@@ -1,4 +1,4 @@
-# KiroClaw
+# KiroCrew
 
 Open-source personal AI agent that runs on your own machine. Chat with it from
 Slack, a web dashboard, or the command line; let it run multi-step tasks
