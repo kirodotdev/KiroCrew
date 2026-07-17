@@ -109,6 +109,12 @@ def test_strip_python_env_holds_on_fail_open_path(monkeypatch):
     monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "none")
     monkeypatch.setattr(sb, "_allow_no_isolation", lambda: True)
     monkeypatch.setattr(sb, "_allow_unsandboxed_exec", lambda: True)
+    # This test asserts the bare fail-open argv (the PYTHONPATH-strip is via the
+    # parent-level scrub, not a launcher). Neutralize the cgroup v2 scope probe
+    # so a host WITH systemd cgroup delegation doesn't prepend `systemd-run` and
+    # break the argv assertion — cgroup wrapping itself is covered by
+    # test_sandbox_argv.py.
+    monkeypatch.setattr(sb, "_probe_cgroup_scope", lambda: (False, "disabled-in-test"))
 
     base = {"PATH": "/usr/bin", "PYTHONPATH": "/kirocrew/site", "PYTHONHOME": "/py"}
     argv, env, cleanup = sb.sandboxed_spawn_argv(
