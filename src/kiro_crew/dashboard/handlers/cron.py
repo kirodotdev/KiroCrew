@@ -23,8 +23,10 @@ from kiro_crew.dashboard.cron_inject import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import cron_executor
 from kiro_crew.llm_helpers import stream_and_collect
+from kiro_crew import model_registry
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
+    _MODEL_NAME_RE,
     CHANNEL_ID_RE,
     CHANNEL_MAX_LEN,
     LEARN_ADD_SCHEMA,
@@ -187,6 +189,28 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if timezone_val and timezone_val not in available_timezones():
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    # Validate model BEFORE add_job so an invalid value never leaves an
+    # orphaned job behind (a retried create would then duplicate it).
+    model_val = (body.get("model") or "").strip()
+    if model_val:
+        if len(model_val) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model_val):
+            return web.json_response({"error": "invalid model format"}, status=400)
+        resolved_model = model_registry.to_provider_id(model_val, "claude_code")
+        if resolved_model == "":
+            # "auto" sentinel (canonical key with no pinned provider id):
+            # explicit inherit — same as leaving model unset.
+            model_val = ""
+        elif resolved_model not in model_registry.available_models("claude_code"):
+            safe_model, _ = redact_credentials(redact_exfiltration_urls(model_val)[0])
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.create",
+                outcome="denied",
+                source="api_cron_create",
+                resources=f"model={safe_model}",
+                error="unknown model",
+            )
+            return web.json_response({"error": f"unknown model: {safe_model!r}"}, status=400)
     if every:
         try:
             every = int(every)
@@ -254,11 +278,13 @@ async def api_crons_create(request: web.Request) -> web.Response:
             source="api_cron_create",
             resources=resolved,
         )
-    if agent_id or project_path or approval_mode or silent or timezone_val or strict_schedule or hide_in_chat:
+    if agent_id or project_path or model_val or approval_mode or silent or timezone_val or strict_schedule or hide_in_chat:
         if agent_id:
             job.agent_id = agent_id
         if project_path:
             job.project_path = resolved
+        if model_val:
+            job.model = model_val
         if approval_mode:
             job.approval_mode = approval_mode
         if silent:
@@ -458,6 +484,26 @@ async def api_cron_update(request: web.Request) -> web.Response:
                 resources=resolved_pp,
             )
         kwargs["project_path"] = resolved_pp
+    if "model" in body:
+        m = (body["model"] or "").strip()
+        if m:
+            if len(m) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(m):
+                return web.json_response({"error": "invalid model format"}, status=400)
+            resolved_model = model_registry.to_provider_id(m, "claude_code")
+            if resolved_model == "":
+                m = ""
+            elif resolved_model not in model_registry.available_models("claude_code"):
+                safe_model, _ = redact_credentials(redact_exfiltration_urls(m)[0])
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.update",
+                    outcome="denied",
+                    source="api_cron_update",
+                    resources=f"model={safe_model}",
+                    error="unknown model",
+                )
+                return web.json_response({"error": f"unknown model: {safe_model!r}"}, status=400)
+        kwargs["model"] = m
     # Validate channel if being updated
     if "channel" in kwargs:
         ch = (kwargs["channel"] or "").strip() or None
@@ -860,6 +906,7 @@ async def api_crons(request: web.Request) -> web.Response:
             "created_ts": j.created_ts or None,
             "last_status": j.last_status,
             "agent": redact_credentials(redact_exfiltration_urls(j.agent_id or "")[0])[0] or None,
+            "model": redact_credentials(redact_exfiltration_urls(j.model or "")[0])[0] or None,
             "channel": redact_credentials(redact_exfiltration_urls(j.channel or "")[0])[0] or None,
             "approval_mode": redact_credentials(redact_exfiltration_urls(j.approval_mode or "")[0])[
                 0

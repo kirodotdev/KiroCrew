@@ -67,6 +67,63 @@ class TestCronCreateApprovalMode:
         assert resp.status == 200
 
 
+class TestCronCreateModel:
+    """Test model validation on cron create (dashboard handler)."""
+
+    def _make_request(self, body: dict) -> MagicMock:
+        mock_state = MagicMock()
+        mock_state.has_slot.return_value = False
+        mock_job = MagicMock()
+        mock_job.id = "abc"
+        mock_job.agent_id = ""
+        mock_job.approval_mode = ""
+        mock_job.silent = False
+        mock_job.model = ""
+        mock_state.crons.add_job.return_value = mock_job
+        request = MagicMock()
+        request.app = {"state": mock_state}
+        request.json = AsyncMock(return_value=body)
+        return request
+
+    @pytest.mark.asyncio
+    async def test_valid_model_accepted(self):
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": "sonnet"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        job = request.app["state"].crons.add_job.return_value
+        assert job.model != ""
+
+    @pytest.mark.asyncio
+    async def test_empty_model_accepted(self):
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": ""}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_invalid_model_format_rejected(self):
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": "../../etc/passwd"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 400
+        body = json.loads(resp.body)
+        assert "invalid model format" in body["error"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_model_rejected(self):
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": "nonexistent-model-xyz"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 400
+        body = json.loads(resp.body)
+        assert "unknown model" in body["error"]
+
+
 class TestCronListFields:
     @pytest.mark.asyncio
     async def test_response_includes_approval_mode_and_silent(self):
@@ -91,6 +148,7 @@ class TestCronListFields:
         mock_job.script = ""
         mock_job.command = ""
         mock_job.last_error = ""
+        mock_job.model = ""
 
         mock_state = MagicMock()
         mock_state.has_slot.return_value = False

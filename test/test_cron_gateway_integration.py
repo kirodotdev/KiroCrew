@@ -286,3 +286,181 @@ class TestAutoPause:
         await _run_script_callback(gw, job, {"status": "ok"})
         assert job.consecutive_failures == 0
         assert job.enabled is True
+
+
+# ── Per-job model override: _acquire_with_model_fallback / _annotate_model_downgrade ──
+
+
+def _make_llm_job(**overrides):
+    """LLM-based cron job (no script, no command) with optional model override."""
+    defaults = dict(
+        id="lj1",
+        name="llm-job",
+        message="Run daily check",
+        schedule=CronSchedule(kind="every", every_secs=3600),
+    )
+    defaults.update(overrides)
+    return CronJob(**defaults)
+
+
+def _make_gw_for_llm():
+    """Extended _make_gw with attributes the LLM single-agent path needs."""
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
+    gw.sessions = MagicMock()
+    gw.ctx_builder = MagicMock()
+    gw.slack = None  # suppress Slack delivery
+    gw.conv_log = None
+    gw.dashboard_state = MagicMock()
+    gw.dashboard_state.get_slot = MagicMock(return_value=None)
+    gw.dashboard_state.has_slot = MagicMock(return_value=False)
+    gw.dashboard_state.notify = MagicMock()
+    gw._owner_id = "U000"
+    gw.subagent_mgr = None
+    gw._cron_injecting = {}
+    gw._running_script_ids = set()
+    gw._no_crons = False
+    gw.cron_svc = MagicMock()
+    gw._cfg = MagicMock()
+    gw._cfg.agent.provider = "acp"
+    gw._cfg.hooks = {}
+    gw._approval_mode = None
+    gw.sessions.release = MagicMock()
+    gw.sessions.reset = AsyncMock()
+    gw.sessions.set_thread = AsyncMock()
+    gw.sessions.set_channel = AsyncMock()
+    gw.sessions.get_channel = MagicMock(return_value=None)
+    gw.ctx_builder.build_message = MagicMock(return_value=("full prompt", None))
+    gw.ctx_builder.hooks = MagicMock()
+    gw._interactive_approval = MagicMock(return_value="cb")
+    return gw
+
+
+async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
+    """Run the cron callback for an LLM-based job through _init_cron.
+
+    get_or_create_side_effect: if provided, set as the side_effect on
+    sessions.get_or_create (for simulating model errors / fallback).
+    """
+    captured_cb = None
+
+    if get_or_create_side_effect is not None:
+        gw.sessions.get_or_create = AsyncMock(side_effect=get_or_create_side_effect)
+    else:
+        provider_mock = MagicMock()
+        gw.sessions.get_or_create = AsyncMock(return_value=(provider_mock, True, False))
+
+    _embed_mock = AsyncMock(return_value=("full prompt", None))
+    _stream_mock = AsyncMock(return_value="Agent response here")
+
+    with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
+         patch("kiro_crew.slack.gateway.run_in_embed_pool", _embed_mock), \
+         patch("kiro_crew.slack.gateway.stream_and_collect", _stream_mock), \
+         patch("kiro_crew.slack.gateway.sel"), \
+         patch("kiro_crew.slack.gateway.build_cron_session_context") as mock_ctx:
+
+        mock_ctx.return_value = (f"cron:{job.id}", job.message)
+
+        def capture_cron(on_job=None, **kw):
+            nonlocal captured_cb
+            captured_cb = on_job
+            svc = MagicMock()
+            svc.start = AsyncMock()
+            return svc
+
+        mock_cron_cls.side_effect = capture_cron
+        await gw._init_cron()
+        assert captured_cb is not None
+        result = await captured_cb(job)
+        return result, _stream_mock
+
+
+class TestModelFallback:
+    """Test _acquire_with_model_fallback and _annotate_model_downgrade paths."""
+
+    @pytest.mark.asyncio
+    async def test_model_override_passed_to_session(self):
+        """When job.model is set, get_or_create receives it."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-opus-4-8")
+
+        result, _ = await _run_llm_callback(gw, job)
+        # The first get_or_create call should have model=job.model
+        call_kwargs = gw.sessions.get_or_create.call_args_list[0].kwargs
+        assert call_kwargs["model"] == "claude-opus-4-8"
+        assert result == "Agent response here"
+
+    @pytest.mark.asyncio
+    async def test_no_model_passes_none(self):
+        """When job.model is empty, get_or_create receives model=None."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="")
+
+        result, _ = await _run_llm_callback(gw, job)
+        call_kwargs = gw.sessions.get_or_create.call_args_list[0].kwargs
+        assert call_kwargs["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_model_unavailable_falls_back(self):
+        """When pinned model fails with model-related error, retries without model."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-nonexistent-9")
+        provider_mock = MagicMock()
+
+        call_count = [0]
+
+        async def _side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("model 'claude-nonexistent-9' not found")
+            return (provider_mock, True, False)
+
+        result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+        assert call_count[0] == 2
+        assert "unavailable" in result
+        assert "Agent response here" in result
+
+    @pytest.mark.asyncio
+    async def test_model_fallback_annotates_response(self):
+        """Downgraded result is prefixed with a warning annotation."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-fancy-model")
+        provider_mock = MagicMock()
+
+        call_count = [0]
+
+        async def _side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("model 'claude-fancy-model' is not available")
+            return (provider_mock, True, False)
+
+        result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+        assert result.startswith("⚠️")
+        assert "claude-fancy-model" in result
+        assert "Agent response here" in result
+
+    @pytest.mark.asyncio
+    async def test_non_model_error_propagates(self):
+        """Errors unrelated to model are not caught by the fallback."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-opus-4-8")
+
+        async def _side_effect(*args, **kwargs):
+            raise RuntimeError("connection refused to provider host")
+
+        with pytest.raises(RuntimeError, match="connection refused"):
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_when_model_empty(self):
+        """When job.model is empty, any error propagates (no fallback needed)."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="")
+
+        async def _side_effect(*args, **kwargs):
+            raise RuntimeError("model spawn failed")
+
+        with pytest.raises(RuntimeError, match="model spawn failed"):
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)

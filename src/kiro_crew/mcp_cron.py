@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import available_timezones
 
+from kiro_crew import model_registry
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.cron import CronService, compute_next_run_ts, format_schedule, get_local_tz
 from kiro_crew.cron_script import resolve_script_path
@@ -520,6 +521,13 @@ def _list_tools() -> list[dict[str, Any]]:
                         "'auto' auto-approves all tools without prompting. "
                         "Empty or omitted uses default hook-based approval.",
                     },
+                    "model": {
+                        "type": "string",
+                        "description": "Model override for this job (canonical key or provider id, "
+                        "e.g. 'sonnet', 'opus'). Empty or omitted inherits from the agent config "
+                        "or global default. Applies when the job's session is created; a running "
+                        "persistent session keeps its current model until it is reset.",
+                    },
                     "skip_dates": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -643,6 +651,13 @@ def _list_tools() -> list[dict[str, Any]]:
                         "session in the dashboard active-session list. Set true to keep "
                         "fire-and-forget jobs out of the Chats sidebar (result still goes to "
                         "Slack/bell + History).",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model override for this job (canonical key or provider id). "
+                        "Empty string clears the override (inherits from agent/global). Applies "
+                        "when the job's session is created; a running persistent session keeps "
+                        "its current model until it is reset.",
                     },
                 },
                 "required": ["job_id"],
@@ -829,6 +844,12 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
         channel = channel_raw.strip() if isinstance(channel_raw, str) else ""
         if agent:
             extras.append(f"agent={_sanitize(agent)}")
+        model_raw = getattr(j, "model", "")
+        model_val = model_raw.strip() if isinstance(model_raw, str) else ""
+        if model_val:
+            # _sanitize applies the full redact_credentials +
+            # redact_exfiltration_urls chain required for LLM-controlled values.
+            extras.append(f"model={_sanitize(model_val)}")
         if channel:
             extras.append(f"channel={_sanitize(channel)}")
         last_status = getattr(j, "last_status", None)
@@ -959,6 +980,27 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             channel = os.environ.get("KIROCREW_CHANNEL_ID") or None
         if not every and not cron_expr and not at_ts:
             return "Error: provide every, cron_expr, at, delay, or at_time"
+        # Validate model BEFORE add_job so an invalid value never leaves an
+        # orphaned job behind (a retried cron_add would then duplicate it).
+        model_arg = str(args.get("model") or "").strip()
+        if model_arg:
+            resolved_model = model_registry.to_provider_id(model_arg, "claude_code")
+            if resolved_model == "":
+                # "auto" sentinel (canonical key with no pinned provider id):
+                # explicit inherit — same as leaving model unset.
+                model_arg = ""
+            elif resolved_model not in model_registry.available_models("claude_code"):
+                safe_model = _sanitize(model_arg)
+                keys = sorted(
+                    r["model_name"] for r in model_registry.display_list("claude_code")
+                )
+                sel().log_api_access(
+                    caller="mcp", operation="cron.create",
+                    outcome="denied", source="mcp",
+                    resources=f"model={safe_model}",
+                    error="unknown model",
+                )
+                return f"Error: unknown model {safe_model!r}. Available: {', '.join(keys)}"
         try:
             thread_ts = (args.get("thread_ts") or "").strip() or None
             job = svc.add_job(
@@ -983,6 +1025,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             job.silent = True
         if approval_mode:
             job.approval_mode = approval_mode
+        if model_arg:
+            job.model = model_arg
         if session_key:
             job.session_key = session_key
         skip_dates = args.get("skip_dates", [])
@@ -1024,6 +1068,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             agent
             or silent
             or approval_mode
+            or model_arg
             or session_key
             or skip_dates
             or tz
@@ -1036,6 +1081,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         ):
             svc._save()
         sched_str = format_schedule(job.schedule)
+        sel().log_api_access(
+            caller="mcp", operation="cron.create",
+            outcome="allowed", source="mcp",
+            resources=f"job_id={job.id}",
+        )
         return f"Added job: {job.id} ({job.name}) [{sched_str}]. Tell the user: scheduled for {sched_str}."
 
     if name == "cron_update":
@@ -1075,6 +1125,26 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             hic = args["hide_in_chat"]
             if isinstance(hic, bool):
                 kwargs["hide_in_chat"] = hic
+        if "model" in args:
+            m = str(args["model"] or "").strip()
+            if m:
+                resolved_model = model_registry.to_provider_id(m, "claude_code")
+                if resolved_model == "":
+                    # "auto" sentinel — explicit inherit, same as clearing.
+                    m = ""
+                elif resolved_model not in model_registry.available_models("claude_code"):
+                    safe_model = _sanitize(m)
+                    keys = sorted(
+                        r["model_name"] for r in model_registry.display_list("claude_code")
+                    )
+                    sel().log_api_access(
+                        caller="mcp", operation="cron.update",
+                        outcome="denied", source="mcp",
+                        resources=f"model={safe_model}",
+                        error="unknown model",
+                    )
+                    return f"Error: unknown model {safe_model!r}. Available: {', '.join(keys)}"
+            kwargs["model"] = m
         if "cron_expr" in args and args["cron_expr"]:
             kwargs["cron_expr"] = args["cron_expr"]
         if "every" in args and args["every"]:
@@ -1089,6 +1159,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {e}"
         if not updated:
             return f"Job not found: {jid}"
+        sel().log_api_access(
+            caller="mcp", operation="cron.update",
+            outcome="allowed", source="mcp",
+            resources=f"job_id={jid}",
+        )
         sched_str = format_schedule(updated.schedule)
         return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]"
 
@@ -1099,8 +1174,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return f"Job not found: {jid}"
 
     if name == "cron_remove_all":
-        from kiro_crew.sel import sel
-
         jobs = svc.list_jobs(include_disabled=True)
         if not jobs:
             return "No cron jobs to remove."
@@ -1158,8 +1231,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         port = DASHBOARD_PORT
         secret_path = config_dir() / ".local_secret"
         ok, msg = trigger_cron_job(jid, port, secret_path)
-        from kiro_crew.sel import sel as _sel
-        _sel().log_api_access(
+        sel().log_api_access(
             caller="mcp", operation="cron.trigger",
             outcome="allowed" if ok else "error", source="mcp",
             resources=f"job_id={jid}",

@@ -693,6 +693,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("delay", (int, float), min_val=1, max_val=86400 * 30),  # 1s to 30 days
         FieldSpec("at_time", str, max_len=100),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("silent", bool),
         FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
         FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
@@ -946,6 +947,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("cron_expr", str, max_len=100),
             FieldSpec("every", int, min_val=60, max_val=86400 * 30),
             FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+            FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
             FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
             FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
             FieldSpec("approval_mode", str, max_len=10, pattern=re.compile(r"^(auto)?$")),

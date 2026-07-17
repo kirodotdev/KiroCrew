@@ -245,6 +245,60 @@ class TestCronService:
         svc._load()
         assert svc.list_jobs()[0].approval_mode == ""
 
+    def test_model_default_empty(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="test", message="hello", every_secs=300)
+        assert job.model == ""
+
+    def test_model_persists(self, tmp_path: Path) -> None:
+        svc1 = CronService(base_dir=tmp_path)
+        svc1._load()
+        job = svc1.add_job(name="model-job", message="go", every_secs=300)
+        job.model = "sonnet"
+        svc1._save()
+
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        loaded = svc2.list_jobs()[0]
+        assert loaded.model == "sonnet"
+
+    def test_model_missing_in_json_defaults_empty(self, tmp_path: Path) -> None:
+        """Old crons.json without model field should default to empty string."""
+        data = {
+            "version": 2,
+            "jobs": [
+                {
+                    "id": "abc123",
+                    "name": "legacy",
+                    "message": "hi",
+                    "schedule": {"kind": "every", "every_secs": 300},
+                }
+            ],
+        }
+        (tmp_path / "crons.json").write_text(json.dumps(data))
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        assert svc.list_jobs()[0].model == ""
+
+    def test_update_job_model(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="test", message="hello", every_secs=300)
+        updated = svc.update_job(job.id, model="opus")
+        assert updated is not None
+        assert updated.model == "opus"
+
+    def test_update_job_model_clear(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="test", message="hello", every_secs=300)
+        job.model = "sonnet"
+        svc._save()
+        updated = svc.update_job(job.id, model="")
+        assert updated is not None
+        assert updated.model == ""
+
 
 class TestTimerRestoreOnLoad:
     """Verify that _load() restores timers for active jobs when running."""
