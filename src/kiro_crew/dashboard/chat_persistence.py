@@ -21,6 +21,7 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import _archive_lines
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
 
@@ -367,6 +368,13 @@ def _rehydrate_slot_from_history(state: DashboardState, slot_name: str) -> _Chat
         slot.folder_id = meta["folder_id"]
     if meta.get("app"):
         slot._app = meta["app"]
+    # Re-validate the companion binding against the slug grammar on restore
+    # (same gate as slot create) — history JSONL is a file an attacker with
+    # disk access could tamper, and this value flows into to_dict()/WS
+    # broadcasts to every connected dashboard client.
+    _artifact_meta = meta.get("artifact")
+    if isinstance(_artifact_meta, str) and ARTIFACT_SLUG_RE.match(_artifact_meta):
+        slot._artifact = _artifact_meta
     if meta.get("pinned"):
         slot.pinned = True
     if meta.get("color_index") is not None:
@@ -518,6 +526,12 @@ def restore_recent_sessions(
             slot.folder_id = meta["folder_id"]
         if meta.get("app"):
             slot._app = meta["app"]
+        # Same tamper gate as _rehydrate_slot_from_history: re-validate the
+        # companion binding against the slug grammar before it reaches
+        # to_dict()/WS broadcasts.
+        _artifact_meta = meta.get("artifact")
+        if isinstance(_artifact_meta, str) and ARTIFACT_SLUG_RE.match(_artifact_meta):
+            slot._artifact = _artifact_meta
         if meta.get("pinned"):
             slot.pinned = True
         if meta.get("color_index") is not None:
@@ -819,6 +833,11 @@ def _save_slot_to_history(
             meta_line["folder_id"] = slot.folder_id
         if slot._app:
             meta_line["app"] = slot._app
+        # Artifact companion binding (Mesh-2772) — persisted so a bound
+        # session restored after a gateway restart (or resumed from the
+        # History page) comes back as the artifact's active bound session.
+        if slot._artifact:
+            meta_line["artifact"] = slot._artifact
         if slot.pinned:
             meta_line["pinned"] = True
         if slot.color_index is not None:

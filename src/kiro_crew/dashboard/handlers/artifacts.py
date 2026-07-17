@@ -68,6 +68,26 @@ def _err(message: str, status: int = 400) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
 
+def _notify_artifact_update(
+    state: Any, slug: str, version: int, *, deleted: bool = False
+) -> None:
+    """Best-effort WS broadcast of an artifact content change (Mesh-2772).
+
+    Called from the mutation funnel (create / content update / revert /
+    delete) — the same choke points as the SEL audit, so panel chat, other
+    dashboard sessions, Slack, and CLI mutations all emit. Fire-and-forget:
+    react-query's 30s staleness window remains the safety net if the broadcast
+    fails or a client misses it. Known limitation (accepted): external edits to
+    a file-backed artifact's source_path never pass through a handler, so those
+    stay on pull-based refresh.
+    """
+    try:
+        if state is not None:
+            state.push_artifact_update(slug, version, deleted=deleted)
+    except Exception:  # pragma: no cover — fire-and-forget by design
+        logger.debug("artifact_update broadcast failed for %s", slug, exc_info=True)
+
+
 async def _read_json_body(request: web.Request) -> dict[str, Any]:
     """Read a JSON body, capped at ``_MAX_BODY_BYTES``."""
     raw = await request.read()
@@ -482,6 +502,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
                 },
             )
             # 200 OK signals "bumped existing"; the create path below returns 201.
+            _notify_artifact_update(state, art.slug, art.version)
             return _json_response(_serialize(art, include_content=True), status=200)
     # Resolve an optional folder placement (id or human path; mkdir -p missing
     # segments) so a save can file the artifact in one call (Mesh-2720). Off the
@@ -542,6 +563,8 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
         outcome="success",
         extra={"slug": art.slug, "kind": art.kind, "version": art.version},
     )
+    # New library entries appear live in every open window (Mesh-2772).
+    _notify_artifact_update(state, art.slug, art.version)
     return _json_response(_serialize(art, include_content=True), status=201)
 
 
@@ -707,6 +730,14 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         outcome="success",
         extra=_success_extra,
     )
+    # Live refresh (Mesh-2772): broadcast only when the artifact's content
+    # actually changed — a content-carrying PATCH (Save / Snapshot / MCP
+    # artifact_update) or a revert (event_type="reverted" is a content
+    # rollback even when the body carries no content field). Metadata-only
+    # updates (rename / retag / description / folder) don't move content, so
+    # open views have nothing to re-render.
+    if body.get("content") is not None or event_type == "reverted":
+        _notify_artifact_update(state, art.slug, art.version)
     return _json_response(_serialize(art, include_content=True))
 
 
@@ -722,6 +753,13 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         )
         return _err("restricted session cannot delete artifacts", status=403)
     slug = request.match_info.get("slug", "")
+    # Capture the pre-delete version so the deleted-variant WS event carries the
+    # last-known version (Mesh-2772). The upstream cleanup block that fetched
+    # this was tied to the removed Artifactory path, so fetch it here directly.
+    try:
+        _existing = get_default_store().get(slug)
+    except ArtifactNotFoundError:
+        _existing = None
     try:
         get_default_store().delete(slug)
     except ArtifactNotFoundError as exc:
@@ -759,6 +797,10 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         request=request,
         outcome="success",
         extra={"slug": slug},
+    )
+    # Deleted variant (Mesh-2772): open views of this slug toast + leave.
+    _notify_artifact_update(
+        state, slug, _existing.version if _existing is not None else 0, deleted=True
     )
     return _json_response({"ok": True})
 

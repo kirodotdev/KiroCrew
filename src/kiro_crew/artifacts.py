@@ -99,7 +99,7 @@ MAX_TAG_LEN = 64
 
 # Slug pattern: lowercase letters, digits, hyphens. 1-80 chars. No leading or
 # trailing hyphen. Single-character slugs are allowed for trivial names.
-_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
+_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 _TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}$")
 _VERSION_FILE_RE = re.compile(r"^v(\d+)\.html$")
 _SLUG_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")

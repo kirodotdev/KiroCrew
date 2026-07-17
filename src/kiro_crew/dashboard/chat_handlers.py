@@ -63,7 +63,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import SecurityEvent, sel
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.validation import _AGENT_NAME_RE, ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
 
@@ -588,6 +588,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         title, _ = redact_credentials(title)
         slot.title = title
         slot._titled = True
+    # Bind to an artifact if provided (companion chat, Mesh-2772). Validate
+    # against the artifact slug grammar so an injection-shaped value can never
+    # land on the slot; anything invalid is silently dropped. Uniqueness (≤1
+    # active bound session per slug) is a frontend-flow convention, not
+    # enforced here.
+    artifact_slug = body.get("artifact") if isinstance(body, dict) else None
+    if isinstance(artifact_slug, str) and ARTIFACT_SLUG_RE.match(artifact_slug):
+        slot._artifact = artifact_slug
     # Default project to workspace directory so file search works out of the box
     if not slot.project:
         cfg_proj = cfg.dashboard.default_project if cfg else ""

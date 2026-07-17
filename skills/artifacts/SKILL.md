@@ -165,6 +165,18 @@ The user says "iterate on artifact <slug> — change X". Flow:
 3. `artifact_update(slug, content=new_html)` → version bumps to vN+1
 4. Re-emit the same widget body in chat (so the user sees the result inline)
 
+### Companion chat sessions
+
+Some sessions are **artifact-bound companions**: the user opened them from an
+artifact's detail page, and your session context includes an injected entry
+("Companion chat for artifact \`<slug>\` …") naming the slug, kind, version,
+and open-comment count. In a companion session the user speaks naturally
+("summarize this", "make the header sticky") without repeating the slug —
+resolve every artifact reference to the slug from that context entry. Your
+behavior is otherwise unchanged: the same iterate flow and the same comment
+triage rules apply, and the user sees your `artifact_update` results live in
+the page next to the chat.
+
 ### "Iterate" without a slug
 
 When the user says "iterate on the widget" / "update the date widget" /

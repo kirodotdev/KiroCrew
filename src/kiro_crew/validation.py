@@ -46,6 +46,17 @@ ALLOWED_HOOK_EVENTS = frozenset(
 # Valid agent name pattern (alphanumeric, hyphens, underscores)
 _AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
 
+# Artifact slug grammar — mirrors kiro_crew.artifacts._SLUG_RE (kept here so
+# consumers outside the store module share one public definition). Used to
+# validate the companion-chat `artifact` slot binding (Mesh-2772) at EVERY
+# boundary it crosses: slot create (chat_handlers) and history-metadata
+# restore (chat_persistence) — a tampered history JSONL must not be able to
+# inject an arbitrary string that flows into to_dict()/WS broadcasts.
+# \Z (not $): Python's $ also matches just before a trailing newline, so
+# "valid-slug\n" would pass a $-anchored .match() — \Z anchors at the true
+# end of the string.
+ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
+
 # Valid model name pattern — alphanumerics, hyphens, dots (e.g. "claude-opus-4.8", "deepseek-3.2")
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 

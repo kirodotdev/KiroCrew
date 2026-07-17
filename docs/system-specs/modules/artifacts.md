@@ -287,6 +287,42 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   persistent folder copy wins over the artifact copy), so the overlap
   self-resolves rather than needing special-casing here.
 
+## Companion Chat (Mesh-2772)
+
+The artifact detail page can host a **companion chat panel**: the artifact
+renders alongside a live agent session bound to it. This is the backend half.
+
+**Binding** — a chat slot may carry an `artifact` field (a validated artifact
+slug) set at slot create (`POST /api/chat/slots` body key `artifact`,
+validated against the slug grammar; invalid values are silently dropped).
+The field is serialized in `to_dict()` — flowing into `GET /api/chat/slots`
+and the WS `slots` snapshot, which is how the frontend resolves the active
+bound session with zero extra endpoints — and persisted in the history meta
+line so the binding survives gateway restarts and History-page resumes
+(resuming a bound session re-establishes it as the artifact's active
+companion).
+
+**Tamper gate** — the binding is validated against a single shared slug
+grammar (`validation.ARTIFACT_SLUG_RE`, `\Z`-anchored) at EVERY boundary it
+crosses: slot create (`chat_handlers`) AND history-metadata restore on both
+paths (`chat_persistence` rehydrate + bulk restore) — a tampered history
+JSONL cannot inject an arbitrary string that flows into `to_dict()`/WS
+broadcasts.
+
+**Invariant** — at most one *active* (non-archived) bound session per slug,
+maintained by the frontend flow. The backend accepts any valid slug and does
+not enforce uniqueness.
+
+**Live refresh** — the artifact mutation funnel broadcasts a typed
+`artifact_update {slug, version, deleted}` WS event
+(`DashboardState.push_artifact_update`, called via the handlers'
+`_notify_artifact_update` helper) from: create (both the genuine-create and
+source_path dedup-bump paths), content-carrying PATCH (Save / Snapshot /
+MCP update / revert — metadata-only PATCHes do NOT emit), and delete
+(`deleted: true`). Fire-and-forget; react-query's 30s staleness window
+remains the safety net. (Upstream also emits from pull-latest and relocate;
+those handlers belong to the Artifactory subsystem removed from this fork.)
+
 ## Roadmap
 
 In scope for the foundation:

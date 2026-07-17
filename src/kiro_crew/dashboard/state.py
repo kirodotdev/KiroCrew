@@ -586,6 +586,7 @@ class _ChatSlot:
         "_titled",
         "_title_in_flight",
         "_title_retry_pending",
+        "_artifact",
         "_resumed_count",
         "_on_message",
         "_has_reader",
@@ -678,6 +679,15 @@ class _ChatSlot:
         self._title_in_flight: bool = False
         # Records a chat_done retry that arrived during the on-send attempt.
         self._title_retry_pending: bool = False
+        # Artifact companion binding (Mesh-2772): set when this slot is a
+        # companion chat session for an artifact (slug). At most one
+        # non-archived slot per slug by convention — the frontend flow
+        # maintains the invariant (archive-then-create); the backend accepts
+        # any valid slug and does not enforce uniqueness. This IS serialized
+        # (to_dict) and persisted (history meta) — the dashboard resolves the
+        # active binding from the slots snapshot, and the binding must survive
+        # gateway restarts.
+        self._artifact: str = ""
         self._resumed_count: int = 0  # messages loaded from history on resume
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
@@ -1075,6 +1085,10 @@ class _ChatSlot:
             "surface": self.mode,
             "workspace": self.workspace,
             "project": self.project,
+            # Artifact companion binding (Mesh-2772). Flows into GET
+            # /api/chat/slots and the WS `slots` snapshot — the frontend
+            # resolves the active bound session for an artifact from here.
+            "artifact": self._artifact,
             "messages": len(self.messages),
             "running": self.running,
             "queue_depth": self.queue_depth,
@@ -2013,6 +2027,25 @@ class DashboardState:
         if full:
             self.push_slots_update()
 
+    def push_artifact_update(self, slug: str, version: int, *, deleted: bool = False) -> None:
+        """Broadcast an artifact content change to all connected clients.
+
+        Emitted from the artifact mutation funnel (create / content update /
+        revert / pull-latest / relocate / delete) so every open dashboard
+        window — main, popouts, companion chat panels — can invalidate its
+        artifact queries immediately instead of waiting for the 30s react-query
+        staleness window (Mesh-2772). Fire-and-forget, best-effort: the
+        staleness window remains the safety net if a client misses the event.
+        """
+        self._broadcast(
+            {
+                "_type": "artifact_update",
+                "slug": slug,
+                "version": version,
+                "deleted": deleted,
+            }
+        )
+
     def push_refresh(self, *kinds: str) -> None:
         """Push a lightweight refresh hint for specific data types.
 
@@ -2080,6 +2113,20 @@ class DashboardState:
                     {
                         "type": "update_progress",
                         "data": {"step": note["step"], "detail": note.get("detail", "")},
+                    }
+                )
+            elif msg_type == "artifact_update":
+                # Typed envelope (not the generic `notification` fallback) so
+                # useWebSocket and future consumers get a self-documenting
+                # event: {slug, version, deleted} (Mesh-2772).
+                ws_msg = json.dumps(
+                    {
+                        "type": "artifact_update",
+                        "data": {
+                            "slug": note["slug"],
+                            "version": note.get("version", 0),
+                            "deleted": note.get("deleted", False),
+                        },
                     }
                 )
             elif msg_type == "chat_message":
