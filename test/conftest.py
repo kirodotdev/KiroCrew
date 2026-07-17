@@ -145,6 +145,25 @@ def _isolate_kirocrew_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_subagents_dir(tmp_path_factory, monkeypatch):
+    """Pin the subagent registry dir to a tmp dir for the whole suite.
+
+    ``kiro_crew.subagent_persistence._SUBAGENTS_DIR`` is bound at import time to
+    ``config_dir() / "subagents"``, so the ``KIROCREW_HOME`` safety net above
+    cannot retroactively redirect it. Any test that calls ``SubagentManager.spawn``
+    or ``create_agent_folder`` without isolating this global itself would write
+    stub agent folders into the operator's real ``~/.kirocrew/subagents/``. On the
+    next gateway start, orphan reconciliation sweeps those stubs and floods the
+    logs with "lost to gateway restart" warnings (e.g. tasks ``t`` / ``ls /tmp``).
+    Redirecting the module global gives every test an isolated, empty registry.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.subagent_persistence._SUBAGENTS_DIR",
+        tmp_path_factory.mktemp("subagents"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_state_sidecar(tmp_path_factory, monkeypatch):
     """Pin the agent_state sidecar to a tmp dir for the whole suite.
 

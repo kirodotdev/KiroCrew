@@ -12,18 +12,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew import subagent_persistence
 from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import SubagentManager
 
-
-@pytest.fixture(autouse=True)
-def _isolate_subagents_dir(tmp_path, monkeypatch):
-    """Redirect subagent persistence to tmp dir."""
-    monkeypatch.setattr(subagent_persistence, "_SUBAGENTS_DIR", tmp_path / "subagents")
+# Subagent-registry isolation is provided globally by the autouse
+# ``_isolate_subagents_dir`` fixture in ``conftest.py`` — no per-file fixture needed.
 
 
 def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:

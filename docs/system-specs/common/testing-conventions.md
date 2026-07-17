@@ -63,6 +63,17 @@ def test_custom_work_dir(self, tmp_path):
 
 - Tests MUST NOT spawn real kiro-cli processes
 - Tests MUST NOT depend on `~/.kirocrew/` existing
+- Tests MUST NOT write into the operator's real data dir. A data-dir path that is
+  bound **at import time** (e.g. `subagent_persistence._SUBAGENTS_DIR`, set to
+  `config_dir() / "subagents"` on first import; or `sel._DEFAULT_DIR`) is NOT
+  covered by the `KIROCREW_HOME` env safety net, because that env var is read
+  after the module already captured the path. `conftest.py` pins each such global
+  with a dedicated autouse fixture (`_isolate_subagents_dir`,
+  `_isolate_sel_default_dir`, …). Paths that instead call `config_dir()` lazily on
+  each use (e.g. `agent_state`) already honor `KIROCREW_HOME`. A test that spawns
+  subagents or persists agent folders without isolating the import-time global
+  leaks stub folders into `~/.kirocrew/subagents/`, which a running gateway then
+  sweeps as orphans on its next restart.
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio`
 

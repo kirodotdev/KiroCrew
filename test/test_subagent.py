@@ -12,22 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew import subagent_persistence
 from kiro_crew.subagent import _TURN_LIMIT, SubagentManager
 
-
-@pytest.fixture(autouse=True)
-def _isolate_subagents_dir(tmp_path, monkeypatch):
-    """Redirect subagent persistence to a tmp dir so tests never touch the live registry.
-
-    ``kiro_crew.subagent_persistence._SUBAGENTS_DIR`` is bound at import time to
-    ``config_dir() / "subagents"``. Without this, tests that create or persist
-    subagents write into the live ``~/.kirocrew/subagents/`` registry, leaking
-    stub agents into a running gateway (which sweeps them as orphans on the next
-    restart). Patching the module global gives every test in this file an
-    isolated directory.
-    """
-    monkeypatch.setattr(subagent_persistence, "_SUBAGENTS_DIR", tmp_path / "subagents")
+# Subagent-registry isolation is provided globally by the autouse
+# ``_isolate_subagents_dir`` fixture in ``conftest.py`` — no per-file fixture needed.
 
 
 def _mock_sessions() -> MagicMock:
