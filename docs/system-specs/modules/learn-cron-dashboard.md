@@ -1,6 +1,6 @@
 # Self-Learning, Cron & Dashboard Modules
 
-Last Updated: 2026-07-13 (silent-cron failure-alert suppression, _deliver_cron_response OPTIONS buttons, theme + slot-mode + folder + agents-roster endpoints, state.py display_title/branch-commit; CHAT_TURN_TIMEOUT applied uniformly to all _run_chat dispatch sites; bumped to 7200s to match ACP _DEFAULT_PROMPT_TIMEOUT)
+Last Updated: 2026-07-17 (learn_add session-recovery resolver now probes the cron JSONL naming — cron_{id}.jsonl + dashboard_cron-{id}.jsonl — so an idle-evicted cron session is recognised; _artifact companion-chat slot field + push_artifact_update broadcast helper; silent-cron failure-alert suppression, _deliver_cron_response OPTIONS buttons, theme + slot-mode + folder + agents-roster endpoints, state.py display_title/branch-commit; CHAT_TURN_TIMEOUT applied uniformly to all _run_chat dispatch sites; bumped to 7200s to match ACP _DEFAULT_PROMPT_TIMEOUT)
 
 ## Overview
 
@@ -20,7 +20,7 @@ The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-s
    - Present in `state._slots` (live in-memory slot), **OR**
    - Key is in `state._restricted_keys`, **OR**
    - Key is in the Slack namespace — either it starts with `slack:`, or it is a bare Slack `thread_ts` matching `validation.SLACK_THREAD_TS_RE` (`^\d{10,}\.\d{6,}$`), **OR**
-   - The corresponding JSONL file exists under `~/.kirocrew/sessions/{slot_name}.jsonl` or `~/.kirocrew/sessions/dashboard_{slot_name}.jsonl` — resolved by `_session_has_persisted_history()` in `handlers/_shared.py`.
+   - The corresponding JSONL file exists under `~/.kirocrew/sessions/{slot_name}.jsonl`, `~/.kirocrew/sessions/dashboard_{slot_name}.jsonl`, `~/.kirocrew/sessions/cron_{slot_name}.jsonl`, or `~/.kirocrew/sessions/dashboard_cron-{slot_name}.jsonl` — resolved by `_session_has_persisted_history()` in `handlers/_shared.py`. The two `cron` forms exist because `history._safe_key` folds `:` to `_`: a cron session keyed off `cron:{id}` persists as `cron_{id}.jsonl`, and its linked dashboard slot keyed off `dashboard:cron-{id}` persists as `dashboard_cron-{id}.jsonl`, so an idle-evicted cron session's `learn_add` is recognised rather than rejected as forged.
 
    If none match → HTTP 400 `unknown session`.
 

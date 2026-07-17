@@ -857,6 +857,115 @@ class TestSessionSlotRecovery:
             assert resp.status == 200
 
     @pytest.mark.asyncio
+    async def test_learn_add_allowed_for_evicted_cron_session_underscore_jsonl(
+        self, tmp_path, monkeypatch
+    ):
+        """A cron session keys off ``cron:{id}`` and persists its transcript as
+        ``cron_{id}.jsonl`` (``_safe_key`` maps ``:`` → ``_``). The resolver must
+        probe that name so an idle-evicted-but-real cron's learn_add succeeds."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._get_memory",
+            MagicMock(return_value=MagicMock(vector_store=None)),
+        )
+        state = _make_state(tmp_path)
+        # cron:abc123 → _safe_key → cron_abc123.jsonl on disk; slot evicted.
+        self._write_sessions_jsonl(tmp_path, "cron_abc123")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "remember this", "category": "knowledge"},
+                headers={"X-Session-Key": "cron:abc123"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_learn_add_allowed_for_evicted_cron_session_dashboard_jsonl(
+        self, tmp_path, monkeypatch
+    ):
+        """A cron's linked dashboard slot keys off ``dashboard:cron-{id}`` and
+        persists as ``dashboard_cron-{id}.jsonl``; probing that name also
+        recovers the evicted cron session for learn_add."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._get_memory",
+            MagicMock(return_value=MagicMock(vector_store=None)),
+        )
+        state = _make_state(tmp_path)
+        # dashboard:cron-abc123 → _safe_key → dashboard_cron-abc123.jsonl
+        self._write_sessions_jsonl(tmp_path, "dashboard_cron-abc123")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "remember this", "category": "knowledge"},
+                headers={"X-Session-Key": "cron:abc123"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_learn_add_rejects_forged_cron_key_without_jsonl(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression guard: a ``cron:`` key with no backing JSONL is still
+        rejected. The cron probes only ADD positive matches — they must not
+        relax the deny path."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        # Empty sessions dir so the path-exists check is meaningful.
+        (tmp_path / ".kirocrew" / "sessions").mkdir(parents=True, exist_ok=True)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "remember this", "category": "knowledge"},
+                headers={"X-Session-Key": "cron:forged123"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"] == "unknown session"
+
+    @pytest.mark.asyncio
+    async def test_learn_add_rejects_path_traversal_in_cron_slot_name(
+        self, tmp_path, monkeypatch
+    ):
+        """AC #4: the path-traversal guard still runs first on the slot_name
+        even for a ``cron:``-prefixed key, so a traversal attempt is rejected
+        even when a file exists at the resolved target."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        sess_dir = tmp_path / ".kirocrew" / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        # Seed files at each resolved traversal target so the guard — NOT the
+        # missing-file fallback — is what rejects each request.
+        # "../escape" → sess_dir/../escape.jsonl → ~/.kirocrew/escape.jsonl
+        (tmp_path / ".kirocrew" / "escape.jsonl").write_text("{}\n")
+        # "a/b" → sess_dir/a/b.jsonl
+        sub = sess_dir / "a"
+        sub.mkdir(parents=True, exist_ok=True)
+        (sub / "b.jsonl").write_text("{}\n")
+        # "a\\b" (Windows separator) → literal single-name file on Linux.
+        (sess_dir / "a\\b.jsonl").write_text("{}\n")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            for bad_key in (
+                "cron:../escape",
+                "cron:a/b",
+                "cron:a\\b",
+            ):
+                resp = await client.post(
+                    "/api/lessons",
+                    json={"rule": "x", "category": "knowledge"},
+                    headers={"X-Session-Key": bad_key},
+                )
+                assert resp.status == 400, f"cron path-traversal passed: {bad_key!r}"
+
+    @pytest.mark.asyncio
     async def test_learn_add_still_rejected_when_no_jsonl_exists(self, tmp_path, monkeypatch):
         """Forged/stale keys with no backing JSONL are still rejected as unknown."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

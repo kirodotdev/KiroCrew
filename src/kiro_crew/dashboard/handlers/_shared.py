@@ -783,11 +783,20 @@ def _session_has_persisted_history(slot_name: str) -> bool:
         return False
     # Match the resolution order used by slack/interactions.py when
     # linking Slack threads to existing sessions: bare stem first, then
-    # the ``dashboard_`` prefix fallback for dashboard slots.
+    # the ``dashboard_`` prefix fallback for dashboard slots. Cron sessions
+    # persist under different names: ``history._safe_key`` folds ``:`` to
+    # ``_``, so ``cron:{id}`` writes ``cron_{id}.jsonl`` and its linked
+    # dashboard slot ``dashboard:cron-{id}`` writes ``dashboard_cron-{id}.jsonl``.
+    # Probe those too so an idle-evicted cron session is recognised rather
+    # than misclassified as forged.
     if (sess_dir / f"{slot_name}.jsonl").exists():
         return True
     if not slot_name.startswith("dashboard_") and (
         sess_dir / f"dashboard_{slot_name}.jsonl"
     ).exists():
+        return True
+    if (sess_dir / f"cron_{slot_name}.jsonl").exists():
+        return True
+    if (sess_dir / f"dashboard_cron-{slot_name}.jsonl").exists():
         return True
     return False
