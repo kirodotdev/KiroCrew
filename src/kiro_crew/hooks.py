@@ -570,6 +570,37 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         return None
 
 
+def safe_read_prefix(raw: str, n: int) -> bytes | None:
+    """Read the first *n* bytes of a file through is_sensitive_path enforcement.
+
+    Like :func:`safe_read_file_bytes` but reads only a bounded prefix, for
+    magic-byte / format sniffing of large binaries that exceed
+    ``MAX_FILE_BYTES`` (e.g. the ~100 MB kiro-cli binary). ``validate_file_path``
+    canonicalizes via ``realpath`` (following symlinks) and rejects sensitive
+    resolved targets, so a symlink pointing into ``~/.aws`` etc. is refused
+    before any read. The open uses ``O_NOFOLLOW`` on the canonical path as
+    TOCTOU defense against a final-component symlink swap after the check.
+
+    Returns up to *n* bytes, or None if the path is rejected or unreadable.
+    """
+    import os
+
+    if n <= 0:
+        return b""
+    path = validate_file_path(raw)
+    if path is None:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read(n)
+    except OSError:
+        return None
+
+
 # ── Script Hooks ──
 
 

@@ -167,7 +167,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "pod/runtime.py::derive_port",
         "pod/runtime.py::recent_journal",
         "sandbox.py::_probe_sandbox_exec",
-        "sandbox.py::_resolve_real_kiro_bin",
         "sandbox.py::_ssh_supports_accept_new",
         "service/linux.py::_current_group",
         "service/linux.py::_sudo_run",

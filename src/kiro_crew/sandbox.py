@@ -188,15 +188,21 @@ def _probe_sandbox_exec() -> bool:
     sb = shutil.which("sandbox-exec")
     if sb is None:
         return False
-    # Probe with file-based profile targeting a representative binary
-    target = shutil.which("kiro-cli") or "true"
-    target_arg = ["--version"] if "kiro-cli" in target else []
+    # Probe with a file-based (allow default) profile against a TRUSTED, fixed
+    # system binary. We deliberately do NOT probe the (user-writable) kiro-cli
+    # binary: the probe runs under (allow default) with KiroCrew's credentials,
+    # so exec'ing a user-writable target here could run a planted payload
+    # effectively unsandboxed. The probe only needs to confirm the kernel
+    # accepts sandbox_apply, which /usr/bin/true validates safely.
+    target = "/usr/bin/true"
+    if not os.path.exists(target):
+        target = shutil.which("true") or target
     fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="kirocrew_probe_")
     try:
         os.write(fd, b"(version 1)(allow default)")
         os.close(fd)
         r = subprocess.run(
-            [sb, "-f", profile_path, target, *target_arg],
+            [sb, "-f", profile_path, target],
             capture_output=True,
             timeout=5,
         )
@@ -220,36 +226,148 @@ def _probe_sandbox_exec() -> bool:
 # ── Backend: Linux namespace sandbox ──
 
 
+# Native-executable magic numbers, split by platform so we never accept an ELF
+# binary on macOS or a Mach-O binary on Linux (which would select an unrunnable
+# target). Mach-O set covers thin 32/64-bit AND fat/universal 32-bit *and*
+# 64-bit (FAT_MAGIC_64), both byte orders — a universal kiro-cli must not be
+# rejected. Used to confirm a resolved candidate is a real binary rather than a
+# shim, stub, or partial/corrupt download.
+_ELF_MAGICS: tuple[bytes, ...] = (b"\x7fELF",)
+_MACHO_MAGICS: tuple[bytes, ...] = (
+    b"\xfe\xed\xfa\xce",  # MH_MAGIC     Mach-O 32-bit (BE)
+    b"\xce\xfa\xed\xfe",  # MH_CIGAM     Mach-O 32-bit (LE)
+    b"\xfe\xed\xfa\xcf",  # MH_MAGIC_64  Mach-O 64-bit (BE)
+    b"\xcf\xfa\xed\xfe",  # MH_CIGAM_64  Mach-O 64-bit (LE)
+    b"\xca\xfe\xba\xbe",  # FAT_MAGIC    universal/fat 32-bit (BE)
+    b"\xbe\xba\xfe\xca",  # FAT_CIGAM    universal/fat 32-bit (LE)
+    b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64 universal/fat 64-bit (BE)
+    b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64 universal/fat 64-bit (LE)
+)
+
+
+def _native_magics() -> tuple[bytes, ...]:
+    """Executable magics valid for the *current* platform."""
+    return _MACHO_MAGICS if sys.platform == "darwin" else _ELF_MAGICS
+
+
+def _is_native_kiro(p: Path) -> bool:
+    """True if *p* is a runnable native kiro-cli binary.
+
+    Requires (1) a regular file named ``kiro-cli``, (2) the platform execute
+    bit (``platform_compat.is_executable_file``), and (3) a platform-correct
+    native binary magic (ELF on Linux; Mach-O thin/fat incl. FAT_MAGIC_64 on
+    macOS). The magic prefix is read through ``hooks.safe_read_prefix``, which
+    enforces ``is_sensitive_path`` and opens with ``O_NOFOLLOW`` — so a
+    ``kiro-cli``-named symlink pointing into a credential path is refused rather
+    than read. Rejects shell shims, non-executable/partial installs, and stubs.
+    """
+    try:
+        if p.name != "kiro-cli" or not p.is_file():
+            return False
+        if not platform_compat.is_executable_file(p):
+            return False
+        from kiro_crew.hooks import safe_read_prefix
+
+        magic = safe_read_prefix(str(p), 4)
+        if not magic:
+            return False
+        return any(magic.startswith(m) for m in _native_magics())
+    except OSError:
+        return False
+
+
+def _is_toolbox_shim(path: str) -> bool:
+    """True if *path* is the toolbox / aim-sandbox wrapper shim we must bypass.
+
+    The shim is a small shell script that re-execs kiro-cli through
+    ``aim sandbox``. We only redirect to the real binary when the supplied
+    path is positively identified as this shim, so an explicit
+    ``KIROCREW_KIRO_BIN`` override (even a custom ``kiro-cli`` script) is
+    honored rather than silently replaced by a toolbox install.
+    """
+    from kiro_crew.hooks import safe_read_prefix
+
+    head = safe_read_prefix(path, 4096)
+    if not head or not head.startswith(b"#!"):
+        return False
+    return b"aim sandbox" in head or b"aim-sandbox" in head
+
+
 def _resolve_real_kiro_bin(shim_path: str) -> str:
     """Resolve the real kiro-cli binary, bypassing any wrapper shim.
 
     On some installs ``kiro-cli`` is a bash shim that re-execs the real
-    binary through a launcher. Inside a user namespace such a shim may
-    fail, so we resolve the real ELF binary and exec it directly.
+    binary through a launcher (e.g. the Amazon toolbox shim routes through
+    ``aim sandbox`` which creates its own seatbelt sandbox — nesting that
+    inside KiroCrew's sandbox-exec fails on macOS 26+).
 
-    Falls back to shim_path unchanged if no real binary is found.
-    Only attempts resolution when the binary basename is ``kiro-cli``.
+    Resolution order:
+    1. If the supplied path resolves (through symlinks) to a native binary,
+       use it — this honors an explicit ``KIROCREW_KIRO_BIN`` / PATH selection
+       and the macOS ``~/.local/bin/kiro-cli`` -> ``.app`` symlink layout.
+    2. If the supplied path is an explicit *non-toolbox* script override,
+       return it unchanged (do not substitute a toolbox install).
+    3. Otherwise (the path is the toolbox aim-sandbox shim, or missing) resolve
+       via the toolbox-managed ``~/.local/bin/kiro-cli`` symlink, then the Linux
+       ``$BUNDLE_ROOT/kiro-cli`` sibling of that symlink's target.
+
+    Security: we deliberately do NOT enumerate ``~/.toolbox/tools/kiro-cli/<ver>``
+    and pick the highest version. That directory is user-writable, so a
+    compromised/sandboxed process could plant a higher-version binary and have
+    it exec'd — including under the ``(allow default)`` capability probe. The
+    installer's symlink is the single trusted pointer to the active version, so
+    resolution follows it and nothing else.
+
+    Every candidate must pass ``_is_native_kiro`` (executable + binary magic).
+    Falls back to ``shim_path`` unchanged if nothing is found. Only attempts
+    resolution when the basename is ``kiro-cli``.
+
+    Intentionally uncached: it is a few ``stat``/``readlink`` calls (no
+    subprocess, no directory scan), and caching risked returning a stale
+    version across a toolbox upgrade that retains the old install.
     """
     if Path(shim_path).name != "kiro-cli":
         return shim_path
     home = Path.home()
-    candidates = [str(home / ".local" / "bin" / "kiro-cli"), shim_path]
-    for entry in candidates:
+
+    # 1. Supplied path already a native binary (after following symlinks). On
+    #    macOS this resolves ~/.local/bin/kiro-cli -> the active version's
+    #    .app binary directly, honoring an explicit KIROCREW_KIRO_BIN / PATH
+    #    selection too.
+    try:
+        resolved = Path(shim_path).resolve(strict=True)
+        if _is_native_kiro(resolved):
+            return str(resolved)
+    except (OSError, ValueError):
+        pass
+
+    # 2. Explicit non-toolbox script override → honor it unchanged. Only the
+    #    toolbox aim-sandbox shim (or a missing/unusable path) triggers the
+    #    trusted-symlink fallback below.
+    if os.path.isfile(shim_path) and not _is_toolbox_shim(shim_path):
+        return shim_path
+
+    # 3a. Follow the toolbox-managed ~/.local/bin/kiro-cli symlink. This is the
+    #     installer's trusted pointer to the ACTIVE version — NOT a scan of the
+    #     user-writable version directory (see the security note above).
+    try:
+        local = Path(home / ".local" / "bin" / "kiro-cli").resolve(strict=True)
+        if _is_native_kiro(local):
+            return str(local)
+    except (OSError, ValueError):
+        pass
+
+    # 3b. Linux $BUNDLE_ROOT/kiro-cli sibling of the resolved symlink target
+    #     (pure realpath, non-blocking — no directory enumeration).
+    for entry in [shim_path, str(home / ".local" / "bin" / "kiro-cli")]:
         try:
-            script = (
-                f'SELF=$(readlink -f "{entry}"); '
-                r'BUNDLE_ROOT=$(cd "$(dirname "$SELF")/.." && pwd); '
-                r'CANDIDATE="$BUNDLE_ROOT/kiro-cli"; '
-                r'[ -f "$CANDIDATE" ] && [ -x "$CANDIDATE" ] && echo "$CANDIDATE"'
-            )
-            r = subprocess.run(["bash", "-c", script], capture_output=True, timeout=5)
-            candidate = r.stdout.decode().strip()
-            if candidate and Path(candidate).is_file():
-                with open(candidate, "rb") as f:
-                    if f.read(2) != b"#!":
-                        return candidate
-        except Exception:
+            self_path = os.path.realpath(entry)
+        except OSError:
             continue
+        candidate = Path(self_path).parent.parent / "kiro-cli"
+        if str(candidate) != self_path and _is_native_kiro(candidate):
+            return str(candidate)
+
     return shim_path
 
 
@@ -789,6 +907,13 @@ def sandbox_exec_argv(
     Returns (new_argv, tmp_profile_path).  Caller should delete the
     profile file after the child exits.
     """
+    # Resolve the real kiro-cli binary to bypass wrapper shims (e.g. the
+    # toolbox shim that calls ``aim sandbox``, which would nest a second
+    # seatbelt inside ours and fail on macOS 26+).
+    real_argv = list(argv)
+    if real_argv:
+        real_argv[0] = _resolve_real_kiro_bin(real_argv[0])
+
     profile = _build_seatbelt_profile(sandbox_level)
     run_dir = os.path.join(os.path.expanduser("~"), ".kirocrew", "run")
     os.makedirs(run_dir, exist_ok=True)
@@ -811,7 +936,7 @@ def sandbox_exec_argv(
             if key.startswith(prefix):
                 unset_args.extend(["-u", key])
                 break
-    return ["env", *unset_args, "sandbox-exec", "-f", path, *argv], path
+    return ["env", *unset_args, "sandbox-exec", "-f", path, *real_argv], path
 
 
 def cleanup_stale_sandbox_profiles() -> None:
