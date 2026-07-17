@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import queue
+import tempfile
 import threading
 import uuid
 from collections.abc import Callable
@@ -590,36 +591,61 @@ class SecurityEventLog:
         return result
 
     def prune(self, keep_days: int = _RETENTION_DAYS) -> int:
-        """Remove entries older than keep_days. Returns count removed."""
+        """Remove entries older than keep_days. Returns count removed.
+
+        Streams the log line-by-line to bound memory usage, writes survivors
+        to a temp file, then atomically replaces the original. The append lock
+        is held across the whole read+replace critical section so a concurrent
+        append cannot land in the old file after the read pass and be lost by
+        the replace: appends either complete before the read (and are copied)
+        or block until after the replace (and land in the new file). Appends
+        run on the background writer thread, so blocking them for the prune
+        duration never touches the event loop.
+        """
         self.flush()  # don't rewrite the file out from under queued appends
-        if not self._path.exists():
-            return 0
         cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(days=keep_days)
         cutoff_str = cutoff_dt.isoformat()
 
-        kept_lines: list[str] = []
         removed = 0
-        for line in self._path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        with self._lock:
+            if not self._path.exists():
+                return 0
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(self._path.parent), prefix=".sel_prune_", suffix=".tmp"
+            )
             try:
-                data = json.loads(line)
-                if data.get("timestamp", "") < cutoff_str:
-                    removed += 1
-                    continue
-            except json.JSONDecodeError:
-                removed += 1
-                continue
-            kept_lines.append(line)
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
+                    with open(self._path, encoding="utf-8") as src_f:
+                        for raw_line in src_f:
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            try:
+                                data = json.loads(line)
+                                if data.get("timestamp", "") < cutoff_str:
+                                    removed += 1
+                                    continue
+                            except json.JSONDecodeError:
+                                removed += 1
+                                continue
+                            tmp_f.write(line)
+                            tmp_f.write("\n")
 
-        if removed:
-            with self._lock:
-                from kiro_crew.atomic_write import atomic_write
-
-                atomic_write(self._path, "\n".join(kept_lines) + "\n" if kept_lines else "")
-                self._last_hash = self._read_last_hash()
-            logger.info("SEL pruned %d entries older than %d days", removed, keep_days)
+                if removed:
+                    os.replace(tmp_path, self._path)
+                    self._last_hash = self._read_last_hash()
+                    logger.info(
+                        "SEL pruned %d entries older than %d days", removed, keep_days
+                    )
+                else:
+                    os.unlink(tmp_path)
+            except BaseException:
+                # Clean up temp file on any failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         return removed
 
 

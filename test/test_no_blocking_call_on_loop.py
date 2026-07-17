@@ -420,6 +420,41 @@ def test_loop_ok_on_last_line_of_multiline_call_suppresses() -> None:
     assert find_violations(src) == []
 
 
+def test_heartbeat_beat_has_no_inline_blocking_calls() -> None:
+    """Pin that heartbeat._beat() offloads rebuild_index/prune_history/prune.
+
+    A focused guard: if someone adds a bare blocking call in _beat() without
+    asyncio.to_thread wrapping, this fails before the broad repo gate to give
+    a specific, actionable message.
+    """
+    src_path = _src_root() / "heartbeat.py"
+    source = src_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # Find the _beat async def
+    beat_fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_beat":
+            beat_fn = node
+            break
+    assert beat_fn is not None, "Could not find async def _beat in heartbeat.py"
+
+    # Collect all direct method calls in _beat's immediate scope (not nested defs)
+    # that call rebuild_index, prune_history, or prune WITHOUT asyncio.to_thread wrapping
+    banned_methods = {"rebuild_index", "prune_history", "prune"}
+    violations = []
+    for call in _scope_calls(beat_fn):
+        func = call.func
+        if isinstance(func, ast.Attribute) and func.attr in banned_methods:
+            # Check it's not inside asyncio.to_thread(...)
+            violations.append(f"line {call.lineno}: bare .{func.attr}() call")
+
+    assert violations == [], (
+        "heartbeat._beat() contains inline blocking calls that must be wrapped "
+        "in asyncio.to_thread():\n  " + "\n  ".join(violations)
+    )
+
+
 if __name__ == "__main__":  # standalone triage: `python3 test/test_no_blocking_call_on_loop.py`
     import sys
 

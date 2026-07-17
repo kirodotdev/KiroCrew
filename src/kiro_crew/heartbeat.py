@@ -8,13 +8,17 @@ Runs on a configurable interval (default 60s):
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine
 
 from kiro_crew import shutdown_event
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.executors import maintenance_executor
 from kiro_crew.memory import MemoryStore, workspace_dir
+from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.history import HistoryConsolidator
@@ -103,20 +107,23 @@ class HeartbeatService:
             await self._process_heartbeat_file()
 
         if self._tick % _FTS_REBUILD_TICKS == 0:
-            count = self._memory.rebuild_index()
+            loop = asyncio.get_running_loop()
+            count = await loop.run_in_executor(
+                maintenance_executor(), self._memory.rebuild_index
+            )
             logger.info("FTS index rebuilt: %d files", count)
 
         if self._tick % _PRUNE_TICKS == 0:
-            from kiro_crew.config.loader import KiroCrewConfig
-
             max_days = KiroCrewConfig.load().memory.history_max_days
-            self._memory.prune_history(keep_days=max_days)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                maintenance_executor(),
+                functools.partial(self._memory.prune_history, keep_days=max_days),
+            )
 
             # Prune security event log per retention policy
             try:
-                from kiro_crew.sel import sel
-
-                sel().prune()
+                await loop.run_in_executor(maintenance_executor(), sel().prune)
             except Exception:
                 logger.debug("SEL prune failed", exc_info=True)
 
