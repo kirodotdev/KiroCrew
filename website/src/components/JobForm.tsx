@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
@@ -15,7 +16,7 @@ const CRON_DOW_TO_GRID: Record<number, number> = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5,
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([sh])/); if (!m) return 3600; return m[2] === 'h' ? parseInt(m[1]) * 3600 : parseInt(m[1]) })()
   const intUnit = secs >= 86400 ? 'days' as const : secs >= 3600 ? 'hours' as const : 'minutes' as const
@@ -32,7 +33,7 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', projectPath: job.project_path || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', projectPath: job.project_path || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -40,10 +41,14 @@ function buildBody(
   f: ReturnType<typeof parseJobDefaults>,
   tz: string,
   setError: (e: string) => void,
+  isEdit = false,
 ): Record<string, string | number | boolean> | null {
   if (!f.name || !f.message) { setError('Name and message are required'); return null }
   const body: Record<string, string | number | boolean> = { name: f.name, message: f.message, agent: f.agent }
   if (f.projectPath) body.project_path = f.projectPath
+  // Edit mode always sends model so clearing an override ("" = inherit)
+  // persists; create mode omits it when empty like other optional fields.
+  if (isEdit || f.model) body.model = f.model
   if (f.channel) body.channel = f.channel
   if (f.approvalMode) body.approval_mode = f.approvalMode
   body.silent = f.silent
@@ -86,6 +91,14 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
   const [msg, setMsg] = useState(defaults.message)
   const [agent, setAgent] = useState(defaults.agent)
   const [projectPath, setProjectPath] = useState(defaults.projectPath || '')
+  const [model, setModel] = useState(defaults.model)
+  const { data: modelList = [] } = useQuery<{ name: string; description?: string }[]>({
+    queryKey: ['models'],
+    queryFn: async () => {
+      const m = await api.models()
+      return Array.isArray(m) ? m.map((x: any) => ({ name: x.model_name || x.name, description: x.display_name || '' })) : []
+    },
+  })
   const [channel, setChannel] = useState(defaults.channel)
   const [approvalMode, setApprovalMode] = useState(defaults.approvalMode)
   const [silent, setSilent] = useState(defaults.silent)
@@ -104,15 +117,15 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
 
   const submit = async () => {
     setError(''); setSaving(true)
-    const f = { name, message: msg, agent, projectPath, channel, approvalMode, silent, strictSchedule, hideInChat, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
-    const body = buildBody(f, tz, setError)
+    const f = { name, message: msg, agent, model, projectPath, channel, approvalMode, silent, strictSchedule, hideInChat, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
+    const body = buildBody(f, tz, setError, !!job)
     if (!body) { setSaving(false); return }
     try {
       const res = job
         ? await api.updateCron(job.id, body)
         : await api.createCron(body).catch((e: Error) => ({ error: e.message }))
       if (res.error) { setError(res.error); setSaving(false); return }
-      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setProjectPath('') }
+      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setProjectPath('') }
       onSaved()
     } catch { setError('Failed to save'); setSaving(false) }
   }
@@ -151,6 +164,11 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
           <Input placeholder="Job name" value={name} onChange={e => setName(e.target.value)} />
           <Input placeholder="Message / task" style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} activeProjectPath={projectPath} onChange={(name, pp) => { setAgent(name); setProjectPath(pp || '') }} />
+          <select className={CRON_SEL} aria-label="Model" value={model} onChange={e => setModel(e.target.value)}>
+            <option value="">Model: inherit</option>
+            {model && !modelList.some(o => o.name === model) && <option value={model}>{model}</option>}
+            {modelList.map(m => <option key={m.name} value={m.name}>{m.description || m.name}</option>)}
+          </select>
           <Input placeholder="Channel ID (optional)" style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
           <select className={CRON_SEL} value={approvalMode} onChange={e => setApprovalMode(e.target.value)}>
             <option value="">Approval: default</option><option value="auto">auto</option>
@@ -198,6 +216,15 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
           <span className="text-[12px] text-muted font-medium">Agent</span>
           <span className="text-[11px] text-muted/70">Which agent handles this job. Leave default for the primary agent.</span>
           <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} activeProjectPath={projectPath} onChange={(name, pp) => { setAgent(name); setProjectPath(pp || '') }} />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[12px] text-muted font-medium">Model</label>
+          <span className="text-[11px] text-muted/70">Override the model for this job. Leave on &quot;Inherit&quot; to use the agent or global default.</span>
+          <select className={CRON_SEL} aria-label="Model" value={model} onChange={e => setModel(e.target.value)}>
+            <option value="">Inherit from agent</option>
+            {model && !modelList.some(o => o.name === model) && <option value={model}>{model}</option>}
+            {modelList.map(m => <option key={m.name} value={m.name}>{m.description || m.name}</option>)}
+          </select>
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">Channel ID</span>

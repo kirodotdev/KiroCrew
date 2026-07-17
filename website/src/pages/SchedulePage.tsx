@@ -158,7 +158,7 @@ export default function SchedulePage() {
       setConfirmDeleteId(null)
     }
   }, [load, setActionError])
-  const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter])
+  const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')+' '+(j.model||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter])
   const scheduleComparators = useMemo(() => ({
     name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
     schedule: (a: CronJob, b: CronJob) => (a.schedule || '').localeCompare(b.schedule || ''),
@@ -340,7 +340,7 @@ export default function SchedulePage() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><code>{j.id}</code></td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{j.name}</td>
-                <td className="px-2.5 py-2 border-b border-border text-sm">{j.script ? <span className="text-[var(--accent)] font-medium text-[13px]">script · python</span> : j.command ? <span className="text-[var(--warn)] font-medium text-[13px]">command · shell</span> : <span className="text-muted text-[13px]">agent · {j.agent || 'default'}</span>}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm">{j.script ? <span className="text-[var(--accent)] font-medium text-[13px]">script · python</span> : j.command ? <span className="text-[var(--warn)] font-medium text-[13px]">command · shell</span> : <span className="text-muted text-[13px]">agent · {j.agent || 'default'}{j.model ? ` · ${j.model}` : ''}</span>}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><code>{j.schedule}</code>{j.timezone && <span className="block text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</td>
                 <td className="px-2.5 py-2 border-b border-border align-top max-w-[360px]"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></td>
                 <td className="px-2.5 py-2 border-b border-border text-sm" title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1" />Running</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">OK</Badge> : j.last_status === 'error' ? <Badge variant="err">Error</Badge> : <Badge variant="ok">Ready</Badge>) : <Badge variant="warn">Paused</Badge>}</td>
