@@ -52,6 +52,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
+    _MAX_PENDING_CONTEXT,
     _mark_permission_resolved,
 )
 from kiro_crew.providers.acp import AcpProvider
@@ -2253,9 +2254,8 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
                 {"error": f"source {source!r} has {_MAX_CONTEXT_PER_SOURCE} pending entries"}, status=429
             )
 
-    # FIFO eviction: cap pending queue at 50 entries
-    max_pending_context = 50
-    while len(slot._pending_context) >= max_pending_context:
+    # FIFO eviction: cap pending queue at the shared ceiling
+    while len(slot._pending_context) >= _MAX_PENDING_CONTEXT:
         slot._pending_context.pop(0)
 
     slot._pending_context.append(entry)  # type: ignore[arg-type]

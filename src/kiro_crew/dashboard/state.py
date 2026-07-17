@@ -286,6 +286,9 @@ _AUTO_COMPACT_FAILED_NOTICE = (
     "You can run `/compact` manually."
 )
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
+# FIFO ceiling on a slot's pending-context queue (app-kit context inject +
+# Slack thread backfill). Shared so the two eviction sites cannot drift.
+_MAX_PENDING_CONTEXT = 50
 
 # Bare chat-N label matcher used by DashboardState.resolve_slot() for prefix fallback.
 # Gates the prefix lookup to prevent broad matches (e.g. bare "chat" binding to any slot).

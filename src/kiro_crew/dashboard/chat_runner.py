@@ -142,6 +142,39 @@ from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_u
 logger = logging.getLogger(__name__)
 
 
+def drain_pending_context(slot: "_ChatSlot") -> str:
+    """Drain ``slot._pending_context`` into a prepend-ready context prefix.
+
+    Returns the concatenated ``[Background context from "<source>"] … [End of
+    background context]`` blocks (empty string when there is nothing to inject)
+    and clears the queue. Expired entries (``maxAge`` elapsed) are discarded.
+
+    Extracted from ``_run_chat`` so the entry contract — the ``content`` /
+    ``source`` keys and the delimiter frame — is pinned by a unit test and
+    shared by every producer (app-kit context inject, Slack thread backfill),
+    rather than duplicated inline where a key rename could silently break a
+    consumer while its producer's own tests stay green.
+    """
+    if not slot._pending_context:
+        return ""
+    now = time.time()
+    ctx_parts: list[str] = []
+    for entry in slot._pending_context:
+        max_age = entry.get("maxAge")
+        if max_age is not None:
+            injected_at = entry.get("injectedAt", 0)
+            if injected_at + max_age < now:
+                continue  # expired — silently discard
+        source = entry.get("source", "app")
+        ctx_parts.append(
+            f'[Background context from "{source}"]\n'
+            f'{entry["content"]}\n'
+            f"[End of background context]\n"
+        )
+    slot._pending_context.clear()
+    return "\n".join(ctx_parts) + "\n" if ctx_parts else ""
+
+
 def _turn_outcome(stop_reason: str | None) -> str:
     """Map an EVENT_COMPLETE stop_reason to a low-cardinality turn outcome.
 
@@ -1936,24 +1969,9 @@ async def _run_chat(
             _user_msg_for_mirror = message
             # Drain pending context injections (silent background context
             # from apps/subagents).  Expired entries are discarded.
-            if slot._pending_context:
-                now = time.time()
-                ctx_parts: list[str] = []
-                for entry in slot._pending_context:
-                    max_age = entry.get("maxAge")
-                    if max_age is not None:
-                        injected_at = entry.get("injectedAt", 0)
-                        if injected_at + max_age < now:
-                            continue  # expired — silently discard
-                    source = entry.get("source", "app")
-                    ctx_parts.append(
-                        f'[Background context from "{source}"]\n'
-                        f'{entry["content"]}\n'
-                        f"[End of background context]\n"
-                    )
-                slot._pending_context.clear()
-                if ctx_parts:
-                    message = "\n".join(ctx_parts) + "\n" + message
+            _ctx_prefix = drain_pending_context(slot)
+            if _ctx_prefix:
+                message = _ctx_prefix + message
             # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
             # name (e.g. "default"), so build_message's is_custom check
             # correctly identifies kirocrew sessions and enables skills.
