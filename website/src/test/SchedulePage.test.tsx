@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
 
@@ -33,10 +33,6 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-const Wrapper = ({ children }: { children: React.ReactNode }) => (
-  <MemoryRouter>{children}</MemoryRouter>
-)
-
 describe('SchedulePage delete button state machine', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -47,7 +43,7 @@ describe('SchedulePage delete button state machine', () => {
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
     vi.mocked(api).deleteCron.mockResolvedValue({})
 
-    render(<SchedulePage />, { wrapper: Wrapper })
+    renderWithProviders(<SchedulePage />)
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     const deleteBtn = screen.getByRole('button', { name: 'Delete' })
@@ -71,7 +67,7 @@ describe('SchedulePage delete button state machine', () => {
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
     vi.mocked(api).deleteCron.mockRejectedValue(new Error('boom'))
 
-    render(<SchedulePage />, { wrapper: Wrapper })
+    renderWithProviders(<SchedulePage />)
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
@@ -90,7 +86,7 @@ describe('SchedulePage delete button state machine', () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
 
-    render(<SchedulePage />, { wrapper: Wrapper })
+    renderWithProviders(<SchedulePage />)
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
@@ -109,7 +105,7 @@ describe('SchedulePage delete button state machine', () => {
       jobs: [mkJob({ id: 'job-1', name: 'Nightly report' }), mkJob({ id: 'job-2', name: 'Weekly digest' })],
     })
 
-    render(<SchedulePage />, { wrapper: Wrapper })
+    renderWithProviders(<SchedulePage />)
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     const deleteButtons = screen.getAllByRole('button', { name: 'Delete' })
@@ -142,7 +138,7 @@ describe('SchedulePage batch select + bulk delete', () => {
     vi.mocked(api).crons.mockResolvedValue({ jobs: twoJobs })
     vi.mocked(api).batchDeleteCron.mockResolvedValue({ ok: true, deleted: ['job-1', 'job-2'], failed: [] })
 
-    render(<SchedulePage />, { wrapper: Wrapper })
+    renderWithProviders(<SchedulePage />)
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     // Select both rows via their per-row checkboxes.
@@ -173,7 +169,7 @@ describe('SchedulePage batch select + bulk delete', () => {
     vi.mocked(api).crons.mockResolvedValue({ jobs: twoJobs })
     vi.mocked(api).batchDeleteCron.mockResolvedValue({ ok: false, deleted: ['job-1'], failed: ['job-2'] })
 
-    render(<SchedulePage />, { wrapper: Wrapper })
+    renderWithProviders(<SchedulePage />)
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Nightly report' }))

@@ -15,6 +15,7 @@ import InfoTip from '../components/InfoTip'
 import type { CronJob } from '../types'
 import { useAgents } from '../hooks/useAgents'
 import { useCronActions } from '../hooks/useCronActions'
+import { useAppSelector } from '../store'
 import { SaveCreateLabel } from '../utils/cronUtils'
 import { useSortableTable } from '../hooks/useSortableTable'
 import SortableHeader from '../components/SortableHeader'
@@ -129,6 +130,10 @@ export default function SchedulePage() {
   }, [])
   useEffect(() => { load() }, [load])
 
+  // Auto-reload when backend pushes a 'crons' refresh (e.g. job starts/ends).
+  const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  useEffect(() => { if (refreshTrigger > 0) load() }, [refreshTrigger, load])
+
   const { running, actionError, setActionError, runNow, openInChat } = useCronActions(load)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -159,7 +164,7 @@ export default function SchedulePage() {
     schedule: (a: CronJob, b: CronJob) => (a.schedule || '').localeCompare(b.schedule || ''),
     status: (a: CronJob, b: CronJob) => {
       const rank = (j: CronJob) =>
-        !j.enabled ? 0 : j.last_status === 'error' ? 1 : j.last_status === 'ok' ? 2 : 3;
+        j.is_running ? 4 : !j.enabled ? 0 : j.last_status === 'error' ? 1 : j.last_status === 'ok' ? 2 : 3;
       return rank(a) - rank(b);
     },
     lastRun: (a: CronJob, b: CronJob) => (a.last_run_ts || 0) - (b.last_run_ts || 0),
@@ -338,7 +343,7 @@ export default function SchedulePage() {
                 <td className="px-2.5 py-2 border-b border-border text-sm">{j.script ? <span className="text-[var(--accent)] font-medium text-[13px]">script · python</span> : j.command ? <span className="text-[var(--warn)] font-medium text-[13px]">command · shell</span> : <span className="text-muted text-[13px]">agent · {j.agent || 'default'}</span>}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><code>{j.schedule}</code>{j.timezone && <span className="block text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</td>
                 <td className="px-2.5 py-2 border-b border-border align-top max-w-[360px]"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></td>
-                <td className="px-2.5 py-2 border-b border-border text-sm" title={j.last_error || j.last_result || ''}>{j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">OK</Badge> : j.last_status === 'error' ? <Badge variant="err">Error</Badge> : <Badge variant="ok">Ready</Badge>) : <Badge variant="warn">Paused</Badge>}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm" title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1" />Running</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">OK</Badge> : j.last_status === 'error' ? <Badge variant="err">Error</Badge> : <Badge variant="ok">Ready</Badge>) : <Badge variant="warn">Paused</Badge>}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtAgo(j.last_run_ts)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted" title={j.next_run_ts ? new Date(j.next_run_ts * 1000).toLocaleString() : ''}>{fmtIn(j.next_run_ts)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap" onClick={e => e.stopPropagation()}>
