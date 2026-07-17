@@ -495,14 +495,13 @@ class TestMixedInternalPathRegistration:
         (hyphen, not slash). If server.py drops the dedicated entry, every
         folder MCP call falls through to cookie auth and fails with
         "Token required"."""
-        import inspect
-
         from kiro_crew.dashboard import server as server_mod
 
-        src = inspect.getsource(server_mod)
-        start = src.index("mixed_internal_paths=frozenset(")
-        end = src.index("internal_secret=", start)
-        block = src[start:end]
-        assert '"/api/artifact-folders"' in block
-        # Confidence check: the prefix-match rule this guards against.
+        # The mixed-internal set is the module-level constant shared by
+        # start_dashboard and start_api_server (a single source of truth so the
+        # two entrypoints cannot drift). Assert against the runtime value rather
+        # than scraping source text, so the guard survives refactors.
+        assert "/api/artifact-folders" in server_mod._MIXED_INTERNAL_API_PATHS
+        # Confidence check: the prefix-match rule this guards against —
+        # "/api/artifact-folders" is NOT covered by the "/api/artifacts" entry.
         assert not "/api/artifact-folders".startswith("/api/artifacts" + "/")

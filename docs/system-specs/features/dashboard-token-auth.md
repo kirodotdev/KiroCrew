@@ -292,6 +292,32 @@ app.middlewares[:] = [
 site = web.TCPSite(runner, bind_address_for(local_only), port)
 ```
 
+The two internal-path sets passed to `token_auth_middleware` are module-level
+constants — `_STRICT_INTERNAL_API_PATHS` and `_MIXED_INTERNAL_API_PATHS` — so
+the headless server (below) binds to the **same** sets and the two entrypoints
+cannot drift.
+
+#### `start_api_server()` — headless (`--slack-only`) parity
+
+The `--slack-only` gateway starts `start_api_server()` instead of
+`start_dashboard()`. It serves the **same** MCP tool route surface
+(`_register_mcp_routes`), so it mounts an auth chain at parity:
+`host_validation_middleware → csrf_middleware → token_auth_middleware(
+internal_paths=_STRICT_INTERNAL_API_PATHS,
+mixed_internal_paths=_MIXED_INTERNAL_API_PATHS, spa_shell_handler=None) →
+sel_audit_middleware`. It generates and persists the same
+`~/.kirocrew/.local_secret`, sets `app["local_secret"]`, and builds
+`app["allowed_origins"]`. `spa_shell_handler=None` because there is no UI — a
+request with no token is denied outright. Every in-repo caller (mcp-core, cron)
+already sends `X-Internal-Secret`, so the change is purely additive.
+
+The `sel_audit_middleware` **alone is not a security boundary** — it only logs.
+Any minimal/alternate server that calls `_register_mcp_routes` MUST mount the
+same token-auth chain; otherwise every state-changing MCP route (`/api/spawn`,
+`/api/crons`, `/api/lessons`, `/api/send-message`, `/api/workflows/*`,
+`/api/taskrunner`) is reachable unauthenticated on loopback (port forwarders and
+browser CSRF reach `127.0.0.1`).
+
 ### 6. `gateway.py` Integration
 
 `_init_dashboard()` resolves config and passes to `start_dashboard()`:
@@ -302,6 +328,21 @@ self._local_only = is_local_only(configured_host, self._slack_enabled)
 await start_dashboard(
     ...,
     slack_connected=self._slack_enabled,
+    local_only=self._local_only,
+    configured_host=configured_host,
+)
+```
+
+`_init_api_server()` (the `--slack-only` / `--no-dashboard` path) resolves the
+same `configured_host`/`local_only` and forwards them to `start_api_server()`,
+so the headless server's CSRF origin allowlist and Host allowlist match the
+dashboard's:
+
+```python
+configured_host, dashboard_port = parse_dashboard_url(self._cfg.dashboard.url)
+self._local_only = is_local_only(configured_host, self._slack_enabled)
+await start_api_server(
+    ...,
     local_only=self._local_only,
     configured_host=configured_host,
 )
@@ -385,3 +426,4 @@ HTML 403 page includes instructions to run `!dashboard` in Slack. The middleware
 9. Bounded concurrent nonces (max 50; raised from 5 so pending Slack link nonces aren't evicted by other token-minting activity) — prevents unbounded memory growth, limits exposure window; an active session refreshes its eviction position on each check
 10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
+12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `host_validation → csrf → token_auth → sel_audit` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
