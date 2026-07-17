@@ -691,6 +691,22 @@ class TestAcpClientBackendSelection:
         yield
         _mod._claude_acp_argv_cache = _mod._UNRESOLVED
 
+    @pytest.fixture(autouse=True)
+    def _no_cgroup_scope(self):
+        # These tests assert the exact/leading spawn argv to verify BACKEND
+        # SELECTION (which binary), not cgroup wrapping. Our branch wires
+        # cgroup_scope_argv() into _spawn(), which prepends a `systemd-run
+        # --user --scope ... --` prefix on Linux hosts WITH cgroup-v2 systemd
+        # delegation (XDG_RUNTIME_DIR set). Neutralize the probe here so the
+        # argv is host-independent — no prefix regardless of the runner. Scoped
+        # to this class only; test_sandbox_argv.py (which tests the wrapping
+        # itself) is a separate file and is unaffected.
+        with patch(
+            "kiro_crew.sandbox._probe_cgroup_scope",
+            return_value=(False, "disabled-in-test"),
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_spawn_claude_backend_uses_claude_acp_bin(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)

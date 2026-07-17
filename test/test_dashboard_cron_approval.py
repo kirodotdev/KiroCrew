@@ -114,14 +114,30 @@ class TestCronCreateModel:
         assert "invalid model format" in body["error"]
 
     @pytest.mark.asyncio
-    async def test_unknown_model_rejected(self):
+    async def test_malformed_model_rejected(self):
+        # A value that violates _MODEL_NAME_RE (contains a space and "!") is
+        # still rejected by the FORMAT gate — that gate is retained.
         request = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "model": "nonexistent-model-xyz"}
+            {"name": "t", "message": "m", "every": 300, "model": "bad model!"}
         )
         resp = await api_crons_create(request)
         assert resp.status == 400
         body = json.loads(resp.body)
-        assert "unknown model" in body["error"]
+        assert "invalid model format" in body["error"]
+
+    @pytest.mark.asyncio
+    async def test_arbitrary_kiro_model_accepted(self):
+        # There is no membership gate against the claude_code registry: the
+        # model dropdown is sourced from the live kiro-cli --list-models, so an
+        # arbitrary well-formed kiro id (not in the claude_code family) is
+        # accepted and persisted verbatim. Matches the chat model path.
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": "glm-4.7"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        job = request.app["state"].crons.add_job.return_value
+        assert job.model == "glm-4.7"
 
 
 class TestCronListFields:

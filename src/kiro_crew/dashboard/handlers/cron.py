@@ -195,22 +195,17 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if model_val:
         if len(model_val) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model_val):
             return web.json_response({"error": "invalid model format"}, status=400)
+        # No membership gate: the model dropdown is sourced from the live
+        # kiro-cli `--list-models` (via /api/models), not the claude_code
+        # registry family, so any well-formed id the CLI advertises is valid.
+        # Matches the chat model path (which also skips membership); the
+        # runtime is model-agnostic with a gateway fallback. Only normalize
+        # the "auto" inherit sentinel below.
         resolved_model = model_registry.to_provider_id(model_val, "claude_code")
         if resolved_model == "":
             # "auto" sentinel (canonical key with no pinned provider id):
             # explicit inherit — same as leaving model unset.
             model_val = ""
-        elif resolved_model not in model_registry.available_models("claude_code"):
-            safe_model, _ = redact_credentials(redact_exfiltration_urls(model_val)[0])
-            _sel().log_api_access(
-                caller="dashboard",
-                operation="cron.create",
-                outcome="denied",
-                source="api_cron_create",
-                resources=f"model={safe_model}",
-                error="unknown model",
-            )
-            return web.json_response({"error": f"unknown model: {safe_model!r}"}, status=400)
     if every:
         try:
             every = int(every)
@@ -489,20 +484,15 @@ async def api_cron_update(request: web.Request) -> web.Response:
         if m:
             if len(m) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(m):
                 return web.json_response({"error": "invalid model format"}, status=400)
+            # No membership gate: the model dropdown is sourced from the live
+            # kiro-cli `--list-models` (via /api/models), not the claude_code
+            # registry family, so any well-formed id the CLI advertises is
+            # valid. Matches the chat model path (which also skips membership);
+            # the runtime is model-agnostic with a gateway fallback. Only
+            # normalize the "auto" inherit sentinel below.
             resolved_model = model_registry.to_provider_id(m, "claude_code")
             if resolved_model == "":
                 m = ""
-            elif resolved_model not in model_registry.available_models("claude_code"):
-                safe_model, _ = redact_credentials(redact_exfiltration_urls(m)[0])
-                _sel().log_api_access(
-                    caller="dashboard",
-                    operation="cron.update",
-                    outcome="denied",
-                    source="api_cron_update",
-                    resources=f"model={safe_model}",
-                    error="unknown model",
-                )
-                return web.json_response({"error": f"unknown model: {safe_model!r}"}, status=400)
         kwargs["model"] = m
     # Validate channel if being updated
     if "channel" in kwargs:

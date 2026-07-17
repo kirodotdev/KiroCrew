@@ -984,23 +984,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # orphaned job behind (a retried cron_add would then duplicate it).
         model_arg = str(args.get("model") or "").strip()
         if model_arg:
+            # No membership gate: the model list is sourced from the live
+            # kiro-cli `--list-models` (via /api/models), not the claude_code
+            # registry family, so any id the CLI advertises is valid. Matches
+            # the chat model path (which also skips membership); the runtime is
+            # model-agnostic with a gateway fallback. Only normalize the "auto"
+            # inherit sentinel.
             resolved_model = model_registry.to_provider_id(model_arg, "claude_code")
             if resolved_model == "":
                 # "auto" sentinel (canonical key with no pinned provider id):
                 # explicit inherit — same as leaving model unset.
                 model_arg = ""
-            elif resolved_model not in model_registry.available_models("claude_code"):
-                safe_model = _sanitize(model_arg)
-                keys = sorted(
-                    r["model_name"] for r in model_registry.display_list("claude_code")
-                )
-                sel().log_api_access(
-                    caller="mcp", operation="cron.create",
-                    outcome="denied", source="mcp",
-                    resources=f"model={safe_model}",
-                    error="unknown model",
-                )
-                return f"Error: unknown model {safe_model!r}. Available: {', '.join(keys)}"
         try:
             thread_ts = (args.get("thread_ts") or "").strip() or None
             job = svc.add_job(
@@ -1128,22 +1122,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if "model" in args:
             m = str(args["model"] or "").strip()
             if m:
+                # No membership gate: the model list is sourced from the live
+                # kiro-cli `--list-models` (via /api/models), not the
+                # claude_code registry family, so any id the CLI advertises is
+                # valid. Matches the chat model path (which also skips
+                # membership); the runtime is model-agnostic with a gateway
+                # fallback. Only normalize the "auto" inherit sentinel.
                 resolved_model = model_registry.to_provider_id(m, "claude_code")
                 if resolved_model == "":
                     # "auto" sentinel — explicit inherit, same as clearing.
                     m = ""
-                elif resolved_model not in model_registry.available_models("claude_code"):
-                    safe_model = _sanitize(m)
-                    keys = sorted(
-                        r["model_name"] for r in model_registry.display_list("claude_code")
-                    )
-                    sel().log_api_access(
-                        caller="mcp", operation="cron.update",
-                        outcome="denied", source="mcp",
-                        resources=f"model={safe_model}",
-                        error="unknown model",
-                    )
-                    return f"Error: unknown model {safe_model!r}. Available: {', '.join(keys)}"
             kwargs["model"] = m
         if "cron_expr" in args and args["cron_expr"]:
             kwargs["cron_expr"] = args["cron_expr"]

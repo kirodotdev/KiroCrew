@@ -758,7 +758,11 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
     # this was tied to the removed Artifactory path, so fetch it here directly.
     try:
         _existing = get_default_store().get(slug)
-    except ArtifactNotFoundError:
+    except ArtifactError:
+        # Best-effort version capture only — swallow both the missing-slug and
+        # invalid-slug (ArtifactValidationError) siblings so an invalid slug still
+        # reaches the delete() call below, which returns a clean 4xx (a bare
+        # ArtifactNotFoundError catch here would leak ArtifactValidationError as a 500).
         _existing = None
     try:
         get_default_store().delete(slug)
