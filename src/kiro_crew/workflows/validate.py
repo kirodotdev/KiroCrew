@@ -130,11 +130,17 @@ DETERMINISM_MODULES = frozenset({"time", "random", "uuid", "datetime", "secrets"
 ENTRYPOINT = "workflow"
 META_NAME = "META"
 
-# ``ctx`` methods that are SYNCHRONOUS (return None / a plain value) and MUST NOT
-# be awaited. Awaiting them raises ``TypeError: object NoneType can't be used in
-# 'await' expression`` at run time — a whole class of authoring bug the AST
+# ``ctx`` methods that are SYNCHRONOUS (return a context manager, not an awaitable)
+# and MUST NOT be awaited. Awaiting them raises ``TypeError: object ... can't be
+# used in 'await' expression`` at run time — a whole class of authoring bug the AST
 # sandbox otherwise waves through (``await ctx.phase(...)`` is structurally legal).
+# These methods now return a stateless context manager, so ``with ctx.phase(...):``
+# is purely cosmetic grouping and is explicitly supported.
 SYNC_CTX_METHODS = frozenset({"phase", "log", "nudge"})
+
+# ``ctx`` methods that return a context manager and may legally be used in a
+# ``with`` statement. Any ctx method NOT in this set used with ``with`` is rejected.
+CTX_CONTEXT_MANAGER_METHODS = frozenset({"phase", "log", "nudge"})
 
 # ``ctx`` methods whose result may legitimately be ``None`` (an agent that died or
 # whose output failed schema validation returns None; a failed ``parallel`` thunk
@@ -305,6 +311,32 @@ class _DslContractVisitor(ast.NodeVisitor):
                 f"line {node.lineno}: 'await ctx.{sync}(...)' is invalid — ctx.{sync}() "
                 f"is synchronous (returns None); call it without 'await'"
             )
+        self.generic_visit(node)
+
+    def visit_With(self, node: ast.With) -> None:  # noqa: N802 (ast.NodeVisitor API)
+        """Reject ``with ctx.<method>(...):`` for methods that are NOT context managers."""
+        for item in node.items:
+            # All known ctx methods — reject if not in the CM-safe set.
+            all_ctx_methods = SYNC_CTX_METHODS | NULLABLE_CTX_METHODS
+            method = _is_ctx_call(item.context_expr, all_ctx_methods)
+            if method is not None and method not in CTX_CONTEXT_MANAGER_METHODS:
+                self.errors.append(
+                    f"line {node.lineno}: 'with ctx.{method}(...)' is invalid — "
+                    f"ctx.{method}() is async and does not support the context manager "
+                    f"protocol; use 'result = await ctx.{method}(...)' instead"
+                )
+        self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802 (ast.NodeVisitor API)
+        """Reject ``async with ctx.<method>(...):`` — no ctx methods are async CMs."""
+        for item in node.items:
+            all_ctx_methods = SYNC_CTX_METHODS | NULLABLE_CTX_METHODS
+            method = _is_ctx_call(item.context_expr, all_ctx_methods)
+            if method is not None:
+                self.errors.append(
+                    f"line {node.lineno}: 'async with ctx.{method}(...)' is invalid — "
+                    f"no ctx methods support async context manager protocol"
+                )
         self.generic_visit(node)
 
     def _flag_unguarded(self, inner: ast.AST, lineno: int, how: str) -> None:

@@ -54,9 +54,13 @@ ASYNC vs SYNC — get this right or the script crashes at runtime:
   * AWAIT these (they are async): ctx.agent(...), ctx.parallel(...),
     ctx.pipeline(...), ctx.workflow(...), ctx.approve(...), ctx.send_slack(...),
     ctx.send_message(...).
-  * Do NOT await these (they are SYNCHRONOUS and return None): ctx.phase(title),
-    ctx.log(msg), ctx.nudge(...). Write ``ctx.phase("read")`` — NEVER
-    ``await ctx.phase("read")`` (awaiting None raises TypeError immediately).
+  * Do NOT await these (they are SYNCHRONOUS and return a context manager):
+    ctx.phase(title), ctx.log(msg), ctx.nudge(...). NEVER
+    ``await ctx.phase("read")`` (awaiting raises TypeError immediately).
+    Both calling styles work:
+      ctx.phase("read")           # bare call — sets the phase
+      with ctx.phase("read"):    # context manager — purely cosmetic grouping
+          ...                     # (no-op: phase is NOT auto-ended on block exit)
 
 RESULTS CAN BE None — always guard before use: ctx.agent(...) returns None when
 the agent dies or its output fails schema validation (after retries); a failed

@@ -145,6 +145,25 @@ class RunResult:
 AuthorFn = Callable[..., Awaitable[dict]]
 
 
+class _NoOpContextManager:
+    """Lightweight sync context manager that does nothing.
+
+    Returned by ctx.log() and ctx.nudge() so ``with ctx.log(...):`` doesn't crash
+    even though those methods have no meaningful enter/exit semantics.
+    """
+
+    def __enter__(self) -> "_NoOpContextManager":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class _PhaseContextManager(_NoOpContextManager):
+    """Sync context manager returned by ctx.phase() — supports both bare-call and
+    ``with ctx.phase("title"):`` patterns that LLMs naturally generate."""
+
+
 class _RunContext:
     """Concrete ``WorkflowContext`` assembled per run (satisfies the frozen Protocol).
 
@@ -323,19 +342,37 @@ class _RunContext:
         raise NotImplementedError("nested ctx.workflow() arrives with the registry (M5)")
 
     # --- progress / UI ---
-    def phase(self, title: str) -> None:
+    def phase(self, title: str) -> "_PhaseContextManager":
+        """Set the current phase and emit a phase_started event.
+
+        Returns a stateless context manager so BOTH calling styles work:
+          ctx.phase("read")           # bare call — original pattern
+          with ctx.phase("read"):     # context-manager — purely cosmetic grouping
+              ...
+
+        The CM is stateless: __exit__ does NOT end the phase or restore the
+        previous one.  The phase persists until the next ctx.phase() call.
+        """
         self._current_phase = title
         self._record(self._stream.phase_started(self.now, title=title))
+        return _PhaseContextManager()
 
-    def log(self, message: str) -> None:
+    def log(self, message: str) -> "_NoOpContextManager":
+        """Log a message to the event stream.
+
+        Returns a no-op context manager so ``with ctx.log(...):`` doesn't crash,
+        even though ``ctx.log("x")`` bare-call is the intended pattern.
+        """
         self._record(self._stream.log(self.now, message=message))
+        return _NoOpContextManager()
 
     # --- KiroCrew-native (M4): delegate to injected port fns; clear error if a
     #     workflow uses a primitive the host did not wire/permit for this run. ---
-    def nudge(self, *, idle_secs: int, message: str, max_cycles: int = 0) -> None:
+    def nudge(self, *, idle_secs: int, message: str, max_cycles: int = 0) -> "_NoOpContextManager":
         if self._nudge_fn is None:
             raise RuntimeError("ctx.nudge is not available for this run (no nudge port wired)")
         self._nudge_fn(idle_secs=idle_secs, message=message, max_cycles=max_cycles)
+        return _NoOpContextManager()
 
     async def approve(self, prompt: str) -> bool:
         if self._approve_fn is None:
