@@ -9,7 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers import api_workspaces_create, api_workspaces_update
+from kiro_crew.dashboard.handlers import api_workspaces_create, api_workspaces_update
 
 
 def _make_app() -> web.Application:
@@ -21,7 +21,7 @@ def _make_app() -> web.Application:
 
 @pytest.fixture()
 def mock_sel():
-    with patch("kiro_claw.dashboard.handlers.sel") as m:
+    with patch("kiro_crew.dashboard.handlers.sel") as m:
         m.return_value = MagicMock()
         yield m.return_value
 
@@ -29,21 +29,21 @@ def mock_sel():
 @pytest.fixture()
 def cfg_env(tmp_path, monkeypatch):
     """Set up a clean config dir with a default workspace."""
-    cfg_dir = tmp_path / ".kiroclaw"
+    cfg_dir = tmp_path / ".kirocrew"
     cfg_dir.mkdir()
     cfg_file = cfg_dir / "config.json"
     cfg_file.write_text(json.dumps({
         "workspaces": {"default": {"dir": "workspace"}}
     }))
     monkeypatch.setattr(
-        "kiro_claw.config.loader.config_path", lambda: cfg_file
+        "kiro_crew.config.loader.config_path", lambda: cfg_file
     )
     monkeypatch.setattr(
-        "kiro_claw.config.loader.config_dir", lambda: cfg_dir
+        "kiro_crew.config.loader.config_dir", lambda: cfg_dir
     )
     # Also patch the local import in handlers
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.config_dir", lambda: cfg_dir
+        "kiro_crew.dashboard.handlers.config_dir", lambda: cfg_dir
     )
     return cfg_dir
 

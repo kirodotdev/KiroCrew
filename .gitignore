@@ -24,6 +24,8 @@ __pycache__/
 /dist/
 
 # Generated agent config — contains machine-specific absolute paths
+.kiro/agents/kirocrew.json
+# Legacy (pre-rename) — an unmigrated install may still have this file
 .kiro/agents/kiroclaw.json
 
 # Generated per-machine by install_cc_agent_config()
@@ -51,8 +53,8 @@ frontend/dist/
 tui/dist/
 frontend/tsconfig.app.tsbuildinfo
 frontend/tsconfig.node.tsbuildinfo
-src/kiro_claw/static/dist/
-src/kiro_claw/static/dist
+src/kiro_crew/static/dist/
+src/kiro_crew/static/dist
 
 # JVM crash logs
 hs_err_pid*.log
@@ -61,7 +63,9 @@ hs_err_pid*.log
 Thumbs.db
 .git.old
 
-# Dev mode data directory
+# Dev mode data directory (+ legacy pre-rename names, for in-place upgrades)
+.kirocrew-dev/
+.kirocrew-dev2/
 .kiroclaw-dev/
 .kiroclaw-dev2/
 
@@ -69,6 +73,7 @@ Thumbs.db
 *.TASK_PROGRESS.md
 docs/TASK_PLAN_MODE.md
 frontend/src/.backup_pre_mdpanel/
+kirocrew-data.tar.gz
 kiroclaw-data.tar.gz
 .kiro/hooks/track-with-agent.kiro.hook
 

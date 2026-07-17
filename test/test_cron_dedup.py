@@ -11,8 +11,8 @@ import asyncio
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from kiro_claw.cron import CronJob, CronSchedule
-from kiro_claw.slack.gateway import _result_hash
+from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.slack.gateway import _result_hash
 
 
 def _make_gateway():
@@ -21,7 +21,7 @@ def _make_gateway():
     NOTE: Must mirror all instance attributes from GatewayOrchestrator.__init__.
     If tests fail with AttributeError, add the missing attr here.
     """
-    from kiro_claw.slack.gateway import GatewayOrchestrator
+    from kiro_crew.slack.gateway import GatewayOrchestrator
 
     gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
     gw.sessions = MagicMock()
@@ -64,8 +64,8 @@ def _run_callback(gw, job, stream_result="done"):
     async def fake_stream(client, msg, **kwargs):
         return stream_result
 
-    with patch("kiro_claw.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_claw.slack.gateway.CronService"
+    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
+        "kiro_crew.slack.gateway.CronService"
     ) as mock_cron_cls:
 
         def capture_cron(on_job=None, **kw):
@@ -201,7 +201,7 @@ class TestCronDedup:
         job = _make_job()
 
         _run_callback(gw, job, stream_result="same error")
-        with patch("kiro_claw.slack.gateway.sel") as mock_sel:
+        with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             _run_callback(gw, job, stream_result="same error")
             mock_sel.return_value.log_tool_invocation.assert_called_once()
             call_kwargs = mock_sel.return_value.log_tool_invocation.call_args.kwargs
@@ -268,9 +268,9 @@ def _run_callback_raising(gw, job, exc):
     async def fake_stream(client, msg, **kwargs):
         raise exc
 
-    with patch("kiro_claw.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_claw.slack.gateway.CronService"
-    ) as mock_cron_cls, patch("kiro_claw.sel.sel"):
+    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
+        "kiro_crew.slack.gateway.CronService"
+    ) as mock_cron_cls, patch("kiro_crew.sel.sel"):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -416,7 +416,7 @@ class TestCronFailurePersistence:
         error isn't silently suppressed as a dup of the pre-timeout failure."""
         import asyncio
 
-        from kiro_claw.cron import CronService
+        from kiro_crew.cron import CronService
 
         async def _hang(*args, **kwargs):
             await asyncio.sleep(9999)  # simulate hang; timeout will cancel
@@ -433,7 +433,7 @@ class TestCronFailurePersistence:
         )
         # Pretend _execute hangs so _execute_with_timeout triggers the timeout.
         with patch.object(svc, "_execute", side_effect=_hang), patch(
-            "kiro_claw.cron._JOB_TIMEOUT_SECS", 0.05
+            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
         ):
             asyncio.run(svc._execute_with_timeout(job))
         assert job.last_status == "error"
@@ -447,7 +447,7 @@ class TestCronFailurePersistence:
         """Verify _run_job_isolated persists the cleared failure state to disk."""
         import asyncio
 
-        from kiro_claw.cron import CronService
+        from kiro_crew.cron import CronService
 
         async def _hang(*args, **kwargs):
             await asyncio.sleep(9999)
@@ -466,7 +466,7 @@ class TestCronFailurePersistence:
         svc._jobs = [job]
         svc._save()
         with patch.object(svc, "_execute", side_effect=_hang), patch(
-            "kiro_claw.cron._JOB_TIMEOUT_SECS", 0.05
+            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
         ):
             asyncio.run(svc._run_job_isolated(job))
         svc2 = CronService(base_dir=tmp_path)
@@ -476,7 +476,7 @@ class TestCronFailurePersistence:
         assert svc2._jobs[0].consecutive_failures == 0
 
     def test_save_load_round_trip(self, tmp_path) -> None:
-        from kiro_claw.cron import CronService
+        from kiro_crew.cron import CronService
 
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
@@ -502,7 +502,7 @@ class TestCronFailurePersistence:
         """Old crons.json without new fields loads with safe defaults."""
         import json
 
-        from kiro_claw.cron import CronService
+        from kiro_crew.cron import CronService
 
         path = tmp_path / "crons.json"
         path.write_text(
@@ -582,7 +582,7 @@ class TestCronFailureRespectsSilent:
         gw = _make_gateway()
         gw.slack.post_message = AsyncMock()
         job = _make_job(silent=True)
-        with patch("kiro_claw.slack.gateway.sel") as mock_sel:
+        with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             _run_callback_raising(gw, job, RuntimeError("boom"))
         mock_sel.return_value.log_tool_invocation.assert_called_once()
         kwargs = mock_sel.return_value.log_tool_invocation.call_args.kwargs

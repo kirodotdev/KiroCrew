@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.mcp_core import _call_tool
-from kiro_claw.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_tool_args
+from kiro_crew.mcp_core import _call_tool
+from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_tool_args
 
 
 class TestModelValidation:
@@ -32,8 +32,8 @@ class TestSpawnRunModelParam:
     """Model param is threaded through to the POST body."""
 
     def test_model_passed_in_post_body(self):
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "sess"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "sess"}
         ):
             mock_post.return_value = {"id": "agent1"}
             _call_tool("spawn_run", {"task": "test", "model": "deepseek-3.2"})
@@ -41,8 +41,8 @@ class TestSpawnRunModelParam:
             assert body["model"] == "deepseek-3.2"
 
     def test_no_model_omits_from_body(self):
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "sess"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "sess"}
         ):
             mock_post.return_value = {"id": "agent1"}
             _call_tool("spawn_run", {"task": "test"})

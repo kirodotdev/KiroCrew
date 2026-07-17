@@ -1,4 +1,4 @@
-# KiroClaw — public build targets (pip + npm/vite + pytest).
+# KiroCrew — public build targets (pip + npm/vite + pytest).
 # Common flow: `make` runs build (frontend + backend) then tests.
 #
 # Standalone distribution targets:
@@ -22,14 +22,14 @@ frontend:
 	cd website && \
 	  if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi && \
 	  npm run build
-	rm -rf src/kiro_claw/static/dist
-	mkdir -p src/kiro_claw/static
-	cp -R website/dist src/kiro_claw/static/dist
+	rm -rf src/kiro_crew/static/dist
+	mkdir -p src/kiro_crew/static
+	cp -R website/dist src/kiro_crew/static/dist
 
 backend:
 	test -x $(VENV)/bin/python || $(PY) -m venv $(VENV)
 	$(PIP) install --upgrade pip setuptools wheel
-	KIROCLAW_SKIP_FRONTEND=1 $(PIP) install -e ".[dev]"
+	KIROCREW_SKIP_FRONTEND=1 $(PIP) install -e ".[dev]"
 	bash packaging/resign-macos-libs.sh $(VENV)/bin/python
 
 test: build
@@ -54,7 +54,7 @@ desktop:
 
 clean:
 	rm -rf build dist *.egg-info src/*.egg-info \
-	       src/kiro_claw/static/dist website/dist \
+	       src/kiro_crew/static/dist website/dist \
 	       website/electron/backend-dist website/electron/dist \
 	       .pytest_cache .mypy_cache
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true

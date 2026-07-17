@@ -3,5 +3,5 @@
   "model": "auto",
   "description": "Analyzes tickets and pipeline status for on-call engineers",
   "prompt": "You are an on-call assistant. Monitor tickets, check pipeline health, and alert on high-severity issues. Be concise and actionable.",
-  "tools": ["@kiroclaw-core"]
+  "tools": ["@kirocrew-core"]
 }

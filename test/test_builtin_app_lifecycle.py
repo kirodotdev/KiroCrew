@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_claw.apps import routes
-from kiro_claw.apps.routes import (
+from kiro_crew.apps import routes
+from kiro_crew.apps.routes import (
     _notify_builtin_service,
     _sync_builtin_config,
     handle_disable_app,
@@ -44,7 +44,7 @@ class TestSyncBuiltinConfig:
     def test_sets_enabled_false(self, tmp_path, register_test_builtin):
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({_TEST_CFG_KEY: {"enabled": True, "poll_interval_seconds": 60}}))
-        with patch("kiro_claw.apps.routes.config_path", return_value=cfg):
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=False)
         data = json.loads(cfg.read_text())
         assert data[_TEST_CFG_KEY]["enabled"] is False
@@ -53,7 +53,7 @@ class TestSyncBuiltinConfig:
     def test_sets_enabled_true(self, tmp_path, register_test_builtin):
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({_TEST_CFG_KEY: {"enabled": False}}))
-        with patch("kiro_claw.apps.routes.config_path", return_value=cfg):
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=True)
         data = json.loads(cfg.read_text())
         assert data[_TEST_CFG_KEY]["enabled"] is True
@@ -61,7 +61,7 @@ class TestSyncBuiltinConfig:
     def test_creates_section_if_missing(self, tmp_path, register_test_builtin):
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({"agent": {"model": "auto"}}))
-        with patch("kiro_claw.apps.routes.config_path", return_value=cfg):
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=False)
         data = json.loads(cfg.read_text())
         assert data[_TEST_CFG_KEY]["enabled"] is False
@@ -69,7 +69,7 @@ class TestSyncBuiltinConfig:
 
     def test_creates_file_if_missing(self, tmp_path, register_test_builtin):
         cfg = tmp_path / "config.json"
-        with patch("kiro_claw.apps.routes.config_path", return_value=cfg):
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=True)
         data = json.loads(cfg.read_text())
         assert data[_TEST_CFG_KEY]["enabled"] is True
@@ -77,7 +77,7 @@ class TestSyncBuiltinConfig:
     def test_noop_for_non_builtin(self, tmp_path):
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({}))
-        with patch("kiro_claw.apps.routes.config_path", return_value=cfg):
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config("some-other-app", enabled=False)
         data = json.loads(cfg.read_text())
         assert _TEST_CFG_KEY not in data
@@ -85,7 +85,7 @@ class TestSyncBuiltinConfig:
     def test_raises_on_corrupt_config(self, tmp_path, register_test_builtin):
         cfg = tmp_path / "config.json"
         cfg.write_text("{corrupt json!!!")
-        with patch("kiro_claw.apps.routes.config_path", return_value=cfg):
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             with pytest.raises(OSError):
                 _sync_builtin_config(_TEST_BUILTIN, enabled=False)
         # File should be untouched — not overwritten with empty dict
@@ -152,16 +152,16 @@ class TestHandleDisableBuiltin:
         request.app = {"state": state}
 
         with (
-            patch("kiro_claw.apps.routes.get_app", return_value={
+            patch("kiro_crew.apps.routes.get_app", return_value={
                 "name": _TEST_BUILTIN, "origin": "builtin",
                 "resources": "gateway", "lifecycle": "locked",
                 "enabled": True, "manifest": {},
             }),
-            patch("kiro_claw.apps.routes.disable_app") as mock_disable,
-            patch("kiro_claw.apps.routes.stop_app_backend"),
-            patch("kiro_claw.apps.routes.deregister_app"),
-            patch("kiro_claw.apps.routes.config_path", return_value=cfg),
-            patch("kiro_claw.apps.routes.sel"),
+            patch("kiro_crew.apps.routes.disable_app") as mock_disable,
+            patch("kiro_crew.apps.routes.stop_app_backend"),
+            patch("kiro_crew.apps.routes.deregister_app"),
+            patch("kiro_crew.apps.routes.config_path", return_value=cfg),
+            patch("kiro_crew.apps.routes.sel"),
         ):
             mock_disable.return_value = type("R", (), {"ok": True, "to_dict": lambda self: {"ok": True, "name": _TEST_BUILTIN, "message": "disabled"}})()
             resp = await handle_disable_app(request)
@@ -184,16 +184,16 @@ class TestHandleDisableBuiltin:
         request.app = {}
 
         with (
-            patch("kiro_claw.apps.routes.get_app", return_value={
+            patch("kiro_crew.apps.routes.get_app", return_value={
                 "name": "my-app", "origin": "registry",
                 "resources": "gateway", "lifecycle": "gateway",
                 "enabled": True, "manifest": {},
             }),
-            patch("kiro_claw.apps.routes.disable_app") as mock_disable,
-            patch("kiro_claw.apps.routes.stop_app_backend"),
-            patch("kiro_claw.apps.routes.deregister_app"),
-            patch("kiro_claw.apps.routes.config_path", return_value=cfg),
-            patch("kiro_claw.apps.routes.sel"),
+            patch("kiro_crew.apps.routes.disable_app") as mock_disable,
+            patch("kiro_crew.apps.routes.stop_app_backend"),
+            patch("kiro_crew.apps.routes.deregister_app"),
+            patch("kiro_crew.apps.routes.config_path", return_value=cfg),
+            patch("kiro_crew.apps.routes.sel"),
         ):
             mock_disable.return_value = type("R", (), {"ok": True, "to_dict": lambda self: {"ok": True, "name": "my-app", "message": "disabled"}})()
             resp = await handle_disable_app(request)
@@ -210,11 +210,11 @@ class TestHandleDisableBuiltin:
 
 class TestRedactWarning:
     def test_passes_through_clean_string(self):
-        from kiro_claw.apps.routes import _redact_warning
+        from kiro_crew.apps.routes import _redact_warning
         assert _redact_warning("config sync failed: boom") == "config sync failed: boom"
 
     def test_redacts_credentials(self):
-        from kiro_claw.apps.routes import _redact_warning
+        from kiro_crew.apps.routes import _redact_warning
         result = _redact_warning("error: AKIA1234567890ABCDEF leaked")
         assert "AKIA" not in result or "[REDACTED]" in result
 

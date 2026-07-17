@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.workflows.runner import WorkflowRunner
-from kiro_claw.workflows.schema import (
+from kiro_crew.workflows.runner import WorkflowRunner
+from kiro_crew.workflows.schema import (
     coerce_and_validate,
     parse_json,
     run_with_schema,

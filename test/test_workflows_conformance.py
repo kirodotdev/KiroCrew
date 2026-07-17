@@ -1,7 +1,7 @@
 """GATE F2 — contract conformance for the dynamic-workflows frozen ``ctx`` surface.
 
 This is the canary that locks the FROZEN contract in
-``kiro_claw/workflows/__init__.py`` (the ``WorkflowContext`` Protocol, the Port
+``kiro_crew/workflows/__init__.py`` (the ``WorkflowContext`` Protocol, the Port
 protocols, the exception set, and the run-event schema). Every other
 dynamic-workflows tributary — runner, DSL, UI app, schema enforcement, native
 primitives — fans out from that contract, so a silent signature/event change here
@@ -11,7 +11,7 @@ If a case below turns RED, you changed the contract. That is allowed only as an
 explicit *re-freeze*: update ``workflows/__init__.py``, the module spec
 (``docs/system-specs/modules/workflows.md``), AND this test in the same change
 (see ``docs/dynamic-workflows/GATES.md`` gate F2 and the dir-scoped
-``src/kiro_claw/workflows/AGENTS.md``). If you did NOT intend a re-freeze, revert
+``src/kiro_crew/workflows/AGENTS.md``). If you did NOT intend a re-freeze, revert
 the contract edit — do not "fix" the expectation here.
 
 No implementation is exercised here: this asserts the *shape* of the public
@@ -26,7 +26,7 @@ from typing import Callable
 
 import pytest
 
-import kiro_claw.workflows as wf
+import kiro_crew.workflows as wf
 
 # --------------------------------------------------------------------------- #
 # Expected public surface (the freeze). Keep these literals in lockstep with

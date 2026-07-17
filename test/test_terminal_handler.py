@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 
-from kiro_claw import platform_compat
-from kiro_claw.dashboard.handlers import terminal
+from kiro_crew import platform_compat
+from kiro_crew.dashboard.handlers import terminal
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +107,7 @@ class TestKillSession:
         task.cancel = MagicMock()
         sess = _make_session()
         sess.reader_task = task
-        with patch("os.close"), patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        with patch("os.close"), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
         task.cancel.assert_called_once()
 
@@ -115,7 +115,7 @@ class TestKillSession:
     async def test_closes_master_fd(self):
         sess = _make_session()
         sess.master_fd = 42
-        with patch("os.close") as mock_close, patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        with patch("os.close") as mock_close, patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
         mock_close.assert_called_with(42)
         assert sess.master_fd == -1
@@ -124,7 +124,7 @@ class TestKillSession:
     async def test_skips_close_when_fd_negative(self):
         sess = _make_session()
         sess.master_fd = -1
-        with patch("os.close") as mock_close, patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        with patch("os.close") as mock_close, patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
         mock_close.assert_not_called()
 
@@ -135,7 +135,7 @@ class TestKillSession:
         # shim rather than os.killpg directly.
         sess = _make_session(alive=True)
         with patch("os.close"), \
-                patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
+                patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         mock_kill.assert_any_call(12345, platform_compat.SIGTERM)
 
@@ -143,7 +143,7 @@ class TestKillSession:
     async def test_skips_kill_when_process_already_exited(self):
         sess = _make_session(alive=False)
         with patch("os.close"), \
-                patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
+                patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         mock_kill.assert_not_called()
 
@@ -151,7 +151,7 @@ class TestKillSession:
     async def test_handles_process_lookup_error_on_sigterm(self):
         sess = _make_session(alive=True)
         with patch("os.close"), \
-                patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree",
+                patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree",
                       side_effect=ProcessLookupError):
             await terminal._kill_session(sess)
         # Should not raise
@@ -161,7 +161,7 @@ class TestKillSession:
         sess = _make_session(alive=True)
         sess.proc.wait = AsyncMock(side_effect=[asyncio.TimeoutError, None])
         with patch("os.close"), \
-                patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
+                patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         calls = [c.args for c in mock_kill.call_args_list]
         assert (12345, platform_compat.SIGTERM) in calls
@@ -171,7 +171,7 @@ class TestKillSession:
     async def test_handles_os_error_on_close(self):
         sess = _make_session()
         sess.master_fd = 42
-        with patch("os.close", side_effect=OSError), patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        with patch("os.close", side_effect=OSError), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
         assert sess.master_fd == -1
 
@@ -190,7 +190,7 @@ class TestKillSession:
         sess = _make_session()
         sess.master_fd = 42
         with patch("os.close", side_effect=_record_close), patch(
-            "kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree"
+            "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"
         ):
             await terminal._kill_session(sess)
         assert close_threads, "os.close must have run"
@@ -212,7 +212,7 @@ class TestKillSession:
         sess.master_fd = 42
         with patch.object(
             asyncio.get_event_loop(), "run_in_executor", side_effect=_hang
-        ), patch("kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        ), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             task = asyncio.ensure_future(terminal._kill_session(sess))
             await asyncio.sleep(0)  # let it reach the await
             task.cancel()
@@ -232,7 +232,7 @@ class TestKillSession:
             "run_in_executor",
             side_effect=RuntimeError("cannot schedule new futures after shutdown"),
         ), patch(
-            "kiro_claw.dashboard.handlers.terminal.platform_compat.kill_process_tree"
+            "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"
         ) as mock_kill:
             await terminal._kill_session(sess)
         # The close error was swallowed and teardown continued to the tree-kill.
@@ -518,7 +518,7 @@ class TestApiTerminalWs:
 class TestScrollbackRedaction:
     """The reconnect-replay scrollback feature (ported from MeshClaw d00e6ac6).
 
-    The port re-anchors redaction onto ``kiro_claw.security`` whose redactors
+    The port re-anchors redaction onto ``kiro_crew.security`` whose redactors
     return ``(text, warnings)`` tuples (upstream's ``redaction`` module returns
     a bare ``str``), so the helper must unpack both — a verbatim copy would
     have crashed treating the tuple as a string.
@@ -1058,7 +1058,7 @@ class TestTerminalWsIntegration:
             assert resp.status == 404
 
             # Seed registry directly, then delete
-            from kiro_claw.dashboard.handlers import terminal as _term
+            from kiro_crew.dashboard.handlers import terminal as _term
 
             registry = _term._get_registry(
                 type("R", (), {"app": client.app})()  # type: ignore[arg-type]

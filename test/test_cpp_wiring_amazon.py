@@ -20,10 +20,10 @@ from typing import Dict, List, Optional, Tuple
 
 import pytest
 
-from kiro_claw import agent, sandbox
-from kiro_claw.config.loader import KiroClawConfig
-from kiro_claw.hooks import TOOL_DENY, HookManager, HooksConfig
-from kiro_claw.platform import (
+from kiro_crew import agent, sandbox
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+from kiro_crew.platform import (
     BASELINE_DENY,
     PROFILE_AMAZON,
     PlatformCompositionError,
@@ -96,16 +96,16 @@ class _AmazonMcpTooling:
 @pytest.fixture
 def amazon_ctx(monkeypatch):
     """Install an amazon PlatformContext and return it (companion or inline)."""
-    cfg = KiroClawConfig()
+    cfg = KiroCrewConfig()
     ctx = _compose_amazon_context(cfg, monkeypatch)
     set_context(ctx)
     return ctx
 
 
-def _compose_amazon_context(cfg: KiroClawConfig, monkeypatch):
+def _compose_amazon_context(cfg: KiroCrewConfig, monkeypatch):
     """Compose via the companion if importable, else build the overlay inline."""
     try:
-        from kiro_claw.platform.discovery import discover_companion_context
+        from kiro_crew.platform.discovery import discover_companion_context
 
         companion = discover_companion_context(PROFILE_AMAZON, cfg)
         if companion is not None and companion.profile == PROFILE_AMAZON:
@@ -214,13 +214,13 @@ def test_extra_mcp_server_in_agent_config(amazon_ctx) -> None:
     servers = cfg.get("mcpServers", {})
     assert _AMZN_MCP_NAME in servers
     # Managed servers are still present (ADD-only merge).
-    assert "kiroclaw-core" in servers
-    assert "kiroclaw-cron" in servers
+    assert "kirocrew-core" in servers
+    assert "kirocrew-cron" in servers
 
 
 def test_extra_mcp_server_on_refresh(amazon_ctx) -> None:
     """``_refresh_dynamic_fields`` also seeds the edition-contributed server."""
-    existing: dict = {"name": "kiroclaw", "mcpServers": {}}
+    existing: dict = {"name": "kirocrew", "mcpServers": {}}
     agent._refresh_dynamic_fields(existing)
     assert _AMZN_MCP_NAME in existing["mcpServers"]
 

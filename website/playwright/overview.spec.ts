@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 // Overview page tabs as of the current IA. Cron / Skills / MCP were moved out
 // of Overview into their own pages, so they are intentionally not asserted here.
-const TABS = ['Memory', 'Usage', 'KiroClaw Config', 'Agent Config', 'Import/Export'] as const
+const TABS = ['Memory', 'Usage', 'KiroCrew Config', 'Agent Config', 'Import/Export'] as const
 
 test.describe('Overview Page E2E Tests', () => {
   test.beforeEach(async ({ page }) => {

@@ -123,8 +123,8 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
       const a = await api.agentsInstalled()
       if (!Array.isArray(a)) return []
       ;(a as InstalledAgent[]).sort((x, y) => {
-        if (x.name === 'kiroclaw') return -1; if (y.name === 'kiroclaw') return 1
-        if (x.name === 'kiroclaw-lite') return -1; if (y.name === 'kiroclaw-lite') return 1
+        if (x.name === 'kirocrew') return -1; if (y.name === 'kirocrew') return 1
+        if (x.name === 'kirocrew-lite') return -1; if (y.name === 'kirocrew-lite') return 1
         return x.name.localeCompare(y.name)
       })
       return a as InstalledAgent[]
@@ -267,7 +267,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     </Clickable>
                   )
                   return (<>
-                    {nonAim.map(a => renderAgent(a, a.source !== 'kiroclaw'))}
+                    {nonAim.map(a => renderAgent(a, a.source !== 'kirocrew'))}
                     {Object.entries(aimGrouped).map(([pkg, agents]) => {
                       // For local packages: uninstall with local/PackageName
                       const isLocal = agents[0]?.filename?.startsWith('local-')
@@ -364,7 +364,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                   <div key={s.key}>
                     <div className="flex items-center justify-between mb-1.5">
                       <div className="text-sm font-medium text-text">{s.name}</div>
-                      <div className="text-[13px] text-muted font-mono">{s.agent && s.agent !== 'kiroclaw' ? <span className={`mr-1.5 ${installed.find(a => a.name === s.agent)?.source === 'kiroclaw' ? 'text-accent' : 'text-aim'}`}>{s.agent}</span> : null}{modelShort}</div>
+                      <div className="text-[13px] text-muted font-mono">{s.agent && s.agent !== 'kirocrew' ? <span className={`mr-1.5 ${installed.find(a => a.name === s.agent)?.source === 'kirocrew' ? 'text-accent' : 'text-aim'}`}>{s.agent}</span> : null}{modelShort}</div>
                     </div>
                     <div className="relative h-5 bg-bg-elevated rounded-full overflow-hidden border border-border">
                       {awaiting ? (

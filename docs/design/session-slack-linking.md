@@ -33,12 +33,12 @@ Once set, the thread becomes the **exclusive** Slack surface for that session.
 |--------|-------------|---------|
 | Slack DM | `slack_thread_ts = thread_ts or msg_ts`, `slack_channel_id = channel` | Already linked |
 | Slack channel (@mention) | Same as DM | Already linked |
-| Dashboard | Both `None` | Set when resumed via `/kiroclaw sessions` or "Send to Slack" button |
+| Dashboard | Both `None` | Set when resumed via `/kirocrew sessions` or "Send to Slack" button |
 | Cron / Subagent | Inherit from parent session, or `None` | N/A |
 
 ### Storage
 
-Extend the **session map** (`~/.kiroclaw/session_map.json`) from:
+Extend the **session map** (`~/.kirocrew/session_map.json`) from:
 
 ```json
 { "dashboard:chat-1-123": "acp-session-uuid" }
@@ -116,7 +116,7 @@ For unlinked dashboard sessions, add a button that:
 2. Calls `set_slack_link(key, thread_ts, channel_id)`.
 3. Posts last N messages as context in the thread.
 
-Same flow as `/kiroclaw sessions` resume, but triggered from the dashboard UI.
+Same flow as `/kirocrew sessions` resume, but triggered from the dashboard UI.
 
 ### What Gets Removed
 

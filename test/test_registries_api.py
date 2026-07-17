@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.apps.routes import register_app_routes
+from kiro_crew.apps.routes import register_app_routes
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -16,25 +16,25 @@ from kiro_claw.apps.routes import register_app_routes
 
 
 def _setup_env(tmp_path, monkeypatch):
-    home = tmp_path / "kiroclaw-home"
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
     # Create empty config
     cfg = home / "config.json"
     cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        "kiro_claw.apps.routes.config_path",
+        "kiro_crew.apps.routes.config_path",
         lambda: str(cfg),
     )
     # Mock SEL
     mock_sel = MagicMock()
-    monkeypatch.setattr("kiro_claw.apps.routes.sel", lambda: mock_sel)
+    monkeypatch.setattr("kiro_crew.apps.routes.sel", lambda: mock_sel)
     # Mock bridges/backend to avoid side effects
-    import kiro_claw.apps.bridges as bridges_mod
+    import kiro_crew.apps.bridges as bridges_mod
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    import kiro_claw.apps.backend as bmod
+    import kiro_crew.apps.backend as bmod
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return home, cfg
@@ -207,7 +207,7 @@ class TestPutRegistriesValidation:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [{"repo": "KiroClaw"}]},
+                json={"registries": [{"repo": "KiroCrew"}]},
             )
             assert resp.status == 400
             data = await resp.json()

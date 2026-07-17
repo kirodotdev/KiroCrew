@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kiro_claw import model_registry as mr
+from kiro_crew import model_registry as mr
 
 
 class TestModelRegistry:

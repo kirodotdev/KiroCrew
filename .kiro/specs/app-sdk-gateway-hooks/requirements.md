@@ -2,24 +2,24 @@
 
 ## Introduction
 
-This feature extends the KiroClaw App SDK and gateway to provide backend integration hooks, enabling apps (both built-in and external) to register API routes, manage cron jobs, and hook into gateway lifecycle without modifying KiroClaw core files. The goal is to eliminate the pattern where every new app must hardcode itself into `routes.py`, `server.py`, and `manager.py`.
+This feature extends the KiroCrew App SDK and gateway to provide backend integration hooks, enabling apps (both built-in and external) to register API routes, manage cron jobs, and hook into gateway lifecycle without modifying KiroCrew core files. The goal is to eliminate the pattern where every new app must hardcode itself into `routes.py`, `server.py`, and `manager.py`.
 
 ## Glossary
 
-- **Gateway**: The KiroClaw aiohttp server process that hosts the dashboard, API routes, and app lifecycle management.
+- **Gateway**: The KiroCrew aiohttp server process that hosts the dashboard, API routes, and app lifecycle management.
 - **App_Manifest**: The `app.json` file declaring an app's identity, resources, permissions, and capabilities.
 - **Route_Registry**: A gateway-side component that discovers and mounts app-provided HTTP route handlers at startup and on app enable/disable.
 - **Cron_SDK**: A programmatic API exposed to apps for creating, updating, and deleting scheduled jobs without directly accessing DashboardState.
 - **Lifecycle_Hook**: A Python entry point declared in the app manifest that the gateway invokes at specific lifecycle stages (startup, shutdown, enable, disable).
 - **App_Context**: A scoped object passed to lifecycle hooks and route handlers providing access to permitted gateway services (cron, storage, events) without exposing raw DashboardState.
-- **Builtin_App**: An app bundled with KiroClaw source code, located in `src/kiro_claw/apps/builtins/`.
+- **Builtin_App**: An app bundled with KiroCrew source code, located in `src/kiro_crew/apps/builtins/`.
 - **DashboardState**: The central gateway state object holding cron service, session state, and configuration.
 
 ## Requirements
 
 ### Requirement 1: Declarative Route Registration
 
-**User Story:** As an app developer, I want to declare HTTP route handlers in my app manifest and implementation, so that KiroClaw automatically mounts them without requiring changes to core gateway files.
+**User Story:** As an app developer, I want to declare HTTP route handlers in my app manifest and implementation, so that KiroCrew automatically mounts them without requiring changes to core gateway files.
 
 #### Acceptance Criteria
 

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.chat import _expand_prompt_mention, _run_chat
-from kiro_claw.dashboard.handlers import (
+from kiro_crew.dashboard.chat import _expand_prompt_mention, _run_chat
+from kiro_crew.dashboard.handlers import (
     _extract_sop_description,
     _latest_aim_event_dir,
     _list_aim_prompts,
@@ -25,9 +25,9 @@ from kiro_claw.dashboard.handlers import (
 def _isolate_home(tmp_path, monkeypatch):
     """All tests get an isolated $HOME and no project dir."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("kiro_claw.agent._project_dir", lambda: None)
+    monkeypatch.setattr("kiro_crew.agent._project_dir", lambda: None)
     # Clear prompt cache between tests
-    import kiro_claw.dashboard.handlers as h
+    import kiro_crew.dashboard.handlers as h
     h._prompt_cache = None
     h._prompt_cache_ts = 0
 
@@ -41,17 +41,17 @@ def aim_dir(tmp_path):
 def mock_sel(monkeypatch):
     """Patch sel() in both chat and handlers modules."""
     m = MagicMock()
-    monkeypatch.setattr("kiro_claw.dashboard.chat.sel", lambda: m)
-    monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: m)
+    monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: m)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: m)
     return m
 
 
 @pytest.fixture()
 def block_sensitive(monkeypatch):
     """Make is_sensitive_path return True everywhere."""
-    monkeypatch.setattr("kiro_claw.dashboard.chat_runner.is_sensitive_path", lambda p: True)
-    monkeypatch.setattr("kiro_claw.dashboard.handlers.is_sensitive_path", lambda p: True)
-    monkeypatch.setattr("kiro_claw.hooks.is_sensitive_path", lambda p: True)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.is_sensitive_path", lambda p: True)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.is_sensitive_path", lambda p: True)
+    monkeypatch.setattr("kiro_crew.hooks.is_sensitive_path", lambda p: True)
 
 
 # ── Helpers ──
@@ -107,7 +107,7 @@ class _Slot:
     def __init__(self):
         self.messages = []
         self.key = "t"
-        self.agent = "kiroclaw"
+        self.agent = "kirocrew"
         self.model = None
         self._queue = []
         self.linked_session_key = ""
@@ -247,7 +247,7 @@ class TestListAimPrompts:
 
     def test_discovers_local_project_prompts(self, tmp_path, monkeypatch):
         proj = tmp_path / "proj"
-        monkeypatch.setattr("kiro_claw.agent._project_dir", lambda: proj)
+        monkeypatch.setattr("kiro_crew.agent._project_dir", lambda: proj)
         d = proj / ".kiro" / "prompts"
         d.mkdir(parents=True)
         (d / "local.md").write_text("# L\n")
@@ -324,7 +324,7 @@ class TestListAimPrompts:
         sops.mkdir(parents=True)
         (sops / "evil.sop.md").symlink_to(secret)
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.is_sensitive_path",
+            "kiro_crew.dashboard.handlers.is_sensitive_path",
             lambda p: "secrets" in p,
         )
         assert _list_aim_prompts() == []
@@ -369,7 +369,7 @@ class TestExpandPromptMention:
 
     def test_list_error_returns_original(self, monkeypatch):
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers._find_prompt",
+            "kiro_crew.dashboard.handlers._find_prompt",
             lambda n: (_ for _ in ()).throw(PermissionError),
         )
         msg, status = _expand_prompt_mention("@x", _State(), _Slot())
@@ -468,7 +468,7 @@ class TestRunChatPrompts:
                 return
             await original_run_chat(state, slot, msg, **kw)
 
-        monkeypatch.setattr("kiro_claw.dashboard.chat_runner._run_chat", _mock_run_chat)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _mock_run_chat)
         asyncio.run(_mock_run_chat(s, sl, "/prompts get agent-sop:review"))
         assert any("Loaded prompt" in m[1] for m in sl.messages)
         assert "Do review." in captured.get("expanded", "")
@@ -496,7 +496,7 @@ class TestRunChatPrompts:
         """Prompt discovered but blocked at read time by chat-level check."""
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"secret": "# S"})
         # Only patch chat-level check so prompt is discovered but blocked at read
-        monkeypatch.setattr("kiro_claw.dashboard.chat_runner.is_sensitive_path", lambda p: True)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.is_sensitive_path", lambda p: True)
         s, sl = _ss()
         asyncio.run(_run_chat(s, sl, "/prompts get agent-sop:secret"))
         assert any("blocked" in m[1].lower() for m in sl.messages)
@@ -505,10 +505,10 @@ class TestRunChatPrompts:
     def test_at_prompt_blocked(self, aim_dir, mock_sel, monkeypatch):
         """@mention prompt blocked at read time by chat-level check."""
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"secret": "# S"})
-        monkeypatch.setattr("kiro_claw.dashboard.chat_runner.is_sensitive_path", lambda p: True)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.is_sensitive_path", lambda p: True)
         # @prompt path runs after session acquisition — needs full mock
         captured = []
-        slot = MagicMock(key="t", agent="kiroclaw", model=None, _trust=False, _queue=[])
+        slot = MagicMock(key="t", agent="kirocrew", model=None, _trust=False, _queue=[])
         slot.append = lambda r, t, c: captured.append((r, t, c))
         slot._pending_subagent_failures = []
         state = MagicMock(_hook_store=None, _yolo=False)

@@ -14,19 +14,19 @@ import typing
 from hypothesis import given
 from hypothesis import strategies as st
 
-from kiro_claw.config import schema as _schema_module
-from kiro_claw.config.loader import (
+from kiro_crew.config import schema as _schema_module
+from kiro_crew.config.loader import (
     AgentConfig,
     DashboardConfig,
-    KiroClawAgentConfig,
-    KiroClawConfig,
+    KiroCrewAgentConfig,
+    KiroCrewConfig,
     MemoryConfig,
     MemoryStoreConfig,
     SessionConfig,
     SlackConfig,
     WorkspaceConfig,
 )
-from kiro_claw.config.schema import (
+from kiro_crew.config.schema import (
     JSON_SCHEMA,
     SCHEMA_REGISTRY,
     ConfigEntry,
@@ -38,13 +38,13 @@ from kiro_claw.config.schema import (
 # ---------------------------------------------------------------------------
 
 ALL_CONFIG_CLASSES: list[type] = [
-    KiroClawConfig,
+    KiroCrewConfig,
     AgentConfig,
     SessionConfig,
     MemoryConfig,
     SlackConfig,
     DashboardConfig,
-    KiroClawAgentConfig,
+    KiroCrewAgentConfig,
     WorkspaceConfig,
     MemoryStoreConfig,
 ]
@@ -61,7 +61,7 @@ def _all_fields_recursive(
         result.append((path, f))
         tp = f.type
         if isinstance(tp, str):
-            import kiro_claw.config.loader as _mod
+            import kiro_crew.config.loader as _mod
 
             try:
                 tp = eval(tp, vars(_mod))  # noqa: S307
@@ -95,7 +95,7 @@ def _all_fields_recursive(
 
 def _resolve_type(f: dataclasses.Field) -> type:  # type: ignore[type-arg]
     """Resolve a field's type annotation to a runtime type."""
-    import kiro_claw.config.loader as _mod
+    import kiro_crew.config.loader as _mod
 
     tp = f.type
     if isinstance(tp, str):
@@ -136,7 +136,7 @@ class TestConfigSchemaProperties:
 
         **Validates: Requirements 1.1**
         """
-        all_fields = _all_fields_recursive(KiroClawConfig)
+        all_fields = _all_fields_recursive(KiroCrewConfig)
         assert len(all_fields) > 0, "Expected at least one field"
 
         for path, f in all_fields:
@@ -215,7 +215,7 @@ class TestConfigSchemaProperties:
     def test_registry_entries_structurally_complete(self) -> None:
         """Every SCHEMA_REGISTRY entry must have all required fields and
         every path must be reachable via dataclasses.fields() recursion
-        on KiroClawConfig.
+        on KiroCrewConfig.
 
         **Validates: Requirements 3.2, 2.6**
         """
@@ -235,7 +235,7 @@ class TestConfigSchemaProperties:
         ]
 
         # Build set of all reachable paths from the dataclass hierarchy
-        all_fields = _all_fields_recursive(KiroClawConfig)
+        all_fields = _all_fields_recursive(KiroCrewConfig)
         reachable_paths: set[str] = set()
         for path, f in all_fields:
             reachable_paths.add(path)
@@ -255,7 +255,7 @@ class TestConfigSchemaProperties:
             # Verify path is reachable from the dataclass hierarchy
             assert entry.path in reachable_paths, (
                 f"Entry path '{entry.path}' not reachable via "
-                f"dataclasses.fields() recursion on KiroClawConfig"
+                f"dataclasses.fields() recursion on KiroCrewConfig"
             )
 
             # Verify type is a valid JSON Schema type
@@ -285,7 +285,7 @@ class TestConfigSchemaProperties:
         # Build a lookup from path → ConfigEntry
         registry_by_path: dict[str, ConfigEntry] = {e.path: e for e in SCHEMA_REGISTRY}
 
-        all_fields = _all_fields_recursive(KiroClawConfig)
+        all_fields = _all_fields_recursive(KiroCrewConfig)
         for path, f in all_fields:
             tp = _resolve_type(f)
             origin = typing.get_origin(tp)

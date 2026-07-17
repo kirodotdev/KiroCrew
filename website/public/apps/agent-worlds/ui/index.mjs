@@ -1,10 +1,10 @@
-// Agent Worlds — Standalone KiroClaw App
+// Agent Worlds — Standalone KiroCrew App
 // A pixel art office scene showing agents working at desks.
-// Uses the host's React and app-sdk via window.__kiroclaw_modules.
+// Uses the host's React and app-sdk via window.__kirocrew_modules.
 
-const React = window.__kiroclaw_modules.react
-const { useAppApi, useAppEvents } = window.__kiroclaw_modules['@kiroclaw/app-sdk']
-const { Sparkles, RefreshCw } = window.__kiroclaw_modules['lucide-react']
+const React = window.__kirocrew_modules.react
+const { useAppApi, useAppEvents } = window.__kirocrew_modules['@kirocrew/app-sdk']
+const { Sparkles, RefreshCw } = window.__kirocrew_modules['lucide-react']
 
 const { useState, useEffect, useRef, useCallback, createElement: h } = React
 

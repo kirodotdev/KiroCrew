@@ -64,9 +64,9 @@ export function InAction() {
 
 export function HowItWorks() {
   const steps = [
-    { n: '1', title: 'Clone & Install', code: 'git clone https://github.com/kirodotdev-labs/kiroclaw.git\ncd kiroclaw && pip install .' },
-    { n: '2', title: 'Start', code: 'kiroclaw gateway', note: 'Dashboard opens at localhost:7777. Run kiroclaw doctor to verify.' },
-    { n: '3', title: 'Connect', note: 'DM KiroClaw in Slack, or open the dashboard. Type !dashboard in Slack for a 1-click link.' },
+    { n: '1', title: 'Clone & Install', code: 'git clone https://github.com/kirodotdev/KiroCrew.git\ncd kirocrew && pip install .' },
+    { n: '2', title: 'Start', code: 'kirocrew gateway', note: 'Dashboard opens at localhost:7777. Run kirocrew doctor to verify.' },
+    { n: '3', title: 'Connect', note: 'DM KiroCrew in Slack, or open the dashboard. Type !dashboard in Slack for a 1-click link.' },
   ];
   return (
     <section className="max-w-[800px] mx-auto px-6 pt-24 pb-24" id="how-it-works">
@@ -164,17 +164,17 @@ export function Cta() {
     <section className="text-center px-6 pt-24 pb-16 bg-[radial-gradient(ellipse_60%_50%_at_50%_100%,rgba(245,158,11,0.06),transparent)]">
       <Parallax speed={-0.15}>
         <FadeUp><h2 className="text-4xl md:text-5xl font-bold mb-4 font-space">Ready to get started?</h2></FadeUp>
-        <FadeUp delay={0.1}><p className="text-slate-500 dark:text-slate-400 text-lg mb-8">One command to install. Every engineer's KiroClaw ends up different — that's the point.</p></FadeUp>
+        <FadeUp delay={0.1}><p className="text-slate-500 dark:text-slate-400 text-lg mb-8">One command to install. Every engineer's KiroCrew ends up different — that's the point.</p></FadeUp>
         <FadeUp delay={0.2}>
-          <a href="#how-it-works" className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-[0_0_24px_rgba(245,158,11,0.35)] hover:-translate-y-0.5 transition-all no-underline font-space">Install KiroClaw</a>
+          <a href="#how-it-works" className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-[0_0_24px_rgba(245,158,11,0.35)] hover:-translate-y-0.5 transition-all no-underline font-space">Install KiroCrew</a>
         </FadeUp>
         <FadeUp delay={0.3}>
           <div className="flex gap-4 justify-center mt-6 text-sm">
-            <a href="https://github.com/kirodotdev-labs/kiroclaw" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:underline">GitHub</a>
+            <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:underline">GitHub</a>
             <span className="text-slate-600">&middot;</span>
-            <a href="https://github.com/kirodotdev-labs/kiroclaw/discussions" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:underline">Discussions</a>
+            <a href="https://github.com/kirodotdev/KiroCrew/discussions" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:underline">Discussions</a>
             <span className="text-slate-600">&middot;</span>
-            <a href="https://github.com/kirodotdev-labs/kiroclaw/issues" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:underline">Issues</a>
+            <a href="https://github.com/kirodotdev/KiroCrew/issues" target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:underline">Issues</a>
           </div>
         </FadeUp>
       </Parallax>
@@ -186,11 +186,11 @@ export function Footer() {
   return (
     <footer className="text-center py-10 px-6 border-t border-amber-500/12 text-slate-500 text-xs">
       <div className="flex gap-6 justify-center mb-3">
-        {[['https://github.com/kirodotdev-labs/kiroclaw', 'Source'], ['https://github.com/kirodotdev-labs/kiroclaw/wiki', 'Wiki'], ['https://github.com/kirodotdev-labs/kiroclaw/issues', 'Issues']].map(([href, label]) => (
+        {[['https://github.com/kirodotdev/KiroCrew', 'Source'], ['https://github.com/kirodotdev/KiroCrew/wiki', 'Wiki'], ['https://github.com/kirodotdev/KiroCrew/issues', 'Issues']].map(([href, label]) => (
           <a key={label} href={href} target="_blank" rel="noopener noreferrer" className="text-amber-400 no-underline hover:underline">{label}</a>
         ))}
       </div>
-      <p>KiroClaw — Persistent, self-learning AI agent for engineers</p>
+      <p>KiroCrew — Persistent, self-learning AI agent for engineers</p>
     </footer>
   );
 }

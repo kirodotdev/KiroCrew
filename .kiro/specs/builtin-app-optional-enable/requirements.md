@@ -2,12 +2,12 @@
 
 ## Introduction
 
-Extend KiroClaw's builtin app system to support "default disabled" apps. The existing 5 builtin apps remain unchanged (enabled by default, locked lifecycle). New builtin apps can be configured to default to disabled, appear in the App Store Browse tab for discovery, and when enabled by the user, show in the Installed tab and sidebar. Additionally, provide a standard developer configuration interface for builtin app authors to declare app metadata and behavior until the package-separated App Store receives security approval.
+Extend KiroCrew's builtin app system to support "default disabled" apps. The existing 5 builtin apps remain unchanged (enabled by default, locked lifecycle). New builtin apps can be configured to default to disabled, appear in the App Store Browse tab for discovery, and when enabled by the user, show in the Installed tab and sidebar. Additionally, provide a standard developer configuration interface for builtin app authors to declare app metadata and behavior until the package-separated App Store receives security approval.
 
 ## Glossary
 
-- **Gateway**: The KiroClaw gateway service responsible for app lifecycle management and API routing
-- **Builtin_App**: A feature module baked into the KiroClaw dashboard, using the host React router (no ESM bundle)
+- **Gateway**: The KiroCrew gateway service responsible for app lifecycle management and API routing
+- **Builtin_App**: A feature module baked into the KiroCrew dashboard, using the host React router (no ESM bundle)
 - **App_Store**: The dashboard page for app management, containing "Installed" and "Browse" tabs
 - **Installed_Tab**: The App Store tab showing installed and enabled apps
 - **Browse_Tab**: The App Store tab showing discoverable and installable apps
@@ -15,7 +15,7 @@ Extend KiroClaw's builtin app system to support "default disabled" apps. The exi
 - **InstalledApp_Metadata**: The `installed.json` metadata file for each app
 - **defaultEnabled**: A field in the builtin app definition controlling the initial enabled state on first registration
 - **Builtin_App_Definition**: The dictionary entry in `_BUILTIN_APPS` that declares a builtin app's metadata and configuration
-- **App_Developer**: An internal developer who authors a new builtin app feature for KiroClaw
+- **App_Developer**: An internal developer who authors a new builtin app feature for KiroCrew
 
 ## Requirements
 

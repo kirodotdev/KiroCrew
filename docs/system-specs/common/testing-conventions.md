@@ -49,7 +49,7 @@ client._process = mock_process
 Use `monkeypatch` to override config paths:
 ```python
 def test_load_from_file(self, tmp_path, monkeypatch):
-    monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: cfg_file)
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
 ```
 
 ### Filesystem tests
@@ -62,7 +62,7 @@ def test_custom_work_dir(self, tmp_path):
 ## Rules
 
 - Tests MUST NOT spawn real kiro-cli processes
-- Tests MUST NOT depend on `~/.kiroclaw/` existing
+- Tests MUST NOT depend on `~/.kirocrew/` existing
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio`
 
@@ -105,7 +105,7 @@ import asyncio, json, time
 
 async def main():
     kiro = await asyncio.create_subprocess_exec(
-        "kiro-cli", "acp", "--agent", "kiroclaw",
+        "kiro-cli", "acp", "--agent", "kirocrew",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -142,7 +142,7 @@ async def main():
     t0 = time.time()
     await wait_response(await send("initialize", {
         "protocolVersion": "2024-11-05",
-        "clientInfo": {"name": "kiroclaw", "version": "0.1.0"},
+        "clientInfo": {"name": "kirocrew", "version": "0.1.0"},
     }))
     await wait_response(await send("session/new", {"cwd": "/tmp", "mcpServers": []}))
 

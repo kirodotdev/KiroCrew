@@ -17,13 +17,13 @@ class TestConsolidateCmd:
         f.write_text('{"role":"user","content":"hi","ts":"2026-05-18T10:00:00"}\n')
         return sessions_dir
 
-    @patch("kiro_claw.cli.sel")
-    @patch("kiro_claw.cli.SkillsLoader")
-    @patch("kiro_claw.cli.SessionManager")
-    @patch("kiro_claw.cli.MemoryStore")
-    @patch("kiro_claw.cli.HistoryConsolidator")
-    @patch("kiro_claw.cli.ConversationLog")
-    @patch("kiro_claw.cli.KiroClawConfig")
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
     def test_list_sessions(
         self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
         mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
@@ -35,7 +35,7 @@ class TestConsolidateCmd:
         mock_log._dir = sessions_dir
         mock_log.unconsolidated_count.return_value = 5
 
-        from kiro_claw.cli import _consolidate_cmd
+        from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key=None, consolidate_all=False)
         _consolidate_cmd(args)
@@ -44,13 +44,13 @@ class TestConsolidateCmd:
         assert "test_session" in captured.out
         assert "5 messages" in captured.out
 
-    @patch("kiro_claw.cli.sel")
-    @patch("kiro_claw.cli.SkillsLoader")
-    @patch("kiro_claw.cli.SessionManager")
-    @patch("kiro_claw.cli.MemoryStore")
-    @patch("kiro_claw.cli.HistoryConsolidator")
-    @patch("kiro_claw.cli.ConversationLog")
-    @patch("kiro_claw.cli.KiroClawConfig")
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
     def test_list_sessions_none_found(
         self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
         mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
@@ -63,7 +63,7 @@ class TestConsolidateCmd:
         mock_log._dir = sessions_dir
         mock_log.unconsolidated_count.return_value = 0
 
-        from kiro_claw.cli import _consolidate_cmd
+        from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key=None, consolidate_all=False)
         _consolidate_cmd(args)
@@ -71,13 +71,13 @@ class TestConsolidateCmd:
         captured = capsys.readouterr()
         assert "No sessions with unconsolidated messages" in captured.out
 
-    @patch("kiro_claw.cli.sel")
-    @patch("kiro_claw.cli.SkillsLoader")
-    @patch("kiro_claw.cli.SessionManager")
-    @patch("kiro_claw.cli.MemoryStore")
-    @patch("kiro_claw.cli.HistoryConsolidator")
-    @patch("kiro_claw.cli.ConversationLog")
-    @patch("kiro_claw.cli.KiroClawConfig")
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_all(
         self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
         mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
@@ -93,7 +93,7 @@ class TestConsolidateCmd:
         mock_consolidator = mock_consolidator_cls.return_value
         mock_consolidator.consolidate_now = AsyncMock()
 
-        from kiro_claw.cli import _consolidate_cmd
+        from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key=None, consolidate_all=True)
         _consolidate_cmd(args)
@@ -103,13 +103,13 @@ class TestConsolidateCmd:
         assert "done" in captured.out
         assert mock_sel.return_value.log_api_access.call_count >= 1
 
-    @patch("kiro_claw.cli.sel")
-    @patch("kiro_claw.cli.SkillsLoader")
-    @patch("kiro_claw.cli.SessionManager")
-    @patch("kiro_claw.cli.MemoryStore")
-    @patch("kiro_claw.cli.HistoryConsolidator")
-    @patch("kiro_claw.cli.ConversationLog")
-    @patch("kiro_claw.cli.KiroClawConfig")
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_all_none_found(
         self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
         mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
@@ -122,7 +122,7 @@ class TestConsolidateCmd:
         mock_log._dir = sessions_dir
         mock_log.unconsolidated_count.return_value = 0
 
-        from kiro_claw.cli import _consolidate_cmd
+        from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key=None, consolidate_all=True)
         _consolidate_cmd(args)
@@ -130,13 +130,13 @@ class TestConsolidateCmd:
         captured = capsys.readouterr()
         assert "No sessions with unconsolidated messages" in captured.out
 
-    @patch("kiro_claw.cli.sel")
-    @patch("kiro_claw.cli.SkillsLoader")
-    @patch("kiro_claw.cli.SessionManager")
-    @patch("kiro_claw.cli.MemoryStore")
-    @patch("kiro_claw.cli.HistoryConsolidator")
-    @patch("kiro_claw.cli.ConversationLog")
-    @patch("kiro_claw.cli.KiroClawConfig")
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_single_session(
         self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
         mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
@@ -151,7 +151,7 @@ class TestConsolidateCmd:
         mock_consolidator = mock_consolidator_cls.return_value
         mock_consolidator.consolidate_now = AsyncMock()
 
-        from kiro_claw.cli import _consolidate_cmd
+        from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key="test_session", consolidate_all=False)
         _consolidate_cmd(args)
@@ -164,13 +164,13 @@ class TestConsolidateCmd:
             source="cli", resources="test_session",
         )
 
-    @patch("kiro_claw.cli.sel")
-    @patch("kiro_claw.cli.SkillsLoader")
-    @patch("kiro_claw.cli.SessionManager")
-    @patch("kiro_claw.cli.MemoryStore")
-    @patch("kiro_claw.cli.HistoryConsolidator")
-    @patch("kiro_claw.cli.ConversationLog")
-    @patch("kiro_claw.cli.KiroClawConfig")
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_single_no_messages(
         self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
         mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
@@ -182,7 +182,7 @@ class TestConsolidateCmd:
         mock_log._dir = sessions_dir
         mock_log.unconsolidated_count.return_value = 0
 
-        from kiro_claw.cli import _consolidate_cmd
+        from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key="test_session", consolidate_all=False)
         _consolidate_cmd(args)
@@ -194,14 +194,14 @@ class TestConsolidateCmd:
 class TestOnSessionExpire:
     """Cover on_session_expire callback via real SessionManager._expire_idle."""
 
-    @patch("kiro_claw.session.sel")
-    @patch("kiro_claw.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_claw.session.Stats")
+    @patch("kiro_crew.session.sel")
+    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
+    @patch("kiro_crew.session.Stats")
     def test_expire_idle_fires_callback(self, mock_stats, mock_reset, mock_sel):
         """A real SessionManager._expire_idle invokes on_session_expire for expired keys."""
         import time as _time
 
-        from kiro_claw.session import SessionManager, _Session
+        from kiro_crew.session import SessionManager, _Session
 
         cfg = MagicMock()
         cfg.session.pool_size = 0
@@ -221,14 +221,14 @@ class TestOnSessionExpire:
 
         callback.assert_called_once_with("expired-key")
 
-    @patch("kiro_claw.session.sel")
-    @patch("kiro_claw.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_claw.session.Stats")
+    @patch("kiro_crew.session.sel")
+    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
+    @patch("kiro_crew.session.Stats")
     def test_expire_idle_callback_exception_swallowed(self, mock_stats, mock_reset, mock_sel):
         """Callback exceptions don't prevent session reset."""
         import time as _time
 
-        from kiro_claw.session import SessionManager, _Session
+        from kiro_crew.session import SessionManager, _Session
 
         cfg = MagicMock()
         cfg.session.pool_size = 0
@@ -253,7 +253,7 @@ class TestGatewayExpireWiring:
 
     def test_session_expire_wiring_on_real_instance(self):
         """A real SessionManager instance accepts on_session_expire assignment."""
-        from kiro_claw.session import SessionManager
+        from kiro_crew.session import SessionManager
 
         cfg = MagicMock()
         cfg.session.pool_size = 0
@@ -276,13 +276,13 @@ class TestConsolidateCmdExceptionPath:
         f.write_text('{"role":"user","content":"hi","ts":"2026-05-18T10:00:00"}\n')
         return sessions_dir
 
-    @patch("kiro_claw.cli.sel")
-    @patch("kiro_claw.cli.SkillsLoader")
-    @patch("kiro_claw.cli.SessionManager")
-    @patch("kiro_claw.cli.MemoryStore")
-    @patch("kiro_claw.cli.HistoryConsolidator")
-    @patch("kiro_claw.cli.ConversationLog")
-    @patch("kiro_claw.cli.KiroClawConfig")
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
     def test_consolidate_single_exception_logged(
         self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
         mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
@@ -298,7 +298,7 @@ class TestConsolidateCmdExceptionPath:
         mock_consolidator = mock_consolidator_cls.return_value
         mock_consolidator.consolidate_now = AsyncMock(side_effect=RuntimeError("LLM down"))
 
-        from kiro_claw.cli import _consolidate_cmd
+        from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key="test_session", consolidate_all=False)
         _consolidate_cmd(args)
@@ -311,14 +311,14 @@ class TestConsolidateCmdExceptionPath:
 class TestExpireIdleSelFailure:
     """Cover the SEL failure path in session.py _expire_idle."""
 
-    @patch("kiro_claw.session.sel")
-    @patch("kiro_claw.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_claw.session.Stats")
+    @patch("kiro_crew.session.sel")
+    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
+    @patch("kiro_crew.session.Stats")
     def test_expire_idle_sel_failure_still_resets(self, mock_stats, mock_reset, mock_sel):
         """When sel().log_api_access raises, the session is still reset."""
         import time as _time
 
-        from kiro_claw.session import SessionManager, _Session
+        from kiro_crew.session import SessionManager, _Session
 
         cfg = MagicMock()
         cfg.session.pool_size = 0
@@ -340,14 +340,14 @@ class TestExpireIdleSelFailure:
         callback.assert_not_called()
         mock_reset.assert_called_once_with("expired-sel")
 
-    @patch("kiro_claw.session.sel")
-    @patch("kiro_claw.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_claw.session.Stats")
+    @patch("kiro_crew.session.sel")
+    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
+    @patch("kiro_crew.session.Stats")
     def test_expire_idle_callback_failure_still_resets(self, mock_stats, mock_reset, mock_sel):
         """When on_session_expire raises, the session is still reset."""
         import time as _time
 
-        from kiro_claw.session import SessionManager, _Session
+        from kiro_crew.session import SessionManager, _Session
 
         cfg = MagicMock()
         cfg.session.pool_size = 0

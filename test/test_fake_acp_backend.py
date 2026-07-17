@@ -1,7 +1,7 @@
 """Unit tests for the packaged fake ACP backend.
 
-These run in the standard pytest suite (NOT gated behind ``KIROCLAW_E2E``), so
-they give coverage on ``kiro_claw.testing.fake_acp_backend`` without spawning a
+These run in the standard pytest suite (NOT gated behind ``KIROCREW_E2E``), so
+they give coverage on ``kiro_crew.testing.fake_acp_backend`` without spawning a
 gateway. ``test_e2e_smoke.py`` exercises the fake end-to-end through a real
 gateway subprocess; this file locks the JSON-RPC frame shapes fast, in-process.
 """
@@ -12,7 +12,7 @@ import io
 import json
 from typing import Any
 
-from kiro_claw.testing import fake_acp_backend as fake
+from kiro_crew.testing import fake_acp_backend as fake
 
 
 def _capture(monkeypatch) -> io.StringIO:

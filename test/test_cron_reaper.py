@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.cron import (
+from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     CronJob,
     CronSchedule,
     CronService,
 )
-from kiro_claw.cron_history import CronHistoryStore
+from kiro_crew.cron_history import CronHistoryStore
 
 
 def _mock_sessions() -> MagicMock:
@@ -50,7 +50,7 @@ class TestCronReaper:
         svc._job_start_times["expired1"] = time.time() - _JOB_TIMEOUT_SECS - 120
         svc._running_tasks["expired1"] = MagicMock(done=MagicMock(return_value=False))
 
-        with patch("kiro_claw.sel.sel") as mock_sel, patch.object(svc, "_save"):
+        with patch("kiro_crew.sel.sel") as mock_sel, patch.object(svc, "_save"):
             await svc._force_reap("expired1", _JOB_TIMEOUT_SECS + 120)
 
         assert job.last_status == "error"
@@ -79,7 +79,7 @@ class TestCronReaper:
 
         svc._job_start_times["ok1"] = time.time() - 60  # only 60s old
 
-        with patch("kiro_claw.sel.sel"), patch(
+        with patch("kiro_crew.sel.sel"), patch(
             "asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -100,7 +100,7 @@ class TestCronReaper:
         done_task.done.return_value = True
         svc._running_tasks["done1"] = done_task
 
-        with patch("kiro_claw.sel.sel"), patch(
+        with patch("kiro_crew.sel.sel"), patch(
             "asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -127,8 +127,8 @@ class TestCronReaper:
         svc._jobs = [job]
         svc._running_tasks["hang1"] = MagicMock(done=MagicMock(return_value=False))
 
-        with patch("kiro_claw.sel.sel"), patch(
-            "kiro_claw.cron._REAPER_RESET_TIMEOUT", 0.05
+        with patch("kiro_crew.sel.sel"), patch(
+            "kiro_crew.cron._REAPER_RESET_TIMEOUT", 0.05
         ), patch.object(svc, "_sigkill_session") as mock_kill, patch.object(svc, "_save"):
             await svc._force_reap("hang1", _JOB_TIMEOUT_SECS + 60)
 
@@ -149,7 +149,7 @@ class TestCronReaper:
         svc._jobs = [job]
         svc._running_tasks["exc1"] = MagicMock(done=MagicMock(return_value=False))
 
-        with patch("kiro_claw.sel.sel"), patch.object(
+        with patch("kiro_crew.sel.sel"), patch.object(
             svc, "_sigkill_session"
         ) as mock_kill, patch.object(svc, "_save"):
             await svc._force_reap("exc1", _JOB_TIMEOUT_SECS + 10)
@@ -170,7 +170,7 @@ class TestCronReaper:
         mock_task.done.return_value = False
         svc._running_tasks["cancel1"] = mock_task
 
-        with patch("kiro_claw.sel.sel"), patch.object(svc, "_save"):
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
             await svc._force_reap("cancel1", _JOB_TIMEOUT_SECS + 10)
 
         mock_task.cancel.assert_called_once()
@@ -186,7 +186,7 @@ class TestCronReaper:
         svc._jobs = [job]
         svc._running_tasks["persist1"] = MagicMock(done=MagicMock(return_value=False))
 
-        with patch("kiro_claw.sel.sel"), patch.object(svc, "_save") as mock_save:
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save") as mock_save:
             await svc._force_reap("persist1", _JOB_TIMEOUT_SECS + 10)
 
         mock_save.assert_called_once()
@@ -283,7 +283,7 @@ class TestCronReaper:
         job = _make_job("nosess1")
         svc._jobs = [job]
 
-        with patch("kiro_claw.sel.sel"), patch.object(svc, "_save"):
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
             await svc._force_reap("nosess1", _JOB_TIMEOUT_SECS + 10)
 
         assert job.last_status == "error"
@@ -342,7 +342,7 @@ class TestCronReaper:
         svc._running_tasks["cleanup1"] = mock_task
         svc._executing.add("cleanup1")
 
-        with patch("kiro_claw.sel.sel"), patch.object(svc, "_save"):
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
             await svc._force_reap("cleanup1", _JOB_TIMEOUT_SECS + 10)
 
         assert "cleanup1" not in svc._executing
@@ -381,7 +381,7 @@ class TestCronReaper:
         svc._job_start_times["custom2"] = time.time() - 5500
         svc._running_tasks["custom2"] = MagicMock(done=MagicMock(return_value=False))
 
-        with patch("kiro_claw.sel.sel"), patch.object(svc, "_save"), patch(
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"), patch(
             "asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -423,7 +423,7 @@ class TestCronReaper:
         svc._job_start_times["cap1"] = time.time() - 86500
         svc._running_tasks["cap1"] = MagicMock(done=MagicMock(return_value=False))
 
-        with patch("kiro_claw.sel.sel"), patch.object(svc, "_save"), patch(
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"), patch(
             "asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -444,7 +444,7 @@ class TestCronReaper:
         svc._job_start_times["ghost1"] = time.time() - _JOB_TIMEOUT_SECS - 60
         svc._running_tasks["ghost1"] = MagicMock(done=MagicMock(return_value=False))
 
-        with patch("kiro_claw.sel.sel"), patch.object(svc, "_save"), patch(
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"), patch(
             "asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])
         ):
             with pytest.raises(asyncio.CancelledError):

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.slack.events import _publish_home_tab
+from kiro_crew.slack.events import _publish_home_tab
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,10 +80,10 @@ def _make_orch(
 
 class TestPublishHomeTabHappyPath:
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -99,7 +99,7 @@ class TestPublishHomeTabHappyPath:
 
         blocks = view["blocks"]
         text = str(blocks)
-        assert "KiroClaw Status" in text
+        assert "KiroCrew Status" in text
         assert "Cron Jobs" in text
         assert "Recent Lessons" in text
         assert "Commands" in text
@@ -111,10 +111,10 @@ class TestPublishHomeTabHappyPath:
         assert "Capabilities" in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=True)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="daily")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=True)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="daily")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -128,7 +128,7 @@ class TestPublishHomeTabHappyPath:
 
 class TestPublishHomeTabEmptyState:
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     async def test_empty_crons_and_lessons(self, _yolo):
         orch = _make_orch(
             cron_svc=FakeCronService([]),
@@ -145,7 +145,7 @@ class TestPublishHomeTabEmptyState:
 
 class TestPublishHomeTabNoneServices:
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     async def test_all_services_none(self, _yolo):
         orch = _make_orch(sessions=None, cron_svc=None, ctx_builder=None)
         await _publish_home_tab(orch, "U123")
@@ -159,7 +159,7 @@ class TestPublishHomeTabNoneServices:
 
 class TestPublishHomeTabErrorHandling:
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     async def test_error_publishes_fallback(self, _yolo):
         orch = _make_orch()
         orch.slack.views_publish = AsyncMock(side_effect=[RuntimeError("API down"), None])
@@ -171,7 +171,7 @@ class TestPublishHomeTabErrorHandling:
         assert "Failed to load Home Tab" in str(fallback["blocks"])
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     async def test_slack_none_logs_warning(self, _yolo):
         orch = _make_orch(slack=None)
         # Should not raise
@@ -180,8 +180,8 @@ class TestPublishHomeTabErrorHandling:
 
 class TestViewTypeAlwaysHome:
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="*")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="*")
     async def test_view_type_is_home(self, _fmt, _yolo):
         orch = _make_orch()
         await _publish_home_tab(orch, "U999")
@@ -194,16 +194,16 @@ class TestPublishHomeTabCapabilities:
     """Tests for the Capabilities section (MCP integrations + skills)."""
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch(
-        "kiro_claw.slack.events.list_servers",
-        return_value=[SimpleNamespace(name="builder-mcp"), SimpleNamespace(name="kiroclaw-core")],
+        "kiro_crew.slack.events.list_servers",
+        return_value=[SimpleNamespace(name="builder-mcp"), SimpleNamespace(name="kirocrew-core")],
     )
     @patch(
-        "kiro_claw.slack.events._get_skills_loader",
+        "kiro_crew.slack.events._get_skills_loader",
     )
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -221,11 +221,11 @@ class TestPublishHomeTabCapabilities:
         assert "taskei" in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.list_servers", return_value=[])
-    @patch("kiro_claw.slack.events._get_skills_loader")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.list_servers", return_value=[])
+    @patch("kiro_crew.slack.events._get_skills_loader")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -238,10 +238,10 @@ class TestPublishHomeTabCapabilities:
         assert "No MCP servers or skills configured" in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.list_servers", side_effect=RuntimeError("boom"))
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.list_servers", side_effect=RuntimeError("boom"))
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -257,12 +257,12 @@ class TestPublishHomeTabUptime:
     """Tests for the Uptime line in Status section."""
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.Stats")
-    @patch("kiro_claw.slack.events.list_servers", return_value=[])
-    @patch("kiro_claw.slack.events._get_skills_loader")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.Stats")
+    @patch("kiro_crew.slack.events.list_servers", return_value=[])
+    @patch("kiro_crew.slack.events._get_skills_loader")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -281,10 +281,10 @@ class TestPublishHomeTabVectorStore:
     """Tests for the vector store lesson path in the home tab."""
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -305,10 +305,10 @@ class TestPublishHomeTabVectorStore:
         assert "simple string lesson" in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅ 5.0h remaining",
     )
@@ -357,16 +357,16 @@ class TestPublishHomeTabSessions:
         Individual tests that need to exercise the deny path override this
         within a ``with patch(...)`` block.
         """
-        monkeypatch.setattr("kiro_claw.slack.events.is_owner", lambda _: True)
+        monkeypatch.setattr("kiro_crew.slack.events.is_owner", lambda _: True)
         monkeypatch.setattr(
-            "kiro_claw.slack.events.is_allowed_user", lambda _: True
+            "kiro_crew.slack.events.is_allowed_user", lambda _: True
         )
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -374,7 +374,7 @@ class TestPublishHomeTabSessions:
         """The Sessions header appears even when there are no sessions on disk."""
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
-        monkeypatch.setattr("kiro_claw.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
 
         orch = _make_orch()
         await _publish_home_tab(orch, "U123")
@@ -384,10 +384,10 @@ class TestPublishHomeTabSessions:
         assert "No recent sessions" in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -396,7 +396,7 @@ class TestPublishHomeTabSessions:
     ):
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
-        monkeypatch.setattr("kiro_claw.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
         _write_session_jsonl(
             sess_dir / "dashboard_chat-1.jsonl",
             title="Pipeline triage",
@@ -417,10 +417,10 @@ class TestPublishHomeTabSessions:
         assert "No recent sessions" not in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -429,7 +429,7 @@ class TestPublishHomeTabSessions:
     ):
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
-        monkeypatch.setattr("kiro_claw.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
         _write_session_jsonl(
             sess_dir / "taskrunner_run-foo.jsonl",
             title="Refactor login",
@@ -445,10 +445,10 @@ class TestPublishHomeTabSessions:
         assert "mc_session_resume_taskrunner_run-foo" in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -456,7 +456,7 @@ class TestPublishHomeTabSessions:
         """Home Tab requests at most _HOME_TAB_SESSIONS_PER_KIND rows per kind."""
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
-        monkeypatch.setattr("kiro_claw.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
         for i in range(8):
             _write_session_jsonl(
                 sess_dir / f"dashboard_chat-{i}.jsonl",
@@ -481,10 +481,10 @@ class TestPublishHomeTabSessions:
         assert taskrunner_count == 5
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -498,7 +498,7 @@ class TestPublishHomeTabSessions:
         """
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
-        monkeypatch.setattr("kiro_claw.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
         _write_session_jsonl(
             sess_dir / "dashboard_chat-1.jsonl", title="d1", messages=[("user", "x")]
         )
@@ -520,10 +520,10 @@ class TestPublishHomeTabSessions:
         assert "mc_session_resume_taskrunner_run-1" in str(view["blocks"])
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -533,7 +533,7 @@ class TestPublishHomeTabSessions:
         """If the collector raises, the section degrades gracefully."""
         orch = _make_orch()
         with patch(
-            "kiro_claw.slack.events._collect_recent_sessions",
+            "kiro_crew.slack.events._collect_recent_sessions",
             side_effect=RuntimeError("disk error"),
         ):
             await _publish_home_tab(orch, "U123")
@@ -547,10 +547,10 @@ class TestPublishHomeTabSessions:
         assert "Commands" in text
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -568,10 +568,10 @@ class TestPublishHomeTabSessions:
         orch = _make_orch()
         with (
             patch(
-                "kiro_claw.slack.events._collect_recent_sessions",
+                "kiro_crew.slack.events._collect_recent_sessions",
                 side_effect=RuntimeError("disk error"),
             ),
-            patch("kiro_claw.slack.events.sel") as mock_sel,
+            patch("kiro_crew.slack.events.sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             await _publish_home_tab(orch, "U123")
@@ -594,10 +594,10 @@ class TestPublishHomeTabSessions:
         assert "disk error" in kwargs["error"]
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -613,10 +613,10 @@ class TestPublishHomeTabSessions:
         leaked_key = "AKIAIOSFODNN7EXAMPLE"
         with (
             patch(
-                "kiro_claw.slack.events._collect_recent_sessions",
+                "kiro_crew.slack.events._collect_recent_sessions",
                 side_effect=OSError(f"failed reading {leaked_key} from path"),
             ),
-            patch("kiro_claw.slack.events.sel") as mock_sel,
+            patch("kiro_crew.slack.events.sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             await _publish_home_tab(orch, "U123")
@@ -632,10 +632,10 @@ class TestPublishHomeTabSessions:
         assert leaked_key not in kwargs["error"]
 
     @pytest.mark.asyncio
-    @patch("kiro_claw.slack.events.is_yolo_mode", return_value=False)
-    @patch("kiro_claw.slack.events.format_schedule", return_value="every 5m")
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_claw.midway.get_midway_status_line",
+        "kiro_crew.midway.get_midway_status_line",
         new_callable=AsyncMock,
         return_value="*Midway:* ✅",
     )
@@ -652,7 +652,7 @@ class TestPublishHomeTabSessions:
         """
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
-        monkeypatch.setattr("kiro_claw.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
         # Real session on disk so we can prove the collector was NOT called
         _write_session_jsonl(
             sess_dir / "dashboard_chat-1.jsonl",
@@ -662,9 +662,9 @@ class TestPublishHomeTabSessions:
 
         orch = _make_orch()
         with (
-            patch("kiro_claw.slack.events.is_owner", return_value=False),
-            patch("kiro_claw.slack.events.is_allowed_user", return_value=False),
-            patch("kiro_claw.slack.events.sel") as mock_sel,
+            patch("kiro_crew.slack.events.is_owner", return_value=False),
+            patch("kiro_crew.slack.events.is_allowed_user", return_value=False),
+            patch("kiro_crew.slack.events.sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             await _publish_home_tab(orch, "UATTACKER")

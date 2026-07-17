@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-import kiro_claw.workflows.agent_exec as agent_exec
-from kiro_claw.workflows.agent_exec import build_agent_fn
+import kiro_crew.workflows.agent_exec as agent_exec
+from kiro_crew.workflows.agent_exec import build_agent_fn
 
 pytestmark = pytest.mark.asyncio
 
@@ -115,7 +115,7 @@ async def test_opts_and_defaults_flow_into_get_or_create() -> None:
 
 async def test_end_to_end_through_runner() -> None:
     """A workflow's ctx.agent() reaches the model via the built agent_fn."""
-    from kiro_claw.workflows.runner import WorkflowRunner
+    from kiro_crew.workflows.runner import WorkflowRunner
 
     sessions = FakeSessions()
     fn = build_agent_fn(sessions, run_id="wf_e2e")

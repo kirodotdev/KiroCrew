@@ -1,7 +1,7 @@
 {
-  "name": "kiroclaw-electron-mac",
+  "name": "kirocrew-electron-mac",
   "version": "0.1.0",
-  "description": "KiroClaw \u2014 AI agent desktop app",
+  "description": "KiroCrew \u2014 AI agent desktop app",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -19,8 +19,8 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "dev.kiroclaw.desktop",
-    "productName": "KiroClaw",
+    "appId": "dev.kirocrew.desktop",
+    "productName": "KiroCrew",
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "icon.png",
@@ -69,8 +69,8 @@
     ],
     "extraResources": [
       {
-        "from": "backend-dist/kiroclaw-backend",
-        "to": "backend-dist/kiroclaw-backend",
+        "from": "backend-dist/kirocrew-backend",
+        "to": "backend-dist/kirocrew-backend",
         "filter": [
           "**/*",
           "!**/__pycache__/**",

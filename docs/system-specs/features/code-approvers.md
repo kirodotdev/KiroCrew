@@ -4,14 +4,14 @@ Last Updated: 2026-05-28
 
 ## Overview
 
-Tier-based CR reviewer routing via `CODE_APPROVERS.yaml` in both KiroClaw and KiroClawWebsite packages. Automatically assigns reviewers based on file paths changed, with a drift validator test that fails the build if patterns don't match actual files.
+Tier-based CR reviewer routing via `CODE_APPROVERS.yaml` in both KiroCrew and KiroCrewWebsite packages. Automatically assigns reviewers based on file paths changed, with a drift validator test that fails the build if patterns don't match actual files.
 
 ## Tiers
 
 | Tier | Approval Required | Scope |
 |------|-------------------|-------|
-| T1 | 1 random kiroclaw-core member | Small fixes, non-critical paths |
-| T2 | 2 random kiroclaw-core members | Security, harness, config, prompts, overlapping CRs |
+| T1 | 1 random kirocrew-core member | Small fixes, non-critical paths |
+| T2 | 2 random kirocrew-core members | Security, harness, config, prompts, overlapping CRs |
 | T3 | Both bolichen + zejiangg required | Frozen memory modules |
 
 ## Drift Validator
@@ -20,7 +20,7 @@ Tier-based CR reviewer routing via `CODE_APPROVERS.yaml` in both KiroClaw and Ki
 
 ## Code Reviewer Built-in App
 
-The Code Reviewer is now a built-in app (`src/kiro_claw/apps/builtins/code_reviewer/`) with a full Python backend. It is disabled by default (`defaultEnabled: false`) and can be enabled via the App Store or config.
+The Code Reviewer is now a built-in app (`src/kiro_crew/apps/builtins/code_reviewer/`) with a full Python backend. It is disabled by default (`defaultEnabled: false`) and can be enabled via the App Store or config.
 
 Key capabilities:
 - **Workspace browsing** — `POST /api/browse` with ARCC SAX-04 controls (path containment, sensitive-path blocklist, capped results)
@@ -35,4 +35,4 @@ All endpoints follow audit + input-validation patterns (SHA regex, SEL audit on 
 
 - `CODE_APPROVERS.yaml` (both packages)
 - `test/test_code_approvers.py` — drift validator
-- `src/kiro_claw/apps/builtins/code_reviewer/` — built-in app backend
+- `src/kiro_crew/apps/builtins/code_reviewer/` — built-in app backend

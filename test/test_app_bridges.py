@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.apps.bridges — resource registration bridges."""
+"""Tests for kiro_crew.apps.bridges — resource registration bridges."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.bridges import (
+from kiro_crew.apps.bridges import (
     RegistrationResult,
     _deregister_agents,
     _deregister_crons,
@@ -24,8 +24,8 @@ from kiro_claw.apps.bridges import (
     load_app_cron_defs,
     register_app,
 )
-from kiro_claw.apps.manager import APP_MANIFEST_FILENAME, install_app
-from kiro_claw.apps.manifest import AppManifest
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+from kiro_crew.apps.manifest import AppManifest
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -61,15 +61,15 @@ def _make_app_source(tmp_path, name="test-app", **extras):
 
 @pytest.fixture()
 def app_env(tmp_path, monkeypatch):
-    """Set up isolated KIROCLAW_HOME and KIRO agents dir."""
-    home = tmp_path / "kiroclaw-home"
+    """Set up isolated KIROCREW_HOME and KIRO agents dir."""
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
 
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     # Patch the KIRO_AGENTS_DIR in bridges module
-    import kiro_claw.apps.bridges as bridges_mod
+    import kiro_crew.apps.bridges as bridges_mod
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
 
     # Patch _MCP_JSON_PATH to avoid file descriptor errors in tests
@@ -158,7 +158,7 @@ class TestSkillRegistration:
         assert len(registered) == 1
         assert "test-app/my-skill" in registered
 
-        # Verify symlink exists under ~/.kiroclaw/skills/test-app/my-skill
+        # Verify symlink exists under ~/.kirocrew/skills/test-app/my-skill
         skill_link = app_env["home"] / "skills" / "test-app" / "my-skill"
         assert skill_link.is_symlink()
         assert (skill_link / "SKILL.md").is_file()
@@ -256,7 +256,7 @@ class TestTopLevel:
         bridge created mochi-pet--mochi-pet-bg.json (empty mcpServers) alongside
         the real mochi-pet-bg.json, and kiro-cli loaded the empty one.
         """
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
 
@@ -266,7 +266,7 @@ class TestTopLevel:
         install_app(src)
 
         # Mark as self-managed (like Mochi does via registerExternal)
-        from kiro_claw.apps.manager import register_external_app
+        from kiro_crew.apps.manager import register_external_app
         register_external_app("test-app", "1.0.0", "Test App", resources="app")
 
         result = register_app("test-app")
@@ -340,8 +340,8 @@ class TestRegistrationResult:
 
 class TestMCPRegistration:
     def test_register_mcp_servers(self, tmp_path, app_env, monkeypatch):
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         # Backend live → HTTP url server registers (the dead-port skip only fires when
@@ -366,8 +366,8 @@ class TestMCPRegistration:
         # 9101, …). The manifest's mcpServers url carries an illustrative fixed port.
         # Registration MUST rewrite it to the live allocated port, else agents call the
         # wrong port and every app tool call silently fails.
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         # Pretend the backend actually came up on 9101 (not the manifest's 9100).
@@ -392,8 +392,8 @@ class TestMCPRegistration:
         # makes kiro-cli try to connect on EVERY session → "backend hiccup" → 3 retries →
         # hard error, breaking all requests. The enable/boot flow re-registers with the
         # live port once the backend is up.
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: None)
@@ -416,8 +416,8 @@ class TestMCPRegistration:
         # A stale dead-port entry from a prior (now-down) registration must be SCRUBBED
         # when we re-register and the backend still isn't up — so it can't keep poisoning
         # every kiro session across reboots/disable.
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
 
@@ -440,8 +440,8 @@ class TestMCPRegistration:
     def test_stdio_mcp_server_always_registered_no_backend(self, tmp_path, app_env, monkeypatch):
         # A command/stdio MCP server (no url) has no port to be dead — it must always be
         # registered regardless of backend liveness (only HTTP url servers are gated).
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: None)
@@ -460,9 +460,9 @@ class TestMCPRegistration:
     def test_reregister_app_mcp_servers_overwrites_with_live_port(self, tmp_path, app_env, monkeypatch):
         # reregister_app_mcp_servers (called after the backend starts) overwrites the
         # earlier manifest-default entry with the live-port url.
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
-        from kiro_claw.apps.bridges import reregister_app_mcp_servers
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
+        from kiro_crew.apps.bridges import reregister_app_mcp_servers
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
 
@@ -489,9 +489,9 @@ class TestMCPRegistration:
         # backend isn't marked *healthy* yet (get_app_backend_port would return None at
         # that instant). An explicit live_port must still rewrite the url — this is the
         # exact bug that left the registered url at :9100 while the backend was on :9101.
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
-        from kiro_claw.apps.bridges import reregister_app_mcp_servers
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
+        from kiro_crew.apps.bridges import reregister_app_mcp_servers
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         # Health-gated lookup returns None (backend up but not yet confirmed healthy).
@@ -505,7 +505,7 @@ class TestMCPRegistration:
         assert data["mcpServers"]["test-app:my-mcp"]["url"] == "http://localhost:9101/mcp"
 
     def test_deregister_mcp_servers(self, tmp_path, app_env, monkeypatch):
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
 
@@ -528,13 +528,13 @@ class TestMCPRegistration:
         assert "app-b:srv1" in data["mcpServers"]
 
     def test_deregister_no_servers(self, tmp_path, monkeypatch):
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         assert _deregister_mcp_servers("nonexistent") == 0
 
     def test_register_no_mcp_servers(self, tmp_path, app_env, monkeypatch):
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
 
@@ -542,8 +542,8 @@ class TestMCPRegistration:
         assert _register_mcp_servers("test", manifest) == []
 
     def test_register_app_includes_mcp(self, tmp_path, app_env, monkeypatch):
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         # Backend live so the HTTP url server is registered (not dead-port-skipped).
@@ -581,8 +581,8 @@ class TestMCPProperties:
         """**Validates: Requirements 8.1, 8.2**"""
         import uuid
 
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / f"mcp-{uuid.uuid4().hex[:8]}.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         # Backend live → HTTP url servers register (dead-port skip only with no backend).
@@ -620,8 +620,8 @@ class TestMCPProperties:
         assume(app_a != app_b)
         import uuid
 
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
         mcp_path = tmp_path / f"mcp-iso-{uuid.uuid4().hex[:8]}.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
         # Backend live → HTTP url servers register (dead-port skip only with no backend).
@@ -654,8 +654,8 @@ class TestBootReconcile:
         # have it scrubbed at gateway boot — else kiro-cli dials the dead port on every
         # session. start_enabled_app_backends() reconciles disabled apps before starting
         # any backend.
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
 
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
@@ -688,8 +688,8 @@ class TestBootReconcile:
         # url behind — that's the exact shape that broke every kiro-cli session. The
         # health-gated path calls _gate_mcp_registration(healthy=False) on health failure,
         # which scrubs the entry. (Closes the disabled-only asymmetry the reviewer flagged.)
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
 
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
@@ -708,8 +708,8 @@ class TestBootReconcile:
     def test_enabled_app_healthy_registers_with_live_port(self, tmp_path, app_env, monkeypatch):
         # The complement: once /health passes, _gate_mcp_registration(healthy=True) writes the
         # HTTP MCP url with the confirmed live port (rewriting the manifest's illustrative one).
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
 
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
@@ -728,8 +728,8 @@ class TestBootReconcile:
         # Review CR-284432051: the boot loop must NOT register MCP servers for a freshly
         # spawned (healthy=False) enabled app — registration is deferred to the health-check
         # loop. Registering here is what could leave a dead url for a never-healthy app.
-        import kiro_claw.apps.backend as backend_mod
-        import kiro_claw.apps.bridges as bmod
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
 
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_MCP_JSON_PATH", mcp_path)
@@ -763,14 +763,14 @@ class TestCronServiceBridge:
 
     def _write_app_crons(self, tmp_path, app_name, cron_defs):
         """Write a fake app-crons.json for testing."""
-        app_dir = tmp_path / "kiroclaw-home" / "apps" / app_name
+        app_dir = tmp_path / "kirocrew-home" / "apps" / app_name
         app_dir.mkdir(parents=True, exist_ok=True)
         (app_dir / "app-crons.json").write_text(json.dumps(cron_defs, indent=2))
 
     def test_registers_cron_with_all_fields(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock, patch
 
-        from kiro_claw.apps.bridges import register_app_crons_with_service
+        from kiro_crew.apps.bridges import register_app_crons_with_service
 
         cron_defs = [{
             "name": "test-app/refresh",
@@ -791,7 +791,7 @@ class TestCronServiceBridge:
         mock_sdk.list_jobs.return_value = []
         mock_sdk.add_job.return_value = MagicMock(id="abc123")
 
-        with patch("kiro_claw.apps.bridges.CronSDK", return_value=mock_sdk):
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = register_app_crons_with_service("test-app", mock_cron_service)
 
         assert result == ["test-app/refresh"]
@@ -810,7 +810,7 @@ class TestCronServiceBridge:
     def test_idempotent_skips_existing(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock, patch
 
-        from kiro_claw.apps.bridges import register_app_crons_with_service
+        from kiro_crew.apps.bridges import register_app_crons_with_service
 
         cron_defs = [{"name": "test-app/refresh", "every": 600, "message": "go"}]
         self._write_app_crons(tmp_path, "test-app", cron_defs)
@@ -821,14 +821,14 @@ class TestCronServiceBridge:
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = [existing_job]
 
-        with patch("kiro_claw.apps.bridges.CronSDK", return_value=mock_sdk):
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = register_app_crons_with_service("test-app", mock_cron_service)
 
         assert result == []
         mock_sdk.add_job.assert_not_called()
 
     def test_returns_empty_when_no_cron_service(self, tmp_path, app_env):
-        from kiro_claw.apps.bridges import register_app_crons_with_service
+        from kiro_crew.apps.bridges import register_app_crons_with_service
 
         result = register_app_crons_with_service("test-app", None)
         assert result == []
@@ -836,7 +836,7 @@ class TestCronServiceBridge:
     def test_returns_empty_when_no_app_crons_file(self, tmp_path, app_env):
         from unittest.mock import MagicMock
 
-        from kiro_claw.apps.bridges import register_app_crons_with_service
+        from kiro_crew.apps.bridges import register_app_crons_with_service
 
         result = register_app_crons_with_service("nonexistent-app", MagicMock())
         assert result == []
@@ -844,7 +844,7 @@ class TestCronServiceBridge:
     def test_handles_malformed_entry_gracefully(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock, patch
 
-        from kiro_claw.apps.bridges import register_app_crons_with_service
+        from kiro_crew.apps.bridges import register_app_crons_with_service
 
         cron_defs = [
             {"name": "", "every": 600, "message": "bad"},  # empty name — skipped
@@ -857,14 +857,14 @@ class TestCronServiceBridge:
         mock_sdk.list_jobs.return_value = []
         mock_sdk.add_job.return_value = MagicMock(id="x")
 
-        with patch("kiro_claw.apps.bridges.CronSDK", return_value=mock_sdk):
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = register_app_crons_with_service("test-app", mock_cron_service)
 
         assert result == ["test-app/good"]
 
     def test_register_crons_serializes_all_fields(self, tmp_path, app_env):
         """Verify _register_crons writes all CronEntry fields to app-crons.json."""
-        from kiro_claw.apps.bridges import _register_crons, load_app_cron_defs
+        from kiro_crew.apps.bridges import _register_crons, load_app_cron_defs
 
         manifest = AppManifest(
             name="test-app",
@@ -875,7 +875,7 @@ class TestCronServiceBridge:
             crons=[],
         )
         # Manually construct a CronEntry with all fields set
-        from kiro_claw.apps.manifest import CronEntry
+        from kiro_crew.apps.manifest import CronEntry
         entry = CronEntry(
             name="refresh",
             every=600,
@@ -902,7 +902,7 @@ class TestCronServiceBridge:
         """Exception from CronSDK.add_job is caught, logged, and execution continues."""
         from unittest.mock import MagicMock, patch
 
-        from kiro_claw.apps.bridges import register_app_crons_with_service
+        from kiro_crew.apps.bridges import register_app_crons_with_service
 
         cron_defs = [
             {"name": "test-app/bad", "every": 600, "message": "x"},
@@ -916,7 +916,7 @@ class TestCronServiceBridge:
         # First call raises, second succeeds
         mock_sdk.add_job.side_effect = [RuntimeError("boom"), MagicMock(id="ok")]
 
-        with patch("kiro_claw.apps.bridges.CronSDK", return_value=mock_sdk):
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = register_app_crons_with_service("test-app", mock_cron_service)
 
         # Failed entry skipped, good entry registered
@@ -928,20 +928,20 @@ class TestCronServiceDeregister:
     """Tests for deregister_app_crons_from_service — scheduler cleanup helper."""
 
     def test_returns_zero_when_no_cron_service(self, tmp_path, app_env):
-        from kiro_claw.apps.bridges import deregister_app_crons_from_service
+        from kiro_crew.apps.bridges import deregister_app_crons_from_service
 
         assert deregister_app_crons_from_service("test-app", None) == 0
 
     def test_calls_remove_all_and_returns_count(self, tmp_path, app_env):
         from unittest.mock import MagicMock, patch
 
-        from kiro_claw.apps.bridges import deregister_app_crons_from_service
+        from kiro_crew.apps.bridges import deregister_app_crons_from_service
 
         mock_cron_service = MagicMock()
         mock_sdk = MagicMock()
         mock_sdk.remove_all.return_value = 3
 
-        with patch("kiro_claw.apps.bridges.CronSDK", return_value=mock_sdk):
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = deregister_app_crons_from_service("test-app", mock_cron_service)
 
         assert result == 3
@@ -950,13 +950,13 @@ class TestCronServiceDeregister:
     def test_returns_zero_on_exception(self, tmp_path, app_env):
         from unittest.mock import MagicMock, patch
 
-        from kiro_claw.apps.bridges import deregister_app_crons_from_service
+        from kiro_crew.apps.bridges import deregister_app_crons_from_service
 
         mock_cron_service = MagicMock()
         mock_sdk = MagicMock()
         mock_sdk.remove_all.side_effect = RuntimeError("scheduler unavailable")
 
-        with patch("kiro_claw.apps.bridges.CronSDK", return_value=mock_sdk):
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = deregister_app_crons_from_service("test-app", mock_cron_service)
 
         assert result == 0  # exception swallowed, zero returned

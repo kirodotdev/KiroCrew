@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.autonudge import AutoNudgeService, NudgeLoop
-from kiro_claw.dashboard.handlers import autonudge as _autonudge_mod
-from kiro_claw.dashboard.handlers.autonudge import render_nudge_message
+from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+from kiro_crew.dashboard.handlers import autonudge as _autonudge_mod
+from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
 
 
 @pytest.fixture(autouse=True)
 def _enable(monkeypatch):
-    monkeypatch.setenv("KIROCLAW_AUTONUDGE", "1")
+    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ async def test_add_and_fire_on_idle(svc, monkeypatch):
     svc._on_fire = on_fire
     # Patch asyncio.sleep inside the service's _timer to a no-op so the
     # test exercises the real fire path without waiting _MIN_IDLE_SECS.
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     async def _nosleep(_secs):
         return None
@@ -93,7 +93,7 @@ async def test_persistence_across_restart(tmp_path):
 
 @pytest.mark.asyncio
 async def test_max_cycles_deactivates(svc, monkeypatch):
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     async def _nosleep(_secs):
         return None
@@ -112,7 +112,7 @@ async def test_max_cycles_deactivates(svc, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stop_sentinel_removes_loop(svc, tmp_path, monkeypatch):
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     async def _nosleep(_secs):
         return None
@@ -143,12 +143,12 @@ async def test_one_loop_per_slot_replaces(svc):
 
 @pytest.mark.asyncio
 async def test_disabled_when_flag_off(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCLAW_AUTONUDGE", "0")
+    monkeypatch.setenv("KIROCREW_AUTONUDGE", "0")
     svc = AutoNudgeService(base_dir=tmp_path)
     await svc.start()
     # Service is a no-op when flag is off — add/remove still work on the in-memory
     # dict but timers never arm. Verify via the enabled() helper.
-    from kiro_claw.autonudge import enabled
+    from kiro_crew.autonudge import enabled
 
     assert not enabled()
 
@@ -181,7 +181,7 @@ async def test_skip_when_delivery_returns_false(svc, monkeypatch):
     re-arm the timer with a backoff so the loop self-heals (Mesh-2147)."""
     import asyncio
 
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     sleep_calls: list[float] = []
     gate = asyncio.Event()  # never set — blocks the re-armed timer's sleep
@@ -227,7 +227,7 @@ async def test_fire_callback_exception_does_not_deactivate(svc, monkeypatch):
     re-arming with a backoff (Mesh-2147)."""
     import asyncio
 
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     sleep_calls: list[float] = []
     gate = asyncio.Event()  # never set — blocks the re-armed timer's sleep
@@ -264,7 +264,7 @@ async def test_rearm_backoff_escalates_on_consecutive_failures(svc, monkeypatch)
     so a never-delivering loop backs off instead of hammering (Mesh-2147)."""
     import asyncio
 
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     sleep_calls: list[float] = []
 
@@ -306,7 +306,7 @@ async def test_failure_log_rate_limited_to_once_per_streak(svc, monkeypatch):
     failure of a streak, not every re-arm (Mesh-2147 log-spam fix)."""
     import asyncio
 
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     sleep_calls: list[float] = []
 
@@ -348,7 +348,7 @@ async def test_failure_streak_resets_on_delivery(svc, monkeypatch):
     backoff ramp fresh (Mesh-2147)."""
     import asyncio
 
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     sleep_calls: list[float] = []
 
@@ -392,7 +392,7 @@ async def test_failure_streak_resets_on_delivery(svc, monkeypatch):
 async def test_fire_removed_loop_does_not_rearm_orphan(svc, monkeypatch):
     """If _on_fire removes the loop (e.g. slot missing) and returns False, the
     re-arm path must NOT resurrect it with a fresh timer (Mesh-2147 orphan)."""
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     sleep_calls: list[float] = []
 
@@ -421,7 +421,7 @@ async def test_fire_removed_loop_does_not_rearm_orphan(svc, monkeypatch):
 @pytest.mark.asyncio
 async def test_delivered_bumps_cycle_count(svc, monkeypatch):
     """When _on_fire returns True, cycle_count bumps and 'fired' event emits."""
-    import kiro_claw.autonudge as _an
+    import kiro_crew.autonudge as _an
 
     async def _nosleep(_secs):
         return None

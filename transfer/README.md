@@ -2,7 +2,7 @@
 
 This folder holds standalone scripts and tools for **moving user data between
 installs or formats** — e.g. importing a legacy install's sessions, memory, and
-settings into the current KiroClaw home.
+settings into the current KiroCrew home.
 
 These are intentionally kept *out* of the product UI: they target a small subset
 of users (e.g. those upgrading from a previous app), so shipping them as one-off
@@ -16,7 +16,7 @@ drop in without collisions:
 ```
 transfer/
   README.md                     # this file
-  meshclaw_to_kiroclaw/         # import data from a legacy MeshClaw install
+  meshclaw_to_kirocrew/         # import data from a legacy MeshClaw install
     engine.py                   # pure migration logic (unit-tested)
     migrate.py                  # runnable CLI wrapper
     test_engine.py              # unit tests

@@ -1,7 +1,7 @@
 #!/bin/bash
-# sync-to-remote.sh — push KiroClaw state from LOCAL → REMOTE Cloud Desktop
+# sync-to-remote.sh — push KiroCrew state from LOCAL → REMOTE Cloud Desktop
 # Direction: one-way (local overwrites remote). Run from your laptop/Mac.
-# Improvements over sync-kiroclaw.sh:
+# Improvements over sync-kirocrew.sh:
 #   - Custom port support (patches config.json after copy)
 #   - SQLite WAL sync (memory.db-wal + memory.db-shm)
 #   - Session sync for dashboard restore
@@ -23,7 +23,7 @@ usage() {
   cat <<EOF
 Usage: sync-to-remote.sh [OPTIONS] [HOST] [PORT]
 
-Push KiroClaw state from LOCAL → REMOTE (one-way, local overwrites remote).
+Push KiroCrew state from LOCAL → REMOTE (one-way, local overwrites remote).
 Run this from your laptop/Mac. Patches remote config.json with the specified
 port and disables auto_open_browser.
 
@@ -87,13 +87,13 @@ rsync_dry() {
   fi
 }
 
-echo "=== Syncing KiroClaw to $HOST (port=$PORT) $(${DRY_RUN} && echo '[DRY RUN]') ==="
+echo "=== Syncing KiroCrew to $HOST (port=$PORT) $(${DRY_RUN} && echo '[DRY RUN]') ==="
 
 # --- Create remote dirs ---
 if ! $DRY_RUN; then
-  ssh "$HOST" "mkdir -p ~/.kiroclaw/{workspace/memory,workspace/knowledge,workspace/kb-strategy,workspace/kb-docs,workspace/kiro-agents,workspace/scripts,tasks,skills,hooks,sessions}"
+  ssh "$HOST" "mkdir -p ~/.kirocrew/{workspace/memory,workspace/knowledge,workspace/kb-strategy,workspace/kb-docs,workspace/kiro-agents,workspace/scripts,tasks,skills,hooks,sessions}"
 else
-  echo "  [dry-run] ssh $HOST mkdir -p ~/.kiroclaw/{workspace/...,tasks,skills,hooks,sessions}"
+  echo "  [dry-run] ssh $HOST mkdir -p ~/.kirocrew/{workspace/...,tasks,skills,hooks,sessions}"
 fi
 
 # --- [1] Memory databases (atomic snapshot via .backup) ---
@@ -102,30 +102,30 @@ if ! $DRY_RUN; then
   if command -v sqlite3 &>/dev/null; then
     TMP_DB=$(mktemp -t mc-memory-XXXXXX.db)
     trap "rm -f $TMP_DB $TMP_DB-wal $TMP_DB-shm" EXIT
-    sqlite3 ~/.kiroclaw/memory.db ".backup '$TMP_DB'" || {
+    sqlite3 ~/.kirocrew/memory.db ".backup '$TMP_DB'" || {
       echo "  Warning: sqlite3 .backup failed; falling back to raw copy (may be inconsistent if DB is active)" >&2
-      cp ~/.kiroclaw/memory.db "$TMP_DB"
+      cp ~/.kirocrew/memory.db "$TMP_DB"
     }
-    rsync -az "$TMP_DB" "$HOST":~/.kiroclaw/memory.db
+    rsync -az "$TMP_DB" "$HOST":~/.kirocrew/memory.db
     # Remove stale WAL/SHM from previous syncs — they'd corrupt the fresh backup
-    ssh "$HOST" "rm -f ~/.kiroclaw/memory.db-wal ~/.kiroclaw/memory.db-shm"
+    ssh "$HOST" "rm -f ~/.kirocrew/memory.db-wal ~/.kirocrew/memory.db-shm"
   else
     # Fallback: direct rsync of all DB files (less atomic but works without sqlite3)
-    rsync -az ~/.kiroclaw/memory.db "$HOST":~/.kiroclaw/
-    if [ -f ~/.kiroclaw/memory.db-wal ]; then
-      rsync -az ~/.kiroclaw/memory.db-wal "$HOST":~/.kiroclaw/
+    rsync -az ~/.kirocrew/memory.db "$HOST":~/.kirocrew/
+    if [ -f ~/.kirocrew/memory.db-wal ]; then
+      rsync -az ~/.kirocrew/memory.db-wal "$HOST":~/.kirocrew/
     else
-      ssh "$HOST" "rm -f ~/.kiroclaw/memory.db-wal"
+      ssh "$HOST" "rm -f ~/.kirocrew/memory.db-wal"
     fi
-    if [ -f ~/.kiroclaw/memory.db-shm ]; then
-      rsync -az ~/.kiroclaw/memory.db-shm "$HOST":~/.kiroclaw/
+    if [ -f ~/.kirocrew/memory.db-shm ]; then
+      rsync -az ~/.kirocrew/memory.db-shm "$HOST":~/.kirocrew/
     else
-      ssh "$HOST" "rm -f ~/.kiroclaw/memory.db-shm"
+      ssh "$HOST" "rm -f ~/.kirocrew/memory.db-shm"
     fi
   fi
   # memory_index.db is small and not in WAL mode — safe as direct rsync
-  if [ -f ~/.kiroclaw/memory_index.db ]; then
-    rsync -az ~/.kiroclaw/memory_index.db "$HOST":~/.kiroclaw/
+  if [ -f ~/.kirocrew/memory_index.db ]; then
+    rsync -az ~/.kirocrew/memory_index.db "$HOST":~/.kirocrew/
   fi
 else
   echo "  [dry-run] sqlite3 .backup → rsync atomic snapshot to $HOST"
@@ -134,36 +134,36 @@ fi
 
 # --- [2] Workspace ---
 echo "  [2/7] Workspace..."
-if [ -d ~/.kiroclaw/workspace/memory/ ]; then
-  rsync_dry ~/.kiroclaw/workspace/memory/ "$HOST":~/.kiroclaw/workspace/memory/
+if [ -d ~/.kirocrew/workspace/memory/ ]; then
+  rsync_dry ~/.kirocrew/workspace/memory/ "$HOST":~/.kirocrew/workspace/memory/
 fi
-if [ -d ~/.kiroclaw/workspace/knowledge/ ]; then
-  rsync_dry ~/.kiroclaw/workspace/knowledge/ "$HOST":~/.kiroclaw/workspace/knowledge/
+if [ -d ~/.kirocrew/workspace/knowledge/ ]; then
+  rsync_dry ~/.kirocrew/workspace/knowledge/ "$HOST":~/.kirocrew/workspace/knowledge/
 fi
-if [ -d ~/.kiroclaw/workspace/kb-strategy/ ]; then
-  rsync_dry ~/.kiroclaw/workspace/kb-strategy/ "$HOST":~/.kiroclaw/workspace/kb-strategy/
+if [ -d ~/.kirocrew/workspace/kb-strategy/ ]; then
+  rsync_dry ~/.kirocrew/workspace/kb-strategy/ "$HOST":~/.kirocrew/workspace/kb-strategy/
 fi
-if [ -d ~/.kiroclaw/workspace/kb-docs/ ]; then
-  rsync_dry ~/.kiroclaw/workspace/kb-docs/ "$HOST":~/.kiroclaw/workspace/kb-docs/
+if [ -d ~/.kirocrew/workspace/kb-docs/ ]; then
+  rsync_dry ~/.kirocrew/workspace/kb-docs/ "$HOST":~/.kirocrew/workspace/kb-docs/
 fi
-if [ -d ~/.kiroclaw/workspace/kiro-agents/ ]; then
-  rsync_dry ~/.kiroclaw/workspace/kiro-agents/ "$HOST":~/.kiroclaw/workspace/kiro-agents/
+if [ -d ~/.kirocrew/workspace/kiro-agents/ ]; then
+  rsync_dry ~/.kirocrew/workspace/kiro-agents/ "$HOST":~/.kirocrew/workspace/kiro-agents/
 fi
-if [ -d ~/.kiroclaw/workspace/scripts/ ]; then
-  rsync_dry ~/.kiroclaw/workspace/scripts/ "$HOST":~/.kiroclaw/workspace/scripts/
+if [ -d ~/.kirocrew/workspace/scripts/ ]; then
+  rsync_dry ~/.kirocrew/workspace/scripts/ "$HOST":~/.kirocrew/workspace/scripts/
 fi
-rsync_dry ~/.kiroclaw/workspace/*.md "$HOST":~/.kiroclaw/workspace/ 2>/dev/null || true
-rsync_dry ~/.kiroclaw/workspace/*.yaml "$HOST":~/.kiroclaw/workspace/ 2>/dev/null || true
-rsync_dry ~/.kiroclaw/workspace/*.json "$HOST":~/.kiroclaw/workspace/ 2>/dev/null || true
+rsync_dry ~/.kirocrew/workspace/*.md "$HOST":~/.kirocrew/workspace/ 2>/dev/null || true
+rsync_dry ~/.kirocrew/workspace/*.yaml "$HOST":~/.kirocrew/workspace/ 2>/dev/null || true
+rsync_dry ~/.kirocrew/workspace/*.json "$HOST":~/.kirocrew/workspace/ 2>/dev/null || true
 
 # --- [3] Config (copy + patch port) ---
 echo "  [3/7] Config (port=$PORT, auto_open_browser=false)..."
 if ! $DRY_RUN; then
-  scp -q ~/.kiroclaw/config.json "$HOST":~/.kiroclaw/config.json
+  scp -q ~/.kirocrew/config.json "$HOST":~/.kirocrew/config.json
   ssh "$HOST" python3 - "$PORT" <<'PY'
 import json, os, sys
 port = sys.argv[1]
-p = os.path.expanduser('~/.kiroclaw/config.json')
+p = os.path.expanduser('~/.kirocrew/config.json')
 with open(p) as f: cfg = json.load(f)
 cfg['dashboard']['url'] = f'http://localhost:{port}'
 cfg['dashboard']['auto_open_browser'] = False
@@ -175,14 +175,14 @@ fi
 
 # --- [4] Skills, hooks & tasks ---
 echo "  [4/7] Skills, hooks & tasks..."
-if [ -d ~/.kiroclaw/skills/ ]; then
-  rsync_dry ~/.kiroclaw/skills/ "$HOST":~/.kiroclaw/skills/
+if [ -d ~/.kirocrew/skills/ ]; then
+  rsync_dry ~/.kirocrew/skills/ "$HOST":~/.kirocrew/skills/
 fi
-if [ -d ~/.kiroclaw/hooks/ ]; then
-  rsync_dry ~/.kiroclaw/hooks/ "$HOST":~/.kiroclaw/hooks/
+if [ -d ~/.kirocrew/hooks/ ]; then
+  rsync_dry ~/.kirocrew/hooks/ "$HOST":~/.kirocrew/hooks/
 fi
-if [ -d ~/.kiroclaw/tasks/ ]; then
-  rsync_dry ~/.kiroclaw/tasks/ "$HOST":~/.kiroclaw/tasks/
+if [ -d ~/.kirocrew/tasks/ ]; then
+  rsync_dry ~/.kirocrew/tasks/ "$HOST":~/.kirocrew/tasks/
 fi
 
 # --- [5] Crons & dashboard metadata ---
@@ -193,8 +193,8 @@ fi
 # autonudge.json — autonudge loop state.
 echo "  [5/7] Crons & dashboard metadata..."
 for f in crons.json hooks.json folders.json tags.json tag_boards.json autonudge.json; do
-  if [ -f ~/.kiroclaw/"$f" ]; then
-    run scp -q ~/.kiroclaw/"$f" "$HOST":~/.kiroclaw/
+  if [ -f ~/.kirocrew/"$f" ]; then
+    run scp -q ~/.kirocrew/"$f" "$HOST":~/.kirocrew/
   fi
 done
 
@@ -205,8 +205,8 @@ echo "  [6/7] Dotfiles (skipped by default)..."
 
 # --- [7] Sessions ---
 echo "  [7/7] Sessions..."
-if [ -d ~/.kiroclaw/sessions/ ]; then
-  rsync_dry ~/.kiroclaw/sessions/ "$HOST":~/.kiroclaw/sessions/
+if [ -d ~/.kirocrew/sessions/ ]; then
+  rsync_dry ~/.kirocrew/sessions/ "$HOST":~/.kirocrew/sessions/
 fi
 
 echo ""
@@ -215,6 +215,6 @@ if $DRY_RUN; then
   echo "    Remove --dry-run to sync for real."
 else
   echo "=== Done. Remote config: port=$PORT, auto_open_browser=false ==="
-  echo "    Next: restart gateway on $HOST ('kiroclaw gateway &')"
+  echo "    Next: restart gateway on $HOST ('kirocrew gateway &')"
   echo "    Then: ssh -fN -L $PORT:localhost:$PORT $HOST"
 fi

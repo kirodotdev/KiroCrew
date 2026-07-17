@@ -8,7 +8,7 @@ Pre-send prompt optimization via `Cmd+Shift+Enter` or sparkle button. Rewrites t
 
 ## Architecture
 
-- **Backend** (`dashboard/handlers/optimizer.py`): `POST /api/optimizer/optimize` (registered in `dashboard/server.py`). Dedicated `_optimizer` session key on the `kiroclaw-lite` agent (no semaphore contention with main chat). 30-second timeout. Context is the joined recent-message string, truncated server-side to the last 2000 chars. Permission requests are auto-rejected during optimization (no tool calls). The LLM's `UNCHANGED` sentinel — and any output that matches the original — returns `{changed: false}`. Optimizer output is passed through `redact_exfiltration_urls` + `redact_credentials` before returning.
+- **Backend** (`dashboard/handlers/optimizer.py`): `POST /api/optimizer/optimize` (registered in `dashboard/server.py`). Dedicated `_optimizer` session key on the `kirocrew-lite` agent (no semaphore contention with main chat). 30-second timeout. Context is the joined recent-message string, truncated server-side to the last 2000 chars. Permission requests are auto-rejected during optimization (no tool calls). The LLM's `UNCHANGED` sentinel — and any output that matches the original — returns `{changed: false}`. Optimizer output is passed through `redact_exfiltration_urls` + `redact_credentials` before returning.
 - **Frontend** (`ChatInput.tsx`): Sparkle button in compose bar, keyboard shortcut `Cmd+Shift+Enter`. Shows optimized text in input for user review before sending. No auto-send — user must confirm.
 
 ## Flow
@@ -26,5 +26,5 @@ No config needed — always available. The optimizer session is isolated from th
 
 ## Key Files
 
-- `src/kiro_claw/dashboard/handlers/optimizer.py` — backend optimization logic (`POST /api/optimizer/optimize`, registered in `dashboard/server.py`)
+- `src/kiro_crew/dashboard/handlers/optimizer.py` — backend optimization logic (`POST /api/optimizer/optimize`, registered in `dashboard/server.py`)
 - Frontend: `ChatInput.tsx` sparkle button + keyboard shortcut handler

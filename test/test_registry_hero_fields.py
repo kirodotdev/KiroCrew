@@ -1,5 +1,5 @@
 """Tests for heroImage/screenshotsDark blob proxy conversion in registry._merge_manifest."""
-from kiro_claw.apps.registry import _merge_manifest
+from kiro_crew.apps.registry import _merge_manifest
 
 
 def test_merge_manifest_converts_hero_image_to_blob_proxy():

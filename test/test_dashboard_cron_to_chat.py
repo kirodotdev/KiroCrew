@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from kiro_claw.dashboard.cron_inject import inject_cron_result_to_dashboard
+from kiro_crew.dashboard.cron_inject import inject_cron_result_to_dashboard
 
 
 def _make_state(history_messages=None):
@@ -163,7 +163,7 @@ class TestHydrateSlotFromHistory:
     """Tests for hydrate_slot_from_history (accepts pre-loaded messages)."""
 
     def test_hydrates_messages_into_slot(self):
-        from kiro_claw.dashboard.cron_inject import hydrate_slot_from_history
+        from kiro_crew.dashboard.cron_inject import hydrate_slot_from_history
 
         history = [
             {"role": "user", "content": "hello"},
@@ -177,7 +177,7 @@ class TestHydrateSlotFromHistory:
         assert slot.messages[1]["content"] == "world"
 
     def test_empty_history_produces_no_messages(self):
-        from kiro_claw.dashboard.cron_inject import hydrate_slot_from_history
+        from kiro_crew.dashboard.cron_inject import hydrate_slot_from_history
 
         state = _make_state(history_messages=[])
         slot = state.get_or_create_slot(name="cron-abc")
@@ -185,7 +185,7 @@ class TestHydrateSlotFromHistory:
         assert len(slot.messages) == 0
 
     def test_skips_messages_with_empty_content(self):
-        from kiro_claw.dashboard.cron_inject import hydrate_slot_from_history
+        from kiro_crew.dashboard.cron_inject import hydrate_slot_from_history
 
         history = [
             {"role": "assistant", "content": ""},
@@ -198,7 +198,7 @@ class TestHydrateSlotFromHistory:
         assert slot.messages[0]["content"] == "real message"
 
     def test_assigns_user_role_class(self):
-        from kiro_claw.dashboard.cron_inject import hydrate_slot_from_history
+        from kiro_crew.dashboard.cron_inject import hydrate_slot_from_history
 
         history = [
             {"role": "user", "content": "user msg"},
@@ -215,7 +215,7 @@ class TestHasSlot:
     """Tests for DashboardState.has_slot method."""
 
     def test_returns_true_when_slot_exists(self):
-        from kiro_claw.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState
 
         state = MagicMock(spec=DashboardState)
         state._slots = {"cron-abc": MagicMock()}
@@ -223,7 +223,7 @@ class TestHasSlot:
         assert state.has_slot("cron-abc") is True
 
     def test_returns_false_when_slot_missing(self):
-        from kiro_claw.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState
 
         state = MagicMock(spec=DashboardState)
         state._slots = {}

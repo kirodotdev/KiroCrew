@@ -124,7 +124,7 @@ describe('SkillsTab Integration Tests', () => {
     expect(within(strip).queryByText('Triggers')).not.toBeInTheDocument()
   })
 
-  it('shows Edit and Delete buttons in the detail header for kiroclaw skills', async () => {
+  it('shows Edit and Delete buttons in the detail header for kirocrew skills', async () => {
     renderWithProviders(<SkillsTab />)
 
     await waitFor(() => {
@@ -289,8 +289,8 @@ describe('SkillsTab Integration Tests', () => {
     server.use(
       http.get('/api/skills', () => {
         return HttpResponse.json([
-          { name: 'amazon-writing', key: 'amazon-writing', description: 'Amazon writing guidelines', always: true, source: 'kiroclaw', dir: '/path' },
-          { name: 'code-search', key: 'code-search', description: 'Search code', always: false, source: 'kiroclaw', dir: '/path' },
+          { name: 'amazon-writing', key: 'amazon-writing', description: 'Amazon writing guidelines', always: true, source: 'kirocrew', dir: '/path' },
+          { name: 'code-search', key: 'code-search', description: 'Search code', always: false, source: 'kirocrew', dir: '/path' },
           { name: 'aim-benchmark', key: 'aim-benchmark', description: 'AIM benchmark tool', always: false, source: 'aim', dir: '/path' },
         ])
       })

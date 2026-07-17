@@ -1,6 +1,6 @@
 import { memo, lazy, Suspense } from 'react'
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
-import { kiroclawDark, kiroclawLight } from './monacoTheme'
+import { kirocrewDark, kirocrewLight } from './monacoTheme'
 import Clickable from './Clickable'
 import { copyToClipboard } from '../utils/clipboard'
 
@@ -38,10 +38,10 @@ export default memo(function DiffPanel({ filePath, original, modified, sideBySid
             original={original}
             modified={modified}
             language={lang}
-            theme={isDark ? 'kiroclaw-dark' : 'kiroclaw-light'}
+            theme={isDark ? 'kirocrew-dark' : 'kirocrew-light'}
             beforeMount={(monaco) => {
-              monaco.editor.defineTheme('kiroclaw-dark', kiroclawDark)
-              monaco.editor.defineTheme('kiroclaw-light', kiroclawLight)
+              monaco.editor.defineTheme('kirocrew-dark', kirocrewDark)
+              monaco.editor.defineTheme('kirocrew-light', kirocrewLight)
             }}
             options={{
               readOnly: true,

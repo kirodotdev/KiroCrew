@@ -15,9 +15,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers import knowledge as kh
-from kiro_claw.dashboard.handlers.knowledge import sync_source
-from kiro_claw.knowledge.store import KnowledgeStore
+from kiro_crew.dashboard.handlers import knowledge as kh
+from kiro_crew.dashboard.handlers.knowledge import sync_source
+from kiro_crew.knowledge.store import KnowledgeStore
 
 
 @pytest.fixture()

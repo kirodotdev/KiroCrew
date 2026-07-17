@@ -15,7 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers import api_browse_files
+from kiro_crew.dashboard.handlers import api_browse_files
 
 
 def _make_app() -> web.Application:
@@ -26,7 +26,7 @@ def _make_app() -> web.Application:
 
 @pytest.fixture()
 def mock_sel():
-    with patch("kiro_claw.dashboard.handlers.sel") as m:
+    with patch("kiro_crew.dashboard.handlers.sel") as m:
         m.return_value = MagicMock()
         yield m.return_value
 
@@ -89,7 +89,7 @@ class TestBrowseFiles:
 
     @pytest.mark.asyncio
     async def test_build_artifact_dirs_skipped(self, tmp_path, mock_sel):
-        for d in ["node_modules", "__pycache__", ".cache", "build", "dist", ".next", ".kiroclaw"]:
+        for d in ["node_modules", "__pycache__", ".cache", "build", "dist", ".next", ".kirocrew"]:
             (tmp_path / d).mkdir()
         (tmp_path / "src").mkdir()
         async with TestClient(TestServer(_make_app())) as client:
@@ -116,7 +116,7 @@ class TestBrowseFiles:
     async def test_sensitive_base_path_returns_403(self, tmp_path, mock_sel):
         # is_sensitive_path should reject the base path and never list contents.
         (tmp_path / "secret.txt").write_text("AKIA...")
-        with patch("kiro_claw.dashboard.handlers.files.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True):
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get(f"/api/browse-files?path={tmp_path}")
                 assert resp.status == 403
@@ -140,7 +140,7 @@ class TestBrowseFiles:
             return os.path.realpath(p) == str(secret_target)
 
         with patch(
-            "kiro_claw.dashboard.handlers.files.is_sensitive_path",
+            "kiro_crew.dashboard.handlers.files.is_sensitive_path",
             side_effect=is_sens,
         ):
             async with TestClient(TestServer(_make_app())) as client:
@@ -203,7 +203,7 @@ class TestBrowseFiles:
                 raise OSError("stat raced (entry removed mid-scan)")
 
         with patch(
-            "kiro_claw.dashboard.handlers.files.os.scandir",
+            "kiro_crew.dashboard.handlers.files.os.scandir",
             return_value=[_OSErrorEntry()],
         ):
             async with TestClient(TestServer(_make_app())) as client:

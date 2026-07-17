@@ -80,14 +80,14 @@ plain markdown directory you can hand-edit, but the loop's auto-claim /
 auto-move steps will fail and the agent will block every cycle. Install the
 CLI before arming the loop for unattended runs.
 
-**KiroClaw `autonudge_stop` MCP tool** — shipped with KiroClaw ≥ the
+**KiroCrew `autonudge_stop` MCP tool** — shipped with KiroCrew ≥ the
 autonudge CR. Used by the agent to self-halt when DoD is met. No extra
 install.
 
 ## Run it
 
 ```bash
-cd $(dirname $(readlink -f ~/.kiroclaw/skills/goal-loop/SKILL.md))
+cd $(dirname $(readlink -f ~/.kirocrew/skills/goal-loop/SKILL.md))
 ./scaffold.sh \
   --project my-goal-name \
   --anchor-dir /abs/path/to/goal/anchor \

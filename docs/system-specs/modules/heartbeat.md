@@ -1,14 +1,14 @@
 # Heartbeat Module
 
-Last Updated: 2026-06-05 (kiroclaw-heartbeat agent + scoped hooks + cycle-end recycle)
+Last Updated: 2026-06-05 (kirocrew-heartbeat agent + scoped hooks + cycle-end recycle)
 
 ## Overview
 
-The heartbeat service (`kiro_claw/heartbeat.py`) runs periodic background tasks on a configurable interval (default 60s).
+The heartbeat service (`kiro_crew/heartbeat.py`) runs periodic background tasks on a configurable interval (default 60s).
 
 ## Responsibilities
 
-1. **Task processing** — reads `~/.kiroclaw/workspace/HEARTBEAT.md`, sends non-empty tasks to the agent
+1. **Task processing** — reads `~/.kirocrew/workspace/HEARTBEAT.md`, sends non-empty tasks to the agent
 2. **FTS index rebuild** — every 15 ticks (~15 min at default interval)
 
 ## HEARTBEAT.md Format
@@ -16,7 +16,7 @@ The heartbeat service (`kiro_claw/heartbeat.py`) runs periodic background tasks 
 ```md
 # Heartbeat Tasks
 
-<!-- Add tasks below (one per line). KiroClaw picks them up on next heartbeat. -->
+<!-- Add tasks below (one per line). KiroCrew picks them up on next heartbeat. -->
 - check my pipeline status
 - summarize open PRs
 ```
@@ -102,14 +102,14 @@ is cold-started ~once every N cycles instead of every cycle.
 ## Gateway Wiring
 
 `HeartbeatService` is started in `slack/gateway.py` after cron service:
-- `on_task` callback: prepends a `HEARTBEAT_KEEP` reminder to the task text, opens a session under `HEARTBEAT_KEY` with `agent="kiroclaw-heartbeat"`, streams the response (gated by `HEARTBEAT_SAFE_TOOLS`), posts the result, and releases the per-key semaphore
+- `on_task` callback: prepends a `HEARTBEAT_KEEP` reminder to the task text, opens a session under `HEARTBEAT_KEY` with `agent="kirocrew-heartbeat"`, streams the response (gated by `HEARTBEAT_SAFE_TOOLS`), posts the result, and releases the per-key semaphore
 - `on_cycle_end` callback: invokes `SessionManager.recycle_heartbeat` once after `asyncio.gather` completes — recycles the session only when it has crossed the context / prompt-count threshold
 - Callback re-raises exceptions so heartbeat can track failures
 - Stopped during gateway shutdown
 
 ### Session Identity
 
-Heartbeat runs in its own session (`HEARTBEAT_KEY = "_hb"` in `session.py`), distinct from the shared `BACKGROUND_KEY = "_bg"` used by cron / consolidator / chat-title. The session uses the dedicated `kiroclaw-heartbeat` agent (installed by `_install_heartbeat_agent` in `agent.py`) — a minimal MCP surface (`kiroclaw-core` only on public installs; the Amazon-internal `builder-mcp` wiring is omitted, matching `_install_research_agent` / `_install_knowledge_agent`) so cycle cold-starts stay cheap. SEL audit logging stays gateway-side in `_heartbeat_approval` regardless; the per-agent narrowing is purely a cold-start cost reduction.
+Heartbeat runs in its own session (`HEARTBEAT_KEY = "_hb"` in `session.py`), distinct from the shared `BACKGROUND_KEY = "_bg"` used by cron / consolidator / chat-title. The session uses the dedicated `kirocrew-heartbeat` agent (installed by `_install_heartbeat_agent` in `agent.py`) — a minimal MCP surface (`kirocrew-core` only on public installs; the Amazon-internal `builder-mcp` wiring is omitted, matching `_install_research_agent` / `_install_knowledge_agent`) so cycle cold-starts stay cheap. SEL audit logging stays gateway-side in `_heartbeat_approval` regardless; the per-agent narrowing is purely a cold-start cost reduction.
 
 The session is shared across all tasks in one cycle (so concurrent gather'd tasks reuse the warm provider) and conditionally recycled by `recycle_heartbeat` between cycles when context grows past the threshold.
 
@@ -121,11 +121,11 @@ Every heartbeat task text is prepended with a fixed instruction at the gateway (
 
 Heartbeat is unattended — there is no human to click an approval button. Tool approval uses `HOOK_BASED` policy with a heartbeat-scoped `HookManager` (built once at init by `_build_heartbeat_hooks`) and a custom callback (`GatewayOrchestrator._heartbeat_approval`) that auto-approves only tools whose name **exact-matches** a member of `HEARTBEAT_SAFE_TOOLS` and rejects everything else with a SEL audit event (`outcome=denied`, `reason=not_in_heartbeat_safe_tools`). Both approve and deny outcomes emit `log_tool_invocation` so every permission decision is auditable.
 
-The heartbeat-scoped hooks drop the user's `auto_approve_tools` (and the bundled `kiroclaw browse *` patterns) so the allowlist is the **sole approval authority** — `llm_helpers._resolve_permission` would otherwise consult the hooks BEFORE the `_heartbeat_approval` callback, and a user config like `auto_approve_tools=["*"]` would auto-approve any tool, bypassing `HEARTBEAT_SAFE_TOOLS` entirely. The user's `auto_deny_tools` IS preserved (denies can only narrow what runs in heartbeat, never widen).
+The heartbeat-scoped hooks drop the user's `auto_approve_tools` (and the bundled `kirocrew browse *` patterns) so the allowlist is the **sole approval authority** — `llm_helpers._resolve_permission` would otherwise consult the hooks BEFORE the `_heartbeat_approval` callback, and a user config like `auto_approve_tools=["*"]` would auto-approve any tool, bypassing `HEARTBEAT_SAFE_TOOLS` entirely. The user's `auto_deny_tools` IS preserved (denies can only narrow what runs in heartbeat, never widen).
 
 The allowlist is name-based and exact-match only — no verb / heuristic fallback. Heartbeat polls untrusted external content (CR comments, ticket bodies) where prompt-injection could try to widen approval via a clever read-shaped tool name (`get_all_credentials`, `list_env_secrets`, etc.). Strict enforcement is auditable and cannot be widened that way; this is deny-by-default per the security-controls guideline.
 
-The allowlist is curated for read-only / observation tools — local file reads (`Read`, `Grep`, `Glob`), `WorkspaceSearch`, and side-effect-free KiroClaw-core reads (`learn_list`, `cron_list`, `spawn_list`, `spawn_status`, `artifact_list`, `artifact_get`, `artifact_versions`, `local_knowledge_search`). (The Amazon-internal read APIs — builder-mcp internal search, CRUX/ticketing/pipeline/Apollo/on-call reads, `recall` — were removed from the public fork's allowlist; an internal companion re-adds them out of band.) Write tools (`send_message`, `file_send`, `cron_add`, `Edit`, `Write`, shell `execute`/`run`) are not in the list and are rejected.
+The allowlist is curated for read-only / observation tools — local file reads (`Read`, `Grep`, `Glob`), `WorkspaceSearch`, and side-effect-free KiroCrew-core reads (`learn_list`, `cron_list`, `spawn_list`, `spawn_status`, `artifact_list`, `artifact_get`, `artifact_versions`, `local_knowledge_search`). (The Amazon-internal read APIs — builder-mcp internal search, CRUX/ticketing/pipeline/Apollo/on-call reads, `recall` — were removed from the public fork's allowlist; an internal companion re-adds them out of band.) Write tools (`send_message`, `file_send`, `cron_add`, `Edit`, `Write`, shell `execute`/`run`) are not in the list and are rejected.
 
 When a legitimate new read tool needs to run in heartbeat, operators observe SEL `denied` events (or the gateway-log warning `Heartbeat blocked tool call: <name>`) and explicitly add the name to `HEARTBEAT_SAFE_TOOLS`.
 
@@ -140,7 +140,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `HEARTBEAT_KEY` | `_hb` | `session.py` |
 | `HEARTBEAT_SAFE_TOOLS` | curated frozenset | `slack/gateway.py` |
 | `_HEARTBEAT_KEEP_INJECTION` | reminder string | `slack/gateway.py` |
-| `kiroclaw-heartbeat` agent | minimal-MCP agent JSON | installed by `agent.py:_install_heartbeat_agent` |
+| `kirocrew-heartbeat` agent | minimal-MCP agent JSON | installed by `agent.py:_install_heartbeat_agent` |
 | `_BG_RECYCLE_PCT` | 70.0 (shared with background) | `session.py` |
 
 ## Known Limitations

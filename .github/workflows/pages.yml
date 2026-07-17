@@ -1,7 +1,7 @@
 name: Deploy Site (GitHub Pages)
 
 # Publishes the public marketing site in site/ to GitHub Pages.
-# Path-scoped to site/** so it never runs for backend (kiroclaw-client-py)
+# Path-scoped to site/** so it never runs for backend (kirocrew-client-py)
 # or dashboard (website/) changes — and those workflows never run for site-only PRs.
 on:
   push:

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.context import build_app_context
+from kiro_crew.apps.context import build_app_context
 
 # ---------------------------------------------------------------------------
 # Strategies

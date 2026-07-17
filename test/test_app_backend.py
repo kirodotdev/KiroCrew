@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.apps.backend — backend process management."""
+"""Tests for kiro_crew.apps.backend — backend process management."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from kiro_claw.apps.backend import (
+from kiro_crew.apps.backend import (
     AppProcess,
     _find_free_port,
     get_app_process,
@@ -17,7 +17,7 @@ from kiro_claw.apps.backend import (
     start_app_backend,
     stop_app_backend,
 )
-from kiro_claw.apps.manager import APP_MANIFEST_FILENAME, install_app
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 
 
 def _sandbox_can_spawn() -> bool:
@@ -32,7 +32,7 @@ def _sandbox_can_spawn() -> bool:
     wrap_argv() means this probe can never drift from start_app_backend().
     """
     try:
-        from kiro_claw import sandbox as _sb
+        from kiro_crew import sandbox as _sb
 
         argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
     except Exception:  # noqa: BLE001 — any probe failure => treat as "can't spawn"
@@ -92,10 +92,10 @@ def _make_app_with_backend(tmp_path, name="backend-app"):
 
 @pytest.fixture()
 def app_env(tmp_path, monkeypatch, worker_id):
-    home = tmp_path / "kiroclaw-home"
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
-    import kiro_claw.apps.backend as bmod
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    import kiro_crew.apps.backend as bmod
 
     # Under xdist (-n auto) each worker runs in its OWN process with its own
     # _allocated_ports dict, so two workers both auto-allocate 9100 and the real
@@ -228,8 +228,8 @@ class TestBackendLifecycle:
         # by the runtime backstop in _start_app_backend_body. We materialize the
         # app dir directly (bypassing install-time validation) to exercise the
         # boot-time guard — never spawning a real process.
-        from kiro_claw.apps.backend import _start_app_backend_body
-        from kiro_claw.apps.manager import app_dir, get_app_manifest
+        from kiro_crew.apps.backend import _start_app_backend_body
+        from kiro_crew.apps.manager import app_dir, get_app_manifest
 
         root = app_dir("escape-app")
         root.mkdir(parents=True, exist_ok=True)
@@ -257,8 +257,8 @@ class TestBackendLifecycle:
         # when the switch is off.
         import logging
 
-        import kiro_claw.apps.backend as bmod
-        from kiro_claw.apps.manager import app_dir, get_app_manifest
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import app_dir, get_app_manifest
 
         root = app_dir("third-party-backend")
         root.mkdir(parents=True, exist_ok=True)
@@ -275,7 +275,7 @@ class TestBackendLifecycle:
             )
         )
         monkeypatch.setattr(
-            "kiro_claw.apps.module_loader._third_party_apps_allowed", lambda: False
+            "kiro_crew.apps.module_loader._third_party_apps_allowed", lambda: False
         )
         monkeypatch.setattr(
             bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned despite gate off")
@@ -293,8 +293,8 @@ class TestBackendLifecycle:
         # provenance signal), NOT the manifest entry format — so we persist an
         # installed record with origin="builtin". Reaching the spawn sentinel proves
         # the gate let it through.
-        import kiro_claw.apps.backend as bmod
-        from kiro_claw.apps.manager import (
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import (
             InstalledApp,
             _write_installed,
             app_dir,
@@ -310,7 +310,7 @@ class TestBackendLifecycle:
                     "version": "1.0.0",
                     "displayName": "Builtin",
                     "description": "module-style builtin backend",
-                    "backend": {"entryPoint": "kiro_claw.apps.builtins.x.server", "port": "auto"},
+                    "backend": {"entryPoint": "kiro_crew.apps.builtins.x.server", "port": "auto"},
                 }
             )
         )
@@ -319,7 +319,7 @@ class TestBackendLifecycle:
             InstalledApp(name="builtin-module-app", origin="builtin", enabled=True),
         )
         monkeypatch.setattr(
-            "kiro_claw.apps.module_loader._third_party_apps_allowed", lambda: False
+            "kiro_crew.apps.module_loader._third_party_apps_allowed", lambda: False
         )
 
         class _ReachedSpawn(Exception):
@@ -348,8 +348,8 @@ class TestBackendLifecycle:
         # gate keys on provenance, not entry format, so this is DENIED before any spawn.
         import logging
 
-        import kiro_claw.apps.backend as bmod
-        from kiro_claw.apps.manager import (
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import (
             InstalledApp,
             _write_installed,
             app_dir,
@@ -365,7 +365,7 @@ class TestBackendLifecycle:
                     "version": "1.0.0",
                     "displayName": "Evil",
                     "description": "third-party with a dotted entryPoint",
-                    "backend": {"entryPoint": "kiro_claw.cli_server", "port": "auto"},
+                    "backend": {"entryPoint": "kiro_crew.cli_server", "port": "auto"},
                 }
             )
         )
@@ -374,7 +374,7 @@ class TestBackendLifecycle:
             InstalledApp(name="evil-dotted", origin="registry", enabled=True),
         )
         monkeypatch.setattr(
-            "kiro_claw.apps.module_loader._third_party_apps_allowed", lambda: False
+            "kiro_crew.apps.module_loader._third_party_apps_allowed", lambda: False
         )
         monkeypatch.setattr(
             bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned despite gate off")
@@ -391,7 +391,7 @@ class TestBackendLifecycle:
         # reported as started — otherwise the gateway proxies to a dead port (502) and
         # respawns onto the same doomed port forever (the crash-loop we hit). The spawn
         # verifies the child survived its bind; an immediate exit → None + cleared state.
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
 
         # Widen the survival-check grace window for this test only. The boom.py child
         # exits immediately ONCE it runs, but under heavy pytest-xdist parallelism
@@ -433,7 +433,7 @@ class TestBackendLifecycle:
         # sandboxed os.fork()s racing (a fork-in-threads deadlock unrelated to this fix).
         import threading
 
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
 
         src = _make_app_with_backend(tmp_path)
         install_app(src)
@@ -484,7 +484,7 @@ class TestBackendLifecycle:
         # never fires), an awaiting caller hits the deadline with the placeholder still
         # STARTING. It must clear that placeholder and return None — otherwise the app is
         # wedged in 'starting' forever and every later call re-enters the 20s wait.
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
 
         with bmod._lock:
             bmod._processes["wedged-app"] = AppProcess(
@@ -498,7 +498,7 @@ class TestBackendLifecycle:
 
 
 class TestBootAdmissionRevet:
-    """start_enabled_app_backends re-vets admission at boot (KiroClaw parity).
+    """start_enabled_app_backends re-vets admission at boot (KiroCrew parity).
 
     An app enabled before a policy tightened (banned / now-unsigned) must NOT
     keep running across restarts, but builtins (origin == "builtin") are exempt
@@ -506,7 +506,7 @@ class TestBootAdmissionRevet:
     """
 
     def _boot_env(self, monkeypatch):
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
 
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
         started: list[str] = []
@@ -554,7 +554,7 @@ class TestBootAdmissionRevet:
         """A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing on macOS 26
         where sandbox-exec is gone) must NOT crash the whole gateway — the loop logs,
         skips the failing app, and still boots the healthy one."""
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
 
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
         monkeypatch.setattr(bmod, "get_app_manifest", lambda name: None)
@@ -609,7 +609,7 @@ class TestHealthGatedMcpRegistration:
         monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 3)
 
     def test_registers_when_healthy_and_still_tracked(self, monkeypatch):
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
         self._fast_health(bmod, monkeypatch)
         calls = []
         monkeypatch.setattr(bmod, "_gate_mcp_registration",
@@ -630,7 +630,7 @@ class TestHealthGatedMcpRegistration:
     def test_does_not_register_if_stopped_mid_healthcheck(self, monkeypatch):
         # AutoSDE race finding: app removed from _processes between the poll and the lock →
         # must NOT register MCP for a now-dead backend.
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
         self._fast_health(bmod, monkeypatch)
         calls = []
         monkeypatch.setattr(bmod, "_gate_mcp_registration",
@@ -645,7 +645,7 @@ class TestHealthGatedMcpRegistration:
         assert calls == []  # never registered — no dead-URL entry written
 
     def test_scrubs_when_never_healthy(self, monkeypatch):
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
         self._fast_health(bmod, monkeypatch)
         calls = []
         monkeypatch.setattr(bmod, "_gate_mcp_registration",

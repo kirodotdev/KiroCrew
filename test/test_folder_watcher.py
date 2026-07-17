@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.knowledge.connectors.local_folder import LocalFolderConnector
-from kiro_claw.knowledge.folder_watcher import FolderWatcher
-from kiro_claw.knowledge.store import KnowledgeStore
+from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
+from kiro_crew.knowledge.folder_watcher import FolderWatcher
+from kiro_crew.knowledge.store import KnowledgeStore
 
 
 @pytest.fixture()
@@ -136,7 +136,7 @@ class TestFolderWatcherWalk:
         assert any(p.endswith("report.pdf") for p in paths)
 
     def test_pdf_in_supported_set(self):
-        from kiro_claw.knowledge.readers import FileReader
+        from kiro_crew.knowledge.readers import FileReader
         assert ".pdf" in FileReader.SUPPORTED
 
     def test_discovers_org_files(self, store, pipeline, vault):
@@ -147,11 +147,11 @@ class TestFolderWatcherWalk:
         assert ".org" in suffixes
 
     def test_org_in_supported_set(self):
-        from kiro_claw.knowledge.readers import FileReader
+        from kiro_crew.knowledge.readers import FileReader
         assert ".org" in FileReader.SUPPORTED
 
     def test_org_file_reader_returns_text(self, tmp_path):
-        from kiro_claw.knowledge.readers import FileReader
+        from kiro_crew.knowledge.readers import FileReader
         org_file = tmp_path / "example.org"
         org_file.write_text("#+TITLE: Test\n* Heading\nBody text")
         reader = FileReader()
@@ -406,7 +406,7 @@ class TestSandboxGuard:
 
     def test_sensitive_path_rejected(self):
         """Verify is_sensitive_path blocks known sensitive paths."""
-        from kiro_claw.security import is_sensitive_path
+        from kiro_crew.security import is_sensitive_path
         home = str(Path.home())
         assert is_sensitive_path(f"{home}/.ssh/id_rsa")
         assert is_sensitive_path(f"{home}/.aws/credentials")
@@ -414,7 +414,7 @@ class TestSandboxGuard:
 
     def test_normal_path_allowed(self):
         """Verify normal paths are not blocked."""
-        from kiro_claw.security import is_sensitive_path
+        from kiro_crew.security import is_sensitive_path
         assert not is_sensitive_path("/tmp/test/vault")
         assert not is_sensitive_path("/tmp/notes/readme.md")
 
@@ -460,7 +460,7 @@ class TestHashFileSecurity:
         fw = FolderWatcher(store, pipeline)
         f = tmp_path / "normal.md"
         f.write_text("hello")
-        with patch("kiro_claw.knowledge.folder_watcher.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.knowledge.folder_watcher.is_sensitive_path", return_value=True):
             result = fw._hash_file(str(f))
         assert result is None
 
@@ -482,7 +482,7 @@ class TestIngestFileSecurity:
         f = tmp_path / "note.md"
         f.write_text("content")
 
-        with patch("kiro_claw.knowledge.folder_watcher.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.knowledge.folder_watcher.is_sensitive_path", return_value=True):
             result = await fw._ingest_file(str(f), source_id, "default", {}, [])
 
         assert result is None

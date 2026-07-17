@@ -1,10 +1,10 @@
 # Security Deep Dive
 
-Defense-in-depth security architecture across all KiroClaw layers.
+Defense-in-depth security architecture across all KiroCrew layers.
 
 ## Threat Model
 
-KiroClaw runs an LLM agent with filesystem and shell access. The primary threat is **Cross-Plugin Injection Attack (XPIA)** — a malicious prompt embedded in content the LLM reads (web pages, files, Slack messages) that tricks it into exfiltrating credentials or executing destructive commands.
+KiroCrew runs an LLM agent with filesystem and shell access. The primary threat is **Cross-Plugin Injection Attack (XPIA)** — a malicious prompt embedded in content the LLM reads (web pages, files, Slack messages) that tricks it into exfiltrating credentials or executing destructive commands.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -24,7 +24,7 @@ KiroClaw runs an LLM agent with filesystem and shell access. The primary threat 
 
 ## Layer 0: OS-Level Sandbox (`sandbox.py`)
 
-Hides credential paths from the kiro-cli subprocess tree using platform-native isolation. The parent KiroClaw process is unaffected — only agent subprocesses are sandboxed.
+Hides credential paths from the kiro-cli subprocess tree using platform-native isolation. The parent KiroCrew process is unaffected — only agent subprocesses are sandboxed.
 
 ### How It Works
 
@@ -52,16 +52,16 @@ Two-pipe synchronization ensures correct ordering. The child retains the real UI
 | Strict | `"strict"` | All above + `.aws`, `.ssh`, `.kube` | Only `~/.ssh/known_hosts` | Same |
 | Off | `"off"` | Nothing | Everything | Nothing |
 
-Config: `agent.sandbox` in `~/.kiroclaw/config.json`.
+Config: `agent.sandbox` in `~/.kirocrew/config.json`.
 
-The env scrub additionally strips `PYTHONPATH`/`PYTHONHOME` (`strip_python_env=True`), but **only** on the foreign kiro-cli/agent spawn path — never for KiroClaw's own sandboxed Python children, which import `kiro_claw` via `PYTHONPATH` and would break if it were stripped. This isolates the foreign process from KiroClaw's `PYTHONPATH`, which would otherwise leak in and shadow the agent's (and its MCP servers') own dependencies.
+The env scrub additionally strips `PYTHONPATH`/`PYTHONHOME` (`strip_python_env=True`), but **only** on the foreign kiro-cli/agent spawn path — never for KiroCrew's own sandboxed Python children, which import `kiro_crew` via `PYTHONPATH` and would break if it were stripped. This isolates the foreign process from KiroCrew's `PYTHONPATH`, which would otherwise leak in and shadow the agent's (and its MCP servers') own dependencies.
 
 ### Why Standard Mode Is Safe
 
 Protection depth depends on the access path:
 
 - **kiro-cli tool reads** (primary attack path): two layers protect `.aws`/`.ssh` — denied command patterns block `cat`/`head`/`tail`/`python open()` on those paths, and output redaction (`redact_credentials()`) catches any credential patterns that leak through tool output.
-- **Non-tool reads** (KiroClaw's own file operations): a third hook layer (`safe_read_file()` → `is_sensitive_path()`) blocks reads before they reach the filesystem.
+- **Non-tool reads** (KiroCrew's own file operations): a third hook layer (`safe_read_file()` → `is_sensitive_path()`) blocks reads before they reach the filesystem.
 
 Standard mode allows git-over-SSH via key files, AWS CLI via `credential_process`, and kubectl. Note: `SSH_AUTH_SOCK` is scrubbed in both Standard and Strict modes, so ssh-agent forwarding is unavailable unless the sandbox is set to `"off"`. Users relying on passphrase-protected keys or hardware tokens must either use unencrypted key files directly or set `agent.sandbox` to `"off"`.
 
@@ -78,7 +78,7 @@ On some installs the agent backend (`kiro-cli`) is a bash shim that re-execs the
 ```
 ~/.aws, ~/.ssh, ~/.gnupg, ~/.gpg, ~/.config/gcloud, ~/.azure,
 ~/.docker/config.json, ~/.kube/config, ~/.npmrc, ~/.pypirc,
-~/.netrc, ~/.git-credentials, ~/.kiroclaw/.env
+~/.netrc, ~/.git-credentials, ~/.kirocrew/.env
 ```
 
 ### Sensitive Bash Command Detection
@@ -220,7 +220,7 @@ All string fields redacted via `redact()` before forwarding to centralized log i
 ### Slack Owner Lock (Deny-by-Default)
 
 5 defense-in-depth layers:
-1. `_init_socket_mode()` refuses to connect if `KIROCLAW_OWNER_ID` unset
+1. `_init_socket_mode()` refuses to connect if `KIROCREW_OWNER_ID` unset
 2. `_on_event()` rejects all messages when owner ID missing
 3. `conversations.info` DM gate for Trust/YOLO actions
 4. Trust/YOLO buttons suppressed in group channels
@@ -242,7 +242,7 @@ by the user allowlist (`is_allowed_user`) and the Enterprise Grid origin check.
 The `send_channel_challenge()` helper and the `_CHALLENGE_REDIRECT_ENABLED` gate
 no longer exist. The generic signed-token helpers in `token_auth.py`
 (`generate_token`, `extract_claims_from_token`) remain and back the explicit
-`/kiroclaw dashboard` link command.
+`/kirocrew dashboard` link command.
 
 ### 3-Tier Interactive Trust Escalation
 
@@ -300,7 +300,7 @@ Optional two-layer defense against data exfiltration to personal/external Slack 
 
 ## Credential File Permissions
 
-`load_credentials()` enforces `chmod 600` on `~/.kiroclaw/.env` at load time. Too-open permissions are tightened automatically.
+`load_credentials()` enforces `chmod 600` on `~/.kirocrew/.env` at load time. Too-open permissions are tightened automatically.
 
 ---
 

@@ -1,6 +1,6 @@
 ## LLM Provider Abstraction
 
-KiroClaw drives a single LLM backend: `kiro-cli` over ACP. The `LLMProvider`
+KiroCrew drives a single LLM backend: `kiro-cli` over ACP. The `LLMProvider`
 interface is retained as a thin seam (consumers depend only on the ABC), but
 there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
 
@@ -100,8 +100,8 @@ glue or a provider selector (see the repo-root `CLAUDE.md`).
 **Reasoning effort** (Opus/Sonnet/Fable only — shared vocabulary in `effort.py`: levels `low|medium|high|xhigh|max`, capability via `model_supports_effort`, resolution via `resolve_effort_for_model` with priority slot-override > workspace default > None): applied via a workspace `cli.json` overlay at `<work_dir>/.kiro/settings/cli.json` → `chat.modelDefaults.<model>.output_config.effort`, written before every spawn (`_write_cli_overlay`) and recovered on init (`_read_cli_overlay`) for server-restart resilience. Live change pushes `/effort` with the TuiCommand args form (`send_command(args={"level": …})`). The factory threads `reasoning_effort_override` → `effort_per_model[current_model]`; the dashboard handler routes through `change_effort`/`clear_effort` and only resets the session when there is no live provider. Non-effort-capable models persist the slot value without a live apply or reset.
 
 **MCP Tool Search** (kiro backend only — see https://kiro.dev/docs/cli/mcp/tool-search/): loads MCP tool specs on demand ("search-and-call") instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. Gated by the `agent.tool_search` config toggle (default **on**; auto-surfaces as a Settings toggle since the schema is generated from the dataclass).
-- Applied via the **same** workspace `cli.json` overlay used for effort (`<work_dir>/.kiro/settings/cli.json`), written deterministically before every spawn and on each restart by `_write_tool_search_overlay` (called from `AcpProvider.__init__` and `start()`). When enabled it writes the flat keys `toolSearch.enabled=true` plus `toolSearch.minPct=0`/`toolSearch.minTokens=0` to force deferral always-on (KiroClaw sessions always carry several MCP servers); when disabled it writes `toolSearch.enabled=false` and drops the zeroed thresholds.
-- Writing both `true` and `false` makes the KiroClaw toggle authoritative over any value in the user's global `~/.kiro/settings/cli.json`. The write is merge-safe with the effort `chat.modelDefaults` keys in the same file.
+- Applied via the **same** workspace `cli.json` overlay used for effort (`<work_dir>/.kiro/settings/cli.json`), written deterministically before every spawn and on each restart by `_write_tool_search_overlay` (called from `AcpProvider.__init__` and `start()`). When enabled it writes the flat keys `toolSearch.enabled=true` plus `toolSearch.minPct=0`/`toolSearch.minTokens=0` to force deferral always-on (KiroCrew sessions always carry several MCP servers); when disabled it writes `toolSearch.enabled=false` and drops the zeroed thresholds.
+- Writing both `true` and `false` makes the KiroCrew toggle authoritative over any value in the user's global `~/.kiro/settings/cli.json`. The write is merge-safe with the effort `chat.modelDefaults` keys in the same file.
 - **claude backend** — no-op. Tool Search is a kiro-cli feature; `_apply_tool_search_overlay` returns early for the claude backend and when no toggle value was threaded in (`tool_search is None`).
 
 - **Resume guard:** `session/load` (resume) is only attempted when the prior session transcript exists on disk (`~/.kiro/sessions/cli/<sid>.json`). A stale persisted sid with no transcript falls back to `session/new`, preventing a fresh conversation from replaying old turns (which inflated base context).
@@ -124,7 +124,7 @@ glue or a provider selector (see the repo-root `CLAUDE.md`).
 ### MCP Server Registration
 
 MCP servers are passed directly in the `session/new` params. The two managed
-servers (`kiroclaw-core`, `kiroclaw-cron` — see `agent.py:_MANAGED_MCP_SERVERS`)
+servers (`kirocrew-core`, `kirocrew-cron` — see `agent.py:_MANAGED_MCP_SERVERS`)
 are always present; user-configured servers from the agent config are merged in.
 
 ### SessionManager (`session.py`)
@@ -152,8 +152,8 @@ Provider-level recovery mechanisms that fire automatically without user interven
 
 ### Installation
 
-KiroClaw drives `kiro-cli` over ACP — install it per its own docs, ensure it is
-on `PATH`, and run `kiro-cli login`. `kiroclaw doctor` reports its status.
+KiroCrew drives `kiro-cli` over ACP — install it per its own docs, ensure it is
+on `PATH`, and run `kiro-cli login`. `kirocrew doctor` reports its status.
 
 
 ## AcpProvider: shared-runtime startup

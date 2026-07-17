@@ -8,8 +8,8 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state, _make_tags_app
 
-from kiro_claw.dashboard.chat_tags import _normalize_column, _valid_color
-from kiro_claw.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.chat_tags import _normalize_column, _valid_color
+from kiro_crew.dashboard.state import _ChatSlot
 
 # ── Pure helpers ──
 
@@ -113,7 +113,7 @@ class TestNormalizeColumn:
 class TestTagVocabulary:
     @pytest.mark.asyncio
     async def test_list_seeds_default_vocabulary(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.load_tags()
         app = _make_tags_app(state)
@@ -127,7 +127,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_list_returns_in_order(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state._tags = [
             {"id": "b", "name": "B", "color": "#000000", "order": 1, "status": False},
@@ -141,7 +141,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_create_tag(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -156,7 +156,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_create_tag_invalid_color_falls_back(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -166,7 +166,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_create_tag_empty_name_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -175,7 +175,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_create_tag_invalid_json_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -184,7 +184,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_update_tag_rename_recolor_status(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -200,7 +200,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_update_tag_empty_name_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -210,7 +210,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_update_tag_unparseable_order_ignored(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -220,7 +220,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_update_tag_not_found(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -229,7 +229,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_update_tag_invalid_json_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -240,7 +240,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_delete_tag_strips_from_slots_and_columns(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -252,7 +252,7 @@ class TestTagVocabulary:
             col = await (await client.post(
                 "/api/chat/tag-columns", json={"tag_ids": [tag["id"], other["id"]], "mode": "any"}
             )).json()
-            with patch("kiro_claw.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
                 resp = await client.delete(f"/api/chat/tags/{tag['id']}")
             assert resp.status == 200
             assert tag["id"] not in {t["id"] for t in state._tags}
@@ -263,7 +263,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_delete_tag_not_found(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -277,7 +277,7 @@ class TestTagVocabulary:
 class TestSlotTags:
     @pytest.mark.asyncio
     async def test_assign_filters_unknown_and_dedupes(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -285,7 +285,7 @@ class TestSlotTags:
             t2 = await (await client.post("/api/chat/tags", json={"name": "T2"})).json()
             slot = _ChatSlot("s1")
             state._slots["s1"] = slot
-            with patch("kiro_claw.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
                 resp = await client.put(
                     "/api/chat/slots/s1/tags",
                     json={"tags": [t1["id"], "ghost", t1["id"], t2["id"], 7]},
@@ -297,7 +297,7 @@ class TestSlotTags:
 
     @pytest.mark.asyncio
     async def test_assign_slot_not_found(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -306,7 +306,7 @@ class TestSlotTags:
 
     @pytest.mark.asyncio
     async def test_assign_invalid_json_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state._slots["s1"] = _ChatSlot("s1")
         app = _make_tags_app(state)
@@ -318,7 +318,7 @@ class TestSlotTags:
 
     @pytest.mark.asyncio
     async def test_assign_non_array_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state._slots["s1"] = _ChatSlot("s1")
         app = _make_tags_app(state)
@@ -333,7 +333,7 @@ class TestSlotTags:
 class TestColumns:
     @pytest.mark.asyncio
     async def test_list_columns_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -343,7 +343,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_create_column(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -362,7 +362,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_create_column_invalid_mode_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -371,7 +371,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_create_column_invalid_json_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -382,7 +382,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_update_column(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -396,7 +396,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_update_column_not_found(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -405,7 +405,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_update_column_invalid_payload_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -415,7 +415,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_update_column_invalid_json_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -427,7 +427,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_delete_column(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -438,7 +438,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_delete_column_not_found(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -447,7 +447,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_reorder_columns(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -463,7 +463,7 @@ class TestColumns:
         """Regression: AutoSDE flagged ',
         '.join(ids[:10]) raising TypeError on non-string elements,
         which would skip the SEL audit event after the state mutation."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -474,7 +474,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_reorder_invalid_json_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -485,7 +485,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_reorder_non_list_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -499,7 +499,7 @@ class TestColumns:
 class TestDrop:
     @pytest.mark.asyncio
     async def test_drop_on_status_lane_swaps_status_tag(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -512,7 +512,7 @@ class TestDrop:
             col = await (await client.post(
                 "/api/chat/tag-columns", json={"tag_ids": [done["id"]], "mode": "any"}
             )).json()
-            with patch("kiro_claw.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
                 resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
             data = await resp.json()
             assert data["ok"] is True
@@ -522,7 +522,7 @@ class TestDrop:
 
     @pytest.mark.asyncio
     async def test_drop_on_filter_only_column_is_noop(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -540,7 +540,7 @@ class TestDrop:
 
     @pytest.mark.asyncio
     async def test_drop_slot_not_found(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -549,7 +549,7 @@ class TestDrop:
 
     @pytest.mark.asyncio
     async def test_drop_column_not_found(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state._slots["s1"] = _ChatSlot("s1")
         app = _make_tags_app(state)
@@ -559,7 +559,7 @@ class TestDrop:
 
     @pytest.mark.asyncio
     async def test_drop_invalid_json_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state._slots["s1"] = _ChatSlot("s1")
         app = _make_tags_app(state)
@@ -572,7 +572,7 @@ class TestDrop:
     @pytest.mark.asyncio
     async def test_drop_on_multi_tag_column_is_noop(self, tmp_path, monkeypatch):
         """Drop on a column with > 1 status tag is a no-op (not a single-status lane)."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -597,7 +597,7 @@ class TestLoadTagsSafety:
     def test_load_failure_does_not_overwrite_with_defaults(self, tmp_path, monkeypatch):
         """If tags.json exists but cannot be parsed, never silently overwrite it
         with the seed vocabulary — that would destroy the user's data."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         # Write an unreadable / corrupt tags file
         corrupt = tmp_path / "tags.json"
         corrupt.write_text("not-json-at-all", encoding="utf-8")
@@ -610,7 +610,7 @@ class TestLoadTagsSafety:
 
     def test_missing_file_seeds_defaults(self, tmp_path, monkeypatch):
         """If tags.json doesn't exist, seed the default 5 status tags."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.load_tags()
         names = {t["name"] for t in state._tags}
@@ -620,7 +620,7 @@ class TestLoadTagsSafety:
     def test_explicitly_empty_file_is_not_reseeded(self, tmp_path, monkeypatch):
         """If tags.json contains [], the user explicitly cleared every tag —
         do not re-seed defaults across restart."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         (tmp_path / "tags.json").write_text("[]", encoding="utf-8")
         state = _make_state(tmp_path)
         state.load_tags()
@@ -634,7 +634,7 @@ class TestReorderUniqueOrders:
     async def test_partial_reorder_does_not_collide(self, tmp_path, monkeypatch):
         """Reordering only a subset of columns must not leave older columns
         sharing an `order` value with the newly-renumbered ones."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -661,7 +661,7 @@ class TestDropOnMixedColumn:
         """The docstring promises that a drop on a column with exactly one
         status tag swaps onto that status — additional non-status tags in
         the column's filter must not block the swap."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -676,7 +676,7 @@ class TestDropOnMixedColumn:
                 "/api/chat/tag-columns",
                 json={"tag_ids": [done["id"], spike["id"]], "mode": "all"},
             )).json()
-            with patch("kiro_claw.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
                 resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
             data = await resp.json()
             assert data["ok"] is True

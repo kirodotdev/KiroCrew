@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.session_map import SessionMap
+from kiro_crew.session_map import SessionMap
 
 
 @pytest.fixture()
 def session_map(tmp_path):
     """Create a SessionMap backed by a temp directory."""
-    with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+    with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
         yield SessionMap()
 
 
@@ -42,11 +42,11 @@ class TestSessionMapCwd:
         assert session_map.get_cwd("dash:1") == ""
 
     def test_cwd_persists_to_disk(self, tmp_path):
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm = SessionMap()
             sm.set("dash:1", "sid-abc", cwd="/home/user/project")
 
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm2 = SessionMap()
             assert sm2.get_cwd("dash:1") == "/home/user/project"
 
@@ -62,7 +62,7 @@ class TestSessionResumeCwdOverride:
     @pytest.fixture()
     def mock_session_mgr(self, tmp_path):
         """Minimal mock of SessionManager internals needed for CWD override logic."""
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm = SessionMap()
 
         mgr = MagicMock()
@@ -146,9 +146,9 @@ class TestCwdExtractionFromProvider:
     accessor returns the real path per provider type."""
 
     def test_acp_provider_cwd_returns_real_work_dir(self, tmp_path):
-        from kiro_claw.providers.acp import AcpProvider
+        from kiro_crew.providers.acp import AcpProvider
 
-        with patch("kiro_claw.providers.acp.AcpClient"):
+        with patch("kiro_crew.providers.acp.AcpClient"):
             provider = AcpProvider(acp_backend="")  # kiro
         provider._client._work_dir = tmp_path
         assert provider.cwd == str(tmp_path)

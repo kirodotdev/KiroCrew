@@ -1,6 +1,6 @@
 """Tests for the claude_code model list assembled by /api/models.
 
-The dropdown leads with the KiroClaw-curated set (Opus 4.8 1M/200k, Opus 4.7,
+The dropdown leads with the KiroCrew-curated set (Opus 4.8 1M/200k, Opus 4.7,
 Sonnet 4.6, Haiku 4.5) so users always see clean, current defaults ahead of
 whatever the adapter advertises (its set can be stale — Opus 4.1, Sonnet 4.5);
 adapter extras are appended de-duped, plus the configured default.
@@ -11,8 +11,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from kiro_claw import model_registry
-from kiro_claw.dashboard.handlers.agents import (
+from kiro_crew import model_registry
+from kiro_crew.dashboard.handlers.agents import (
     _advertised_cc_models,
     _cc_models,
 )

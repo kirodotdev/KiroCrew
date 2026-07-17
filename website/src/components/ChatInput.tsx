@@ -94,7 +94,7 @@ function toApiDecision(d: string): 'approve' | 'reject' {
 // Pending-approval selection is now slot-aware — see selectSlotPendingApproval
 // in chatSlice (Path B S3): each grid pane's approval bar reflects ITS slot.
 
-/** Effective viewport height accounting for KiroClaw zoom scale.
+/** Effective viewport height accounting for KiroCrew zoom scale.
  *  --mc-vh is px when zoom active; falls back to window.innerHeight otherwise. */
 function effectiveVh(): number {
   const v = getComputedStyle(document.documentElement).getPropertyValue('--mc-vh')

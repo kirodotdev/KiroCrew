@@ -4,7 +4,7 @@ Last Updated: 2026-02-16
 
 ## Overview
 
-The task module (`kiro_claw/task.py`) provides a state machine for
+The task module (`kiro_crew/task.py`) provides a state machine for
 tracking individual messages through their lifecycle. Each Slack message
 or CLI prompt becomes a `Task` with validated state transitions.
 

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.token_auth import (
+from kiro_crew.dashboard.token_auth import (
     MAX_CONCURRENT_NONCES,
     MAX_SESSION_TTL_SECS,
     RevokedNonceStore,
@@ -38,13 +38,13 @@ def clear_nonces(tmp_path, monkeypatch):
     """Isolate token state per test.
 
     Points config_dir at a tmp dir so the persisted revocation-generation file
-    is not written to the real ~/.kiroclaw, resets the in-process gen to 0, and
+    is not written to the real ~/.kirocrew, resets the in-process gen to 0, and
     clears the nonce store. Uses _state.clear_all() (not revoke_all_sessions)
     so the gen isn't bumped between unrelated tests.
     """
-    import kiro_claw.dashboard.token_auth as _ta
+    import kiro_crew.dashboard.token_auth as _ta
 
-    monkeypatch.setattr("kiro_claw.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr(_ta, "_REVOCATION_GEN", 0)
     # Reset the per-session revoked-nonce store so each test gets a fresh store
     # bound to its own tmp_path config_dir (the singleton would otherwise pin
@@ -173,11 +173,11 @@ def test_try_consume_returns_true_once_then_false() -> None:
 
 def test_expired_token_rejected() -> None:
     """Token link window (5 min) expires — URL no longer valid."""
-    with patch("kiro_claw.dashboard.token_auth.time") as mock_time:
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
         token = generate_token("user6", ttl_seconds=3600)
     # Advance past the 5-minute link window
-    with patch("kiro_claw.dashboard.token_auth.time") as mock_time:
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0 + 301
         valid, _, reason = validate_token(token)
     assert valid is False
@@ -186,11 +186,11 @@ def test_expired_token_rejected() -> None:
 
 def test_session_exp_still_valid_after_link_window() -> None:
     """Cookie-based access uses session_exp, not the link window."""
-    with patch("kiro_claw.dashboard.token_auth.time") as mock_time:
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
         token = generate_token("user6b", ttl_seconds=3600)
     # Past link window but within session TTL
-    with patch("kiro_claw.dashboard.token_auth.time") as mock_time:
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0 + 301
         valid, uid, _ = validate_token(token, use_session_exp=True)
     assert valid is True
@@ -498,7 +498,7 @@ async def test_bare_app_path_is_spa_shell_request(path: str, method: str) -> Non
     SPA_FALLBACK_EXCLUDED_PREFIXES included '/apps/' wholesale, causing the
     spa_fallback middleware to re-raise HTTPNotFound instead of serving shell.
     """
-    import kiro_claw.dashboard.token_auth as ta
+    import kiro_crew.dashboard.token_auth as ta
 
     req = _make_request(path=path, method=method)
     assert ta._is_spa_shell_request(req), (
@@ -519,7 +519,7 @@ async def test_bare_app_path_is_spa_shell_request(path: str, method: str) -> Non
 def test_apps_sub_paths_are_not_spa_shell(path: str) -> None:
     """/apps/{name}/api/* and /apps/{name}/ui/* have real server-side handlers
     and must NOT be treated as SPA shell requests."""
-    import kiro_claw.dashboard.token_auth as ta
+    import kiro_crew.dashboard.token_auth as ta
 
     req = _make_request(path=path, method="GET")
     assert not ta._is_spa_shell_request(req), (
@@ -766,7 +766,7 @@ def test_cookie_auth_survives_nonce_store_wipe() -> None:
     restart. The LINK path still enforces the nonce. We model the restart by
     clearing ONLY the nonce store (gen untouched), not via revoke_all_sessions.
     """
-    from kiro_claw.dashboard.token_auth import _state
+    from kiro_crew.dashboard.token_auth import _state
 
     token = generate_token("user_cookie")
     _state.clear_all()  # simulate restart: in-memory nonce store re-initialized empty
@@ -781,7 +781,7 @@ def test_cookie_auth_survives_nonce_store_wipe() -> None:
 
 
 def test_revoke_all_sessions_kills_established_cookie() -> None:
-    """Explicit revoke (kiroclaw logout) MUST end established cookie sessions.
+    """Explicit revoke (kirocrew logout) MUST end established cookie sessions.
 
     Unlike a restart, revoke_all_sessions() bumps the persisted revocation
     generation, so a cookie minted before the revoke carries a stale gen and is
@@ -807,11 +807,11 @@ def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
     the key and invalidated all outstanding tokens/cookies ("invalid
     signature"). The secret is now loaded-or-created from a 0600 key file.
     """
-    from kiro_claw.dashboard import token_auth as ta
+    from kiro_crew.dashboard import token_auth as ta
 
     monkeypatch.setattr(ta, "config_dir", lambda: tmp_path, raising=False)
     # First load creates the key file.
-    monkeypatch.setattr("kiro_claw.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     s1 = ta._load_or_create_secret()
     key_file = tmp_path / ta._SECRET_KEY_FILE
     assert key_file.exists()
@@ -825,7 +825,7 @@ def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
 
 def test_evict_expired_removes_old_entries() -> None:
     """Verify evict_expired removes expired IP bindings, consumed tokens, and nonces."""
-    from kiro_claw.dashboard.token_auth import _state
+    from kiro_crew.dashboard.token_auth import _state
 
     # Generate a token and bind IP / mark consumed
     token = generate_token("evict_user")
@@ -1007,7 +1007,7 @@ def test_no_get_route_outside_shell_exclusions() -> None:
     import os
     import re as _re
 
-    import kiro_claw.dashboard.token_auth as ta
+    import kiro_crew.dashboard.token_auth as ta
 
     server_path = os.path.join(os.path.dirname(ta.__file__), "server.py")
     source = open(server_path, encoding="utf-8").read()
@@ -1064,7 +1064,7 @@ async def test_invalid_token_shell_serve_emits_distinct_sel_outcome(monkeypatch)
     outcome so anomaly detection still flags credential-forgery probing on GET
     navigations. Pins the observability signal: fails if the outcome reverts
     to "ok"."""
-    import kiro_claw.dashboard.token_auth as ta
+    import kiro_crew.dashboard.token_auth as ta
 
     calls: list[dict] = []
 
@@ -1138,7 +1138,7 @@ async def test_non_local_accepts_valid_token() -> None:
 )
 async def test_dashboard_url_host_selection(dashboard_url: str, expected_host: str) -> None:
     """!dashboard sends presigned link via DM, never in channel."""
-    from kiro_claw.slack.handler import _handle_slash_command
+    from kiro_crew.slack.handler import _handle_slash_command
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)
@@ -1152,15 +1152,15 @@ async def test_dashboard_url_host_selection(dashboard_url: str, expected_host: s
 
     expected_port = 8080 if dashboard_url else 5476
 
-    # Unset KIROCLAW_PORT so parse_dashboard_url (which reads os.environ at
+    # Unset KIROCREW_PORT so parse_dashboard_url (which reads os.environ at
     # call time) uses the port from the URL or the hard-coded default.
     with (
-        patch("kiro_claw.slack.allowlist.KiroClawConfig.load", return_value=mock_cfg),
-        patch("kiro_claw.dashboard.origin.socket.gethostname", return_value="myhostname"),
-        patch("kiro_claw.dashboard.origin.socket.gethostbyname", return_value="10.0.0.1"),
-        patch("kiro_claw.dashboard.origin.socket.getaddrinfo", side_effect=socket.gaierror),
-        patch.dict(os.environ, {}, KIROCLAW_PORT=""),
-        patch("kiro_claw.slack.allowlist.sel") as mock_sel,
+        patch("kiro_crew.slack.allowlist.KiroCrewConfig.load", return_value=mock_cfg),
+        patch("kiro_crew.dashboard.origin.socket.gethostname", return_value="myhostname"),
+        patch("kiro_crew.dashboard.origin.socket.gethostbyname", return_value="10.0.0.1"),
+        patch("kiro_crew.dashboard.origin.socket.getaddrinfo", side_effect=socket.gaierror),
+        patch.dict(os.environ, {}, KIROCREW_PORT=""),
+        patch("kiro_crew.slack.allowlist.sel") as mock_sel,
     ):
         mock_sel.return_value.log_api_access = MagicMock()
         await _handle_slash_command(
@@ -1186,7 +1186,7 @@ async def test_api_logout_success_from_loopback() -> None:
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from kiro_claw.dashboard.handlers import api_logout
+    from kiro_crew.dashboard.handlers import api_logout
 
     app = web.Application()
     app["local_secret"] = "test-secret-123"
@@ -1214,7 +1214,7 @@ async def test_api_logout_rejects_non_loopback() -> None:
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from kiro_claw.dashboard.handlers import api_logout
+    from kiro_crew.dashboard.handlers import api_logout
 
     app = web.Application()
     app["local_secret"] = "test-secret-123"
@@ -1222,7 +1222,7 @@ async def test_api_logout_rejects_non_loopback() -> None:
 
     async with TestClient(TestServer(app)) as client:
         # Patch is_loopback to return False (simulating non-loopback request)
-        with patch("kiro_claw.dashboard.handlers.is_loopback", return_value=False):
+        with patch("kiro_crew.dashboard.handlers.is_loopback", return_value=False):
             resp = await client.post(
                 "/api/logout",
                 json={},
@@ -1239,7 +1239,7 @@ async def test_api_logout_rejects_invalid_secret() -> None:
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from kiro_claw.dashboard.handlers import api_logout
+    from kiro_crew.dashboard.handlers import api_logout
 
     app = web.Application()
     app["local_secret"] = "correct-secret"
@@ -1262,7 +1262,7 @@ async def test_api_logout_rejects_missing_secret() -> None:
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from kiro_claw.dashboard.handlers import api_logout
+    from kiro_crew.dashboard.handlers import api_logout
 
     app = web.Application()
     app["local_secret"] = "correct-secret"
@@ -1279,7 +1279,7 @@ async def test_api_logout_rejects_missing_secret() -> None:
 @pytest.mark.parametrize("duration_arg, expected_ttl", [("", 3600), ("2h", 7200), ("30m", 1800)])
 async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
     """!dashboard logs SEL with operation='slack.dashboard_token', caller, and ttl."""
-    from kiro_claw.slack.handler import _handle_slash_command
+    from kiro_crew.slack.handler import _handle_slash_command
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)
@@ -1294,10 +1294,10 @@ async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
     cmd_text = f"!dashboard {duration_arg}".strip()
 
     with (
-        patch("kiro_claw.slack.allowlist.KiroClawConfig.load", return_value=mock_cfg),
-        patch("kiro_claw.dashboard.origin.socket.gethostname", return_value="myhostname"),
-        patch("kiro_claw.dashboard.origin.socket.gethostbyname", return_value="10.0.0.1"),
-        patch("kiro_claw.slack.allowlist.sel") as mock_sel,
+        patch("kiro_crew.slack.allowlist.KiroCrewConfig.load", return_value=mock_cfg),
+        patch("kiro_crew.dashboard.origin.socket.gethostname", return_value="myhostname"),
+        patch("kiro_crew.dashboard.origin.socket.gethostbyname", return_value="10.0.0.1"),
+        patch("kiro_crew.slack.allowlist.sel") as mock_sel,
     ):
         mock_log = MagicMock()
         mock_sel.return_value.log_api_access = mock_log
@@ -1423,7 +1423,7 @@ def test_revoked_cookie_survives_store_reload(tmp_path) -> None:
     reloaded = RevokedNonceStore(state_path=tmp_path / "token_revoked_nonces.json")
     import json
 
-    from kiro_claw.dashboard.token_auth import _b64url_decode
+    from kiro_crew.dashboard.token_auth import _b64url_decode
 
     nonce = json.loads(_b64url_decode(token.split(".")[0]))["nonce"]
     assert reloaded.is_revoked(nonce) is True
@@ -1475,7 +1475,7 @@ def test_app_owns_path_boundaries() -> None:
     assert not _app_owns_path("foo", "/api/apps/foo-bar/config")
     # Unrelated dashboard endpoints are never owned.
     assert not _app_owns_path("foo", "/api/sessions")
-    assert not _app_owns_path("foo", "/api/config/kiroclaw")
+    assert not _app_owns_path("foo", "/api/config/kirocrew")
 
 
 def test_app_token_path_allowed_empty_name_denies() -> None:
@@ -1486,7 +1486,7 @@ def test_app_token_path_allowed_empty_name_denies() -> None:
 @pytest.mark.asyncio
 async def test_app_token_denied_on_unscoped_endpoint(monkeypatch) -> None:
     """The pentest scenario: an app token hitting /api/sessions must be 403."""
-    import kiro_claw.dashboard.token_auth as _ta
+    import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
     mw = token_auth_middleware()
@@ -1498,7 +1498,7 @@ async def test_app_token_denied_on_unscoped_endpoint(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_app_token_allowed_on_own_namespace(monkeypatch) -> None:
-    import kiro_claw.dashboard.token_auth as _ta
+    import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
     mw = token_auth_middleware()
@@ -1510,7 +1510,7 @@ async def test_app_token_allowed_on_own_namespace(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_app_token_allowed_on_declared_api(monkeypatch) -> None:
-    import kiro_claw.dashboard.token_auth as _ta
+    import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ("/api/widgets/*",))
     mw = token_auth_middleware()
@@ -1535,7 +1535,7 @@ async def test_app_token_denied_on_mixed_internal_path(monkeypatch) -> None:
     """Escalation guard: an app token on a mixed_internal path (e.g. /api/chat)
     over loopback must NOT be silently treated as the dashboard user. Before the
     fix this branch never set request['app'] and granted unconditionally."""
-    import kiro_claw.dashboard.token_auth as _ta
+    import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
     mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/chat"}))
@@ -1556,7 +1556,7 @@ async def test_app_token_denied_on_strict_internal_path(monkeypatch) -> None:
     /api/send-message over loopback (no secret header) must be scope-denied —
     otherwise a compromised app could send notifications impersonating the
     system (app-sandbox-roadmap threat)."""
-    import kiro_claw.dashboard.token_auth as _ta
+    import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
     mw = token_auth_middleware(internal_paths=frozenset({"/api/send-message"}))
@@ -1596,7 +1596,7 @@ async def test_url_token_exchanged_for_distinct_session_cookie() -> None:
     # … and the two tokens carry different nonces (independent sessions).
     import json as _json
 
-    from kiro_claw.dashboard.token_auth import _b64url_decode
+    from kiro_crew.dashboard.token_auth import _b64url_decode
 
     url_nonce = _json.loads(_b64url_decode(url_token.split(".")[0]))["nonce"]
     cookie_nonce = _json.loads(_b64url_decode(cookie.value.split(".")[0]))["nonce"]
@@ -1607,7 +1607,7 @@ async def test_url_token_exchanged_for_distinct_session_cookie() -> None:
 async def test_exchanged_cookie_preserves_app_claim() -> None:
     """If an app token ever arrives via the URL flow, the exchanged cookie must
     keep the ``app`` claim so app-scope enforcement continues to apply."""
-    import kiro_claw.dashboard.token_auth as _ta
+    import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch_allow = lambda name: ("/api/anything/*",)  # noqa: E731
     _ta._app_perms_cache.clear()
@@ -1723,7 +1723,7 @@ async def test_served_shell_is_auth_independent() -> None:
     boundary. This test fails if the served body becomes request-dependent or
     starts carrying credential/state markers.
     """
-    import kiro_claw.dashboard.handlers.core as core
+    import kiro_crew.dashboard.handlers.core as core
 
     # Unauthenticated cold-start request vs an "authenticated-looking" one
     # (cookies + remote set). index() must ignore request state entirely.
@@ -1761,7 +1761,7 @@ async def test_index_serves_guidance_when_bundle_missing(tmp_path, monkeypatch) 
     served unauthenticated). The legacy dashboard.html fallback was removed
     (Talos V2285871874); dist/index.html is the sole shell source.
     """
-    import kiro_claw.dashboard.handlers.core as core
+    import kiro_crew.dashboard.handlers.core as core
 
     # Point the React build index at a non-existent location so index() falls
     # into the FileNotFoundError -> guidance-page branch.
@@ -1781,8 +1781,8 @@ async def test_index_serves_guidance_when_bundle_missing(tmp_path, monkeypatch) 
     body = resp_anon.text
     # Recognizable heading preserved + actionable guidance added.
     assert "<h1>Dashboard HTML not found</h1>" in body
-    assert "restarting KiroClaw" in body
-    assert "kiroclaw service restart" in body
+    assert "restarting KiroCrew" in body
+    assert "kirocrew service restart" in body
     # Request-independent and secret-free (same contract as the served shell).
     assert resp_anon.text == resp_authed.text
     assert "someminted.token.value" not in body

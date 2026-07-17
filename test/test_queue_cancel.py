@@ -15,8 +15,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.chat import api_chat_slot_queue_cancel
-from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.chat import api_chat_slot_queue_cancel
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 # ── Unit tests: _ChatSlot queue helpers ──
 
@@ -130,7 +130,7 @@ class TestQueueCancelEndpoint:
         qid = slot.queue_append("cancel me")
         slot.append("queued", "cancel me", json.dumps({"queue_id": qid}))
 
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_app(state)
             async with TestClient(TestServer(app)) as client:
@@ -147,7 +147,7 @@ class TestQueueCancelEndpoint:
     @pytest.mark.asyncio
     async def test_cancel_slot_not_found(self):
         state = _make_state()
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_app(state)
             async with TestClient(TestServer(app)) as client:
@@ -160,7 +160,7 @@ class TestQueueCancelEndpoint:
         slot = state.get_or_create_slot("chat-1")
         slot.queue_append("keep me")
 
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_app(state)
             async with TestClient(TestServer(app)) as client:
@@ -181,7 +181,7 @@ class TestQueueCancelEndpoint:
         qid2 = slot.queue_append("second")
         slot.queue_append("third")
 
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_app(state)
             async with TestClient(TestServer(app)) as client:
@@ -198,7 +198,7 @@ class TestQueueCancelEndpoint:
         qid = slot.queue_append("cancel me")
         state.broadcast_ws = MagicMock()
 
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_app(state)
             async with TestClient(TestServer(app)) as client:
@@ -220,7 +220,7 @@ class TestQueueCancelEndpoint:
         slot.append("queued", "same text", json.dumps({"queue_id": id1}))
         slot.append("queued", "same text", json.dumps({"queue_id": id2}))
 
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_app(state)
             async with TestClient(TestServer(app)) as client:

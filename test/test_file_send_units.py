@@ -4,49 +4,49 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.hooks import FileTooLargeError, safe_read_file_bytes
-from kiro_claw.security import redact
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.security import redact
 
 
 class TestSafeReadFileBytes:
     def test_reads_normal_file(self, tmp_path):
         f = tmp_path / "hello.txt"
         f.write_bytes(b"hello world")
-        with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             result = safe_read_file_bytes(str(f))
         assert result == b"hello world"
 
     def test_rejects_sensitive_path(self, tmp_path):
         f = tmp_path / "secret.txt"
         f.write_bytes(b"secret")
-        with patch("kiro_claw.hooks.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.hooks.is_sensitive_path", return_value=True):
             assert safe_read_file_bytes(str(f)) is None
 
     def test_returns_none_for_missing_file(self, tmp_path):
-        with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             assert safe_read_file_bytes(str(tmp_path / "nope.txt")) is None
 
     def test_raises_file_too_large(self, tmp_path):
         f = tmp_path / "big.txt"
         # Write just over the limit
-        with patch("kiro_claw.hooks.MAX_FILE_BYTES", 10):
-            with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.MAX_FILE_BYTES", 10):
+            with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
                 f.write_bytes(b"x" * 12)
                 with pytest.raises(FileTooLargeError):
                     safe_read_file_bytes(str(f))
 
     def test_returns_bytes_at_exact_limit(self, tmp_path):
         f = tmp_path / "exact.txt"
-        with patch("kiro_claw.hooks.MAX_FILE_BYTES", 10):
-            with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.MAX_FILE_BYTES", 10):
+            with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
                 f.write_bytes(b"x" * 10)
                 assert safe_read_file_bytes(str(f)) == b"x" * 10
 
 
 class TestOutboxDir:
     def test_creates_and_returns_outbox(self, tmp_path):
-        with patch("kiro_claw.config.loader.workspace_root", return_value=tmp_path):
-            from kiro_claw.config.loader import outbox_dir
+        with patch("kiro_crew.config.loader.workspace_root", return_value=tmp_path):
+            from kiro_crew.config.loader import outbox_dir
 
             result = outbox_dir()
             assert result == tmp_path / "outbox"
@@ -75,7 +75,7 @@ class TestBinaryFileHandling:
         """Binary files should not be rejected by redact (can't decode UTF-8)."""
         f = tmp_path / "audio.mp3"
         f.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 100)  # MP3 header
-        with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         assert raw is not None
         # Binary: decode fails, so redact should be skipped
@@ -90,7 +90,7 @@ class TestBinaryFileHandling:
         """Text files with sensitive content should still be caught."""
         f = tmp_path / "config.txt"
         f.write_text("key=AKIAIOSFODNN7EXAMPLE")
-        with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         text = raw.decode("utf-8")
         assert redact(text) != text  # Would be blocked
@@ -138,7 +138,7 @@ class TestBinaryFileHandling:
         """api_outbox_notify logic: binary file passes validation."""
         f = tmp_path / "test.mp3"
         f.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 50)
-        with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         assert raw is not None
         # Simulate the notify validation logic
@@ -154,7 +154,7 @@ class TestBinaryFileHandling:
         """api_outbox_notify logic: text file with secrets is blocked."""
         f = tmp_path / "secrets.txt"
         f.write_text("aws_secret=AKIAIOSFODNN7EXAMPLE")
-        with patch("kiro_claw.hooks.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         try:
             text = raw.decode("utf-8")

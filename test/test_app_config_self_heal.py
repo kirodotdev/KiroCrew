@@ -12,19 +12,19 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.apps.manager import APP_MANIFEST_FILENAME, app_data_dir, install_app
-from kiro_claw.apps.routes import register_app_routes
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, app_data_dir, install_app
+from kiro_crew.apps.routes import register_app_routes
 
 
 def _setup_env(tmp_path, monkeypatch):
-    home = tmp_path / "kiroclaw-home"
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
-    import kiro_claw.apps.bridges as bridges_mod
+    import kiro_crew.apps.bridges as bridges_mod
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    import kiro_claw.apps.backend as bmod
+    import kiro_crew.apps.backend as bmod
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return home

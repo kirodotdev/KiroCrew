@@ -20,12 +20,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.heartbeat import HeartbeatService, heartbeat_path
-from kiro_claw.session import HEARTBEAT_KEY
+from kiro_crew.heartbeat import HeartbeatService, heartbeat_path
+from kiro_crew.session import HEARTBEAT_KEY
 
 
 def _make_cfg():
-    """Minimal KiroClawConfig stub for SessionManager unit tests."""
+    """Minimal KiroCrewConfig stub for SessionManager unit tests."""
     cfg = MagicMock()
     cfg.session.pool_size = 0
     cfg.session.pool_agent = ""
@@ -38,7 +38,7 @@ def _make_cfg():
 @pytest.fixture()
 def heartbeat_file(tmp_path, monkeypatch):
     """Redirect heartbeat_path() to a tmp file."""
-    monkeypatch.setattr("kiro_claw.heartbeat.workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.heartbeat.workspace_dir", lambda: tmp_path)
     return heartbeat_path()
 
 
@@ -159,7 +159,7 @@ class TestRecycleHeartbeat:
     async def test_no_op_when_session_absent(self):
         """Cycles where no heartbeat task ever ran (no session created)
         must be cheap — no work, no errors."""
-        from kiro_claw.session import SessionManager
+        from kiro_crew.session import SessionManager
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
         # Should not raise even with no provider, no session, no factory call.
@@ -169,7 +169,7 @@ class TestRecycleHeartbeat:
     async def test_no_op_below_threshold(self):
         """Healthy session (under 70% context, under 40 prompts) is preserved
         — cycle-end recycle must NOT churn warm sessions."""
-        from kiro_claw.session import SessionManager, _Session
+        from kiro_crew.session import SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
         provider = MagicMock()
@@ -189,7 +189,7 @@ class TestRecycleHeartbeat:
     async def test_recycles_at_pct_threshold(self):
         """At ≥70% context, recycle drops the session so the next
         ``get_or_create`` creates a fresh one on demand."""
-        from kiro_claw.session import SessionManager, _Session
+        from kiro_crew.session import SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
         provider = MagicMock()
@@ -210,7 +210,7 @@ class TestRecycleHeartbeat:
     @pytest.mark.asyncio
     async def test_recycles_blind_at_40_prompts(self):
         """When provider can't report context%, fall back to prompt count."""
-        from kiro_claw.session import SessionManager, _Session
+        from kiro_crew.session import SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
         provider = MagicMock()
@@ -227,71 +227,71 @@ class TestRecycleHeartbeat:
 
 
 class TestHeartbeatAgentInstall:
-    """``_install_heartbeat_agent`` writes the kiroclaw-heartbeat agent
+    """``_install_heartbeat_agent`` writes the kirocrew-heartbeat agent
     config with a minimal MCP surface (gsanc review on CR-277980962/r5)."""
 
     def test_installs_with_minimal_mcp_servers(self, tmp_path, monkeypatch):
-        """Heartbeat agent gets kiroclaw-core only on public installs — NOT
-        kiroclaw-cron / arcc-governance / etc.  This is gsanc's
+        """Heartbeat agent gets kirocrew-core only on public installs — NOT
+        kirocrew-cron / arcc-governance / etc.  This is gsanc's
         narrow-toolbelt fix for cold-start cost. (The Amazon-internal
         builder-mcp wiring is omitted on public installs, matching
         ``_install_research_agent`` / ``_install_knowledge_agent``.)"""
         import json
 
-        from kiro_claw import agent as agent_mod
+        from kiro_crew import agent as agent_mod
 
         kiro_dir = tmp_path / "agents"
         kiro_dir.mkdir()
-        # Seed a main kiroclaw.json with multiple mcp servers — the heartbeat
-        # installer should pick out only the one it needs (kiroclaw-core).
+        # Seed a main kirocrew.json with multiple mcp servers — the heartbeat
+        # installer should pick out only the one it needs (kirocrew-core).
         main_config = {
-            "name": "kiroclaw",
+            "name": "kirocrew",
             "mcpServers": {
                 "builder-mcp": {"command": "/bin/builder-mcp", "args": ["x"]},
-                "kiroclaw-core": {"command": "/bin/mc", "args": ["mcp-core"]},
-                "kiroclaw-cron": {"command": "/bin/mc", "args": ["mcp-cron"]},
+                "kirocrew-core": {"command": "/bin/mc", "args": ["mcp-core"]},
+                "kirocrew-cron": {"command": "/bin/mc", "args": ["mcp-cron"]},
                 "arcc-governance": {"command": "/bin/arcc", "args": []},
             },
         }
-        (kiro_dir / "kiroclaw.json").write_text(json.dumps(main_config))
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
 
         monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
 
         agent_mod._install_heartbeat_agent()
 
-        path = kiro_dir / "kiroclaw-heartbeat.json"
+        path = kiro_dir / "kirocrew-heartbeat.json"
         assert path.exists()
         config = json.loads(path.read_text())
 
-        assert config["name"] == "kiroclaw-heartbeat"
-        # Minimal MCP surface — only kiroclaw-core on public installs
+        assert config["name"] == "kirocrew-heartbeat"
+        # Minimal MCP surface — only kirocrew-core on public installs
         # (builder-mcp is Amazon-internal and omitted).
-        assert set(config["mcpServers"].keys()) == {"kiroclaw-core"}
+        assert set(config["mcpServers"].keys()) == {"kirocrew-core"}
         # Tools tags reflect that server (so kiro-cli loads it).
-        assert "@kiroclaw-core" in config["tools"]
+        assert "@kirocrew-core" in config["tools"]
         assert "@builder-mcp" not in config["tools"]
         # Description references the SEL audit gateway-side responsibility.
         assert "HEARTBEAT_SAFE_TOOLS" in config["description"]
 
     def test_strips_include_tools_filters_from_main_config(self, tmp_path, monkeypatch):
-        """The main kiroclaw config may narrow a server via ``--include-tools``
+        """The main kirocrew config may narrow a server via ``--include-tools``
         / ``--include-tool-tags`` / ``--exclude-tools``; those filters are
         fragile (a typo silently surfaces zero tools to the agent) and the
         heartbeat allowlist is enforced gateway-side anyway. Strip them so
         the heartbeat agent always sees the full catalog and
-        ``HEARTBEAT_SAFE_TOOLS`` is the sole gate. (Asserted on kiroclaw-core —
+        ``HEARTBEAT_SAFE_TOOLS`` is the sole gate. (Asserted on kirocrew-core —
         the only server the public installer pulls.)
         """
         import json
 
-        from kiro_claw import agent as agent_mod
+        from kiro_crew import agent as agent_mod
 
         kiro_dir = tmp_path / "agents"
         kiro_dir.mkdir()
         main_config = {
-            "name": "kiroclaw",
+            "name": "kirocrew",
             "mcpServers": {
-                "kiroclaw-core": {
+                "kirocrew-core": {
                     "command": "/bin/mc",
                     "args": [
                         "mcp-core",
@@ -306,13 +306,13 @@ class TestHeartbeatAgentInstall:
                 },
             },
         }
-        (kiro_dir / "kiroclaw.json").write_text(json.dumps(main_config))
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
         monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
 
         agent_mod._install_heartbeat_agent()
 
-        config = json.loads((kiro_dir / "kiroclaw-heartbeat.json").read_text())
-        core_args = config["mcpServers"]["kiroclaw-core"]["args"]
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text())
+        core_args = config["mcpServers"]["kirocrew-core"]["args"]
         # Filter flags + their values must be stripped (both --flag=value and
         # --flag <value> shapes).
         joined = " ".join(core_args)
@@ -328,12 +328,12 @@ class TestHeartbeatAgentInstall:
         assert "mcp-core" in core_args
 
     def test_install_resilient_when_main_config_missing(self, tmp_path, monkeypatch):
-        """First-run scenario: kiroclaw.json may not exist yet when the
+        """First-run scenario: kirocrew.json may not exist yet when the
         heartbeat installer is called.  Should still write a valid (empty
         mcpServers) heartbeat config — install ordering is not load-bearing."""
         import json
 
-        from kiro_claw import agent as agent_mod
+        from kiro_crew import agent as agent_mod
 
         kiro_dir = tmp_path / "agents"
         kiro_dir.mkdir()
@@ -341,12 +341,12 @@ class TestHeartbeatAgentInstall:
 
         agent_mod._install_heartbeat_agent()
 
-        path = kiro_dir / "kiroclaw-heartbeat.json"
+        path = kiro_dir / "kirocrew-heartbeat.json"
         assert path.exists()
         config = json.loads(path.read_text())
-        assert config["name"] == "kiroclaw-heartbeat"
+        assert config["name"] == "kirocrew-heartbeat"
         # No main config → empty mcpServers (subsequent rebuild_agent_config
-        # call will re-seed when kiroclaw.json appears).
+        # call will re-seed when kirocrew.json appears).
         assert config["mcpServers"] == {}
         # tools must be derived from mcpServers — never reference a
         # namespace without a matching mcpServers entry, otherwise kiro-cli
@@ -356,33 +356,33 @@ class TestHeartbeatAgentInstall:
     def test_tools_derived_from_resolved_mcp_servers(self, tmp_path, monkeypatch):
         """``tools`` must be built from the mcpServers actually resolved.
 
-        The public installer only pulls ``kiroclaw-core``; the Amazon-internal
+        The public installer only pulls ``kirocrew-core``; the Amazon-internal
         ``builder-mcp`` is never carried over.  So a main config that has
-        builder-mcp but NOT kiroclaw-core resolves to an empty toolbelt — and
+        builder-mcp but NOT kirocrew-core resolves to an empty toolbelt — and
         the tools list must NEVER reference a namespace without a matching
         mcpServers entry, otherwise kiro-cli fails to load the agent.
         (AutoSDE finding on rev 6.)
         """
         import json
 
-        from kiro_claw import agent as agent_mod
+        from kiro_crew import agent as agent_mod
 
         kiro_dir = tmp_path / "agents"
         kiro_dir.mkdir()
-        # Main config has builder-mcp but NOT kiroclaw-core.
+        # Main config has builder-mcp but NOT kirocrew-core.
         main_config = {
-            "name": "kiroclaw",
+            "name": "kirocrew",
             "mcpServers": {
                 "builder-mcp": {"command": "/bin/builder-mcp", "args": []},
             },
         }
-        (kiro_dir / "kiroclaw.json").write_text(json.dumps(main_config))
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
         monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
 
         agent_mod._install_heartbeat_agent()
 
-        config = json.loads((kiro_dir / "kiroclaw-heartbeat.json").read_text())
-        # builder-mcp is omitted on public installs; kiroclaw-core absent here.
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text())
+        # builder-mcp is omitted on public installs; kirocrew-core absent here.
         assert config["mcpServers"] == {}
         # tools list mirrors mcpServers — never references @builder-mcp.
         assert config["tools"] == []

@@ -38,13 +38,13 @@ jobs:
       # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
 
       - name: Check imports (isort)
-        run: isort --check-only src/kiro_claw test
+        run: isort --check-only src/kiro_crew test
 
       - name: Lint (flake8)
-        run: flake8 src/kiro_claw test
+        run: flake8 src/kiro_crew test
 
       - name: Type check (mypy)
-        run: mypy src/kiro_claw/
+        run: mypy src/kiro_crew/
 
   backend-test:
     name: Backend Tests
@@ -67,7 +67,7 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest -q -n auto --timeout=120 --cov=kiro_claw --cov-report=xml \
+          pytest -q -n auto --timeout=120 --cov=kiro_crew --cov-report=xml \
             --deselect=test/test_script_hooks.py \
             --deselect=test/test_cron_script.py \
             --deselect=test/test_run_aim_path.py

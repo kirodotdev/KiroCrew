@@ -22,7 +22,7 @@ const TABS = [
   { key: 'voice', label: 'Voice', icon: <Mic size={16} />, description: 'Text-to-speech and speech-to-text (dictation) settings' },
   { key: 'display', label: 'Display', icon: <Palette size={16} />, description: 'Zoom, font, and color theme preferences' },
   { key: 'browser', label: 'Browser', icon: <Globe size={16} />, description: 'Playwright browser mode, extension token, and auth configuration' },
-  { key: 'instances', label: 'Instances', icon: <Server size={16} />, description: 'Manage remote KiroClaw instances over SSH tunnels; switch between them from the top header' },
+  { key: 'instances', label: 'Instances', icon: <Server size={16} />, description: 'Manage remote KiroCrew instances over SSH tunnels; switch between them from the top header' },
   { key: 'security', label: 'Security', icon: <ShieldCheck size={16} />, description: 'Security posture, defense layers, certifications, and data classification' },
   { key: 'notifications', label: 'Notifications', icon: <Bell size={16} />, description: 'Sound effects and per-category alert preferences' },
   { key: 'slack', label: 'Slack', icon: <SlackIcon size={16} />, description: 'Slack channel integration settings' },
@@ -42,7 +42,7 @@ export default function SettingsPage() {
     <SidePanelLayout
       title="Settings"
       tabs={tabs}
-      footer={<span className="text-[12px] text-muted">KiroClaw v{version}</span>}
+      footer={<span className="text-[12px] text-muted">KiroCrew v{version}</span>}
     >
       {tab => <>
         {tab === 'overview' && <OverviewPanel />}

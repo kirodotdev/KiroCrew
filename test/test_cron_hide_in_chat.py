@@ -20,12 +20,12 @@ import json
 
 import pytest
 
-from kiro_claw.cron import CronJob, CronService
+from kiro_crew.cron import CronJob, CronService
 
 
 @pytest.fixture(autouse=True)
 def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_claw.cron._DEFAULT_DIR", tmp_path)
+    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
     yield
 
 

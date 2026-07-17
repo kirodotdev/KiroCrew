@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.history import (
+from kiro_crew.history import (
     _CONSOLIDATION_THRESHOLD,
     _SESSION_KEEP_LINES,
     ConversationLog,
@@ -344,7 +344,7 @@ class TestRecentFromSource:
 
 class TestSessionManagerCompaction:
     def test_sliding_window_splits_messages(self, tmp_path):
-        from kiro_claw.history import ConversationLog
+        from kiro_crew.history import ConversationLog
 
         log = ConversationLog(base_dir=tmp_path)
         log.init()
@@ -360,7 +360,7 @@ class TestSessionManagerCompaction:
         assert recent[0]["content"] == "msg-6"
 
     def test_sliding_window_all_recent_when_few(self, tmp_path):
-        from kiro_claw.history import ConversationLog
+        from kiro_crew.history import ConversationLog
 
         log = ConversationLog(base_dir=tmp_path)
         log.init()
@@ -583,14 +583,14 @@ class TestSearchSessions:
     def test_matches_query_with_json_escaped_chars(self, tmp_path):
         """Query containing backslash/quote must match despite JSON escaping.
 
-        Regression: file paths like ``src\\kiro_claw`` are stored in JSONL
-        as ``src\\\\kiro_claw`` (escaped).  A raw-line substring fast-path
+        Regression: file paths like ``src\\kiro_crew`` are stored in JSONL
+        as ``src\\\\kiro_crew`` (escaped).  A raw-line substring fast-path
         would miss them; parsing every line ensures the needle is compared
         against the un-escaped ``content`` value.
         """
         log = ConversationLog(base_dir=tmp_path)
-        log.append("alpha", "user", r"edited src\kiro_claw\history.py today")
-        results = log.search_sessions(r"src\kiro_claw")
+        log.append("alpha", "user", r"edited src\kiro_crew\history.py today")
+        results = log.search_sessions(r"src\kiro_crew")
         assert [s["key"] for s in results] == ["alpha"]
 
     def test_case_insensitive_unicode(self, tmp_path):
@@ -796,7 +796,7 @@ class TestSearchSessions:
         Files outside the window must not appear in results even if they
         would score higher, bounding per-search I/O.
         """
-        monkeypatch.setattr("kiro_claw.history._SEARCH_SCAN_WINDOW", 2)
+        monkeypatch.setattr("kiro_crew.history._SEARCH_SCAN_WINDOW", 2)
         log = ConversationLog(base_dir=tmp_path)
         # Oldest: strong match (would win on score if scanned)
         log.append("old-strong", "user", "apollo apollo apollo apollo apollo")
@@ -845,8 +845,8 @@ class TestSearchSessions:
 
 class TestArchive:
     def test_rotate_archives_dropped_lines(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.history._SESSION_MAX_BYTES", 100)
-        monkeypatch.setattr("kiro_claw.history._SESSION_KEEP_LINES", 3)
+        monkeypatch.setattr("kiro_crew.history._SESSION_MAX_BYTES", 100)
+        monkeypatch.setattr("kiro_crew.history._SESSION_KEEP_LINES", 3)
         log = ConversationLog(base_dir=tmp_path)
         for i in range(20):
             log.append("t1", "user", f"message number {i} with enough text to exceed limits")
@@ -875,8 +875,8 @@ class TestArchive:
         import os
         import time
 
-        import kiro_claw.history as history_mod
-        from kiro_claw.history import _cleanup_old_archives
+        import kiro_crew.history as history_mod
+        from kiro_crew.history import _cleanup_old_archives
 
         history_mod._last_cleanup = 0.0  # reset rate-limit so cleanup actually runs
         adir = tmp_path / "archive"
@@ -894,7 +894,7 @@ class TestArchive:
         assert new.exists()
 
     def test_archive_empty_lines_noop(self, tmp_path):
-        from kiro_claw.history import _archive_lines
+        from kiro_crew.history import _archive_lines
 
         result = _archive_lines("k", [], reason="rotate", base=tmp_path)
         assert result is None
@@ -902,7 +902,7 @@ class TestArchive:
 
     def test_same_second_conflict_suffixes_filename(self, tmp_path):
         """Multiple archives for same key in same second must not clobber each other."""
-        from kiro_claw.history import _archive_lines
+        from kiro_crew.history import _archive_lines
 
         p1 = _archive_lines("k", ["line1\n"], reason="rotate", base=tmp_path)
         p2 = _archive_lines("k", ["line2\n"], reason="rotate", base=tmp_path)
@@ -914,8 +914,8 @@ class TestArchive:
         assert "line3" in p3.read_text()
 
     def test_cleanup_old_archives_noop_when_dir_missing(self, tmp_path):
-        import kiro_claw.history as history_mod
-        from kiro_claw.history import _cleanup_old_archives
+        import kiro_crew.history as history_mod
+        from kiro_crew.history import _cleanup_old_archives
 
         history_mod._last_cleanup = 0.0
         removed = _cleanup_old_archives(retention_days=7, base=tmp_path)
@@ -926,8 +926,8 @@ class TestArchive:
         import os
         import time
 
-        import kiro_claw.history as history_mod
-        from kiro_claw.history import _cleanup_old_archives
+        import kiro_crew.history as history_mod
+        from kiro_crew.history import _cleanup_old_archives
 
         history_mod._last_cleanup = 0.0
         adir = tmp_path / "archive"
@@ -945,8 +945,8 @@ class TestArchive:
         import os
         import time
 
-        import kiro_claw.history as history_mod
-        from kiro_claw.history import _cleanup_old_archives
+        import kiro_crew.history as history_mod
+        from kiro_crew.history import _cleanup_old_archives
 
         monkeypatch.setattr(history_mod, "_resolve_retention_days", lambda: 7)
         history_mod._last_cleanup = 0.0
@@ -963,15 +963,15 @@ class TestArchive:
     def test_cleanup_throttled_skips_config_load(self, tmp_path, monkeypatch):
         """A rate-limited call must NOT resolve retention from config (Bug #6).
 
-        Config resolution (KiroClawConfig.load — a disk read + parse) is
+        Config resolution (KiroCrewConfig.load — a disk read + parse) is
         expensive and runs on every archive write via _archive_lines. The
         throttle guard must short-circuit BEFORE that read so the common
         once-per-hour-already-ran path stays cheap.
         """
         import time
 
-        import kiro_claw.history as history_mod
-        from kiro_claw.history import _cleanup_old_archives
+        import kiro_crew.history as history_mod
+        from kiro_crew.history import _cleanup_old_archives
 
         def _boom() -> int:
             raise AssertionError("config must not be loaded on a throttled call")
@@ -988,8 +988,8 @@ class TestArchive:
         """Explicit negative disables without touching config, even when throttled."""
         import time
 
-        import kiro_claw.history as history_mod
-        from kiro_claw.history import _cleanup_old_archives
+        import kiro_crew.history as history_mod
+        from kiro_crew.history import _cleanup_old_archives
 
         def _boom() -> int:
             raise AssertionError("config must not be loaded for explicit negative")
@@ -1009,8 +1009,8 @@ class TestArchive:
         first call should resolve config once; the immediate next call must be
         throttled and NOT resolve config again.
         """
-        import kiro_claw.history as history_mod
-        from kiro_claw.history import _cleanup_old_archives
+        import kiro_crew.history as history_mod
+        from kiro_crew.history import _cleanup_old_archives
 
         calls = {"n": 0}
 
@@ -1028,7 +1028,7 @@ class TestArchive:
 
     def test_safe_key_sanitizes_unsafe_chars(self, tmp_path):
         """Keys with slashes/colons must be sanitized into safe filenames."""
-        from kiro_claw.history import _archive_lines, _safe_key
+        from kiro_crew.history import _archive_lines, _safe_key
 
         assert _safe_key("slack:C123/456") == "slack_C123_456"
         p = _archive_lines("slack:C123/456", ["x\n"], reason="rotate", base=tmp_path)
@@ -1038,8 +1038,8 @@ class TestArchive:
 
     def test_multiple_rotations_produce_multiple_archives(self, tmp_path, monkeypatch):
         """A session that keeps growing across multiple rotate cycles produces multiple archive files."""
-        monkeypatch.setattr("kiro_claw.history._SESSION_MAX_BYTES", 200)
-        monkeypatch.setattr("kiro_claw.history._SESSION_KEEP_LINES", 2)
+        monkeypatch.setattr("kiro_crew.history._SESSION_MAX_BYTES", 200)
+        monkeypatch.setattr("kiro_crew.history._SESSION_KEEP_LINES", 2)
         log = ConversationLog(base_dir=tmp_path)
         for _ in range(3):
             # Each round writes enough to trigger a rotate
@@ -1050,7 +1050,7 @@ class TestArchive:
 
     def test_archive_header_is_valid_json_metadata_line(self, tmp_path):
         """First line of archive is a JSON metadata row; remaining lines are original message jsonl."""
-        from kiro_claw.history import _archive_lines
+        from kiro_crew.history import _archive_lines
 
         p = _archive_lines("k", ['{"role":"user","content":"a"}\n', '{"role":"assistant","content":"b"}\n'], reason="rotate", base=tmp_path)
         lines = p.read_text().splitlines()
@@ -1070,7 +1070,7 @@ class TestArchiveDashboardAPI:
         pytest.importorskip("aiohttp")
         from aiohttp import web
 
-        from kiro_claw.dashboard.handlers import (
+        from kiro_crew.dashboard.handlers import (
             api_session_archive_list,
             api_session_archive_read,
         )
@@ -1087,7 +1087,7 @@ class TestArchiveDashboardAPI:
         import os
         import time
 
-        import kiro_claw.history as history_mod
+        import kiro_crew.history as history_mod
 
         sessions = tmp_path / "sessions"
         archive = sessions / "archive"
@@ -1142,7 +1142,7 @@ class TestArchiveDashboardAPI:
     async def test_list_empty_when_no_archive_dir(self, tmp_path, monkeypatch):
         from aiohttp.test_utils import TestClient, TestServer
 
-        import kiro_claw.history as history_mod
+        import kiro_crew.history as history_mod
 
         sessions = tmp_path / "sessions"
         sessions.mkdir()
@@ -1233,7 +1233,7 @@ class TestArchiveOnlyDropped:
         log.append("t1", "assistant", "B")
         log.append("t1", "user", "C")
         # Read back the three message lines so we can feed them exactly to rewrite_session
-        from kiro_claw.history import _safe_key
+        from kiro_crew.history import _safe_key
 
         path = tmp_path / f"{_safe_key('t1')}.jsonl"
         lines = [ln for ln in path.read_text().splitlines() if ln and '"_type"' not in ln]
@@ -1259,8 +1259,8 @@ class TestArchiveOnlyDropped:
 class TestConsolidationToolPolicy:
     """The background consolidation LLM turn must run tool-free on ALL providers.
 
-    kiro scopes the kiroclaw-lite session to tools:[] via set_mode, but the
-    Claude Code backend skips set_mode and injects the full kiroclaw-core/cron
+    kiro scopes the kirocrew-lite session to tools:[] via set_mode, but the
+    Claude Code backend skips set_mode and injects the full kirocrew-core/cron
     toolset (auto-approved). To keep parity — and prevent a background turn from
     firing side-effecting tools like send_message/learn_add — _call_llm must
     reject all tools regardless of provider.
@@ -1268,7 +1268,7 @@ class TestConsolidationToolPolicy:
 
     @pytest.mark.asyncio
     async def test_call_llm_rejects_tools(self):
-        from kiro_claw.llm_helpers import ToolApprovalPolicy
+        from kiro_crew.llm_helpers import ToolApprovalPolicy
 
         provider = MagicMock()
         sessions = MagicMock()
@@ -1285,7 +1285,7 @@ class TestConsolidationToolPolicy:
             return {"ok": True}
 
         # Patch where it is USED — history.py imports the symbol at module top.
-        with patch("kiro_claw.history.stream_and_collect_json", side_effect=_fake_scj):
+        with patch("kiro_crew.history.stream_and_collect_json", side_effect=_fake_scj):
             result = await consolidator._call_llm("some prompt")
 
         assert result == {"ok": True}
@@ -1451,7 +1451,7 @@ class TestConsolidationDoesNotBlockLoop:
         """The LLM lessons array is capped like semantic/episodic: each
         write_lesson can perform up to 6 blocking embeds, so an uncapped list
         would occupy a worker thread for minutes."""
-        from kiro_claw.vector_memory import _MAX_LESSONS_PER_CONSOLIDATION
+        from kiro_crew.vector_memory import _MAX_LESSONS_PER_CONSOLIDATION
 
         vector_store = MagicMock()
         vector_store.write_lesson.return_value = True
@@ -1476,7 +1476,7 @@ class TestStopEventContextInjection:
         """context.py emits the system note for resolved stop events."""
         import json
 
-        from kiro_claw.context import _build_stop_event_notes
+        from kiro_crew.context import _build_stop_event_notes
 
         log = ConversationLog(base_dir=tmp_path)
         log.append("sess1", "user", "hello")
@@ -1497,7 +1497,7 @@ class TestStopEventContextInjection:
         """At most 3 stop event notes are injected."""
         import json
 
-        from kiro_claw.context import _build_stop_event_notes
+        from kiro_crew.context import _build_stop_event_notes
 
         log = ConversationLog(base_dir=tmp_path)
         for i in range(5):
@@ -1519,7 +1519,7 @@ class TestStopEventContextInjection:
         """Unresolved stop_events (state=stopping) are not injected."""
         import json
 
-        from kiro_claw.context import _build_stop_event_notes
+        from kiro_crew.context import _build_stop_event_notes
 
         log = ConversationLog(base_dir=tmp_path)
         stop_data = json.dumps({
@@ -1538,7 +1538,7 @@ class TestAutoSkillHelpers:
     """Module-level helpers for auto-skill eligibility (Mesh-677)."""
 
     def test_count_tool_call_messages(self):
-        from kiro_claw.history import _count_tool_call_messages
+        from kiro_crew.history import _count_tool_call_messages
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -1551,7 +1551,7 @@ class TestAutoSkillHelpers:
         assert _count_tool_call_messages(messages) == 3
 
     def test_count_handles_malformed_tools(self):
-        from kiro_claw.history import _count_tool_call_messages
+        from kiro_crew.history import _count_tool_call_messages
 
         messages = [
             {"role": "assistant", "content": "x", "tools": "not-a-list"},
@@ -1561,7 +1561,7 @@ class TestAutoSkillHelpers:
         assert _count_tool_call_messages(messages) == 0
 
     def test_session_touched_sensitive_true_for_aws(self):
-        from kiro_claw.history import _session_touched_sensitive
+        from kiro_crew.history import _session_touched_sensitive
 
         messages = [
             {"role": "assistant", "content": "", "tools": ["Reading ~/.aws/credentials"]},
@@ -1569,7 +1569,7 @@ class TestAutoSkillHelpers:
         assert _session_touched_sensitive(messages) is True
 
     def test_session_touched_sensitive_true_for_imds(self):
-        from kiro_claw.history import _session_touched_sensitive
+        from kiro_crew.history import _session_touched_sensitive
 
         messages = [
             {"role": "assistant", "content": "", "tools": ["curl 169.254.169.254/latest/..."]},
@@ -1577,7 +1577,7 @@ class TestAutoSkillHelpers:
         assert _session_touched_sensitive(messages) is True
 
     def test_session_touched_sensitive_false_for_normal_tools(self):
-        from kiro_claw.history import _session_touched_sensitive
+        from kiro_crew.history import _session_touched_sensitive
 
         messages = [
             {"role": "assistant", "content": "", "tools": ["Running: ls /tmp", "fs_read"]},
@@ -1591,7 +1591,7 @@ class TestDashboardSchemaToolCallCounting:
 
     def test_count_dashboard_role_tool_messages(self):
         """Dashboard pipeline records tool calls as role='tool' messages."""
-        from kiro_claw.history import _count_tool_call_messages
+        from kiro_crew.history import _count_tool_call_messages
 
         messages = [
             {"role": "user", "content": "find info on grading"},
@@ -1606,7 +1606,7 @@ class TestDashboardSchemaToolCallCounting:
 
     def test_sensitive_detection_dashboard_schema(self):
         """Sensitive paths in dashboard tool content are detected."""
-        from kiro_claw.history import _session_touched_sensitive
+        from kiro_crew.history import _session_touched_sensitive
 
         messages = [
             {"role": "assistant", "content": "Reading credentials."},
@@ -1617,7 +1617,7 @@ class TestDashboardSchemaToolCallCounting:
 
     def test_sensitive_false_for_normal_dashboard_tools(self):
         """Normal dashboard tool messages don't trigger sensitive detection."""
-        from kiro_claw.history import _session_touched_sensitive
+        from kiro_crew.history import _session_touched_sensitive
 
         messages = [
             {"role": "tool", "content": "🔧 Running: @builder-mcp/ReadInternalWebsites"},
@@ -1627,7 +1627,7 @@ class TestDashboardSchemaToolCallCounting:
 
     def test_mixed_schema_no_double_count(self):
         """Sessions mixing legacy tools field and dashboard role='tool' count correctly."""
-        from kiro_claw.history import _count_tool_call_messages
+        from kiro_crew.history import _count_tool_call_messages
 
         messages = [
             {"role": "assistant", "content": "step 1", "tools": ["fs_read"]},
@@ -1647,8 +1647,8 @@ class TestProcessAutoSkillsIntegration:
     @pytest.mark.asyncio
     async def test_consolidator_default_off_never_writes(self, tmp_path):
         """With auto_skills_enabled=False (default), no skill writes happen."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -1686,8 +1686,8 @@ class TestProcessAutoSkillsIntegration:
 
     @pytest.mark.asyncio
     async def test_consolidator_on_creates_auto_skill(self, tmp_path):
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -1735,8 +1735,8 @@ class TestProcessAutoSkillsIntegration:
 
     @pytest.mark.asyncio
     async def test_sensitive_session_skipped_even_when_enabled(self, tmp_path):
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -1779,8 +1779,8 @@ class TestProcessAutoSkillsIntegration:
     @pytest.mark.asyncio
     async def test_credentials_in_llm_output_are_redacted_before_write(self, tmp_path):
         """If the LLM returns a procedure with an AWS key, it's redacted before disk write."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -1825,8 +1825,8 @@ class TestProcessAutoSkillsIntegration:
 
     @pytest.mark.asyncio
     async def test_similarity_dedup_skips_near_duplicate(self, tmp_path):
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -1876,8 +1876,8 @@ class TestProcessAutoSkillsIntegration:
 
         This is the regression test that would have caught the schema mismatch bug.
         """
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -1930,8 +1930,8 @@ class TestAutoSkillSELAudit:
     @pytest.mark.asyncio
     async def test_refine_namespace_lock_rejection_emits_sel(self, tmp_path):
         """When LLM tries to refine a hand-authored skill, SEL must log rejection."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -1975,7 +1975,7 @@ class TestAutoSkillSELAudit:
             recorded.append(kwargs)
 
         with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
-            with patch("kiro_claw.history.sel") as mock_sel:
+            with patch("kiro_crew.history.sel") as mock_sel:
                 mock_sel.return_value.log_tool_invocation = fake_log
                 await consolidator._consolidate("dashboard:chat-refine", include_history=True)
 
@@ -1996,8 +1996,8 @@ class TestAutoSkillSELAudit:
     @pytest.mark.asyncio
     async def test_create_path_failure_emits_sel(self, tmp_path):
         """When create_auto_skill returns None (invalid slug / oversize), SEL must log rejection."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2033,7 +2033,7 @@ class TestAutoSkillSELAudit:
             recorded.append(kwargs)
 
         with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
-            with patch("kiro_claw.history.sel") as mock_sel:
+            with patch("kiro_crew.history.sel") as mock_sel:
                 mock_sel.return_value.log_tool_invocation = fake_log
                 await consolidator._consolidate("dashboard:chat-bad-slug", include_history=True)
 
@@ -2059,8 +2059,8 @@ class TestAutoSkillSELAuditCompleteness:
     @pytest.mark.asyncio
     async def test_create_empty_after_redaction_emits_sel(self, tmp_path):
         """If LLM returns new_skill but redaction strips everything, emit rejection audit."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2096,7 +2096,7 @@ class TestAutoSkillSELAuditCompleteness:
             recorded.append(kwargs)
 
         with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
-            with patch("kiro_claw.history.sel") as mock_sel:
+            with patch("kiro_crew.history.sel") as mock_sel:
                 mock_sel.return_value.log_tool_invocation = fake_log
                 await consolidator._consolidate("dashboard:chat-empty", include_history=True)
 
@@ -2112,8 +2112,8 @@ class TestAutoSkillSELAuditCompleteness:
     @pytest.mark.asyncio
     async def test_refine_empty_after_redaction_emits_sel(self, tmp_path):
         """Same gap on refine path: empty fields after redaction must audit."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import AutoSkillProvenance, SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2160,7 +2160,7 @@ class TestAutoSkillSELAuditCompleteness:
             recorded.append(kwargs)
 
         with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
-            with patch("kiro_claw.history.sel") as mock_sel:
+            with patch("kiro_crew.history.sel") as mock_sel:
                 mock_sel.return_value.log_tool_invocation = fake_log
                 await consolidator._consolidate(
                     "dashboard:chat-refine-empty", include_history=True
@@ -2177,8 +2177,8 @@ class TestAutoSkillSELAuditCompleteness:
     @pytest.mark.asyncio
     async def test_refine_update_failed_emits_sel(self, tmp_path):
         """When update_auto_skill returns False (oversized / missing), audit the rejection."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import (
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import (
             AUTO_SKILL_MAX_PROCEDURE_CHARS,
             AutoSkillProvenance,
             SkillsLoader,
@@ -2230,7 +2230,7 @@ class TestAutoSkillSELAuditCompleteness:
             recorded.append(kwargs)
 
         with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
-            with patch("kiro_claw.history.sel") as mock_sel:
+            with patch("kiro_crew.history.sel") as mock_sel:
                 mock_sel.return_value.log_tool_invocation = fake_log
                 await consolidator._consolidate("dashboard:chat-oversize", include_history=True)
 
@@ -2257,7 +2257,7 @@ class TestConsolidationPromptJsonShape:
         """Extract the new_skill shape example and verify balanced quotes."""
         import inspect
 
-        from kiro_claw.history import HistoryConsolidator
+        from kiro_crew.history import HistoryConsolidator
 
         src = inspect.getsource(HistoryConsolidator._consolidate)
         # Find the new_skill prompt key block — it's a concatenated string
@@ -2283,8 +2283,8 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_session_fires_for_eligible(self, tmp_path):
         """consolidate_session triggers consolidation for sessions with messages."""
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2330,7 +2330,7 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_session_skips_empty(self, tmp_path):
         """consolidate_session does nothing for sessions with no messages."""
-        from kiro_claw.memory import MemoryStore
+        from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2347,7 +2347,7 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_session_skips_already_running(self, tmp_path):
         """consolidate_session doesn't double-trigger for the same session."""
-        from kiro_claw.memory import MemoryStore
+        from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2366,7 +2366,7 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_session_skips_sensitive(self, tmp_path):
         """consolidate_session skips sessions that touched sensitive paths."""
-        from kiro_claw.memory import MemoryStore
+        from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2385,7 +2385,7 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_session_on_done_logs_exception(self, tmp_path):
         """_on_done callback logs warning when consolidation task raises."""
-        from kiro_claw.memory import MemoryStore
+        from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2410,7 +2410,7 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_now_skips_sensitive(self, tmp_path):
         """consolidate_now skips sessions that touched sensitive paths."""
-        from kiro_claw.memory import MemoryStore
+        from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2427,7 +2427,7 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_now_happy_path(self, tmp_path):
         """consolidate_now calls _consolidate for eligible sessions."""
-        from kiro_claw.memory import MemoryStore
+        from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
@@ -2444,7 +2444,7 @@ class TestConsolidateSession:
     @pytest.mark.asyncio
     async def test_consolidate_now_skips_empty(self, tmp_path):
         """consolidate_now does nothing for sessions with no unconsolidated messages."""
-        from kiro_claw.memory import MemoryStore
+        from kiro_crew.memory import MemoryStore
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()

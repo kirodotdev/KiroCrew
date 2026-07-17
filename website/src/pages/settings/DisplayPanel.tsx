@@ -26,26 +26,26 @@ export function DisplayPanel() {
   const defaultColor = useAppSelector(s => s.dashboard.sessionDefaultColor) as DefaultColorSetting
 
   // Recency-tint count is persisted server-side (dashboard.recent_tint_count) via the shared
-  // kiroclawConfig query, so the choice follows the user across browsers/restarts. Optimistic
+  // kirocrewConfig query, so the choice follows the user across browsers/restarts. Optimistic
   // cache write makes the sidebar tint (which reads the same query) re-rank instantly.
   const qc = useQueryClient()
   const mcQ = useQuery<{ dashboard?: { recent_tint_count?: number } }>({
-    queryKey: ['kiroclawConfig'],
-    queryFn: () => api.kiroclawConfig(),
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
   })
   const recentTintCount = clampTintCount(mcQ.data?.dashboard?.recent_tint_count)
   const tintMut = useMutation({
     mutationFn: (value: number) => api.patchConfig('dashboard.recent_tint_count', value),
     onMutate: async (value: number) => {
-      await qc.cancelQueries({ queryKey: ['kiroclawConfig'] })
-      const prev = qc.getQueryData<{ dashboard?: { recent_tint_count?: number } }>(['kiroclawConfig'])
+      await qc.cancelQueries({ queryKey: ['kirocrewConfig'] })
+      const prev = qc.getQueryData<{ dashboard?: { recent_tint_count?: number } }>(['kirocrewConfig'])
       const next = structuredClone(prev ?? {})
       next.dashboard = { ...(next.dashboard ?? {}), recent_tint_count: value }
-      qc.setQueryData(['kiroclawConfig'], next)
+      qc.setQueryData(['kirocrewConfig'], next)
       return { prev }
     },
-    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(['kiroclawConfig'], ctx.prev) },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['kiroclawConfig'] }),
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(['kirocrewConfig'], ctx.prev) },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
   })
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
 
@@ -143,7 +143,7 @@ export function DisplayPanel() {
           />
           <SettingsStepper
             label="Highlight recent sessions"
-            description="Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your KiroClaw config."
+            description="Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your KiroCrew config."
             value={recentTintCount}
             onIncrement={() => setTintCount(recentTintCount + 1)}
             onDecrement={() => setTintCount(recentTintCount - 1)}

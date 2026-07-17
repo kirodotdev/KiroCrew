@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from kiro_claw.dashboard.state import (
+from kiro_crew.dashboard.state import (
     DashboardState,
     _fmt_duration,
     _load_notifications,
@@ -25,7 +25,7 @@ class TestDashboard:
         assert _fmt_duration(0) == "0m 0s"
 
     def test_state_init(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = DashboardState(
             sessions=MagicMock(count=3),
             crons=MagicMock(),
@@ -36,7 +36,7 @@ class TestDashboard:
         assert state.messages_received == 0
 
     def test_state_init_with_slack_client(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = DashboardState(
             sessions=MagicMock(count=0),
             crons=MagicMock(),
@@ -52,7 +52,7 @@ class TestDashboard:
 class TestNotificationPersistence:
     def test_persist_and_load(self, monkeypatch, tmp_path) -> None:
         """Notifications are persisted to JSONL and loaded on restart."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         _persist_notification({"kind": "cron", "title": "Job A", "body": "result"})
         _persist_notification({"kind": "subagent", "title": "Sub B", "body": "done"})
 
@@ -63,12 +63,12 @@ class TestNotificationPersistence:
 
     def test_load_empty(self, monkeypatch, tmp_path) -> None:
         """Loading from nonexistent file returns empty list."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         assert _load_notifications() == []
 
     def test_load_redacts_preexisting_rows(self, monkeypatch, tmp_path) -> None:
         """Rows persisted before delivery-time redaction are redacted at load."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         path = tmp_path / "notifications.jsonl"
         secret = "AKIAIOSFODNN7EXAMPLE"
         row = {
@@ -92,7 +92,7 @@ class TestNotificationPersistence:
     ) -> None:
         """A valid-JSON row with an unexpected shape (normalize/redact raises)
         is skipped per-line; surrounding good rows survive."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         path = tmp_path / "notifications.jsonl"
         lines = [
             json.dumps({"kind": "cron", "title": "Before", "body": "ok"}),
@@ -106,7 +106,7 @@ class TestNotificationPersistence:
 
     def test_load_corrupted_lines_skipped(self, monkeypatch, tmp_path) -> None:
         """Corrupted JSON lines are skipped during load."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         path = tmp_path / "notifications.jsonl"
         lines = [
             json.dumps({"kind": "cron", "title": "Good", "body": "ok"}),
@@ -122,8 +122,8 @@ class TestNotificationPersistence:
 
     def test_trim_large_file(self, monkeypatch, tmp_path) -> None:
         """File is trimmed when exceeding 2x max notifications."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
-        monkeypatch.setattr("kiro_claw.dashboard.state._MAX_PERSISTED_NOTIFICATIONS", 5)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state._MAX_PERSISTED_NOTIFICATIONS", 5)
         path = tmp_path / "notifications.jsonl"
         # Write 11 lines (> 2 * 5)
         lines: list[str] = []
@@ -141,7 +141,7 @@ class TestNotificationPersistence:
 
     def test_notify_persists(self, monkeypatch, tmp_path) -> None:
         """DashboardState.notify() persists to disk."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = DashboardState(
             sessions=MagicMock(count=0),
             crons=MagicMock(),
@@ -167,7 +167,7 @@ class TestNotificationPersistence:
         carry LLM-derived content; a top-level-only scan would let secrets
         in nested fields reach SSE clients and JSONL on disk.
         """
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = DashboardState(
             sessions=MagicMock(count=0),
             crons=MagicMock(),
@@ -201,7 +201,7 @@ class TestNotificationPersistence:
 
     def test_state_loads_existing_on_init(self, monkeypatch, tmp_path) -> None:
         """DashboardState.__init__ loads existing notifications from disk."""
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         # Pre-persist some notifications
         _persist_notification({"kind": "cron", "title": "Old", "body": "data"})
         _persist_notification({"kind": "cron", "title": "Old2", "body": "data2"})

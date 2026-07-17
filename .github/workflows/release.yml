@@ -33,9 +33,9 @@ jobs:
 
       - name: Stage frontend
         run: |
-          rm -rf src/kiro_claw/static/dist
-          mkdir -p src/kiro_claw/static
-          cp -R website/dist src/kiro_claw/static/dist
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
 
       - name: Build wheel + sdist
         run: |
@@ -56,9 +56,9 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            artifact-name: KiroClaw-macOS-arm64
+            artifact-name: KiroCrew-macOS-arm64
           - os: ubuntu-22.04
-            artifact-name: KiroClaw-Linux-x64
+            artifact-name: KiroCrew-Linux-x64
     steps:
       - uses: actions/checkout@v4
 

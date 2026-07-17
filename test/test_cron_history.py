@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.cron_history import CronHistoryStore, CronRunRecord
+from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -290,7 +290,7 @@ def test_record_from_dict_ignores_extra_keys() -> None:
 
 @pytest.mark.asyncio
 async def test_run_job_returns_false_when_already_executing() -> None:
-    from kiro_claw.cron import CronJob, CronService
+    from kiro_crew.cron import CronJob, CronService
 
     svc = CronService.__new__(CronService)
     svc._jobs = [CronJob(id="j1", name="test", schedule="* * * * *", message="hi")]
@@ -306,7 +306,7 @@ async def test_run_job_returns_false_when_already_executing() -> None:
 
 @pytest.mark.asyncio
 async def test_run_job_stores_manual_trigger_meta() -> None:
-    from kiro_claw.cron import CronJob, CronService
+    from kiro_crew.cron import CronJob, CronService
 
     svc = CronService.__new__(CronService)
     svc._jobs = [CronJob(id="j1", name="test", schedule="* * * * *", message="hi")]

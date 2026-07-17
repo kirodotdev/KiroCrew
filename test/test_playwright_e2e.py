@@ -7,7 +7,7 @@ suite uses, then runs the credential-less, crash-free Playwright spec set
 browser binary.
 
 Gating:
-  * ``KIROCLAW_E2E`` (set by E2eTestCommand) lifts the skipif, same as the
+  * ``KIROCREW_E2E`` (set by E2eTestCommand) lifts the skipif, same as the
     smoke suite.
   * Skips gracefully when the in-tree ``website`` dir or its Playwright CLI
     can't be resolved (e.g. a python-only checkout without the built frontend
@@ -27,10 +27,10 @@ from typing import NoReturn
 
 import pytest
 
-# Gate behind KIROCLAW_E2E so it never runs in the default unit-test pass.
+# Gate behind KIROCREW_E2E so it never runs in the default unit-test pass.
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("KIROCLAW_E2E"),
-    reason="E2E Playwright suite. Set KIROCLAW_E2E=1 to run.",
+    not os.environ.get("KIROCREW_E2E"),
+    reason="E2E Playwright suite. Set KIROCREW_E2E=1 to run.",
 )
 
 _WEBSITE = "website"
@@ -79,11 +79,11 @@ def _resolve_node18_dir() -> str | None:
 def _resolve_website_dir() -> Path | None:
     """Locate the in-tree ``website`` root (with ``playwright/`` + ``node_modules``).
 
-    Mirrors ``kiro_claw.frontend`` dist resolution: the canonical frontend lives
+    Mirrors ``kiro_crew.frontend`` dist resolution: the canonical frontend lives
     in-tree at ``<repo-root>/website``. ``test/`` sits at the repo root, so the
     website is a sibling of this file's parent directory.
     """
-    repo_root = Path(__file__).resolve().parent.parent  # KiroClaw repo root
+    repo_root = Path(__file__).resolve().parent.parent  # KiroCrew repo root
     in_tree = repo_root / _WEBSITE
     return in_tree if (in_tree / "playwright").is_dir() else None
 
@@ -92,12 +92,12 @@ def test_dashboard_playwright_suite(tmp_path) -> None:
     """Boot a gateway and run the credential-less Playwright spec set against it."""
 
     def _unresolved(msg: str) -> NoReturn:
-        # On the required PR gate (KIROCLAW_E2E_REQUIRE, set by that step) an
+        # On the required PR gate (KIROCREW_E2E_REQUIRE, set by that step) an
         # environment-resolution miss is a HARD failure: pytest counts a skip as
         # a pass, so the gate would go green having run zero browser specs -- the
         # exact "dead suite, silent UI drift" rot this fold exists to catch. Keep
         # the graceful skip for ad-hoc local/dev runs (marker unset).
-        if os.environ.get("KIROCLAW_E2E_REQUIRE"):
+        if os.environ.get("KIROCREW_E2E_REQUIRE"):
             pytest.fail(msg)
         pytest.skip(msg)
 
@@ -116,10 +116,10 @@ def test_dashboard_playwright_suite(tmp_path) -> None:
     # Point the gateway's ACP client at the packaged fake backend so the
     # agent-driven specs (chat, fork) run deterministic, credential-less turns
     # instead of needing real model access. acp/client.py reads
-    # KIROCLAW_KIRO_BIN and, when set, spawns it as the agent binary; the
+    # KIROCREW_KIRO_BIN and, when set, spawns it as the agent binary; the
     # harness gateway inherits os.environ at spawn time.
-    from kiro_claw.testing import fake_acp_backend
-    from kiro_claw.testing.harness import spawn_feature_gateway
+    from kiro_crew.testing import fake_acp_backend
+    from kiro_crew.testing.harness import spawn_feature_gateway
 
     # Mirror the smoke suite's acp_gateway fixture: exec the packaged fake via a
     # sys.executable-pinned launcher rather than its own ``#!/usr/bin/env
@@ -133,8 +133,8 @@ def test_dashboard_playwright_suite(tmp_path) -> None:
     )
     launcher.chmod(0o755)
 
-    prev_kiro_bin = os.environ.get("KIROCLAW_KIRO_BIN")
-    os.environ["KIROCLAW_KIRO_BIN"] = str(launcher)
+    prev_kiro_bin = os.environ.get("KIROCREW_KIRO_BIN")
+    os.environ["KIROCREW_KIRO_BIN"] = str(launcher)
     try:
         with spawn_feature_gateway(fixture="minimal", approval="reads") as gw:
             env = dict(os.environ)
@@ -149,9 +149,9 @@ def test_dashboard_playwright_suite(tmp_path) -> None:
                     # can run headlessly -- opt them back in.
                     "PLAYWRIGHT_RUN_AGENT_SPECS": "1",
                     # Explicit ephemeral-harness marker: this gateway runs on an
-                    # isolated tmp KIROCLAW_HOME (spawn_feature_gateway --test-mode),
+                    # isolated tmp KIROCREW_HOME (spawn_feature_gateway --test-mode),
                     # so its slots are disposable.
-                    "KIROCLAW_E2E_EPHEMERAL": "1",
+                    "KIROCREW_E2E_EPHEMERAL": "1",
                     # CI mode: serial workers + retries:2 (absorbs gateway-load
                     # timeout flakes) + html reporter, per playwright.config.ts.
                     "CI": "1",
@@ -166,6 +166,6 @@ def test_dashboard_playwright_suite(tmp_path) -> None:
             assert rc == 0, f"playwright test exited {rc}"
     finally:
         if prev_kiro_bin is None:
-            os.environ.pop("KIROCLAW_KIRO_BIN", None)
+            os.environ.pop("KIROCREW_KIRO_BIN", None)
         else:
-            os.environ["KIROCLAW_KIRO_BIN"] = prev_kiro_bin
+            os.environ["KIROCREW_KIRO_BIN"] = prev_kiro_bin

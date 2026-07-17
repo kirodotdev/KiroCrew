@@ -1,5 +1,5 @@
 /**
- * AppHost — dynamically loads and renders a KiroClaw app via ESM import.
+ * AppHost — dynamically loads and renders a KiroCrew app via ESM import.
  *
  * Replaces the old AppLoader (iframe) and AppPage (backend status) with a
  * single component that:

@@ -17,7 +17,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.config.schema import (
+from kiro_crew.config.schema import (
     SCHEMA_REGISTRY,
     config_entry_to_dict,
 )
@@ -29,7 +29,7 @@ from kiro_claw.config.schema import (
 
 def _make_app() -> web.Application:
     """Minimal aiohttp app with the schema endpoint."""
-    from kiro_claw.dashboard.handlers import api_config_schema
+    from kiro_crew.dashboard.handlers import api_config_schema
 
     app = web.Application()
     app.router.add_get("/api/config/schema", api_config_schema)
@@ -192,24 +192,24 @@ class TestSchemaApiEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# KiroClaw Agent CRUD API tests (Tasks 5.3 + 5.4)
+# KiroCrew Agent CRUD API tests (Tasks 5.3 + 5.4)
 # ---------------------------------------------------------------------------
 
 
 def _make_crud_app() -> web.Application:
-    """Minimal aiohttp app with KiroClaw Agent CRUD endpoints."""
-    from kiro_claw.dashboard.handlers import (
-        api_kiroclaw_agent_delete,
-        api_kiroclaw_agent_update,
-        api_kiroclaw_agents,
-        api_kiroclaw_agents_create,
+    """Minimal aiohttp app with KiroCrew Agent CRUD endpoints."""
+    from kiro_crew.dashboard.handlers import (
+        api_kirocrew_agent_delete,
+        api_kirocrew_agent_update,
+        api_kirocrew_agents,
+        api_kirocrew_agents_create,
     )
 
     app = web.Application()
-    app.router.add_get("/api/agents", api_kiroclaw_agents)
-    app.router.add_post("/api/agents", api_kiroclaw_agents_create)
-    app.router.add_put("/api/agents/{name}", api_kiroclaw_agent_update)
-    app.router.add_delete("/api/agents/{name}", api_kiroclaw_agent_delete)
+    app.router.add_get("/api/agents", api_kirocrew_agents)
+    app.router.add_post("/api/agents", api_kirocrew_agents_create)
+    app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+    app.router.add_delete("/api/agents/{name}", api_kirocrew_agent_delete)
     return app
 
 
@@ -224,7 +224,7 @@ def _seed_config() -> dict:
     return {
         "agents": {
             "default": {
-                "kiro_agent": "kiroclaw",
+                "kiro_agent": "kirocrew",
                 "workspace": "default",
                 "memory_store": "default",
             },
@@ -240,7 +240,7 @@ def _seed_config() -> dict:
 
 
 class TestAgentCrudProperties:
-    """Property-based tests for KiroClaw Agent CRUD round-trips."""
+    """Property-based tests for KiroCrew Agent CRUD round-trips."""
 
     # Feature: multi-agent-orchestration, Property 8: CRUD create round-trip
     # **Validates: Requirements 4.1, 4.2**
@@ -251,7 +251,7 @@ class TestAgentCrudProperties:
             min_size=1,
             max_size=30,
         ),
-        kiro_agent=st.sampled_from(["kiroclaw", "oncall", "research", "coding"]),
+        kiro_agent=st.sampled_from(["kirocrew", "oncall", "research", "coding"]),
         workspace=st.sampled_from(["default", "oncall", "research"]),
         memory_store=st.sampled_from(["default", "oncall-kb", "research-mem"]),
     )
@@ -273,7 +273,7 @@ class TestAgentCrudProperties:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     # Create
                     resp = await client.post(
@@ -318,13 +318,13 @@ class TestAgentCrudProperties:
         if not (update_kiro or update_ws or update_ms):
             update_kiro = True  # ensure at least one field updated
 
-        new_kiro = data.draw(st.sampled_from(["kiroclaw", "oncall", "research"]))
+        new_kiro = data.draw(st.sampled_from(["kirocrew", "oncall", "research"]))
         new_ws = data.draw(st.sampled_from(["default", "oncall"]))
         new_ms = data.draw(st.sampled_from(["default", "oncall-kb"]))
 
         seed = _seed_config()
         seed["agents"]["test-agent"] = {
-            "kiro_agent": "kiroclaw",
+            "kiro_agent": "kirocrew",
             "workspace": "default",
             "memory_store": "default",
         }
@@ -334,7 +334,7 @@ class TestAgentCrudProperties:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     body: dict = {}
                     if update_kiro:
@@ -355,7 +355,7 @@ class TestAgentCrudProperties:
                     if update_kiro:
                         assert agent["kiro_agent"] == new_kiro
                     else:
-                        assert agent["kiro_agent"] == "kiroclaw"
+                        assert agent["kiro_agent"] == "kirocrew"
                     if update_ws:
                         assert agent["workspace"] == new_ws
                     else:
@@ -386,7 +386,7 @@ class TestAgentCrudProperties:
 
         seed = _seed_config()
         seed["agents"][name] = {
-            "kiro_agent": "kiroclaw",
+            "kiro_agent": "kirocrew",
             "workspace": "default",
             "memory_store": "default",
         }
@@ -396,7 +396,7 @@ class TestAgentCrudProperties:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     resp = await client.delete(f"/api/agents/{name}")
                     assert resp.status == 200
@@ -415,7 +415,7 @@ class TestAgentCrudProperties:
 
 
 class TestAgentCrudEdgeCases:
-    """Unit tests for KiroClaw Agent CRUD error handling."""
+    """Unit tests for KiroCrew Agent CRUD error handling."""
 
     @pytest.mark.asyncio
     async def test_create_duplicate_returns_409(self) -> None:
@@ -425,11 +425,11 @@ class TestAgentCrudEdgeCases:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     resp = await client.post(
                         "/api/agents",
-                        json={"name": "default", "kiro_agent": "kiroclaw"},
+                        json={"name": "default", "kiro_agent": "kirocrew"},
                     )
                     assert resp.status == 409
                     data = await resp.json()
@@ -445,7 +445,7 @@ class TestAgentCrudEdgeCases:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     resp = await client.put(
                         "/api/agents/nonexistent",
@@ -465,7 +465,7 @@ class TestAgentCrudEdgeCases:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     resp = await client.delete("/api/agents/default")
                     assert resp.status == 409
@@ -482,7 +482,7 @@ class TestAgentCrudEdgeCases:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     resp = await client.delete("/api/agents/nonexistent")
                     assert resp.status == 404
@@ -499,11 +499,11 @@ class TestAgentCrudEdgeCases:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     resp = await client.post(
                         "/api/agents",
-                        json={"name": "", "kiro_agent": "kiroclaw"},
+                        json={"name": "", "kiro_agent": "kirocrew"},
                     )
                     assert resp.status == 400
                     data = await resp.json()
@@ -519,11 +519,11 @@ class TestAgentCrudEdgeCases:
             tmp = Path(f.name)
 
         try:
-            with unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=tmp):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
                     resp = await client.post(
                         "/api/agents",
-                        json={"name": "   ", "kiro_agent": "kiroclaw"},
+                        json={"name": "   ", "kiro_agent": "kirocrew"},
                     )
                     assert resp.status == 400
         finally:

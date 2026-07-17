@@ -1,0 +1,35 @@
+{
+  "name": "deploy-web",
+  "version": "0.1.0",
+  "displayName": "Web Deploy",
+  "description": "Publish artifacts (HTML / markdown / widget) to a public HTTPS URL on your own AWS account (private S3 + CloudFront + OAC). Bring your own AWS profile; KiroCrew never stores credentials.",
+  "author": "zejiangg",
+  "tags": ["aws", "publish", "deploy", "artifacts"],
+  "defaultEnabled": false,
+  "skills": ["skills/deploy-web"],
+  "permissions": {
+    "api": ["/api/apps/deploy-web", "/api/apps/deploy-web/*"]
+  },
+  "ui": {
+    "pages": [
+      {"route": "/deploy-web", "label": "Web Deploy", "icon": "Globe"}
+    ]
+  },
+  "publishProvider": {
+    "id": "deploy-web-aws",
+    "label": "Publish to public web (your AWS)",
+    "icon": "Globe",
+    "endpoint": "/api/apps/deploy-web/deploy",
+    "kinds": ["widget", "html", "markdown"],
+    "setupRoute": "/deploy-web",
+    "configFile": "config.json",
+    "configuredField": "profile"
+  },
+  "dependencies": {
+    "commands": ["aws"]
+  },
+  "configSchema": {
+    "profile": {"type": "string", "description": "AWS profile name (resolved by the local AWS CLI; never a raw key)"},
+    "region": {"type": "string", "default": "us-west-2", "description": "AWS region for the S3 origin bucket"}
+  }
+}

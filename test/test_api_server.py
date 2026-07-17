@@ -12,14 +12,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.server import _register_mcp_routes
-from kiro_claw.dashboard.state import DashboardState
+from kiro_crew.dashboard.server import _register_mcp_routes
+from kiro_crew.dashboard.state import DashboardState
 
 
 def _make_state(tmp_path, **kwargs):
     """DashboardState with mocked services (mirrors --slack-only init)."""
     monkeypatch_dir = tmp_path
-    import kiro_claw.dashboard.state as _st
+    import kiro_crew.dashboard.state as _st
 
     orig = _st.config_dir
     _st.config_dir = lambda: monkeypatch_dir
@@ -150,7 +150,7 @@ class TestApiServerSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_without_slack(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path, slack_client=None)
         async with TestClient(TestServer(_make_api_app(state))) as client:
             resp = await client.post("/api/send-message", json={"text": "hello"})
@@ -197,11 +197,11 @@ class TestStartApiServerWiring:
 
     @pytest.mark.asyncio
     async def test_server_has_audit_middleware_and_hook_store(self, tmp_path, monkeypatch):
-        import kiro_claw.dashboard.state as _st
+        import kiro_crew.dashboard.state as _st
 
         monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
 
-        from kiro_claw.dashboard.server import start_api_server
+        from kiro_crew.dashboard.server import start_api_server
 
         runner, state = await start_api_server(
             sessions=MagicMock(count=0),
@@ -219,25 +219,25 @@ class TestStartApiServerWiring:
             await runner.cleanup()
 
 
-class TestApiKiroclawConfig:
-    """Tests for PUT /api/config/kiroclaw inline validation."""
+class TestApiKirocrewConfig:
+    """Tests for PUT /api/config/kirocrew inline validation."""
 
     @staticmethod
     def _make_app(tmp_path):
-        from kiro_claw.dashboard import handlers
+        from kiro_crew.dashboard import handlers
 
         app = web.Application()
-        app.router.add_get("/api/config/kiroclaw", handlers.api_kiroclaw_config)
-        app.router.add_put("/api/config/kiroclaw", handlers.api_kiroclaw_config)
+        app.router.add_get("/api/config/kirocrew", handlers.api_kirocrew_config)
+        app.router.add_put("/api/config/kirocrew", handlers.api_kirocrew_config)
         return app
 
     @pytest.mark.asyncio
     async def test_put_happy_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {"max_subagents": 3}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"subagent_max_turns": 50}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_max_turns": 50}})
             assert resp.status == 200
             import json
 
@@ -247,29 +247,29 @@ class TestApiKiroclawConfig:
 
     @pytest.mark.asyncio
     async def test_put_rejects_bool(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"subagent_max_turns": True}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_max_turns": True}})
             assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_put_rejects_out_of_range(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"max_subagents": 999}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"max_subagents": 999}})
             assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_put_persists_subagent_auto_max(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {"max_subagents": 0}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"subagent_auto_max": 32}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_auto_max": 32}})
             assert resp.status == 200
             import json
 
@@ -278,11 +278,11 @@ class TestApiKiroclawConfig:
 
     @pytest.mark.asyncio
     async def test_put_rejects_subagent_auto_max_above_ceiling(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"subagent_auto_max": 9999}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_auto_max": 9999}})
             assert resp.status == 400
 
     @pytest.mark.asyncio
@@ -290,12 +290,12 @@ class TestApiKiroclawConfig:
         # Raising subagent_auto_max in the same request must NOT let max_subagents
         # exceed the absolute ceiling (64): a 9999 auto_max is rejected first, so
         # the persisted cap stays at the default 16 and max_subagents=9999 fails.
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put(
-                "/api/config/kiroclaw",
+                "/api/config/kirocrew",
                 json={"agent": {"subagent_auto_max": 9999, "max_subagents": 9999}},
             )
             assert resp.status == 400
@@ -304,34 +304,34 @@ class TestApiKiroclawConfig:
     async def test_put_corrupt_persisted_auto_max_clamped_to_ceiling(self, tmp_path, monkeypatch):
         # A hand-edited/corrupt config with subagent_auto_max above the ceiling must
         # NOT be trusted to widen the bound: max_subagents is still capped at 64.
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {"subagent_auto_max": 9999}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"max_subagents": 9999}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"max_subagents": 9999}})
             assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_put_rejects_non_dict_agent(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": "not a dict"})
+            resp = await c.put("/api/config/kirocrew", json={"agent": "not a dict"})
             assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_put_corrupt_config_returns_500(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text("NOT JSON{{{")
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"subagent_max_turns": 50}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_max_turns": 50}})
             assert resp.status == 500
 
     @pytest.mark.asyncio
     async def test_put_rejects_unrecognized_keys(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
-            resp = await c.put("/api/config/kiroclaw", json={"agent": {"unknown_key": 42}})
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"unknown_key": 42}})
             assert resp.status == 400

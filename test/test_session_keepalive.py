@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.handlers.sessions import api_session_keepalive
+from kiro_crew.dashboard.handlers.sessions import api_session_keepalive
 
 
 class _FakeSessions:
@@ -64,9 +64,9 @@ def test_wait_tool_posts_keepalive_periodically():
     """wait() should POST /api/session-keepalive at least once while sleeping."""
     import time as _time
 
-    from kiro_claw.mcp_core import _call_tool
+    from kiro_crew.mcp_core import _call_tool
 
-    with patch("kiro_claw.mcp_core._post") as mock_post, patch.object(
+    with patch("kiro_crew.mcp_core._post") as mock_post, patch.object(
         _time, "sleep", return_value=None
     ):
         mock_post.return_value = {}

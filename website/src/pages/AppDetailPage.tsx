@@ -90,7 +90,7 @@ interface AppManifest {
   crons?: { name: string }[]
   mcpServers?: Record<string, McpServerConfig>
   permissions?: AppPermissions
-  minKiroClawVersion?: string
+  minKiroCrewVersion?: string
 }
 
 function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
@@ -493,7 +493,7 @@ export default function AppDetailPage() {
                 <>
                   <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> Installed (v{app.installedVersion})</div>
                   {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install'} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> Updating…</> : <><ArrowUp size={14} /> Update</>}</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'} title="Removes KiroClaw metadata only — the app itself is managed externally"><Trash2 size={14} /> Uninstall</Btn>}
+                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'} title="Removes KiroCrew metadata only — the app itself is managed externally"><Trash2 size={14} /> Uninstall</Btn>}
                 </>
               )}
               {app.installed && !isSelfManaged && !isBuiltin && (
@@ -527,7 +527,7 @@ export default function AppDetailPage() {
               <div className="flex items-center gap-2">
                 {installDone && error && (
                   <Btn onClick={() => {
-                    const appSourcePath = `~/.kiroclaw/app-sources/.workspaces/${app?.name || name}/src/${name}/`
+                    const appSourcePath = `~/.kirocrew/app-sources/.workspaces/${app?.name || name}/src/${name}/`
                     const msg = [
                       `App "${app?.displayName || name}" installation failed. Error log:`,
                       '',
@@ -599,7 +599,7 @@ export default function AppDetailPage() {
                   </p>
                 )}
                 <p className="text-[12px] text-muted mt-2">
-                  Once launched, the app will automatically connect to this KiroClaw instance and appear in the App Store.
+                  Once launched, the app will automatically connect to this KiroCrew instance and appear in the App Store.
                 </p>
               </div>
             </div>
@@ -751,7 +751,7 @@ export default function AppDetailPage() {
               {app.author && <div>Author: {app.author}</div>}
               {app.installedAt && <div>Installed: {new Date(app.installedAt).toLocaleDateString()}</div>}
               {app.origin && <div>Origin: {app.origin} | Resources: {app.resources || 'gateway'} | Lifecycle: {app.lifecycle || 'gateway'}</div>}
-              {app.manifest?.minKiroClawVersion && <div>Min KiroClaw: v{app.manifest.minKiroClawVersion}</div>}
+              {app.manifest?.minKiroCrewVersion && <div>Min KiroCrew: v{app.manifest.minKiroCrewVersion}</div>}
               {app.platform?.os && <div>Platform: {app.platform.os.join(', ')}</div>}
             </div>
           </Card>

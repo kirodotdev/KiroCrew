@@ -14,7 +14,7 @@ export type McpPoolableServer = {
   denylisted: boolean      // in UNPOOLABLE_SERVERS — can never be pooled
 }
 
-export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_claw.history.SEARCH_MIN_CHARS)
+export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
 /**
  * A single task-runner plan step as sent to the server. Known fields are
@@ -149,7 +149,7 @@ function showSessionExpiredBanner(): void {
   const b = document.createElement('b')
   b.textContent = 'Session expired.'
   const code = document.createElement('code')
-  code.textContent = 'kiroclaw token'
+  code.textContent = 'kirocrew token'
   code.style.cssText = 'background:#7f1d1d;padding:2px 6px;border-radius:4px'
   const input = document.createElement('input')
   input.type = 'text'
@@ -379,13 +379,13 @@ export const api = {
   agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
   agentMetadata: (name: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name)).then(j),
   agentMetadataSave: (name: string, content: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }).then(j),
-  // KiroClaw agents
-  kiroclawAgents: () => fetch('/api/agents').then(j),
-  syncKiroclawAgents: () => post('/api/agents/sync', {}).then(j),
-  createKiroclawAgent: (body: object) => post('/api/agents', body).then(j),
-  updateKiroclawAgent: (name: string, body: object) =>
+  // KiroCrew agents
+  kirocrewAgents: () => fetch('/api/agents').then(j),
+  syncKirocrewAgents: () => post('/api/agents/sync', {}).then(j),
+  createKirocrewAgent: (body: object) => post('/api/agents', body).then(j),
+  updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
-  deleteKiroclawAgent: (name: string) =>
+  deleteKirocrewAgent: (name: string) =>
     del('/api/agents/' + encodeURIComponent(name)).then(j),
   models: () => fetch('/api/models').then(j),
   effortLevels: (slot?: string) =>
@@ -489,9 +489,9 @@ export const api = {
   saveAgentConfig: (config: object) => put('/api/agent/config', { config }).then(j),
   defaultAgent: () => fetch('/api/config/default-agent').then(j),
   setDefaultAgent: (agent: string) => put('/api/config/default-agent', { agent }).then(j),
-  kiroclawConfig: () => fetch('/api/config/kiroclaw').then(j),
-  saveKiroclawConfig: (agent: object) => put('/api/config/kiroclaw', { agent }).then(j),
-  patchConfig: (path: string, value: unknown) => fetch('/api/config/kiroclaw', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value }) }).then(j),
+  kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
+  saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j),
+  patchConfig: (path: string, value: unknown) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value }) }).then(j),
   // Optional integrations — backend endpoints are graceful no-ops on a public
   // install (AIM / kiro usage are stubbed). Kept so the UI compiles and
   // degrades gracefully (panels render empty when the feature is absent).

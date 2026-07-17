@@ -5,13 +5,13 @@ import json
 
 import pytest
 
-from kiro_claw.apps.builtins.deploy_web import engine
+from kiro_crew.apps.builtins.deploy_web import engine
 
 _SITE_TAGS = [
-    {"ResourceARN": "arn:aws:s3:::kiroclaw-web-aaaa1111",
-     "Tags": [{"Key": "kiroclaw:managed", "Value": "true"}, {"Key": "kiroclaw:site", "Value": "cr-dash"}]},
+    {"ResourceARN": "arn:aws:s3:::kirocrew-web-aaaa1111",
+     "Tags": [{"Key": "kirocrew:managed", "Value": "true"}, {"Key": "kirocrew:site", "Value": "cr-dash"}]},
     {"ResourceARN": "arn:aws:cloudfront::123456789012:distribution/DISTAAA",
-     "Tags": [{"Key": "kiroclaw:managed", "Value": "true"}, {"Key": "kiroclaw:site", "Value": "cr-dash"}]},
+     "Tags": [{"Key": "kirocrew:managed", "Value": "true"}, {"Key": "kirocrew:site", "Value": "cr-dash"}]},
 ]
 
 
@@ -36,7 +36,7 @@ def test_recall_empties_bucket_and_invalidates(monkeypatch):
     monkeypatch.setattr(engine, "run_aws", run)
     result = engine.recall("cr-dash", profile="p")
     assert result["recalled"] is True
-    assert result["bucket"] == "kiroclaw-web-aaaa1111"
+    assert result["bucket"] == "kirocrew-web-aaaa1111"
     acts = [f"{c[0]} {c[1]}" for c in calls if len(c) > 1]
     assert "s3 rm" in acts
     assert "cloudfront create-invalidation" in acts
@@ -135,9 +135,9 @@ def test_list_sites_groups_by_tag_with_live_status(monkeypatch):
     def run(args, profile, timeout=30):  # noqa: ANN001
         if args[0] == "resourcegroupstaggingapi":
             return _tag_resp(_SITE_TAGS + [
-                {"ResourceARN": "arn:aws:s3:::kiroclaw-web-bbbb2222",
-                 "Tags": [{"Key": "kiroclaw:managed", "Value": "true"},
-                          {"Key": "kiroclaw:site", "Value": "blog"}]},
+                {"ResourceARN": "arn:aws:s3:::kirocrew-web-bbbb2222",
+                 "Tags": [{"Key": "kirocrew:managed", "Value": "true"},
+                          {"Key": "kirocrew:site", "Value": "blog"}]},
             ])
         if args[:2] == ["cloudfront", "get-distribution"]:
             return 0, json.dumps({"Distribution": {
@@ -148,7 +148,7 @@ def test_list_sites_groups_by_tag_with_live_status(monkeypatch):
     sites = engine.list_sites(profile="p")
     by_id = {s["site_id"]: s for s in sites}
     assert set(by_id) == {"cr-dash", "blog"}
-    assert by_id["cr-dash"]["bucket"] == "kiroclaw-web-aaaa1111"
+    assert by_id["cr-dash"]["bucket"] == "kirocrew-web-aaaa1111"
     assert by_id["cr-dash"]["distribution_id"] == "DISTAAA"
     assert by_id["cr-dash"]["status"] == "Deployed"
     assert by_id["cr-dash"]["url"] == "https://d111.cloudfront.net/"

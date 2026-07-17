@@ -24,8 +24,8 @@ from threading import Thread
 
 import pytest
 
-import kiro_claw.mcp_core as mcp_core
-from kiro_claw.mcp_core import _call_tool_inner
+import kiro_crew.mcp_core as mcp_core
+from kiro_crew.mcp_core import _call_tool_inner
 
 
 class _MockAutonudgeHandler(BaseHTTPRequestHandler):
@@ -111,7 +111,7 @@ def mock_dashboard(tmp_path, monkeypatch):
     # Point the tool's API base at the mock server, and give it a dashboard
     # session key so autonudge_stop proceeds past its "dashboard-only" guard.
     monkeypatch.setattr(mcp_core, "_API", f"http://127.0.0.1:{port}")
-    monkeypatch.setenv("KIROCLAW_SESSION_KEY", "dashboard:chat-3-1700000000")
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-3-1700000000")
     # Reset the in-process user-token cache so each test bootstraps fresh.
     monkeypatch.setattr(mcp_core, "_USER_TOKEN_CACHE", ("", 0.0))
 

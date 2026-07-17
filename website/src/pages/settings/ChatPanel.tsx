@@ -54,7 +54,7 @@ export function ChatPanel() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['dashboardConfig'] }),
   })
 
-  // ── KiroClaw config (server-side) ──
+  // ── KiroCrew config (server-side) ──
   const mcQ = useQuery<{
     session?: { autocompact_pct?: number }
     agent?: {
@@ -63,8 +63,8 @@ export function ChatPanel() {
       completion_keep_chars?: number
     }
   }>({
-    queryKey: ['kiroclawConfig'],
-    queryFn: () => api.kiroclawConfig(),
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
   })
   const mcCfg = mcQ.data
 
@@ -79,7 +79,7 @@ export function ChatPanel() {
 
   const budgetMut = useMutation({
     mutationFn: (n: number) => api.patchConfig('agent.soft_stop_budget_secs', n),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kiroclawConfig'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
     onError: () => {
       setSaveError('Failed to save soft-stop budget')
       // Revert the input to the last-known server value so the user isn't
@@ -100,7 +100,7 @@ export function ChatPanel() {
 
   const keepCharsMut = useMutation({
     mutationFn: (n: number) => api.patchConfig('agent.completion_keep_chars', n),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kiroclawConfig'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
     onError: () => {
       setSaveError('Failed to save completion-keep characters')
       setLocalKeepChars(
@@ -111,7 +111,7 @@ export function ChatPanel() {
 
   const keepModeMut = useMutation({
     mutationFn: (v: CompletionKeepMode) => api.patchConfig('agent.completion_keep', v),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kiroclawConfig'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
     onError: () => setSaveError('Failed to save completion-keep mode'),
   })
 
@@ -227,7 +227,7 @@ export function ChatPanel() {
             optionLabels={COMPACT_LABELS}
             onChange={v =>
               api.patchConfig('session.autocompact_pct', Number(v))
-                .then(() => qc.invalidateQueries({ queryKey: ['kiroclawConfig'] }))
+                .then(() => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }))
                 .catch(() => setSaveError('Failed to save auto-compact threshold'))
             }
             disabled={!mcQ.isSuccess}

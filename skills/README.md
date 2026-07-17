@@ -1,6 +1,6 @@
 # Skills
 
-Skills are markdown files that teach the LLM agent how to use KiroClaw capabilities.
+Skills are markdown files that teach the LLM agent how to use KiroCrew capabilities.
 
 ## Directory Layout
 

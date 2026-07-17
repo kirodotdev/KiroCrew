@@ -12,7 +12,7 @@
  * cookie — NOT the app-sdk hooks (those require <AppApiProvider>, which only
  * wraps standalone/installed apps via AppHost).
  *
- * Backend contract: see kiro_claw/apps/builtins/workflows/server.py and the run
+ * Backend contract: see kiro_crew/apps/builtins/workflows/server.py and the run
  * event schema in docs/system-specs/modules/workflows.md.
  */
 import { useCallback, useMemo, useState } from 'react'
@@ -30,7 +30,7 @@ import { groupByPhase, latestBudget, type WfEvent, type AgentRow, type PhaseGrou
 export { groupByPhase, latestBudget }
 export type { WfEvent, AgentRow, PhaseGroup }
 
-// Proxied base for the workflows builtin-app backend (KiroClaw reverse-proxies
+// Proxied base for the workflows builtin-app backend (KiroCrew reverse-proxies
 // /apps/workflows/api/* to the app's HTTP server).
 const API_BASE = '/apps/workflows/api'
 

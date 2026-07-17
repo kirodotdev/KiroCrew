@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Sandbox security smoke test — run on dev desktop to verify standard mode
 # Usage: ssh dev-dsk-bolichen-2a-88e4ee3f.us-west-2.amazon.com
-#        cd ~/workplace/kiroclaw && bash test/smoke_sandbox.sh
+#        cd ~/workplace/kirocrew && bash test/smoke_sandbox.sh
 #
-# Prerequisites: kiroclaw gateway running, ada profile "smoke" configured
+# Prerequisites: kirocrew gateway running, ada profile "smoke" configured
 # Setup:  ada profile add --profile smoke --account <account_id> --provider conduit --role IibsAdminAccess-DO-NOT-DELETE
 
 set -uo pipefail
@@ -20,11 +20,11 @@ pass() { echo -e "  ${GREEN}✓ PASS${NC}: $1"; ((PASS++)); }
 fail() { echo -e "  ${RED}✗ FAIL${NC}: $1"; ((FAIL++)); }
 skip() { echo -e "  ${YELLOW}⊘ SKIP${NC}: $1"; ((SKIP++)); }
 
-# Run a command inside kiroclaw's sandbox (same as kiro-cli subprocess)
+# Run a command inside kirocrew's sandbox (same as kiro-cli subprocess)
 sandbox_run() {
-    local sandbox_mode="${KIROCLAW_SANDBOX_MODE:-auto}"
+    local sandbox_mode="${KIROCREW_SANDBOX_MODE:-auto}"
     python3 -c "
-from kiro_claw.sandbox import wrap_argv
+from kiro_crew.sandbox import wrap_argv
 import subprocess, sys
 argv, cleanup = wrap_argv(sys.argv[1:], '$sandbox_mode')
 try:
@@ -57,7 +57,7 @@ sys.exit(1)
 # Run redact_credentials check
 check_redaction() {
     python3 -c "
-from kiro_claw.security import redact_credentials
+from kiro_crew.security import redact_credentials
 import sys
 text = sys.argv[1]
 result, warnings = redact_credentials(text)
@@ -71,11 +71,11 @@ else:
 }
 
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║          KiroClaw Sandbox Security Smoke Test               ║"
+echo "║          KiroCrew Sandbox Security Smoke Test               ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Account: $ACCOUNT"
-echo "Sandbox: ${KIROCLAW_SANDBOX_MODE:-auto} (standard)"
+echo "Sandbox: ${KIROCREW_SANDBOX_MODE:-auto} (standard)"
 echo ""
 
 # ─── Section 1: Sandbox filesystem isolation ───
@@ -187,7 +187,7 @@ allowed_cmds=(
     "aws s3 ls s3://my-bucket --profile $PROFILE"
     "aws s3 cp s3://bucket/file ./local"
     "kubectl get pods"
-    "git clone ssh://git.amazon.com:2222/pkg/KiroClaw"
+    "git clone ssh://git.amazon.com:2222/pkg/KiroCrew"
 )
 
 for cmd in "${allowed_cmds[@]}"; do
@@ -224,7 +224,7 @@ done
 safe_cases=(
     "Successfully refreshed aws credentials for default"
     '{"Account": "123456789012", "Arn": "arn:aws:iam::123:user/dev"}'
-    "Cloning into KiroClaw... remote: Enumerating objects: 1234"
+    "Cloning into KiroCrew... remote: Enumerating objects: 1234"
     "NAME       READY   STATUS    RESTARTS   AGE"
 )
 

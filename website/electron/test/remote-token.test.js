@@ -11,7 +11,7 @@ const {
 
 describe("REMOTE_BIN_CANDIDATES", () => {
   it("lists the toolbox path first (most common install)", () => {
-    assert.equal(REMOTE_BIN_CANDIDATES[0], "~/.toolbox/bin/kiroclaw");
+    assert.equal(REMOTE_BIN_CANDIDATES[0], "~/.toolbox/bin/kirocrew");
   });
 
   it("includes the legacy default path", () => {
@@ -43,9 +43,9 @@ describe("buildCandidateTokenCommand", () => {
     assert.doesNotMatch(cmd, /:\$PATH/, "must not reference existing $PATH (spaces cause remote shell errors)");
   });
 
-  it("includes KIROCLAW_PORT when port option is provided", () => {
+  it("includes KIROCREW_PORT when port option is provided", () => {
     const cmd = buildCandidateTokenCommand(REMOTE_BIN_CANDIDATES, { port: "7778" });
-    assert.match(cmd, /KIROCLAW_PORT=7778/);
+    assert.match(cmd, /KIROCREW_PORT=7778/);
   });
 
   it("uses custom remotePath when provided", () => {
@@ -78,33 +78,33 @@ describe("buildRemoteTokenCommand", () => {
   });
 
   it("respects a user-customized binPath", () => {
-    const cmd = buildRemoteTokenCommand("/opt/custom/kiroclaw");
+    const cmd = buildRemoteTokenCommand("/opt/custom/kirocrew");
     assert.doesNotMatch(cmd, /for b in /);
-    assert.match(cmd, /"\/opt\/custom\/kiroclaw" token/);
+    assert.match(cmd, /"\/opt\/custom\/kirocrew" token/);
   });
 
-  it("includes KIROCLAW_PORT for custom binPath", () => {
-    const cmd = buildRemoteTokenCommand("/opt/custom/kiroclaw", { port: "7778" });
-    assert.match(cmd, /KIROCLAW_PORT=7778/);
-    assert.match(cmd, /"\/opt\/custom\/kiroclaw" token/);
+  it("includes KIROCREW_PORT for custom binPath", () => {
+    const cmd = buildRemoteTokenCommand("/opt/custom/kirocrew", { port: "7778" });
+    assert.match(cmd, /KIROCREW_PORT=7778/);
+    assert.match(cmd, /"\/opt\/custom\/kirocrew" token/);
   });
 
   it("rewrites a leading ~/ to $HOME/ so it expands inside double quotes", () => {
     // Use a non-default custom path so this takes the user-binPath branch
     // (the default sentinel would take the candidate-sweep branch instead).
-    const cmd = buildRemoteTokenCommand("~/apps/kiroclaw");
-    assert.match(cmd, /"\$HOME\/apps\/kiroclaw" token/);
+    const cmd = buildRemoteTokenCommand("~/apps/kirocrew");
+    assert.match(cmd, /"\$HOME\/apps\/kirocrew" token/);
     assert.doesNotMatch(cmd, /"~\//);
   });
 
   it("leaves absolute and $HOME-prefixed paths untouched", () => {
-    assert.match(buildRemoteTokenCommand("/opt/x/kiroclaw"), /"\/opt\/x\/kiroclaw" token/);
-    assert.match(buildRemoteTokenCommand("$HOME/x/kiroclaw"), /"\$HOME\/x\/kiroclaw" token/);
+    assert.match(buildRemoteTokenCommand("/opt/x/kirocrew"), /"\/opt\/x\/kirocrew" token/);
+    assert.match(buildRemoteTokenCommand("$HOME/x/kirocrew"), /"\$HOME\/x\/kirocrew" token/);
   });
 
   it("passes port through to candidate command", () => {
     const cmd = buildRemoteTokenCommand(DEFAULT_REMOTE_BIN, { port: "8080" });
-    assert.match(cmd, /KIROCLAW_PORT=8080/);
+    assert.match(cmd, /KIROCREW_PORT=8080/);
   });
 
   it("accepts a custom candidate list via options", () => {

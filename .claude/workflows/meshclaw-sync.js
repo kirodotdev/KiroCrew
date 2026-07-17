@@ -1,7 +1,7 @@
 export const meta = {
   name: 'meshclaw-sync',
-  description: 'Sync fixes from internal MeshClaw (backend) + MeshClawWebsite (frontend) into the de-Amazoned public KiroClaw fork: scan both upstreams from the boundary, adversarially triage each candidate, then (opt-in) port / verify / build DMGs / commit / PR.',
-  whenToUse: 'Run the recurring MeshClaw->KiroClaw content sync. Defaults to a read-only triage report; pass {mode:"port"} or {mode:"full"} to mutate, build, and raise a PR. Source of truth is skills/meshclaw-sync/SKILL.md.',
+  description: 'Sync fixes from internal MeshClaw (backend) + MeshClawWebsite (frontend) into the de-Amazoned public KiroCrew fork: scan both upstreams from the boundary, adversarially triage each candidate, then (opt-in) port / verify / build DMGs / commit / PR.',
+  whenToUse: 'Run the recurring MeshClaw->KiroCrew content sync. Defaults to a read-only triage report; pass {mode:"port"} or {mode:"full"} to mutate, build, and raise a PR. Source of truth is skills/meshclaw-sync/SKILL.md.',
   phases: [
     { title: 'Scan' },
     { title: 'Triage' },
@@ -17,7 +17,7 @@ export const meta = {
 // match the documented checkout locations in skills/meshclaw-sync/SKILL.md.
 // ---------------------------------------------------------------------------
 const cfg = {
-  fork: (args && args.workspaceFork) || '/Volumes/workplace/kiroclaw',
+  fork: (args && args.workspaceFork) || '/Volumes/workplace/kirocrew',
   backend: (args && args.upstreamBackend) || '/Volumes/workplace/MeshClaw/src/MeshClaw',
   frontend: (args && args.upstreamFrontend) || '/Volumes/workplace/MeshClaw/src/MeshClawWebsite',
   // mode: 'triage' (read-only, default) | 'port' (port + verify, no build/PR) | 'full' (port + verify + build + commit + PR)
@@ -31,7 +31,7 @@ const willShip = cfg.mode === 'full'
 // The de-Amazon + symbol-map rules every agent must apply. Kept short here;
 // the agent MUST read SKILL.md for the authoritative, exhaustive version.
 const RULES = `
-You are working the MeshClaw -> KiroClaw content sync. The fork shares NO git
+You are working the MeshClaw -> KiroCrew content sync. The fork shares NO git
 history with the upstreams, so nothing is cherry-picked — everything is ported
 BY CONTENT, path- and symbol-mapped, then re-verified.
 
@@ -41,12 +41,12 @@ It defines Steps 1-7, the de-Amazon SKIP rubric, the "Anti-miss: a NAME is not
 a verdict" section, and every gotcha. If this prompt and the skill ever
 disagree, THE SKILL WINS.
 
-Path map: backend src/mesh_claw/X -> fork src/kiro_claw/X ; frontend
+Path map: backend src/mesh_claw/X -> fork src/kiro_crew/X ; frontend
 MeshClawWebsite src/X -> fork website/src/X (tests -> website/src/test or
 website/integration). Symbol map everywhere incl. comments + tests:
-  mesh_claw->kiro_claw  MeshClaw->KiroClaw  meshclaw->kiroclaw
-  MESHCLAW_->KIROCLAW_  .meshclaw->.kiroclaw  meshclaw-ui->kiroclaw-ui
-  source:'meshclaw'->'kiroclaw'  /api/config/meshclaw->/api/config/kiroclaw
+  mesh_claw->kiro_crew  MeshClaw->KiroCrew  meshclaw->kirocrew
+  MESHCLAW_->KIROCREW_  .meshclaw->.kirocrew  meshclaw-ui->kirocrew-ui
+  source:'meshclaw'->'kirocrew'  /api/config/meshclaw->/api/config/kirocrew
 KEEP VERBATIM: mc-* localStorage/postMessage keys, the mc_token_ cookie prefix,
 inert tool-name allowlist literals, and Mesh-NNNN / CR-NNNNNN ticket refs.
 
@@ -322,19 +322,19 @@ const buildReport = await agent(
 
 TASK (Step 7.1 — rebuild BOTH macOS DMGs dual-arch; recipe in
 ${cfg.fork}/docs/DESKTOP_APP.md). Work in ${cfg.fork}. macOS host only.
-- Detach any stale KiroClaw disk mounts first (hdiutil) to avoid "Resource
+- Detach any stale KiroCrew disk mounts first (hdiutil) to avoid "Resource
   temporarily unavailable (35)". rm stale DMGs in website/electron/dist.
 - Frontend bundle: \`cd website && npm run build && cd .. && rm -rf
-  src/kiro_claw/static/dist && cp -R website/dist src/kiro_claw/static/dist\`.
+  src/kiro_crew/static/dist && cp -R website/dist src/kiro_crew/static/dist\`.
 - arm64: \`SKIP_FRONTEND=1 PYTHON="$PWD/.venv/bin/python" bash packaging/build-desktop.sh\`.
 - x86_64: PyInstaller under \`arch -x86_64 .venv-x86/bin/python -m PyInstaller
-  packaging/kiroclaw-backend.spec --noconfirm --distpath build/pyinstaller-x86/dist
+  packaging/kirocrew-backend.spec --noconfirm --distpath build/pyinstaller-x86/dist
   --workpath build/pyinstaller-x86/build\` -> stage into
-  website/electron/backend-dist/kiroclaw-backend -> \`(cd website/electron && npx
+  website/electron/backend-dist/kirocrew-backend -> \`(cd website/electron && npx
   electron-builder --mac --x64)\` -> RESTORE the arm64 backend from
   build/pyinstaller/dist into backend-dist.
 - pip install pyinstaller into .venv/.venv-x86 if missing; keep electron version 0.1.0.
-- MOUNT-VERIFY each DMG: \`file .../Resources/backend-dist/kiroclaw-backend/kiroclaw-backend\`
+- MOUNT-VERIFY each DMG: \`file .../Resources/backend-dist/kirocrew-backend/kirocrew-backend\`
   — the arm64 DMG must carry arm64, the x64 DMG x86_64. A mismatch crashes on launch.
 DMGs + static/dist are gitignored (not in the PR). Report both DMG paths + the
 verified arch of each.`,
@@ -352,7 +352,7 @@ const shipReport = await agent(
 TASK (Step 7.3 — raise the PR). Work in ${cfg.fork}. THIS RUN IS AUTHORIZED to
 commit/push/PR (the recurring auto-sync standing authorization).
 - Push the sync branch: \`git push -u origin HEAD\`.
-  (origin = https://github.com/kirodotdev-labs/kiroclaw.git)
+  (origin = https://github.com/kirodotdev/KiroCrew.git)
 - Create the PR: \`gh pr create --base main\`.
 - TITLE: "sync: MeshClaw dual-repo beta sync ${scan.syncDate} (N ported)"
   (say backend+frontend counts). The PR BODY should contain a concise

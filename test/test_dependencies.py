@@ -1,22 +1,22 @@
-"""Tests for kiro_claw.apps.dependencies — dependency resolution."""
+"""Tests for kiro_crew.apps.dependencies — dependency resolution."""
 from __future__ import annotations
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.dependencies import (
+from kiro_crew.apps.dependencies import (
     DependencyResult,
     _get_dep_id,
     _get_managed_by,
     resolve_dependencies,
 )
-from kiro_claw.apps.manifest import AimDependencies, Dependencies
+from kiro_crew.apps.manifest import AimDependencies, Dependencies
 
 
 @pytest.fixture(autouse=True)
 def _dep_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path / "kiroclaw-home"))
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "kirocrew-home"))
 
 
 class TestHelpers:

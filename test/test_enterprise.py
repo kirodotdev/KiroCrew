@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.slack.enterprise — workspace validation.
+"""Tests for kiro_crew.slack.enterprise — workspace validation.
 
 Focus: the default-open behaviour AND the fail-closed security property
 when auth.test cannot verify the workspace identity but an allowlist is
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.slack import enterprise
+from kiro_crew.slack import enterprise
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +68,7 @@ def _fake_config(allowed_ids: list[str]):
 def test_no_allowlist_accepts_any_workspace():
     resp = {"team_id": "T_RANDOM", "team": "Random Co", "url": "https://x"}
     with _install_fake_slack_sdk(resp), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
     ):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert enterprise._allowlist_configured is False
@@ -80,7 +80,7 @@ def test_no_allowlist_accepts_any_workspace():
 def test_auth_test_failure_no_allowlist_defaults_open():
     """auth.test fails, no allowlist -> default-open (return True)."""
     with _install_fake_slack_sdk(raise_exc=True), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
     ):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert enterprise._allowlist_configured is False
@@ -95,7 +95,7 @@ def test_auth_test_failure_no_allowlist_defaults_open():
 def test_allowlist_accepts_listed_workspace():
     resp = {"team_id": "T_GOOD", "team": "Good Co", "url": "https://x"}
     with _install_fake_slack_sdk(resp), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config(["T_GOOD"])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config(["T_GOOD"])
     ):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert enterprise._allowlist_configured is True
@@ -114,7 +114,7 @@ def test_allowlist_rejects_unlisted_enterprise():
         "url": "https://x",
     }
     with _install_fake_slack_sdk(resp), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config(["E_GOOD"])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config(["E_GOOD"])
     ):
         assert enterprise.validate_enterprise("xoxb-token") is False
 
@@ -127,7 +127,7 @@ def test_extra_ids_form_allowlist_and_enforce():
         "url": "https://x",
     }
     with _install_fake_slack_sdk(resp), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
     ):
         # extra_ids does not contain the enterprise_id -> validation fails.
         assert (
@@ -145,7 +145,7 @@ def test_auth_test_failure_with_config_allowlist_fails_closed():
     """auth.test fails but slack.allowed_enterprise_ids is set -> deny."""
     sel_mock = MagicMock()
     with _install_fake_slack_sdk(raise_exc=True), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config(["T_ALLOWED"])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config(["T_ALLOWED"])
     ), patch.object(enterprise, "sel", return_value=sel_mock):
         assert enterprise.validate_enterprise("xoxb-token") is False
     # A denial must be SEL-audited.
@@ -168,7 +168,7 @@ def test_auth_test_failure_with_extra_ids_fails_closed():
     """auth.test fails but extra_ids passed -> deny (no fail-open)."""
     sel_mock = MagicMock()
     with _install_fake_slack_sdk(raise_exc=True), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
     ), patch.object(enterprise, "sel", return_value=sel_mock):
         assert (
             enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"})
@@ -185,7 +185,7 @@ def test_auth_test_failure_with_allowlist_and_bad_config_load_fails_closed():
     still force fail-closed.
     """
     with _install_fake_slack_sdk(raise_exc=True), patch.object(
-        enterprise.KiroClawConfig, "load", side_effect=RuntimeError("no config")
+        enterprise.KiroCrewConfig, "load", side_effect=RuntimeError("no config")
     ):
         assert (
             enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"})
@@ -197,7 +197,7 @@ def test_auth_test_failure_with_allowlist_and_bad_config_load_fails_closed():
 def test_auth_test_failure_bad_config_no_allowlist_defaults_open():
     """auth.test fails, config load fails, no extra_ids -> default-open."""
     with _install_fake_slack_sdk(raise_exc=True), patch.object(
-        enterprise.KiroClawConfig, "load", side_effect=RuntimeError("no config")
+        enterprise.KiroCrewConfig, "load", side_effect=RuntimeError("no config")
     ):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert enterprise._allowlist_configured is False
@@ -225,10 +225,10 @@ def _install_governance_posture(allowed_enterprise_ids: list[str]):
     """Install a PlatformContext carrying a channels.posture slack allowlist."""
     import dataclasses
 
-    from kiro_claw.config.loader import KiroClawConfig
-    from kiro_claw.platform import context as ctx_mod
-    from kiro_claw.platform.bootstrap import build_default_context
-    from kiro_claw.platform.governance import parse_policy
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import context as ctx_mod
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.governance import parse_policy
 
     policy = parse_policy(
         {
@@ -247,7 +247,7 @@ def _install_governance_posture(allowed_enterprise_ids: list[str]):
             },
         }
     )
-    base = build_default_context(KiroClawConfig.load())
+    base = build_default_context(KiroCrewConfig.load())
     ctx_mod.set_context(dataclasses.replace(base, governance=policy))
 
 
@@ -255,13 +255,13 @@ def test_governance_posture_blocks_workspace_outside_policy():
     # config.json has NO allowlist (default-open), but the governance posture
     # pins enterprise E_GOOD. A workspace E_EVIL must be REJECTED by the policy
     # ceiling even though the operator config would have accepted it.
-    from kiro_claw.platform import context as ctx_mod
+    from kiro_crew.platform import context as ctx_mod
 
     resp = {"enterprise_id": "E_EVIL", "team_id": "T1", "team": "Evil", "url": "https://x"}
     try:
         _install_governance_posture(["E_GOOD"])
         with _install_fake_slack_sdk(resp), patch.object(
-            enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+            enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
         ):
             assert enterprise.validate_enterprise("xoxb-token") is False
     finally:
@@ -269,13 +269,13 @@ def test_governance_posture_blocks_workspace_outside_policy():
 
 
 def test_governance_posture_allows_pinned_workspace():
-    from kiro_claw.platform import context as ctx_mod
+    from kiro_crew.platform import context as ctx_mod
 
     resp = {"enterprise_id": "E_GOOD", "team_id": "T1", "team": "Good", "url": "https://x"}
     try:
         _install_governance_posture(["E_GOOD"])
         with _install_fake_slack_sdk(resp), patch.object(
-            enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+            enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
         ):
             assert enterprise.validate_enterprise("xoxb-token") is True
     finally:
@@ -286,7 +286,7 @@ def test_no_governance_posture_is_default_open():
     # No policy installed → the governance posture check is a no-op (default-open).
     resp = {"enterprise_id": "E_ANY", "team_id": "T1", "team": "Any", "url": "https://x"}
     with _install_fake_slack_sdk(resp), patch.object(
-        enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+        enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
     ):
         assert enterprise.validate_enterprise("xoxb-token") is True
 
@@ -296,13 +296,13 @@ def test_governance_posture_blocks_empty_enterprise_id_when_pinned():
     # common case). An empty id cannot satisfy an explicitly-pinned
     # allowed_enterprise_ids ceiling, so it must FAIL CLOSED — not silently pass
     # via the old `if not value: continue`. (CR-284272012 Heimdall blocking.)
-    from kiro_claw.platform import context as ctx_mod
+    from kiro_crew.platform import context as ctx_mod
 
     resp = {"enterprise_id": "", "team_id": "T1", "team": "NonGrid", "url": "https://x"}
     try:
         _install_governance_posture(["E_GOOD"])
         with _install_fake_slack_sdk(resp), patch.object(
-            enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+            enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
         ):
             assert enterprise.validate_enterprise("xoxb-token") is False
     finally:
@@ -317,10 +317,10 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned():
     # team-pinned policy is accepted iff its team matches.
     import dataclasses
 
-    from kiro_claw.config.loader import KiroClawConfig
-    from kiro_claw.platform import context as ctx_mod
-    from kiro_claw.platform.bootstrap import build_default_context
-    from kiro_claw.platform.governance import parse_policy
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import context as ctx_mod
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.governance import parse_policy
 
     policy = parse_policy(
         {
@@ -334,10 +334,10 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned():
     )
     resp = {"enterprise_id": "", "team_id": "T_OK", "team": "NonGrid", "url": "https://x"}
     try:
-        base = build_default_context(KiroClawConfig.load())
+        base = build_default_context(KiroCrewConfig.load())
         ctx_mod.set_context(dataclasses.replace(base, governance=policy))
         with _install_fake_slack_sdk(resp), patch.object(
-            enterprise.KiroClawConfig, "load", return_value=_fake_config([])
+            enterprise.KiroCrewConfig, "load", return_value=_fake_config([])
         ):
             # enterprise leaf unpinned → empty id skipped; team T_OK matches → True.
             assert enterprise.validate_enterprise("xoxb-token") is True

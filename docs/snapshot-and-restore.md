@@ -1,22 +1,22 @@
 # Backup & Restore
 
-Portable snapshot and restore of KiroClaw state.
+Portable snapshot and restore of KiroCrew state.
 
 ## Quick Start
 
 ```bash
-kiroclaw snapshot                                    # default: ~/.kiroclaw/snapshots
-kiroclaw snapshot ~/my-snapshots --keep 3             # custom dir, keep 3
-kiroclaw snapshot --list                             # list existing snapshots
-kiroclaw restore snapshot.tar.gz                     # auto-detects replace vs merge
-kiroclaw restore snapshot.tar.gz --components memory,crons
-kiroclaw restore snapshot.tar.gz --dry-run           # preview without writing
-kiroclaw restore --list-components                   # show available components
+kirocrew snapshot                                    # default: ~/.kirocrew/snapshots
+kirocrew snapshot ~/my-snapshots --keep 3             # custom dir, keep 3
+kirocrew snapshot --list                             # list existing snapshots
+kirocrew restore snapshot.tar.gz                     # auto-detects replace vs merge
+kirocrew restore snapshot.tar.gz --components memory,crons
+kirocrew restore snapshot.tar.gz --dry-run           # preview without writing
+kirocrew restore --list-components                   # show available components
 ```
 
 ## Snapshot
 
-Creates a `.tar.gz` archive containing all KiroClaw state:
+Creates a `.tar.gz` archive containing all KiroCrew state:
 
 | Component | Files |
 |-----------|-------|
@@ -34,7 +34,7 @@ Excludes `workspace/hygiene_data/` and `workspace/insert_facts*.py` (large, rege
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `OUTPUT_DIR` | `~/.kiroclaw/snapshots` | Where to write the tarball |
+| `OUTPUT_DIR` | `~/.kirocrew/snapshots` | Where to write the tarball |
 | `--keep N` | 7 | Prune to N most recent snapshots |
 | `--list` | — | List existing snapshots and exit |
 
@@ -51,7 +51,7 @@ Before snapshotting, `PRAGMA wal_checkpoint(TRUNCATE)` is attempted on `memory.d
 | `replace` | No existing `memory.db` | Overwrites target with snapshot contents (backs up any existing state first) |
 | `merge` | Existing `memory.db` found | Imports new data without overwriting existing |
 
-Auto-detected based on whether `~/.kiroclaw/memory.db` exists. Override with `--mode replace|merge`.
+Auto-detected based on whether `~/.kirocrew/memory.db` exists. Override with `--mode replace|merge`.
 
 ### Merge Behavior
 
@@ -88,10 +88,10 @@ After restore, `PRAGMA integrity_check` runs on `memory.db`. If it fails, restor
 The daily snapshot cron runs at 08:00 UTC:
 
 ```
-kiroclaw-daily-snapshot | At 8:00 AM UTC
-→ kiroclaw snapshot --keep 7
+kirocrew-daily-snapshot | At 8:00 AM UTC
+→ kirocrew snapshot --keep 7
 ```
 
 ## Architecture
 
-The implementation lives in `src/kiro_claw/snapshot.py` (~500 lines), exposed via `kiroclaw snapshot` and `kiroclaw restore` subcommands in the CLI.
+The implementation lives in `src/kiro_crew/snapshot.py` (~500 lines), exposed via `kirocrew snapshot` and `kirocrew restore` subcommands in the CLI.

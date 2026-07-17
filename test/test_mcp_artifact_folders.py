@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from kiro_claw.mcp_core import _call_tool_inner
+from kiro_crew.mcp_core import _call_tool_inner
 
 # A representative folder listing returned by GET /api/artifact-folders.
 _FOLDERS = [
@@ -21,13 +21,13 @@ _FOLDERS = [
 
 class TestFolderList:
     def test_list_formats_id_path_count(self) -> None:
-        with patch("kiro_claw.mcp_core._get", return_value={"folders": _FOLDERS}):
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": _FOLDERS}):
             out = _call_tool_inner("artifact_folder_list", {})
         assert "f_reports" in out and "Reports/Q3" in out
         assert "1 item" in out and "2 item" in out
 
     def test_list_empty(self) -> None:
-        with patch("kiro_claw.mcp_core._get", return_value={"folders": []}):
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": []}):
             out = _call_tool_inner("artifact_folder_list", {})
         assert "No artifact folders" in out
 
@@ -35,7 +35,7 @@ class TestFolderList:
 class TestFolderCreate:
     def test_create_forwards_parent(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={"id": "f_new", "name": "Q3", "path": "Reports/Q3"},
         ) as mock_post:
             out = _call_tool_inner(
@@ -49,8 +49,8 @@ class TestFolderCreate:
 
 class TestFolderRename:
     def test_rename_resolves_path_then_patches(self) -> None:
-        with patch("kiro_claw.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
-            "kiro_claw.mcp_core._patch",
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
+            "kiro_crew.mcp_core._patch",
             return_value={"id": "f_q3", "name": "Q4", "path": "Reports/Q4"},
         ) as mock_patch:
             out = _call_tool_inner(
@@ -62,7 +62,7 @@ class TestFolderRename:
         assert "Q4" in out
 
     def test_rename_unknown_path_errors(self) -> None:
-        with patch("kiro_claw.mcp_core._get", return_value={"folders": _FOLDERS}):
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": _FOLDERS}):
             out = _call_tool_inner(
                 "artifact_folder_rename", {"folder": "Nope/Missing", "name": "x"}
             )
@@ -71,8 +71,8 @@ class TestFolderRename:
 
 class TestFolderMove:
     def test_move_resolves_both_refs(self) -> None:
-        with patch("kiro_claw.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
-            "kiro_claw.mcp_core._patch",
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
+            "kiro_crew.mcp_core._patch",
             return_value={"id": "f_q3", "path": "Q3", "parent_id": ""},
         ) as mock_patch:
             _call_tool_inner("artifact_folder_move", {"folder": "f_q3", "new_parent": "root"})
@@ -83,8 +83,8 @@ class TestFolderMove:
 
 class TestFolderDelete:
     def test_keep_default(self) -> None:
-        with patch("kiro_claw.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
-            "kiro_claw.mcp_core._delete",
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
+            "kiro_crew.mcp_core._delete",
             return_value={"ok": True, "reparented_artifact_slugs": ["a", "b"]},
         ) as mock_delete:
             out = _call_tool_inner("artifact_folder_delete", {"folder": "f_reports"})
@@ -93,8 +93,8 @@ class TestFolderDelete:
         assert "kept 2 artifacts" in out
 
     def test_cascade_sets_query(self) -> None:
-        with patch("kiro_claw.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
-            "kiro_claw.mcp_core._delete",
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
+            "kiro_crew.mcp_core._delete",
             return_value={
                 "ok": True,
                 "deleted_folder_ids": ["f_reports", "f_q3"],
@@ -113,7 +113,7 @@ class TestFolderDelete:
 class TestArtifactMove:
     def test_move_patches_folder_route(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._patch",
+            "kiro_crew.mcp_core._patch",
             return_value={"slug": "doc", "folder_id": "f_reports"},
         ) as mock_patch:
             out = _call_tool_inner("artifact_move", {"slug": "doc", "folder": "Reports"})
@@ -124,7 +124,7 @@ class TestArtifactMove:
 
     def test_unfile_message(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._patch",
+            "kiro_crew.mcp_core._patch",
             return_value={"slug": "doc", "folder_id": ""},
         ):
             out = _call_tool_inner("artifact_move", {"slug": "doc", "folder": ""})
@@ -135,7 +135,7 @@ class TestSaveForwardsFolder:
     def test_save_includes_folder_in_body(self) -> None:
         # kind=markdown skips the widget dedup probe (which would call _get).
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "doc", "version": 1, "name": "Doc", "kind": "markdown"},
         ) as mock_post:
             _call_tool_inner(

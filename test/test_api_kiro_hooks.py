@@ -18,14 +18,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.hooks import api_kiro_hooks
+from kiro_crew.dashboard.handlers.hooks import api_kiro_hooks
 
-# Handler does `from kiro_claw.agent import KIRO_AGENTS_DIR, _shipped_defaults`
-# and `from kiro_claw.security import redact` inside the function body each call,
+# Handler does `from kiro_crew.agent import KIRO_AGENTS_DIR, _shipped_defaults`
+# and `from kiro_crew.security import redact` inside the function body each call,
 # so we patch at the source module where the names are defined.
-_P_AGENTS_DIR = "kiro_claw.agent.KIRO_AGENTS_DIR"
-_P_DEFAULTS = "kiro_claw.agent._shipped_defaults"
-_P_REDACT = "kiro_claw.security.redact"
+_P_AGENTS_DIR = "kiro_crew.agent.KIRO_AGENTS_DIR"
+_P_DEFAULTS = "kiro_crew.agent._shipped_defaults"
+_P_REDACT = "kiro_crew.security.redact"
 
 
 def _make_app() -> web.Application:
@@ -42,7 +42,7 @@ def kiro_dir(tmp_path: Path) -> Path:
 
 def _write_agent_cfg(kiro_dir: Path, data: object) -> None:
     kiro_dir.mkdir(parents=True, exist_ok=True)
-    (kiro_dir / "kiroclaw.json").write_text(json.dumps(data))
+    (kiro_dir / "kirocrew.json").write_text(json.dumps(data))
 
 
 def _write_defaults(path: Path, data: object) -> None:
@@ -55,7 +55,7 @@ class TestApiKiroHooks:
 
     @pytest.mark.asyncio
     async def test_missing_agent_cfg_returns_empty(self, kiro_dir: Path, tmp_path: Path) -> None:
-        """Path 1: OSError when kiroclaw.json doesn't exist → empty hooks."""
+        """Path 1: OSError when kirocrew.json doesn't exist → empty hooks."""
         defaults = tmp_path / "defaults.json"
         _write_defaults(defaults, {"hooks": {}})
         with patch(_P_AGENTS_DIR, kiro_dir), patch(_P_DEFAULTS, return_value=defaults):
@@ -66,9 +66,9 @@ class TestApiKiroHooks:
 
     @pytest.mark.asyncio
     async def test_malformed_json_in_agent_cfg(self, kiro_dir: Path, tmp_path: Path) -> None:
-        """Path 1: JSONDecodeError in kiroclaw.json → empty hooks."""
+        """Path 1: JSONDecodeError in kirocrew.json → empty hooks."""
         kiro_dir.mkdir(parents=True, exist_ok=True)
-        (kiro_dir / "kiroclaw.json").write_text("{not valid json")
+        (kiro_dir / "kirocrew.json").write_text("{not valid json")
         defaults = tmp_path / "defaults.json"
         _write_defaults(defaults, {"hooks": {}})
         with patch(_P_AGENTS_DIR, kiro_dir), patch(_P_DEFAULTS, return_value=defaults):
@@ -94,7 +94,7 @@ class TestApiKiroHooks:
 
     @pytest.mark.asyncio
     async def test_raw_not_dict_returns_empty(self, kiro_dir: Path, tmp_path: Path) -> None:
-        """Path 3: kiroclaw.json contains a list → isinstance(raw, dict) guard."""
+        """Path 3: kirocrew.json contains a list → isinstance(raw, dict) guard."""
         _write_agent_cfg(kiro_dir, ["not", "a", "dict"])
         defaults = tmp_path / "defaults.json"
         _write_defaults(defaults, {"hooks": {}})

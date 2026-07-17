@@ -1,11 +1,11 @@
 #!/bin/bash
-# Run the KiroClaw gateway from LIVE source. Uses the venv Python (which has
+# Run the KiroCrew gateway from LIVE source. Uses the venv Python (which has
 # all deps) but PYTHONPATH=src so code changes are picked up immediately on
 # restart.
 #
 # Usage: ./dev-backend.sh
 #   - Runs on port 6777 (dev port, separate from production on 5476)
-#   - Uses .kiroclaw-dev/ as data directory (isolated from ~/.kiroclaw/)
+#   - Uses .kirocrew-dev/ as data directory (isolated from ~/.kirocrew/)
 #   - Ctrl+C to stop, re-run to pick up changes
 set -e
 
@@ -21,28 +21,28 @@ if [ -z "$RUNTIME_PYTHON" ] || [ ! -x "$RUNTIME_PYTHON" ]; then
     fi
 fi
 if [ ! -x "$RUNTIME_PYTHON" ]; then
-    echo "ERROR: Cannot find the KiroClaw venv Python at $SCRIPT_DIR/.venv/bin/python."
+    echo "ERROR: Cannot find the KiroCrew venv Python at $SCRIPT_DIR/.venv/bin/python."
     echo "Run 'bash minimal_install.sh' once to set up the venv, then try again."
     exit 1
 fi
 
 export PYTHONPATH="$SCRIPT_DIR/src"
-export KIROCLAW_HOME="${KIROCLAW_HOME:-.kiroclaw-dev}"
+export KIROCREW_HOME="${KIROCREW_HOME:-.kirocrew-dev}"
 # Absolutize: config_dir() resolves this against each process's CWD, and MCP
 # subprocesses (mcp-core/mcp-cron) are spawned with session-workspace CWDs —
 # a relative HOME makes them create empty config dirs with no .local_secret,
 # so their gateway IPC calls fail with 403 Forbidden.
-case "$KIROCLAW_HOME" in
+case "$KIROCREW_HOME" in
     /*) ;;
-    *) KIROCLAW_HOME="$SCRIPT_DIR/$KIROCLAW_HOME" ;;
+    *) KIROCREW_HOME="$SCRIPT_DIR/$KIROCREW_HOME" ;;
 esac
-export KIROCLAW_PORT="${KIROCLAW_PORT:-6777}"
-export KIROCLAW_PROJECT_DIR="$SCRIPT_DIR"
+export KIROCREW_PORT="${KIROCREW_PORT:-6777}"
+export KIROCREW_PROJECT_DIR="$SCRIPT_DIR"
 
-echo "🐾 Dev backend starting (live source, port $KIROCLAW_PORT)"
+echo "🐾 Dev backend starting (live source, port $KIROCREW_PORT)"
 echo "   Python: $RUNTIME_PYTHON"
 echo "   Source: $PYTHONPATH"
-echo "   Data:   $KIROCLAW_HOME"
+echo "   Data:   $KIROCREW_HOME"
 echo ""
 
-exec "$RUNTIME_PYTHON" -m kiro_claw gateway
+exec "$RUNTIME_PYTHON" -m kiro_crew gateway

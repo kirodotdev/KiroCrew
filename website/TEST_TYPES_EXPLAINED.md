@@ -74,7 +74,7 @@ test('saves preferences', async () => {
 - Runs against actual running application (frontend + backend)
 
 **Requirements:**
-- ✅ Backend must be running (`KIROCLAW_HOME=.kiroclaw-dev KIROCLAW_PORT=6777`)
+- ✅ Backend must be running (`KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777`)
 - ✅ Frontend dev server must be running (or built static files served)
 - ✅ Database must be accessible
 - ✅ Real browser launches

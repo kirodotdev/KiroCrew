@@ -10,7 +10,7 @@ import WeekGrid from '../components/WeekGrid'
 import TimezoneSelect from '../components/TimezoneSelect'
 import JobForm from '../components/JobForm'
 import JobLogsView from '../components/JobLogsView'
-import type { KiroClawAgent } from '../components/AgentSelector'
+import type { KiroCrewAgent } from '../components/AgentSelector'
 import InfoTip from '../components/InfoTip'
 import type { CronJob } from '../types'
 import { useAgents } from '../hooks/useAgents'
@@ -21,7 +21,7 @@ import SortableHeader from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 
-const RENDER_TZ_STORAGE_KEY = 'kiroclaw.schedule.renderTz'
+const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 /**
  * Collapsed-by-default message cell. Shows a 1-line preview with a chevron;
  * click to toggle a <pre> block that preserves whitespace/indentation.
@@ -439,7 +439,7 @@ export default function SchedulePage() {
 }
 
 function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
-  job?: CronJob; agents: KiroClawAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
+  job?: CronJob; agents: KiroCrewAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)

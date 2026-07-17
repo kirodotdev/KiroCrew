@@ -25,13 +25,13 @@ async function wipeColumns(request: APIRequestContext) {
   for (const c of list) await request.delete(`/api/chat/tag-columns/${c.id}`)
 }
 // Destructive wipes are gated on an EXPLICIT ephemeral-harness marker: the
-// e2e harness sets KIROCLAW_E2E_EPHEMERAL for the throwaway tmp-home gateway
+// e2e harness sets KIROCREW_E2E_EPHEMERAL for the throwaway tmp-home gateway
 // it spawns. Token presence alone is NOT a safe signal -- it is also the normal
 // state when authenticating to a real, token-protected gateway, so a developer
 // pointing the suite at their live gateway (to debug a failure) must never
 // trigger a slot wipe. Absent the marker we skip the wipes and accept the flake
 // risk (e.g. a bare local `playwright test` against the port-5476 fallback).
-const HARNESS_GATEWAY = !!process.env.KIROCLAW_E2E_EPHEMERAL
+const HARNESS_GATEWAY = !!process.env.KIROCREW_E2E_EPHEMERAL
 
 async function wipeSlots(request: APIRequestContext) {
   // Slots accumulate across this serial describe (and across retries:2) since

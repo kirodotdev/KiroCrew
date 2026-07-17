@@ -7,7 +7,7 @@ logic, so a regression in the shard parser or percentile math fails the test.
 import json
 from pathlib import Path
 
-from kiro_claw.dashboard.handlers.telemetry import _aggregate, _Hist, _pct_from_buckets
+from kiro_crew.dashboard.handlers.telemetry import _aggregate, _Hist, _pct_from_buckets
 
 _BOUNDS = [10, 20, 30, 40, 50]
 
@@ -51,17 +51,17 @@ def _write_shard(tmp_path: Path, metrics: list) -> Path:
 
 
 def test_aggregate_startup_turn_and_other(tmp_path: Path):
-    startup = {"name": "kiroclaw.session.startup.duration", "data": {"data_points": [
+    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
         {"attributes": {"outcome": "ready", "spawned": True}, "count": 3, "sum": 45.0,
          "min": 10.0, "max": 25.0, "bucket_counts": [0, 1, 1, 1, 0, 0], "explicit_bounds": _BOUNDS},
     ]}}
-    turn = {"name": "kiroclaw.turn.duration", "data": {"data_points": [
+    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
         {"attributes": {"outcome": "ok"}, "count": 3, "sum": 30.0, "min": 5.0, "max": 15.0,
          "bucket_counts": [1, 1, 1, 0, 0, 0], "explicit_bounds": _BOUNDS},
         {"attributes": {"outcome": "error"}, "count": 1, "sum": 45.0, "min": 45.0, "max": 45.0,
          "bucket_counts": [0, 0, 0, 0, 1, 0], "explicit_bounds": _BOUNDS},
     ]}}
-    warm = {"name": "kiroclaw.mcp.warm_pool.acquire", "data": {"data_points": [
+    warm = {"name": "kirocrew.mcp.warm_pool.acquire", "data": {"data_points": [
         {"attributes": {"result": "hit"}, "value": 3},
         {"attributes": {"result": "miss"}, "value": 1},
     ]}}
@@ -79,7 +79,7 @@ def test_aggregate_startup_turn_and_other(tmp_path: Path):
     assert result["turn"]["fault_rate"] == 0.25  # 1 error / 4
 
     # Other: warm-pool counter with per-attr breakdown.
-    warm_rows = [o for o in result["other"] if o["name"] == "kiroclaw.mcp.warm_pool.acquire"]
+    warm_rows = [o for o in result["other"] if o["name"] == "kirocrew.mcp.warm_pool.acquire"]
     assert warm_rows and warm_rows[0]["kind"] == "counter"
     assert warm_rows[0]["total"] == 4.0
     assert warm_rows[0]["by_attr"]["result=hit"] == 3.0

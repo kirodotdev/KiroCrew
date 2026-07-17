@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.apps.manifest — AppManifest parser and validator."""
+"""Tests for kiro_crew.apps.manifest — AppManifest parser and validator."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.manifest import (
+from kiro_crew.apps.manifest import (
     AimDependencies,
     AppManifest,
     Dependencies,
@@ -111,7 +111,7 @@ class TestValidation:
         # A dotted module-style backend entryPoint has no '..' and is not
         # absolute, so the containment helper must not false-positive on it.
         m = AppManifest.from_dict(_valid_manifest(
-            backend={"entryPoint": "kiro_claw.apps.builtins.x.server"}
+            backend={"entryPoint": "kiro_crew.apps.builtins.x.server"}
         ))
         assert m.validate() == []
 
@@ -191,7 +191,7 @@ class TestValidation:
             "description": "Unified oncall dashboard",
             "author": "zezhexu",
             "license": "MIT",
-            "minKiroClawVersion": "1.3.0",
+            "minKiroCrewVersion": "1.3.0",
             "agents": ["agents/ticket-analyst.json"],
             "skills": ["skills/ticket-triage"],
             "sops": ["sops/ticket-rca.sop.md"],
@@ -231,7 +231,7 @@ class TestRoundTrip:
             "description": "Does things",
             "author": "dev",
             "license": "Apache-2.0",
-            "minKiroClawVersion": "2.0.0",
+            "minKiroCrewVersion": "2.0.0",
             "agents": ["agents/a.json", "agents/b.json"],
             "skills": ["skills/s1"],
             "sops": ["sops/s.sop.md"],
@@ -371,7 +371,7 @@ class TestPropertyBased:
                 min_size=1, max_size=15,
             ).filter(lambda k: k not in {
                 "name", "version", "displayName", "description", "author",
-                "license", "minKiroClawVersion", "agents", "skills", "sops",
+                "license", "minKiroCrewVersion", "agents", "skills", "sops",
                 "mcpServers", "crons", "ui", "backend", "permissions",
                 "setup", "tags", "jobFamilies",
             }),

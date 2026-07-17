@@ -11,12 +11,12 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.knowledge import readers
-from kiro_claw.knowledge.chunker import HeadingAwareChunker
-from kiro_claw.knowledge.extractor import EntityExtractor
-from kiro_claw.knowledge.readers import FileReader
-from kiro_claw.knowledge.retrieval import HybridRetriever, _bytes_to_floats
-from kiro_claw.knowledge.store import KnowledgeStore, SimpleDiGraph
+from kiro_crew.knowledge import readers
+from kiro_crew.knowledge.chunker import HeadingAwareChunker
+from kiro_crew.knowledge.extractor import EntityExtractor
+from kiro_crew.knowledge.readers import FileReader
+from kiro_crew.knowledge.retrieval import HybridRetriever, _bytes_to_floats
+from kiro_crew.knowledge.store import KnowledgeStore, SimpleDiGraph
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -942,9 +942,9 @@ class TestPysqlite3Fallback:
     """Verify modules fall back to stdlib sqlite3 when pysqlite3 is unavailable."""
 
     _MODULES = (
-        "kiro_claw.knowledge.store",
-        "kiro_claw.knowledge.retrieval",
-        "kiro_claw.snapshot",
+        "kiro_crew.knowledge.store",
+        "kiro_crew.knowledge.retrieval",
+        "kiro_crew.snapshot",
     )
 
     def _reload_without_pysqlite3(self, module_name: str):
@@ -966,13 +966,13 @@ class TestPysqlite3Fallback:
                 sys.modules["pysqlite3"] = saved
 
     def test_store_falls_back_to_stdlib_sqlite3(self):
-        self._reload_without_pysqlite3("kiro_claw.knowledge.store")
+        self._reload_without_pysqlite3("kiro_crew.knowledge.store")
 
     def test_retrieval_falls_back_to_stdlib_sqlite3(self):
-        self._reload_without_pysqlite3("kiro_claw.knowledge.retrieval")
+        self._reload_without_pysqlite3("kiro_crew.knowledge.retrieval")
 
     def test_snapshot_falls_back_to_stdlib_sqlite3(self):
-        self._reload_without_pysqlite3("kiro_claw.snapshot")
+        self._reload_without_pysqlite3("kiro_crew.snapshot")
 
 
 # ---------------------------------------------------------------------------
@@ -1127,11 +1127,11 @@ class _FakeEmbedder:
 @pytest.mark.asyncio
 class TestRebuildEmbeddingsJob:
     async def _run(self, store, embedder, n_items):
-        from kiro_claw.dashboard.handlers.knowledge import _rebuild_embeddings_job
+        from kiro_crew.dashboard.handlers.knowledge import _rebuild_embeddings_job
 
         # Seed active items, each with a stale (single-element) embedding so we can
         # prove the rebuild overwrites in place rather than only filling NULLs.
-        from kiro_claw.knowledge.embedder import floats_to_bytes
+        from kiro_crew.knowledge.embedder import floats_to_bytes
         for i in range(n_items):
             store.add_item(f"Item {i:03d}", f"body {i}", "document",
                            embedding=floats_to_bytes([9.9]))
@@ -1146,8 +1146,8 @@ class TestRebuildEmbeddingsJob:
 
     async def test_rebuild_reembeds_all_items_across_batches(self, store):
         # More than one _REBUILD_BATCH_SIZE page to exercise the id-cursor loop.
-        from kiro_claw.knowledge.embedder import embed_signature, floats_to_bytes
-        from kiro_claw.knowledge.ingestion import _REBUILD_BATCH_SIZE
+        from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
+        from kiro_crew.knowledge.ingestion import _REBUILD_BATCH_SIZE
         n = _REBUILD_BATCH_SIZE + 5
         embedder = _FakeEmbedder()
         job_id = await self._run(store, embedder, n)
@@ -1178,7 +1178,7 @@ class TestRebuildEmbeddingsJob:
         assert len(embedder.embedded_titles) == 3
 
         # A second rebuild on an unchanged setup finds nothing stale -> no-op.
-        from kiro_claw.knowledge.ingestion import rebuild_embeddings
+        from kiro_crew.knowledge.ingestion import rebuild_embeddings
         second = _FakeEmbedder()
         processed = await rebuild_embeddings(store, second)
         assert processed == 0
@@ -1186,8 +1186,8 @@ class TestRebuildEmbeddingsJob:
 
     async def test_rebuild_partial_retry_resumes_only_stale(self, store):
         # One item already carries the current sig; the rest are stale (NULL sig).
-        from kiro_claw.knowledge.embedder import embed_signature, floats_to_bytes
-        from kiro_claw.knowledge.ingestion import rebuild_embeddings
+        from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
+        from kiro_crew.knowledge.ingestion import rebuild_embeddings
         embedder = _FakeEmbedder()
         sig = embed_signature(embedder.model)
         done = store.add_item("done", "body", "document",
@@ -1207,7 +1207,7 @@ class TestRebuildEmbeddingsJob:
         embedder = _FakeEmbedder()
         await self._run(store, embedder, 3)
 
-        from kiro_claw.knowledge.ingestion import rebuild_embeddings
+        from kiro_crew.knowledge.ingestion import rebuild_embeddings
         forced = _FakeEmbedder()
         processed = await rebuild_embeddings(store, forced, force=True)
         assert processed == 3
@@ -1228,7 +1228,7 @@ class TestRebuildEmbeddingsJob:
 @pytest.mark.asyncio
 class TestWatcherSelfHeal:
     def _watcher(self, store, embedder):
-        from kiro_claw.knowledge.watcher import KnowledgeWatcher
+        from kiro_crew.knowledge.watcher import KnowledgeWatcher
 
         class _Pipe:
             pass
@@ -1238,7 +1238,7 @@ class TestWatcherSelfHeal:
 
     async def test_stale_items_trigger_rebuild_job(self, store):
         # Items with NULL sig are stale -> watcher fires a tracked rebuild job.
-        from kiro_claw.knowledge.embedder import embed_signature
+        from kiro_crew.knowledge.embedder import embed_signature
         embedder = _FakeEmbedder()
         for i in range(3):
             store.add_item(f"Item {i}", "body", "document")
@@ -1262,7 +1262,7 @@ class TestWatcherSelfHeal:
 
     async def test_no_stale_items_is_noop(self, store):
         # Everything already current -> no job created.
-        from kiro_claw.knowledge.embedder import embed_signature, floats_to_bytes
+        from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
         embedder = _FakeEmbedder()
         sig = embed_signature(embedder.model)
         item_id = store.add_item("current", "body", "document",
@@ -1295,7 +1295,7 @@ class TestWatcherSelfHeal:
         # A 'processing' row whose updated_at is older than the staleness window is
         # from a crash that bypassed cleanup -> the guard ignores it and the watcher
         # starts a fresh rebuild rather than being permanently blocked.
-        from kiro_claw.knowledge.ingestion import _REBUILD_STALE_AFTER
+        from kiro_crew.knowledge.ingestion import _REBUILD_STALE_AFTER
         embedder = _FakeEmbedder()
         store.add_item("stale", "body", "document")
         old = (datetime.now() - _REBUILD_STALE_AFTER - timedelta(minutes=1)).isoformat()
@@ -1326,7 +1326,7 @@ class TestWatcherSelfHeal:
         async def _boom(*a, **k):
             raise asyncio.CancelledError()
 
-        with patch("kiro_claw.knowledge.watcher.rebuild_embeddings", _boom):
+        with patch("kiro_crew.knowledge.watcher.rebuild_embeddings", _boom):
             with pytest.raises(asyncio.CancelledError):
                 await watcher._run_reembed_job(embedder, "cancel000001")
 

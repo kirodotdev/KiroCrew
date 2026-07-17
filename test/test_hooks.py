@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_claw.hooks import (
+from kiro_crew.hooks import (
     HOOK_INJECT_CONTEXT,
     HOOK_MODIFY,
     HOOK_PASSTHROUGH,
@@ -280,8 +280,8 @@ class TestToolHooks:
 class TestHooksConfigFromDict:
     def test_empty(self):
         cfg = HooksConfig.from_dict({})
-        assert "kiroclaw browse *" in cfg.auto_approve_tools
-        assert "*kiroclaw browse *" in cfg.auto_approve_tools
+        assert "kirocrew browse *" in cfg.auto_approve_tools
+        assert "*kirocrew browse *" in cfg.auto_approve_tools
         assert cfg.auto_approve_subagent_spawn is False
         assert cfg.auto_approve_subagent_tools is False
         assert cfg.auto_replies == []
@@ -298,7 +298,7 @@ class TestHooksConfigFromDict:
             }
         )
         assert "ReadFile" in cfg.auto_approve_tools
-        assert "kiroclaw browse *" in cfg.auto_approve_tools
+        assert "kirocrew browse *" in cfg.auto_approve_tools
         assert len(cfg.auto_replies) == 1
         assert cfg.auto_replies[0].exact is True
         assert len(cfg.context_rules) == 1
@@ -322,13 +322,13 @@ class TestHooksConfigFromDict:
         assert cfg.auto_approve_subagent_tools is True
 
     def test_hook_manager_auto_approve_subagent_tools_property(self):
-        from kiro_claw.hooks import HookManager
+        from kiro_crew.hooks import HookManager
         cfg = HooksConfig.from_dict({"auto_approve_subagent_tools": True})
         mgr = HookManager(cfg)
         assert mgr.auto_approve_subagent_tools is True
 
     def test_hook_manager_auto_approve_subagent_tools_default(self):
-        from kiro_claw.hooks import HookManager
+        from kiro_crew.hooks import HookManager
         cfg = HooksConfig.from_dict({})
         mgr = HookManager(cfg)
         assert mgr.auto_approve_subagent_tools is False
@@ -357,7 +357,7 @@ class TestSafeReadFile:
 
     def test_blocks_symlink_to_sensitive_path(self, tmp_path, monkeypatch):
         """A workspace symlink into ~/.aws must be refused through the link."""
-        from kiro_claw.hooks import safe_read_file_bytes
+        from kiro_crew.hooks import safe_read_file_bytes
 
         home = tmp_path / "home"
         (home / ".aws").mkdir(parents=True)
@@ -375,7 +375,7 @@ class TestSafeReadFile:
 
     def test_allows_benign_symlink(self, tmp_path):
         """A symlink to a non-sensitive file is still readable via its target."""
-        from kiro_claw.hooks import safe_read_file_bytes
+        from kiro_crew.hooks import safe_read_file_bytes
 
         real = tmp_path / "real.txt"
         real.write_text("hello")
@@ -409,32 +409,32 @@ class TestShouldAutoApproveSpawn:
     """Test _should_auto_approve_spawn helper from handler.py."""
 
     def test_approves_spawn_run_when_flag_true(self):
-        from kiro_claw.hooks import HookManager
-        from kiro_claw.slack.handler import _should_auto_approve_spawn
+        from kiro_crew.hooks import HookManager
+        from kiro_crew.slack.handler import _should_auto_approve_spawn
         ctx = MagicMock()
         ctx.hooks = HookManager(HooksConfig.from_dict({"auto_approve_subagent_spawn": True}))
         assert _should_auto_approve_spawn(ctx, "spawn_run") is True
 
     def test_rejects_when_flag_false(self):
-        from kiro_claw.hooks import HookManager
-        from kiro_claw.slack.handler import _should_auto_approve_spawn
+        from kiro_crew.hooks import HookManager
+        from kiro_crew.slack.handler import _should_auto_approve_spawn
         ctx = MagicMock()
         ctx.hooks = HookManager(HooksConfig.from_dict({"auto_approve_subagent_spawn": False}))
         assert _should_auto_approve_spawn(ctx, "spawn_run") is False
 
     def test_rejects_non_spawn_tool(self):
-        from kiro_claw.hooks import HookManager
-        from kiro_claw.slack.handler import _should_auto_approve_spawn
+        from kiro_crew.hooks import HookManager
+        from kiro_crew.slack.handler import _should_auto_approve_spawn
         ctx = MagicMock()
         ctx.hooks = HookManager(HooksConfig.from_dict({"auto_approve_subagent_spawn": True}))
         assert _should_auto_approve_spawn(ctx, "spawn_run_privileged") is False
 
     def test_rejects_none_context(self):
-        from kiro_claw.slack.handler import _should_auto_approve_spawn
+        from kiro_crew.slack.handler import _should_auto_approve_spawn
         assert _should_auto_approve_spawn(None, "spawn_run") is False
 
     def test_rejects_none_hooks(self):
-        from kiro_claw.slack.handler import _should_auto_approve_spawn
+        from kiro_crew.slack.handler import _should_auto_approve_spawn
         ctx = MagicMock()
         ctx.hooks = None
         assert _should_auto_approve_spawn(ctx, "spawn_run") is False

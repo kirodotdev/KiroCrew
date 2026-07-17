@@ -14,16 +14,16 @@
 
 | File | Responsibility |
 |------|---------------|
-| **Create:** `src/kiro_claw/safety_override.py` | Single source of truth for override state, TTLs, activation/renewal/expiry logic, SEL audit |
+| **Create:** `src/kiro_crew/safety_override.py` | Single source of truth for override state, TTLs, activation/renewal/expiry logic, SEL audit |
 | **Create:** `test/test_safety_override.py` | Unit tests for the new module |
-| **Modify:** `src/kiro_claw/slack/handler.py:410-934` | Remove YOLO globals and functions, delegate to `safety_override()` |
-| **Modify:** `src/kiro_claw/slack/events.py:285-322` | Replace `_handle_yolo` to use `safety_override()`, add `renew` subcommand |
-| **Modify:** `src/kiro_claw/dashboard/state.py:690-848` | Remove YOLO fields and methods, delegate to `safety_override()` |
-| **Modify:** `src/kiro_claw/dashboard/chat_handlers.py:1204-1391` | Remove Slack sync block, use `safety_override()` |
-| **Modify:** `src/kiro_claw/dashboard/chat_runner.py:730,1360` | Replace `state.is_yolo_active()` with `safety_override().is_active()` |
-| **Modify:** `src/kiro_claw/dashboard/server.py:216-239` | Replace `_apply_startup_yolo` with `safety_override().activate("config")` |
-| **Modify:** `src/kiro_claw/dashboard/handlers_system.py:115` | Add `yolo_active` and `yolo_expires_at` to `/api/status` |
-| **Modify:** `src/kiro_claw/slack/gateway.py:326,368,2483-2488` | Replace `is_yolo_mode()` imports with `safety_override().is_active()` |
+| **Modify:** `src/kiro_crew/slack/handler.py:410-934` | Remove YOLO globals and functions, delegate to `safety_override()` |
+| **Modify:** `src/kiro_crew/slack/events.py:285-322` | Replace `_handle_yolo` to use `safety_override()`, add `renew` subcommand |
+| **Modify:** `src/kiro_crew/dashboard/state.py:690-848` | Remove YOLO fields and methods, delegate to `safety_override()` |
+| **Modify:** `src/kiro_crew/dashboard/chat_handlers.py:1204-1391` | Remove Slack sync block, use `safety_override()` |
+| **Modify:** `src/kiro_crew/dashboard/chat_runner.py:730,1360` | Replace `state.is_yolo_active()` with `safety_override().is_active()` |
+| **Modify:** `src/kiro_crew/dashboard/server.py:216-239` | Replace `_apply_startup_yolo` with `safety_override().activate("config")` |
+| **Modify:** `src/kiro_crew/dashboard/handlers_system.py:115` | Add `yolo_active` and `yolo_expires_at` to `/api/status` |
+| **Modify:** `src/kiro_crew/slack/gateway.py:326,368,2483-2488` | Replace `is_yolo_mode()` imports with `safety_override().is_active()` |
 | **Modify:** `test/test_dashboard_yolo_startup.py` | Update tests to verify new 24h TTL behavior |
 
 ---
@@ -31,13 +31,13 @@
 ### Task 1: Create `SafetyOverride` Module — Core State & Activation
 
 **Files:**
-- Create: `src/kiro_claw/safety_override.py`
+- Create: `src/kiro_crew/safety_override.py`
 - Test: `test/test_safety_override.py`
 
 - [ ] **Step 1: Write failing tests for activation and expiry**
 
 ```python
-"""Tests for kiro_claw.safety_override module."""
+"""Tests for kiro_crew.safety_override module."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.safety_override import SafetyOverride, OverrideStatus
+from kiro_crew.safety_override import SafetyOverride, OverrideStatus
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def override() -> SafetyOverride:
 
 class TestActivation:
     def test_activate_from_slack(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             result = override.activate("slack")
         assert result.active is True
         assert result.ttl == 1800
@@ -75,29 +75,29 @@ class TestActivation:
         mock_sel.return_value.log_api_access.assert_called_once()
 
     def test_activate_from_dashboard(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             result = override.activate("dashboard")
         assert result.ttl == 21600
 
     def test_activate_from_config(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             result = override.activate("config")
         assert result.ttl == 86400
 
     def test_activate_caps_at_max_ttl(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             result = override.activate("dashboard", ttl=200_000)
         assert result.ttl == 86400  # capped at _MAX_TTL
 
     def test_activate_fires_callback(self, override: SafetyOverride) -> None:
         called = []
         override._on_activated = lambda src, ttl: called.append((src, ttl))
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
         assert called == [("slack", 1800)]
 
     def test_activation_count_increments(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
             override.deactivate("slack")
             override.activate("dashboard")
@@ -106,28 +106,28 @@ class TestActivation:
 
 class TestExpiry:
     def test_is_active_returns_false_after_expiry(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
         # Simulate time passing beyond TTL
         override._expires_at = time.monotonic() - 1
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             assert override.is_active() is False
 
     def test_expiry_fires_callback(self, override: SafetyOverride) -> None:
         called = []
         override._on_expired = lambda src: called.append(src)
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
         override._expires_at = time.monotonic() - 1
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.is_active()
         assert called == ["slack"]
 
     def test_expiry_logs_sel_event(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             override.activate("slack")
         override._expires_at = time.monotonic() - 1
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             override.is_active()
         kwargs = mock_sel.return_value.log_api_access.call_args.kwargs
         assert kwargs["operation"] == "safety_override:expired"
@@ -135,20 +135,20 @@ class TestExpiry:
 
 class TestDeactivation:
     def test_deactivate(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
             override.deactivate("slack")
         assert override.is_active() is False
 
     def test_deactivate_when_inactive_is_noop(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.deactivate("slack")  # should not raise
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_safety_override.py -v 2>&1 | head -40`
-Expected: FAIL — `ModuleNotFoundError: No module named 'kiro_claw.safety_override'`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py -v 2>&1 | head -40`
+Expected: FAIL — `ModuleNotFoundError: No module named 'kiro_crew.safety_override'`
 
 - [ ] **Step 3: Write the `safety_override.py` module**
 
@@ -388,7 +388,7 @@ class SafetyOverride:
     def _log_sel(self, *, operation: str, outcome: str, caller: str, resources: str) -> None:
         """Emit SEL audit event."""
         try:
-            from kiro_claw.sel import sel
+            from kiro_crew.sel import sel
             sel().log_api_access(
                 caller=caller,
                 operation=operation,
@@ -420,13 +420,13 @@ def reset_singleton() -> None:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_safety_override.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py -v`
 Expected: All tests PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/kiro_claw/safety_override.py test/test_safety_override.py
+git add src/kiro_crew/safety_override.py test/test_safety_override.py
 git commit -m "feat(security): add SafetyOverride module with time-limited YOLO
 
 Implements Mesh-1648: replaces permanent YOLO with capped overrides.
@@ -450,38 +450,38 @@ Append to `test/test_safety_override.py`:
 ```python
 class TestRenewal:
     def test_renew_active_override(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
             result = override.renew("dashboard")
         assert result.renewed is True
         assert result.ttl == 21600  # dashboard TTL on renew
 
     def test_renew_within_grace_period(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
         # Expire it just barely (within 5-min grace)
         override._expires_at = time.monotonic() - 60  # 1 min ago
         override._active = False
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             result = override.renew("slack")
         assert result.renewed is True
         assert override.is_active() is True
 
     def test_renew_outside_grace_period_fails(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("slack")
         # Expire it well past grace window
         override._expires_at = time.monotonic() - 600  # 10 min ago
         override._active = False
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             result = override.renew("slack")
         assert result.renewed is False
         assert result.error == "not_active"
 
     def test_renew_logs_sel(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("dashboard")
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             override.renew("dashboard")
         kwargs = mock_sel.return_value.log_api_access.call_args.kwargs
         assert kwargs["operation"] == "safety_override:renew"
@@ -490,7 +490,7 @@ class TestRenewal:
 
 class TestStatus:
     def test_status_when_active(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel"):
+        with patch("kiro_crew.safety_override.sel"):
             override.activate("dashboard")
         st = override.status()
         assert st.active is True
@@ -506,7 +506,7 @@ class TestStatus:
 
 - [ ] **Step 2: Run tests**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_safety_override.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py -v`
 Expected: All PASS
 
 - [ ] **Step 3: Commit**
@@ -521,12 +521,12 @@ git commit -m "test(safety_override): add renewal and status tests"
 ### Task 3: Integrate Into Dashboard State
 
 **Files:**
-- Modify: `src/kiro_claw/dashboard/state.py:690-848`
-- Modify: `src/kiro_claw/dashboard/chat_runner.py:730,1360`
+- Modify: `src/kiro_crew/dashboard/state.py:690-848`
+- Modify: `src/kiro_crew/dashboard/chat_runner.py:730,1360`
 
 - [ ] **Step 1: Replace YOLO fields in `state.py`**
 
-In `src/kiro_claw/dashboard/state.py`, remove lines 690-692 (`_yolo`, `_yolo_expires_at`, `_yolo_from_config` fields from `__init__`).
+In `src/kiro_crew/dashboard/state.py`, remove lines 690-692 (`_yolo`, `_yolo_expires_at`, `_yolo_from_config` fields from `__init__`).
 
 Remove lines 799-848 (the `_YOLO_TTL` constant and `enable_yolo`, `disable_yolo`, `_expire_yolo_if_needed`, `is_yolo_active` methods).
 
@@ -541,34 +541,34 @@ Replace with delegating methods:
     # -- Replace the removed methods with:
     def enable_yolo(self, *, from_config: bool = False) -> None:
         """Activate safety override (delegates to safety_override module)."""
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         source = "config" if from_config else "dashboard"
         safety_override().activate(source)
 
     def disable_yolo(self) -> None:
         """Deactivate safety override (delegates to safety_override module)."""
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         safety_override().deactivate("dashboard")
 
     def is_yolo_active(self) -> bool:
         """Return whether safety override is active (delegates to safety_override module)."""
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         return safety_override().is_active()
 ```
 
 - [ ] **Step 2: Update `chat_runner.py` references**
 
-In `src/kiro_claw/dashboard/chat_runner.py` at line 730 and 1360, `state.is_yolo_active()` continues to work as-is since we kept the delegating method. No changes needed here.
+In `src/kiro_crew/dashboard/chat_runner.py` at line 730 and 1360, `state.is_yolo_active()` continues to work as-is since we kept the delegating method. No changes needed here.
 
 - [ ] **Step 3: Run existing YOLO startup tests**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_dashboard_yolo_startup.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py -v`
 Expected: May need adjustment (test expects `state.is_yolo_active()` to work — it will since we kept the delegation)
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/kiro_claw/dashboard/state.py
+git add src/kiro_crew/dashboard/state.py
 git commit -m "refactor(state): delegate YOLO to safety_override module
 
 DashboardState.enable_yolo/disable_yolo/is_yolo_active now delegate
@@ -580,13 +580,13 @@ to the SafetyOverride singleton. Internal _yolo* fields removed."
 ### Task 4: Integrate Into Slack Handler
 
 **Files:**
-- Modify: `src/kiro_claw/slack/handler.py:410-934`
-- Modify: `src/kiro_claw/slack/events.py:285-322`
-- Modify: `src/kiro_claw/slack/gateway.py:326,368,2483-2488`
+- Modify: `src/kiro_crew/slack/handler.py:410-934`
+- Modify: `src/kiro_crew/slack/events.py:285-322`
+- Modify: `src/kiro_crew/slack/gateway.py:326,368,2483-2488`
 
 - [ ] **Step 1: Replace Slack handler globals and functions**
 
-In `src/kiro_claw/slack/handler.py`:
+In `src/kiro_crew/slack/handler.py`:
 
 Remove lines 410-418 (YOLO state globals):
 ```python
@@ -603,7 +603,7 @@ Replace `set_yolo_mode()` (line 809-814) with:
 def set_yolo_mode(enabled: bool) -> None:
     """Set YOLO mode at startup from config (called by gateway)."""
     if enabled:
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         safety_override().activate("config")
 ```
 
@@ -611,7 +611,7 @@ Replace `disable_yolo()` (line 887-895) with:
 ```python
 def disable_yolo() -> None:
     """Disable YOLO mode (global auto-approve)."""
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
     safety_override().deactivate("slack")
     _trusted_sessions.clear()
     logger.info("YOLO mode OFF")
@@ -621,7 +621,7 @@ Replace `enable_yolo_with_ttl()` (line 901-913) with:
 ```python
 def enable_yolo_with_ttl(ttl_secs: int) -> None:
     """Enable YOLO mode with a specific TTL."""
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
     safety_override().activate("slack", ttl=ttl_secs)
     logger.info("YOLO mode ON (expires in %ds)", ttl_secs)
 ```
@@ -630,7 +630,7 @@ Replace `is_yolo_mode()` (line 916-934) with:
 ```python
 def is_yolo_mode() -> bool:
     """Return whether YOLO mode is currently active."""
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
     return safety_override().is_active()
 ```
 
@@ -644,7 +644,7 @@ Replace the `_yolo_from_config` check at line 1061 with:
 ```
 → Change to:
 ```python
-            from kiro_claw.safety_override import safety_override
+            from kiro_crew.safety_override import safety_override
             if safety_override().is_active() and safety_override()._source == "config":
 ```
 
@@ -682,7 +682,7 @@ Simplify the `!yolo on` block to:
 In the `!yolo` command handler (after the `elif parts[1].lower() == "on"` block), add:
 ```python
         elif len(parts) >= 2 and parts[1].lower() == "renew":
-            from kiro_claw.safety_override import safety_override
+            from kiro_crew.safety_override import safety_override
             result = safety_override().renew("slack")
             if result.renewed:
                 sel().log_api_access(
@@ -699,7 +699,7 @@ In the `!yolo` command handler (after the `elif parts[1].lower() == "on"` block)
 
 - [ ] **Step 4: Update `events.py:_handle_yolo`**
 
-In `src/kiro_claw/slack/events.py`, replace `_handle_yolo` (lines 285-322):
+In `src/kiro_crew/slack/events.py`, replace `_handle_yolo` (lines 285-322):
 
 ```python
 async def _handle_yolo(
@@ -710,7 +710,7 @@ async def _handle_yolo(
         await respond("⛔ Only the owner can toggle YOLO mode.")
         return
 
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
 
     arg = args.strip().lower()
     if arg == "on":
@@ -750,15 +750,15 @@ async def _handle_yolo(
 
 - [ ] **Step 5: Update `gateway.py` references**
 
-In `src/kiro_claw/slack/gateway.py`:
+In `src/kiro_crew/slack/gateway.py`:
 
 At line 326 and 2483, replace:
 ```python
-from kiro_claw.slack.handler import is_yolo_mode
+from kiro_crew.slack.handler import is_yolo_mode
 ```
 with:
 ```python
-from kiro_claw.safety_override import safety_override
+from kiro_crew.safety_override import safety_override
 ```
 
 At line 368 replace `if is_yolo_mode():` with `if safety_override().is_active():`.
@@ -766,13 +766,13 @@ At line 2488 replace `return is_yolo_mode()` with `return safety_override().is_a
 
 - [ ] **Step 6: Run tests**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/kiro_claw/slack/handler.py src/kiro_claw/slack/events.py src/kiro_claw/slack/gateway.py
+git add src/kiro_crew/slack/handler.py src/kiro_crew/slack/events.py src/kiro_crew/slack/gateway.py
 git commit -m "refactor(slack): delegate YOLO state to safety_override module
 
 - handler.py: globals removed, functions delegate to SafetyOverride
@@ -785,16 +785,16 @@ git commit -m "refactor(slack): delegate YOLO state to safety_override module
 ### Task 5: Remove Dashboard ↔ Slack Sync Block
 
 **Files:**
-- Modify: `src/kiro_claw/dashboard/chat_handlers.py:1313-1331`
+- Modify: `src/kiro_crew/dashboard/chat_handlers.py:1313-1331`
 
 - [ ] **Step 1: Remove the sync block**
 
-In `src/kiro_claw/dashboard/chat_handlers.py`, remove lines 1313-1331:
+In `src/kiro_crew/dashboard/chat_handlers.py`, remove lines 1313-1331:
 
 ```python
     # Remove this entire block:
     # Sync Slack handler YOLO state with dashboard
-    from kiro_claw.slack.handler import (
+    from kiro_crew.slack.handler import (
         _YOLO_DASHBOARD_TTL_SECS,
         disable_yolo,
         enable_yolo_with_ttl,
@@ -824,7 +824,7 @@ Replace:
 ```
 with:
 ```python
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         safety_override().activate("dashboard")
 ```
 
@@ -832,7 +832,7 @@ with:
 
 Replace all `state.disable_yolo()` with:
 ```python
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         safety_override().deactivate("dashboard")
 ```
 
@@ -846,19 +846,19 @@ Replace:
 ```
 with:
 ```python
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         policy = "auto" if slot._trust or safety_override().is_active() else ""
 ```
 
 - [ ] **Step 5: Run tests**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py test/test_dashboard_approval.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py test/test_dashboard_approval.py -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/kiro_claw/dashboard/chat_handlers.py
+git add src/kiro_crew/dashboard/chat_handlers.py
 git commit -m "refactor(chat_handlers): remove Slack↔Dashboard YOLO sync
 
 Both interfaces now read from SafetyOverride singleton.
@@ -870,12 +870,12 @@ The manual sync block is eliminated."
 ### Task 6: Update Dashboard Startup (`_apply_startup_yolo`)
 
 **Files:**
-- Modify: `src/kiro_claw/dashboard/server.py:216-239`
+- Modify: `src/kiro_crew/dashboard/server.py:216-239`
 - Modify: `test/test_dashboard_yolo_startup.py`
 
 - [ ] **Step 1: Replace `_apply_startup_yolo`**
 
-In `src/kiro_claw/dashboard/server.py`, replace the function (lines 216-239):
+In `src/kiro_crew/dashboard/server.py`, replace the function (lines 216-239):
 
 ```python
 def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
@@ -885,7 +885,7 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     """
     if not cfg.agent.yolo:
         return
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
     try:
         result = safety_override().activate("config")
     except Exception:
@@ -909,9 +909,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from kiro_claw.dashboard.server import _apply_startup_yolo
-from kiro_claw.dashboard.state import DashboardState
-from kiro_claw.safety_override import reset_singleton
+from kiro_crew.dashboard.server import _apply_startup_yolo
+from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.safety_override import reset_singleton
 
 
 def _make_state() -> DashboardState:
@@ -938,10 +938,10 @@ def teardown_function() -> None:
 def test_apply_startup_yolo_enables_with_24h_ttl() -> None:
     """agent.yolo=true activates safety override with 24h cap."""
     state = _make_state()
-    with patch("kiro_claw.safety_override.sel"):
+    with patch("kiro_crew.safety_override.sel"):
         _apply_startup_yolo(state, _cfg(yolo=True))
 
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
     so = safety_override()
     assert so.is_active() is True
     assert so._source == "config"
@@ -952,17 +952,17 @@ def test_apply_startup_yolo_enables_with_24h_ttl() -> None:
 def test_apply_startup_yolo_noop_when_config_false() -> None:
     """agent.yolo=false does not activate override."""
     state = _make_state()
-    with patch("kiro_claw.safety_override.sel"):
+    with patch("kiro_crew.safety_override.sel"):
         _apply_startup_yolo(state, _cfg(yolo=False))
 
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
     assert safety_override().is_active() is False
 
 
 def test_apply_startup_yolo_logs_sel() -> None:
     """Activation emits SEL audit event."""
     state = _make_state()
-    with patch("kiro_claw.safety_override.sel") as mock_sel:
+    with patch("kiro_crew.safety_override.sel") as mock_sel:
         _apply_startup_yolo(state, _cfg(yolo=True))
 
     mock_sel.return_value.log_api_access.assert_called()
@@ -973,13 +973,13 @@ def test_apply_startup_yolo_logs_sel() -> None:
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/kiro_claw/dashboard/server.py test/test_dashboard_yolo_startup.py
+git add src/kiro_crew/dashboard/server.py test/test_dashboard_yolo_startup.py
 git commit -m "feat(startup): agent.yolo=true now activates 24h capped override
 
 No longer permanent — requires re-authorization after 24h.
@@ -991,15 +991,15 @@ SEL audit event emitted on activation."
 ### Task 7: Add Fleet Governance Endpoints
 
 **Files:**
-- Modify: `src/kiro_claw/dashboard/handlers_system.py:106-122`
-- Modify: `src/kiro_claw/dashboard/server.py` (route registration)
+- Modify: `src/kiro_crew/dashboard/handlers_system.py:106-122`
+- Modify: `src/kiro_crew/dashboard/server.py` (route registration)
 
 - [ ] **Step 1: Add `yolo_active` and `yolo_expires_at` to `/api/status`**
 
-In `src/kiro_claw/dashboard/handlers_system.py`, after line 115 (`"yolo": state._yolo,`), replace with:
+In `src/kiro_crew/dashboard/handlers_system.py`, after line 115 (`"yolo": state._yolo,`), replace with:
 
 ```python
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         so = safety_override()
         so_status = so.status()
 ```
@@ -1014,12 +1014,12 @@ Then in the `data.update(...)` block, replace `"yolo": state._yolo,` with:
 
 - [ ] **Step 2: Add `/api/admin/compliance/yolo-status` endpoint**
 
-Add a new handler in `src/kiro_claw/dashboard/handlers_system.py`:
+Add a new handler in `src/kiro_crew/dashboard/handlers_system.py`:
 
 ```python
 async def api_compliance_yolo_status(request: web.Request) -> web.Response:
     """GET /api/admin/compliance/yolo-status — safety override governance status."""
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
     from dataclasses import asdict
     status = safety_override().status()
     return web.json_response(asdict(status))
@@ -1027,20 +1027,20 @@ async def api_compliance_yolo_status(request: web.Request) -> web.Response:
 
 - [ ] **Step 3: Register the route**
 
-In `src/kiro_claw/dashboard/server.py`, add near the other admin/system routes:
+In `src/kiro_crew/dashboard/server.py`, add near the other admin/system routes:
 ```python
     app.router.add_get("/api/admin/compliance/yolo-status", handlers.api_compliance_yolo_status)
 ```
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/kiro_claw/dashboard/handlers_system.py src/kiro_claw/dashboard/server.py
+git add src/kiro_crew/dashboard/handlers_system.py src/kiro_crew/dashboard/server.py
 git commit -m "feat(governance): add yolo_active/expires_at to /api/status
 
 Adds /api/admin/compliance/yolo-status for full override status.
@@ -1052,15 +1052,15 @@ Fleet monitoring tools get override visibility via existing status poll."
 ### Task 8: Wire Expiry Notifications
 
 **Files:**
-- Modify: `src/kiro_claw/dashboard/server.py` (wire `on_expired` callback)
-- Modify: `src/kiro_claw/slack/gateway.py` (Slack expiry notification)
+- Modify: `src/kiro_crew/dashboard/server.py` (wire `on_expired` callback)
+- Modify: `src/kiro_crew/slack/gateway.py` (Slack expiry notification)
 
 - [ ] **Step 1: Wire the `on_expired` callback in gateway startup**
 
-In `src/kiro_claw/dashboard/server.py`, after the `_apply_startup_yolo` call, add:
+In `src/kiro_crew/dashboard/server.py`, after the `_apply_startup_yolo` call, add:
 
 ```python
-    from kiro_claw.safety_override import safety_override
+    from kiro_crew.safety_override import safety_override
 
     def _on_override_expired(source: str) -> None:
         """Notify dashboard clients when safety override expires."""
@@ -1076,7 +1076,7 @@ In `src/kiro_claw/dashboard/server.py`, after the `_apply_startup_yolo` call, ad
 
 - [ ] **Step 2: Wire Slack expiry notification in gateway**
 
-In `src/kiro_claw/slack/gateway.py`, during gateway initialization (where heartbeat or on_expired would be wired), add a Slack notification path. The simplest approach: in the existing `on_expired` callback, also post to Slack:
+In `src/kiro_crew/slack/gateway.py`, during gateway initialization (where heartbeat or on_expired would be wired), add a Slack notification path. The simplest approach: in the existing `on_expired` callback, also post to Slack:
 
 Update the `_on_override_expired` in `server.py` to also notify Slack:
 
@@ -1091,7 +1091,7 @@ Update the `_on_override_expired` in `server.py` to also notify Slack:
                 state.sessions.set_approval_policy(f"dashboard:{slot.key}", "")
         # Slack notification (fire-and-forget)
         try:
-            from kiro_claw.slack.handler import _post_to_owner
+            from kiro_crew.slack.handler import _post_to_owner
             import asyncio
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -1104,7 +1104,7 @@ Update the `_on_override_expired` in `server.py` to also notify Slack:
 
 - [ ] **Step 3: Add `_post_to_owner` helper in Slack handler (if it doesn't exist)**
 
-In `src/kiro_claw/slack/handler.py`, add:
+In `src/kiro_crew/slack/handler.py`, add:
 
 ```python
 async def _post_to_owner(text: str) -> None:
@@ -1121,13 +1121,13 @@ async def _post_to_owner(text: str) -> None:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/kiro_claw/dashboard/server.py src/kiro_claw/slack/handler.py src/kiro_claw/slack/gateway.py
+git add src/kiro_crew/dashboard/server.py src/kiro_crew/slack/handler.py src/kiro_crew/slack/gateway.py
 git commit -m "feat(notifications): wire expiry notifications to Dashboard + Slack
 
 When safety override expires:
@@ -1141,12 +1141,12 @@ When safety override expires:
 ### Task 9: Clean Up Legacy References & Run Full Test Suite
 
 **Files:**
-- Modify: `src/kiro_claw/slack/handler.py` (remove dead `_yolo_from_config` references)
-- Modify: `src/kiro_claw/dashboard/chat_handlers.py:1461` (remaining `state.enable_yolo()`)
+- Modify: `src/kiro_crew/slack/handler.py` (remove dead `_yolo_from_config` references)
+- Modify: `src/kiro_crew/dashboard/chat_handlers.py:1461` (remaining `state.enable_yolo()`)
 
 - [ ] **Step 1: Audit remaining legacy references**
 
-Run: `grep -rn "_yolo_from_config\|_yolo_mode\|_yolo_expires_at\|_yolo_active_ttl" src/kiro_claw/ --include="*.py" | grep -v __pycache__`
+Run: `grep -rn "_yolo_from_config\|_yolo_mode\|_yolo_expires_at\|_yolo_active_ttl" src/kiro_crew/ --include="*.py" | grep -v __pycache__`
 
 Fix any remaining direct references to the old globals.
 
@@ -1154,18 +1154,18 @@ Fix any remaining direct references to the old globals.
 
 If there's a remaining `state.enable_yolo()` at line 1461, replace with:
 ```python
-        from kiro_claw.safety_override import safety_override
+        from kiro_crew.safety_override import safety_override
         safety_override().activate("dashboard")
 ```
 
 - [ ] **Step 3: Run full test suite**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m pytest test/ -x --timeout=60 -q 2>&1 | tail -30`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/ -x --timeout=60 -q 2>&1 | tail -30`
 Expected: All tests pass (or only unrelated failures)
 
 - [ ] **Step 4: Run type checking**
 
-Run: `cd /workplace/bolichen/KiroClaw/src/KiroClaw && python -m mypy src/kiro_claw/safety_override.py --ignore-missing-imports`
+Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m mypy src/kiro_crew/safety_override.py --ignore-missing-imports`
 Expected: No errors
 
 - [ ] **Step 5: Commit final cleanup**

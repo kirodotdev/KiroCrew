@@ -21,8 +21,8 @@ from typing import Any
 
 import pytest
 
-from kiro_claw.mcp_gateway import gatewayd as gw
-from kiro_claw.mcp_gateway import socketsec
+from kiro_crew.mcp_gateway import gatewayd as gw
+from kiro_crew.mcp_gateway import socketsec
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -228,7 +228,7 @@ def test_caller_from_register_parses_recaller_frame() -> None:
     forms and — critically — return ``None`` for an empty/missing session_key
     so a bogus recaller can never clobber a good caller in
     ``_handle_connection``."""
-    from kiro_claw.mcp_gateway.gatewayd import _caller_from_register
+    from kiro_crew.mcp_gateway.gatewayd import _caller_from_register
 
     # Flat shape — exactly what stub._recaller_loop emits.
     flat = {
@@ -269,7 +269,7 @@ def test_caller_rekey_emits_sel_audit_event(monkeypatch: "pytest.MonkeyPatch") -
     authorization change, so it MUST emit a SEL audit event — mirroring the
     register-time accept audit. Verify _audit_caller_rekey records the
     identity transition via SecurityEventLog.log_api_access."""
-    from kiro_claw.mcp_gateway import gatewayd as gw
+    from kiro_crew.mcp_gateway import gatewayd as gw
 
     calls: list[dict[str, Any]] = []
 
@@ -278,7 +278,7 @@ def test_caller_rekey_emits_sel_audit_event(monkeypatch: "pytest.MonkeyPatch") -
             calls.append(kwargs)
 
     monkeypatch.setattr(gw, "SecurityEventLog", _FakeSEL)
-    gw._audit_caller_rekey("dashboard:chat-QA-1", "kiroclaw:kiroclaw-core")
+    gw._audit_caller_rekey("dashboard:chat-QA-1", "kirocrew:kirocrew-core")
 
     assert len(calls) == 1
     ev = calls[0]
@@ -286,14 +286,14 @@ def test_caller_rekey_emits_sel_audit_event(monkeypatch: "pytest.MonkeyPatch") -
     assert ev["operation"] == "mcp-gateway.caller-rekey"
     assert ev["outcome"] == "allowed"
     assert ev["source"] == "gateway"
-    assert ev["resources"] == "kiroclaw:kiroclaw-core"
+    assert ev["resources"] == "kirocrew:kirocrew-core"
 
 
 def test_recaller_rejected_emits_denied_sel_audit_event(monkeypatch: "pytest.MonkeyPatch") -> None:
     """A rejected recaller pivot (connection already identified) is a
     security-relevant permission decision, so it MUST emit a denied SEL audit
     event capturing the attempted target — mirroring _audit_peer_denied."""
-    from kiro_claw.mcp_gateway import gatewayd as gw
+    from kiro_crew.mcp_gateway import gatewayd as gw
 
     calls: list[dict[str, Any]] = []
 
@@ -303,7 +303,7 @@ def test_recaller_rejected_emits_denied_sel_audit_event(monkeypatch: "pytest.Mon
 
     monkeypatch.setattr(gw, "SecurityEventLog", _FakeSEL)
     gw._audit_recaller_rejected(
-        "dashboard:orig-1", "kiroclaw:kiroclaw-core",
+        "dashboard:orig-1", "kirocrew:kirocrew-core",
         "recaller pivot attempt to session_key=dashboard:evil-2",
     )
 
@@ -313,5 +313,5 @@ def test_recaller_rejected_emits_denied_sel_audit_event(monkeypatch: "pytest.Mon
     assert ev["operation"] == "mcp-gateway.caller-rekey"
     assert ev["outcome"] == "denied"
     assert ev["source"] == "gateway"
-    assert ev["resources"] == "kiroclaw:kiroclaw-core"
+    assert ev["resources"] == "kirocrew:kirocrew-core"
     assert ev["error"] == "recaller pivot attempt to session_key=dashboard:evil-2"

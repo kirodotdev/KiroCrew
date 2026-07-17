@@ -11,7 +11,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.app_storage import AppStorage
+from kiro_crew.apps.app_storage import AppStorage
 
 # ---------------------------------------------------------------------------
 # Strategies

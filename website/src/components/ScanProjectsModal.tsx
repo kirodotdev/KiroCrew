@@ -46,7 +46,7 @@ export default function ScanProjectsModal({ open, onClose, onSuccess }: Props) {
       </>}
     >
       <div className="space-y-4 text-[13px] text-text">
-        <p>KiroClaw will scan the directory you provide for <code className="text-[12px] bg-bg-hover px-1 py-0.5 rounded">.kiro/agents/</code> folders and register any agents it finds. Registered agents appear in the dropdown grouped under the project folder name.</p>
+        <p>KiroCrew will scan the directory you provide for <code className="text-[12px] bg-bg-hover px-1 py-0.5 rounded">.kiro/agents/</code> folders and register any agents it finds. Registered agents appear in the dropdown grouped under the project folder name.</p>
         <p className="text-muted">You can provide a parent directory (e.g. <code className="text-[12px] bg-bg-hover px-1 py-0.5 rounded">~/Documents</code>) to scan multiple projects at once, or a specific project path. The scan goes up to 8 levels deep and stops automatically at 50,000 directories to keep it fast.</p>
         <div>
           {/* Control is correctly associated via htmlFor+id; label-has-for's nesting requirement is a false positive here. */}

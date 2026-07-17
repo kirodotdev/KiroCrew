@@ -4,7 +4,7 @@
 
 **Use case 1 — Agent-driven install:** A user asks an agent to "look at my GitHub repo." The agent doesn't have a GitHub MCP server available, so it should: (a) install one, (b) ask the user to authenticate, (c) call the tool with the resulting credentials.
 
-**Use case 2 — User-driven install:** A user clicks "Install GitHub integration" in the KiroClaw dashboard. The dashboard walks them through GitHub auth and the integration is ready for the next session.
+**Use case 2 — User-driven install:** A user clicks "Install GitHub integration" in the KiroCrew dashboard. The dashboard walks them through GitHub auth and the integration is ready for the next session.
 
 Both flows end at the same place: a remote MCP server that needs an OAuth bearer token in `Authorization: Bearer …` on every request. Three things have to happen end-to-end:
 
@@ -16,21 +16,21 @@ Both flows end at the same place: a remote MCP server that needs an OAuth bearer
 
 kiro-cli reads its agent definition from `agent.json` at session start. MCP servers are declared inline in that file. From there, two paths:
 
-**Path A — no token in the agent config.** kiro-cli connects to the MCP server, gets a 401, runs OAuth itself, and surfaces the consent URL via the `_kiro.dev/mcp/oauth_request` ACP notification. KiroClaw renders that URL as a dashboard banner; the user clicks through; the OAuth provider eventually calls back to **kiro-cli's own local callback server**; kiro-cli stores the token in **its own credential store** (macOS keychain, kiro-cli's SQLite — opaque to KiroClaw). All subsequent calls "just work" because the bearer is injected internally by kiro-cli.
+**Path A — no token in the agent config.** kiro-cli connects to the MCP server, gets a 401, runs OAuth itself, and surfaces the consent URL via the `_kiro.dev/mcp/oauth_request` ACP notification. KiroCrew renders that URL as a dashboard banner; the user clicks through; the OAuth provider eventually calls back to **kiro-cli's own local callback server**; kiro-cli stores the token in **its own credential store** (macOS keychain, kiro-cli's SQLite — opaque to KiroCrew). All subsequent calls "just work" because the bearer is injected internally by kiro-cli.
 
 **Path B — token already written into the agent config's `headers`.** kiro-cli sees `Authorization: Bearer …` on the MCP server entry and connects without running OAuth at all.
 
 Path B has two showstoppers:
 
 - **Expiration is invisible.** The token in `agent.json` is static. When it expires, the next MCP call returns 401 mid-turn, and there's no refresh story.
-- **Plaintext on disk.** The token sits in a JSON file the agent itself can read. An agent doing legitimate filesystem work — `cat ~/.kiro/agents/kiroclaw.json`, `grep -r Bearer ~`, anything — pulls the credential into its own context. Same risk class as `.env` files and `.aws/credentials`, except agents are LLM-driven, with a "curiosity gradient" much higher than a human's.
+- **Plaintext on disk.** The token sits in a JSON file the agent itself can read. An agent doing legitimate filesystem work — `cat ~/.kiro/agents/kirocrew.json`, `grep -r Bearer ~`, anything — pulls the credential into its own context. Same risk class as `.env` files and `.aws/credentials`, except agents are LLM-driven, with a "curiosity gradient" much higher than a human's.
 
-So in practice we live on Path A. The cost: **kiro-cli owns the entire OAuth chain** — config reading, browser flow, callback server, token storage, refresh, sign-out — and KiroClaw's only observation surface is one-directional `_kiro.dev/*` notifications. Concretely:
+So in practice we live on Path A. The cost: **kiro-cli owns the entire OAuth chain** — config reading, browser flow, callback server, token storage, refresh, sign-out — and KiroCrew's only observation surface is one-directional `_kiro.dev/*` notifications. Concretely:
 
 - We can't see **which** MCP servers are authenticated for the current user.
 - We can't proactively refresh tokens or check expiry.
 - We can't sign out of one MCP server without nuking kiro-cli's whole identity.
-- We can't have two KiroClaw users (or two agents in the same workspace) authenticated to the same MCP server with different accounts — kiro-cli's store is one-per-machine.
+- We can't have two KiroCrew users (or two agents in the same workspace) authenticated to the same MCP server with different accounts — kiro-cli's store is one-per-machine.
 - We can't show "GitHub: connected as zezhexu" in the dashboard, because that data lives in kiro-cli's store and we can't read it.
 
 The ACP-level workarounds we've built (the OAuth banner, dedup, completion patching, role-aware redaction, `chat_message_update`) are all symptoms of the same thing: **we're rendering UI for a flow we don't own.**
@@ -51,19 +51,19 @@ options = ClaudeAgentOptions(mcp_servers={
 
 The SDK doesn't run OAuth, doesn't handle callbacks, doesn't store anything. Whatever bearer we hand it is what it uses.
 
-That inverts the ownership model: **KiroClaw owns the OAuth chain end-to-end.**
+That inverts the ownership model: **KiroCrew owns the OAuth chain end-to-end.**
 
 - The dashboard runs the consent flow (open browser, receive callback, exchange code for token).
-- KiroClaw stores tokens in its own credential store — keychain on macOS, sealed SQLite on Linux, whatever fits Amazon's security posture.
+- KiroCrew stores tokens in its own credential store — keychain on macOS, sealed SQLite on Linux, whatever fits Amazon's security posture.
 - Token scoping is up to us: per-user × per-agent × per-server. Two agents in one workspace can hold tokens for two different GitHub accounts.
-- Refresh is a KiroClaw concern: a background task watches expiry, refreshes, hands the new bearer to the next `query()`.
+- Refresh is a KiroCrew concern: a background task watches expiry, refreshes, hands the new bearer to the next `query()`.
 - Sign-out is a single dashboard click — delete the row from our store and revoke upstream.
 - Tokens never sit in `agent.json`. The file holds only the **shape** of the MCP server (URL, server-id, scope hints); the bearer is injected at runtime.
-- The dashboard can show "GitHub: connected as zezhexu, expires in 47 min" because the data lives in KiroClaw.
+- The dashboard can show "GitHub: connected as zezhexu, expires in 47 min" because the data lives in KiroCrew.
 
 ## The core problem in one sentence
 
-**With kiro-cli, the entire chain — config → OAuth → token storage → header injection — lives inside the CLI process, and KiroClaw can only observe it through opaque ACP notifications. With the Agent SDK, that chain is KiroClaw's code, and we can shape it into whatever the product needs.**
+**With kiro-cli, the entire chain — config → OAuth → token storage → header injection — lives inside the CLI process, and KiroCrew can only observe it through opaque ACP notifications. With the Agent SDK, that chain is KiroCrew's code, and we can shape it into whatever the product needs.**
 
 ---
 
@@ -71,14 +71,14 @@ That inverts the ownership model: **KiroClaw owns the OAuth chain end-to-end.**
 
 1. **"An agent could grep and leak the token" understates it.** The instinct is right, but the real risk isn't malicious agents. It's a benign one. A GitHub MCP server with an OAuth token in `agent.json` plus a perfectly reasonable user prompt — "summarize what's in my home directory" — can leak the credential into chat output without anyone misbehaving. Lead with the **prompt-injection / accidental-leak** angle; it's more persuasive because it's harder to mitigate.
 
-2. **The "different accounts per MCP" point isn't in the original write-up but is one of the strongest.** kiro-cli's keychain is process-global — one GitHub identity per machine. With KiroClaw owning identity, a workspace running two agents (e.g. `personal-tasks` and `team-tasks`) can hold two different GitHub tokens against the same MCP server. That's a concrete product capability we can't deliver today.
+2. **The "different accounts per MCP" point isn't in the original write-up but is one of the strongest.** kiro-cli's keychain is process-global — one GitHub identity per machine. With KiroCrew owning identity, a workspace running two agents (e.g. `personal-tasks` and `team-tasks`) can hold two different GitHub tokens against the same MCP server. That's a concrete product capability we can't deliver today.
 
 3. **Use a comparison table instead of prose; reviewers process it faster:**
 
    | Concern | kiro-cli (today) | Agent SDK (proposed) |
    |---|---|---|
-   | Where does the OAuth token live? | kiro-cli's keychain (opaque) | KiroClaw's credential store |
-   | Who runs the callback server? | kiro-cli, on a port it picks | KiroClaw, on a port we control |
+   | Where does the OAuth token live? | kiro-cli's keychain (opaque) | KiroCrew's credential store |
+   | Who runs the callback server? | kiro-cli, on a port it picks | KiroCrew, on a port we control |
    | Can we list authenticated MCP servers? | No | Yes |
    | Can we refresh proactively? | No | Yes |
    | Per-agent identities? | No | Yes |

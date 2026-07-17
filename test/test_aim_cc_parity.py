@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiro_claw.aim_agents import (
+from kiro_crew.aim_agents import (
     _ensure_standalone_mode,
     install_cc_plugin,
     installed_kiro_packages_missing_from_cc,
@@ -28,7 +28,7 @@ class TestListCcPlugins:
     def test_returns_empty_when_marketplace_missing(self, tmp_path: Path, monkeypatch):
         """Returns [] when marketplace.json does not exist."""
         monkeypatch.setattr(
-            "kiro_claw.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins"
+            "kiro_crew.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins"
         )
         assert list_cc_plugins() == []
 
@@ -41,7 +41,7 @@ class TestListCcPlugins:
             {"packageName": "PkgB", "version": "2.0"},
         ]
         (plugins_dir / "marketplace.json").write_text(json.dumps(data))
-        monkeypatch.setattr("kiro_claw.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
+        monkeypatch.setattr("kiro_crew.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
         assert list_cc_plugins() == ["PkgA", "PkgB"]
 
     def test_parses_dict_format_with_plugins_key(self, tmp_path: Path, monkeypatch):
@@ -50,7 +50,7 @@ class TestListCcPlugins:
         plugins_dir.mkdir(parents=True)
         data = {"plugins": [{"packageName": "PkgC"}]}
         (plugins_dir / "marketplace.json").write_text(json.dumps(data))
-        monkeypatch.setattr("kiro_claw.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
+        monkeypatch.setattr("kiro_crew.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
         assert list_cc_plugins() == ["PkgC"]
 
     def test_returns_empty_on_malformed_json(self, tmp_path: Path, monkeypatch):
@@ -58,7 +58,7 @@ class TestListCcPlugins:
         plugins_dir = tmp_path / "cc-plugins" / ".claude-plugin"
         plugins_dir.mkdir(parents=True)
         (plugins_dir / "marketplace.json").write_text("not json")
-        monkeypatch.setattr("kiro_claw.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
+        monkeypatch.setattr("kiro_crew.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
         assert list_cc_plugins() == []
 
     def test_skips_entries_without_package_name(self, tmp_path: Path, monkeypatch):
@@ -67,7 +67,7 @@ class TestListCcPlugins:
         plugins_dir.mkdir(parents=True)
         data = [{"packageName": "Good"}, {"version": "1.0"}, {"packageName": ""}]
         (plugins_dir / "marketplace.json").write_text(json.dumps(data))
-        monkeypatch.setattr("kiro_claw.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
+        monkeypatch.setattr("kiro_crew.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
         assert list_cc_plugins() == ["Good"]
 
 
@@ -79,11 +79,11 @@ class TestIsCcPluginInstalled:
         plugins_dir.mkdir(parents=True)
         data = [{"packageName": "MyPkg"}]
         (plugins_dir / "marketplace.json").write_text(json.dumps(data))
-        monkeypatch.setattr("kiro_claw.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
+        monkeypatch.setattr("kiro_crew.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
         assert is_cc_plugin_installed("MyPkg") is True
 
     def test_returns_false_when_absent(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
+        monkeypatch.setattr("kiro_crew.aim_agents._CC_PLUGINS_DIR", tmp_path / "cc-plugins")
         assert is_cc_plugin_installed("Missing") is False
 
 

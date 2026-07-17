@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kiro_claw.acp.liveness import (
+from kiro_crew.acp.liveness import (
     CHILD_EXIT_GRACE_SECS,
     EVIDENCE_ESTABLISHED_FLAT,
     VERDICT_DEAD,

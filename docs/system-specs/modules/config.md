@@ -1,53 +1,53 @@
 # Config Module
 
-Last Updated: 2026-07-15 (Removed the SecretaryConfig / TaskKeeperConfig / KeywordHook DTOs and the `secretary`/`taskkeeper` KiroClawConfig fields — the Secretary/TaskKeeper features were dropped from the public fork (P472753900); config-baseline regenerated. Prior — 2026-07-13 Schema refresh: documented security-bounded load-time clamp — SUBAGENT_AUTO_MAX_CEILING=64 / SUBAGENT_MAX_TURNS_CEILING=200 / POOL_SIZE_MAX=10, `_clamp_security_bounds` + `config_bounds_clamped` SEL event; added clamped AgentConfig fields, SessionConfig.pool_size, MessagingConfig/SkillsConfig/TelemetryConfig/DashboardConfig (theme_mode/theme_color/onboarded) DTOs, `_resolve_named_agent_model`/`kiro_agents_dir`; corrected `_resolve_agent_model` fallback to `config_package_dir()/defaults.json`. 2026-06-22: AgentConfig: added sandbox_allow_no_isolation (SEC-009) field; agent_model_state.json sidecar: model_managed/cc_model moved out of kiro agent specs so kiro-cli deny_unknown_fields no longer drops KiroClaw agents)
+Last Updated: 2026-07-15 (Removed the SecretaryConfig / TaskKeeperConfig / KeywordHook DTOs and the `secretary`/`taskkeeper` KiroCrewConfig fields — the Secretary/TaskKeeper features were dropped from the public fork (P472753900); config-baseline regenerated. Prior — 2026-07-13 Schema refresh: documented security-bounded load-time clamp — SUBAGENT_AUTO_MAX_CEILING=64 / SUBAGENT_MAX_TURNS_CEILING=200 / POOL_SIZE_MAX=10, `_clamp_security_bounds` + `config_bounds_clamped` SEL event; added clamped AgentConfig fields, SessionConfig.pool_size, MessagingConfig/SkillsConfig/TelemetryConfig/DashboardConfig (theme_mode/theme_color/onboarded) DTOs, `_resolve_named_agent_model`/`kiro_agents_dir`; corrected `_resolve_agent_model` fallback to `config_package_dir()/defaults.json`. 2026-06-22: AgentConfig: added sandbox_allow_no_isolation (SEC-009) field; agent_model_state.json sidecar: model_managed/cc_model moved out of kiro agent specs so kiro-cli deny_unknown_fields no longer drops KiroCrew agents)
 
 ## Overview
 
-The config module (`kiro_claw/config/loader.py`) loads runtime configuration from `~/.kiroclaw/config.json` using stdlib dataclasses with sensible defaults.
+The config module (`kiro_crew/config/loader.py`) loads runtime configuration from `~/.kirocrew/config.json` using stdlib dataclasses with sensible defaults.
 
 ## Workspace Root
 
 `workspace_root()` returns the base directory for all LLM working directories (kiro-cli cwd, task runner output, etc.):
 
 Resolution order:
-1. `KIROCLAW_WORKSPACE` env var — used as-is (no `kiroclaw-workspace` subdirectory appended)
-2. Saved path in `~/.kiroclaw/workspace_dir` (written by `kiroclaw setup`; re-running setup preserves the existing value as the prompt default)
+1. `KIROCREW_WORKSPACE` env var — used as-is (no `kirocrew-workspace` subdirectory appended)
+2. Saved path in `~/.kirocrew/workspace_dir` (written by `kirocrew setup`; re-running setup preserves the existing value as the prompt default)
 3. Platform default:
 
 | Platform | Path |
 |----------|------|
-| macOS | `/Volumes/workplace/kiroclaw-workspace` (falls back to `~/workplace/kiroclaw-workspace` if `/Volumes/workplace` doesn't exist) |
-| Linux | `~/workplace/kiroclaw-workspace` |
+| macOS | `/Volumes/workplace/kirocrew-workspace` (falls back to `~/workplace/kirocrew-workspace` if `/Volumes/workplace` doesn't exist) |
+| Linux | `~/workplace/kirocrew-workspace` |
 
 Each session/task gets an isolated subdirectory under this root via `_session_work_dir(key)`:
-- Chat sessions: `kiroclaw-workspace/cli_chat`, `kiroclaw-workspace/{thread_ts}`
-- Background: `kiroclaw-workspace/_bg`
-- Cron: `kiroclaw-workspace/cron_{job_id}`
-- TaskRunner: `kiroclaw-workspace/taskrunner_main`
-- Background session: `kiroclaw-workspace/_bg`
+- Chat sessions: `kirocrew-workspace/cli_chat`, `kirocrew-workspace/{thread_ts}`
+- Background: `kirocrew-workspace/_bg`
+- Cron: `kirocrew-workspace/cron_{job_id}`
+- TaskRunner: `kirocrew-workspace/taskrunner_main`
+- Background session: `kirocrew-workspace/_bg`
 
 The parent directory is created on first call if it doesn't exist.
 
 ## Project Directory Resolution
 
-`KIROCLAW_PROJECT_DIR` env var controls where agent config and skills are loaded from:
+`KIROCREW_PROJECT_DIR` env var controls where agent config and skills are loaded from:
 
-1. Env var `KIROCLAW_PROJECT_DIR` (if set and valid)
-2. CWD walk-up — CLI walks up from CWD looking for `skills/` + `src/kiro_claw/` (the `agents/` dir was removed in commit bbbc1f6e when agent config moved into `src/kiro_claw/config/`)
-3. Saved path in `~/.kiroclaw/project_dir` (written by `kiroclaw setup`)
+1. Env var `KIROCREW_PROJECT_DIR` (if set and valid)
+2. CWD walk-up — CLI walks up from CWD looking for `skills/` + `src/kiro_crew/` (the `agents/` dir was removed in commit bbbc1f6e when agent config moved into `src/kiro_crew/config/`)
+3. Saved path in `~/.kirocrew/project_dir` (written by `kirocrew setup`)
 4. Bundled fallback — `config/defaults.json` and `builtin_skills/` inside the package
 
 The CLI (`cli.py:main()`) auto-detects and sets the env var at startup.
 
 ## Config Overlay (config.local.json)
 
-User overrides can be placed in `~/.kiroclaw/config.local.json`. This file is
+User overrides can be placed in `~/.kirocrew/config.local.json`. This file is
 deep-merged on top of `config.json` at load time and is never touched by
-`kiroclaw setup` or toolbox upgrades.
+`kirocrew setup` or toolbox upgrades.
 
 Resolution order:
-1. Load `config.json` (managed by KiroClaw, may be regenerated on upgrade)
+1. Load `config.json` (managed by KiroCrew, may be regenerated on upgrade)
 2. Deep-merge `config.local.json` on top (user-owned, never touched by setup/migration)
 3. Return merged result
 
@@ -55,14 +55,14 @@ Resolution order:
 
 ```bash
 # Save a setting to config.local.json (persists across upgrades):
-kiroclaw config set --local agent.yolo true
+kirocrew config set --local agent.yolo true
 
 # Save to config.json (may be overwritten on upgrade):
-kiroclaw config set agent.yolo true
+kirocrew config set agent.yolo true
 ```
 
 ### `config_local_path() -> Path`
-Returns `~/.kiroclaw/config.local.json` (or `$KIROCLAW_HOME/config.local.json`).
+Returns `~/.kirocrew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
 
 ### `_deep_merge(base: dict, overlay: dict) -> dict`
 Recursively merges overlay into base. Dict values merge recursively; all other
@@ -70,7 +70,7 @@ types in overlay replace base values.
 
 ## APIs
 
-### `KiroClawConfig.load() -> KiroClawConfig`
+### `KiroCrewConfig.load() -> KiroCrewConfig`
 Loads config from disk. Merges `config.local.json` overlay if present.
 Returns defaults if file is missing or invalid.
 
@@ -86,12 +86,12 @@ runtime edit is reflected on the next `load()`; `save()` also invalidates it
 eagerly via `_invalidate_config_cache()`. The defaults-only path (neither file
 present) is not cached.
 
-### `KiroClawConfig._resolve_agent_model() -> str`
-Reads model from installed agent config (`~/.kiro/agents/kiroclaw.json`),
+### `KiroCrewConfig._resolve_agent_model() -> str`
+Reads model from installed agent config (`~/.kiro/agents/kirocrew.json`),
 falling back to the bundled `config_package_dir()/defaults.json` (i.e.
-`src/kiro_claw/config/defaults.json`), then `DEFAULT_MODEL`.
+`src/kiro_crew/config/defaults.json`), then `DEFAULT_MODEL`.
 
-### `KiroClawConfig._resolve_named_agent_model(agent, agents_dir=None) -> str`
+### `KiroCrewConfig._resolve_named_agent_model(agent, agents_dir=None) -> str`
 Returns a named agent's own kiro `model` field, or `""` if none. Used by
 `SessionManager.get_or_create` so an explicit global `agent.model` ranks *below*
 a per-agent model pin (per-agent pin > global default). Reads only the kiro
@@ -101,49 +101,49 @@ a per-agent model pin (per-agent pin > global default). Reads only the kiro
 ### `kiro_agents_dir() -> Path` (`config/paths.py`)
 Leaf helper returning `~/.kiro/agents`. Lives in the leaf module so `loader.py`
 (and `_resolve_named_agent_model`'s `agents_dir` DI seam) can locate installed
-agent JSONs without importing `kiro_claw.agent` — which imports `config.loader`
+agent JSONs without importing `kiro_crew.agent` — which imports `config.loader`
 and would create an import cycle.
 
-### `KiroClawConfig.create_provider_factory() -> Callable`
+### `KiroCrewConfig.create_provider_factory() -> Callable`
 Returns a factory for LLMProvider instances. Resolves `"auto"` model
 before creating the provider.
 
-### `KiroClawConfig.to_dict() -> dict`
+### `KiroCrewConfig.to_dict() -> dict`
 Serializes config to the JSON structure used by `config.json`. Uses `_configured_port`
-(the file value) instead of `dashboard_port` (which may be overridden by `KIROCLAW_PORT`
+(the file value) instead of `dashboard_port` (which may be overridden by `KIROCREW_PORT`
 env var) to avoid clobbering the saved port on write-back.
 
-### `KiroClawConfig.save() -> None`
-Writes current config to `~/.kiroclaw/config.json` via `to_dict()`. Invalidates
+### `KiroCrewConfig.save() -> None`
+Writes current config to `~/.kirocrew/config.json` via `to_dict()`. Invalidates
 the `load()` validated-data cache so the next load reflects the write immediately.
 
 ### `config_dir() -> Path`
-Returns `~/.kiroclaw/`. Overridden by `KIROCLAW_HOME` env var (refuses system directories like `/`, `/usr`, `/System`, `/etc`).
+Returns `~/.kirocrew/`. Overridden by `KIROCREW_HOME` env var (refuses system directories like `/`, `/usr`, `/System`, `/etc`).
 
 ### `config_path() -> Path`
-Returns `~/.kiroclaw/config.json` (or `$KIROCLAW_HOME/config.json` if overridden).
+Returns `~/.kirocrew/config.json` (or `$KIROCREW_HOME/config.json` if overridden).
 
 ### Agent Bookkeeping Sidecar (`agent_model_state.json`)
 
-KiroClaw tracks two pieces of per-agent state that are **not** part of the
+KiroCrew tracks two pieces of per-agent state that are **not** part of the
 kiro-cli agent schema: `model_managed` (whether an agent's `model` tracks the
 shipped default or is a frozen user pick) and `cc_model` (a per-agent Claude
 Code model). kiro-cli validates `~/.kiro/agents/*.json` with serde
 `deny_unknown_fields` and rejects the *entire* spec on any unknown key, then
 silently falls back to the default agent (`--agent <name>` resolves to default
 with only a stderr "no agent with name X found" line). To keep every spec
-schema-valid, this state lives in a KiroClaw-owned sidecar
-`~/.kiroclaw/agent_model_state.json` (honoring `KIROCLAW_HOME`), keyed by agent
+schema-valid, this state lives in a KiroCrew-owned sidecar
+`~/.kirocrew/agent_model_state.json` (honoring `KIROCREW_HOME`), keyed by agent
 name:
 
 ```json
 {
-  "kiroclaw":           {"model_managed": true},
-  "kiroclaw-heartbeat": {"cc_model": "claude-sonnet-4.6"}
+  "kirocrew":           {"model_managed": true},
+  "kirocrew-heartbeat": {"cc_model": "claude-sonnet-4.6"}
 }
 ```
 
-- Read/written via `kiro_claw/agent_state.py` (atomic, lock-guarded near-leaf
+- Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
   module: stdlib + `config.paths` + `atomic_write` only).
 - `build_agent_config()` is pure (writes no spec key); `rebuild_agent_config()`
   seeds managed-state on a fresh/clean install (never clobbering a frozen pick).
@@ -155,7 +155,7 @@ name:
 - The dashboard model PATCH writes the sidecar, never the spec; agent DELETE
   prunes the sidecar entry.
 
-Note: KiroClaw is KiroACP (kiro-cli) only — the deleted `claude_code` provider
+Note: KiroCrew is KiroACP (kiro-cli) only — the deleted `claude_code` provider
 was the sole reader of spec `cc_model`, so `cc_model` is now dead config. The
 lite/heartbeat installers still write it to the sidecar (harmless bookkeeping)
 purely to keep the kiro spec schema-clean; nothing in the fork resolves it.
@@ -175,7 +175,7 @@ class AgentConfig:
     provider: str = "acp"          # fixed to "acp" (kiro-cli) — the only provider
     sandbox: str = "auto"          # "auto" (namespace on Linux, seatbelt on macOS), "strict", or "off"
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
-    enforce_denied_commands: str = "all"  # "all" or "kiroclaw"
+    enforce_denied_commands: str = "all"  # "all" or "kirocrew"
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     yolo: bool = False             # permanent YOLO mode (skip tool approval); tracked via _yolo_from_config flag
     max_subagents: int = 3         # concurrent subagent cap; 0 = auto-size from host memory/CPU. Load-time clamped to [0, 64]
@@ -231,7 +231,7 @@ class SkillsConfig:
 @dataclass
 class TelemetryConfig:
     enabled: bool = False          # main switch; off = metric call sites are no-ops, nothing written
-    local_dir: str = ""            # local JSONL shard dir; empty = ~/.kiroclaw/metrics
+    local_dir: str = ""            # local JSONL shard dir; empty = ~/.kirocrew/metrics
     export_interval_seconds: int = 60  # local-exporter flush interval (>=1)
 
 @dataclass
@@ -245,10 +245,10 @@ class DashboardConfig:
 # Additional top-level DTOs (not fully expanded here — see loader.py):
 # OrchestratorConfig, CronHistoryConfig, TunnelConfig, InstancesConfig, HeartbeatConfig,
 # WorkspaceConfig, MemoryStoreConfig, ExternalRegistryConfig,
-# KiroClawAgentConfig, SlackConfig.
+# KiroCrewAgentConfig, SlackConfig.
 
 @dataclass
-class KiroClawConfig:
+class KiroCrewConfig:
     agent: AgentConfig
     session: SessionConfig
     taskrunner: TaskRunnerConfig
@@ -258,7 +258,7 @@ class KiroClawConfig:
     hooks_data: dict               # raw hooks from config.json
     dashboard_url: str = ""        # e.g. "http://my-host.example.com:8080"
     auto_update: bool = True
-    snapshot_dir: str = ""         # snapshot output dir (default ~/.kiroclaw/snapshots)
+    snapshot_dir: str = ""         # snapshot output dir (default ~/.kirocrew/snapshots)
     slack_channels: dict[str, ChannelConfig]  # per-channel config keyed by channel ID
     slack_dm_activation: str = "always"       # activation mode for DMs (D-prefix channels)
 ```
@@ -304,7 +304,7 @@ unset (the frontend falls back to `localStorage` or the built-in default).
 ### `ChannelConfig.from_dict(data: dict) -> ChannelConfig`
 Parses a channel config entry from JSON. Invalid activation values fall back to `"mention"`.
 
-### `KiroClawConfig.channel_config(channel_id: str) -> ChannelConfig`
+### `KiroCrewConfig.channel_config(channel_id: str) -> ChannelConfig`
 Returns the effective config for a channel:
 1. Explicit entry in `slack_channels` → returned as-is
 2. DM channel (`D`-prefix) → `ChannelConfig(activation=slack_dm_activation)`
@@ -314,10 +314,10 @@ Returns the effective config for a channel:
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KIROCLAW_HOME` | Override config/data directory | `~/.kiroclaw` |
-| `KIROCLAW_PORT` | Override dashboard port (dev mode — run dev + prod side by side) | `5476` |
-| `KIROCLAW_WORKSPACE` | Override workspace root directory | Platform-dependent |
-| `KIROCLAW_PROJECT_DIR` | Override agent config/skills directory | Auto-detected |
+| `KIROCREW_HOME` | Override config/data directory | `~/.kirocrew` |
+| `KIROCREW_PORT` | Override dashboard port (dev mode — run dev + prod side by side) | `5476` |
+| `KIROCREW_WORKSPACE` | Override workspace root directory | Platform-dependent |
+| `KIROCREW_PROJECT_DIR` | Override agent config/skills directory | Auto-detected |
 ```
 
 ## Config File Format
@@ -345,7 +345,7 @@ Returns the effective config for a channel:
   },
   "hooks": {},
   "slack": {
-    "command": "kiroclaw",
+    "command": "kirocrew",
     "allowed_users": [],
     "tracking_channels": [],
     "dm_activation": "always",
@@ -368,8 +368,8 @@ The `dashboard.url` field controls where the dashboard is reachable. From it, th
 
 When `agent.model` is `"auto"` (default):
 
-1. `~/.kiro/agents/kiroclaw.json` → `model` field (installed agent config)
-2. `config_package_dir()/defaults.json` → `model` field (bundled `src/kiro_claw/config/defaults.json`)
+1. `~/.kiro/agents/kirocrew.json` → `model` field (installed agent config)
+2. `config_package_dir()/defaults.json` → `model` field (bundled `src/kiro_crew/config/defaults.json`)
 3. Falls back to `DEFAULT_MODEL` (passed through to provider)
 
 ## Error Handling

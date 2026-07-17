@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from kiro_claw.acp.types import AcpPromptStats
-from kiro_claw.dashboard.chat_runner import _context_usage_payload
-from kiro_claw.providers.acp import AcpProvider
+from kiro_crew.acp.types import AcpPromptStats
+from kiro_crew.dashboard.chat_runner import _context_usage_payload
+from kiro_crew.providers.acp import AcpProvider
 
 
 def _provider_with_stats(used: int, window: int, pct: float) -> AcpProvider:
-    with patch("kiro_claw.providers.acp.AcpClient"):
+    with patch("kiro_crew.providers.acp.AcpClient"):
         provider = AcpProvider()
     provider._client = MagicMock()
     provider._client.last_prompt_stats = AcpPromptStats(

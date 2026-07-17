@@ -148,7 +148,7 @@ export default function RegistryManager() {
               <label htmlFor="registry-repo" className="text-[12px] text-muted mb-1 block">Repo *</label>
               <Input
                 id="registry-repo"
-                placeholder="e.g. my-kiroclaw-app-registry"
+                placeholder="e.g. my-kirocrew-app-registry"
                 value={editRepo}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRepo(e.target.value)}
                 onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}

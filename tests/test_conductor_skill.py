@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.conductor_skill — conductor SKILL.md generation."""
+"""Tests for kiro_crew.conductor_skill — conductor SKILL.md generation."""
 
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ def _read_skill(tmp_path: Path) -> str:
     return (tmp_path / "conductor" / "SKILL.md").read_text(encoding="utf-8")
 
 
-@patch("kiro_claw.conductor_skill.list_agents")
-@patch("kiro_claw.conductor_skill.load_all")
-@patch("kiro_claw.conductor_skill.load")
-@patch("kiro_claw.conductor_skill.save")
+@patch("kiro_crew.conductor_skill.list_agents")
+@patch("kiro_crew.conductor_skill.load_all")
+@patch("kiro_crew.conductor_skill.load")
+@patch("kiro_crew.conductor_skill.save")
 def test_includes_agents_from_metadata(mock_save, mock_load, mock_load_all, mock_list, skills_loader):
-    from kiro_claw.conductor_skill import generate_conductor_skill
+    from kiro_crew.conductor_skill import generate_conductor_skill
 
     mock_list.return_value = [
         _FakeAgent(name="code-reviewer", description="Reviews code"),
@@ -50,12 +50,12 @@ def test_includes_agents_from_metadata(mock_save, mock_load, mock_load_all, mock
     assert "Use for CR reviews and security audits." in content
 
 
-@patch("kiro_claw.conductor_skill.list_agents")
-@patch("kiro_claw.conductor_skill.load_all")
-@patch("kiro_claw.conductor_skill.load")
-@patch("kiro_claw.conductor_skill.save")
+@patch("kiro_crew.conductor_skill.list_agents")
+@patch("kiro_crew.conductor_skill.load_all")
+@patch("kiro_crew.conductor_skill.load")
+@patch("kiro_crew.conductor_skill.save")
 def test_auto_seeds_metadata_from_description(mock_save, mock_load, mock_load_all, mock_list, skills_loader):
-    from kiro_claw.conductor_skill import generate_conductor_skill
+    from kiro_crew.conductor_skill import generate_conductor_skill
 
     mock_list.return_value = [
         _FakeAgent(name="code-reviewer", description="Reviews code quality"),
@@ -66,34 +66,34 @@ def test_auto_seeds_metadata_from_description(mock_save, mock_load, mock_load_al
     mock_save.assert_called_once_with("code-reviewer", "Reviews code quality")
 
 
-@patch("kiro_claw.conductor_skill.list_agents")
-@patch("kiro_claw.conductor_skill.load_all")
-@patch("kiro_claw.conductor_skill.load")
-@patch("kiro_claw.conductor_skill.save")
-def test_excludes_kiroclaw_and_conductor(mock_save, mock_load, mock_load_all, mock_list, skills_loader):
-    from kiro_claw.conductor_skill import generate_conductor_skill
+@patch("kiro_crew.conductor_skill.list_agents")
+@patch("kiro_crew.conductor_skill.load_all")
+@patch("kiro_crew.conductor_skill.load")
+@patch("kiro_crew.conductor_skill.save")
+def test_excludes_kirocrew_and_conductor(mock_save, mock_load, mock_load_all, mock_list, skills_loader):
+    from kiro_crew.conductor_skill import generate_conductor_skill
 
     mock_list.return_value = [
-        _FakeAgent(name="kiroclaw", description="General"),
-        _FakeAgent(name="kiroclaw-conductor", description="Conductor"),
+        _FakeAgent(name="kirocrew", description="General"),
+        _FakeAgent(name="kirocrew-conductor", description="Conductor"),
         _FakeAgent(name="code-reviewer", description="Reviews code"),
     ]
     mock_load.return_value = ""
     mock_load_all.return_value = {}
     generate_conductor_skill(skills_loader)
     content = _read_skill(skills_loader._dir)
-    assert "kiroclaw-conductor" not in content
-    # kiroclaw should not appear as a heading in roster
-    assert "### kiroclaw" not in content
+    assert "kirocrew-conductor" not in content
+    # kirocrew should not appear as a heading in roster
+    assert "### kirocrew" not in content
     assert "### code-reviewer" in content
 
 
-@patch("kiro_claw.conductor_skill.list_agents")
-@patch("kiro_claw.conductor_skill.load_all")
-@patch("kiro_claw.conductor_skill.load")
-@patch("kiro_claw.conductor_skill.save")
+@patch("kiro_crew.conductor_skill.list_agents")
+@patch("kiro_crew.conductor_skill.load_all")
+@patch("kiro_crew.conductor_skill.load")
+@patch("kiro_crew.conductor_skill.save")
 def test_skill_has_always_true_and_delegation_guidelines(mock_save, mock_load, mock_load_all, mock_list, skills_loader):
-    from kiro_claw.conductor_skill import generate_conductor_skill
+    from kiro_crew.conductor_skill import generate_conductor_skill
 
     mock_list.return_value = [_FakeAgent(name="code-reviewer", description="Reviews code")]
     mock_load.return_value = ""

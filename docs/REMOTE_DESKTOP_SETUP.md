@@ -1,6 +1,6 @@
-# Running KiroClaw on a Remote Host (24/7)
+# Running KiroCrew on a Remote Host (24/7)
 
-Run KiroClaw on an always-on remote Linux host — a VPS, a cloud VM (EC2,
+Run KiroCrew on an always-on remote Linux host — a VPS, a cloud VM (EC2,
 GCE, DigitalOcean, Hetzner, etc.), or any spare Linux box — so the Slack
 bot, cron jobs, and task runner keep working while your laptop sleeps.
 
@@ -9,7 +9,7 @@ bot, cron jobs, and task runner keep working while your laptop sleeps.
 - **OS**: Any modern Linux distribution (Ubuntu 22.04+, Debian 12+,
   Fedora, Amazon Linux 2023, etc.). Node 20+ is needed for `slack-mcp`,
   so prefer a distro that ships or can install a recent Node.
-- **RAM**: A Linux host with ~10GB+ RAM. KiroClaw itself uses ~10GB, but
+- **RAM**: A Linux host with ~10GB+ RAM. KiroCrew itself uses ~10GB, but
   MCP cold starts and heavy tool calls can cause memory spikes beyond
   that, so give yourself headroom (16GB is comfortable).
 - **CPU**: A couple of vCPUs is fine for a single user; extra cores help
@@ -21,7 +21,7 @@ bot, cron jobs, and task runner keep working while your laptop sleeps.
 ### 1. Install basics
 
 You need Python 3 (3.11+), `pip`, `git`, and Node.js 20+ to install
-KiroClaw and build the dashboard. `tmux` is handy for long-running
+KiroCrew and build the dashboard. `tmux` is handy for long-running
 sessions. Install with your distro's package manager, for example:
 
 ```bash
@@ -44,7 +44,7 @@ git config --global user.email "you@example.com"
 
 ### 2. Install the agent backend
 
-KiroClaw drives the `kiro-cli` agent over ACP. Install `kiro-cli` per its own
+KiroCrew drives the `kiro-cli` agent over ACP. Install `kiro-cli` per its own
 docs, make sure it is on your `PATH`, and log in:
 
 ```bash
@@ -53,9 +53,9 @@ kiro-cli login
 
 See the [README](../README.md) for backend options and credentials.
 Configure your provider credentials (e.g. an Anthropic API key) in
-`~/.kiroclaw/.env` as described in the README.
+`~/.kirocrew/.env` as described in the README.
 
-## Install KiroClaw
+## Install KiroCrew
 
 Install the Python backend (`pip`) and build the React dashboard (`npm`),
 exactly as on a local machine — see the [README](../README.md#quick-start)
@@ -63,30 +63,30 @@ for the full walkthrough:
 
 ```bash
 # 1. Clone and install the backend
-git clone https://github.com/kirodotdev-labs/kiroclaw.git
-cd kiroclaw
+git clone https://github.com/kirodotdev/KiroCrew.git
+cd kirocrew
 
 # 2. Build the frontend bundle
 cd website && npm install && npm run build && cd ..
-cp -r website/dist src/kiro_claw/static/dist
+cp -r website/dist src/kiro_crew/static/dist
 
 # 3. Install the backend (bundles the dashboard)
 pip install .
 
 # 4. Configure
-kiroclaw setup
+kirocrew setup
 ```
 
-This installs the `kiroclaw` command onto your `PATH`. See the
+This installs the `kirocrew` command onto your `PATH`. See the
 [README](../README.md) for the agent backend and Ollama setup.
 
 After setup:
 ```bash
-kiroclaw doctor            # verify everything
-kiroclaw setup             # configure Slack tokens (optional)
+kirocrew doctor            # verify everything
+kirocrew setup             # configure Slack tokens (optional)
 ```
 
-## Run 24/7 (`kiroclaw service install`)
+## Run 24/7 (`kirocrew service install`)
 
 The simplest path is the built-in installer. It registers a
 system-level systemd unit (Linux) or launchd LaunchAgent (macOS), so
@@ -96,26 +96,26 @@ install step prompts for sudo once to write the unit file and run
 `systemctl`; the gateway itself runs as your user, not root:
 
 ```bash
-kiroclaw service install
+kirocrew service install
 ```
 
 Manage:
 
 ```bash
-kiroclaw service status      # check status
-kiroclaw logs -f             # tail live logs
-kiroclaw stop                # stop the service
-kiroclaw restart             # restart the service (atomic on systemd; unload+load on launchd)
-kiroclaw service uninstall   # remove the unit / plist
+kirocrew service status      # check status
+kirocrew logs -f             # tail live logs
+kirocrew stop                # stop the service
+kirocrew restart             # restart the service (atomic on systemd; unload+load on launchd)
+kirocrew service uninstall   # remove the unit / plist
 ```
 
 **Boot survival** is handled by the unit's `WantedBy=multi-user.target`
 plus `enable --now`. Nothing extra needed. The gateway will start on
 host reboot.
 
-**Sudo scope:** `kiroclaw service install` only runs `sudo tee`
+**Sudo scope:** `kirocrew service install` only runs `sudo tee`
 (to write the unit file under `/etc/systemd/system/`) and `sudo
-systemctl ...` (daemon-reload, enable, restart). No kiroclaw / MCP /
+systemctl ...` (daemon-reload, enable, restart). No kirocrew / MCP /
 LLM code path is invoked under sudo. Once started, the gateway runs
 as `User=$USER Group=$(id -gn)` — not root.
 
@@ -124,11 +124,11 @@ unit, or for hosts where the wrapped install isn't appropriate):
 
 ```bash
 # Resolve the actual binary path at install time
-KIROCLAW_BIN=$(command -v kiroclaw 2>/dev/null || echo "$HOME/.local/bin/kiroclaw")
+KIROCREW_BIN=$(command -v kirocrew 2>/dev/null || echo "$HOME/.local/bin/kirocrew")
 
-sudo tee /etc/systemd/system/kiroclaw.service << EOF
+sudo tee /etc/systemd/system/kirocrew.service << EOF
 [Unit]
-Description=KiroClaw AI Agent Gateway
+Description=KiroCrew AI Agent Gateway
 After=network-online.target
 Wants=network-online.target
 StartLimitBurst=5
@@ -137,67 +137,67 @@ StartLimitIntervalSec=300
 [Service]
 Type=simple
 User=$(whoami)
-ExecStart=$KIROCLAW_BIN gateway
+ExecStart=$KIROCREW_BIN gateway
 Restart=on-failure
 RestartSec=10
 WorkingDirectory=$HOME
 Environment=HOME=$HOME
-Environment=PATH=$(dirname $KIROCLAW_BIN):$HOME/.local/bin:$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo v20.0.0)/bin:/usr/local/bin:/usr/bin
-Environment=KIROCLAW_PROJECT_DIR=$(git -C "$(dirname "$(readlink -f "$KIROCLAW_BIN")")" rev-parse --show-toplevel 2>/dev/null || echo "")
+Environment=PATH=$(dirname $KIROCREW_BIN):$HOME/.local/bin:$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo v20.0.0)/bin:/usr/local/bin:/usr/bin
+Environment=KIROCREW_PROJECT_DIR=$(git -C "$(dirname "$(readlink -f "$KIROCREW_BIN")")" rev-parse --show-toplevel 2>/dev/null || echo "")
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable kiroclaw
-sudo systemctl start kiroclaw
+sudo systemctl enable kirocrew
+sudo systemctl start kirocrew
 ```
 
 The system-level unit lets you tail logs with
-`sudo journalctl -u kiroclaw -f` or restart with `sudo systemctl restart kiroclaw`.
+`sudo journalctl -u kirocrew -f` or restart with `sudo systemctl restart kirocrew`.
 
 **Alternative — tmux** (if you don't want a service at all):
 
 ```bash
-tmux new -s kiroclaw
-kiroclaw gateway
+tmux new -s kirocrew
+kirocrew gateway
 # Ctrl+B, D to detach
-# Reconnect: tmux attach -t kiroclaw
+# Reconnect: tmux attach -t kirocrew
 ```
 
 tmux survives SSH disconnect but does **not** auto-restart on crash or
 auto-start on reboot. Use the service install path unless you have a
 specific reason not to.
 
-## Sync KiroClaw to a New Host
+## Sync KiroCrew to a New Host
 
 When setting up a new remote host (or replacing a dead one), sync your
-local KiroClaw state so the remote instance has your memories,
+local KiroCrew state so the remote instance has your memories,
 preferences, lessons, and agent configs from day one.
 
 ### What to Sync
 
 | Category | Path | Why |
 |---|---|---|
-| **Memory** | `~/.kiroclaw/workspace/memory/` | Preferences, projects, history — the agent's long-term knowledge of you |
-| **Databases** | `~/.kiroclaw/memory.db`, `memory.db-wal`, `memory.db-shm`, `memory_index.db` | Episodic & semantic memory (SQLite + WAL for complete state) |
-| **Config** | `~/.kiroclaw/config.json` | KiroClaw settings (Slack tokens, model prefs) |
+| **Memory** | `~/.kirocrew/workspace/memory/` | Preferences, projects, history — the agent's long-term knowledge of you |
+| **Databases** | `~/.kirocrew/memory.db`, `memory.db-wal`, `memory.db-shm`, `memory_index.db` | Episodic & semantic memory (SQLite + WAL for complete state) |
+| **Config** | `~/.kirocrew/config.json` | KiroCrew settings (Slack tokens, model prefs) |
 | **Lessons** | Stored in `memory.db` | Learned corrections that override default behavior |
-| **Task specs** | `~/.kiroclaw/tasks/` | Saved task runner specs |
-| **Skills** | `~/.kiroclaw/skills/` | Custom skill definitions |
-| **Hooks** | `~/.kiroclaw/hooks/` | Webhook listener configs |
-| **Cron jobs** | `~/.kiroclaw/crons.json` | Scheduled recurring jobs |
+| **Task specs** | `~/.kirocrew/tasks/` | Saved task runner specs |
+| **Skills** | `~/.kirocrew/skills/` | Custom skill definitions |
+| **Hooks** | `~/.kirocrew/hooks/` | Webhook listener configs |
+| **Cron jobs** | `~/.kirocrew/crons.json` | Scheduled recurring jobs |
 | **Dotfiles** | `~/.gitconfig`, `~/.bashrc`, `~/.zshrc` | Shell & git config |
 
 > **Why sync WAL files?** SQLite uses Write-Ahead Logging — recent writes go to `memory.db-wal` before being checkpointed into `memory.db`. Without the WAL, the remote gets a stale snapshot missing your latest memories and lessons.
 
 ### What NOT to Sync
 
-- `~/.kiroclaw/sessions/` — optional; sync if you want chat history on remote (sync-to-remote.sh includes this)
-- `~/.kiroclaw/session_pid_*.txt` — process tracking files, host-specific
-- `~/.kiroclaw/audit.log`, `security_events.jsonl` — large logs, not needed on new host
-- `~/.kiroclaw/.env`, `.local_secret`, `sel_hmac.key` — secrets, regenerated on first run
+- `~/.kirocrew/sessions/` — optional; sync if you want chat history on remote (sync-to-remote.sh includes this)
+- `~/.kirocrew/session_pid_*.txt` — process tracking files, host-specific
+- `~/.kirocrew/audit.log`, `security_events.jsonl` — large logs, not needed on new host
+- `~/.kirocrew/.env`, `.local_secret`, `sel_hmac.key` — secrets, regenerated on first run
 
 ### Quick Sync Script
 
@@ -226,22 +226,22 @@ scripts/sync-to-remote.sh --dry-run
 scripts/sync-to-remote.sh --help
 ```
 
-> **Note on sessions**: The script syncs `~/.kiroclaw/sessions/` by default so your chat history appears on the remote dashboard. If you prefer a clean slate, remove the sessions step from the script.
+> **Note on sessions**: The script syncs `~/.kirocrew/sessions/` by default so your chat history appears on the remote dashboard. If you prefer a clean slate, remove the sessions step from the script.
 
 ### After Syncing
 
 On the new host:
 ```bash
-# 1. Install KiroClaw (if not already) — see "Install KiroClaw" above
+# 1. Install KiroCrew (if not already) — see "Install KiroCrew" above
 
 # 2. Verify
-kiroclaw doctor
+kirocrew doctor
 
 # 3. Re-enter any host-specific credentials
-kiroclaw setup          # re-enter Slack tokens / API keys if needed
+kirocrew setup          # re-enter Slack tokens / API keys if needed
 
 # 4. Start the gateway
-sudo systemctl start kiroclaw   # or: tmux new -s kiroclaw && kiroclaw gateway
+sudo systemctl start kirocrew   # or: tmux new -s kirocrew && kirocrew gateway
 ```
 
 ### Ongoing Sync (Optional)
@@ -250,7 +250,7 @@ If you develop on both local and remote, keep memories in sync with a
 shell alias (replace `user@your-host.example.com` with your SSH target):
 
 ```bash
-alias sync-claw='rsync -avz ~/.kiroclaw/workspace/memory/ user@your-host.example.com:~/.kiroclaw/workspace/memory/ && rsync -avz ~/.kiroclaw/memory.db ~/.kiroclaw/memory_index.db user@your-host.example.com:~/.kiroclaw/'
+alias sync-claw='rsync -avz ~/.kirocrew/workspace/memory/ user@your-host.example.com:~/.kirocrew/workspace/memory/ && rsync -avz ~/.kirocrew/memory.db ~/.kirocrew/memory_index.db user@your-host.example.com:~/.kirocrew/'
 ```
 
 ## Access Dashboard via SSH Tunnel
@@ -266,7 +266,7 @@ ssh -L 5476:localhost:5476 user@your-host.example.com
 Then open `http://localhost:5476` in your local browser.
 
 **Custom port** — if you configured a non-default port (set via the
-`KIROCLAW_PORT` environment variable on the remote host, e.g. when you
+`KIROCREW_PORT` environment variable on the remote host, e.g. when you
 ran `sync-to-remote.sh user@host 7779`), match the tunnel:
 
 ```bash
@@ -295,18 +295,18 @@ The above approaches require an active terminal session — if the terminal clos
 ```bash
 REMOTE_HOST="user@your-host.example.com"
 
-cat > ~/Library/LaunchAgents/com.kiroclaw.tunnel.plist << EOF
+cat > ~/Library/LaunchAgents/com.kirocrew.tunnel.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.kiroclaw.tunnel</string>
+    <string>com.kirocrew.tunnel</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>while true; do echo "\$(date): Connecting..." >> /tmp/kiroclaw-tunnel.log; ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -L 5476:localhost:5476 $REMOTE_HOST 2>> /tmp/kiroclaw-tunnel.log; echo "\$(date): Disconnected (exit \$?)" >> /tmp/kiroclaw-tunnel.log; sleep 15; done</string>
+        <string>while true; do echo "\$(date): Connecting..." >> /tmp/kirocrew-tunnel.log; ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -L 5476:localhost:5476 $REMOTE_HOST 2>> /tmp/kirocrew-tunnel.log; echo "\$(date): Disconnected (exit \$?)" >> /tmp/kirocrew-tunnel.log; sleep 15; done</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -315,52 +315,52 @@ cat > ~/Library/LaunchAgents/com.kiroclaw.tunnel.plist << EOF
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>StandardErrorPath</key>
-    <string>/tmp/kiroclaw-tunnel.err</string>
+    <string>/tmp/kirocrew-tunnel.err</string>
 </dict>
 </plist>
 EOF
 
-launchctl bootout gui/$(id -u)/com.kiroclaw.tunnel 2>/dev/null
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kiroclaw.tunnel.plist
+launchctl bootout gui/$(id -u)/com.kirocrew.tunnel 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kirocrew.tunnel.plist
 ```
 
 Manage:
 
 ```bash
-tail -f /tmp/kiroclaw-tunnel.log                                    # check status
-launchctl bootout gui/$(id -u)/com.kiroclaw.tunnel                  # stop
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kiroclaw.tunnel.plist  # start
+tail -f /tmp/kirocrew-tunnel.log                                    # check status
+launchctl bootout gui/$(id -u)/com.kirocrew.tunnel                  # stop
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kirocrew.tunnel.plist  # start
 ```
 
 > **Note**: The tunnel auto-reconnects when SSH drops (network change, sleep/wake, etc.) within 15 seconds. For passwordless reconnection, use SSH key-based authentication to the remote host.
 
 ### Raycast Script (macOS - zsh)
-If you use Raycast scripts, you can use the below snippet to start an SSH tunnel and open the dashboard with the KiroClaw token directly from a Raycast Script. Replace `"user@your-host.example.com"` with your remote host's SSH target.
+If you use Raycast scripts, you can use the below snippet to start an SSH tunnel and open the dashboard with the KiroCrew token directly from a Raycast Script. Replace `"user@your-host.example.com"` with your remote host's SSH target.
 
 ```zsh
 #!/bin/zsh -e
 # Required parameters:
 # @raycast.schemaVersion 1
-# @raycast.title Open Kiroclaw
+# @raycast.title Open Kirocrew
 # @raycast.mode compact
 # Optional parameters:
 # @raycast.icon 🐉
-# @raycast.packageName KiroClaw Utils
+# @raycast.packageName KiroCrew Utils
 # Documentation:
-# @raycast.description Get token and start KiroClaw
+# @raycast.description Get token and start KiroCrew
 REMOTE_HOST="user@your-host.example.com"
-REMOTE_CMD='source ~/.zshrc; kiroclaw token'
-DEBUG_LOG="/tmp/kiroclaw_debug.log"
+REMOTE_CMD='source ~/.zshrc; kirocrew token'
+DEBUG_LOG="/tmp/kirocrew_debug.log"
 
 if lsof -i :5476 -sTCP:LISTEN > /dev/null 2>&1; then
-  echo "Tunnel already opened, accessing KiroClaw"
+  echo "Tunnel already opened, accessing KiroCrew"
 else
   ssh -fNT -L 5476:localhost:5476 "${REMOTE_HOST}"
-  echo "Tunnel opened, accessing KiroClaw!"
+  echo "Tunnel opened, accessing KiroCrew!"
 fi
 
 SECONDS=0
-# `kiroclaw token` prints two URLs: a localhost one and a direct host one.
+# `kirocrew token` prints two URLs: a localhost one and a direct host one.
 # Keep only the localhost URL — that's what routes through the SSH tunnel opened
 # above.
 URL="$(ssh -o ConnectTimeout=10 "${REMOTE_HOST}" "${REMOTE_CMD}" 2>"${DEBUG_LOG}" | grep -m1 'localhost:5476')"
@@ -378,15 +378,15 @@ open "$URL"
 
 | Issue | Fix |
 |---|---|
-| `kiroclaw: command not found` after install | Ensure pip's script dir is on `PATH` (often `~/.local/bin`); `source ~/.bashrc` or re-login |
-| Agent backend errors / timeouts | Confirm `kiro-cli` is on your `PATH` and you are logged in (`kiro-cli login`); `kiroclaw doctor` reports its status |
-| Service won't start | `sudo journalctl -u kiroclaw -n 50` to check logs |
-| Service keeps restarting | Check `systemctl status kiroclaw` for exit code, then check logs |
+| `kirocrew: command not found` after install | Ensure pip's script dir is on `PATH` (often `~/.local/bin`); `source ~/.bashrc` or re-login |
+| Agent backend errors / timeouts | Confirm `kiro-cli` is on your `PATH` and you are logged in (`kiro-cli login`); `kirocrew doctor` reports its status |
+| Service won't start | `sudo journalctl -u kirocrew -n 50` to check logs |
+| Service keeps restarting | Check `systemctl status kirocrew` for exit code, then check logs |
 | SSH tunnel refuses connection | Confirm the gateway is running on the remote host and listening on the expected port (`ss -ltnp \| grep 5476`) |
-| Dashboard shows Ollama offline (✗) but it was working before | The `ollama.com` install script creates a systemd service (`User=ollama`) that conflicts with KiroClaw's own process management. The systemd user can't find models in your `~/.ollama/models/`. Fix: `sudo systemctl disable --now ollama` — KiroClaw manages Ollama itself via `ollama serve` subprocess |
+| Dashboard shows Ollama offline (✗) but it was working before | The `ollama.com` install script creates a systemd service (`User=ollama`) that conflicts with KiroCrew's own process management. The systemd user can't find models in your `~/.ollama/models/`. Fix: `sudo systemctl disable --now ollama` — KiroCrew manages Ollama itself via `ollama serve` subprocess |
 | `ollama list` shows no models but files exist in `~/.ollama/` | Same systemd user mismatch. The `ollama` system user looks in `/usr/share/ollama/.ollama/models/` instead of your home directory. Either disable the systemd service (recommended) or set `Environment="OLLAMA_MODELS=/home/YOUR_USER/.ollama/models"` in `/etc/systemd/system/ollama.service` |
 
 > **Note**: Embeddings (Ollama) are optional. If Ollama isn't installed,
-> KiroClaw degrades gracefully — semantic memory features are reduced but
+> KiroCrew degrades gracefully — semantic memory features are reduced but
 > the agent still runs. See the [README](../README.md) for Ollama setup
 > (`ollama pull qwen3-embedding:0.6b`).

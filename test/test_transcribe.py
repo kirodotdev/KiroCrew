@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.config.loader import SttConfig
-from kiro_claw.transcribe import (
+from kiro_crew.config.loader import SttConfig
+from kiro_crew.transcribe import (
     _find_mlx_whisper,
     _find_whisper,
     _ProfileCredentialResolver,
@@ -39,20 +39,20 @@ class TestFindWhisper:
         assert _find_whisper(str(binary)) is None
 
     def test_empty_path_uses_which(self):
-        with patch("kiro_claw.transcribe.shutil.which", return_value="/usr/bin/whisper"):
+        with patch("kiro_crew.transcribe.shutil.which", return_value="/usr/bin/whisper"):
             assert _find_whisper("") == "/usr/bin/whisper"
 
     def test_empty_path_which_none_checks_search_paths(self, tmp_path, monkeypatch):
-        with patch("kiro_claw.transcribe.shutil.which", return_value=None):
-            monkeypatch.setattr("kiro_claw.transcribe._WHISPER_SEARCH_PATHS", [str(tmp_path / "w")])
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [str(tmp_path / "w")])
             assert _find_whisper("") is None
 
     def test_empty_path_finds_in_search_paths(self, tmp_path, monkeypatch):
         binary = tmp_path / "whisper"
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
-        with patch("kiro_claw.transcribe.shutil.which", return_value=None):
-            monkeypatch.setattr("kiro_claw.transcribe._WHISPER_SEARCH_PATHS", [str(binary)])
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [str(binary)])
             assert _find_whisper("") == str(binary)
 
     def test_tilde_expansion(self, tmp_path, monkeypatch):
@@ -70,23 +70,23 @@ class TestFindWhisper:
 
 class TestFindMlxWhisper:
     def test_found_on_path(self):
-        with patch("kiro_claw.transcribe.shutil.which", return_value="/usr/local/bin/mlx_whisper"):
+        with patch("kiro_crew.transcribe.shutil.which", return_value="/usr/local/bin/mlx_whisper"):
             assert _find_mlx_whisper() == "/usr/local/bin/mlx_whisper"
 
     def test_not_found(self, monkeypatch):
-        with patch("kiro_claw.transcribe.shutil.which", return_value=None):
-            monkeypatch.setattr("kiro_claw.transcribe._python3_bin_dir", lambda: "")
-            monkeypatch.setattr("kiro_claw.transcribe._MLX_WHISPER_SEARCH_PATHS", ["/nonexistent"])
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: "")
+            monkeypatch.setattr("kiro_crew.transcribe._MLX_WHISPER_SEARCH_PATHS", ["/nonexistent"])
             assert _find_mlx_whisper() is None
 
     def test_found_in_search_paths(self, tmp_path, monkeypatch):
         binary = tmp_path / "mlx_whisper"
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
-        with patch("kiro_claw.transcribe.shutil.which", return_value=None):
-            monkeypatch.setattr("kiro_claw.transcribe._python3_bin_dir", lambda: "")
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: "")
             monkeypatch.setattr(
-                "kiro_claw.transcribe._MLX_WHISPER_SEARCH_PATHS", [str(binary)]
+                "kiro_crew.transcribe._MLX_WHISPER_SEARCH_PATHS", [str(binary)]
             )
             assert _find_mlx_whisper() == str(binary)
 
@@ -113,17 +113,17 @@ class TestIsAvailable:
     def test_loads_config_when_none(self):
         mock_cfg = MagicMock()
         mock_cfg.stt = SttConfig(enabled=False)
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=mock_cfg):
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=mock_cfg):
             assert is_available(None) is False
 
     def test_mlx_available_when_binary_found(self):
         cfg = SttConfig(enabled=True, provider="mlx")
-        with patch("kiro_claw.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
+        with patch("kiro_crew.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
             assert is_available(cfg) is True
 
     def test_mlx_unavailable_when_binary_missing(self):
         cfg = SttConfig(enabled=True, provider="mlx")
-        with patch("kiro_claw.transcribe._find_mlx_whisper", return_value=None):
+        with patch("kiro_crew.transcribe._find_mlx_whisper", return_value=None):
             assert is_available(cfg) is False
 
 
@@ -164,7 +164,7 @@ class TestTranscribeAudio:
             return mock_proc
 
         with patch(
-            "kiro_claw.transcribe.asyncio.create_subprocess_exec", side_effect=fake_exec
+            "kiro_crew.transcribe.asyncio.create_subprocess_exec", side_effect=fake_exec
         ):
             result = await transcribe_audio(str(audio), cfg)
         assert result == "Hello world"
@@ -183,7 +183,7 @@ class TestTranscribeAudio:
         mock_proc.communicate = AsyncMock(return_value=(b"", b"error"))
 
         with patch(
-            "kiro_claw.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
+            "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
         ):
             result = await transcribe_audio(str(audio), cfg)
         assert result is None
@@ -201,10 +201,10 @@ class TestTranscribeAudio:
         mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
 
         with patch(
-            "kiro_claw.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
+            "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
         ):
             with patch(
-                "kiro_claw.transcribe.asyncio.wait_for", side_effect=asyncio.TimeoutError
+                "kiro_crew.transcribe.asyncio.wait_for", side_effect=asyncio.TimeoutError
             ):
                 result = await transcribe_audio(str(audio), cfg)
         assert result is None
@@ -223,7 +223,7 @@ class TestTranscribeAudio:
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
         with patch(
-            "kiro_claw.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
+            "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
         ):
             result = await transcribe_audio(str(audio), cfg)
         assert result is None
@@ -232,7 +232,7 @@ class TestTranscribeAudio:
     async def test_loads_config_when_none(self):
         mock_cfg = MagicMock()
         mock_cfg.stt = SttConfig(enabled=False)
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=mock_cfg):
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=mock_cfg):
             result = await transcribe_audio("/tmp/test.webm", None)
         assert result is None
 
@@ -241,7 +241,7 @@ class TestTranscribeAudio:
         audio = tmp_path / "test.webm"
         audio.write_text("fake audio")
         cfg = SttConfig(enabled=True, provider="mlx")
-        with patch("kiro_claw.transcribe._find_mlx_whisper", return_value=None):
+        with patch("kiro_crew.transcribe._find_mlx_whisper", return_value=None):
             result = await transcribe_audio(str(audio), cfg)
         assert result is None
 
@@ -254,8 +254,8 @@ class TestTranscribeAudio:
         cfg = SttConfig(
             enabled=True, provider="mlx", mlx_model="; rm -rf ~", timeout_secs=10
         )
-        with patch("kiro_claw.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
-            with patch("kiro_claw.transcribe.asyncio.create_subprocess_exec") as spawn:
+        with patch("kiro_crew.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
+            with patch("kiro_crew.transcribe.asyncio.create_subprocess_exec") as spawn:
                 result = await transcribe_audio(str(audio), cfg)
         assert result is None
         spawn.assert_not_called()
@@ -280,9 +280,9 @@ class TestTranscribeAudio:
             Path(out_dir).joinpath("test.txt").write_text("Hola mundo")
             return mock_proc
 
-        with patch("kiro_claw.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
+        with patch("kiro_crew.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
             with patch(
-                "kiro_claw.transcribe.asyncio.create_subprocess_exec", side_effect=fake_exec
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", side_effect=fake_exec
             ):
                 result = await transcribe_audio(str(audio), cfg)
         assert result == "Hola mundo"
@@ -299,9 +299,9 @@ class TestTranscribeAudio:
         mock_proc.returncode = 1
         mock_proc.communicate = AsyncMock(return_value=(b"", b"boom"))
 
-        with patch("kiro_claw.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
+        with patch("kiro_crew.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
             with patch(
-                "kiro_claw.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
             ):
                 result = await transcribe_audio(str(audio), cfg)
         assert result is None
@@ -315,12 +315,12 @@ class TestTranscribeAudio:
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
 
-        with patch("kiro_claw.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
+        with patch("kiro_crew.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
             with patch(
-                "kiro_claw.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
             ):
                 with patch(
-                    "kiro_claw.transcribe.asyncio.wait_for", side_effect=asyncio.TimeoutError
+                    "kiro_crew.transcribe.asyncio.wait_for", side_effect=asyncio.TimeoutError
                 ):
                     result = await transcribe_audio(str(audio), cfg)
         assert result is None
@@ -335,7 +335,7 @@ class TestTranscribeFiles:
     @pytest.mark.xdist_group(name="serial")
     @pytest.mark.asyncio
     async def test_transcribe_audio_files(self):
-        from kiro_claw.slack.events import _transcribe_files
+        from kiro_crew.slack.events import _transcribe_files
 
         mock_orch = MagicMock()
         mock_orch.slack = AsyncMock()
@@ -351,14 +351,14 @@ class TestTranscribeFiles:
         ]
 
         with patch(
-            "kiro_claw.slack.events.transcribe_audio", new_callable=AsyncMock, return_value="Hello"
+            "kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock, return_value="Hello"
         ):
             result = await _transcribe_files(mock_orch, files)
         assert result == ["Hello"]
 
     @pytest.mark.asyncio
     async def test_skips_non_audio(self):
-        from kiro_claw.slack.events import _transcribe_files
+        from kiro_crew.slack.events import _transcribe_files
 
         mock_orch = MagicMock()
         mock_orch.slack = AsyncMock()
@@ -372,7 +372,7 @@ class TestTranscribeFiles:
 
     @pytest.mark.asyncio
     async def test_skips_no_url(self):
-        from kiro_claw.slack.events import _transcribe_files
+        from kiro_crew.slack.events import _transcribe_files
 
         mock_orch = MagicMock()
         mock_orch.slack = AsyncMock()
@@ -384,7 +384,7 @@ class TestTranscribeFiles:
 
     @pytest.mark.asyncio
     async def test_handles_transcription_failure(self):
-        from kiro_claw.slack.events import _transcribe_files
+        from kiro_crew.slack.events import _transcribe_files
 
         mock_orch = MagicMock()
         mock_orch.slack = AsyncMock()
@@ -400,14 +400,14 @@ class TestTranscribeFiles:
         ]
 
         with patch(
-            "kiro_claw.transcribe.transcribe_audio", new_callable=AsyncMock, return_value=None
+            "kiro_crew.transcribe.transcribe_audio", new_callable=AsyncMock, return_value=None
         ):
             result = await _transcribe_files(mock_orch, files)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_handles_exception(self):
-        from kiro_claw.slack.events import _transcribe_files
+        from kiro_crew.slack.events import _transcribe_files
 
         mock_orch = MagicMock()
         mock_orch.slack = AsyncMock()
@@ -434,7 +434,7 @@ class TestTranscribeFiles:
 class TestSlackClientDownloadFile:
     @pytest.mark.asyncio
     async def test_base_class_raises(self):
-        from kiro_claw.slack.client import SlackClientOps
+        from kiro_crew.slack.client import SlackClientOps
 
         class MinimalClient(SlackClientOps):
             async def post_message(self, *a, **kw):
@@ -513,7 +513,7 @@ class TestSensitivePathGuard:
         audio = tmp_path / "test.webm"
         audio.write_text("fake")
         cfg = SttConfig(enabled=True, provider="whisper")
-        with patch("kiro_claw.security.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
             result = await transcribe_audio(str(audio), cfg)
         assert result is None
 
@@ -522,7 +522,7 @@ class TestSensitivePathGuard:
         audio = tmp_path / "test.webm"
         audio.write_text("fake")
         cfg = SttConfig(enabled=True, provider="transcribe")
-        with patch("kiro_claw.security.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
             result = await transcribe_audio(str(audio), cfg)
         assert result is None
 
@@ -538,8 +538,8 @@ class TestFfmpegEnsuredForWhisper:
         audio = tmp_path / "test.webm"
         audio.write_text("fake")
         cfg = SttConfig(enabled=True, provider="whisper", whisper_path="/nonexistent")
-        with patch("kiro_claw.security.is_sensitive_path", return_value=False), \
-             patch("kiro_claw.transcribe.ensure_ffmpeg_in_path") as mock_ensure:
+        with patch("kiro_crew.security.is_sensitive_path", return_value=False), \
+             patch("kiro_crew.transcribe.ensure_ffmpeg_in_path") as mock_ensure:
             await transcribe_audio(str(audio), cfg)
         mock_ensure.assert_called_once()
 
@@ -548,9 +548,9 @@ class TestFfmpegEnsuredForWhisper:
         audio = tmp_path / "test.ogg"
         audio.write_text("fake")
         cfg = SttConfig(enabled=True, provider="transcribe")
-        with patch("kiro_claw.security.is_sensitive_path", return_value=False), \
-             patch("kiro_claw.transcribe.ensure_ffmpeg_in_path") as mock_ensure, \
-             patch("kiro_claw.transcribe._transcribe_aws", new_callable=AsyncMock, return_value="hi"):
+        with patch("kiro_crew.security.is_sensitive_path", return_value=False), \
+             patch("kiro_crew.transcribe.ensure_ffmpeg_in_path") as mock_ensure, \
+             patch("kiro_crew.transcribe._transcribe_aws", new_callable=AsyncMock, return_value="hi"):
             await transcribe_audio(str(audio), cfg)
         mock_ensure.assert_not_called()
 
@@ -566,7 +566,7 @@ class TestTranscribeFormatValidation:
         audio = tmp_path / "test.mp3"
         audio.write_text("fake")
         cfg = SttConfig(enabled=True, provider="transcribe")
-        with patch("kiro_claw.security.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.security.is_sensitive_path", return_value=False):
             result = await transcribe_audio(str(audio), cfg)
         assert result is None
 

@@ -1,8 +1,8 @@
 """Corpus of real-world OAuth/OIDC authorization URLs that MUST never be
-rejected by KiroClaw's MCP OAuth-banner safety check.
+rejected by KiroCrew's MCP OAuth-banner safety check.
 
-When an MCP server asks KiroClaw to authenticate, kiro-cli forwards the
-provider's *authorization* (consent) URL and KiroClaw renders it as a
+When an MCP server asks KiroCrew to authenticate, kiro-cli forwards the
+provider's *authorization* (consent) URL and KiroCrew renders it as a
 clickable banner.  These URLs legitimately carry high-entropy params
 (``state``, ``code_challenge`` …) and frequently exceed 200 chars — so the
 generic data-exfiltration heuristic must not fire on them.  A regression here
@@ -13,9 +13,9 @@ This corpus is the contract: every entry is a *real* provider URL shape
 (host + parameter set taken from the provider's own OAuth docs) and
 ``_oauth_url_contains_credential`` must return False for all of them.
 
-**Adding a provider:** when KiroClaw gains/observes a new MCP OAuth provider,
+**Adding a provider:** when KiroCrew gains/observes a new MCP OAuth provider,
 add a representative authorize URL here.  If any param it uses isn't yet in
-``_OAUTH_QUERY_PARAMS`` (kiro_claw/dashboard/chat_runner.py), add it there too
+``_OAUTH_QUERY_PARAMS`` (kiro_crew/dashboard/chat_runner.py), add it there too
 — and confirm the value is benign (not a real secret) before exempting it.
 
 Values use realistic-but-fake identifiers; PKCE ``code_challenge`` is a real

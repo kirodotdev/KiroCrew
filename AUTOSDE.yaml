@@ -1,7 +1,7 @@
-# KiroClaw Backend AutoSDE Rules
+# KiroCrew Backend AutoSDE Rules
 #
 # Backend (Python) counterpart to website/AUTOSDE.yaml (React/TypeScript
-# frontend rules). Rules here govern the Python package under src/kiro_claw/.
+# frontend rules). Rules here govern the Python package under src/kiro_crew/.
 # Both files are enforced by the Claude and Codex PR reviewers.
 #
 # De-Amazoned from the internal package rule set (internal links removed).
@@ -11,14 +11,15 @@ custom-rules:
   - id: backend-security-controls
     blocking: true
     file-patterns:
-      - "src/kiro_claw/**/*.py"
+      - "src/kiro_crew/**/*.py"
     rule: |
-      Enforce KiroClaw backend security controls, based on real vulnerabilities
+      Enforce KiroCrew backend security controls, based on real vulnerabilities
       found and fixed in this codebase.
 
       - Never read sensitive credential paths (~/.aws, ~/.ssh, ~/.gnupg,
         ~/.docker, ~/.kube, ~/.npmrc, ~/.pypirc, ~/.netrc, ~/.git-credentials,
-        ~/.kiroclaw/.env). File reads of user- or LLM-influenced paths MUST go
+        ~/.kirocrew/.env, and the legacy ~/.kiroclaw/.env an unmigrated install
+        may still hold). File reads of user- or LLM-influenced paths MUST go
         through hooks.py, which enforces is_sensitive_path(); trusted
         fixed-path internal config/package reads are exempt. Never weaken that
         keystone.
@@ -39,7 +40,7 @@ custom-rules:
         token_auth.py:token_auth_middleware().
       - All tool invocations and permission decisions MUST emit a SEL audit
         event via sel.py.
-      - Never hardcode secrets. Store them in ~/.kiroclaw/.env with chmod 600,
+      - Never hardcode secrets. Store them in ~/.kirocrew/.env with chmod 600,
         enforced at load time (log a warning if the chmod fails).
       - Auto-approve / YOLO mode MUST auto-expire — never leave global
         auto-approve enabled indefinitely. Activations are capped via the
@@ -51,7 +52,7 @@ custom-rules:
   - id: no-blocking-call-on-event-loop
     blocking: true
     file-patterns:
-      - "src/kiro_claw/**/*.py"
+      - "src/kiro_crew/**/*.py"
     rule: |
       Do NOT add a blocking syscall that runs on the asyncio event loop. The
       gateway runs everything on one loop; a single blocking call there freezes
@@ -89,7 +90,7 @@ custom-rules:
   - id: top-level-imports
     blocking: false
     file-patterns:
-      - "src/kiro_claw/**/*.py"
+      - "src/kiro_crew/**/*.py"
     rule: |
       All imports must be at the top of the file, not inside functions or
       methods. In-method imports make dependencies hard to trace, break IDE

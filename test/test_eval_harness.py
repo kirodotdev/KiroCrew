@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.acp.types import AcpEvent as LLMEvent
-from kiro_claw.eval.runner import (
+from kiro_crew.acp.types import AcpEvent as LLMEvent
+from kiro_crew.eval.runner import (
     EvalRunner,
     ScenarioResult,
     SessionResult,
@@ -17,7 +17,7 @@ from kiro_claw.eval.runner import (
     format_results,
     score_by_dimension,
 )
-from kiro_claw.eval.scenario import (
+from kiro_crew.eval.scenario import (
     Assertion,
     AssertionType,
     Scenario,
@@ -27,7 +27,7 @@ from kiro_claw.eval.scenario import (
     load_scenario,
     load_scenarios,
 )
-from kiro_claw.providers.base import (
+from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -271,7 +271,7 @@ class TestSeedProfile:
 # ── Runner Tests ──
 # Note: These tests work because MockProvider is passed via provider_factory and
 # EvalRunner.run_scenario uses a temp workspace_dir, which triggers _run_scenario_in
-# with lazy imports of SessionManager/KiroClawConfig. The tests exercise the full
+# with lazy imports of SessionManager/KiroCrewConfig. The tests exercise the full
 # memory loop (consolidation, vector store) but MockProvider short-circuits actual
 # LLM calls, so no real kiro-cli session is needed.
 
@@ -660,7 +660,7 @@ class TestJudgeParsing:
 
     @pytest.mark.asyncio
     async def test_judge_parses_valid_json(self):
-        from kiro_claw.eval.judge import LLMJudge
+        from kiro_crew.eval.judge import LLMJudge
 
         class JudgeProvider(MockProvider):
             async def stream(self, message):
@@ -680,7 +680,7 @@ class TestJudgeParsing:
 
     @pytest.mark.asyncio
     async def test_judge_handles_unparseable_response(self):
-        from kiro_claw.eval.judge import LLMJudge
+        from kiro_crew.eval.judge import LLMJudge
 
         class BadProvider(MockProvider):
             async def stream(self, message):
@@ -727,7 +727,7 @@ class TestConsolidationFailure:
         runner = EvalRunner(provider_factory=lambda key, **kw: MockProvider())
 
         with patch(
-            "kiro_claw.history.HistoryConsolidator._consolidate",
+            "kiro_crew.history.HistoryConsolidator._consolidate",
             new_callable=AsyncMock,
             side_effect=RuntimeError("consolidation boom"),
         ):

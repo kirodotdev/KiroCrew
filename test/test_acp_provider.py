@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.acp.types import ACP_BACKEND_CLAUDE, AcpEvent
-from kiro_claw.providers.acp import AcpProvider
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent
+from kiro_crew.providers.acp import AcpProvider
 
 
 def _build_provider(backend: str) -> AcpProvider:
-    with patch("kiro_claw.providers.acp.AcpClient"):
+    with patch("kiro_crew.providers.acp.AcpClient"):
         provider = AcpProvider(acp_backend=backend)
     provider._client = MagicMock()
     provider._client.backend = backend
@@ -166,7 +166,7 @@ class TestEffortControl:
     @pytest.mark.asyncio
     async def test_kiro_change_effort_pushes_slash_command_and_overlay(self):
         provider = self._effort_provider(backend="", model="claude-opus-4.7")
-        with patch("kiro_claw.providers.acp._write_cli_overlay") as wco:
+        with patch("kiro_crew.providers.acp._write_cli_overlay") as wco:
             ok = await provider.change_effort("xhigh")
         assert ok is True
         provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "xhigh"})
@@ -191,7 +191,7 @@ class TestEffortControl:
         # Adapter rejects "max" for a model whose ceiling is "xhigh"; the push
         # must fall back down the ladder and land "xhigh" rather than failing
         # the whole change (which would reset the session and lose state).
-        from kiro_claw.acp.client import AcpError
+        from kiro_crew.acp.client import AcpError
 
         provider = self._effort_provider(backend=ACP_BACKEND_CLAUDE, model="claude-opus-4.7")
 
@@ -213,7 +213,7 @@ class TestEffortControl:
     async def test_claude_change_effort_propagates_non_value_errors(self):
         # A transport/timeout error is NOT a value rejection — it must NOT be
         # swallowed by the ladder; it propagates so the caller rolls back.
-        from kiro_claw.acp.client import AcpError
+        from kiro_crew.acp.client import AcpError
 
         provider = self._effort_provider(backend=ACP_BACKEND_CLAUDE, model="claude-opus-4.7")
         provider._client.set_config_option = AsyncMock(side_effect=AcpError("transport died"))
@@ -286,7 +286,7 @@ class TestEffortControl:
         # Defense in depth: even if the capability guard is bypassed (e.g. the
         # option is advertised lazily), an 'Unknown config option' rejection
         # from the adapter must be skipped, not re-raised (which resets).
-        from kiro_claw.acp.client import AcpError
+        from kiro_crew.acp.client import AcpError
 
         provider = self._effort_provider(backend=ACP_BACKEND_CLAUDE, model="claude-opus-4.7")
         # Force the guard open so the ladder runs and hits the adapter error.
@@ -308,7 +308,7 @@ class TestEffortControl:
         # would leave the running session stuck at the old effort.
         provider = self._effort_provider(backend="", model="claude-opus-4.7")
         provider._effort_per_model = {"claude-opus-4.7": "high"}
-        with patch("kiro_claw.providers.acp._clear_cli_overlay_effort") as cco:
+        with patch("kiro_crew.providers.acp._clear_cli_overlay_effort") as cco:
             ok = await provider.clear_effort()
         assert ok is False
         assert "claude-opus-4.7" not in provider._effort_per_model
@@ -357,7 +357,7 @@ class TestStartKiroRuntimeResume:
     def _kiro_provider(self, model="auto"):
         provider = _build_provider(backend="")  # kiro backend
         provider._client._work_dir = "/tmp/ws"
-        provider._client._agent = "kiroclaw"
+        provider._client._agent = "kirocrew"
         provider._client._sandbox_mode = "auto"
         provider._client._extra_env = {}
         provider._client._mcp_gateway_overlay = None
@@ -384,9 +384,9 @@ class TestStartKiroRuntimeResume:
         provider._client._resume_session_id = resume_sid
 
         with (
-            patch("kiro_claw.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
             patch(
-                "kiro_claw.providers.acp.AcpSessionProvider",
+                "kiro_crew.providers.acp.AcpSessionProvider",
                 side_effect=lambda handle, runtime, **kw: MagicMock(
                     _handle=handle, _runtime=runtime, resumed=False
                 ),
@@ -471,8 +471,8 @@ class TestStartKiroRuntimeResume:
         mock_runtime.create_session = AsyncMock(side_effect=boom)
 
         with (
-            patch("kiro_claw.providers.acp.AcpRuntime", return_value=mock_runtime),
-            patch("kiro_claw.providers.acp.AcpSessionProvider"),
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch("kiro_crew.providers.acp.AcpSessionProvider"),
         ):
             with pytest.raises(RuntimeError, match="session limit reached"):
                 await provider._start_kiro_runtime()
@@ -499,7 +499,7 @@ class TestFixBDeadRuntimeRespawn:
     def _kiro_provider(self):
         provider = _build_provider(backend="")  # kiro backend
         provider._client._work_dir = "/tmp/ws"
-        provider._client._agent = "kiroclaw"
+        provider._client._agent = "kirocrew"
         provider._client._sandbox_mode = "auto"
         provider._client._extra_env = {}
         provider._client._mcp_gateway_overlay = None
@@ -541,11 +541,11 @@ class TestFixBDeadRuntimeRespawn:
 
         with (
             patch(
-                "kiro_claw.providers.acp.AcpRuntime",
+                "kiro_crew.providers.acp.AcpRuntime",
                 side_effect=lambda **kw: next(runtime_calls),
             ),
             patch(
-                "kiro_claw.providers.acp.AcpSessionProvider",
+                "kiro_crew.providers.acp.AcpSessionProvider",
                 side_effect=lambda handle, runtime, **kw: MagicMock(
                     _handle=handle, _runtime=runtime, resumed=False
                 ),

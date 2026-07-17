@@ -16,10 +16,10 @@ from unittest.mock import patch
 
 def _resolve(prompt: str, session_key: str, density: str = "more") -> str:
     """Call the private template resolver with a canned config."""
-    from kiro_claw.context import ContextBuilder
+    from kiro_crew.context import ContextBuilder
 
     fake_cfg = SimpleNamespace(dashboard=SimpleNamespace(widget_density=density))
-    with patch("kiro_claw.context.KiroClawConfig.load", return_value=fake_cfg):
+    with patch("kiro_crew.context.KiroCrewConfig.load", return_value=fake_cfg):
         return ContextBuilder._resolve_prompt_templates(prompt, session_key)
 
 
@@ -76,10 +76,10 @@ class TestWidgetBlockPlaceholder:
 
     def test_density_default_when_config_missing(self):
         # If the dashboard config omits widget_density entirely, fall back to "more".
-        from kiro_claw.context import ContextBuilder
+        from kiro_crew.context import ContextBuilder
 
         fake_cfg = SimpleNamespace(dashboard=SimpleNamespace())
-        with patch("kiro_claw.context.KiroClawConfig.load", return_value=fake_cfg):
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=fake_cfg):
             result = ContextBuilder._resolve_prompt_templates("{{WIDGET_BLOCK}}", "dashboard:x")
         # The `more` branch fires (skill pointer + encouraging wording) and the
         # `less` branch does not. Assert structurally, not on specific prose

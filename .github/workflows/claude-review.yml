@@ -72,7 +72,7 @@ jobs:
             You are reviewing pull request #${{ github.event.pull_request.number }}
             of ${{ github.repository }} (HEAD ${{ github.event.pull_request.head.sha }}).
 
-            KiroClaw is an open-source AI agent platform (Python backend + React/TS
+            KiroCrew is an open-source AI agent platform (Python backend + React/TS
             dashboard). CLAUDE.md and AGENTS.md (root and website/) are read
             automatically — follow the conventions there. This repo is a de-Amazoned
             public fork: do NOT flag the absence of Brazil/AUTOSDE tooling.
@@ -98,7 +98,7 @@ jobs:
               XSS. In the frontend, dangerouslySetInnerHTML MUST go through
               sanitize()/md() (DOMPurify); no HTML built from template literals with
               user/LLM content. In the backend, sensitive-path reads MUST go through
-              hooks.py is_sensitive_path(); never weaken the ~/.kiroclaw keystone.
+              hooks.py is_sensitive_path(); never weaken the ~/.kirocrew keystone.
             - Accessibility (WCAG 2.1 AA): icon-only buttons need aria-label;
               interactive elements need keyboard handling; no emoji used as UI icons
               (use lucide-react).

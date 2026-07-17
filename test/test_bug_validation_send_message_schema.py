@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.validation import (
+from kiro_crew.validation import (
     CRON_SESSION_RE,
     SEND_MESSAGE_SCHEMA,
     ValidationError,

@@ -12,12 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw import subagent_persistence
-from kiro_claw.acp.runtime import AcpRuntimeDead
-from kiro_claw.acp.session_provider import AcpSessionProvider
-from kiro_claw.acp.types import AcpEvent
-from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
-from kiro_claw.subagent import SubagentManager
+from kiro_crew import subagent_persistence
+from kiro_crew.acp.runtime import AcpRuntimeDead
+from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.types import AcpEvent
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.subagent import SubagentManager
 
 
 @pytest.fixture(autouse=True)
@@ -30,14 +30,14 @@ def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:
     """Create a mock SessionManager with session-sharing support."""
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
-    sessions.get_agent = MagicMock(return_value="kiroclaw")
+    sessions.get_agent = MagicMock(return_value="kirocrew")
     sessions.get_approval_policy = MagicMock(return_value="auto")
     sessions.has_session = MagicMock(return_value=True)
     sessions.is_session_sharing_eligible = MagicMock(return_value=sharing_eligible)
     sessions.record_success = MagicMock()
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()
-    sessions._pool_cwd = "/home/user/.kiroclaw/workspace"
+    sessions._pool_cwd = "/home/user/.kirocrew/workspace"
 
     # Legacy get_or_create path
     legacy_provider = AsyncMock()
@@ -88,12 +88,12 @@ def _mock_ctx_builder_auto() -> MagicMock:
 
 
 def _cfg_patch(session_sharing: bool = True):
-    """Patch KiroClawConfig.load() to return session_sharing flag."""
+    """Patch KiroCrewConfig.load() to return session_sharing flag."""
     cfg = MagicMock()
     cfg.agent.session_sharing = session_sharing
     cfg.agent.spawn_min_memory_gb = 0  # disable memory check
     cfg.agent.subagent_cwd_allowed_roots = ["~/workspace", "~/workplace"]
-    return patch("kiro_claw.subagent.KiroClawConfig.load", return_value=cfg)
+    return patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg)
 
 
 class TestSessionSharingDecision:
@@ -109,7 +109,7 @@ class TestSessionSharingDecision:
             is_yolo=lambda: True,
         )
 
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         info = SubagentInfo(id="test1", task="hello", parent_session_key="dashboard:slot1")
         with _cfg_patch(session_sharing=True):
@@ -126,7 +126,7 @@ class TestSessionSharingDecision:
             is_yolo=lambda: True,
         )
 
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         info = SubagentInfo(id="test2", task="hello", parent_session_key="dashboard:slot1")
         with _cfg_patch(session_sharing=False):
@@ -143,7 +143,7 @@ class TestSessionSharingDecision:
             is_yolo=lambda: True,
         )
 
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         info = SubagentInfo(id="test3", task="hello", parent_session_key="dashboard:slot1")
         with _cfg_patch(session_sharing=True):
@@ -160,7 +160,7 @@ class TestSessionSharingDecision:
             is_yolo=lambda: True,
         )
 
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         # model override forces CC path
         info = SubagentInfo(
@@ -182,7 +182,7 @@ class TestSessionSharingDecision:
             is_yolo=lambda: True,
         )
 
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         info = SubagentInfo(id="test5", task="hello", parent_session_key="")
         with _cfg_patch(session_sharing=True):
@@ -204,8 +204,8 @@ class TestSessionSharingSpawn:
         )
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             assert info is not None
             # Wait for the subagent to complete
@@ -229,8 +229,8 @@ class TestSessionSharingSpawn:
         )
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await asyncio.sleep(0.5)
 
@@ -249,8 +249,8 @@ class TestSessionSharingSpawn:
         )
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await asyncio.sleep(0.5)
 
@@ -275,8 +275,8 @@ class TestSessionSharingSpawn:
         )
 
         with _cfg_patch(session_sharing=False), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await asyncio.sleep(0.5)
 
@@ -305,8 +305,8 @@ class TestSessionSharingFallback:
         )
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await asyncio.sleep(0.5)
 
@@ -336,8 +336,8 @@ class TestSessionSharingFallback:
         )
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await asyncio.sleep(0.5)
 
@@ -359,7 +359,7 @@ class TestSessionSharingReaper:
             is_yolo=lambda: True,
         )
 
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         mock_provider = AsyncMock()
         mock_provider.shutdown = AsyncMock()
@@ -374,7 +374,7 @@ class TestSessionSharingReaper:
         manager._tasks["reap1"] = MagicMock(done=MagicMock(return_value=False))
         manager._tasks["reap1"].cancel = MagicMock()
 
-        with patch("kiro_claw.subagent.Stats"), patch("kiro_claw.subagent.sel"):
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._force_reap("reap1", info, 1800.0)
 
         # shutdown called on the shared provider
@@ -392,7 +392,7 @@ class TestSessionSharingReaper:
             is_yolo=lambda: True,
         )
 
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         info = SubagentInfo(
             id="reap2",
@@ -404,7 +404,7 @@ class TestSessionSharingReaper:
         manager._tasks["reap2"] = MagicMock(done=MagicMock(return_value=False))
         manager._tasks["reap2"].cancel = MagicMock()
 
-        with patch("kiro_claw.subagent.Stats"), patch("kiro_claw.subagent.sel"):
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._force_reap("reap2", info, 1800.0)
 
         # Legacy path: reset called
@@ -428,8 +428,8 @@ class TestSessionSharingMultiAgent:
         manager._spawn_stagger_secs = 0.0
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot1")
             await asyncio.sleep(1.0)
@@ -456,8 +456,8 @@ class TestSessionSharingMultiAgent:
         manager._spawn_stagger_secs = 0.0
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot2")
             await asyncio.sleep(1.0)
@@ -480,8 +480,8 @@ class TestSessionSharingMultiAgent:
         )
 
         with _cfg_patch(session_sharing=True), \
-             patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel"):
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await asyncio.sleep(0.5)
 
@@ -499,10 +499,10 @@ class TestSessionSharingParentReset:
         # We can't easily test the full reset() without a real session,
         # but we can test that the cleanup code path works correctly
         # by verifying release_subagent_runtime kills the runtime.
-        from kiro_claw.config.loader import KiroClawConfig
-        from kiro_claw.session import SessionManager
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
 
-        cfg = KiroClawConfig.load()
+        cfg = KiroCrewConfig.load()
         sm = SessionManager(cfg)
 
         # Simulate a subagent runtime being registered
@@ -524,10 +524,10 @@ class TestSessionSharingParentReset:
     @pytest.mark.asyncio
     async def test_release_subagent_runtime_noop_when_missing(self):
         """release_subagent_runtime is safe when no runtime exists."""
-        from kiro_claw.config.loader import KiroClawConfig
-        from kiro_claw.session import SessionManager
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
 
-        cfg = KiroClawConfig.load()
+        cfg = KiroCrewConfig.load()
         sm = SessionManager(cfg)
 
         # Should not raise
@@ -536,10 +536,10 @@ class TestSessionSharingParentReset:
     @pytest.mark.asyncio
     async def test_release_subagent_runtime_handles_kill_failure(self):
         """release_subagent_runtime handles errors from runtime.kill()."""
-        from kiro_claw.config.loader import KiroClawConfig
-        from kiro_claw.session import SessionManager
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
 
-        cfg = KiroClawConfig.load()
+        cfg = KiroCrewConfig.load()
         sm = SessionManager(cfg)
 
         mock_runtime = MagicMock()
@@ -555,10 +555,10 @@ class TestSessionSharingParentReset:
     @pytest.mark.asyncio
     async def test_get_subagent_runtime_reuses_alive_runtime(self):
         """get_subagent_runtime returns existing runtime if alive."""
-        from kiro_claw.config.loader import KiroClawConfig
-        from kiro_claw.session import SessionManager
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
 
-        cfg = KiroClawConfig.load()
+        cfg = KiroCrewConfig.load()
         sm = SessionManager(cfg)
 
         # Pre-populate with an alive runtime
@@ -569,7 +569,7 @@ class TestSessionSharingParentReset:
 
         # Mock the _sessions dict for agent lookup
         mock_session = MagicMock()
-        mock_session.agent = "kiroclaw"
+        mock_session.agent = "kirocrew"
         sm._sessions["dashboard:slot1"] = mock_session
 
         result = await sm.get_subagent_runtime("dashboard:slot1")
@@ -581,12 +581,12 @@ class TestSessionSharingParentReset:
         get_bg_session): the first spawn dies, the second succeeds -> live runtime.
         Regression guard: the retry loop was previously dead code (spawn raised
         straight through without being caught, so max_retries had no effect)."""
-        from kiro_claw.acp.runtime import AcpRuntimeDead
-        from kiro_claw.config.loader import KiroClawConfig
-        from kiro_claw.session import SessionManager
+        from kiro_crew.acp.runtime import AcpRuntimeDead
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
 
-        sm = SessionManager(KiroClawConfig.load())
-        sm._get_session_agent = lambda k: "kiroclaw"  # type: ignore[assignment]
+        sm = SessionManager(KiroCrewConfig.load())
+        sm._get_session_agent = lambda k: "kirocrew"  # type: ignore[assignment]
 
         calls = {"n": 0}
 
@@ -605,7 +605,7 @@ class TestSessionSharingParentReset:
 
         # Inline import in get_subagent_runtime resolves AcpRuntime at call time,
         # so patching the source module is picked up.
-        monkeypatch.setattr("kiro_claw.acp.runtime.AcpRuntime", _FlakyRuntime)
+        monkeypatch.setattr("kiro_crew.acp.runtime.AcpRuntime", _FlakyRuntime)
         rt = await sm.get_subagent_runtime("dashboard:slot1")
         assert calls["n"] == 2  # retried once after the transient failure
         assert rt.is_alive()
@@ -616,12 +616,12 @@ class TestSessionSharingParentReset:
         """When every spawn attempt fails, get_subagent_runtime raises
         AcpRuntimeDead (so the caller falls back to the legacy path) after the
         retry budget is exhausted, and records no runtime."""
-        from kiro_claw.acp.runtime import AcpRuntimeDead
-        from kiro_claw.config.loader import KiroClawConfig
-        from kiro_claw.session import SessionManager
+        from kiro_crew.acp.runtime import AcpRuntimeDead
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
 
-        sm = SessionManager(KiroClawConfig.load())
-        sm._get_session_agent = lambda k: "kiroclaw"  # type: ignore[assignment]
+        sm = SessionManager(KiroCrewConfig.load())
+        sm._get_session_agent = lambda k: "kirocrew"  # type: ignore[assignment]
 
         calls = {"n": 0}
 
@@ -636,7 +636,7 @@ class TestSessionSharingParentReset:
             def is_alive(self):
                 return False
 
-        monkeypatch.setattr("kiro_claw.acp.runtime.AcpRuntime", _DeadRuntime)
+        monkeypatch.setattr("kiro_crew.acp.runtime.AcpRuntime", _DeadRuntime)
         with pytest.raises(AcpRuntimeDead):
             await sm.get_subagent_runtime("dashboard:slot1")
         assert calls["n"] == 2  # initial attempt + one retry

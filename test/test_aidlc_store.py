@@ -6,8 +6,8 @@ import tempfile
 
 import pytest
 
-from kiro_claw.aidlc.store import AidlcStore
-from kiro_claw.task_models import Project, Task
+from kiro_crew.aidlc.store import AidlcStore
+from kiro_crew.task_models import Project, Task
 
 
 @pytest.fixture

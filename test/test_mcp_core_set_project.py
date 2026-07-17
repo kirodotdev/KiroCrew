@@ -14,23 +14,23 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw import mcp_core
+from kiro_crew import mcp_core
 
 # ───────────────────────────── _resolve_session_key_strict ─────────────────
 
 
 class TestResolveSessionKeyStrict:
-    """Strict resolver: only the ``KIROCLAW_SESSION_KEY`` env var produces a
+    """Strict resolver: only the ``KIROCREW_SESSION_KEY`` env var produces a
     value. The PID-walk fallback that the lenient resolver uses is dropped."""
 
     def test_env_var_used(self, monkeypatch):
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "dashboard:slot-B")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:slot-B")
         assert mcp_core._resolve_session_key_strict() == "dashboard:slot-B"
 
     def test_returns_empty_when_only_pid_walk_would_match(self, monkeypatch):
         """Lenient resolver would walk /proc and find a session_pid_*.txt;
         strict returns "" so the caller can refuse."""
-        monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         assert mcp_core._resolve_session_key_strict() == ""
 
 
@@ -82,7 +82,7 @@ class TestSetProjectTool:
         assert body == {"project": ""}
 
     def test_empty_path_without_clear_rejected(self):
-        from kiro_claw.validation import ValidationError
+        from kiro_crew.validation import ValidationError
         with patch.object(mcp_core, "_post") as mock_post, \
              patch.object(mcp_core, "_resolve_session_key_strict", return_value="dashboard:test"):
             with pytest.raises(ValidationError, match="required.*clear=true"):
@@ -90,7 +90,7 @@ class TestSetProjectTool:
         mock_post.assert_not_called()
 
     def test_non_string_path_raises_validation_error_without_calling_post(self):
-        from kiro_claw.validation import ValidationError
+        from kiro_crew.validation import ValidationError
         with patch.object(mcp_core, "_post") as mock_post, \
              patch.object(mcp_core, "_resolve_session_key_strict", return_value="dashboard:test"):
             with pytest.raises(ValidationError):

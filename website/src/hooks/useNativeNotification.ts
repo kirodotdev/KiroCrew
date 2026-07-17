@@ -36,7 +36,7 @@ export function useNativeNotification(botName: string, avatar: string) {
               latestNotif?.approval_id ||
               latestNotif?.job_id ||
               latestNotif?.task_id ||
-              'kiroclaw-notif',
+              'kirocrew-notif',
           })
         } else if (Notification.permission === 'default') {
           Notification.requestPermission()

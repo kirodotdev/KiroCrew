@@ -1,10 +1,10 @@
 """Regression test for `_run_aim()` PATH augmentation.
 
-The dashboard's `_run_aim` helper shells out to the `aim` CLI. When KiroClaw
+The dashboard's `_run_aim` helper shells out to the `aim` CLI. When KiroCrew
 runs under systemd or any other non-login shell, `~/.toolbox/bin` is often
 missing from the inherited PATH, causing `aim` to fail with `[Errno 2] No
 such file or directory: 'aim'`. The fix explicitly augments PATH via
-`kiro_claw.env.augmented_path()` before spawning the subprocess.
+`kiro_crew.env.augmented_path()` before spawning the subprocess.
 
 Also verifies that the companion `_aim_path()` guard uses the same
 augmentation, so handlers don't return 503 "aim CLI not found" under a
@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_claw.dashboard.handlers import agents as agents_handler
+from kiro_crew.dashboard.handlers import agents as agents_handler
 
 
 class _FakeProc:
@@ -39,7 +39,7 @@ async def test_run_aim_augments_path():
         return _FakeProc()
 
     with patch(
-        "kiro_claw.dashboard.handlers.agents.asyncio.create_subprocess_exec",
+        "kiro_crew.dashboard.handlers.agents.asyncio.create_subprocess_exec",
         new=AsyncMock(side_effect=fake_exec),
     ):
         rc, out = await agents_handler._run_aim("skills", "list")

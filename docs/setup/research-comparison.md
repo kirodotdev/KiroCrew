@@ -1,7 +1,7 @@
 # Research: How openclaw & hermes-agent install, authenticate, and go remote
 
 Comparative study of two mature sibling agents (both public checkouts on this
-machine) against **KiroClaw today**, to inform the KiroClaw installer + cloud
+machine) against **KiroCrew today**, to inform the KiroCrew installer + cloud
 launcher. Focus areas: install entry points, cross-platform support, dependency
 bootstrapping, backend/LLM auth, cloud/remote deployment, onboarding UX,
 packaging.
@@ -11,13 +11,13 @@ Sources:
   Gateway daemon + native macOS/iOS/Android apps. (`/Users/zedmor/workplace/openclaw`)
 - `hermes-agent` — Python (uv) project shipping a `hermes` CLI + gateway +
   Electron/Tauri desktop. (`/Users/zedmor/workplace/hermes-agent`)
-- `kiroclaw` — this repo.
+- `kirocrew` — this repo.
 
 ---
 
 ## 1. Installation entry points
 
-| | openclaw | hermes-agent | **KiroClaw today** |
+| | openclaw | hermes-agent | **KiroCrew today** |
 |---|---|---|---|
 | Hosted one-liner | `curl … openclaw.ai/install.sh \| bash` (3400-line script) + `irm …install.ps1 \| iex` (Windows) | `curl … /install.sh \| bash` (3100 lines) + `iex(irm …install.ps1)` + `install.cmd` | **None hosted** — user clones repo then runs `bash install.sh` |
 | Underlying pkg | `npm install -g openclaw` | `uv` + venv + `pip install -e .` | venv + `pip install -e .` |
@@ -27,8 +27,8 @@ Sources:
 
 **Shared pattern worth adopting:** a *thin bootstrapper* (get the runtime +
 binary on PATH) that then **hands off to an in-CLI `onboard`/`setup` wizard** for
-configuration. Both projects `exec <cli> onboard` at the end of install. KiroClaw
-already half-does this (`install.sh` → `kiroclaw setup --agent-only`).
+configuration. Both projects `exec <cli> onboard` at the end of install. KiroCrew
+already half-does this (`install.sh` → `kirocrew setup --agent-only`).
 
 **The single most reusable idea:** hermes's **stage protocol** — the *same*
 install script accepts `--manifest` (emit the ordered stage list as JSON) and
@@ -40,7 +40,7 @@ real progress. openclaw has the equivalent via `install-cli.sh --json`.
 
 ## 2. Cross-platform support
 
-| | openclaw | hermes-agent | **KiroClaw today** |
+| | openclaw | hermes-agent | **KiroCrew today** |
 |---|---|---|---|
 | macOS | ✅ (x64+arm64) | ✅ (x64+arm64) | ✅ |
 | Linux | ✅ (apt/pacman/dnf/yum/apk, glibc+musl) | ✅ (huge distro matrix + Raspbian) | ✅ (apt/dnf/yum/brew) |
@@ -61,7 +61,7 @@ real progress. openclaw has the equivalent via `install-cli.sh --json`.
   `~/.hermes/node`, `~/.hermes/git`) so it never pollutes system dirs and needs
   no root. openclaw offers the same via `install-cli.sh` (`~/.openclaw/tools`).
 
-**KiroClaw implication:** we cannot run the `kiro-cli` *backend* on Windows. But
+**KiroCrew implication:** we cannot run the `kiro-cli` *backend* on Windows. But
 Windows support is still reachable if Windows is a **thin client** in cloud mode
 (§5) — the client only needs `aws` CLI + an SSH client (both native on Win10+),
 which the portable-bootstrap tricks make trivial to guarantee.
@@ -70,7 +70,7 @@ which the portable-bootstrap tricks make trivial to guarantee.
 
 ## 3. Dependency bootstrapping
 
-Both peers **auto-install** prerequisites aggressively (vs. KiroClaw's mix of
+Both peers **auto-install** prerequisites aggressively (vs. KiroCrew's mix of
 auto-install + "check and instruct"):
 
 - **openclaw**: Homebrew→node@24 (macOS); NodeSource/pacman/apk (Linux);
@@ -85,41 +85,41 @@ auto-install + "check and instruct"):
   are **lazy-installed at first use** to shrink the base install. Portable Node 22
   tarball; `run_with_timeout` watchdog (process-group kill) around every hangy
   download (Playwright/npm/Electron).
-- **KiroClaw**: `install.sh` detects apt/dnf/yum/brew/nvm, optional `--mise` for
+- **KiroCrew**: `install.sh` detects apt/dnf/yum/brew/nvm, optional `--mise` for
   pinned Python+Node. No reactive build-tool logic, no watchdog, no lockfile
   hash verification.
 
 **Adopt:** `run_with_timeout` (portable stall-killer) and the reactive-build-tool
 retry are cheap, high-value robustness wins for any installer.
 
-Neither peer auto-installs Ollama (KiroClaw also treats it as optional — good).
+Neither peer auto-installs Ollama (KiroCrew also treats it as optional — good).
 
 ---
 
 ## 4. Backend / LLM account setup
 
-This is where the projects differ most from KiroClaw, because KiroClaw
+This is where the projects differ most from KiroCrew, because KiroCrew
 deliberately **delegates all backend auth to `kiro-cli`**.
 
-| | openclaw | hermes-agent | **KiroClaw** |
+| | openclaw | hermes-agent | **KiroCrew** |
 |---|---|---|---|
 | Auth surface | inside `openclaw onboard` | inside `hermes setup` / `hermes … auth login` | **`kiro-cli login`** (external) |
 | Mechanisms | API key; **reuse existing CLI logins** (Claude Code/Codex/Gemini) *tested with a real completion before saving*; **PKCE OAuth** w/ localhost:1455 callback + paste-URL for headless | API key (`.env` chmod 600); **device-code OAuth** for Nous/Codex/xAI/MiniMax; reuse Qwen CLI login; Anthropic paste-token | GitHub / Google / **AWS Builder ID** / **IAM Identity Center** / Okta / Entra — all via kiro-cli's own browser + device-code flow |
-| Subscription/purchase | bring-your-own provider acct; no billing in-app | **Nous Portal** subscription (one plan, 300+ models) via browser OAuth | **Kiro subscription** — handled entirely by kiro-cli / kiro.dev; KiroClaw does not reimplement it |
-| Credential storage | per-agent SQLite (`auth-profiles.json`), **SecretRefs** (env/file/exec, 1Password/Vault/pass), process-local sentinels | `~/.hermes/.env` (600) + `~/.hermes/auth.json` (file-locked OAuth store) | kiro-cli owns its own creds; KiroClaw stores none for the LLM |
+| Subscription/purchase | bring-your-own provider acct; no billing in-app | **Nous Portal** subscription (one plan, 300+ models) via browser OAuth | **Kiro subscription** — handled entirely by kiro-cli / kiro.dev; KiroCrew does not reimplement it |
+| Credential storage | per-agent SQLite (`auth-profiles.json`), **SecretRefs** (env/file/exec, 1Password/Vault/pass), process-local sentinels | `~/.hermes/.env` (600) + `~/.hermes/auth.json` (file-locked OAuth store) | kiro-cli owns its own creds; KiroCrew stores none for the LLM |
 | AWS as LLM | Bedrock via `mode:"aws-sdk"` | **Bedrock via boto3 full credential chain** — "on EC2/ECS/Lambda attach an IAM role, no keys" | (Bedrock provider was removed in the OSS fork; ACP/kiro-cli only) |
 
 **Reusable, remote-login-relevant:**
 - Both document **OAuth-over-SSH** for headless hosts (`ssh -L <port>` port-forward
   + open the URL in the *local* browser), and **device-code** as the
-  no-forwarding alternative. KiroClaw's `docs/kiro-cli/authentication.md` already
+  no-forwarding alternative. KiroCrew's `docs/kiro-cli/authentication.md` already
   says exactly this for `kiro-cli login` on a remote box. **This is directly the
   "log in to the backend on the EC2 instance" story** — we don't need to build
   anything; we surface the device-code URL/port to the user.
 - hermes's **Bedrock-on-EC2 zero-config** pattern (IAM instance role → boto3
   credential chain, no stored keys) is the philosophical match for "connect AWS
-  via the CLI, store nothing." (KiroClaw's `deploy_web` already applies the same
-  principle to the `aws` CLI — see the KiroClaw section below.)
+  via the CLI, store nothing." (KiroCrew's `deploy_web` already applies the same
+  principle to the `aws` CLI — see the KiroCrew section below.)
 
 ---
 
@@ -131,10 +131,10 @@ deliberately **delegates all backend auth to `kiro-cli`**.
 Their "cloud" story is uniformly *"you already have a Linux box (VPS / EC2 /
 Pi); SSH in and run the installer,"* plus Docker/PaaS config files.
 
-| | openclaw | hermes-agent | **KiroClaw today** |
+| | openclaw | hermes-agent | **KiroCrew today** |
 |---|---|---|---|
 | VM provisioning | **none** | **none** (links an *external* CloudFormation sample repo) | **none** |
-| Deploy unit | Docker (359-line multi-stage), Fly.io (`fly.toml` + private no-public-IP variant), Render, Railway, Northflank, K8s, Nix, Ansible | Docker (`nousresearch/hermes-agent`, s6-overlay), docker-compose (host net), Nix flake | pip install on the host; `kiroclaw service install` (systemd/launchd) |
+| Deploy unit | Docker (359-line multi-stage), Fly.io (`fly.toml` + private no-public-IP variant), Render, Railway, Northflank, K8s, Nix, Ansible | Docker (`nousresearch/hermes-agent`, s6-overlay), docker-compose (host net), Nix flake | pip install on the host; `kirocrew service install` (systemd/launchd) |
 | Cloud guides | DigitalOcean, Hetzner, GCP, Azure, Oracle Free ARM, Pi (AWS: "works, community video", no guide) | Docker on any VPS; AWS only via Bedrock doc + external CFN sample | `REMOTE_DESKTOP_SETUP.md` (any Linux VM incl. EC2) |
 | **Web-UI remote access** | **loopback + Tailscale Serve/Funnel (auto-configured)**; SSH tunnel (persistent LaunchAgent recipe); direct bind requires token/password | **loopback + SSH tunnel** (recommended); direct bind `0.0.0.0` requires a DashboardAuthProvider (basic/OAuth/OIDC), **fails closed** otherwise; **relay outbound-WS reverse tunnel** to a hosted connector (no inbound port) | **loopback + SSH tunnel**; `Instances` feature auto-tunnels + mints token + iframes; cloudflared/ngrok/Tailscale for mobile |
 | Idle cost control | — | **Fly scale-to-zero** (`go_dormant()` + Fly `autostop:suspend` + connector wake-poke) | — |
@@ -150,13 +150,13 @@ Pi); SSH in and run the installer,"* plus Docker/PaaS config files.
   (Fly) suspends the machine; a "wake poke" restarts it. Directly relevant if we
   want an EC2 instance that stops itself to save money and wakes on demand.
 
-**KiroClaw is actually ahead of both peers on turnkey remote access** because of
+**KiroCrew is actually ahead of both peers on turnkey remote access** because of
 the built-in **`Instances`** feature (`docs/INSTANCES.md`): a hub gateway opens a
 supervised `ssh -N -L` to a remote gateway's loopback port, mints a short-lived
 dashboard token over SSH, and embeds the remote dashboard in an iframe with
 self-heal + token refresh. It *already documents EC2* as a remote type (via an
 `~/.ssh/config` alias with `IdentityFile`/`ProxyJump`/SSM `ProxyCommand`). So
-once an EC2 box is running KiroClaw, **the "access it from the app" half is
+once an EC2 box is running KiroCrew, **the "access it from the app" half is
 essentially done** — the missing piece is *provisioning the box and registering
 it as an instance automatically.*
 
@@ -175,9 +175,9 @@ it as an instance automatically.*
   doctor` (108 KB) checks version/supervision/provider health/AWS+Bedrock
   reachability/DB health. Focused reconfig: `hermes model`, `hermes tools`,
   `hermes gateway setup`.
-- **KiroClaw** — `kiroclaw setup` wizard (`cli_setup.py`: workspace dir, Slack
+- **KiroCrew** — `kirocrew setup` wizard (`cli_setup.py`: workspace dir, Slack
   tokens, slash command, timezone, dashboard URL, custom domain, `--agent-only`,
-  `--electron-only`) + `kiroclaw doctor`. Solid, but **no `--json`/structured
+  `--electron-only`) + `kirocrew doctor`. Solid, but **no `--json`/structured
   mode**, **no `--fix` auto-repair**, and no "start gateway + verify reachable"
   health gate at the end of setup.
 
@@ -188,7 +188,7 @@ end-of-setup "start + verify reachable" gate.
 
 ## 7. Packaging / distribution
 
-| Channel | openclaw | hermes | KiroClaw today |
+| Channel | openclaw | hermes | KiroCrew today |
 |---|---|---|---|
 | Language registry | **npm** | **PyPI** | pip wheel (unpublished) |
 | Docker image | ✅ published | ✅ `nousresearch/hermes-agent` | ❌ none |
@@ -197,19 +197,19 @@ end-of-setup "start + verify reachable" gate.
 | Nix | flake + guides | ✅ flake + NixOS module | ❌ |
 | PaaS one-click | Render/Fly/Railway/Northflank | Docker-on-VPS | ❌ |
 
-**Gaps for KiroClaw if we want frictionless distribution:** no published
+**Gaps for KiroCrew if we want frictionless distribution:** no published
 package (pip/npm), no Docker image, no Homebrew, no auto-update for the desktop
 app (openclaw's Sparkle appcast is the reference).
 
 ---
 
-## What KiroClaw already has that the peers don't
+## What KiroCrew already has that the peers don't
 
 1. **`deploy_web` builtin app** — the in-repo reference for **bring-your-own-AWS
    with zero stored credentials**: every AWS call goes through one `run_aws()`
    chokepoint that shells `aws … --profile <name>` (never boto3), wrapped in the
    OS sandbox; it **generates a least-privilege IAM policy for the user to
-   apply** (`iam.py`, KiroClaw never does an IAM write); it does **read-only
+   apply** (`iam.py`, KiroCrew never does an IAM write); it does **read-only
    reachability checks** (`sts get-caller-identity`, harmless `list` calls) and
    maps `AccessDenied` stderr → the exact missing IAM statement Sid. LLM-facing
    inputs (`profile`, `region`) are charset-validated before hitting argv. This
@@ -226,7 +226,7 @@ app (openclaw's Sparkle appcast is the reference).
 
 **Actual EC2 provisioning** (`aws ec2 run-instances` orchestration: key pair or
 SSM, security group, AMI/instance-type selection, user-data to install+start
-KiroClaw, tag for discovery, wait-for-ready, register as an Instance). This is
+KiroCrew, tag for discovery, wait-for-ready, register as an Instance). This is
 greenfield relative to all three codebases — but the *shape* is fully
 prescribed by `deploy_web` (the `run_aws` chokepoint, tag-based statelessness,
 IAM-policy-for-the-user, reachability checks, `AccessDenied`→Sid mapping).

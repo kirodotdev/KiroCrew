@@ -16,15 +16,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import kiro_claw.slack.events as events
-from kiro_claw.slack.events import _handle_slash, register_slash_command
+import kiro_crew.slack.events as events
+from kiro_crew.slack.events import _handle_slash, register_slash_command
 
 
 def _make_orch() -> MagicMock:
     orch = MagicMock()
     orch.slack = MagicMock()  # truthy
     orch._owner_id = "U_OWNER"  # truthy
-    orch.slack_command = "kiroclaw"  # _handle_slash compares cmd to f"/{slack_command}"
+    orch.slack_command = "kirocrew"  # _handle_slash compares cmd to f"/{slack_command}"
     return orch
 
 
@@ -45,7 +45,7 @@ async def test_slash_handler_task_is_retained(tmp_path, monkeypatch) -> None:
     try:
         events._bg_tasks.clear()
         orch = _make_orch()
-        await _handle_slash(orch, {"command": "/kiroclaw", "user_id": "U1", "text": "zzztest do a thing", "response_url": "https://example.test/r"})
+        await _handle_slash(orch, {"command": "/kirocrew", "user_id": "U1", "text": "zzztest do a thing", "response_url": "https://example.test/r"})
 
         # The dispatched handler task must be retained while pending.
         assert len(events._bg_tasks) >= 1, (
@@ -72,7 +72,7 @@ async def test_unauthorized_reply_task_is_retained(tmp_path, monkeypatch) -> Non
 
     events._bg_tasks.clear()
     orch = _make_orch()
-    await _handle_slash(orch, {"command": "/kiroclaw", "user_id": "U_BAD", "text": "status", "response_url": "https://example.test/r"})
+    await _handle_slash(orch, {"command": "/kirocrew", "user_id": "U_BAD", "text": "status", "response_url": "https://example.test/r"})
     # The reply task must be retained (else the user gets no error message).
     assert len(events._bg_tasks) >= 1
     await asyncio.gather(*list(events._bg_tasks), return_exceptions=True)
@@ -88,7 +88,7 @@ async def test_owner_not_configured_reply_retained(tmp_path, monkeypatch) -> Non
     orch = _make_orch()
     orch._owner_id = ""  # falsy → triggers the owner-not-configured branch
     events._bg_tasks.clear()
-    await _handle_slash(orch, {"command": "/kiroclaw", "user_id": "U1", "text": "status", "response_url": "https://example.test/r"})
+    await _handle_slash(orch, {"command": "/kirocrew", "user_id": "U1", "text": "status", "response_url": "https://example.test/r"})
     assert len(events._bg_tasks) >= 1
     await asyncio.gather(*list(events._bg_tasks), return_exceptions=True)
     await asyncio.sleep(0)
@@ -103,7 +103,7 @@ async def test_unknown_subcommand_help_reply_retained(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(events, "_build_help_text", lambda _cmd: "help")
     orch = _make_orch()
     events._bg_tasks.clear()
-    await _handle_slash(orch, {"command": "/kiroclaw", "user_id": "U1", "text": "no_such_subcmd_xyz", "response_url": "https://example.test/r"})
+    await _handle_slash(orch, {"command": "/kirocrew", "user_id": "U1", "text": "no_such_subcmd_xyz", "response_url": "https://example.test/r"})
     assert len(events._bg_tasks) >= 1
     await asyncio.gather(*list(events._bg_tasks), return_exceptions=True)
     await asyncio.sleep(0)
@@ -119,7 +119,7 @@ async def test_user_mention_disabled_reply_retained(tmp_path, monkeypatch) -> No
     events._bg_tasks.clear()
     await _handle_slash(
         orch,
-        {"command": "/kiroclaw", "user_id": "U1", "text": "<@U99999>", "response_url": "https://example.test/r"},
+        {"command": "/kirocrew", "user_id": "U1", "text": "<@U99999>", "response_url": "https://example.test/r"},
     )
     assert len(events._bg_tasks) >= 1
     await asyncio.gather(*list(events._bg_tasks), return_exceptions=True)
@@ -141,7 +141,7 @@ async def test_channel_mention_track_tasks_retained(tmp_path, monkeypatch) -> No
     events._bg_tasks.clear()
     await _handle_slash(
         orch,
-        {"command": "/kiroclaw", "user_id": "U1", "text": "<#C12345|general>", "response_url": "https://example.test/r"},
+        {"command": "/kirocrew", "user_id": "U1", "text": "<#C12345|general>", "response_url": "https://example.test/r"},
     )
     assert len(events._bg_tasks) >= 1  # track + ack reply
     await asyncio.gather(*list(events._bg_tasks), return_exceptions=True)
@@ -166,7 +166,7 @@ async def test_raising_handler_task_still_self_cleans(tmp_path, monkeypatch) -> 
         orch = _make_orch()
         await _handle_slash(
             orch,
-            {"command": "/kiroclaw", "user_id": "U1", "text": "zzzboom", "response_url": "https://example.test/r"},
+            {"command": "/kirocrew", "user_id": "U1", "text": "zzzboom", "response_url": "https://example.test/r"},
         )
         assert len(events._bg_tasks) >= 1  # retained while pending
         await asyncio.gather(*list(events._bg_tasks), return_exceptions=True)

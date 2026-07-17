@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import kiro_claw.heartbeat as hb_mod
-from kiro_claw.heartbeat import (
+import kiro_crew.heartbeat as hb_mod
+from kiro_crew.heartbeat import (
     _HEADER,
     HeartbeatService,
     _should_keep,

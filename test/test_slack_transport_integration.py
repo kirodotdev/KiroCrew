@@ -14,10 +14,10 @@ import importlib
 import sys
 from pathlib import Path
 
-from kiro_claw.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
-from kiro_claw.messaging.transport import InboundMessage
-from kiro_claw.slack import handler as slack_handler
-from kiro_claw.slack.transport import SlackTransport
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
+from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.slack import handler as slack_handler
+from kiro_crew.slack.transport import SlackTransport
 
 # Import from sibling test file without triggering stdlib 'test' module collision.
 _test_dir = Path(__file__).parent

@@ -196,7 +196,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Jail",
-      "help": "Process-isolation jail mode for agent-bearing commands. 'auto' uses a jail when the active edition supplies a working backend (the public edition has none, so 'auto' and 'on' are no-ops there); 'off' disables it. Disable per-invocation with --no-jail or KIROCLAW_NO_JAIL=1.",
+      "help": "Process-isolation jail mode for agent-bearing commands. 'auto' uses a jail when the active edition supplies a working backend (the public edition has none, so 'auto' and 'on' are no-ops there); 'off' disables it. Disable per-invocation with --no-jail or KIROCREW_NO_JAIL=1.",
       "hasChildren": false,
       "enumValues": [
         "auto",
@@ -270,7 +270,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. When enabled, KiroClaw forces deferral always-on (minPct=0/minTokens=0) via the per-session kiro settings overlay; disabling reverts to sending full tool specs. No effect on the Claude Code backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. When enabled, KiroCrew forces deferral always-on (minPct=0/minTokens=0) via the per-session kiro settings overlay; disabling reverts to sending full tool specs. No effect on the Claude Code backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -529,7 +529,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Log Level",
-      "help": "Persistent log level for the kiro_claw logger. Applied at startup; overridden by --verbose CLI flag.",
+      "help": "Persistent log level for the kiro_crew logger. Applied at startup; overridden by --verbose CLI flag.",
       "hasChildren": false,
       "enumValues": [
         "DEBUG",
@@ -548,11 +548,11 @@
       "sensitive": false,
       "tags": [],
       "label": "Enforce Denied Commands",
-      "help": "Scope for deniedCommands enforcement on kiro agent configs. 'all' enforces on every agent; 'kiroclaw' only on the kiroclaw agent.",
+      "help": "Scope for deniedCommands enforcement on kiro agent configs. 'all' enforces on every agent; 'kirocrew' only on the kirocrew agent.",
       "hasChildren": false,
       "enumValues": [
         "all",
-        "kiroclaw"
+        "kirocrew"
       ],
       "defaultValue": "all"
     },
@@ -765,7 +765,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Use Transport",
-      "help": "Route inbound Slack messages through the SlackTransport → TurnDriver → SlackRenderer channel-neutral path instead of the native handle_message monolith. Default ON in KiroClaw (the transport abstraction is the canonical path, shared with future channels). Set to false to fall back to the legacy native handler.",
+      "help": "Route inbound Slack messages through the SlackTransport → TurnDriver → SlackRenderer channel-neutral path instead of the native handle_message monolith. Default ON in KiroCrew (the transport abstraction is the canonical path, shared with future channels). Set to false to fall back to the legacy native handler.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -987,7 +987,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Managed Embedding Server",
-      "help": "When true, KiroClaw starts/stops a local Ollama server. Set to false for external or SSH-forwarded Ollama instances.",
+      "help": "When true, KiroCrew starts/stops a local Ollama server. Set to false for external or SSH-forwarded Ollama instances.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1375,7 +1375,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Extra Skill Paths",
-      "help": "Additional directories to scan for skills. Supports ~ expansion. Skills from extra_paths are read-only (trigger matching + loading). Local ~/.kiroclaw/skills/ takes precedence for duplicate names.",
+      "help": "Additional directories to scan for skills. Supports ~ expansion. Skills from extra_paths are read-only (trigger matching + loading). Local ~/.kirocrew/skills/ takes precedence for duplicate names.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -1421,7 +1421,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Enabled",
-      "help": "Main switch for KiroClaw metrics telemetry. Off by default: metric call sites are no-ops and nothing is written. When on, a local-first JSONL sink under ~/.kiroclaw/metrics is enabled (no network egress).",
+      "help": "Main switch for KiroCrew metrics telemetry. Off by default: metric call sites are no-ops and nothing is written. When on, a local-first JSONL sink under ~/.kirocrew/metrics is enabled (no network egress).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -1435,7 +1435,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Local Metrics Dir",
-      "help": "Directory for local JSONL metric shards. Empty = ~/.kiroclaw/metrics. Supports ~ expansion.",
+      "help": "Directory for local JSONL metric shards. Empty = ~/.kirocrew/metrics. Supports ~ expansion.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -1688,7 +1688,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Socket Path",
-      "help": "Unix socket for the broker. Empty -> $KIROCLAW_HOME/mcp-gateway/gateway.sock.",
+      "help": "Unix socket for the broker. Empty -> $KIROCREW_HOME/mcp-gateway/gateway.sock.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -1702,7 +1702,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Overlay Dir",
-      "help": "Directory of rewritten agent JSON, bind-mounted over ~/.kiro/agents per session. Empty -> $KIROCLAW_HOME/mcp-gateway/agents.",
+      "help": "Directory of rewritten agent JSON, bind-mounted over ~/.kiro/agents per session. Empty -> $KIROCREW_HOME/mcp-gateway/agents.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -1786,7 +1786,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Instances",
-      "help": "Multi-instance management — manage/switch remote KiroClaws over SSH.",
+      "help": "Multi-instance management — manage/switch remote KiroCrews over SSH.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
@@ -1808,7 +1808,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Enabled",
-      "help": "Enable multi-instance management — lets this gateway open SSH tunnels to remote KiroClaws and embed their dashboards. Default off (opt-in). Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
+      "help": "Enable multi-instance management — lets this gateway open SSH tunnels to remote KiroCrews and embed their dashboards. Default off (opt-in). Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -2050,7 +2050,7 @@
         "allowed_users": [],
         "tracking_channels": [],
         "open_channels": [],
-        "command": "kiroclaw",
+        "command": "kirocrew",
         "forward_to_agent_callback": "",
         "trusted_bot_ids": [],
         "allowed_enterprise_ids": [],
@@ -2157,7 +2157,7 @@
       "help": "Slack slash command trigger word.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kiroclaw"
+      "defaultValue": "kirocrew"
     },
     {
       "path": "slack.forward_to_agent_callback",
@@ -2311,7 +2311,7 @@
         "slack"
       ],
       "label": "Use Tunnel URL in Slack",
-      "help": "When true, dashboard links posted to Slack (e.g. via /kiroclaw dashboard) use the tunnel URL if one is active. When false (default), Slack links always use the configured dashboard origin or host:port. Disabled by default until the tunnel mechanism is scaled for general use.",
+      "help": "When true, dashboard links posted to Slack (e.g. via /kirocrew dashboard) use the tunnel URL if one is active. When false (default), Slack links always use the configured dashboard origin or host:port. Disabled by default until the tunnel mechanism is scaled for general use.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -2854,7 +2854,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Name Mode",
-      "help": "Tunnel naming: 'username' uses 'kiroclaw', 'hash' uses 'kiroclaw-<hostHash>' for multi-host disambiguation.",
+      "help": "Tunnel naming: 'username' uses 'kirocrew', 'hash' uses 'kirocrew-<hostHash>' for multi-host disambiguation.",
       "hasChildren": false,
       "enumValues": [
         "username",
@@ -3031,7 +3031,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Agents",
-      "help": "Named KiroClaw agent definitions.",
+      "help": "Named KiroCrew agent definitions.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -3115,10 +3115,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Source",
-      "help": "Agent origin: kiroclaw or builtin.",
+      "help": "Agent origin: kirocrew or builtin.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kiroclaw"
+      "defaultValue": "kirocrew"
     },
     {
       "path": "default_agent",
@@ -3129,7 +3129,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Default Agent",
-      "help": "Active KiroClaw agent name from the agents section.",
+      "help": "Active KiroCrew agent name from the agents section.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -3301,7 +3301,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Snapshot Directory",
-      "help": "Directory for kiroclaw snapshot output. Defaults to ~/.kiroclaw/snapshots if empty.",
+      "help": "Directory for kirocrew snapshot output. Defaults to ~/.kirocrew/snapshots if empty.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

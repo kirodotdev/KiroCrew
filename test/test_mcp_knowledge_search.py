@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.validation import ValidationError
+from kiro_crew.validation import ValidationError
 
 
 @pytest.fixture
@@ -19,10 +19,10 @@ def mock_db_exists(tmp_path):
 
 
 class TestKnowledgeSearchDBMissing:
-    @patch("kiro_claw.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.config_dir")
     def test_returns_not_configured_when_db_missing(self, mock_config_dir, tmp_path):
         mock_config_dir.return_value = tmp_path  # no knowledge.db here
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         result = _call_tool_inner("local_knowledge_search", {"query": "auth"})
         assert "not configured" in result
@@ -30,44 +30,44 @@ class TestKnowledgeSearchDBMissing:
 
 class TestKnowledgeSearchValidation:
     def test_empty_query_raises_validation_error(self):
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         with pytest.raises(ValidationError):
             _call_tool_inner("local_knowledge_search", {"query": ""})
 
     def test_whitespace_query_raises_validation_error(self):
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         with pytest.raises(ValidationError):
             _call_tool_inner("local_knowledge_search", {"query": "   "})
 
     def test_limit_over_max_raises_validation_error(self):
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         with pytest.raises(ValidationError):
             _call_tool_inner("local_knowledge_search", {"query": "test", "limit": 99})
 
 
 class TestKnowledgeSearchResults:
-    @patch("kiro_claw.mcp_core.config_dir")
-    @patch("kiro_claw.mcp_core.HybridRetriever")
-    @patch("kiro_claw.mcp_core.KnowledgeStore")
-    @patch("kiro_claw.mcp_core.create_embedder_from_config")
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core.KnowledgeStore")
+    @patch("kiro_crew.mcp_core.create_embedder_from_config")
     def test_no_results_returns_message(
         self, mock_embedder, mock_store_cls, mock_retriever_cls, mock_config_dir, mock_db_exists
     ):
         mock_config_dir.return_value = mock_db_exists
         mock_embedder.return_value = None
         mock_retriever_cls.return_value.search.return_value = []
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         result = _call_tool_inner("local_knowledge_search", {"query": "nonexistent"})
         assert "No relevant knowledge found" in result
 
-    @patch("kiro_claw.mcp_core.config_dir")
-    @patch("kiro_claw.mcp_core.HybridRetriever")
-    @patch("kiro_claw.mcp_core.KnowledgeStore")
-    @patch("kiro_claw.mcp_core.create_embedder_from_config")
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core.KnowledgeStore")
+    @patch("kiro_crew.mcp_core.create_embedder_from_config")
     def test_low_score_filtered_out(
         self, mock_embedder, mock_store_cls, mock_retriever_cls, mock_config_dir, mock_db_exists
     ):
@@ -76,15 +76,15 @@ class TestKnowledgeSearchResults:
         mock_retriever_cls.return_value.search.return_value = [
             {"title": "Weak Match", "content": "low relevance", "score": 0.005, "source": "s1"}
         ]
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         result = _call_tool_inner("local_knowledge_search", {"query": "test"})
         assert "No relevant knowledge found" in result
 
-    @patch("kiro_claw.mcp_core.config_dir")
-    @patch("kiro_claw.mcp_core.HybridRetriever")
-    @patch("kiro_claw.mcp_core.KnowledgeStore")
-    @patch("kiro_claw.mcp_core.create_embedder_from_config")
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core.KnowledgeStore")
+    @patch("kiro_crew.mcp_core.create_embedder_from_config")
     def test_formatted_output(
         self, mock_embedder, mock_store_cls, mock_retriever_cls, mock_config_dir, mock_db_exists
     ):
@@ -102,7 +102,7 @@ class TestKnowledgeSearchResults:
             }
         ]
 
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         result = _call_tool_inner("local_knowledge_search", {"query": "auth"})
 
@@ -114,10 +114,10 @@ class TestKnowledgeSearchResults:
         # No score or relevance metadata exposed
         assert "0.035" not in result
 
-    @patch("kiro_claw.mcp_core.config_dir")
-    @patch("kiro_claw.mcp_core.HybridRetriever")
-    @patch("kiro_claw.mcp_core.KnowledgeStore")
-    @patch("kiro_claw.mcp_core.create_embedder_from_config")
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core.KnowledgeStore")
+    @patch("kiro_crew.mcp_core.create_embedder_from_config")
     def test_default_limit_is_3(
         self, mock_embedder, mock_store_cls, mock_retriever_cls, mock_config_dir, mock_db_exists
     ):
@@ -125,15 +125,15 @@ class TestKnowledgeSearchResults:
         mock_embedder.return_value = None
         mock_retriever_cls.return_value.search.return_value = []
 
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         _call_tool_inner("local_knowledge_search", {"query": "test"})
         mock_retriever_cls.return_value.search.assert_called_once_with("test", limit=3)
 
-    @patch("kiro_claw.mcp_core.config_dir")
-    @patch("kiro_claw.mcp_core.HybridRetriever")
-    @patch("kiro_claw.mcp_core.KnowledgeStore")
-    @patch("kiro_claw.mcp_core.create_embedder_from_config")
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core.KnowledgeStore")
+    @patch("kiro_crew.mcp_core.create_embedder_from_config")
     def test_citation_with_section_and_uri(
         self, mock_embedder, mock_store_cls, mock_retriever_cls, mock_config_dir, mock_db_exists
     ):
@@ -156,7 +156,7 @@ class TestKnowledgeSearchResults:
             }
         ]
 
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         result = _call_tool_inner("local_knowledge_search", {"query": "auth"})
 
@@ -167,10 +167,10 @@ class TestKnowledgeSearchResults:
         # A specific file path supersedes the folder-root uri Link.
         assert "**Link:**" not in result
 
-    @patch("kiro_claw.mcp_core.config_dir")
-    @patch("kiro_claw.mcp_core.HybridRetriever")
-    @patch("kiro_claw.mcp_core.KnowledgeStore")
-    @patch("kiro_claw.mcp_core.create_embedder_from_config")
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core.KnowledgeStore")
+    @patch("kiro_crew.mcp_core.create_embedder_from_config")
     def test_artifact_citation_uses_slug(
         self, mock_embedder, mock_store_cls, mock_retriever_cls, mock_config_dir, mock_db_exists
     ):
@@ -192,7 +192,7 @@ class TestKnowledgeSearchResults:
             }
         ]
 
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         result = _call_tool_inner("local_knowledge_search", {"query": "vision"})
 
@@ -204,10 +204,10 @@ class TestKnowledgeSearchResults:
         assert "Artifacts \u2014" not in result
         assert "artifact://aggregate" not in result
 
-    @patch("kiro_claw.mcp_core.config_dir")
-    @patch("kiro_claw.mcp_core.HybridRetriever")
-    @patch("kiro_claw.mcp_core.KnowledgeStore")
-    @patch("kiro_claw.mcp_core.create_embedder_from_config")
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core.KnowledgeStore")
+    @patch("kiro_crew.mcp_core.create_embedder_from_config")
     def test_internal_uri_survives_redaction(
         self, mock_embedder, mock_store_cls, mock_retriever_cls, mock_config_dir, mock_db_exists
     ):
@@ -227,7 +227,7 @@ class TestKnowledgeSearchResults:
             }
         ]
 
-        from kiro_claw.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _call_tool_inner
 
         result = _call_tool_inner("local_knowledge_search", {"query": "vision"})
 
@@ -237,14 +237,14 @@ class TestKnowledgeSearchResults:
 
 class TestKnowledgeSearchToolDefinition:
     def test_tool_listed(self):
-        from kiro_claw.mcp_core import _list_tools
+        from kiro_crew.mcp_core import _list_tools
 
         tools = _list_tools()
         names = [t["name"] for t in tools]
         assert "local_knowledge_search" in names
 
     def test_tool_has_required_query(self):
-        from kiro_claw.mcp_core import _list_tools
+        from kiro_crew.mcp_core import _list_tools
 
         tools = _list_tools()
         tool = next(t for t in tools if t["name"] == "local_knowledge_search")

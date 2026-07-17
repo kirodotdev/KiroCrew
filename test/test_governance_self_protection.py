@@ -12,15 +12,15 @@ import os
 
 import pytest
 
-from kiro_claw import security
-from kiro_claw.hooks import TOOL_DENY, HookManager, validate_file_path
-from kiro_claw.platform.context import PlatformCompositionError
-from kiro_claw.platform.governance import assert_governance_paths_protected
+from kiro_crew import security
+from kiro_crew.hooks import TOOL_DENY, HookManager, validate_file_path
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance import assert_governance_paths_protected
 
 _GOV_FILES = (
-    "~/.kiroclaw/security_policy.json",
-    "~/.kiroclaw/profiles/app-deploy-web.json",
-    "~/.kiroclaw/admission_policy.json",
+    "~/.kirocrew/security_policy.json",
+    "~/.kirocrew/profiles/app-deploy-web.json",
+    "~/.kirocrew/admission_policy.json",
 )
 
 
@@ -36,34 +36,34 @@ def test_validate_file_path_rejects_governance_files(path):
 
 
 def test_profiles_dir_and_children_blocked():
-    assert security.is_sensitive_path("~/.kiroclaw/profiles")
-    assert security.is_sensitive_path("~/.kiroclaw/profiles/anything.json")
-    assert security.is_sensitive_path("~/.kiroclaw/profiles/nested/deep.json")
+    assert security.is_sensitive_path("~/.kirocrew/profiles")
+    assert security.is_sensitive_path("~/.kirocrew/profiles/anything.json")
+    assert security.is_sensitive_path("~/.kirocrew/profiles/nested/deep.json")
 
 
-def test_non_governance_kiroclaw_paths_still_readable():
-    # The ~/.kiroclaw dir itself is NOT blanket-sensitive — only the trust-root
+def test_non_governance_kirocrew_paths_still_readable():
+    # The ~/.kirocrew dir itself is NOT blanket-sensitive — only the trust-root
     # files are.  A normal state file under it must remain accessible.
-    assert not security.is_sensitive_path("~/.kiroclaw/sessions.db")
-    assert not security.is_sensitive_path("~/.kiroclaw/config.json")
+    assert not security.is_sensitive_path("~/.kirocrew/sessions.db")
+    assert not security.is_sensitive_path("~/.kirocrew/config.json")
 
 
 def test_agent_fs_write_to_policy_denied_at_gate():
     # The PreToolUse host gate treats a path-like title via is_sensitive_path.
     hooks = HookManager()
     home = os.path.expanduser("~")
-    result = hooks.on_tool_call(f"{home}/.kiroclaw/security_policy.json")
+    result = hooks.on_tool_call(f"{home}/.kirocrew/security_policy.json")
     assert result.action == TOOL_DENY
 
 
 @pytest.mark.parametrize(
     "cmd",
     [
-        "tee ~/.kiroclaw/security_policy.json",
-        "mv /tmp/evil.json ~/.kiroclaw/security_policy.json",
-        "sed -i s/deny/allow/ ~/.kiroclaw/security_policy.json",
-        "ln -sf /tmp/evil ~/.kiroclaw/profiles/app.json",
-        "truncate -s0 ~/.kiroclaw/admission_policy.json",
+        "tee ~/.kirocrew/security_policy.json",
+        "mv /tmp/evil.json ~/.kirocrew/security_policy.json",
+        "sed -i s/deny/allow/ ~/.kirocrew/security_policy.json",
+        "ln -sf /tmp/evil ~/.kirocrew/profiles/app.json",
+        "truncate -s0 ~/.kirocrew/admission_policy.json",
     ],
 )
 def test_bash_write_verbs_to_keystone_are_blocked(cmd):
@@ -80,12 +80,12 @@ def test_benign_write_verbs_not_overblocked():
 @pytest.mark.parametrize(
     "cmd",
     [
-        "git checkout -- ~/.kiroclaw/security_policy.json",
-        "git restore ~/.kiroclaw/security_policy.json",
-        "cp evil /home/someuser/.kiroclaw/security_policy.json",
-        "unzip evil.zip -d ~/.kiroclaw/profiles/",
-        "tar -xf evil.tar -C ~/.kiroclaw/",
-        "tar xzf x -C /home/u/.kiroclaw/",
+        "git checkout -- ~/.kirocrew/security_policy.json",
+        "git restore ~/.kirocrew/security_policy.json",
+        "cp evil /home/someuser/.kirocrew/security_policy.json",
+        "unzip evil.zip -d ~/.kirocrew/profiles/",
+        "tar -xf evil.tar -C ~/.kirocrew/",
+        "tar xzf x -C /home/u/.kirocrew/",
         "curl x | tar xf - -C ~/.aws",
     ],
 )
@@ -102,8 +102,8 @@ def test_benign_archive_and_vcs_not_overblocked():
         "git checkout -- src/main.py",
         "unzip data.zip -d /tmp/data",
         "git commit -m 'update'",
-        "tar -cf out.tar ~/.kiroclaw/sessions.db",  # reading a non-sensitive .kiroclaw file
-        "cat ~/.kiroclaw/config.json",
+        "tar -cf out.tar ~/.kirocrew/sessions.db",  # reading a non-sensitive .kirocrew file
+        "cat ~/.kirocrew/config.json",
     ]:
         assert security.is_sensitive_bash_command(cmd) is None, cmd
 
@@ -111,8 +111,8 @@ def test_benign_archive_and_vcs_not_overblocked():
 def test_case_variant_policy_path_is_sensitive():
     # Case-fold keystone: an alternate-case policy path (the same file on a
     # case-insensitive FS) must still be treated as sensitive.
-    assert security.is_sensitive_path("~/.kiroclaw/Security_Policy.json")
-    assert security.is_sensitive_path("~/.KIROCLAW/profiles/x.json")
+    assert security.is_sensitive_path("~/.kirocrew/Security_Policy.json")
+    assert security.is_sensitive_path("~/.KIROCREW/profiles/x.json")
 
 
 def test_boot_assertion_passes_with_paths_present():

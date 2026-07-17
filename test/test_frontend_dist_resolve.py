@@ -1,11 +1,11 @@
-"""Tests for ``kiro_claw.frontend.ensure_dev_dist_symlink``.
+"""Tests for ``kiro_crew.frontend.ensure_dev_dist_symlink``.
 
 Covers the runtime dist-resolution contract described in Mesh-1270:
 
 * pre-bundled real directory is left alone (packaged install / prior build)
 * valid symlink is kept
 * dangling / empty symlink is replaced
-* sibling ``KiroClawWebsite/dist`` is resolved and symlinked
+* sibling ``KiroCrewWebsite/dist`` is resolved and symlinked
 * nothing-found returns ``None`` (caller logs warning and serves legacy UI)
 """
 
@@ -16,12 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw import frontend
+from kiro_crew import frontend
 
 
-def _fake_kiro_claw_package(root: Path) -> Path:
+def _fake_kiro_crew_package(root: Path) -> Path:
     """Build the minimal directory shape the resolver walks."""
-    pkg = root / "src" / "KiroClaw" / "src" / "kiro_claw"
+    pkg = root / "src" / "KiroCrew" / "src" / "kiro_crew"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
     return pkg
@@ -37,12 +37,12 @@ def _make_dist(path: Path) -> Path:
 def fake_pkg(tmp_path, monkeypatch):
     """Patch ``frontend.__file__`` to a throwaway filesystem layout.
 
-    Returns the ``kiro_claw`` package dir (``<ws>/src/KiroClaw/src/kiro_claw``).
-    The resolver uses ``Path(__file__)`` from ``kiro_claw.frontend`` to locate
+    Returns the ``kiro_crew`` package dir (``<ws>/src/KiroCrew/src/kiro_crew``).
+    The resolver uses ``Path(__file__)`` from ``kiro_crew.frontend`` to locate
     the package; monkeypatching that attribute redirects every probe to the
     temp-dir tree we build in each test.
     """
-    pkg = _fake_kiro_claw_package(tmp_path)
+    pkg = _fake_kiro_crew_package(tmp_path)
     monkeypatch.setattr(frontend, "__file__", str(pkg / "frontend.py"))
     return pkg
 
@@ -97,7 +97,7 @@ def test_dangling_symlink_is_replaced_when_candidate_exists(fake_pkg, tmp_path, 
     tree_dist.symlink_to(dead_target)  # dangling
 
     # Sibling checkout has a fresh dist — resolver should pick it up.
-    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroClawWebsite" / "dist")
+    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroCrewWebsite" / "dist")
 
     monkeypatch.setattr(subprocess, "run", _no_brazil_path)
 
@@ -128,7 +128,7 @@ def test_symlink_to_empty_dir_is_replaced(fake_pkg, tmp_path, monkeypatch):
     tree_dist.parent.mkdir(parents=True)
     tree_dist.symlink_to(empty_target)
 
-    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroClawWebsite" / "dist")
+    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroCrewWebsite" / "dist")
     monkeypatch.setattr(subprocess, "run", _no_brazil_path)
 
     result = frontend.ensure_dev_dist_symlink()
@@ -141,8 +141,8 @@ def test_symlink_to_empty_dir_is_replaced(fake_pkg, tmp_path, monkeypatch):
 
 
 def test_sibling_checkout_is_symlinked(fake_pkg, monkeypatch):
-    """Sibling KiroClawWebsite/dist wins even when brazil-path is available."""
-    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroClawWebsite" / "dist")
+    """Sibling KiroCrewWebsite/dist wins even when brazil-path is available."""
+    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroCrewWebsite" / "dist")
 
     # Should not be reached — sibling wins first.
     def _should_not_run(*a, **kw):
@@ -227,7 +227,7 @@ def test_empty_real_dir_is_replaced_when_candidate_exists(fake_pkg, monkeypatch)
     tree_dist = fake_pkg / "static" / "dist"
     tree_dist.mkdir(parents=True)  # empty — no index.html
 
-    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroClawWebsite" / "dist")
+    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroCrewWebsite" / "dist")
     monkeypatch.setattr(subprocess, "run", _no_brazil_path)
 
     result = frontend.ensure_dev_dist_symlink()
@@ -247,7 +247,7 @@ def test_resolver_produces_a_symlink_the_pwa_guard_accepts(fake_pkg, tmp_path, m
     prefixes.
     """
     _ = tmp_path  # unused — fake_pkg is the layout we need
-    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroClawWebsite" / "dist")
+    sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroCrewWebsite" / "dist")
     (sibling_dist / "pcm-worklet.js").write_text("// worklet")
     monkeypatch.setattr(subprocess, "run", _no_brazil_path)
 

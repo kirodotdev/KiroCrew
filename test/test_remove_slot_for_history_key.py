@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.handlers import _remove_slot_for_history_key
+from kiro_crew.dashboard.handlers import _remove_slot_for_history_key
 
 
 def _make_state(slots: dict) -> MagicMock:

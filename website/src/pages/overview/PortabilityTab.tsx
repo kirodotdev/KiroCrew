@@ -33,7 +33,7 @@ export default function PortabilityTab() {
       a.href = url
       const cd = resp.headers.get('Content-Disposition') || ''
       const m = cd.match(/filename="?([^"]+)"?/)
-      a.download = m ? m[1] : 'kiroclaw-export.zip'
+      a.download = m ? m[1] : 'kirocrew-export.zip'
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -118,7 +118,7 @@ export default function PortabilityTab() {
       <Card>
         <CardTitle>Import Configuration</CardTitle>
         <p className="text-muted text-[13px] mb-3">
-          Upload a KiroClaw export zip to restore settings on this instance.
+          Upload a KiroCrew export zip to restore settings on this instance.
           Existing data will be merged by default (duplicates are skipped).
         </p>
         <div className="flex items-center gap-3 flex-wrap">

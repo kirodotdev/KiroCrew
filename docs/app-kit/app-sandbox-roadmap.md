@@ -17,7 +17,7 @@ A buggy or malicious app with a valid app token can currently:
 - Spawn unlimited subagents, exhausting compute
 - Send notifications impersonating the system
 
-The app identity system (App Kit §6) provides authentication but not authorization. We need per-app sandboxing so one app cannot destroy another app's state or degrade the user's KiroClaw experience.
+The app identity system (App Kit §6) provides authentication but not authorization. We need per-app sandboxing so one app cannot destroy another app's state or degrade the user's KiroCrew experience.
 
 ---
 
@@ -58,7 +58,7 @@ Each mutable resource gets an `owner_app` field. Apps can only modify resources 
 | Lessons | App lessons stored in `app:{name}:` namespace. App cannot read/write global lessons. Global lessons remain read-only for apps. |
 | Memory | App can only search memory from its own slots. Memory consolidation scoped to app's sessions. |
 | Chat history | App can only read history of its own slots. |
-| App storage | Already directory-isolated (`~/.kiroclaw/apps/{name}/data/`). Add token-level check: app token can only access its own `name` in `/api/apps/{name}/config`. |
+| App storage | Already directory-isolated (`~/.kirocrew/apps/{name}/data/`). Add token-level check: app token can only access its own `name` in `/api/apps/{name}/config`. |
 | Gateway config | Apps cannot modify gateway config (`/api/config/*`). Read-only access to non-sensitive fields only. |
 
 ### Phase 4 — Quotas & Rate Limiting
@@ -99,7 +99,7 @@ App tokens already contain `"app": "mochi-pet"` in the HMAC payload. No token fo
 ### Backward Compatibility
 
 - Dashboard users (tokens without `app` field) bypass all app restrictions — full access as today.
-- Apps using legacy auth (`kiroclawSecret.ts` headers, no app identity) are treated as dashboard users — no restrictions. This is the correct fallback for old gateways.
+- Apps using legacy auth (`kirocrewSecret.ts` headers, no app identity) are treated as dashboard users — no restrictions. This is the correct fallback for old gateways.
 - Phase 2+ enforcement is opt-in per gateway version. Old gateways ignore the `app` field.
 
 ### SDK Impact

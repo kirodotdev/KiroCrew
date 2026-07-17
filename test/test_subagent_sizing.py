@@ -13,13 +13,13 @@ import types
 
 import pytest
 
-import kiro_claw.subagent as subagent
-from kiro_claw.subagent import compute_max_subagents, resolve_max_subagents
+import kiro_crew.subagent as subagent
+from kiro_crew.subagent import compute_max_subagents, resolve_max_subagents
 
 
 @pytest.fixture(autouse=True)
 def _no_learned_cost(monkeypatch):
-    """Isolate from the machine's learned-cost store (~/.kiroclaw/subagents/
+    """Isolate from the machine's learned-cost store (~/.kirocrew/subagents/
     cost_samples.jsonl). compute_max_subagents prefers read_learned_cost over
     the cfg fallback, so on a dev box with a populated store these tests would
     read the real mem_gb/cpu_cores instead of the per-case fallback costs and
@@ -37,7 +37,7 @@ def _cfg(
     hard_cap: int = 16,
     pool_size: int = 0,
 ) -> types.SimpleNamespace:
-    """Minimal duck-typed stand-in for KiroClawConfig (agent + session)."""
+    """Minimal duck-typed stand-in for KiroCrewConfig (agent + session)."""
     return types.SimpleNamespace(
         agent=types.SimpleNamespace(
             max_subagents=max_subagents,
@@ -164,7 +164,7 @@ def test_manager_reports_resolved_cap_for_auto_sentinel(patch_host) -> None:
     """The cap the gateway feeds SubagentManager is what `.max_concurrent` reports."""
     from unittest.mock import MagicMock
 
-    from kiro_claw.subagent import SubagentManager
+    from kiro_crew.subagent import SubagentManager
 
     patch_host(174.7, 48)
     cfg = _cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
@@ -188,7 +188,7 @@ def _mgr(*, running: int, max_concurrent: int, last_ts: float, stagger: float = 
     """Build a SubagentManager with stagger state set, mock heavy deps."""
     from unittest.mock import MagicMock
 
-    from kiro_claw.subagent import SubagentManager
+    from kiro_crew.subagent import SubagentManager
 
     m = SubagentManager(
         sessions=MagicMock(),
@@ -297,7 +297,7 @@ class TestCpuJiffiesParser:
     """_parse_cpu_jiffies: utime+stime from raw /proc/<pid>/stat bytes."""
 
     def test_parses_utime_stime(self) -> None:
-        from kiro_claw.subagent import _parse_cpu_jiffies
+        from kiro_crew.subagent import _parse_cpu_jiffies
 
         # comm with spaces + an embedded ')' — rindex must find the real close.
         # post-comm tokens: state(0) ... utime(11)=120 stime(12)=60
@@ -305,7 +305,7 @@ class TestCpuJiffiesParser:
         assert _parse_cpu_jiffies(stat) == 180
 
     def test_malformed_returns_zero(self) -> None:
-        from kiro_claw.subagent import _parse_cpu_jiffies
+        from kiro_crew.subagent import _parse_cpu_jiffies
 
         assert _parse_cpu_jiffies(b"garbage") == 0
         assert _parse_cpu_jiffies(b"") == 0
@@ -315,7 +315,7 @@ class TestSubtreeCpuJiffies:
     """_subtree_cpu_jiffies: sums pid + descendants."""
 
     def test_sums_tree(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         # tree: 1 -> [2, 3]; 2 -> [4]
         children = {1: [2, 3], 2: [4], 3: [], 4: []}
@@ -329,14 +329,14 @@ class TestSampleLiveCosts:
     """_sample_live_costs: high-water RSS/CPU tracking across polls."""
 
     def _agent(self):
-        from kiro_claw.subagent import SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
-        info = SubagentInfo(id="a1", task="t", agent="kiroclaw")
+        info = SubagentInfo(id="a1", task="t", agent="kirocrew")
         info._pid = 4242
         return info
 
     def test_rss_high_water(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
         info = self._agent()
@@ -350,7 +350,7 @@ class TestSampleLiveCosts:
         assert info.peak_rss_gb == pytest.approx(2.0, abs=0.01)
 
     def test_cpu_high_water_uses_delta(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
         info = self._agent()
@@ -371,7 +371,7 @@ class TestSampleLiveCosts:
         assert info.peak_cpu_cores == pytest.approx(1.0, abs=0.01)
 
     def test_done_or_pidless_agents_skipped(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
         done = self._agent()
@@ -393,15 +393,15 @@ class TestSampleLiveCosts:
         """Shared subagents share ONE runtime PID; each must be charged the
         measured RSS/CPU divided by the number of live shared sessions on that
         PID (an empirical per-session average), not the whole shared process."""
-        import kiro_claw.subagent as sub
-        from kiro_claw.subagent import SubagentInfo
+        import kiro_crew.subagent as sub
+        from kiro_crew.subagent import SubagentInfo
 
         m = _mgr(running=2, max_concurrent=16, last_ts=0.0)
         # Two shared subagents on the SAME runtime PID.
-        a = SubagentInfo(id="a1", task="t", agent="kiroclaw")
+        a = SubagentInfo(id="a1", task="t", agent="kirocrew")
         a._pid = 4242
         a._session_sharing = True
-        b = SubagentInfo(id="a2", task="t", agent="kiroclaw")
+        b = SubagentInfo(id="a2", task="t", agent="kirocrew")
         b._pid = 4242
         b._session_sharing = True
         m._agents = {"a1": a, "a2": b}
@@ -428,21 +428,21 @@ class TestSampleLiveCosts:
 
 class TestReadIntFile:
     def test_reads_int(self, tmp_path) -> None:
-        from kiro_claw.subagent import _read_int_file
+        from kiro_crew.subagent import _read_int_file
 
         p = tmp_path / "v"
         p.write_text("12345\n")
         assert _read_int_file(str(p)) == 12345
 
     def test_max_returns_none(self, tmp_path) -> None:
-        from kiro_claw.subagent import _read_int_file
+        from kiro_crew.subagent import _read_int_file
 
         p = tmp_path / "v"
         p.write_text("max\n")
         assert _read_int_file(str(p)) is None
 
     def test_missing_and_garbage_return_none(self, tmp_path) -> None:
-        from kiro_claw.subagent import _read_int_file
+        from kiro_crew.subagent import _read_int_file
 
         assert _read_int_file(str(tmp_path / "nope")) is None
         g = tmp_path / "g"
@@ -452,7 +452,7 @@ class TestReadIntFile:
 
 class TestCgroupAvailable:
     def test_v2_headroom(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         vals = {
             "/sys/fs/cgroup/memory.max": 16 * 1024 ** 3,
@@ -462,21 +462,21 @@ class TestCgroupAvailable:
         assert sub._cgroup_available_gb() == pytest.approx(14.0, abs=0.01)
 
     def test_v2_unlimited_max_falls_through_to_minus_one(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         # memory.max == 'max' → _read_int_file None; v1 absent → -1.0 (unlimited)
         monkeypatch.setattr(sub, "_read_int_file", lambda p: None)
         assert sub._cgroup_available_gb() == -1.0
 
     def test_sentinel_large_limit_is_unlimited(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         vals = {"/sys/fs/cgroup/memory.max": sub._CGROUP_UNLIMITED + 1}
         monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
         assert sub._cgroup_available_gb() == -1.0
 
     def test_v1_headroom(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         vals = {
             "/sys/fs/cgroup/memory.max": None,  # v2 absent
@@ -489,21 +489,21 @@ class TestCgroupAvailable:
 
 class TestAvailableMemoryClamp:
     def test_clamps_to_cgroup_when_smaller(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 100.0))
         monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: 14.0)
         assert sub._available_memory_gb() == pytest.approx(14.0, abs=0.01)
 
     def test_unconstrained_uses_host(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 100.0))
         monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: -1.0)
         assert sub._available_memory_gb() == pytest.approx(100.0, abs=0.01)
 
     def test_non_linux_fails_open(self, monkeypatch) -> None:
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, -1.0))
         # cgroup not even consulted when host is unreadable
@@ -511,7 +511,7 @@ class TestAvailableMemoryClamp:
 
     def test_cgroup_clamp_lowers_computed_cap(self, monkeypatch) -> None:
         """End-to-end: a 6 GB cgroup cap on a big host caps the count via memory."""
-        import kiro_claw.subagent as sub
+        import kiro_crew.subagent as sub
 
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 174.7))
         monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: 4.0)  # headroom 4 GB

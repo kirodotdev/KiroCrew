@@ -1,20 +1,20 @@
-# Implementation Plan — "One command → KiroClaw running on AWS"
+# Implementation Plan — "One command → KiroCrew running on AWS"
 
 > **Status:** Plan to execute. Builds on [`options.md`](options.md) and
 > [`research-comparison.md`](research-comparison.md). This is the doc we follow.
 >
 > **The promise:** the user runs one command, answers *at most* one or two
 > questions, and a few minutes later a correctly-sized, correctly-configured
-> KiroClaw is running on an EC2 instance **in their own AWS account**, their
+> KiroCrew is running on an EC2 instance **in their own AWS account**, their
 > Kiro backend is signed in, and their browser opens straight onto the live
-> dashboard. Teardown is one command. KiroClaw stores **no** AWS credentials.
+> dashboard. Teardown is one command. KiroCrew stores **no** AWS credentials.
 
 ---
 
 ## 1. The delight target (the experience we are building toward)
 
 ```
-$ kiroclaw cloud launch            # (the bootstrap installer routes Windows/first-run here)
+$ kirocrew cloud launch            # (the bootstrap installer routes Windows/first-run here)
 
   [1/6] Prerequisites
         ✓ aws CLI 2.x            ✓ session-manager-plugin
@@ -26,17 +26,17 @@ $ kiroclaw cloud launch            # (the bootstrap installer routes Windows/fir
       ◉ Balanced   t4g.xlarge   arm64 · 16 GB · 40 GB disk   ~$0.13/hr   (recommended)
       ○ Light      t4g.large    arm64 ·  8 GB · 30 GB disk   ~$0.07/hr
       ○ Power      m7g.2xlarge  arm64 · 32 GB · 60 GB disk   ~$0.33/hr
-  [5/6] Launching  (CloudFormation stack: kiroclaw-7f3a)
+  [5/6] Launching  (CloudFormation stack: kirocrew-7f3a)
         ⠸ instance i-0abc booting
-        ⠸ installing python · node · kiro-cli · kiroclaw        (live setup log)
-        ✓ kiroclaw.service is up and healthy
+        ⠸ installing python · node · kiro-cli · kirocrew        (live setup log)
+        ✓ kirocrew.service is up and healthy
   [6/6] Sign in to Kiro
         opened https://…/device?code=WXYZ in your browser — approve to continue…
         ✓ signed in
 
-  🎉  KiroClaw is live on AWS.
+  🎉  KiroCrew is live on AWS.
       Opening the dashboard → http://localhost:5476/?token=…
-      Manage:  kiroclaw cloud status | stop | start | destroy
+      Manage:  kirocrew cloud status | stop | start | destroy
 ```
 
 Design rules that make this delightful (and non-negotiable):
@@ -49,9 +49,9 @@ Design rules that make this delightful (and non-negotiable):
   file*. AWS creds resolved by the `aws` CLI's own chain; we store only a
   profile name (+ region + stack name).
 - **Authoritative readiness, not guesswork.** The launch command returns only
-  when KiroClaw is actually serving (CloudFormation `WaitCondition` +
+  when KiroCrew is actually serving (CloudFormation `WaitCondition` +
   `cfn-signal`), and streams real setup progress while waiting.
-- **One-command, atomic teardown.** `kiroclaw cloud destroy` → `delete-stack` →
+- **One-command, atomic teardown.** `kirocrew cloud destroy` → `delete-stack` →
   everything (instance, role, SG, volume) gone. No orphans.
 - **Reversible & re-runnable.** Every step is idempotent; re-running `launch`
   finds the existing stack by tag and reconnects instead of duplicating.
@@ -62,11 +62,11 @@ Design rules that make this delightful (and non-negotiable):
 
 ```
 ┌─ user's machine (macOS / Windows / Linux) ─────────────┐        ┌─ EC2 (Amazon Linux 2023, arm64) ─────────┐
-│  kiroclaw cloud …  (Python, ships in the package)      │        │  cloud-init user-data:                    │
+│  kirocrew cloud …  (Python, ships in the package)      │        │  cloud-init user-data:                    │
 │    • aws CLI        (their creds — we store nothing)   │  CFN   │    install python+node+git+kiro-cli       │
-│    • session-manager-plugin                            │ deploy │    install kiroclaw, kiroclaw service     │
+│    • session-manager-plugin                            │ deploy │    install kirocrew, kirocrew service     │
 │    • run_aws() chokepoint  ── aws cloudformation deploy ──────► │    cfn-signal ✓ when healthy              │
-│    • browser / Electron shell                          │        │  kiroclaw.service (systemd, loopback)     │
+│    • browser / Electron shell                          │        │  kirocrew.service (systemd, loopback)     │
 │    • SSM port-forward  ◄── aws ssm start-session ─────────────► │  kiro-cli (backend) — signed in via SSM   │
 │      http://localhost:5476?token=…                     │        │  dashboard 127.0.0.1:5476 (never public)  │
 └────────────────────────────────────────────────────────┘        └────────────────────────────────────────────┘
@@ -75,10 +75,10 @@ Design rules that make this delightful (and non-negotiable):
 
 Two halves:
 
-1. **Client** (`kiroclaw cloud …`) — a thin, all-OS control plane. Drives the
+1. **Client** (`kirocrew cloud …`) — a thin, all-OS control plane. Drives the
    `aws` CLI, opens tunnels, opens the browser. This is the part that runs on
    Windows (where the backend can't).
-2. **Server** (the EC2 box) — a normal Linux KiroClaw install created by
+2. **Server** (the EC2 box) — a normal Linux KiroCrew install created by
    cloud-init, supervised by systemd, bound to loopback, reached only via SSM.
 
 ---
@@ -97,8 +97,8 @@ It is *already* a hybrid, but an untested one:
 - **~1,065 lines of shell** — `install.sh` (571), `setup.sh` (255),
   `ensure-node.sh` (93), `minimal_install.sh` (146) — that bootstrap
   prerequisites (Python, Node, pip, PATH) and detect OS / package managers.
-- Then they **delegate to `kiroclaw setup`** (Python, `cli_setup.py`, 715 lines)
-  for all *configuration* logic (`install.sh` → `kiroclaw setup --agent-only`).
+- Then they **delegate to `kirocrew setup`** (Python, `cli_setup.py`, 715 lines)
+  for all *configuration* logic (`install.sh` → `kirocrew setup --agent-only`).
 
 The problem is that the **shell layer has almost no unit tests** (its
 OS-branching, package-manager detection, and retry logic are untested), while
@@ -116,7 +116,7 @@ give us that.
 | Layer | Language | Size | Why |
 |---|---|---|---|
 | **Bootstrapper** (`install.sh`, new `install.ps1`, in cloud mode) | shell / PowerShell | ~50–80 lines each, boring & stable | You cannot run Python before Python exists. This is the *only* thing shell is uniquely needed for. Matches openclaw + hermes exactly (*thin bootstrapper → in-CLI wizard*). |
-| **Everything else** — wizard, AWS calls, CloudFormation deploy, SSM connect, kiro-cli login, IAM policy gen, lifecycle, cost | **Python** (`src/kiro_claw/cloud/`) | the bulk of the work | One codebase runs on macOS/Windows/Linux; unit-testable via the `run_aws` chokepoint; reuses `deploy_web`, `validation.FieldSpec`, the `Instances` registry, `cli_setup`, `service/`; gated by the repo's `black`/`isort`/`flake8`/`mypy`/`pytest` cycle. |
+| **Everything else** — wizard, AWS calls, CloudFormation deploy, SSM connect, kiro-cli login, IAM policy gen, lifecycle, cost | **Python** (`src/kiro_crew/cloud/`) | the bulk of the work | One codebase runs on macOS/Windows/Linux; unit-testable via the `run_aws` chokepoint; reuses `deploy_web`, `validation.FieldSpec`, the `Instances` registry, `cli_setup`, `service/`; gated by the repo's `black`/`isort`/`flake8`/`mypy`/`pytest` cycle. |
 
 ### Why Python wins for the logic (point-by-point)
 
@@ -126,17 +126,17 @@ give us that.
 | Cross-platform in **one** codebase | ✗ need `.sh` **and** `.ps1`, kept in sync forever | ✓ one module runs on all three OSes |
 | Parse `aws` JSON output, branch, validate input | painful (`jq`, brittle string parsing) | native (`json`, `validation.FieldSpec` charset checks) |
 | Reuse existing code | ✗ can't import Python | ✓ `deploy_web`, `Instances`, `cli_setup`, `service/` |
-| Repo quality gate (flake8/mypy/black/pytest) | ✗ not linted or type-checked | ✓ same cycle as the rest of `kiro_claw` |
+| Repo quality gate (flake8/mypy/black/pytest) | ✗ not linted or type-checked | ✓ same cycle as the rest of `kiro_crew` |
 | Error messages, retries, progress rendering | ad-hoc | structured, reusable, testable |
 
 ### What this means concretely
 
-- The `src/kiro_claw/cloud/` module map in §12 is **Python**, mirroring
+- The `src/kiro_crew/cloud/` module map in §12 is **Python**, mirroring
   `deploy_web`'s isolation and its single `run_aws()` chokepoint.
-- **`kiroclaw cloud launch/status/connect/stop/start/destroy`** are Python
+- **`kirocrew cloud launch/status/connect/stop/start/destroy`** are Python
   subcommands (added to the CLI alongside `token`/`service`), so a user with
-  KiroClaw already installed never touches a shell script at all — they just run
-  `kiroclaw cloud launch`.
+  KiroCrew already installed never touches a shell script at all — they just run
+  `kirocrew cloud launch`.
 - The bootstrapper only exists for the **cold-start / Windows** case (no Python
   yet). Once Python + `aws` are present, control is in Python permanently.
 - The **user-data on the EC2 box** stays shell (cloud-init runs bash) — but it is
@@ -192,13 +192,13 @@ machine. For v1 a hand-written YAML is simplest and has no toolchain at all.
   so it always picks the latest Amazon Linux 2023 for the chosen region/arch,
   automatically.
 - **`WaitCondition` + `cfn-signal`** — user-data calls `cfn-signal` only after
-  `kiroclaw.service` is healthy, so `aws cloudformation deploy` blocks until the
+  `kirocrew.service` is healthy, so `aws cloudformation deploy` blocks until the
   box is *actually ready*. If setup fails, the stack rolls back to a clean state
   (no half-provisioned orphan).
 
 ---
 
-## 4. The CloudFormation template (`src/kiro_claw/cloud/templates/kiroclaw-ec2.yaml`)
+## 4. The CloudFormation template (`src/kiro_crew/cloud/templates/kirocrew-ec2.yaml`)
 
 **Parameters** (all defaulted; the wizard overrides via `--parameter-overrides`):
 
@@ -208,7 +208,7 @@ machine. For v1 a hand-written YAML is simplest and has no toolchain at all.
 | `Architecture` | `arm64` | drives the AMI alias; `x86_64` alternative |
 | `VolumeSizeGb` | `40` | gp3 root volume |
 | `VpcId` / `SubnetId` | *(auto-discovered default VPC)* | wizard resolves and passes them |
-| `StackNameTag` | `kiroclaw-<rand>` | for tag discovery |
+| `StackNameTag` | `kirocrew-<rand>` | for tag discovery |
 | `AllowSshCidr` | `""` (empty = SSM-only) | SSH fallback only if set |
 
 **Resources:**
@@ -221,7 +221,7 @@ machine. For v1 a hand-written YAML is simplest and has no toolchain at all.
   CIDR (the fallback path).
 - **`EC2 Instance`** — `ImageId` via the `resolve:ssm` alias, `IamInstanceProfile`,
   the SG, a gp3 `BlockDeviceMapping`, `UserData` (§6), and tags
-  `kiroclaw:managed=true` + `kiroclaw:instance=<StackNameTag>`. Public IP for
+  `kirocrew:managed=true` + `kirocrew:instance=<StackNameTag>`. Public IP for
   outbound only (package/SSM egress).
 - **`WaitCondition` + `WaitConditionHandle`** — user-data signals success/failure.
 
@@ -238,9 +238,9 @@ as a decision point, not built in v1.
 
 ## 5. "Appropriately sized" — the size tiers
 
-`REMOTE_DESKTOP_SETUP.md` states KiroClaw itself uses ~10 GB RAM, with spikes
+`REMOTE_DESKTOP_SETUP.md` states KiroCrew itself uses ~10 GB RAM, with spikes
 beyond that (16 GB comfortable). So the **default must be ≥16 GB RAM**. We default
-to **arm64 / Graviton** — cheaper per GB, and both KiroClaw and `kiro-cli` ship
+to **arm64 / Graviton** — cheaper per GB, and both KiroCrew and `kiro-cli` ship
 aarch64 Linux builds.
 
 | Tier | Instance | Arch | RAM | vCPU | Disk | ~On-demand |
@@ -267,15 +267,15 @@ real bootstrap from the repo so we're not maintaining a huge inline script):
    (`dnf`/`apt`), `ripgrep`, `ffmpeg` (mirror `install.sh`'s dependency logic).
 2. Install **`kiro-cli`** (the AL2023 arm64 path from
    `docs/kiro-cli/installation.md`).
-3. Install **KiroClaw** — v1: `git clone` + `bash install.sh` (today's path).
-   (Later: `pip install kiroclaw` once the wheel is published — Decision 7 in
+3. Install **KiroCrew** — v1: `git clone` + `bash install.sh` (today's path).
+   (Later: `pip install kirocrew` once the wheel is published — Decision 7 in
    `options.md`.)
-4. `kiroclaw setup --agent-only` + **`kiroclaw service install`** (systemd,
+4. `kirocrew setup --agent-only` + **`kirocrew service install`** (systemd,
    loopback bind, auto-restart, boot-survival — already documented in
    `REMOTE_DESKTOP_SETUP.md`).
-5. Health-check the gateway locally (`curl 127.0.0.1:5476` / `kiroclaw doctor`),
+5. Health-check the gateway locally (`curl 127.0.0.1:5476` / `kirocrew doctor`),
    then **`cfn-signal`** success (or failure with the tail of the setup log).
-6. Setup log streamed to `/var/log/kiroclaw-setup.log` — the client tails it over
+6. Setup log streamed to `/var/log/kirocrew-setup.log` — the client tails it over
    SSM for the live progress in step 5 of the UX.
 
 Note: `kiro-cli` is **not** logged in yet at this point — that's an interactive
@@ -307,7 +307,7 @@ purchase a subscription). Done as a post-provision wizard step over SSM:
 
 Once ready + signed in:
 
-1. Mint a dashboard token on the box: `kiroclaw token` over SSM (the CLI already
+1. Mint a dashboard token on the box: `kirocrew token` over SSM (the CLI already
    prints `http://localhost:5476/?token=…`).
 2. Open an **SSM port-forward**:
    `aws ssm start-session --target <id> --document-name AWS-StartPortForwardingSession --parameters portNumber=5476,localPortNumber=5476`.
@@ -316,7 +316,7 @@ Once ready + signed in:
 - The gateway stays **loopback-only** on EC2 — never `0.0.0.0` — matching the
   current security posture; access is always tunnel + token.
 - **Instances integration (managed experience):** register the box in
-  `~/.kiroclaw/instances.json` (the existing `Instances` registry). Its
+  `~/.kirocrew/instances.json` (the existing `Instances` registry). Its
   `ssh_host` can be an SSM `ProxyCommand` alias — **already documented in
   `docs/INSTANCES.md` §9**. Then the hub dashboard's `/instances` page gives
   auto-tunnel + token-refresh + self-heal + iframe switching for free. The
@@ -347,13 +347,13 @@ browser. All three exist for macOS/Windows/Linux.
 
 ## 10. IAM — least-privilege policy we generate for the user
 
-Same philosophy as `deploy_web/iam.py`: **KiroClaw never performs an IAM write.**
+Same philosophy as `deploy_web/iam.py`: **KiroCrew never performs an IAM write.**
 We *generate* the policy text; the user applies it (or, if they're the account
 admin, they already have it). Reachability is read-only (`sts get-caller-identity`,
 `ec2 describe-*`); the first `cloudformation deploy` is the true permission test,
 and on `AccessDenied` we map stderr → the exact missing action/statement.
 
-The launch path needs (scoped by the `kiroclaw:managed` tag / stack name where
+The launch path needs (scoped by the `kirocrew:managed` tag / stack name where
 the API supports it):
 
 - `cloudformation:CreateStack/UpdateStack/DeleteStack/DescribeStacks/DescribeStackEvents/GetTemplateSummary`
@@ -370,7 +370,7 @@ profile the "bring-your-own-AWS account owner" audience already has.
 
 ## 11. Lifecycle, cost & safety
 
-**Command surface — `kiroclaw cloud <verb>`** (human entry point; the wizard
+**Command surface — `kirocrew cloud <verb>`** (human entry point; the wizard
 calls into it):
 
 | Verb | Action |
@@ -403,7 +403,7 @@ New module, mirroring `deploy_web`'s isolation and its `run_aws` chokepoint so
 tests can monkeypatch one function:
 
 ```
-src/kiro_claw/cloud/
+src/kiro_crew/cloud/
 ├── __init__.py
 ├── aws.py             # run_aws() chokepoint (sandbox-wrapped, --profile, never boto3)
 ├── ec2.py             # deploy/status/stop/start/destroy via `aws cloudformation` + `aws ec2`
@@ -413,7 +413,7 @@ src/kiro_claw/cloud/
 ├── sizes.py           # the size-tier table (§5) + price hints  (constants, no magic numbers)
 ├── wizard.py          # the 6-step interactive flow (§1)
 └── templates/
-    └── kiroclaw-ec2.yaml
+    └── kirocrew-ec2.yaml
 ```
 
 Reuse, don't reinvent:
@@ -434,7 +434,7 @@ Reuse, don't reinvent:
   next to `token`/`service`, each a **1–3 line dispatcher** into `cloud.*`. All
   real logic stays in the testable `cloud/` module; `cli_*` stays a wiring layer.
   (See the note below on why we *don't* pile logic into `cli_setup.py`.)
-- **`service/`** — the box uses the existing `kiroclaw service install`.
+- **`service/`** — the box uses the existing `kirocrew service install`.
 
 > **On "should we just improve `cli_setup.py`?"** — Yes to *extending the wizard*
 > there (one new step that offers the cloud path), **no to putting cloud logic
@@ -453,7 +453,7 @@ Reuse, don't reinvent:
   54 tests) — assert exact argv for each verb, `AccessDenied→Sid` mapping,
   idempotent re-launch (tag found → reconnect), and validation rejects bad
   profile/region/instance-type.
-- **Template:** validate `kiroclaw-ec2.yaml` with `aws cloudformation
+- **Template:** validate `kirocrew-ec2.yaml` with `aws cloudformation
   validate-template` in CI; a `cfn-lint` pass; snapshot the rendered parameters.
 - **User-data:** lint the bootstrap script (shellcheck); a container-based smoke
   test that runs it against a Linux image to catch install regressions
@@ -470,16 +470,16 @@ Reuse, don't reinvent:
 
 **M1 — Client bootstrap + read-only `cloud` skeleton.**
 `cloud/aws.py` chokepoint, `cloud/iam.py` (policy generator + reachability),
-`kiroclaw cloud status` (tag discovery, empty-state), `install.ps1` cloud-mode
+`kirocrew cloud status` (tag discovery, empty-state), `install.ps1` cloud-mode
 prereqs (`aws` + `session-manager-plugin`). *Acceptance:* on a machine with a
-configured profile, `kiroclaw cloud status` reports "no instances" and the IAM
+configured profile, `kirocrew cloud status` reports "no instances" and the IAM
 policy + reachability check render correctly; unit tests green.
 
 **M2 — Template + `launch` (provision only).**
-`kiroclaw-ec2.yaml` (role/SG/instance/waitcondition, `resolve:ssm` AMI),
-`cloud/ec2.py deploy()`, size tiers, `--dry-run`. User-data installs KiroClaw +
+`kirocrew-ec2.yaml` (role/SG/instance/waitcondition, `resolve:ssm` AMI),
+`cloud/ec2.py deploy()`, size tiers, `--dry-run`. User-data installs KiroCrew +
 service and `cfn-signal`s. *Acceptance:* `launch --dry-run` prints correct argv;
-a real `launch` in a scratch account brings up a box where `kiroclaw.service` is
+a real `launch` in a scratch account brings up a box where `kirocrew.service` is
 healthy and the stack reaches `CREATE_COMPLETE`; `destroy` cleanly deletes it.
 
 **M3 — Backend sign-in over SSM.**
@@ -500,7 +500,7 @@ idempotent; agent deny-list verified intact.
 
 **M6 — Distribution (unblocks faster boxes).**
 Publish the pip wheel → user-data switches from `git clone` to `pip install
-kiroclaw`; optional Docker image. (Decision 7 in `options.md`.)
+kirocrew`; optional Docker image. (Decision 7 in `options.md`.)
 
 ---
 

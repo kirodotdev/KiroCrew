@@ -1,10 +1,10 @@
-# Getting Started with KiroClaw Apps
+# Getting Started with KiroCrew Apps
 
-Build, install, and run your first KiroClaw app in 5 minutes.
+Build, install, and run your first KiroCrew app in 5 minutes.
 
 ## Prerequisites
 
-- KiroClaw installed and running (`kiroclaw gateway`)
+- KiroCrew installed and running (`kirocrew gateway`)
 - Node.js 18+ (for apps with UI)
 
 ## 1. Create an App Directory
@@ -38,7 +38,7 @@ Every app needs an `app.json`. See [Manifest Reference](manifest-reference.md) f
   "name": "my-dashboard",
   "version": "0.1.0",
   "displayName": "My Dashboard",
-  "description": "A KiroClaw app: My Dashboard",
+  "description": "A KiroCrew app: My Dashboard",
   "author": "yourname",
   "agents": ["agents/sample-agent.json"],
   "skills": ["skills/sample-skill"],
@@ -58,18 +58,18 @@ Every app needs an `app.json`. See [Manifest Reference](manifest-reference.md) f
 ### UI Page — React Component
 
 Edit `ui/src/App.tsx`. Your app is a standard React component that uses
-`@kiroclaw/app-sdk` hooks and `@kiroclaw/app-sdk/ui` shared components.
+`@kirocrew/app-sdk` hooks and `@kirocrew/app-sdk/ui` shared components.
 
-> **You do not `npm install` `@kiroclaw/app-sdk`.** The dashboard host provides
+> **You do not `npm install` `@kirocrew/app-sdk`.** The dashboard host provides
 > it (and React, ReactDOM, lucide-react) at runtime through its import map: the
-> bare `@kiroclaw/app-sdk` specifier resolves to the host's vendored copy via
-> `window.__kiroclaw_modules`. This guarantees your app shares the host's exact
+> bare `@kirocrew/app-sdk` specifier resolves to the host's vendored copy via
+> `window.__kirocrew_modules`. This guarantees your app shares the host's exact
 > React instance (so hooks work) and stays a small bundle. Mark these as
 > externals in your build (don't bundle them).
 
 ```tsx
-import { useAppApi, useAppEvents } from '@kiroclaw/app-sdk'
-import { Card, CardTitle, PageHeader, StatCard } from '@kiroclaw/app-sdk/ui'
+import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'
+import { Card, CardTitle, PageHeader, StatCard } from '@kirocrew/app-sdk/ui'
 import { useState, useEffect } from 'react'
 
 export default function MyDashboard() {
@@ -112,7 +112,7 @@ Edit `agents/sample-agent.json` to customize your agent:
   "model": "auto",
   "description": "Analyzes data and generates reports",
   "prompt": "You are a data analyst assistant.",
-  "tools": ["@kiroclaw-core"]
+  "tools": ["@kirocrew-core"]
 }
 ```
 
@@ -132,7 +132,7 @@ This produces `dist/index.mjs` — the ESM bundle loaded by the dashboard.
 
 ## 4. Install and Enable
 
-Install via the KiroClaw dashboard REST API or the App Store UI:
+Install via the KiroCrew dashboard REST API or the App Store UI:
 
 ```bash
 # Via curl (REST API)
@@ -143,9 +143,9 @@ curl -X POST http://localhost:5476/api/apps/install \
 curl -X POST http://localhost:5476/api/apps/my-dashboard/enable
 ```
 
-Or open the KiroClaw dashboard → App Store → install from local path.
+Or open the KiroCrew dashboard → App Store → install from local path.
 
-Your app now appears in the KiroClaw dashboard sidebar.
+Your app now appears in the KiroCrew dashboard sidebar.
 
 ## 5. Iterate
 
@@ -163,7 +163,7 @@ Agent and skill changes take effect on the next agent invocation (no rebuild nee
 
 ## App SDK Hooks
 
-Available in `@kiroclaw/app-sdk`:
+Available in `@kirocrew/app-sdk`:
 
 | Hook | Purpose |
 |------|---------|
@@ -171,14 +171,14 @@ Available in `@kiroclaw/app-sdk`:
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
 | `useAppInfo()` | App metadata (name, version, permissions) |
-| `useNavigate()` | Navigate to KiroClaw routes |
+| `useNavigate()` | Navigate to KiroCrew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
 | `useChatLauncher()` | Navigate to chat with optional agent and message |
 
 ## Shared UI Components
 
-Available in `@kiroclaw/app-sdk/ui`:
+Available in `@kirocrew/app-sdk/ui`:
 
 `Card`, `CardTitle`, `Btn`, `SendBtn`, `Input`, `SearchInput`, `Badge`,
 `AimBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`,
@@ -214,18 +214,18 @@ undeclared paths throws an error.
 
 ## Python Client
 
-For Python apps, CLI tools, or services that need to talk to KiroClaw Gateway:
+For Python apps, CLI tools, or services that need to talk to KiroCrew Gateway:
 
 ```bash
-pip install kiroclaw-client
+pip install kirocrew-client
 ```
 
 ```python
 import asyncio
-from kiroclaw_client import KiroClawClient
+from kirocrew_client import KiroCrewClient
 
 async def main():
-    async with KiroClawClient(app_name="my-tool") as mc:
+    async with KiroCrewClient(app_name="my-tool") as mc:
         # Check connectivity
         ok = await mc.ping()
         print(f"Gateway reachable: {ok}")
@@ -245,14 +245,14 @@ async def main():
 asyncio.run(main())
 ```
 
-The `kiroclaw-client` package is async (uses `aiohttp`) and standalone — no
-dependency on the KiroClaw main package. It covers the full Gateway API surface.
+The `kirocrew-client` package is async (uses `aiohttp`) and standalone — no
+dependency on the KiroCrew main package. It covers the full Gateway API surface.
 
 See [API Reference](api-reference.md) for the full method list.
 
 ## Publishing Your App
 
 Once your app works locally, publish it to the App Store registry so other
-KiroClaw users can install it with one click.
+KiroCrew users can install it with one click.
 
 See [Publishing Guide](publishing-guide.md) for the full workflow.

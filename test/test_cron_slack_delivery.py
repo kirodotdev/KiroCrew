@@ -12,12 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.cron import CronJob, CronSchedule
+from kiro_crew.cron import CronJob, CronSchedule
 
 
 def _make_gateway():
     """Build a minimal GatewayOrchestrator with mocked dependencies."""
-    from kiro_claw.slack.gateway import GatewayOrchestrator
+    from kiro_crew.slack.gateway import GatewayOrchestrator
 
     gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
     gw.sessions = MagicMock()
@@ -61,8 +61,8 @@ def _run_callback(gw, job, stream_result="done", stream_side_effect=None):
             raise stream_side_effect
         return stream_result
 
-    with patch("kiro_claw.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_claw.slack.gateway.CronService"
+    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
+        "kiro_crew.slack.gateway.CronService"
     ) as mock_cron_cls:
 
         def capture_cron(on_job=None, **kw):
@@ -119,8 +119,8 @@ class TestDashboardNotificationRedaction:
         gw.slack = None  # skip Slack path
         job = _make_job()
 
-        with patch("kiro_claw.slack.gateway.redact_exfiltration_urls") as mock_url, patch(
-            "kiro_claw.slack.gateway.redact_credentials"
+        with patch("kiro_crew.slack.gateway.redact_exfiltration_urls") as mock_url, patch(
+            "kiro_crew.slack.gateway.redact_credentials"
         ) as mock_cred:
             mock_url.return_value = ("redacted_url", False)
             mock_cred.return_value = ("fully_redacted", False)

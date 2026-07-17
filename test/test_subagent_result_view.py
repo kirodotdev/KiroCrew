@@ -9,8 +9,8 @@ Covers:
 
 from __future__ import annotations
 
-from kiro_claw.context_management import summarize_result
-from kiro_claw.dashboard.handlers.messaging import _spawn_result_view
+from kiro_crew.context_management import summarize_result
+from kiro_crew.dashboard.handlers.messaging import _spawn_result_view
 
 
 class TestSummarizeResult:

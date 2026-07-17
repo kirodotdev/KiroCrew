@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-from kiro_claw.sandbox import (
+from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     _CC_DIRS,
     _CC_EXPOSE_FILES,
@@ -62,8 +62,8 @@ class TestCcFilesList:
     def test_has_git_credentials(self):
         assert ".git-credentials" in _CC_FILES
 
-    def test_has_kiroclaw_env(self):
-        assert ".kiroclaw/.env" in _CC_FILES
+    def test_has_kirocrew_env(self):
+        assert ".kirocrew/.env" in _CC_FILES
 
 
 class TestBuildLauncherScriptCcMode:
@@ -122,7 +122,7 @@ class TestBuildSeatbeltProfileCcMode:
         assert ".npmrc" in profile
         assert ".netrc" in profile
         assert ".git-credentials" in profile
-        assert ".kiroclaw/.env" in profile
+        assert ".kirocrew/.env" in profile
         assert "literal" in profile
 
     def test_cc_does_not_deny_ssh(self):
@@ -139,7 +139,7 @@ class TestBuildSeatbeltProfileCcMode:
 
 
 class TestWrapArgvCcMode:
-    @patch("kiro_claw.sandbox.detect_backend", return_value="sandbox-exec")
+    @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     def test_cc_mode_routes_to_sandbox(self, _mock_backend):
         wrapped, cleanup = wrap_argv(["echo", "hi"], mode="cc")
         assert len(wrapped) > 2
@@ -151,7 +151,7 @@ class TestWrapArgvCcMode:
         assert wrapped == ["echo", "hi"]
         assert cleanup is None
 
-    @patch("kiro_claw.sandbox.detect_backend", return_value="sandbox-exec")
+    @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     def test_cc_seatbelt_does_not_deny_aws(self, _mock_backend):
         """CC seatbelt does NOT deny .aws on macOS — full access needed."""
         wrapped, cleanup = wrap_argv(["echo", "hi"], mode="cc")
@@ -162,7 +162,7 @@ class TestWrapArgvCcMode:
         finally:
             os.unlink(cleanup)
 
-    @patch("kiro_claw.sandbox.detect_backend", return_value="sandbox-exec")
+    @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     def test_cc_seatbelt_profile_does_not_deny_ssh(self, _mock_backend):
         """CC profile should not contain ssh deny rules."""
         wrapped, cleanup = wrap_argv(["echo", "hi"], mode="cc")
@@ -183,7 +183,7 @@ class TestAgentDeniedEnvKeys:
     def test_default_set_includes_slack_tokens(self):
         assert "SLACK_BOT_TOKEN" in _AGENT_DENIED_ENV_KEYS
         assert "SLACK_APP_TOKEN" in _AGENT_DENIED_ENV_KEYS
-        assert "KIROCLAW_OWNER_ID" in _AGENT_DENIED_ENV_KEYS
+        assert "KIROCREW_OWNER_ID" in _AGENT_DENIED_ENV_KEYS
 
     def test_cc_launcher_scrubs_agent_creds(self):
         """cc launcher script's ENV_PREFIXES list contains the cred keys."""
@@ -212,11 +212,11 @@ class TestAgentDeniedEnvKeys:
     def test_cc_sandbox_exec_scrubs_agent_creds(self, monkeypatch):
         """sandbox-exec (macOS) cc path emits env -u for cred keys present in env."""
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
-        monkeypatch.setenv("KIROCLAW_OWNER_ID", "U123")
+        monkeypatch.setenv("KIROCREW_OWNER_ID", "U123")
         argv, cleanup = sandbox_exec_argv(["echo", "hi"], sandbox_level="cc")
         try:
             assert "-u" in argv and "SLACK_BOT_TOKEN" in argv
-            assert "KIROCLAW_OWNER_ID" in argv
+            assert "KIROCREW_OWNER_ID" in argv
         finally:
             if cleanup:
                 os.unlink(cleanup)
@@ -230,7 +230,7 @@ class TestAgentDeniedEnvKeys:
             if cleanup:
                 os.unlink(cleanup)
 
-    @patch("kiro_claw.sandbox.detect_backend", return_value="namespace")
+    @patch("kiro_crew.sandbox.detect_backend", return_value="namespace")
     def test_cc_namespace_launcher_hides_aws_exposes_config(self, _mock_backend):
         wrapped, cleanup = wrap_argv(["echo", "hi"], mode="cc")
         assert cleanup is not None

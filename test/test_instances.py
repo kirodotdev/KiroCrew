@@ -24,8 +24,8 @@ import pytest
 
 class TestConfig:
     def test_defaults_off_and_tunables(self):
-        from kiro_claw.config.loader import InstancesConfig
-        from kiro_claw.instances.constants import (
+        from kiro_crew.config.loader import InstancesConfig
+        from kiro_crew.instances.constants import (
             DEFAULT_TUNNEL_BASE_PORT,
             DEFAULT_WARM_SET_CAP,
         )
@@ -36,17 +36,17 @@ class TestConfig:
         assert c.tunnel_base_port == DEFAULT_TUNNEL_BASE_PORT == 7778
 
     def test_clamps_out_of_range(self):
-        from kiro_claw.config.loader import InstancesConfig
+        from kiro_crew.config.loader import InstancesConfig
 
         c = InstancesConfig(warm_set_cap=0, tunnel_base_port=99999)
         assert c.warm_set_cap == 1
         assert c.tunnel_base_port == 7778
 
     def test_roundtrip_and_schema(self):
-        from kiro_claw.config.loader import KiroClawConfig
-        from kiro_claw.config.schema import SCHEMA_REGISTRY
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.schema import SCHEMA_REGISTRY
 
-        d = KiroClawConfig().to_dict()
+        d = KiroCrewConfig().to_dict()
         assert d["instances"] == {
             "enabled": False,
             "warm_set_cap": 5,
@@ -72,7 +72,7 @@ class TestConfig:
     def test_recovery_knobs_parse_from_config_file(self, tmp_path, monkeypatch):
         import json
 
-        from kiro_claw.config.loader import KiroClawConfig
+        from kiro_crew.config.loader import KiroCrewConfig
 
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(
@@ -86,14 +86,14 @@ class TestConfig:
                 }
             )
         )
-        monkeypatch.setattr("kiro_claw.config.loader.config_path", lambda: cfg_file)
-        cfg = KiroClawConfig.load()
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
+        cfg = KiroCrewConfig.load()
         assert cfg.instances.max_recovery_attempts == 12
         assert cfg.instances.recover_backoff_max_secs == 45.0
         assert cfg.instances.probe_failure_threshold == 5
 
     def test_recovery_knob_clamps(self):
-        from kiro_claw.config.loader import InstancesConfig
+        from kiro_crew.config.loader import InstancesConfig
 
         c = InstancesConfig(
             max_recovery_attempts=0, recover_backoff_max_secs=0, probe_failure_threshold=0
@@ -105,7 +105,7 @@ class TestConfig:
         # Upper bound: a pathological max_recovery_attempts is clamped down to the
         # ceiling (warned, not silently dropped) so it can't spin a near-infinite
         # self-heal loop. The boundary value itself is left untouched.
-        from kiro_claw.instances.constants import MAX_RECOVERY_ATTEMPTS_CEILING
+        from kiro_crew.instances.constants import MAX_RECOVERY_ATTEMPTS_CEILING
 
         assert MAX_RECOVERY_ATTEMPTS_CEILING == 100
         assert (
@@ -122,7 +122,7 @@ class TestConfig:
         # recover_backoff_max_secs has the same two-sided guard: a pathological
         # pacing is clamped down to the ceiling so the attempt cap can't be stretched
         # into a multi-day wall-clock window; the boundary value is left untouched.
-        from kiro_claw.instances.constants import RECOVER_BACKOFF_MAX_CEILING_SECS
+        from kiro_crew.instances.constants import RECOVER_BACKOFF_MAX_CEILING_SECS
 
         assert RECOVER_BACKOFF_MAX_CEILING_SECS == 300.0
         assert (
@@ -142,13 +142,13 @@ class TestConfig:
 
 class TestPortAllocator:
     def test_rejects_bad_base(self):
-        from kiro_claw.instances.port_allocator import PortAllocator
+        from kiro_crew.instances.port_allocator import PortAllocator
 
         with pytest.raises(ValueError):
             PortAllocator(base_port=0)
 
     def test_skips_bound_and_excluded(self):
-        from kiro_claw.instances.port_allocator import PortAllocator
+        from kiro_crew.instances.port_allocator import PortAllocator
 
         # Bind an OS-assigned free port so the test never collides with a port
         # something else already holds (the old hard-coded base was flaky).
@@ -174,7 +174,7 @@ class TestPortAllocator:
         never an active LISTEN, so the probe (also SO_REUSEADDR) must still fail
         to bind against a LISTENing socket that itself set SO_REUSEADDR.
         """
-        from kiro_claw.instances.port_allocator import _is_port_free
+        from kiro_crew.instances.port_allocator import _is_port_free
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # The occupier sets SO_REUSEADDR too (as ssh does); the probe must still
@@ -189,7 +189,7 @@ class TestPortAllocator:
             s.close()
 
     def test_is_port_free_true_for_unbound_port(self):
-        from kiro_claw.instances.port_allocator import _is_port_free
+        from kiro_crew.instances.port_allocator import _is_port_free
 
         # Grab an OS-assigned port, then release it — it is now free to bind.
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -204,7 +204,7 @@ class TestPortAllocator:
 
 class TestTokenMint:
     def test_parse(self):
-        from kiro_claw.instances.token_mint import parse_token_from_stdout
+        from kiro_crew.instances.token_mint import parse_token_from_stdout
 
         assert parse_token_from_stdout("http://localhost:7777?token=eyJa.b\n") == "eyJa.b"
         assert parse_token_from_stdout("https://h/?x=1&token=TOK&y=2") == "TOK"
@@ -212,38 +212,38 @@ class TestTokenMint:
 
     @pytest.mark.parametrize("bad", ["abc", "20", "0h", "-1h", "20s", "99999h"])
     def test_ttl_rejects(self, bad):
-        from kiro_claw.instances.token_mint import TokenMintError, _validate_ttl
+        from kiro_crew.instances.token_mint import TokenMintError, _validate_ttl
 
         with pytest.raises(TokenMintError):
             _validate_ttl(bad)
 
     def test_command_builders(self):
-        from kiro_claw.instances.token_mint import build_remote_token_command
+        from kiro_crew.instances.token_mint import build_remote_token_command
 
         # empty remote_bin -> candidate-ladder path (build_remote_command -> build_candidate_command)
         assert 'exec "$b" token --ttl 20h;' in build_remote_token_command("", ttl="20h")
-        custom = build_remote_token_command("~/bin/kiroclaw", ttl="30m")
-        assert '"$HOME/bin/kiroclaw" token --ttl 30m' in custom
+        custom = build_remote_token_command("~/bin/kirocrew", ttl="30m")
+        assert '"$HOME/bin/kirocrew" token --ttl 30m' in custom
         default = build_remote_token_command("", ttl=None)
         assert 'exec "$b" token;' in default and "--ttl" not in default
         # port is threaded through so the remote mint targets the right gateway
         # (not the default 7777) — essential for instances on a custom port.
-        with_port = build_remote_token_command("~/bin/kiroclaw", ttl="20h", port=7879)
-        assert '"$HOME/bin/kiroclaw" token --ttl 20h --port 7879' in with_port
+        with_port = build_remote_token_command("~/bin/kirocrew", ttl="20h", port=7879)
+        assert '"$HOME/bin/kirocrew" token --ttl 20h --port 7879' in with_port
         # invalid port is rejected (kept out of the shell command unvalidated)
-        from kiro_claw.instances.token_mint import TokenMintError
+        from kiro_crew.instances.token_mint import TokenMintError
         with pytest.raises(TokenMintError):
             build_remote_token_command("", ttl="20h", port=99999)
 
     def test_ssh_argv_shape(self):
-        from kiro_claw.instances.token_mint import _build_ssh_argv
+        from kiro_crew.instances.token_mint import _build_ssh_argv
 
         argv = _build_ssh_argv("cd-1", "echo hi")
         assert argv[0] == "ssh" and argv[-2] == "cd-1"
         assert "BatchMode=yes" in argv and "AddressFamily=inet" in argv
 
     def test_mint_success_and_no_token_in_logs(self, monkeypatch, caplog):
-        from kiro_claw.instances import token_mint as tm
+        from kiro_crew.instances import token_mint as tm
 
         class FakeProc:
             returncode = 0
@@ -261,13 +261,13 @@ class TestTokenMint:
         assert "SECRETJWT" not in caplog.text
 
     def test_mint_nonzero_exit_raises(self, monkeypatch):
-        from kiro_claw.instances import token_mint as tm
+        from kiro_crew.instances import token_mint as tm
 
         class FakeProc:
             returncode = 127
 
             async def communicate(self):
-                return b"", b"kiroclaw binary not found"
+                return b"", b"kirocrew binary not found"
 
         async def fake_exec(*a, **k):
             return FakeProc()
@@ -283,7 +283,7 @@ class TestTokenMint:
 class TestValidation:
     @pytest.mark.parametrize("good", ["cd-1-alias", "user@host.example.com", "h_1"])
     def test_ssh_host_accept(self, good):
-        from kiro_claw.instances.validation import validate_ssh_host
+        from kiro_crew.instances.validation import validate_ssh_host
 
         assert validate_ssh_host(good) == good
 
@@ -291,16 +291,16 @@ class TestValidation:
         "bad", ["-oProxyCommand=x", "a b", "a;b", "a$b", "a@b@c", "", "@h", "h@", "`x`"]
     )
     def test_ssh_host_reject(self, bad):
-        from kiro_claw.instances.validation import SshValidationError, validate_ssh_host
+        from kiro_crew.instances.validation import SshValidationError, validate_ssh_host
 
         with pytest.raises(SshValidationError):
             validate_ssh_host(bad)
 
     def test_remote_bin(self):
-        from kiro_claw.instances.validation import SshValidationError, validate_remote_bin
+        from kiro_crew.instances.validation import SshValidationError, validate_remote_bin
 
         assert validate_remote_bin("") == ""
-        assert validate_remote_bin("~/.local/bin/kiroclaw") == "~/.local/bin/kiroclaw"
+        assert validate_remote_bin("~/.local/bin/kirocrew") == "~/.local/bin/kirocrew"
         for bad in ("$(x)", "a;b", "`x`", "-rf", 'a"b'):
             with pytest.raises(SshValidationError):
                 validate_remote_bin(bad)
@@ -311,12 +311,12 @@ class TestValidation:
 
 class TestRegistry:
     def _reg(self, tmp_path):
-        from kiro_claw.instances.registry import InstancesRegistry
+        from kiro_crew.instances.registry import InstancesRegistry
 
         return InstancesRegistry(path=tmp_path / "instances.json")
 
     def test_crud_and_collision(self, tmp_path):
-        from kiro_claw.instances.registry import DuplicateInstanceError
+        from kiro_crew.instances.registry import DuplicateInstanceError
 
         reg = self._reg(tmp_path)
         a = reg.add(name="Cloud Desktop 1", ssh_host="cd-1-alias")
@@ -328,7 +328,7 @@ class TestRegistry:
         assert len(reg.list()) == 2
 
     def test_update_validation_and_hints(self, tmp_path):
-        from kiro_claw.instances.registry import InstanceNotFoundError, InvalidInstanceError
+        from kiro_crew.instances.registry import InstanceNotFoundError, InvalidInstanceError
 
         reg = self._reg(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
@@ -360,9 +360,9 @@ class TestRegistry:
         assert "token" not in raw.lower()
 
     def test_env_home_path(self, tmp_path, monkeypatch):
-        from kiro_claw.instances.registry import InstancesRegistry
+        from kiro_crew.instances.registry import InstancesRegistry
 
-        monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         assert InstancesRegistry().path == tmp_path / "instances.json"
 
 
@@ -371,7 +371,7 @@ class TestRegistry:
 
 class _FakeTunnel:
     def __init__(self, iid, ssh_host, lp, rp, *, connect_timeout_secs=0, compression=True, probe_failure_threshold=0, on_exit=None):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         self.iid = iid
         self.stopped = False
@@ -393,12 +393,12 @@ class _FakeTunnel:
 class TestSshTunnelArgvCompression:
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_claw.instances.ssh_tunnel_manager as stm
+        import kiro_crew.instances.ssh_tunnel_manager as stm
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
 
     def test_compression_flag_present_by_default(self):
-        from kiro_claw.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
 
         argv = _build_ssh_tunnel_argv("host-a", 7779, 7879)
         assert "-C" in argv
@@ -407,7 +407,7 @@ class TestSshTunnelArgvCompression:
         assert argv[0] == "ssh" and argv[-1] == "host-a"
 
     def test_compression_flag_omitted_when_disabled(self):
-        from kiro_claw.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
 
         argv = _build_ssh_tunnel_argv("host-a", 7779, 7879, compression=False)
         assert "-C" not in argv
@@ -420,8 +420,8 @@ class TestSshTunnelArgvCompression:
         # The manager must thread ssh_compression to the tunnel factory on
         # connect() -- that flag is what _build_ssh_tunnel_argv uses to add/omit
         # -C. Drive a real connect and assert the captured value both ways.
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
 
         captured: dict = {}
 
@@ -457,13 +457,13 @@ class TestSshTunnelManager:
     def _free_ports(self, monkeypatch):
         # Connect now probes _is_port_free (CSE SEC-016 mirror conflict check).
         # Keep these unit tests hermetic / independent of the host's real ports.
-        import kiro_claw.instances.ssh_tunnel_manager as stm
+        import kiro_crew.instances.ssh_tunnel_manager as stm
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
@@ -476,7 +476,7 @@ class TestSshTunnelManager:
 
     @pytest.mark.asyncio
     async def test_connect_persists_and_idempotent(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
@@ -509,7 +509,7 @@ class TestSshTunnelManager:
             asyncio.run(mgr.connect("ghost"))
 
     def test_validation_failure(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="Bad", ssh_host="-obadhost", instance_id="bad")  # registry ok; manager rejects
@@ -518,7 +518,7 @@ class TestSshTunnelManager:
         assert mgr.status("bad") is None and mgr.get_token("bad") == ""
 
     def test_tunnel_failure(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         def failing(*a, **k):
             t = _FakeTunnel(*a, **k)
@@ -531,8 +531,8 @@ class TestSshTunnelManager:
         assert st.state == TunnelState.ERROR and mgr.get_token("cd-1") == ""
 
     def test_mint_failure_tears_down(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
-        from kiro_claw.instances.token_mint import TokenMintError
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
             raise TokenMintError("nope")
@@ -563,7 +563,7 @@ class TestSshTunnelManager:
         # SEC-016 mirror), but disconnect() must reset it to the unallocated
         # sentinel. Otherwise the freed port stays recorded and reads as
         # reserved forever, blocking reconnect.
-        from kiro_claw.instances.registry import _UNALLOCATED_PORT
+        from kiro_crew.instances.registry import _UNALLOCATED_PORT
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
@@ -582,7 +582,7 @@ class TestSshTunnelManager:
     async def test_disconnect_clears_stale_port_without_live_tunnel(self, tmp_path):
         # A port left recorded by an unclean prior exit (no live tunnel tracked)
         # must still be clearable via disconnect, so the user can recover.
-        from kiro_claw.instances.registry import _UNALLOCATED_PORT
+        from kiro_crew.instances.registry import _UNALLOCATED_PORT
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
@@ -594,7 +594,7 @@ class TestSshTunnelManager:
 
     @pytest.mark.asyncio
     async def test_token_validates_status_mapping(self, tmp_path, monkeypatch):
-        from kiro_claw.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances import ssh_tunnel_manager as m
 
         class _Resp:
             def __init__(self, status):
@@ -635,7 +635,7 @@ class TestSshTunnelManager:
 
     @pytest.mark.asyncio
     async def test_token_validates_denies_on_error(self, tmp_path, monkeypatch):
-        from kiro_claw.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances import ssh_tunnel_manager as m
 
         class _BoomSess:
             def __init__(self, *a, **k):
@@ -685,9 +685,9 @@ class _State:
 
 
 def _enable(tmp_path: Path, monkeypatch, *, enabled=True):
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     (tmp_path / "config.json").write_text(json.dumps({"instances": {"enabled": enabled}}))
-    from kiro_claw.config import loader
+    from kiro_crew.config import loader
 
     loader._invalidate_config_cache()
 
@@ -698,19 +698,19 @@ def _body(resp):
 
 class TestHandlers:
     def _reg(self, tmp_path):
-        from kiro_claw.instances.registry import InstancesRegistry
+        from kiro_crew.instances.registry import InstancesRegistry
 
         return InstancesRegistry(path=tmp_path / "instances.json")
 
     def test_disabled_returns_403(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch, enabled=False)
         r = asyncio.run(handlers.api_instances_list(_FakeReq(_State(self._reg(tmp_path)))))
         assert r.status == 403 and "disabled" in _body(r)["error"]
 
     def test_slack_origin_rejected(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         req = _FakeReq(_State(self._reg(tmp_path)), headers={"X-Session-Key": "slack:T:C"})
@@ -718,7 +718,7 @@ class TestHandlers:
         assert r.status == 403 and "owner-only" in _body(r)["error"]
 
     def test_unauthenticated_rejected(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         # No authenticated user (require_auth would have set request["user"]).
@@ -727,7 +727,7 @@ class TestHandlers:
         assert r.status == 401 and "authentication required" in _body(r)["error"]
 
     def test_add_list_includes_cap(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -743,7 +743,7 @@ class TestHandlers:
         assert b["active"] is False
 
     def test_list_active_reflects_manager_running(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -754,7 +754,7 @@ class TestHandlers:
         assert _body(r)["active"] is False
 
     def test_add_invalid_ssh_host_400(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         r = asyncio.run(
@@ -765,8 +765,8 @@ class TestHandlers:
         assert r.status == 400
 
     def test_connect_returns_token_but_list_does_not_leak(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -813,8 +813,8 @@ class TestHandlers:
         assert "SECRET_TOK" not in r.body.decode()
 
     def test_connect_remints_when_stored_token_stale(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -851,8 +851,8 @@ class TestHandlers:
         assert mgr.refreshed == ["cd-1"]
 
     def test_connect_502_when_stale_and_remint_fails(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -886,7 +886,7 @@ class TestHandlers:
         assert "STALE_TOK" not in r.body.decode()
 
     def test_status_404(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         r = asyncio.run(
@@ -895,7 +895,7 @@ class TestHandlers:
         assert r.status == 404
 
     def test_status_diagnose_runs_ladder(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -931,7 +931,7 @@ class TestHandlers:
         assert body["diagnosis"]["reason"] == "remote dashboard down"
 
     def test_add_duplicate_and_bad_body(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         state = _State(self._reg(tmp_path))
@@ -945,7 +945,7 @@ class TestHandlers:
         assert asyncio.run(handlers.api_instances_add(_FakeReq(state, body=["x"]))).status == 400
 
     def test_update_paths(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -982,7 +982,7 @@ class TestHandlers:
         )
 
     def test_remove_success_and_404(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -995,8 +995,8 @@ class TestHandlers:
         )
 
     def test_connect_503_404_and_502(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -1028,7 +1028,7 @@ class TestHandlers:
         assert r.status == 502 and _body(r)["error"] == "boom"
 
     def test_disconnect_reports_was_connected(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
 
@@ -1044,7 +1044,7 @@ class TestHandlers:
         assert r.status == 200 and _body(r)["was_connected"] is True
 
     def test_restart_paths(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
         reg = self._reg(tmp_path)
@@ -1083,7 +1083,7 @@ class TestHandlers:
         assert r.status == 502
 
     def test_audit_failure_never_breaks_request(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard import handlers_instances as handlers
+        from kiro_crew.dashboard import handlers_instances as handlers
 
         _enable(tmp_path, monkeypatch)
 
@@ -1103,7 +1103,7 @@ class TestHandlers:
 
 class TestTokenMintGeneric:
     def test_ttl_to_seconds(self):
-        from kiro_claw.instances.token_mint import TokenMintError, ttl_to_seconds
+        from kiro_crew.instances.token_mint import TokenMintError, ttl_to_seconds
 
         assert ttl_to_seconds("20h") == 72000
         assert ttl_to_seconds("30m") == 1800
@@ -1111,19 +1111,19 @@ class TestTokenMintGeneric:
             ttl_to_seconds("bad")
 
     def test_generic_builders_and_token_delegation(self):
-        from kiro_claw.instances.token_mint import (
+        from kiro_crew.instances.token_mint import (
             build_candidate_command,
             build_remote_command,
             build_remote_token_command,
         )
 
         assert 'exec "$b" restart;' in build_candidate_command("restart")
-        assert '"$HOME/bin/kiroclaw" restart' in build_remote_command("~/bin/kiroclaw", "restart")
+        assert '"$HOME/bin/kirocrew" restart' in build_remote_command("~/bin/kirocrew", "restart")
         # token builder emits identical strings via the generic builders it delegates to
         assert 'exec "$b" token --ttl 20h;' in build_remote_token_command("", ttl="20h")
 
-    def test_run_remote_kiroclaw(self, monkeypatch):
-        from kiro_claw.instances import token_mint as tm
+    def test_run_remote_kirocrew(self, monkeypatch):
+        from kiro_crew.instances import token_mint as tm
 
         class FakeProc:
             returncode = 0
@@ -1135,13 +1135,13 @@ class TestTokenMintGeneric:
             return FakeProc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-        rc, err = asyncio.run(tm.run_remote_kiroclaw("cd-1", "restart"))
+        rc, err = asyncio.run(tm.run_remote_kirocrew("cd-1", "restart"))
         assert rc == 0 and err == ""
 
-    def test_run_remote_kiroclaw_redacts_stderr(self, monkeypatch):
+    def test_run_remote_kirocrew_redacts_stderr(self, monkeypatch):
         # Proxy-controlled stderr carrying a credential is redacted before return,
         # so a caller logging the tail cannot leak it.
-        from kiro_claw.instances import token_mint as tm
+        from kiro_crew.instances import token_mint as tm
 
         class FakeProc:
             returncode = 255
@@ -1153,7 +1153,7 @@ class TestTokenMintGeneric:
             return FakeProc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-        rc, err = asyncio.run(tm.run_remote_kiroclaw("cd-1", "restart"))
+        rc, err = asyncio.run(tm.run_remote_kirocrew("cd-1", "restart"))
         assert rc == 255
         assert "AKIAIOSFODNN7EXAMPLE" not in err
         assert "[REDACTED: credential]" in err
@@ -1161,7 +1161,7 @@ class TestTokenMintGeneric:
 
 class TestDiagnostics:
     def _set_probes(self, monkeypatch, ssh, remote, local):
-        from kiro_claw.instances import diagnostics as diag
+        from kiro_crew.instances import diagnostics as diag
 
         async def _ssh(h):
             return ssh
@@ -1177,7 +1177,7 @@ class TestDiagnostics:
         monkeypatch.setattr(diag, "_probe_local_forward", _loc)
 
     def test_ladder_first_broken_link(self, monkeypatch):
-        from kiro_claw.instances.diagnostics import (
+        from kiro_crew.instances.diagnostics import (
             NOT_CONNECTED,
             OK,
             REMOTE_DOWN,
@@ -1201,13 +1201,13 @@ class TestDiagnostics:
         assert asyncio.run(diagnose_instance("cd-1-alias", 7777, 0)).code == NOT_CONNECTED
 
     def test_invalid_host_short_circuits(self):
-        from kiro_claw.instances.diagnostics import UNKNOWN, diagnose_instance
+        from kiro_crew.instances.diagnostics import UNKNOWN, diagnose_instance
 
         r = asyncio.run(diagnose_instance("-obadhost", 7777, 7778))
         assert r.code == UNKNOWN and r.probes == []
 
     def test_probe_helpers_via_mocked_subprocess(self, monkeypatch):
-        from kiro_claw.instances import diagnostics as diag
+        from kiro_crew.instances import diagnostics as diag
 
         class FakeProc:
             def __init__(self, rc, out=b""):
@@ -1252,7 +1252,7 @@ class TestDiagnostics:
         assert asyncio.run(diag._probe_remote_dashboard("cd-1", 7777)) is False
 
     def test_probe_local_forward(self):
-        from kiro_claw.instances import diagnostics as diag
+        from kiro_crew.instances import diagnostics as diag
 
         # no port -> False without connecting
         assert asyncio.run(diag._probe_local_forward(0)) is False
@@ -1271,7 +1271,7 @@ class _ResilTunnel:
     """Controllable fake tunnel for self-heal tests."""
 
     def __init__(self, iid, ssh_host, lp, rp, *, connect_timeout_secs=0, compression=True, probe_failure_threshold=0, on_exit=None):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         self._S = TunnelState
         self.status = TunnelStatus(instance_id=iid, local_port=lp, remote_port=rp)
@@ -1287,7 +1287,7 @@ class _ResilTunnel:
 
 class TestTunnelStatus:
     def test_to_dict_includes_diagnosis_only_when_set(self):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         # no diagnosis -> key absent
         d = TunnelStatus("cd-1", TunnelState.CONNECTED, local_port=7778, remote_port=7777).to_dict()
@@ -1301,13 +1301,13 @@ class TestTunnelStatus:
 class TestSelfHealRefreshRestart:
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_claw.instances.ssh_tunnel_manager as stm
+        import kiro_crew.instances.ssh_tunnel_manager as stm
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_ResilTunnel):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
@@ -1320,7 +1320,7 @@ class TestSelfHealRefreshRestart:
 
     @pytest.mark.asyncio
     async def test_recover_tier1_then_tier2(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
@@ -1332,7 +1332,7 @@ class TestSelfHealRefreshRestart:
         assert mgr._recover_attempts.get("cd-1", 0) == 0
 
     def test_recover_releases_lock_during_io(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         started = asyncio.Event()
         release = asyncio.Event()
@@ -1364,7 +1364,7 @@ class TestSelfHealRefreshRestart:
 
     @pytest.mark.asyncio
     async def test_recover_attempt_cap_then_diagnose(self, tmp_path, monkeypatch):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         def failing(*a, **k):
             t = _ResilTunnel(*a, **k)
@@ -1388,7 +1388,7 @@ class TestSelfHealRefreshRestart:
 
     @pytest.mark.asyncio
     async def test_rebuild_stops_old_before_replace(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
@@ -1404,7 +1404,7 @@ class TestSelfHealRefreshRestart:
 
     @pytest.mark.asyncio
     async def test_connect_stops_stale_tunnel_before_replace(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         # Use the _FakeTunnel (tracks .stopped) for this manager.
         reg, mgr = self._mgr(tmp_path, factory=_FakeTunnel)
@@ -1419,7 +1419,7 @@ class TestSelfHealRefreshRestart:
 
     @pytest.mark.asyncio
     async def test_wait_until_ready_rejects_child_that_dies_during_probe(self):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
 
         class _Proc:
             def __init__(self):
@@ -1444,7 +1444,7 @@ class TestSelfHealRefreshRestart:
         assert "post-quantum" not in t.status.error.lower()
 
     def test_exit_error_strips_post_quantum_noise(self):
-        from kiro_claw.instances.ssh_tunnel_manager import _SshTunnel
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
 
         t = _SshTunnel("cd-1", "h", 1, 2)
         t._stderr_buf = (
@@ -1461,7 +1461,7 @@ class TestSelfHealRefreshRestart:
         assert t._exit_error(255) == "ssh exited with code 255"
 
     def test_exit_error_classifies_wssh_transport_vs_auth(self):
-        from kiro_claw.instances.ssh_tunnel_manager import _SshTunnel
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
 
         t = _SshTunnel("cd-1", "h", 1, 2)
 
@@ -1492,7 +1492,7 @@ class TestSelfHealRefreshRestart:
         assert "auth failed" in t._exit_error(255).lower()
 
     def test_recover_backoff_grows_and_caps(self):
-        from kiro_claw.instances.ssh_tunnel_manager import (
+        from kiro_crew.instances.ssh_tunnel_manager import (
             _RECOVER_BACKOFF_MAX_SECS,
             _recover_backoff_secs,
         )
@@ -1505,8 +1505,8 @@ class TestSelfHealRefreshRestart:
         import os as _os
         import signal as _signal
 
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         reg = InstancesRegistry(path=tmp_path / "i.json")
         mgr = SshTunnelManager(reg, base_port=53400)  # default (real) factory
@@ -1558,7 +1558,7 @@ class TestSelfHealRefreshRestart:
         assert seen[-1] == 9001  # proactive refresh re-mints with the same port
 
     def test_restart_remote(self, tmp_path, monkeypatch):
-        from kiro_claw.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances import ssh_tunnel_manager as stm
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
@@ -1569,7 +1569,7 @@ class TestSelfHealRefreshRestart:
             calls["a"] = (host, sub)
             return (0, "")
 
-        monkeypatch.setattr(stm, "run_remote_kiroclaw", fake_run)
+        monkeypatch.setattr(stm, "run_remote_kirocrew", fake_run)
         r = asyncio.run(mgr.restart_remote("cd-1"))
         assert r["ok"] and calls["a"] == ("cd-1-alias", "restart")
         # validation failure
@@ -1580,8 +1580,8 @@ class TestSelfHealRefreshRestart:
         assert not r["ok"]
 
     def test_probe_loop_tears_down_after_threshold(self, tmp_path, monkeypatch):
-        from kiro_claw.instances import ssh_tunnel_manager as stm
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
 
         monkeypatch.setattr(stm, "_PROBE_INTERVAL", 0.01)
 
@@ -1621,8 +1621,8 @@ class TestSelfHealRefreshRestart:
         asyncio.run(main())
 
     def test_sshtunnel_start_success_then_stop(self, monkeypatch):
-        from kiro_claw.instances import ssh_tunnel_manager as stm
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
 
         monkeypatch.setattr(stm, "_PROBE_INTERVAL", 0)  # no probe-loop task
 
@@ -1683,7 +1683,7 @@ class TestInstancesStartupHooks:
     def _state(self):
         from unittest.mock import MagicMock
 
-        from kiro_claw.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState
 
         return DashboardState(
             sessions=MagicMock(), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
@@ -1692,7 +1692,7 @@ class TestInstancesStartupHooks:
     def test_register_then_freeze_then_startup_creates_manager(self, tmp_path, monkeypatch):
         from aiohttp import web
 
-        from kiro_claw.dashboard.server import _register_instances_hooks
+        from kiro_crew.dashboard.server import _register_instances_hooks
 
         _enable(tmp_path, monkeypatch, enabled=True)
         app = web.Application()
@@ -1722,7 +1722,7 @@ class TestInstancesStartupHooks:
     def test_disabled_skips_manager_creation(self, tmp_path, monkeypatch):
         from aiohttp import web
 
-        from kiro_claw.dashboard.server import _register_instances_hooks
+        from kiro_crew.dashboard.server import _register_instances_hooks
 
         _enable(tmp_path, monkeypatch, enabled=False)
         app = web.Application()
@@ -1745,8 +1745,8 @@ class TestPortMirror:
 
     @staticmethod
     def _mgr(reg, factory, monkeypatch, *, port_free=True):
-        import kiro_claw.instances.ssh_tunnel_manager as stm
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": port_free)
 
@@ -1757,8 +1757,8 @@ class TestPortMirror:
 
     @pytest.mark.asyncio
     async def test_local_port_mirrors_remote_port(self, tmp_path, monkeypatch):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         captured: dict = {}
 
@@ -1778,8 +1778,8 @@ class TestPortMirror:
 
     @pytest.mark.asyncio
     async def test_mirror_overrides_stale_local_port(self, tmp_path, monkeypatch):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         captured: dict = {}
 
@@ -1799,8 +1799,8 @@ class TestPortMirror:
 
     @pytest.mark.asyncio
     async def test_port_conflict_hard_fails(self, tmp_path, monkeypatch):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         captured: dict = {}
 
@@ -1826,13 +1826,13 @@ class TestLastError:
 
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_claw.instances.ssh_tunnel_manager as stm
+        import kiro_crew.instances.ssh_tunnel_manager as stm
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
@@ -1867,7 +1867,7 @@ class TestLastError:
 
     @pytest.mark.asyncio
     async def test_retained_on_mint_failure_after_teardown(self, tmp_path):
-        from kiro_claw.instances.token_mint import TokenMintError
+        from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
             raise TokenMintError("nope")
@@ -1880,8 +1880,8 @@ class TestLastError:
 
     @pytest.mark.asyncio
     async def test_cleared_on_successful_connect(self, tmp_path):
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
-        from kiro_claw.instances.token_mint import TokenMintError
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.token_mint import TokenMintError
 
         calls = {"n": 0}
 
@@ -1901,7 +1901,7 @@ class TestLastError:
 
     @pytest.mark.asyncio
     async def test_cleared_on_explicit_disconnect(self, tmp_path):
-        from kiro_claw.instances.token_mint import TokenMintError
+        from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
             raise TokenMintError("nope")
@@ -1920,13 +1920,13 @@ class TestStatusForRetainedError:
 
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_claw.instances.ssh_tunnel_manager as stm
+        import kiro_crew.instances.ssh_tunnel_manager as stm
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
@@ -1941,8 +1941,8 @@ class TestStatusForRetainedError:
     async def test_surfaces_error_when_no_live_tunnel(self, tmp_path):
         import types
 
-        from kiro_claw.dashboard.handlers_instances import _status_for
-        from kiro_claw.instances.token_mint import TokenMintError
+        from kiro_crew.dashboard.handlers_instances import _status_for
+        from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
             raise TokenMintError("nope")
@@ -1960,7 +1960,7 @@ class TestStatusForRetainedError:
     async def test_disconnected_when_no_tunnel_and_no_error(self, tmp_path):
         import types
 
-        from kiro_claw.dashboard.handlers_instances import _status_for
+        from kiro_crew.dashboard.handlers_instances import _status_for
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
@@ -1972,7 +1972,7 @@ class TestStatusForRetainedError:
     async def test_live_tunnel_status_wins(self, tmp_path):
         import types
 
-        from kiro_claw.dashboard.handlers_instances import _status_for
+        from kiro_crew.dashboard.handlers_instances import _status_for
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
@@ -1990,13 +1990,13 @@ class TestStartupRevive:
 
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_claw.instances.ssh_tunnel_manager as stm
+        import kiro_crew.instances.ssh_tunnel_manager as stm
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
-        from kiro_claw.instances.registry import InstancesRegistry
-        from kiro_claw.instances.ssh_tunnel_manager import SshTunnelManager
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
@@ -2009,8 +2009,8 @@ class TestStartupRevive:
 
     @pytest.mark.asyncio
     async def test_revives_all_was_connected(self, tmp_path):
-        import kiro_claw.dashboard.server as server
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
+        import kiro_crew.dashboard.server as server
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="A", ssh_host="host-a", instance_id="a", remote_port=7777)
@@ -2028,9 +2028,9 @@ class TestStartupRevive:
 
     @pytest.mark.asyncio
     async def test_some_fail_isolated_and_intent_preserved(self, tmp_path):
-        import kiro_claw.dashboard.server as server
-        from kiro_claw.instances.ssh_tunnel_manager import TunnelState
-        from kiro_claw.instances.token_mint import TokenMintError
+        import kiro_crew.dashboard.server as server
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.token_mint import TokenMintError
 
         async def mint(host, *, remote_bin="", ttl="20h", remote_port=None):
             if "bad" in host:
@@ -2055,7 +2055,7 @@ class TestStartupRevive:
 
     @pytest.mark.asyncio
     async def test_noop_when_none_intended(self, tmp_path):
-        import kiro_claw.dashboard.server as server
+        import kiro_crew.dashboard.server as server
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="A", ssh_host="host-a", instance_id="a")  # was_connected False
@@ -2078,7 +2078,7 @@ class TestStartupRevive:
 
         from aiohttp import web
 
-        import kiro_claw.dashboard.server as server
+        import kiro_crew.dashboard.server as server
 
         cfg = types.SimpleNamespace(
             instances=types.SimpleNamespace(
@@ -2090,7 +2090,7 @@ class TestStartupRevive:
                 probe_failure_threshold=3,
             )
         )
-        monkeypatch.setattr(server, "KiroClawConfig", types.SimpleNamespace(load=lambda: cfg))
+        monkeypatch.setattr(server, "KiroCrewConfig", types.SimpleNamespace(load=lambda: cfg))
         monkeypatch.setattr(server, "InstancesRegistry", lambda: object())
         monkeypatch.setattr(server, "SshTunnelManager", lambda *a, **k: object())
 

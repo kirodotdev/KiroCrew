@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.messaging -- v1a contracts (ABCs, value objects)."""
+"""Tests for kiro_crew.messaging -- v1a contracts (ABCs, value objects)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from kiro_claw.messaging import (
+from kiro_crew.messaging import (
     COMPACTION,
     DONE,
     OUTPUT_KINDS,

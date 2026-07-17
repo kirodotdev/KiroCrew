@@ -7,7 +7,7 @@ import { SecretField } from '../../components/SecretField'
 import { Input, Btn } from '../../components/ui'
 import { api, type SlackConfigData, type SlackConfigSave } from '../../api/client'
 
-const SETUP_GUIDE = 'https://github.com/kirodotdev-labs/kiroclaw/blob/main/SLACK_SETUP.md'
+const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/SLACK_SETUP.md'
 
 type Draft = {
   owner_id: string
@@ -242,7 +242,7 @@ export function SlackPanel() {
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mb-3">
           <Lock size={13} className="text-muted flex-none" />
           <span className="text-[12px] text-muted">
-            Slack settings are managed on the machine running KiroClaw and are read-only from remote sessions.
+            Slack settings are managed on the machine running KiroCrew and are read-only from remote sessions.
           </span>
         </div>
       )}
@@ -252,7 +252,7 @@ export function SlackPanel() {
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
             Create the Slack app from the pre-filled manifest below (Socket Mode and permissions
-            included, named KiroClaw-{manifestQ.data?.alias ?? 'you'}). Install it to your
+            included, named KiroCrew-{manifestQ.data?.alias ?? 'you'}). Install it to your
             workspace, then paste the bot token and app-level token here.
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -314,7 +314,7 @@ export function SlackPanel() {
         <SettingsCard>
           <SettingsInput
             label="Owner Slack member ID"
-            description="The one member who can always interact with the bot (KIROCLAW_OWNER_ID). Starts with U or W."
+            description="The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W."
             value={draft.owner_id}
             onChange={v => upd({ owner_id: v })}
             placeholder="U0123ABC456"
@@ -340,7 +340,7 @@ export function SlackPanel() {
             description="Trigger word for the Slack slash command (without the leading /)."
             value={draft.command}
             onChange={v => upd({ command: v })}
-            placeholder="kiroclaw"
+            placeholder="kirocrew"
             disabled={ro}
           />
           <SettingsToggle

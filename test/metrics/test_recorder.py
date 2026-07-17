@@ -1,9 +1,9 @@
-"""Tests for kiro_claw.metrics.recorder — the MetricsRecorder facade."""
+"""Tests for kiro_crew.metrics.recorder — the MetricsRecorder facade."""
 
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from kiro_claw.metrics.recorder import MetricsRecorder
+from kiro_crew.metrics.recorder import MetricsRecorder
 
 
 def _recorder_with_reader():
@@ -30,42 +30,42 @@ class TestNoOpRecorder:
         rec = MetricsRecorder(None)
         assert rec.enabled is False
         # Must not raise even though there is no underlying meter.
-        rec.counter("kiroclaw.x")
-        rec.histogram("kiroclaw.y", 1.0)
-        rec.up_down_counter("kiroclaw.z", 1)
+        rec.counter("kirocrew.x")
+        rec.histogram("kirocrew.y", 1.0)
+        rec.up_down_counter("kirocrew.z", 1)
 
 
 class TestRecord:
     def test_counter_recorded(self):
         rec, reader = _recorder_with_reader()
-        rec.counter("kiroclaw.test.count", 3, attrs={"ok": True})
+        rec.counter("kirocrew.test.count", 3, attrs={"ok": True})
         names = [n for n, _ in _data_points(reader)]
-        assert "kiroclaw.test.count" in names
+        assert "kirocrew.test.count" in names
 
     def test_histogram_recorded(self):
         rec, reader = _recorder_with_reader()
-        rec.histogram("kiroclaw.test.dur", 12.5, unit="ms")
+        rec.histogram("kirocrew.test.dur", 12.5, unit="ms")
         names = [n for n, _ in _data_points(reader)]
-        assert "kiroclaw.test.dur" in names
+        assert "kirocrew.test.dur" in names
 
     def test_session_startup_histogram_contract(self):
         """The exact call ensure_ready() makes must record cleanly."""
         rec, reader = _recorder_with_reader()
         rec.histogram(
-            "kiroclaw.session.startup.duration",
+            "kirocrew.session.startup.duration",
             1234.0,
             unit="ms",
             attrs={"outcome": "ready", "spawned": True},
         )
         names = [n for n, _ in _data_points(reader)]
-        assert "kiroclaw.session.startup.duration" in names
+        assert "kirocrew.session.startup.duration" in names
 
 
 class TestGuardrails:
     def test_app_cannot_spoof_core_namespace(self):
         """validate_name raises on spoof; recorder swallows -> nothing recorded."""
         rec, reader = _recorder_with_reader()
-        rec.counter("kiroclaw.evil", app_id="my_app")  # invalid namespace
+        rec.counter("kirocrew.evil", app_id="my_app")  # invalid namespace
         assert _data_points(reader) == []
 
     def test_app_valid_namespace_recorded(self):
@@ -77,7 +77,7 @@ class TestGuardrails:
     def test_credential_attr_redacted(self):
         rec, reader = _recorder_with_reader()
         rec.counter(
-            "kiroclaw.test.count",
+            "kirocrew.test.count",
             1,
             attrs={"api_key": "AKIAIOSFODNN7EXAMPLE1", "safe": "ok"},
         )

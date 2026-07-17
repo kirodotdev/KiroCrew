@@ -1,11 +1,11 @@
-"""Tests for kiro_claw.wechat.renderer (WeComRenderer, Layer 2b)."""
+"""Tests for kiro_crew.wechat.renderer (WeComRenderer, Layer 2b)."""
 
 from __future__ import annotations
 
 import pytest
 
-from kiro_claw.wechat.renderer import WeComRenderer
-from kiro_claw.wechat.transport import WECOM_CAPABILITIES
+from kiro_crew.wechat.renderer import WeComRenderer
+from kiro_crew.wechat.transport import WECOM_CAPABILITIES
 
 
 class FakeClient:

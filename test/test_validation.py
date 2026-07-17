@@ -1,10 +1,10 @@
-"""Tests for kiro_claw.validation — tool input/output validation."""
+"""Tests for kiro_crew.validation — tool input/output validation."""
 
 from __future__ import annotations
 
 import pytest
 
-from kiro_claw.validation import (
+from kiro_crew.validation import (
     CHANNEL_ID_RE,
     CRON_ADD_SCHEMA,
     LEARN_ADD_SCHEMA,

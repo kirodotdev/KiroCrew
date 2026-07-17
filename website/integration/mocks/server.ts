@@ -14,7 +14,7 @@ export const mockMemoryPreferences = {
 }
 
 export const mockMemoryProjects = {
-  content: '# Projects\n\n## KiroClaw\n\nAI-powered development assistant.',
+  content: '# Projects\n\n## KiroCrew\n\nAI-powered development assistant.',
   last_updated: '2026-03-20T10:00:00Z',
 }
 
@@ -54,7 +54,7 @@ export const mockSkills = [
     key: 'amazon-writing',
     description: 'Amazon writing guidelines for documents',
     always: true,
-    source: 'kiroclaw',
+    source: 'kirocrew',
     dir: '/path/to/skills/amazon-writing',
   },
   {
@@ -62,7 +62,7 @@ export const mockSkills = [
     key: 'code-search',
     description: 'Search code in Amazon repositories',
     always: false,
-    source: 'kiroclaw',
+    source: 'kirocrew',
     dir: '/path/to/skills/code-search',
   },
 ]
@@ -73,7 +73,7 @@ export const mockSkillDetail = {
   content: '---\nname: amazon-writing\ndescription: Amazon writing guidelines for documents\nalways: true\ntriggers: writing, docs, narrative\ntags: [skill, writing, amazon]\n---\n# Amazon Writing\n\nGuidelines for clear technical writing.',
   description: 'Amazon writing guidelines for documents',
   always: true,
-  source: 'kiroclaw',
+  source: 'kirocrew',
   dir: '/path/to/skills/amazon-writing',
 }
 
@@ -83,7 +83,7 @@ export const mockCodeSearchDetail = {
   content: '---\nname: code-search\ndescription: Search code in Amazon repositories\ntags: [skill, code, search]\n---\n# Code Search\n\nSearch Amazon code repositories.',
   description: 'Search code in Amazon repositories',
   always: false,
-  source: 'kiroclaw',
+  source: 'kirocrew',
   dir: '/path/to/skills/code-search',
 }
 
@@ -95,7 +95,7 @@ export const mockMcpServers = [
     tools: ['ReadInternalWebsites', 'TaskeiGetTask'],
     disabledTools: [],
     command: 'node /path/to/builder-mcp',
-    presence: { kiroclaw: true, kiroGlobal: true, ccGlobal: false },
+    presence: { kirocrew: true, kiroGlobal: true, ccGlobal: false },
   },
   {
     name: 'ai-community-slack-mcp',
@@ -104,7 +104,7 @@ export const mockMcpServers = [
     tools: ['search', 'post_message'],
     disabledTools: ['post_message'],
     command: 'node /path/to/slack-mcp',
-    presence: { kiroclaw: false, kiroGlobal: false, ccGlobal: false },
+    presence: { kirocrew: false, kiroGlobal: false, ccGlobal: false },
   },
 ]
 
@@ -127,8 +127,8 @@ export const mockMemoryGraph = {
   nodes: [
     { id: 'p1', label: 'Use TypeScript', group: 'preference', title: 'Use TypeScript' },
     { id: 'p2', label: 'Follow Amazon style guide', group: 'preference', title: 'Follow Amazon style guide' },
-    { id: 'pr1', label: 'KiroClaw', group: 'project', title: 'KiroClaw' },
-    { id: 'pr2', label: 'KiroClaw: AI-powered assistant', group: 'project', title: 'AI-powered development assistant' },
+    { id: 'pr1', label: 'KiroCrew', group: 'project', title: 'KiroCrew' },
+    { id: 'pr2', label: 'KiroCrew: AI-powered assistant', group: 'project', title: 'AI-powered development assistant' },
     { id: 's1', label: 'pref.editor', group: 'semantic', title: 'pref.editor = vim' },
     { id: 'l1', label: 'Check CRs before building', group: 'lesson', title: 'Always check for existing open CRs' },
     { id: 'h1', label: '2026-03-25', group: 'history', title: '2026-03-25 work session' },
@@ -282,7 +282,7 @@ export const handlers = [
       key: body.name,
       content: body.content,
       always: false,
-      source: 'kiroclaw',
+      source: 'kirocrew',
       dir: `/path/to/skills/${body.name}`,
     }, { status: 201 })
   }),
@@ -370,7 +370,7 @@ export const handlers = [
   http.get('/api/agents/installed', () => {
     return HttpResponse.json([
       { name: 'default', source: 'builtin' },
-      { name: 'kiroclaw', source: 'builtin' },
+      { name: 'kirocrew', source: 'builtin' },
     ])
   }),
   

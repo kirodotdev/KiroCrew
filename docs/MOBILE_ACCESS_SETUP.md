@@ -1,12 +1,12 @@
 # Mobile Dashboard Access (Tunnels)
 
-Access the KiroClaw dashboard from your phone by exposing the local
+Access the KiroCrew dashboard from your phone by exposing the local
 dashboard port (5476) through a secure named tunnel and pointing the
 Slack bot's presigned links at the tunnel URL.
 
 ## How It Works
 
-The dashboard binds to `localhost:5476` on whatever host runs KiroClaw.
+The dashboard binds to `localhost:5476` on whatever host runs KiroCrew.
 To reach it from a phone, you put a tunnel in front of that local port.
 A tunneling service (e.g. [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/),
 [ngrok](https://ngrok.com/), or [Tailscale Funnel](https://tailscale.com/kb/1223/funnel))
@@ -15,7 +15,7 @@ then set that URL as `dashboard.url` so the Slack bot generates links
 your phone can open.
 
 > **Security note:** A tunnel exposes your dashboard to the public
-> internet. KiroClaw protects the dashboard with a per-session token
+> internet. KiroCrew protects the dashboard with a per-session token
 > (the presigned `?token=...` link), but you should still prefer a tunnel
 > provider that adds its own authentication layer (e.g. Cloudflare Access,
 > Tailscale's private network) when possible, and keep token lifetimes
@@ -23,7 +23,7 @@ your phone can open.
 
 ## Prerequisites
 
-- KiroClaw running on a host (local machine or a remote host — see
+- KiroCrew running on a host (local machine or a remote host — see
   [REMOTE_DESKTOP_SETUP.md](REMOTE_DESKTOP_SETUP.md))
 - A tunneling tool installed on that host. This guide uses
   [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
@@ -39,26 +39,26 @@ restarts. With cloudflared, for example:
 ```bash
 # One-time: authenticate and create the named tunnel
 cloudflared tunnel login
-cloudflared tunnel create kiroclaw
+cloudflared tunnel create kirocrew
 
 # Route a hostname you control to the tunnel, then run it pointed at port 5476
-cloudflared tunnel route dns kiroclaw kiroclaw.example.com
-cloudflared tunnel --url http://localhost:5476 run kiroclaw
-# → https://kiroclaw.example.com
+cloudflared tunnel route dns kirocrew kirocrew.example.com
+cloudflared tunnel --url http://localhost:5476 run kirocrew
+# → https://kirocrew.example.com
 ```
 
-With ngrok the equivalent is `ngrok http --domain=kiroclaw.example.com 5476`.
+With ngrok the equivalent is `ngrok http --domain=kirocrew.example.com 5476`.
 Whatever tool you use, the goal is the same: a stable HTTPS URL that
-proxies to your local KiroClaw dashboard port (5476).
+proxies to your local KiroCrew dashboard port (5476).
 
 ### 2. Configure the dashboard URL
 
-Set `dashboard.url` in `~/.kiroclaw/config.json` to the tunnel URL:
+Set `dashboard.url` in `~/.kirocrew/config.json` to the tunnel URL:
 
 ```json
 {
   "dashboard": {
-    "url": "https://kiroclaw.example.com"
+    "url": "https://kirocrew.example.com"
   }
 }
 ```
@@ -72,7 +72,7 @@ tmux session, as a background process, or as a systemd service:
 
 ```bash
 tmux new -s tunnel
-cloudflared tunnel --url http://localhost:5476 run kiroclaw
+cloudflared tunnel --url http://localhost:5476 run kirocrew
 # Ctrl+B, D to detach
 ```
 
@@ -83,12 +83,12 @@ service install`) so the tunnel auto-starts on boot — recommended for
 ### 4. Restart the gateway
 
 ```bash
-kiroclaw restart   # or: kiroclaw gateway
+kirocrew restart   # or: kirocrew gateway
 ```
 
 ## Usage
 
-1. Type `/kiroclaw dashboard` (or `/kiroclaw dashboard 6h` for a longer session) in your KiroClaw Slack DM
+1. Type `/kirocrew dashboard` (or `/kirocrew dashboard 6h` for a longer session) in your KiroCrew Slack DM
 2. The bot DMs you a presigned link: `https://<tunnel-url>/?token=...`
 3. Tap the link on your phone — it opens the dashboard in your mobile browser
 
@@ -96,22 +96,22 @@ kiroclaw restart   # or: kiroclaw gateway
 
 | Layer | Duration | Notes |
 |-------|----------|-------|
-| **`/kiroclaw dashboard` token** | **1 hour (default)** | **Practical limit** — configurable: `/kiroclaw dashboard 6h`, max `/kiroclaw dashboard 20h` |
+| **`/kirocrew dashboard` token** | **1 hour (default)** | **Practical limit** — configurable: `/kirocrew dashboard 6h`, max `/kirocrew dashboard 20h` |
 | Presigned link click window | 5 minutes | Must click before it expires |
 
 The **dashboard presigned token** is the session limit. Use
-`/kiroclaw dashboard 6h` or `/kiroclaw dashboard 20h` for longer sessions.
-When the token expires, generate a new link with `/kiroclaw dashboard`.
+`/kirocrew dashboard 6h` or `/kirocrew dashboard 20h` for longer sessions.
+When the token expires, generate a new link with `/kirocrew dashboard`.
 
 ## Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
-| `/kiroclaw dashboard` link still shows `localhost` | Verify `dashboard.url` is set in config.json and restart the gateway |
-| Link opens but shows "token expired" | Click within 5 minutes of generating. Use `/kiroclaw dashboard` again for a fresh link |
+| `/kirocrew dashboard` link still shows `localhost` | Verify `dashboard.url` is set in config.json and restart the gateway |
+| Link opens but shows "token expired" | Click within 5 minutes of generating. Use `/kirocrew dashboard` again for a fresh link |
 | Tunnel disconnects | Reconnect the tunnel — a *named* tunnel reuses the same URL on restart |
-| Dashboard loads but layout is broken | Ensure you're on the latest KiroClaw; the dashboard ships a mobile-responsive layout |
-| Phone can't reach the URL | Verify the tunnel process is running and connected on the host serving KiroClaw |
+| Dashboard loads but layout is broken | Ensure you're on the latest KiroCrew; the dashboard ships a mobile-responsive layout |
+| Phone can't reach the URL | Verify the tunnel process is running and connected on the host serving KiroCrew |
 
 ## References
 

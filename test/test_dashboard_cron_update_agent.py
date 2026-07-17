@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.handlers import api_cron_update
+from kiro_crew.dashboard.handlers import api_cron_update
 
 
 def _make_request(body: dict, job_id: str = "abc123") -> MagicMock:

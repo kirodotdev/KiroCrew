@@ -10,11 +10,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
-from kiro_claw.messaging.link import ChannelLink
+from kiro_crew.messaging.link import ChannelLink
 
 
 def _make_mirror_app(state):
-    from kiro_claw.dashboard.chat_mirror import (
+    from kiro_crew.dashboard.chat_mirror import (
         api_chat_slot_mirror_link,
         api_chat_slot_mirror_unlink,
     )
@@ -34,7 +34,7 @@ def _fake_transport(channel_type="telegram", proactive=True):
 
 
 def _prep(tmp_path, monkeypatch):
-    monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
     state.get_or_create_slot("s1")
     state.push_slots_update = MagicMock()

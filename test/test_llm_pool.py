@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_claw.knowledge.llm_pool import (
+from kiro_crew.knowledge.llm_pool import (
     AcpWorker,
     CCWorker,
     LLMPool,
@@ -293,28 +293,28 @@ class TestLLMPoolBatchErrors:
 
 class TestProviderDetection:
     def test_default_is_acp(self, tmp_path):
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "acp"
 
     def test_reads_claude_code_from_config(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "claude_code"}}')
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "claude_code"
 
     def test_reads_acp_from_config(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "acp"
 
     def test_handles_malformed_config(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("not json")
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "acp"
 
 
@@ -329,37 +329,37 @@ class TestSandboxMode:
     bypassed least-privilege; these lock in the restored behaviour."""
 
     def test_default_is_auto(self, tmp_path):
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "auto"
 
     def test_reads_sandbox_from_config(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "off"}}')
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "off"
 
     def test_malformed_config_defaults_auto(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("not json")
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "auto"
 
     def test_unknown_mode_falls_back_to_auto(self, tmp_path):
         """A value outside wrap_argv's accepted set must not reach the wrapper."""
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "bogus"}}')
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "auto"
 
     @pytest.mark.parametrize("mode", ["auto", "standard", "strict", "cc", "off"])
     def test_all_valid_modes_pass_through(self, mode, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"agent": {"sandbox": mode}}))
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == mode
 
     def test_accepts_prereadm_config_dict(self):
@@ -376,28 +376,28 @@ class TestSandboxMode:
 
 class TestReadConfig:
     def test_missing_file_returns_empty(self, tmp_path):
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _read_config() == {}
 
     def test_reads_dict(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "claude_code"}}')
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _read_config() == {"agent": {"provider": "claude_code"}}
 
     def test_malformed_returns_empty(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("not json")
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _read_config() == {}
 
     def test_non_dict_json_returns_empty(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("[1, 2, 3]")
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _read_config() == {}
 
     def test_parsers_accept_config_dict(self):
@@ -429,10 +429,10 @@ class TestReadConfig:
     def test_read_config_coerces_non_dict_sections(self, tmp_path):
         """``_read_config`` normalises non-dict ``agent``/``knowledge`` to ``{}``
         so downstream ``.get(...).get(...)`` chains are always dict-safe."""
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": "acp", "knowledge": 7}')
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             data = _read_config()
         assert data["agent"] == {}
         assert data["knowledge"] == {}
@@ -440,13 +440,13 @@ class TestReadConfig:
     @pytest.mark.asyncio
     async def test_start_passes_configured_sandbox_to_client(self, tmp_path):
         """AcpWorker.start wires the configured sandbox mode into AcpClient."""
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "off"}}')
         mock_client = AsyncMock()
         mock_client.is_ready = True
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path), \
-             patch("kiro_claw.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk:
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk:
             worker = AcpWorker()
             await worker.start()
         assert mk.call_args.kwargs["sandbox_mode"] == "off"
@@ -455,8 +455,8 @@ class TestReadConfig:
     async def test_start_defaults_sandbox_to_auto(self, tmp_path):
         mock_client = AsyncMock()
         mock_client.is_ready = True
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path), \
-             patch("kiro_claw.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk:
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk:
             worker = AcpWorker()
             await worker.start()
         assert mk.call_args.kwargs["sandbox_mode"] == "auto"
@@ -470,11 +470,11 @@ class TestReadConfig:
 class TestLLMPoolStart:
     @pytest.mark.asyncio
     async def test_start_creates_workers(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
 
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             pool = LLMPool(pool_size=2)
 
             # Mock _create_worker to avoid spawning real processes
@@ -495,11 +495,11 @@ class TestLLMPoolStart:
 
     @pytest.mark.asyncio
     async def test_start_idempotent(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
 
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             pool = LLMPool(pool_size=1)
             call_count = 0
 
@@ -525,11 +525,11 @@ class TestLLMPoolStart:
 class TestLLMPoolContextManager:
     @pytest.mark.asyncio
     async def test_async_context_manager(self, tmp_path):
-        config = tmp_path / ".kiroclaw" / "config.json"
+        config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
 
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             pool = LLMPool(pool_size=1)
 
             async def _mock_create():
@@ -599,8 +599,8 @@ class TestAcpWorker:
         stale = AsyncMock()
         fresh = AsyncMock()
         fresh.is_ready = True
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path), \
-             patch("kiro_claw.knowledge.llm_pool.AcpClient", return_value=fresh):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=fresh):
             worker = AcpWorker()
             worker._client = stale
             await worker.start()
@@ -614,8 +614,8 @@ class TestAcpWorker:
         stale.shutdown.side_effect = RuntimeError("boom")
         fresh = AsyncMock()
         fresh.is_ready = True
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path), \
-             patch("kiro_claw.knowledge.llm_pool.AcpClient", return_value=fresh):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=fresh):
             worker = AcpWorker()
             worker._client = stale
             await worker.start()
@@ -632,11 +632,11 @@ class TestAcpWorker:
         fresh._pid = 7777
         registered: list[int] = []
         unregistered: list[int] = []
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path), \
-             patch("kiro_claw.knowledge.llm_pool.AcpClient", return_value=fresh), \
-             patch("kiro_claw.knowledge.llm_pool.register_protected_pid",
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=fresh), \
+             patch("kiro_crew.knowledge.llm_pool.register_protected_pid",
                    side_effect=registered.append), \
-             patch("kiro_claw.knowledge.llm_pool.unregister_protected_pid",
+             patch("kiro_crew.knowledge.llm_pool.unregister_protected_pid",
                    side_effect=unregistered.append):
             worker = AcpWorker()
             await worker.start()
@@ -656,11 +656,11 @@ class TestAcpWorker:
         second._pid = 200
         registered: list[int] = []
         unregistered: list[int] = []
-        with patch("kiro_claw.knowledge.llm_pool.Path.home", return_value=tmp_path), \
-             patch("kiro_claw.knowledge.llm_pool.AcpClient", side_effect=[first, second]), \
-             patch("kiro_claw.knowledge.llm_pool.register_protected_pid",
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", side_effect=[first, second]), \
+             patch("kiro_crew.knowledge.llm_pool.register_protected_pid",
                    side_effect=registered.append), \
-             patch("kiro_claw.knowledge.llm_pool.unregister_protected_pid",
+             patch("kiro_crew.knowledge.llm_pool.unregister_protected_pid",
                    side_effect=unregistered.append):
             worker = AcpWorker()
             await worker.start()     # register 100
@@ -687,7 +687,7 @@ class TestCCWorker:
 
     @pytest.mark.asyncio
     async def test_start_raises_without_claude(self):
-        with patch("kiro_claw.knowledge.llm_pool.shutil.which", return_value=None):
+        with patch("kiro_crew.knowledge.llm_pool.shutil.which", return_value=None):
             worker = CCWorker()
             with pytest.raises(RuntimeError, match="claude CLI not found"):
                 await worker.start()
@@ -701,7 +701,7 @@ class TestCCWorker:
 class TestFetchUrlContent:
     @pytest.mark.asyncio
     async def test_fetch_returns_stripped_content(self):
-        from kiro_claw.knowledge.agent_fetch import fetch_url_content
+        from kiro_crew.knowledge.agent_fetch import fetch_url_content
 
         pool = _make_pool_with_fake_workers(pool_size=1, responses=["  This is a document with enough content to pass the minimum length validation check.  "])
         result = await fetch_url_content("https://example.com/doc", pool)
@@ -709,7 +709,7 @@ class TestFetchUrlContent:
 
     @pytest.mark.asyncio
     async def test_fetch_raises_on_empty(self):
-        from kiro_claw.knowledge.agent_fetch import fetch_url_content
+        from kiro_crew.knowledge.agent_fetch import fetch_url_content
 
         pool = _make_pool_with_fake_workers(pool_size=1, responses=[""])
         with pytest.raises(RuntimeError, match="empty content"):
@@ -717,7 +717,7 @@ class TestFetchUrlContent:
 
     @pytest.mark.asyncio
     async def test_fetch_raises_on_whitespace_only(self):
-        from kiro_claw.knowledge.agent_fetch import fetch_url_content
+        from kiro_crew.knowledge.agent_fetch import fetch_url_content
 
         pool = _make_pool_with_fake_workers(pool_size=1, responses=["   \n  "])
         with pytest.raises(RuntimeError, match="empty content"):

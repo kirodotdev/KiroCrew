@@ -89,13 +89,13 @@ vi.mock('../src/pages/chat/ChatSettings', () => ({
 const SLOT_KEY = 'slot-1'
 const TITLE = 'My Session Title'
 const slots = [{
-  key: SLOT_KEY, title: TITLE, running: false, agent: 'kiroclaw',
+  key: SLOT_KEY, title: TITLE, running: false, agent: 'kirocrew',
   created: '2026-04-08T01:00:00Z', last_ts: '2026-04-08T02:00:00Z', folder_id: '', tags: [],
 }]
 const props = {
   slots, activeSlot: SLOT_KEY, unreadSlots: [] as string[],
-  history: [], historyHasMore: false, defaultAgent: 'kiroclaw',
-  installedAgents: [{ name: 'kiroclaw', source: 'builtin' }],
+  history: [], historyHasMore: false, defaultAgent: 'kirocrew',
+  installedAgents: [{ name: 'kirocrew', source: 'builtin' }],
 }
 
 beforeEach(() => {

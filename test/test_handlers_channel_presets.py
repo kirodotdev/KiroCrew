@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.handlers_channel import _DEFAULT_PRESETS, api_channel_presets
+from kiro_crew.dashboard.handlers_channel import _DEFAULT_PRESETS, api_channel_presets
 
 
 class TestChannelPresets:
@@ -15,7 +15,7 @@ class TestChannelPresets:
     async def test_returns_defaults_when_config_missing(self, tmp_path, monkeypatch):
         """When config.json doesn't exist, the built-in defaults are returned."""
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers_channel.config_path",
+            "kiro_crew.dashboard.handlers_channel.config_path",
             lambda: tmp_path / "missing.json",
         )
         request = MagicMock()
@@ -30,7 +30,7 @@ class TestChannelPresets:
         """A config without ``channel_presets`` falls back to defaults."""
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({"unrelated": "value"}), encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers_channel.config_path", lambda: cfg)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers_channel.config_path", lambda: cfg)
         request = MagicMock()
         resp = await api_channel_presets(request)
         body = json.loads(resp.body)
@@ -51,7 +51,7 @@ class TestChannelPresets:
         ]
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({"channel_presets": custom}), encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers_channel.config_path", lambda: cfg)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers_channel.config_path", lambda: cfg)
         request = MagicMock()
         resp = await api_channel_presets(request)
         body = json.loads(resp.body)
@@ -64,7 +64,7 @@ class TestChannelPresets:
         """A config.json with invalid JSON does not crash the handler."""
         cfg = tmp_path / "config.json"
         cfg.write_text("{not valid json", encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers_channel.config_path", lambda: cfg)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers_channel.config_path", lambda: cfg)
         request = MagicMock()
         resp = await api_channel_presets(request)
         body = json.loads(resp.body)
@@ -77,7 +77,7 @@ class TestChannelPresets:
         """A config.json containing a non-dict (e.g. an array) does not crash."""
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.dashboard.handlers_channel.config_path", lambda: cfg)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers_channel.config_path", lambda: cfg)
         request = MagicMock()
         resp = await api_channel_presets(request)
         body = json.loads(resp.body)

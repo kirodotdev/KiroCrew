@@ -7,7 +7,7 @@
  * there was simply no test asserting SettingsPage *lists* the tabs. These close
  * that gap for the fork's tab roster. (Upstream's Cloud Sync assertion is
  * dropped — the fork has no GitFarm Cloud-Sync tab; we assert the Browser tab
- * instead. There is no Provider tab: KiroClaw collapsed to its single KiroACP /
+ * instead. There is no Provider tab: KiroCrew collapsed to its single KiroACP /
  * kiro-cli provider, so there is no provider to select.)
  */
 import { describe, it, expect, vi } from 'vitest'

@@ -7,12 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState
 
 
 @pytest.fixture
 def state(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     crons = MagicMock()
     crons.list_jobs.return_value = [{"id": "j1"}, {"id": "j2"}]
     lessons = MagicMock()
@@ -103,7 +103,7 @@ class TestAllStatusSnapshotCallersPassUpdateAvailable:
         """Regression: ws.py must pass update_available to status_snapshot()."""
         import inspect
 
-        from kiro_claw.dashboard import ws
+        from kiro_crew.dashboard import ws
         source = inspect.getsource(ws)
         assert "update_available=" in source, (
             "ws.py calls status_snapshot() without update_available — "
@@ -113,14 +113,14 @@ class TestAllStatusSnapshotCallersPassUpdateAvailable:
     def test_sse_handler_passes_update_available(self) -> None:
         import inspect
 
-        from kiro_claw.dashboard import handlers
+        from kiro_crew.dashboard import handlers
         source = inspect.getsource(handlers)
         assert "update_available=" in source
 
     def test_system_api_passes_update_available(self) -> None:
         import inspect
 
-        from kiro_claw.dashboard import handlers_system
+        from kiro_crew.dashboard import handlers_system
         source = inspect.getsource(handlers_system)
         assert "update_available=" in source
 
@@ -130,16 +130,16 @@ class TestBuildInfoResolution:
 
     Regression (dogfood 2026-07-06): an earlier revision resolved git_build_info()
     at state.py *module import*. Under systemd the entrypoint imports this module
-    BEFORE main() detects KIROCLAW_PROJECT_DIR, so it resolved with no project dir
+    BEFORE main() detects KIROCREW_PROJECT_DIR, so it resolved with no project dir
     and lru_cache then pinned ("", "") for the process lifetime — the dropdown was
     always blank. The value is now recorded by the CLI gateway entrypoint (sync,
     pre-loop, post-detection) via set_build_info() and only read here.
     """
 
     def test_setter_flows_into_new_state(self, monkeypatch, tmp_path) -> None:
-        from kiro_claw.dashboard import state as state_mod
+        from kiro_crew.dashboard import state as state_mod
 
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state_mod.set_build_info(("beta-braveheart", "4f753ed0"))
         try:
             st = DashboardState(
@@ -153,9 +153,9 @@ class TestBuildInfoResolution:
             state_mod.set_build_info(("", ""))  # restore shared module global
 
     def test_default_is_empty_when_setter_never_called(self, monkeypatch, tmp_path) -> None:
-        from kiro_claw.dashboard import state as state_mod
+        from kiro_crew.dashboard import state as state_mod
 
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state_mod.set_build_info(("", ""))  # simulate non-git / not-yet-resolved
         st = DashboardState(
             sessions=MagicMock(count=0),

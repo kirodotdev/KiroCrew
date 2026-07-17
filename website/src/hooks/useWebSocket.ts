@@ -271,7 +271,7 @@ export function useWebSocket() {
             queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
             // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
             if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
-              new Notification('Approval Required', { body: data.tool || 'A task needs your decision', tag: 'kiroclaw-approval' })
+              new Notification('Approval Required', { body: data.tool || 'A task needs your decision', tag: 'kirocrew-approval' })
             }
             dispatch(addNotification({
               kind: 'approval',
@@ -574,7 +574,7 @@ export function useWebSocket() {
           case 'channel_closed':
           case 'channel_agent_joined':
           case 'channel_agent_left':
-            window.dispatchEvent(new CustomEvent('kiroclaw-channel', { detail: { type, data } }))
+            window.dispatchEvent(new CustomEvent('kirocrew-channel', { detail: { type, data } }))
             break
           case 'cron_history':
             window.dispatchEvent(new CustomEvent('cron_history', { detail: data }))
@@ -585,7 +585,7 @@ export function useWebSocket() {
             // Live mirror frame (a screenshot the agent took, forwarded by the
             // MCP proxy). Routed via a window event so BrowserLiveView can render
             // without a Redux slice.
-            window.dispatchEvent(new CustomEvent('kiroclaw-browser-frame', { detail: data }))
+            window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', { detail: data }))
             break
         }
       } catch { /* ignore malformed */ }

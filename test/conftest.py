@@ -10,10 +10,10 @@ import sys
 import pytest
 from hypothesis import HealthCheck, settings
 
-from kiro_claw import sel as _sel
-from kiro_claw.safety_override import reset_singleton as _reset_safety_override
-from kiro_claw.slack.client import SlackClientOps
-from kiro_claw.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
+from kiro_crew import sel as _sel
+from kiro_crew.safety_override import reset_singleton as _reset_safety_override
+from kiro_crew.slack.client import SlackClientOps
+from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
 
 # ── Hypothesis profiles ─────────────────────────────────────────────────
 # Default (CI): fast iteration.  Run ``HYPOTHESIS_PROFILE=thorough brazil-build test``
@@ -38,7 +38,7 @@ def _isolate_aim_skills_dir(tmp_path, monkeypatch):
     ~35MB) inflate session context beyond _MAX_CONTEXT_CHARS, causing silent
     truncation and non-deterministic test failures under xdist.
     """
-    monkeypatch.setattr("kiro_claw.skills.aim_skills_dir", lambda: tmp_path / "no_aim")
+    monkeypatch.setattr("kiro_crew.skills.aim_skills_dir", lambda: tmp_path / "no_aim")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -83,13 +83,13 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     laptop gets 8 workers (the cap never binds, so no oversubscription), a
     16-core build host gets 16 (unchanged from today), while 64/128-core
     desktops are held at 32 instead of stampeding. Override the ceiling with
-    ``KIROCLAW_MAX_TEST_WORKERS`` for a host that profiles differently. An
+    ``KIROCREW_MAX_TEST_WORKERS`` for a host that profiles differently. An
     explicit ``-n <N>`` on the command line always wins; this hook only fires
     for ``auto`` / ``logical``.
     """
     cpu = os.cpu_count() or 1
     try:
-        cap = int(os.environ.get("KIROCLAW_MAX_TEST_WORKERS", "32"))
+        cap = int(os.environ.get("KIROCREW_MAX_TEST_WORKERS", "32"))
     except ValueError:
         cap = 32
     return min(cpu, max(1, cap))
@@ -111,7 +111,7 @@ def _reset_reasoning_effort_globals():
     through ``_sync_effort_levels`` -> ``update_reasoning_effort_values``;
     without this, a level like ``"extreme"`` leaks into the global and poisons
     validation tests sharing the xdist worker (e.g. test_chat_slot_reasoning_effort)."""
-    import kiro_claw.dashboard.chat_persistence as _cp
+    import kiro_crew.dashboard.chat_persistence as _cp
 
     saved_values = set(_cp._reasoning_effort_values)
     saved_ordered = list(_cp._reasoning_effort_ordered)
@@ -123,40 +123,40 @@ def _reset_reasoning_effort_globals():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_kiroclaw_home(tmp_path_factory, monkeypatch):
-    """Pin ``KIROCLAW_HOME`` to a per-test tmp dir as a safety net.
+def _isolate_kirocrew_home(tmp_path_factory, monkeypatch):
+    """Pin ``KIROCREW_HOME`` to a per-test tmp dir as a safety net.
 
-    ``config_dir()`` reads ``KIROCLAW_HOME`` on every call and falls back to the
-    operator's real ``~/.kiroclaw`` when it is unset. Any test that reaches a
+    ``config_dir()`` reads ``KIROCREW_HOME`` on every call and falls back to the
+    operator's real ``~/.kirocrew`` when it is unset. Any test that reaches a
     code path resolving ``apps_dir()`` / ``config_dir()`` (e.g. a lifecycle
     dispatch that calls ``app_dir(name)/"data".mkdir()``) without setting
-    ``KIROCLAW_HOME`` itself would otherwise create real dirs/files under the
+    ``KIROCREW_HOME`` itself would otherwise create real dirs/files under the
     developer's home — and under Hypothesis that means one orphan per generated
-    example, accumulating into thousands of stray ``~/.kiroclaw/apps/<name>/``
+    example, accumulating into thousands of stray ``~/.kirocrew/apps/<name>/``
     dirs over a dev's test history.
 
     This runs before the test body, so a test that sets its own
-    ``KIROCLAW_HOME`` via ``monkeypatch.setenv`` still wins (its value is applied
+    ``KIROCREW_HOME`` via ``monkeypatch.setenv`` still wins (its value is applied
     later and reverted independently). The guard only changes behavior for tests
     that did NOT isolate the home themselves — exactly the leak we want to close.
     """
-    home = tmp_path_factory.mktemp("kiroclaw-home")
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    home = tmp_path_factory.mktemp("kirocrew-home")
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
 
 
 @pytest.fixture(autouse=True)
 def _isolate_agent_state_sidecar(tmp_path_factory, monkeypatch):
     """Pin the agent_state sidecar to a tmp dir for the whole suite.
 
-    ``kiro_claw.agent_state`` stores per-agent bookkeeping (model_managed,
-    cc_model) in ``~/.kiroclaw/agent_model_state.json`` via ``config_dir()``.
+    ``kiro_crew.agent_state`` stores per-agent bookkeeping (model_managed,
+    cc_model) in ``~/.kirocrew/agent_model_state.json`` via ``config_dir()``.
     Tests that exercise the install / refresh / migration / PATCH paths would
     otherwise read and write the operator's real sidecar. Redirect
     ``config_dir`` — referenced as a module attribute at call time — to a fresh
     tmp dir so every test starts from empty state.
     """
     sidecar_root = tmp_path_factory.mktemp("agent-state-isolation")
-    monkeypatch.setattr("kiro_claw.agent_state.config_dir", lambda: sidecar_root)
+    monkeypatch.setattr("kiro_crew.agent_state.config_dir", lambda: sidecar_root)
 
 
 @pytest.fixture(autouse=True)
@@ -248,7 +248,7 @@ def _no_load_check(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import AsyncMock
 
     try:
-        monkeypatch.setattr("kiro_claw.task_executor._wait_for_load", AsyncMock())
+        monkeypatch.setattr("kiro_crew.task_executor._wait_for_load", AsyncMock())
     except AttributeError:
         pass  # load guard not present in this branch
 
@@ -256,9 +256,9 @@ def _no_load_check(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _enterprise_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
-    monkeypatch.setattr("kiro_claw.slack.enterprise._validated_team_id", "TTEST")
-    monkeypatch.setattr("kiro_claw.slack.enterprise._validated_enterprise_id", "ETEST")
-    monkeypatch.setattr("kiro_claw.slack.enterprise._allowed_team_ids", {"TTEST"})
+    monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")
+    monkeypatch.setattr("kiro_crew.slack.enterprise._validated_enterprise_id", "ETEST")
+    monkeypatch.setattr("kiro_crew.slack.enterprise._allowed_team_ids", {"TTEST"})
 
 
 @pytest.fixture(autouse=True)
@@ -293,7 +293,7 @@ def _clean_slack_thread_state():
     Clearing before and after every test makes each hermetic regardless of
     scheduling. Idempotent with per-file fixtures that already clear a subset.
     """
-    from kiro_claw.slack import handler as _h
+    from kiro_crew.slack import handler as _h
 
     for _m in (_h._thread_temporary, _h._thread_incognito, _h._titled_threads, _h._thread_agents):
         _m.clear()
@@ -306,8 +306,8 @@ def _clean_slack_thread_state():
 def _isolate_sel_default_dir(tmp_path_factory):
     """Redirect the Security Event Log default dir to a session-local tmp dir.
 
-    SEL's default singleton writes to the real ``~/.kiroclaw/security_events.jsonl``
-    (``_DEFAULT_DIR = Path.home()/".kiroclaw"``, non-atomic append). Tests that
+    SEL's default singleton writes to the real ``~/.kirocrew/security_events.jsonl``
+    (``_DEFAULT_DIR = Path.home()/".kirocrew"``, non-atomic append). Tests that
     emit events via the default ``sel()`` would otherwise pollute that real file
     and, under ``pytest -n auto``, share it across worker processes. Redirect the
     module-level default to a per-session tmp dir. Session-scoped so we don't
@@ -472,7 +472,7 @@ def _reset_platform_context(monkeypatch):
     must not leak it into the next test.  ``current_context()`` lazily rebuilds
     the standalone default on next access.
 
-    Also pins ``KIROCLAW_PROFILE=standalone`` by default so a dev box that has a
+    Also pins ``KIROCREW_PROFILE=standalone`` by default so a dev box that has a
     real ``~/.midway`` directory does not make ``boot_platform`` resolve the
     ``amazon`` profile and fail closed (no companion installed) for the many
     pre-existing tests that drive ``run_gateway`` / boot.  A test that wants the
@@ -480,10 +480,10 @@ def _reset_platform_context(monkeypatch):
     runs after this autouse fixture), or composes the context directly via
     ``set_context`` without booting.
     """
-    from kiro_claw.platform.bootstrap import _reset_boot_state
-    from kiro_claw.platform.context import reset_context
+    from kiro_crew.platform.bootstrap import _reset_boot_state
+    from kiro_crew.platform.context import reset_context
 
-    monkeypatch.setenv("KIROCLAW_PROFILE", "standalone")
+    monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
     reset_context()
     _reset_boot_state()
     yield

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_claw.dashboard.handlers.files import api_file_diff
+from kiro_crew.dashboard.handlers.files import api_file_diff
 
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -32,7 +32,7 @@ def _mock_sel():
 async def test_empty_path_returns_empty():
     """No path param returns empty diff and original."""
     req = _req("")
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         resp = await api_file_diff(req)
     assert resp.status == 200
     body = json.loads(resp.body)
@@ -43,7 +43,7 @@ async def test_empty_path_returns_empty():
 async def test_nonexistent_file_returns_empty():
     """Non-existent file returns empty diff and original."""
     req = _req("/tmp/nonexistent_file_abc123.txt")
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         resp = await api_file_diff(req)
     assert resp.status == 200
     body = json.loads(resp.body)
@@ -54,9 +54,9 @@ async def test_nonexistent_file_returns_empty():
 async def test_sensitive_path_returns_403():
     """Sensitive paths are rejected with 403."""
     req = _req("/home/user/.ssh/id_rsa")
-    with patch("kiro_claw.dashboard.handlers.files.is_sensitive_path", return_value=True), \
-         patch("kiro_claw.dashboard.handlers.files.os.path.isfile", return_value=True), \
-         patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()):
+    with patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True), \
+         patch("kiro_crew.dashboard.handlers.files.os.path.isfile", return_value=True), \
+         patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         resp = await api_file_diff(req)
     assert resp.status == 403
     body = json.loads(resp.body)
@@ -68,7 +68,7 @@ async def test_file_not_in_git_repo(tmp_path):
     """File outside a git repo returns not_git status."""
     f = tmp_path / "standalone.txt"
     f.write_text("hello")
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         req = _req(str(f))
         resp = await api_file_diff(req)
     assert resp.status == 200
@@ -91,7 +91,7 @@ async def test_clean_file_in_git_repo(tmp_path):
     subprocess.run(["git", "add", "clean.txt"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
 
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         req = _req(str(f))
         resp = await api_file_diff(req)
     assert resp.status == 200
@@ -115,7 +115,7 @@ async def test_modified_file_in_git_repo(tmp_path):
     # Modify the file
     f.write_text("modified content")
 
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         req = _req(str(f))
         resp = await api_file_diff(req)
     assert resp.status == 200
@@ -141,7 +141,7 @@ async def test_untracked_file_in_git_repo(tmp_path):
     f = tmp_path / "untracked.txt"
     f.write_text("new file content")
 
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         req = _req(str(f))
         resp = await api_file_diff(req)
     assert resp.status == 200
@@ -171,8 +171,8 @@ async def test_textconv_hardening(tmp_path):
         calls.append(cmd)
         return orig_run(cmd, **kwargs)
 
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()), \
-         patch("kiro_claw.dashboard.handlers.files.subprocess.run", side_effect=spy_run):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \
+         patch("kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=spy_run):
         req = _req(str(f))
         resp = await api_file_diff(req)
 
@@ -207,8 +207,8 @@ async def test_git_env_nosystem(tmp_path):
             envs.append(kwargs["env"])
         return orig_run(cmd, **kwargs)
 
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()), \
-         patch("kiro_claw.dashboard.handlers.files.subprocess.run", side_effect=spy_run):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \
+         patch("kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=spy_run):
         req = _req(str(f))
         await api_file_diff(req)
 
@@ -225,9 +225,9 @@ async def test_timeout_returns_not_git(tmp_path):
     def timeout_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, 5)
 
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=_mock_sel()), \
-         patch("kiro_claw.dashboard.handlers.files.subprocess.run", side_effect=timeout_run), \
-         patch("kiro_claw.dashboard.handlers.files.is_sensitive_path", return_value=False):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \
+         patch("kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=timeout_run), \
+         patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=False):
         req = _req(str(f))
         resp = await api_file_diff(req)
     assert resp.status == 200
@@ -242,9 +242,9 @@ async def test_sel_audit_logging_on_success(tmp_path):
     f.write_text("content")
 
     mock_sel = _mock_sel()
-    with patch("kiro_claw.dashboard.handlers.files._sel", return_value=mock_sel), \
-         patch("kiro_claw.dashboard.handlers.files.is_sensitive_path", return_value=False), \
-         patch("kiro_claw.dashboard.handlers.files.subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=mock_sel), \
+         patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=False), \
+         patch("kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
         req = _req(str(f))
         await api_file_diff(req)
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from kiro_claw.dashboard.state import DashboardState, _ChatSlot
-from kiro_claw.history import ConversationLog
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.history import ConversationLog
 
 # -- Helpers --
 

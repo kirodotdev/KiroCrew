@@ -1,4 +1,4 @@
-"""Tests for kiroclaw.turn.duration, emitted at turn completion.
+"""Tests for kirocrew.turn.duration, emitted at turn completion.
 
 Drives the REAL production helper ``chat_runner._emit_turn_metric`` with a
 patched recorder, so the metric name, attributes, the stop_reason→outcome
@@ -23,18 +23,18 @@ class _CapturingRecorder:
 
 def _run(duration_ms, stop_reason, slot_key="dashboard:abc123"):
     """Invoke the production emit helper with a patched recorder; return it."""
-    from kiro_claw.dashboard import chat_runner
+    from kiro_crew.dashboard import chat_runner
 
     rec = _CapturingRecorder()
     # chat_runner imports get_recorder at module top-level → patch the consumer.
-    with patch("kiro_claw.dashboard.chat_runner.get_recorder", return_value=rec):
+    with patch("kiro_crew.dashboard.chat_runner.get_recorder", return_value=rec):
         chat_runner._emit_turn_metric(duration_ms, stop_reason, slot_key)
     return rec
 
 
 def _turn_call(rec):
-    calls = [c for c in rec.calls if c["name"] == "kiroclaw.turn.duration"]
-    assert calls, "kiroclaw.turn.duration histogram must be emitted"
+    calls = [c for c in rec.calls if c["name"] == "kirocrew.turn.duration"]
+    assert calls, "kirocrew.turn.duration histogram must be emitted"
     return calls[-1]
 
 

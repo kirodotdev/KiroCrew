@@ -1,6 +1,6 @@
-# KiroClaw UI Integration Tests
+# KiroCrew UI Integration Tests
 
-This directory contains integration and E2E tests for the KiroClaw dashboard frontend.
+This directory contains integration and E2E tests for the KiroCrew dashboard frontend.
 
 ## Test Structure
 
@@ -73,7 +73,7 @@ Playwright is configured in `playwright.config.ts`:
 - Uses Chromium browser
 - Runs against `http://localhost:3000`
 - Auto-starts dev server before tests
-- Uses dev environment (`KIROCLAW_HOME=.kiroclaw-dev` + `KIROCLAW_PORT=6777`)
+- Uses dev environment (`KIROCREW_HOME=.kirocrew-dev` + `KIROCREW_PORT=6777`)
 
 ## Test Coverage
 
@@ -106,7 +106,7 @@ Make sure `src/test/setup.ts` is configured in `vite.config.ts` as `setupFiles`.
 Check that:
 - Port 3000 and 6777 are available
 - Backend is configured with dev environment variables
-- `KIROCLAW_HOME=.kiroclaw-dev` directory exists
+- `KIROCREW_HOME=.kirocrew-dev` directory exists
 
 ### E2E Test Debugging
 Use `npm run test:e2e:debug` to run with visible browser and step through each action. This will help you see exactly what's happening when a test fails.

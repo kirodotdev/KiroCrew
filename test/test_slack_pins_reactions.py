@@ -15,8 +15,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.messaging import api_slack_pins, api_slack_reactions
-from kiro_claw.dashboard.state import DashboardState
+from kiro_crew.dashboard.handlers.messaging import api_slack_pins, api_slack_reactions
+from kiro_crew.dashboard.state import DashboardState
 
 TRACKED = "C0TRACKED123"
 UNTRACKED = "C0UNTRACKED9"
@@ -35,7 +35,7 @@ def _make_app(slack_client):
 
 def _patch_tracked(value: bool):
     return patch(
-        "kiro_claw.slack.handler.is_tracked_channel",
+        "kiro_crew.slack.handler.is_tracked_channel",
         return_value=value,
     )
 

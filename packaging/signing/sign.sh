@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Sign a KiroClaw .app bundle via CDSigner.
+# Sign a KiroCrew .app bundle via CDSigner.
 #
 # Usage:
 #   bash packaging/signing/sign.sh <app-path> <channel> <version>
 #
 # Example:
-#   bash packaging/signing/sign.sh website/electron/dist/mac-arm64/KiroClaw.app nightly 0.2.0-nightly.20260708
+#   bash packaging/signing/sign.sh website/electron/dist/mac-arm64/KiroCrew.app nightly 0.2.0-nightly.20260708
 #
 # Environment variables (required):
 #   AWS_SIGNING_BUCKET     — S3 bucket for signing artifacts

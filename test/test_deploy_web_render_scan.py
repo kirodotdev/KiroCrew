@@ -1,8 +1,8 @@
 """Tests for deploy_web render_standalone + pre-publish scan."""
 from __future__ import annotations
 
-from kiro_claw.apps.builtins.deploy_web.render import render_standalone
-from kiro_claw.apps.builtins.deploy_web.scan import scan_content, summarize
+from kiro_crew.apps.builtins.deploy_web.render import render_standalone
+from kiro_crew.apps.builtins.deploy_web.scan import scan_content, summarize
 
 # --- render ---------------------------------------------------------------
 

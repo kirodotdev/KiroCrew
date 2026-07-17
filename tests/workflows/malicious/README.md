@@ -1,6 +1,6 @@
 # Adversarial workflow-script corpus (GATE B9)
 
-Each `*.py` here is a **hostile workflow script** that `kiro_claw.workflows.validate`
+Each `*.py` here is a **hostile workflow script** that `kiro_crew.workflows.validate`
 MUST statically reject. They are **data/fixtures**, not pytest modules — the
 package only collects tests under `test/` (`testpaths = test`), so nothing here
 runs. `test/test_workflows_malicious.py` loads every file in this directory and

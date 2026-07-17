@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from kiro_claw.acp.types import (
+from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -18,8 +18,8 @@ from kiro_claw.acp.types import (
     EVENT_TOOL_CALL,
     AcpEvent,
 )
-from kiro_claw.messaging import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_claw.slack.renderer import (
+from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver
+from kiro_crew.slack.renderer import (
     _STATUS_WORKING,
     TOOL_APPROVE_ACTION_PREFIX,
     TOOL_DENY_ACTION_PREFIX,
@@ -368,7 +368,7 @@ class TestApprovalDecider:
     def test_timeout_denies(self, monkeypatch):
         # If the user never clicks, the decider denies by default after the
         # approval window (patched tiny for the test).
-        monkeypatch.setattr("kiro_claw.slack.renderer._APPROVAL_TIMEOUT", 0.01)
+        monkeypatch.setattr("kiro_crew.slack.renderer._APPROVAL_TIMEOUT", 0.01)
         rec = _RecSlack()
         decider = SlackApprovalDecider()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)

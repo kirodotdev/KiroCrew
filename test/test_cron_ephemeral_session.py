@@ -21,12 +21,12 @@ import json
 
 import pytest
 
-from kiro_claw.cron import CronJob, CronService
+from kiro_crew.cron import CronJob, CronService
 
 
 @pytest.fixture(autouse=True)
 def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_claw.cron._DEFAULT_DIR", tmp_path)
+    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
     yield
 
 
@@ -82,7 +82,7 @@ class TestBuildCronSessionContext:
 
     def test_persistent_uses_stable_key(self):
         """persistent_session=True → key == f'cron:{job.id}' (unchanged)."""
-        from kiro_claw.cron import build_cron_session_context
+        from kiro_crew.cron import build_cron_session_context
 
         job = CronJob(id="abc123", name="x", message="hi", persistent_session=True)
         key, _prompt = build_cron_session_context(job)
@@ -90,7 +90,7 @@ class TestBuildCronSessionContext:
 
     def test_persistent_prompt_prepends_last_result(self):
         """persistent_session=True → prompt contains the previous run's result."""
-        from kiro_claw.cron import build_cron_session_context
+        from kiro_crew.cron import build_cron_session_context
 
         job = CronJob(
             id="abc123",
@@ -105,7 +105,7 @@ class TestBuildCronSessionContext:
 
     def test_stateless_uses_fresh_key_per_call(self):
         """persistent_session=False → two calls return two different keys."""
-        from kiro_claw.cron import build_cron_session_context
+        from kiro_crew.cron import build_cron_session_context
 
         job = CronJob(id="abc123", name="x", message="hi", persistent_session=False)
         key1, _ = build_cron_session_context(job)
@@ -114,7 +114,7 @@ class TestBuildCronSessionContext:
 
     def test_stateless_key_prefix_is_job_id(self):
         """Ephemeral key must still start with 'cron:{job.id}:' for reaper matching."""
-        from kiro_claw.cron import build_cron_session_context
+        from kiro_crew.cron import build_cron_session_context
 
         job = CronJob(id="abc123", name="x", message="hi", persistent_session=False)
         key, _ = build_cron_session_context(job)
@@ -129,7 +129,7 @@ class TestBuildCronSessionContext:
         accidentally had last_result from a previous version's persisted state,
         the new code must never inject it.
         """
-        from kiro_claw.cron import build_cron_session_context
+        from kiro_crew.cron import build_cron_session_context
 
         job = CronJob(
             id="abc123",
@@ -144,7 +144,7 @@ class TestBuildCronSessionContext:
 
     def test_stateless_prompt_equals_bare_message(self):
         """When persistent_session=False and no acks, prompt is exactly job.message."""
-        from kiro_claw.cron import build_cron_session_context
+        from kiro_crew.cron import build_cron_session_context
 
         job = CronJob(
             id="abc123",

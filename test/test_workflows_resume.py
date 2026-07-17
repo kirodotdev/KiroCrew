@@ -19,8 +19,8 @@ import asyncio
 
 import pytest
 
-from kiro_claw.workflows.runner import WorkflowRunner
-from kiro_claw.workflows.service import WorkflowService
+from kiro_crew.workflows.runner import WorkflowRunner
+from kiro_crew.workflows.service import WorkflowService
 
 pytestmark = pytest.mark.asyncio
 
@@ -124,7 +124,7 @@ async def _wait(svc, rid, timeout=3.0):
 
 async def test_service_rerun_subtree_from_index(monkeypatch) -> None:
     # Patch the agent_fn the service builds so calls are counted + deterministic.
-    import kiro_claw.workflows.agent_exec as ae
+    import kiro_crew.workflows.agent_exec as ae
 
     calls = {"n": 0}
 
@@ -137,7 +137,7 @@ async def test_service_rerun_subtree_from_index(monkeypatch) -> None:
 
     monkeypatch.setattr(ae, "build_agent_fn", fake_build)
     # service.py imported build_agent_fn by name — patch there too
-    import kiro_claw.workflows.service as svc_mod
+    import kiro_crew.workflows.service as svc_mod
 
     monkeypatch.setattr(svc_mod, "build_agent_fn", fake_build)
 

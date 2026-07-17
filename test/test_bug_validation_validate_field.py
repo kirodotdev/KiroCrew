@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.validation import (
+from kiro_crew.validation import (
     FieldSpec,
     ToolSchema,
     ValidationError,

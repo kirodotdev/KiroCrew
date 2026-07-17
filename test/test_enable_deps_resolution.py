@@ -14,8 +14,8 @@ import pytest
 @pytest.fixture(autouse=True)
 def _mock_dashboard_server():
     """Pre-mock dashboard.server to avoid circular import with mimir."""
-    if "kiro_claw.dashboard.server" not in sys.modules:
-        sys.modules["kiro_claw.dashboard.server"] = MagicMock()
+    if "kiro_crew.dashboard.server" not in sys.modules:
+        sys.modules["kiro_crew.dashboard.server"] = MagicMock()
     yield
 
 
@@ -25,7 +25,7 @@ class TestEnableDepsResolution:
     @pytest.mark.asyncio
     async def test_dependencies_resolved_on_enable(self) -> None:
         """When manifest has dependencies.aim, resolve_dependencies is called."""
-        from kiro_claw.apps.dependencies import DependencyResult
+        from kiro_crew.apps.dependencies import DependencyResult
 
         fake_app_info = {
             "name": "test-app",
@@ -42,15 +42,15 @@ class TestEnableDepsResolution:
         mock_dep_result = DependencyResult(installed=["aim/agents/TestAICapabilities"])
 
         with (
-            patch("kiro_claw.apps.routes.get_app", return_value=fake_app_info),
-            patch("kiro_claw.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
-            patch("kiro_claw.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
-            patch("kiro_claw.apps.routes.start_app_backend", return_value=None),
-            patch("kiro_claw.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
-            patch("kiro_claw.apps.routes.sel", return_value=MagicMock()),
-            patch("kiro_claw.apps.routes._resolve_deps", new_callable=AsyncMock, return_value=mock_dep_result) as mock_resolve,
+            patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
+            patch("kiro_crew.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
+            patch("kiro_crew.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
+            patch("kiro_crew.apps.routes.start_app_backend", return_value=None),
+            patch("kiro_crew.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
+            patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+            patch("kiro_crew.apps.routes._resolve_deps", new_callable=AsyncMock, return_value=mock_dep_result) as mock_resolve,
         ):
-            from kiro_claw.apps.routes import handle_enable_app
+            from kiro_crew.apps.routes import handle_enable_app
 
             request = MagicMock()
             request.match_info = {"name": "test-app"}
@@ -80,15 +80,15 @@ class TestEnableDepsResolution:
         }
 
         with (
-            patch("kiro_claw.apps.routes.get_app", return_value=fake_app_info),
-            patch("kiro_claw.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
-            patch("kiro_claw.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
-            patch("kiro_claw.apps.routes.start_app_backend", return_value=None),
-            patch("kiro_claw.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
-            patch("kiro_claw.apps.routes.sel", return_value=MagicMock()),
-            patch("kiro_claw.apps.routes._resolve_deps", new_callable=AsyncMock) as mock_resolve,
+            patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
+            patch("kiro_crew.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
+            patch("kiro_crew.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
+            patch("kiro_crew.apps.routes.start_app_backend", return_value=None),
+            patch("kiro_crew.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
+            patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+            patch("kiro_crew.apps.routes._resolve_deps", new_callable=AsyncMock) as mock_resolve,
         ):
-            from kiro_claw.apps.routes import handle_enable_app
+            from kiro_crew.apps.routes import handle_enable_app
 
             request = MagicMock()
             request.match_info = {"name": "simple-app"}
@@ -101,7 +101,7 @@ class TestEnableDepsResolution:
     @pytest.mark.asyncio
     async def test_failed_deps_reported_but_enable_continues(self) -> None:
         """Failed dependency resolution is reported but doesn't block enable."""
-        from kiro_claw.apps.dependencies import DependencyResult
+        from kiro_crew.apps.dependencies import DependencyResult
 
         fake_app_info = {
             "name": "partial-app",
@@ -120,15 +120,15 @@ class TestEnableDepsResolution:
         )
 
         with (
-            patch("kiro_claw.apps.routes.get_app", return_value=fake_app_info),
-            patch("kiro_claw.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
-            patch("kiro_claw.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
-            patch("kiro_claw.apps.routes.start_app_backend", return_value=None),
-            patch("kiro_claw.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
-            patch("kiro_claw.apps.routes.sel", return_value=MagicMock()),
-            patch("kiro_claw.apps.routes._resolve_deps", new_callable=AsyncMock, return_value=mock_dep_result),
+            patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
+            patch("kiro_crew.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
+            patch("kiro_crew.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
+            patch("kiro_crew.apps.routes.start_app_backend", return_value=None),
+            patch("kiro_crew.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
+            patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+            patch("kiro_crew.apps.routes._resolve_deps", new_callable=AsyncMock, return_value=mock_dep_result),
         ):
-            from kiro_claw.apps.routes import handle_enable_app
+            from kiro_crew.apps.routes import handle_enable_app
 
             request = MagicMock()
             request.match_info = {"name": "partial-app"}
@@ -150,7 +150,7 @@ class TestEnableDepsResolution:
         """Dependencies are resolved BEFORE setup.onEnable runs."""
         call_order: list[str] = []
 
-        from kiro_claw.apps.dependencies import DependencyResult
+        from kiro_crew.apps.dependencies import DependencyResult
 
         fake_app_info = {
             "name": "ordered-app",
@@ -171,16 +171,16 @@ class TestEnableDepsResolution:
             return {"output": "", "failed": False}
 
         with (
-            patch("kiro_claw.apps.routes.get_app", return_value=fake_app_info),
-            patch("kiro_claw.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
-            patch("kiro_claw.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
-            patch("kiro_claw.apps.routes.start_app_backend", return_value=None),
-            patch("kiro_claw.apps.routes._run_lifecycle_script", side_effect=mock_script),
-            patch("kiro_claw.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
-            patch("kiro_claw.apps.routes.sel", return_value=MagicMock()),
-            patch("kiro_claw.apps.routes._resolve_deps", side_effect=mock_resolve),
+            patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
+            patch("kiro_crew.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
+            patch("kiro_crew.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
+            patch("kiro_crew.apps.routes.start_app_backend", return_value=None),
+            patch("kiro_crew.apps.routes._run_lifecycle_script", side_effect=mock_script),
+            patch("kiro_crew.apps.routes.on_app_enable", new_callable=AsyncMock, return_value=None),
+            patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+            patch("kiro_crew.apps.routes._resolve_deps", side_effect=mock_resolve),
         ):
-            from kiro_claw.apps.routes import handle_enable_app
+            from kiro_crew.apps.routes import handle_enable_app
 
             request = MagicMock()
             request.match_info = {"name": "ordered-app"}

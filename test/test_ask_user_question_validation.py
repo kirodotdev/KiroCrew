@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.validation import ValidationError, validate_ask_user_question
+from kiro_crew.validation import ValidationError, validate_ask_user_question
 
 
 class TestValidateAskUserQuestion:

@@ -20,7 +20,7 @@ from chat_test_helpers import _make_app, _make_state
 def _patch_sel():
     """Patch sel() so the handler doesn't touch a real SecurityEventLog."""
     mock_sel = MagicMock()
-    with patch("kiro_claw.dashboard.chat_handlers.sel", return_value=mock_sel):
+    with patch("kiro_crew.dashboard.chat_handlers.sel", return_value=mock_sel):
         yield mock_sel
 
 
@@ -39,7 +39,7 @@ def _running_slot(state, key="test"):
 class TestApiChatSteer:
     @pytest.mark.asyncio
     async def test_steer_injects_into_running_turn(self, tmp_path, monkeypatch, _patch_sel):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = _running_slot(state)
@@ -64,7 +64,7 @@ class TestApiChatSteer:
 
     @pytest.mark.asyncio
     async def test_steer_unavailable_falls_back_to_queue(self, tmp_path, monkeypatch, _patch_sel):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = _running_slot(state)
@@ -86,7 +86,7 @@ class TestApiChatSteer:
 
     @pytest.mark.asyncio
     async def test_steer_error_falls_back_to_queue(self, tmp_path, monkeypatch, _patch_sel):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = _running_slot(state)

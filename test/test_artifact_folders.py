@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.artifacts import (
+from kiro_crew.artifacts import (
     ArtifactFolderStore,
     ArtifactNotFoundError,
     ArtifactStore,
@@ -159,7 +159,7 @@ class TestFolderCrud:
     def test_reparent_depth_guard(self, folders: ArtifactFolderStore) -> None:
         # Merging a subtree into a deep chain must not exceed MAX_FOLDER_DEPTH —
         # the guard create()/resolve_path() enforce must also apply to reparent.
-        from kiro_claw.artifacts import MAX_FOLDER_DEPTH
+        from kiro_crew.artifacts import MAX_FOLDER_DEPTH
 
         chain = "/".join(f"A{i}" for i in range(MAX_FOLDER_DEPTH - 2))  # depths 0..MAX-3
         deep_leaf = folders.resolve_path(chain, create_missing=True)
@@ -252,7 +252,7 @@ class TestResolvePath:
     def test_mkdir_p_rolls_back_on_depth_failure(self, folders: ArtifactFolderStore) -> None:
         # A path deeper than MAX_FOLDER_DEPTH must fail all-or-nothing: no
         # partial folders left behind (in-memory state stays consistent with disk).
-        from kiro_claw.artifacts import MAX_FOLDER_DEPTH
+        from kiro_crew.artifacts import MAX_FOLDER_DEPTH
 
         deep = "/".join(f"L{i}" for i in range(MAX_FOLDER_DEPTH + 2))
         with pytest.raises(ArtifactValidationError):

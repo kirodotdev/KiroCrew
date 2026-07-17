@@ -6,8 +6,8 @@ import uuid
 
 import pytest
 
-from kiro_claw.cron import CronService
-from kiro_claw.mcp_cron import _call_tool_inner
+from kiro_crew.cron import CronService
+from kiro_crew.mcp_cron import _call_tool_inner
 
 
 def _unique_name() -> str:
@@ -17,15 +17,15 @@ def _unique_name() -> str:
 @pytest.fixture(autouse=True)
 def _isolate_cron_store(monkeypatch, tmp_path):
     """Route all CronService() instances to tmp_path for test isolation."""
-    monkeypatch.setattr("kiro_claw.cron._DEFAULT_DIR", tmp_path)
-    monkeypatch.setattr("kiro_claw.mcp_cron.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
+    monkeypatch.setattr("kiro_crew.mcp_cron.config_dir", lambda: tmp_path)
 
 
 class TestCronAddSessionKey:
     def test_captures_session_key_from_env(self, monkeypatch):
-        """cron_add tags job with KIROCLAW_SESSION_KEY."""
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-abc")
-        monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
+        """cron_add tags job with KIROCREW_SESSION_KEY."""
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-abc")
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
         name = _unique_name()
         result = _call_tool_inner("cron_add", {"name": name, "message": "hi", "every": 120})
         assert "Added job" in result
@@ -35,10 +35,10 @@ class TestCronAddSessionKey:
         assert jobs[0].session_key == "sess-abc"
 
     def test_no_session_key_leaves_empty(self, monkeypatch):
-        """Without KIROCLAW_SESSION_KEY, session_key is empty."""
-        monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
-        monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
-        monkeypatch.setattr("kiro_claw.mcp_cron._resolve_session_key", lambda: "")
+        """Without KIROCREW_SESSION_KEY, session_key is empty."""
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        monkeypatch.setattr("kiro_crew.mcp_cron._resolve_session_key", lambda: "")
         name = _unique_name()
         _call_tool_inner("cron_add", {"name": name, "message": "hi", "every": 120})
 
@@ -50,20 +50,20 @@ class TestCronAddSessionKey:
 class TestCronRemoveAllScoped:
     def test_removes_only_own_session_jobs(self, monkeypatch):
         """With session key, cron_remove_all only removes jobs from that session."""
-        monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
-        monkeypatch.delenv("KIROCLAW_CLI", raising=False)
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
         n1, n2 = _unique_name(), _unique_name()
 
         # Create job as session A
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-A")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-A")
         _call_tool_inner("cron_add", {"name": n1, "message": "a", "every": 120})
 
         # Create job as session B
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-B")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-B")
         _call_tool_inner("cron_add", {"name": n2, "message": "b", "every": 120})
 
         # Remove all as session A — should only remove n1
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-A")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-A")
         result = _call_tool_inner("cron_remove_all", {})
         assert "Removed 1 job(s)" in result
 
@@ -73,52 +73,52 @@ class TestCronRemoveAllScoped:
         assert remaining[0].name == n2
 
     def test_cli_removes_all(self, monkeypatch):
-        """With KIROCLAW_CLI=1, cron_remove_all removes everything."""
-        monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
+        """With KIROCREW_CLI=1, cron_remove_all removes everything."""
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
         n1, n2 = _unique_name(), _unique_name()
 
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-X")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-X")
         _call_tool_inner("cron_add", {"name": n1, "message": "a", "every": 120})
 
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-Y")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-Y")
         _call_tool_inner("cron_add", {"name": n2, "message": "b", "every": 120})
 
         # CLI admin removes everything
-        monkeypatch.setenv("KIROCLAW_CLI", "1")
-        monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_CLI", "1")
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         result = _call_tool_inner("cron_remove_all", {})
         assert "Removed 2 job(s)" in result
 
     def test_no_session_key_no_cli_returns_error(self, monkeypatch):
         """Without session key or CLI flag, returns error."""
-        monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
-        monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
-        monkeypatch.delenv("KIROCLAW_CLI", raising=False)
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
         name = _unique_name()
 
         # Create a job via CLI so it exists
-        monkeypatch.setenv("KIROCLAW_CLI", "1")
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-owner")
-        monkeypatch.setattr("kiro_claw.mcp_cron._resolve_session_key", lambda: "sess-owner")
+        monkeypatch.setenv("KIROCREW_CLI", "1")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-owner")
+        monkeypatch.setattr("kiro_crew.mcp_cron._resolve_session_key", lambda: "sess-owner")
         _call_tool_inner("cron_add", {"name": name, "message": "a", "every": 120})
 
         # Try to remove without session key or CLI
-        monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
-        monkeypatch.delenv("KIROCLAW_CLI", raising=False)
-        monkeypatch.setattr("kiro_claw.mcp_cron._resolve_session_key", lambda: "")
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
+        monkeypatch.setattr("kiro_crew.mcp_cron._resolve_session_key", lambda: "")
         result = _call_tool_inner("cron_remove_all", {})
         assert "Error: no session key set" in result
 
     def test_no_matching_jobs_returns_message(self, monkeypatch):
         """Session with no owned jobs gets appropriate message."""
-        monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
-        monkeypatch.delenv("KIROCLAW_CLI", raising=False)
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
         name = _unique_name()
 
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-owner")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-owner")
         _call_tool_inner("cron_add", {"name": name, "message": "a", "every": 120})
 
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-other")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-other")
         result = _call_tool_inner("cron_remove_all", {})
         assert "No cron jobs owned by this session" in result
 

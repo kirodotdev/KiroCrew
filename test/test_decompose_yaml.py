@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.task_planner import _check_acyclic, decompose_yaml
+from kiro_crew.task_planner import _check_acyclic, decompose_yaml
 
 # ── Happy path ──
 
@@ -154,7 +154,7 @@ def test_too_many_agents():
 # ── _check_acyclic directly (iterative DFS) ──
 
 def test_check_acyclic_no_cycle():
-    from kiro_claw.task_models import Task
+    from kiro_crew.task_models import Task
     tasks = [
         Task(index=1, title="a", description="", depends_on=[]),
         Task(index=2, title="b", description="", depends_on=[1]),
@@ -164,7 +164,7 @@ def test_check_acyclic_no_cycle():
 
 def test_check_acyclic_deep_chain():
     """Iterative DFS handles chains deeper than Python's recursion limit."""
-    from kiro_claw.task_models import Task
+    from kiro_crew.task_models import Task
     n = 1500
     # Each task depends on the *next* one so DFS from task 1 must chase the full chain (stack depth n).
     tasks = [Task(index=i, title=f"t{i}", description="", depends_on=[i + 1] if i < n else []) for i in range(1, n + 1)]

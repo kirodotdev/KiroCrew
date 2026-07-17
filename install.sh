@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# KiroClaw Installer
+# KiroCrew Installer
 # One-command setup for macOS and Linux. Public build — no Brazil workspace,
 # no internal tooling required. Uses python3/pip (backend) + npm/vite (frontend).
 #
 # Usage (from a local clone):
-#   git clone https://github.com/kirodotdev-labs/kiroclaw.git
-#   cd kiroclaw
+#   git clone https://github.com/kirodotdev/KiroCrew.git
+#   cd kirocrew
 #   bash install.sh
 #
 # Options:
@@ -30,11 +30,11 @@ done
 
 # ── Constants ──
 # Repo root = directory containing this script (run from a local clone).
-KIROCLAW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-KIROCLAW_DATA_DIR="$HOME/.kiroclaw"
+KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+KIROCREW_DATA_DIR="$HOME/.kirocrew"
 NODE_VERSION="20"
 PYTHON_VERSION="3.12"
-KIROCLAW_PORT="${KIROCLAW_PORT:-5476}"
+KIROCREW_PORT="${KIROCREW_PORT:-5476}"
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
 
 # ── Colors & Formatting ──
@@ -112,14 +112,14 @@ has() { command -v "$1" >/dev/null 2>&1; }
 
 banner
 
-echo "  ${DIM}Repo directory:${RESET}     $KIROCLAW_APP_DIR"
-echo "  ${DIM}Data directory:${RESET}     $KIROCLAW_DATA_DIR"
+echo "  ${DIM}Repo directory:${RESET}     $KIROCREW_APP_DIR"
+echo "  ${DIM}Data directory:${RESET}     $KIROCREW_DATA_DIR"
 echo "  ${DIM}Platform:${RESET}           $(uname -s) $(uname -m)"
 echo ""
 
-if [ ! -f "$KIROCLAW_APP_DIR/pyproject.toml" ]; then
-    die "Run this from inside a KiroClaw clone (pyproject.toml not found in $KIROCLAW_APP_DIR).
-     git clone https://github.com/kirodotdev-labs/kiroclaw.git && cd kiroclaw && bash install.sh"
+if [ ! -f "$KIROCREW_APP_DIR/pyproject.toml" ]; then
+    die "Run this from inside a KiroCrew clone (pyproject.toml not found in $KIROCREW_APP_DIR).
+     git clone https://github.com/kirodotdev/KiroCrew.git && cd kirocrew && bash install.sh"
 fi
 
 # ══════════════════════════════════════════════════════════════════════
@@ -291,16 +291,16 @@ detail "kiro-cli is an optional alternative backend (https://kiro.dev/docs/cli/i
 # ══════════════════════════════════════════════════════════════════════
 step "Build"
 
-cd "$KIROCLAW_APP_DIR"
+cd "$KIROCREW_APP_DIR"
 
 # ── Frontend (npm + vite) ──
-# Vite emits to website/dist; we stage it into src/kiro_claw/static/dist
+# Vite emits to website/dist; we stage it into src/kiro_crew/static/dist
 # where setup.py copies it into the package at install time.
-if has node && [ -d "$KIROCLAW_APP_DIR/website" ]; then
+if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     info "Building frontend (website/)…"
     _fe_log="$(mktemp)"
     (
-        cd "$KIROCLAW_APP_DIR/website" &&
+        cd "$KIROCREW_APP_DIR/website" &&
         if [ -f package-lock.json ]; then
             npm ci --no-audit --no-fund --loglevel=error 2>"$_fe_log"
         else
@@ -310,13 +310,13 @@ if has node && [ -d "$KIROCLAW_APP_DIR/website" ]; then
     ) &
     spinner $! "Installing npm packages & building React app…"
     if wait $!; then
-        _dist_src="$KIROCLAW_APP_DIR/website/dist"
-        _dist_dst="$KIROCLAW_APP_DIR/src/kiro_claw/static/dist"
+        _dist_src="$KIROCREW_APP_DIR/website/dist"
+        _dist_dst="$KIROCREW_APP_DIR/src/kiro_crew/static/dist"
         if [ -d "$_dist_src" ]; then
             rm -rf "$_dist_dst"
             mkdir -p "$(dirname "$_dist_dst")"
             cp -R "$_dist_src" "$_dist_dst"
-            ok "Frontend built and staged → src/kiro_claw/static/dist"
+            ok "Frontend built and staged → src/kiro_crew/static/dist"
         else
             warn "website/dist not found after build — dashboard will use legacy fallback"
         fi
@@ -332,7 +332,7 @@ fi
 
 # ── Python virtual environment & package ──
 info "Creating virtual environment…"
-_venv="$KIROCLAW_APP_DIR/.venv"
+_venv="$KIROCREW_APP_DIR/.venv"
 if [ -d "$_venv" ] && [ -x "$_venv/bin/python" ]; then
     ok "Existing venv found"
 else
@@ -351,17 +351,17 @@ fi
 _pip_log="$(mktemp)"
 (
     "$_venv/bin/pip" install --upgrade pip setuptools wheel 2>&1 | tail -5 > "$_pip_log"
-    cd "$KIROCLAW_APP_DIR"
+    cd "$KIROCREW_APP_DIR"
     # Frontend already built and staged above; skip rebuild in setup.py.
-    KIROCLAW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_pip_target" 2>&1 | tail -20 >> "$_pip_log"
+    KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_pip_target" 2>&1 | tail -20 >> "$_pip_log"
 ) &
-spinner $! "Installing kiroclaw and dependencies…"
+spinner $! "Installing kirocrew and dependencies…"
 if wait $!; then
     if "$_venv/bin/python" -c "import aiohttp" 2>/dev/null; then
         ok "Python package installed (isolated venv)"
     else
         die "Package installed but dependencies missing (aiohttp not importable).
-     Try manually: $_venv/bin/pip install -e $KIROCLAW_APP_DIR"
+     Try manually: $_venv/bin/pip install -e $KIROCREW_APP_DIR"
     fi
 else
     if [ -s "$_pip_log" ]; then
@@ -373,37 +373,37 @@ else
 fi
 rm -f "$_pip_log"
 
-# Record install method so `kiroclaw update` uses the right rebuild strategy
-echo "pip" > "$KIROCLAW_APP_DIR/.install-method"
+# Record install method so `kirocrew update` uses the right rebuild strategy
+echo "pip" > "$KIROCREW_APP_DIR/.install-method"
 ok "Install method recorded (.install-method=pip)"
 
-# Symlink the kiroclaw entry point to ~/.local/bin for PATH access
+# Symlink the kirocrew entry point to ~/.local/bin for PATH access
 mkdir -p "$HOME/.local/bin"
-ln -sf "$_venv/bin/kiroclaw" "$HOME/.local/bin/kiroclaw"
-ok "Symlinked kiroclaw → ~/.local/bin/kiroclaw"
+ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
+ok "Symlinked kirocrew → ~/.local/bin/kirocrew"
 
 # ── Desktop App (macOS only) ──
-if [ "$(uname)" = "Darwin" ] && has node && [ -d "$KIROCLAW_APP_DIR/electron" ]; then
-    printf "\n  Install KiroClaw desktop app to ~/Applications? [Y/n] "
+if [ "$(uname)" = "Darwin" ] && has node && [ -d "$KIROCREW_APP_DIR/electron" ]; then
+    printf "\n  Install KiroCrew desktop app to ~/Applications? [Y/n] "
     read -r _install_app < /dev/tty
     case "${_install_app:-Y}" in
         [Yy]*)
             info "Building desktop app…"
             (
-                cd "$KIROCLAW_APP_DIR/electron"
+                cd "$KIROCREW_APP_DIR/electron"
                 npm install --no-audit --no-fund --loglevel=error 2>/dev/null
                 npx electron-builder --mac --dir 2>/dev/null
             ) &
             spinner $! "Building Electron app…"
             if wait $!; then
-                _app_src="$KIROCLAW_APP_DIR/electron/dist/mac-arm64/KiroClaw.app"
-                [ ! -d "$_app_src" ] && _app_src="$KIROCLAW_APP_DIR/electron/dist/mac/KiroClaw.app"
+                _app_src="$KIROCREW_APP_DIR/electron/dist/mac-arm64/KiroCrew.app"
+                [ ! -d "$_app_src" ] && _app_src="$KIROCREW_APP_DIR/electron/dist/mac/KiroCrew.app"
                 if [ -d "$_app_src" ]; then
                     mkdir -p "$HOME/Applications"
-                    rm -rf "$HOME/Applications/KiroClaw.app" 2>/dev/null
-                    cp -R "$_app_src" "$HOME/Applications/KiroClaw.app"
-                    ok "KiroClaw.app installed to ~/Applications"
-                    detail "Launch via Spotlight (⌘+Space → KiroClaw) or Finder → ~/Applications"
+                    rm -rf "$HOME/Applications/KiroCrew.app" 2>/dev/null
+                    cp -R "$_app_src" "$HOME/Applications/KiroCrew.app"
+                    ok "KiroCrew.app installed to ~/Applications"
+                    detail "Launch via Spotlight (⌘+Space → KiroCrew) or Finder → ~/Applications"
                 else
                     warn "Electron build succeeded but .app not found"
                 fi
@@ -413,7 +413,7 @@ if [ "$(uname)" = "Darwin" ] && has node && [ -d "$KIROCLAW_APP_DIR/electron" ];
             ;;
         *)
             info "Skipping desktop app"
-            detail "Install later: cd $KIROCLAW_APP_DIR/electron && npm install && npm run dist"
+            detail "Install later: cd $KIROCREW_APP_DIR/electron && npm install && npm run dist"
             ;;
     esac
 fi
@@ -423,12 +423,12 @@ fi
 # ══════════════════════════════════════════════════════════════════════
 step "PATH Configuration"
 
-# The kiroclaw entry point is symlinked to ~/.local/bin/kiroclaw.
-export PATH="$HOME/.local/bin:$KIROCLAW_APP_DIR/bin:$PATH"
+# The kirocrew entry point is symlinked to ~/.local/bin/kirocrew.
+export PATH="$HOME/.local/bin:$KIROCREW_APP_DIR/bin:$PATH"
 
 # Persist to shell rc files
 _path_line="export PATH=\"\$HOME/.local/bin:\$PATH\""
-_marker="# KiroClaw"
+_marker="# KiroCrew"
 
 _add_to_rc() {
     local rc="$1"
@@ -444,21 +444,21 @@ _add_to_rc() {
     ok "Added to $(basename "$rc")"
 }
 
-# Also persist KIROCLAW_PROJECT_DIR so kiroclaw works from any directory
-_proj_line="export KIROCLAW_PROJECT_DIR=\"$KIROCLAW_APP_DIR\""
+# Also persist KIROCREW_PROJECT_DIR so kirocrew works from any directory
+_proj_line="export KIROCREW_PROJECT_DIR=\"$KIROCREW_APP_DIR\""
 
 _add_proj_to_rc() {
     local rc="$1"
     [ ! -f "$rc" ] && return
-    if grep -qF "KIROCLAW_PROJECT_DIR" "$rc" 2>/dev/null; then
+    if grep -qF "KIROCREW_PROJECT_DIR" "$rc" 2>/dev/null; then
         local _tmp
         _tmp="$(mktemp)"
-        grep -v "KIROCLAW_PROJECT_DIR" "$rc" > "$_tmp" && mv "$_tmp" "$rc"
+        grep -v "KIROCREW_PROJECT_DIR" "$rc" > "$_tmp" && mv "$_tmp" "$rc"
     fi
     echo "$_proj_line" >> "$rc"
 }
 
-export KIROCLAW_PROJECT_DIR="$KIROCLAW_APP_DIR"
+export KIROCREW_PROJECT_DIR="$KIROCREW_APP_DIR"
 
 for _rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     if [ -f "$_rc" ]; then
@@ -473,28 +473,28 @@ if [ -f "$_fish_config" ] || [ "$(basename "${SHELL:-}")" = "fish" ]; then
     mkdir -p "$HOME/.config/fish"
     if grep -qF "$_marker" "$_fish_config" 2>/dev/null; then
         _tmp="$(mktemp)"
-        awk -v marker="$_marker" 'BEGIN{s=0} $0==marker{s=1;next} s&&/^(fish_add_path|set -gx KIROCLAW)/{next} {s=0;print}' "$_fish_config" > "$_tmp" && mv "$_tmp" "$_fish_config"
+        awk -v marker="$_marker" 'BEGIN{s=0} $0==marker{s=1;next} s&&/^(fish_add_path|set -gx KIROCREW)/{next} {s=0;print}' "$_fish_config" > "$_tmp" && mv "$_tmp" "$_fish_config"
     fi
     {
         echo "$_marker"
         echo "fish_add_path -g ~/.local/bin"
-        echo "set -gx KIROCLAW_PROJECT_DIR $KIROCLAW_APP_DIR"
+        echo "set -gx KIROCREW_PROJECT_DIR $KIROCREW_APP_DIR"
     } >> "$_fish_config"
     ok "Added to config.fish"
 fi
 
-# Save project dir for kiroclaw to find
-mkdir -p "$KIROCLAW_DATA_DIR"
-echo "$KIROCLAW_APP_DIR" > "$KIROCLAW_DATA_DIR/project_dir"
+# Save project dir for kirocrew to find
+mkdir -p "$KIROCREW_DATA_DIR"
+echo "$KIROCREW_APP_DIR" > "$KIROCREW_DATA_DIR/project_dir"
 
-# Verify kiroclaw is accessible
-if has kiroclaw; then
-    ok "kiroclaw command available"
-elif [ -x "$HOME/.local/bin/kiroclaw" ]; then
-    ok "kiroclaw symlinked to ~/.local/bin/kiroclaw"
+# Verify kirocrew is accessible
+if has kirocrew; then
+    ok "kirocrew command available"
+elif [ -x "$HOME/.local/bin/kirocrew" ]; then
+    ok "kirocrew symlinked to ~/.local/bin/kirocrew"
     detail "You may need to restart your shell for it to be in PATH"
 else
-    warn "kiroclaw not in PATH — restart your shell or run:"
+    warn "kirocrew not in PATH — restart your shell or run:"
     detail "source ~/.$(basename "$SHELL")rc"
 fi
 
@@ -503,22 +503,22 @@ fi
 # ══════════════════════════════════════════════════════════════════════
 step "Agent Config"
 
-# Install agent config via kiroclaw setup
-if has kiroclaw; then
-    _kiroclaw=kiroclaw
-elif [ -x "$HOME/.local/bin/kiroclaw" ]; then
-    _kiroclaw="$HOME/.local/bin/kiroclaw"
+# Install agent config via kirocrew setup
+if has kirocrew; then
+    _kirocrew=kirocrew
+elif [ -x "$HOME/.local/bin/kirocrew" ]; then
+    _kirocrew="$HOME/.local/bin/kirocrew"
 else
-    _kiroclaw=""
+    _kirocrew=""
 fi
-if [ -n "$_kiroclaw" ]; then
+if [ -n "$_kirocrew" ]; then
     info "Installing agent config…"
-    KIROCLAW_PROJECT_DIR="$KIROCLAW_APP_DIR" "$_kiroclaw" setup --agent-only \
+    KIROCREW_PROJECT_DIR="$KIROCREW_APP_DIR" "$_kirocrew" setup --agent-only \
         && ok "Agent config installed" \
-        || warn "kiroclaw setup --agent-only failed (run manually after install)"
+        || warn "kirocrew setup --agent-only failed (run manually after install)"
 fi
 
-ok "Run ${CYAN}kiroclaw setup${RESET} to configure agent, workspace, and integrations"
+ok "Run ${CYAN}kirocrew setup${RESET} to configure agent, workspace, and integrations"
 
 # ── Embeddings (optional) ──
 info "Optional: local vector memory via Ollama"
@@ -531,7 +531,7 @@ detail "Install ollama (https://ollama.com), then: ollama pull qwen3-embedding:0
 
 echo ""
 echo ""
-echo "  ${GREEN}${BOLD}🐾 KiroClaw installed successfully!${RESET}"
+echo "  ${GREEN}${BOLD}🐾 KiroCrew installed successfully!${RESET}"
 echo ""
 echo "  ${DIM}────────────────────────────────────────${RESET}"
 echo ""
@@ -545,12 +545,12 @@ case "$(basename "${SHELL:-}")" in
 esac
 echo ""
 echo "    ${CYAN}2.${RESET} Run the setup wizard:"
-echo "       ${GREEN}kiroclaw setup${RESET}"
+echo "       ${GREEN}kirocrew setup${RESET}"
 echo ""
 echo "    ${CYAN}3.${RESET} Start the dashboard:"
-echo "       ${GREEN}kiroclaw gateway${RESET}"
+echo "       ${GREEN}kirocrew gateway${RESET}"
 echo ""
-echo "    ${CYAN}4.${RESET} Open ${CYAN}http://localhost:${KIROCLAW_PORT}${RESET} in your browser"
+echo "    ${CYAN}4.${RESET} Open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your browser"
 echo ""
 # SSH tunnel tip for remote Linux users
 if [ "$(uname)" != "Darwin" ]; then
@@ -560,9 +560,9 @@ if [ "$(uname)" != "Darwin" ]; then
     echo "  ${BOLD}Remote access:${RESET}"
     echo "    Run this on your ${CYAN}local machine${RESET} to forward the dashboard:"
     echo ""
-    echo "    ${GREEN}ssh -N -L ${KIROCLAW_PORT}:localhost:${KIROCLAW_PORT} $_hostname${RESET}"
+    echo "    ${GREEN}ssh -N -L ${KIROCREW_PORT}:localhost:${KIROCREW_PORT} $_hostname${RESET}"
     echo ""
-    echo "    Then open ${CYAN}http://localhost:${KIROCLAW_PORT}${RESET} in your local browser."
+    echo "    Then open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your local browser."
     echo ""
 fi
 echo "  ${DIM}────────────────────────────────────────${RESET}"

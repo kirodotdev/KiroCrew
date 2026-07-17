@@ -3,7 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from kiro_claw.dashboard.chat_handlers import _sweep_stale_permissions
+from kiro_crew.dashboard.chat_handlers import _sweep_stale_permissions
 
 
 class TestSweepStalePermissions:
@@ -19,7 +19,7 @@ class TestSweepStalePermissions:
             {"role": "permission", "content": "shell", "cls": json.dumps({"request_id": "abc"})},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel"):
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
             _sweep_stale_permissions(slot)
         cls = json.loads(msgs[1]["cls"])
         assert cls["resolved"] == "stale"
@@ -30,7 +30,7 @@ class TestSweepStalePermissions:
             {"role": "permission", "content": "shell", "cls": json.dumps({"request_id": "abc", "resolved": "approved"})},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel"):
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
             _sweep_stale_permissions(slot)
         cls = json.loads(msgs[0]["cls"])
         assert cls["resolved"] == "approved"
@@ -42,7 +42,7 @@ class TestSweepStalePermissions:
             {"role": "assistant", "content": "hello", "cls": ""},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel"):
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
             _sweep_stale_permissions(slot)
         assert slot._dirty is False
 
@@ -52,7 +52,7 @@ class TestSweepStalePermissions:
             {"role": "permission", "content": "read", "cls": json.dumps({"request_id": "xyz"})},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel"):
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
             _sweep_stale_permissions(slot)
         assert msgs[0]["cls"] == "not-json"  # untouched
         assert json.loads(msgs[1]["cls"])["resolved"] == "stale"
@@ -68,7 +68,7 @@ class TestSweepStalePermissions:
             {"role": "permission", "content": "e", "cls": json.dumps({"request_id": "xyz"})},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel"):
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
             _sweep_stale_permissions(slot)
         # non-dict entries left untouched
         assert msgs[0]["cls"] == json.dumps([])
@@ -83,7 +83,7 @@ class TestSweepStalePermissions:
             {"role": "permission", "content": "shell", "cls": json.dumps({"request_id": "abc"})},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel") as mock_sel:
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
             _sweep_stale_permissions(slot)
         mock_sel().log_api_access.assert_called_once_with(
             caller="gateway",
@@ -99,7 +99,7 @@ class TestSweepStalePermissions:
             {"role": "permission", "content": "read", "cls": json.dumps({"request_id": "b"})},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel"):
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
             _sweep_stale_permissions(slot)
         assert json.loads(msgs[0]["cls"])["resolved"] == "stale"
         assert json.loads(msgs[1]["cls"])["resolved"] == "stale"
@@ -112,7 +112,7 @@ class TestSweepStalePermissions:
              "cls": json.dumps({"request_id": "abc", "resolved": False})},
         ]
         slot = self._make_slot(msgs)
-        with patch("kiro_claw.dashboard.chat_handlers.sel"):
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
             _sweep_stale_permissions(slot)
         cls = json.loads(msgs[0]["cls"])
         assert cls["resolved"] is False  # untouched

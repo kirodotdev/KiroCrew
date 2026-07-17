@@ -1,6 +1,6 @@
 # Resource Protection Mechanisms
 
-KiroClaw runs long-lived LLM sessions that spawn OS processes (kiro-cli, MCP servers) across
+KiroCrew runs long-lived LLM sessions that spawn OS processes (kiro-cli, MCP servers) across
 multiple workflows — chat subagents, cron jobs, task runner steps, and background sessions.
 Each workflow has different failure modes (event-loop saturation, orphaned tasks, hung processes,
 context overflow), so protection is layered: primary timeouts catch the common case, independent
@@ -98,7 +98,7 @@ of failure.
   records its PID at spawn, so the orphan sweep would SIGKILL any tracked PID missing from
   the active set (surfacing as `process exited (rc=-9)` mid-chat). To protect runtimes that
   live outside `self._sessions` — companion subagent runtimes and the background
-  `kiroclaw-lite` runtime — the sweep unions `SessionManager._companion_runtime_pids()`
+  `kirocrew-lite` runtime — the sweep unions `SessionManager._companion_runtime_pids()`
   (`session.py`) into the active set in both the candidate-collection and the phase-2 re-check
   passes, so live shared runtimes are never swept.
 

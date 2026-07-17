@@ -8,7 +8,7 @@
 # Format: "<branch-or-repo> <sha>  # <date> <note>"
 #
 # TWO upstream repos are tracked (the fork bundles both into one package):
-#   - backend  = MeshClaw          (package mesh_claw  → src/kiro_claw/)
+#   - backend  = MeshClaw          (package mesh_claw  → src/kiro_crew/)
 #   - frontend = MeshClawWebsite    (the React/Vite SPA → website/src/)
 # Boundary semantics differ per repo (see SKILL.md Step 1):
 #   - backend  : SHA-range incremental (the fork shares the backend's content lineage).
@@ -74,7 +74,7 @@
 # PORTED (4 backend, chronological / parent-first):
 #   eaf62582 -> "feat: native Windows support via platform_compat shim" — the
 #     fork ADOPTS Windows support (user reversed the prior macOS+Linux-only stance).
-#     NEW src/kiro_claw/platform_compat.py (cross-platform file-lock/process/signal/
+#     NEW src/kiro_crew/platform_compat.py (cross-platform file-lock/process/signal/
 #     chmod/resource/strftime/console shim) + routing ~50 live modules through it;
 #     replaces the dangerous os.kill(pid,0) liveness probe with pid_exists. PARTIAL:
 #     dropped hunks for fork-absent modules (providers/claude_code.py, cc_agent.py,
@@ -98,7 +98,7 @@
 #     — [SECURITY] NEW apps/admission.py App-Kit admission gate (banned/approved,
 #     optional-HMAC signature, fail-closed), backend.entryPoint path-containment,
 #     third-party load gate (apps_allow_third_party opt-in), body-bound App-Kit
-#     HMAC, added ~/.kiroclaw/app_admission.json to the sensitive floor. DISTINCT
+#     HMAC, added ~/.kirocrew/app_admission.json to the sensitive floor. DISTINCT
 #     from + does NOT weaken the CPP platform/admission.py plugin gate
 #     (CONTRACT_VERSION stays 1). Dropped the publish_sync.py hunk (internal
 #     Artifactory engine, absent from fork).
@@ -116,7 +116,7 @@
 #     + purify.min.js + css/dashboard.css + cli-mode.css + _HTML_PATH wiring + the
 #     legacy-XSS test, so this is a genuine generic-core XSS-surface reduction.
 #     index() now serves dist/index.html only (guidance page on missing bundle);
-#     /static route, theme assets, kiroclaw-logo.png, and _BASE_CSP preserved.
+#     /static route, theme assets, kirocrew-logo.png, and _BASE_CSP preserved.
 #     Upstream-CR CR-289374220 / Talos V2285871874.
 #   a7736388 -> "feat(context): scale injected-memory budget to model context
 #     window" — the fork had the fixed _CONTEXT_BUDGET_BASE=165k this refactors to
@@ -125,7 +125,7 @@
 # SKIP:
 #   889f87b0 (register 6 chapmang apps in app-registry) — SKIP_INTERNAL: all six
 #     are internal MeshClawApp-* GitFarm gateway apps (incl. taskei-agent); the
-#     fork's src/kiro_claw/apps/app-registry.json is deliberately [] and these
+#     fork's src/kiro_crew/apps/app-registry.json is deliberately [] and these
 #     point at nonexistent internal repos. Upstream-CR CR-288078910.
 #
 # --- Batch-33 (dual-repo beta sync 2026-07-15) ---
@@ -259,8 +259,8 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 # + AUTOSDE exception documented. No boundary advance (commit is within the pre-window tail).
 
 # --- Batch-27 (dual-repo sync 2026-07-10, ultracode comprehensive, FIRST on the GitHub fork) ---
-# RUN IN THE PUBLIC GITHUB CHECKOUT /workplace/bolichen/KiroClawGitHub (origin github.com/
-# kirodotdev-labs/kiroclaw), which ships via PULL REQUEST — NOT the internal Brazil workspace/CRUX
+# RUN IN THE PUBLIC GITHUB CHECKOUT /workplace/bolichen/KiroCrewGitHub (origin github.com/
+# kirodotdev/KiroCrew), which ships via PULL REQUEST — NOT the internal Brazil workspace/CRUX
 # path of batches 1-25. Branch sync/beta-2026-07-10 off origin/main 8355fc6 (safety tag batch27-base).
 # KEY CONTEXT: the boundary file was STALE (recorded batch-25 beta 6cf3aae0) but the fork had since
 # done batch-26 (PR #18) + a large GitHub-NATIVE porting wave (PRs #10-#38) that did NOT cite the
@@ -321,10 +321,10 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 #   clipboard header at the no_cache_middleware chokepoint (Chrome 143+; extracted _apply_security_headers,
 #   DROPPED upstream's tunnels/cognito/RUM CSP endpoints); f4acf37e ACP tool-stall watchdog folds
 #   _last_activity (session-keepalive) into the clock (client.py:2375, mirrors the stale-turn check);
-#   210baed2 pytest-xdist worker cap min(cpu,32) (conftest hook; MESHCLAW_->KIROCLAW_MAX_TEST_WORKERS);
+#   210baed2 pytest-xdist worker cap min(cpu,32) (conftest hook; MESHCLAW_->KIROCREW_MAX_TEST_WORKERS);
 #   0d9797e (FE) per-tab remote-host config keyed by port + per-tab token refresh (new electron/host-config.js
 #   + validation REMOTE_PORT_RE/REMOTE_PATH_RE + main.js per-port refactor; RESTORED the fork's OSS
-#   DEFAULT_REMOTE_BIN=~/.local/bin/kiroclaw vs upstream's ~/.toolbox default; kept toolbox as candidate).
+#   DEFAULT_REMOTE_BIN=~/.local/bin/kirocrew vs upstream's ~/.toolbox default; kept toolbox as candidate).
 # PARTIAL (3): 99041753 (bulk pentest-r2+bg-reconnect ALREADY_PRESENT via fork-native 1c8f980+aef7a86;
 #   residual ported = the 2 edit-mode Slack preview sites still using the truncating throwaway
 #   StreamRedactor().feed(accumulated) -> redact(accumulated) at handler.py:2798/2893 + 1 regression test;
@@ -332,7 +332,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 #   widening that collides with the fork's governance _EXTRACT_INTO_TRUST_ROOT_RE divergence); bf9663df
 #   (workspace_root() realpath-normalize for symlinked-home cold resume — new _resolve_workspace_root helper
 #   routes all 3 branches through os.path.realpath; DROPPED the _encode_cc_project_dir slug-parity test — the
-#   CC provider is deleted; MESHCLAW_->KIROCLAW_WORKSPACE); 76cfc2e0 (the 3900-line ACP session-multiplexing
+#   CC provider is deleted; MESHCLAW_->KIROCREW_WORKSPACE); 76cfc2e0 (the 3900-line ACP session-multiplexing
 #   rewrite is DEFERRED for human review — it deletes _turn_lock + re-adds a claude_code|bedrock get_bg_session
 #   selector on the absent _resolve_agent_provider = SKIP_NONKIROACP; rescued ONLY the 2 generic subagent-path
 #   chokepoint fixes: redact sub-agent title+text via the existing redactors + read nested content.text via
@@ -371,7 +371,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 # advanced origin/mainline (aef7a86 = 9 fork-native commits: pentest auth incl. CWE-613 cookie
 # re-mint, CPP wave-3, slack challenge-gate REMOVED, instances auto-reconnect, default port 5476).
 # The rebase excised the orphaned send_channel_challenge port (182d101) + resolved ~7 conflicts;
-# see the batch-24 rebase note in the kiroclaw-meshclaw-sync memory. One coherent CR for 22+23+24.
+# see the batch-24 rebase note in the kirocrew-meshclaw-sync memory. One coherent CR for 22+23+24.
 # Window since batch-23:
 #   backend  beta-braveheart 1926f16f..bfa7b4e8  (47 candidates ; live tip advanced past post-scan)
 #   frontend MeshClawWebsite  a6b1fc7..0f2c062    (31 candidates ; live tip 0d9797e post-scan)
@@ -432,7 +432,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 #     Kept the fork's dormant ACP_BACKEND_CLAUDE test_cc_provider parity test (both assertions ported).
 #   c6fa6489 -> 72ef8df  feat(knowledge): auto-dedup documents across sources — new knowledge/dedup.py
 #     (524 lines, regenerated from post-image) + content_hash schema/index/add_item + ingest+folder
-#     triggers + knowledge_dedup MCP tool + `kiroclaw knowledge dedup [--apply]` CLI + spec doc + test.
+#     triggers + knowledge_dedup MCP tool + `kirocrew knowledge dedup [--apply]` CLI + spec doc + test.
 #     Inert "quip" PERSISTENT_SOURCE_TYPES literal kept verbatim (no quip source in OSS).
 #   384a5d1  -> c2eb9f6  feat(picker): ProjectPicker searchable Recent tab + browse drill-on-slash
 #     (pairs backend eb32b8a2). Regenerated ProjectPicker.tsx + test from post-image (byte-identical
@@ -455,7 +455,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 # --- Batch-22 (dual-repo sync 2026-06-27, ultracode comprehensive) -----------
 # Worktree branch sync/beta-2026-06-27 off origin/mainline (dfa9559 = governance CR-284272012
 # merged; tracks origin/mainline from creation). Built in a git worktree (/workplace/bolichen/
-# kiroclaw-wt/batch22) because another session was mid-work on feat/governance in the main checkout.
+# kirocrew-wt/batch22) because another session was mid-work on feat/governance in the main checkout.
 # Window since batch-21:
 #   backend  beta-braveheart 59ec6e1d..58e0abb0  (68 candidates ; mainline unchanged 199d7853)
 #   frontend MeshClawWebsite  ca99bb4..0e1f442    (37 candidates)
@@ -521,7 +521,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 #   59ec6e1d -> 2092347  fix(dashboard): same-origin loopback WS for embedded instance
 #     iframe (Mesh-1864). Generic CSRF fix in dashboard/origin.py check_origin(): trust a
 #     loopback Origin only when it == request Host. Pairs the SEC-016 work taken in batch-20.
-#     +5 regression tests (port 8765/kiroclaw.localhost adapted). docs/security.md note.
+#     +5 regression tests (port 8765/kirocrew.localhost adapted). docs/security.md note.
 #   d10750e2 -> 5891deb  fix(apps): gracefully handle missing app config.json. Seed empty
 #     {} on GET when config absent (data dir wiped by update) so app UI doesn't hang on
 #     "Initializing". Generic apps/routes.py handle_app_config; new test_app_config_self_heal.py.
@@ -584,7 +584,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 #     logic confined to the absent writing-review subsystem.
 #   5f3c6555 ALREADY_PRESENT — doc-only Raycast PATH fix in REMOTE_DESKTOP_SETUP.md
 #     (toolbox/bin hand-built PATH); fork doc already correct.
-#   6b51f2eb SKIP_INTERNAL — adds "meetnote" (repo:KiroClawApp-MeetNote) to
+#   6b51f2eb SKIP_INTERNAL — adds "meetnote" (repo:KiroCrewApp-MeetNote) to
 #     app-registry.json; App Store data only.
 #   6aba983d SKIP_INTERNAL — silent self-install Artifactory MCP on first publish; confined
 #     to the absent Harmony-Artifactory publish/install subsystem (PublishProvider.ensure_ready).
@@ -672,8 +672,8 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 # Tally: 30 KEEP, 11 PARTIAL, 2 DEFER, 13 SKIP_INTERNAL. No NEW mainline-only delta
 # (ebd78ac4 is a byte-identical dual-landing of 14ae0f50, ported).
 #
-# HEADLINE "KiroClaw styles" (user ask): 7661050 Kiro ghost BOOT-REVEAL splash (draws the
-# KIROCLAW wordmark in Kiro-purple + vendored anime.js v3.2.2) — ported KEEPING the fork's
+# HEADLINE "KiroCrew styles" (user ask): 7661050 Kiro ghost BOOT-REVEAL splash (draws the
+# KIROCREW wordmark in Kiro-purple + vendored anime.js v3.2.2) — ported KEEPING the fork's
 # current header logo/avatar/favicon untouched (splash + persistent logo coexist). Plus
 # fd88c429 Knight Rider theme persona, b674cd5 WCAG-AA contrast, 8b07305 disintegrate effect.
 #
@@ -708,7 +708,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 #   thinking-path staleness check via max(last_data_ts,_last_activity) — stops false
 #   stale-turn reaping long subagent runs), c38b72e8 (test isolation: autouse fixture
 #   stubs subagent.read_learned_cost so subagent-sizing tests use cfg fallback not the
-#   real ~/.kiroclaw store), 7a22e34d (tag compaction notices kind="compaction" via a
+#   real ~/.kirocrew store), 7a22e34d (tag compaction notices kind="compaction" via a
 #   shared _append_compaction_notice chokepoint so follow-up [OPTIONS:] survive; state.py
 #   auto-compact notice tagged inline to avoid an import cycle), bfcea59a (Unlink from
 #   Slack: SessionMap.clear_slack_link + slack-unlink endpoint, clears both raw and
@@ -746,9 +746,9 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 #   202268a3 (stop re-queue zombie-retry guard — _should_suppress_requeue on all 3 paths).
 # PORTED (frontend): d12eb8c (completion_keep Chat-panel UI — matched PAIR with 499818c7,
 #   committed together as one feature: Subagents settings section, mode select + chars input).
-# Symbol map applied throughout (mesh_claw->kiro_claw, MeshClawConfig->KiroClawConfig,
-# api_meshclaw_config_patch->api_kiroclaw_config_patch, meshclawConfig->kiroclawConfig,
-# /api/config/meshclaw->/api/config/kiroclaw, MESHCLAW_SESSION_KEY env already KIROCLAW_).
+# Symbol map applied throughout (mesh_claw->kiro_crew, MeshClawConfig->KiroCrewConfig,
+# api_meshclaw_config_patch->api_kirocrew_config_patch, meshclawConfig->kirocrewConfig,
+# /api/config/meshclaw->/api/config/kirocrew, MESHCLAW_SESSION_KEY env already KIROCREW_).
 # Verify: backend 939 tests + flake8 clean; frontend tsc -b clean + 2521 vitest (+4);
 # de-Amazon audit clean (only the inert ClaudeCodeProvider seam in session.py). CR-281319232.
 # GOTCHA: chat_runner re-exports PromptBusyExhaustedError (from llm_helpers) so the upstream
@@ -796,12 +796,12 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 # Fresh branch sync/beta-2026-06-10c off origin/mainline (prior CR merged, no
 # longer stacking). 6 candidates (3 backend + 3 frontend); 4 PORTED, 2 SKIP.
 # PORTED: d00e6ac6 (backend terminal scrollback ring buffer + reconnect replay —
-# RE-ANCHORED redaction: imports kiro_claw.security NOT mesh_claw.redaction, and
+# RE-ANCHORED redaction: imports kiro_crew.security NOT mesh_claw.redaction, and
 # tuple-unpacks `text,_ = redact_*()` since the fork's redactors return
 # tuple[str,list[str]] while upstream's redaction module returns str — a verbatim
 # copy would have crashed; added _redact_terminal helper + 6 regression tests),
 # fbdf391 (frontend terminal session persistence/rename/reconnect — LABELS_KEY
-# symbol-mapped to kiroclaw-terminal-labels; renameSession already existed),
+# symbol-mapped to kirocrew-terminal-labels; renameSession already existed),
 # 2fee03d (input interactive while stopping, Mesh-2004 — test re-authored fork-
 # correct: dropped the absent secretarySlice the upstream test imported, matched
 # the fork's flat dashboard-slot shape), 76a7fa3 (force-kill arming debounce +
@@ -817,7 +817,7 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 # Stacked on batch-10 (CR-280980741 still pending — origin/mainline lacks it + the
 # KiroACP-only refactor, so the existing sync branch is the correct base, NOT a fresh
 # branch from origin/mainline). PORTED: 03e2ba43 (slack tool-card elapsed time),
-# 0dc8ff1a (kiroclaw cron preview), 964b7e5 (board card layoutId per column). SKIP:
+# 0dc8ff1a (kirocrew cron preview), 964b7e5 (board card layoutId per column). SKIP:
 # 599d6f64 + ed7c87f (promptfarm publish — absent), 7342c6e (secretary — absent),
 # 7eb7d6c (Cloud Sync SyncPanel — absent). ALREADY_PRESENT: a673571 (MCP OAuth banner
 # — fork ChatPage already routes m.role==='mcp_oauth').

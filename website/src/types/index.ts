@@ -66,7 +66,7 @@ export interface Skill {
   dir?: string
   /** Names of installed agents whose ``resources`` glob matches this skill's
    *  SKILL.md path.  Empty list means no agent loads it via kiro-cli's
-   *  native ``skill://`` loader (it may still load via KiroClaw text-injection). */
+   *  native ``skill://`` loader (it may still load via KiroCrew text-injection). */
   loaded_by_agents?: string[]
 }
 
@@ -78,7 +78,7 @@ export interface SkillTreeEntry {
 }
 
 export interface McpScopePresence {
-  kiroclaw: boolean
+  kirocrew: boolean
   kiroGlobal: boolean
   ccGlobal: boolean
 }
@@ -92,7 +92,7 @@ export interface McpServer {
 
 export interface McpApplyChange {
   name: string
-  kiroclaw?: boolean
+  kirocrew?: boolean
   kiroGlobal?: boolean
   ccGlobal?: boolean
   uninstall?: boolean

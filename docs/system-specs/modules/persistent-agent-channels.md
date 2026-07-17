@@ -10,7 +10,7 @@ communicate via @mentions, and persist across sessions.
 
 ## Problem
 
-KiroClaw's subagent model is fire-and-forget: spawn a task, get a result,
+KiroCrew's subagent model is fire-and-forget: spawn a task, get a result,
 done. There's no way for multiple agents to collaborate on a shared problem
 over time, see each other's progress, or coordinate through a human
 orchestrator.
@@ -105,7 +105,7 @@ an Orchestrator agent as the first member.
 
 ## Persistence
 
-Channels saved to `~/.kiroclaw/channels/{id}.json` on every state change.
+Channels saved to `~/.kirocrew/channels/{id}.json` on every state change.
 Restored on gateway startup via `ChannelManager._load_all()`. Agents
 restored as `done` and relaunched with fresh sessions.
 
@@ -137,11 +137,11 @@ restored as `done` and relaunched with fresh sessions.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/kiro_claw/channel.py` | ~720 | Core data model, routing, persistence, agent execution loop |
-| `src/kiro_claw/dashboard/handlers_channel.py` | ~250 | REST API handlers with input validation |
+| `src/kiro_crew/channel.py` | ~720 | Core data model, routing, persistence, agent execution loop |
+| `src/kiro_crew/dashboard/handlers_channel.py` | ~250 | REST API handlers with input validation |
 | `frontend/src/pages/ChannelPage.tsx` | ~620 | Full UI with WebSocket, threads, @mention, approval |
 | `frontend/src/api/client.ts` | +15 | API methods (patch helper + 13 channel endpoints) |
-| `src/kiro_claw/dashboard/server.py` | +24 | Route registration |
+| `src/kiro_crew/dashboard/server.py` | +24 | Route registration |
 | `test/test_channel.py` | ~240 | 26 tests across 5 classes |
 
 ## Out-of-Plan Fixes (discovered during testing)

@@ -2,33 +2,33 @@
   "manifest": {
     "type": "app",
     "os": "osx",
-    "name": "KiroClaw.app",
-    "outputs": [{ "label": "macos", "path": "KiroClaw.app" }],
+    "name": "KiroCrew.app",
+    "outputs": [{ "label": "macos", "path": "KiroCrew.app" }],
     "app": {
-      "identifier": "com.amazon.kiro.claw",
+      "identifier": "com.amazon.kiro.crew",
       "embedded_requirements": {
         "Contents/Frameworks/Electron Framework.framework/Versions/A/Helpers/chrome_crashpad_handler": {
-          "full_identifier": "com.amazon.kiro.claw.com.github.Electron.framework",
+          "full_identifier": "com.amazon.kiro.crew.com.github.Electron.framework",
           "signing_args": { "entitlements_path": "SIGNING_METADATA/Entitlements.entitlements" }
         },
         "Contents/Frameworks/Electron Framework.framework": {
-          "full_identifier": "com.amazon.kiro.claw.com.github.Electron.framework",
+          "full_identifier": "com.amazon.kiro.crew.com.github.Electron.framework",
           "signing_args": { "entitlements_path": "SIGNING_METADATA/Entitlements.entitlements" }
         },
-        "Contents/Frameworks/KiroClaw Helper.app": {
-          "full_identifier": "com.amazon.kiro.claw.com.github.Electron.helper",
+        "Contents/Frameworks/KiroCrew Helper.app": {
+          "full_identifier": "com.amazon.kiro.crew.com.github.Electron.helper",
           "signing_args": { "entitlements_path": "SIGNING_METADATA/Entitlements.entitlements" }
         },
-        "Contents/Frameworks/KiroClaw Helper (GPU).app": {
-          "full_identifier": "com.amazon.kiro.claw.com.github.Electron.helper.GPU",
+        "Contents/Frameworks/KiroCrew Helper (GPU).app": {
+          "full_identifier": "com.amazon.kiro.crew.com.github.Electron.helper.GPU",
           "signing_args": { "entitlements_path": "SIGNING_METADATA/Entitlements.entitlements" }
         },
-        "Contents/Frameworks/KiroClaw Helper (Plugin).app": {
-          "full_identifier": "com.amazon.kiro.claw.com.github.Electron.helper.Plugin",
+        "Contents/Frameworks/KiroCrew Helper (Plugin).app": {
+          "full_identifier": "com.amazon.kiro.crew.com.github.Electron.helper.Plugin",
           "signing_args": { "entitlements_path": "SIGNING_METADATA/Entitlements.entitlements" }
         },
-        "Contents/Frameworks/KiroClaw Helper (Renderer).app": {
-          "full_identifier": "com.amazon.kiro.claw.com.github.Electron.helper.Renderer",
+        "Contents/Frameworks/KiroCrew Helper (Renderer).app": {
+          "full_identifier": "com.amazon.kiro.crew.com.github.Electron.helper.Renderer",
           "signing_args": { "entitlements_path": "SIGNING_METADATA/Entitlements.entitlements" }
         }
       },

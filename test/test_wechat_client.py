@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.wechat.client."""
+"""Tests for kiro_crew.wechat.client."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
-from kiro_claw.wechat.client import (
+from kiro_crew.wechat.client import (
     WeComClient,
     WeComInbound,
     _build_subscribe_frame,
@@ -586,14 +586,14 @@ class TestThresholdClamp:
     """WeComConfig.__post_init__ clamps to [0,100] and enforces soft <= hard."""
 
     def test_soft_above_hard_is_lowered_to_hard(self) -> None:
-        from kiro_claw.config.loader import WeComConfig
+        from kiro_crew.config.loader import WeComConfig
 
         c = WeComConfig(soft_threshold_pct=95, hard_threshold_pct=50)
         assert c.soft_threshold_pct == 50
         assert c.hard_threshold_pct == 50
 
     def test_out_of_range_values_clamped(self) -> None:
-        from kiro_claw.config.loader import WeComConfig
+        from kiro_crew.config.loader import WeComConfig
 
         c = WeComConfig(soft_threshold_pct=-10, hard_threshold_pct=200)
         assert c.soft_threshold_pct == 0

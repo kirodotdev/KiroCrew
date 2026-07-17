@@ -1,7 +1,7 @@
 import type { ProviderAdapter, ProviderId } from './types'
 import { AcpAdapter } from './adapters/acp'
 
-// KiroClaw is KiroACP-only: kiro-cli over ACP is the sole provider
+// KiroCrew is KiroACP-only: kiro-cli over ACP is the sole provider
 // (agent.provider enum is ["acp"]; the ClaudeCode/Bedrock providers were
 // deleted). The adapter registry therefore has a single entry; it is kept as a
 // thin indirection so the 15+ pages that consume useProvider()/the adapter

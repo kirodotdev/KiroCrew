@@ -15,8 +15,8 @@ build.
 """
 from __future__ import annotations
 
-from kiro_claw.context import build_session_replay
-from kiro_claw.history import ConversationLog
+from kiro_crew.context import build_session_replay
+from kiro_crew.history import ConversationLog
 
 
 class TestRecentExcludeLastN:

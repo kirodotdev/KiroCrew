@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from kiro_claw.dashboard.chat_runner import (
+from kiro_crew.dashboard.chat_runner import (
     _native_subagent_close_all,
     _native_subagent_sync,
 )

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.slack.files import (
+from kiro_crew.slack.files import (
     _MAX_IMAGE_BYTES,
     _MAX_TEXT_BYTES,
     _MAX_TEXT_INJECT,
@@ -256,7 +256,7 @@ class TestProcessSlackFiles:
                 "size": 11,
             }
         ]
-        with patch("kiro_claw.slack.files.tempfile.mkstemp", side_effect=tracking_mkstemp):
+        with patch("kiro_crew.slack.files.tempfile.mkstemp", side_effect=tracking_mkstemp):
             await process_slack_files(orch, files)
         assert len(created_paths) == 1
         assert not os.path.exists(created_paths[0])
@@ -463,7 +463,7 @@ class TestProcessSlackFiles:
     @pytest.mark.asyncio
     async def test_document_too_large_skipped(self):
         """Documents exceeding size limit are skipped."""
-        from kiro_claw.slack.files import _MAX_DOC_BYTES
+        from kiro_crew.slack.files import _MAX_DOC_BYTES
 
         orch = _make_orch()
         files = [

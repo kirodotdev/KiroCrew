@@ -1,12 +1,12 @@
 /**
- * ChatPanel — mounts the full KiroClaw ChatPage inside an app.
+ * ChatPanel — mounts the full KiroCrew ChatPage inside an app.
  *
  * ChatPage accepts `embedded` prop which skips URL sync effects.
  * ChatPanel dispatches switchSlot() to activate the workspace session.
  * The result is the complete native chat experience with no redirects.
  *
  * Usage:
- *   const { ChatPanel } = window.__kiroclaw_modules['@kiroclaw/app-sdk']
+ *   const { ChatPanel } = window.__kirocrew_modules['@kirocrew/app-sdk']
  *   <ChatPanel slotKey="coder-abc123" />
  */
 import { useEffect, useRef } from 'react'

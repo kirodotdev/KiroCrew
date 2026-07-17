@@ -1,27 +1,27 @@
-# KiroClaw App Platform & Client SDK — Design Review
+# KiroCrew App Platform & Client SDK — Design Review
 
 **Author:** Ray Xu (rayrayxu) **Date:** 2026-04-22 **Status:** Approved - Implemented
 * * *
 
 ## 1. Problem Statement
 
-KiroClaw's contributor community has grown rapidly. Contributors are building increasingly ambitious features on top of the platform — Slack inbox management (Secretary), multi-agent collaboration (Channels), visual agent monitoring (Worlds), desktop pet assistants (Mochi). This is a great problem to have, but it creates two tensions:
+KiroCrew's contributor community has grown rapidly. Contributors are building increasingly ambitious features on top of the platform — Slack inbox management (Secretary), multi-agent collaboration (Channels), visual agent monitoring (Worlds), desktop pet assistants (Mochi). This is a great problem to have, but it creates two tensions:
 
 **For core maintainers:** Every new feature lands directly in the main codebase. Contributors modify shared files (App.tsx, server.py, handlers.py) to add their features, which means core maintainers must review and maintain code for features they didn't build. As the contributor base grows, this doesn't scale.
 
-**For app builders:** There's no standard way to build on KiroClaw. Contributors must dig through source code to understand endpoints, auth, response shapes, and dashboard wiring. External tools have no way to interact with the Gateway without reimplementing HTTP/WS patterns from scratch.
+**For app builders:** There's no standard way to build on KiroCrew. Contributors must dig through source code to understand endpoints, auth, response shapes, and dashboard wiring. External tools have no way to interact with the Gateway without reimplementing HTTP/WS patterns from scratch.
 
 **User Stories:**
 
-* **Secretary (lanxib@)** — Built a Slack inbox management feature for KiroClaw. The biggest pain point was the development cycle. Every code change required manually stopping and restarting the Gateway in the terminal to see the effect. Tried to avoid modifying core KiroClaw functionality to reduce risk, but still had to register routes in shared files. Not being familiar with UI design, had to iterate by trial and error. It would have been much easier with standardized UI components and clear API access.
-* **Mochi (rayrayxu@)** — Built a desktop pet assistant as an Electron app that connects to the KiroClaw Gateway running on a remote host. Spent significant time figuring out the auth flow. Ray has to read source code to understand cookie formats, secret file paths, and the token exchange mechanism. When the token auth system was introduced, it took multiple iterations to get the Electron app to authenticate correctly. There was no documented way for an outside app to obtain and refresh tokens. Even after getting it working, there was no way to distribute Mochi to other KiroClaw users without asking them to clone the repo and set it up manually.
-* **Pipeline Health Tool (moelansa@)** — Wanted to build a pipelines dependency visualization tool with in-place AI actions for issue resolution. Started building it outside KiroClaw and tried to call Gateway APIs directly. Ran into auth issues and couldn't distribute it to teammates easily. Quote: *"What if we have a way to accommodate custom apps in KiroClaw, similar to VS Code extensions — each app has its own config, a defined interface to talk to agents and sessions, and can be distributed via a package manager."*
+* **Secretary (lanxib@)** — Built a Slack inbox management feature for KiroCrew. The biggest pain point was the development cycle. Every code change required manually stopping and restarting the Gateway in the terminal to see the effect. Tried to avoid modifying core KiroCrew functionality to reduce risk, but still had to register routes in shared files. Not being familiar with UI design, had to iterate by trial and error. It would have been much easier with standardized UI components and clear API access.
+* **Mochi (rayrayxu@)** — Built a desktop pet assistant as an Electron app that connects to the KiroCrew Gateway running on a remote host. Spent significant time figuring out the auth flow. Ray has to read source code to understand cookie formats, secret file paths, and the token exchange mechanism. When the token auth system was introduced, it took multiple iterations to get the Electron app to authenticate correctly. There was no documented way for an outside app to obtain and refresh tokens. Even after getting it working, there was no way to distribute Mochi to other KiroCrew users without asking them to clone the repo and set it up manually.
+* **Pipeline Health Tool (moelansa@)** — Wanted to build a pipelines dependency visualization tool with in-place AI actions for issue resolution. Started building it outside KiroCrew and tried to call Gateway APIs directly. Ran into auth issues and couldn't distribute it to teammates easily. Quote: *"What if we have a way to accommodate custom apps in KiroCrew, similar to VS Code extensions — each app has its own config, a defined interface to talk to agents and sessions, and can be distributed via a package manager."*
 
 * * *
 
-## 2. What is a KiroClaw App
+## 2. What is a KiroCrew App
 
-A KiroClaw App is a self-contained extension that adds functionality to the KiroClaw platform. An app is defined by a manifest (`app.json`) and can include any combination of agents, skills, cron jobs, a dashboard UI page, and a backend service. An app must do something beyond what a single capability package provides. It may coordinate multiple resources, adds a UI, runs a backend service, or manages its own scheduling. An app may bundle capability packages as part of its resources, so the two systems compose naturally.
+A KiroCrew App is a self-contained extension that adds functionality to the KiroCrew platform. An app is defined by a manifest (`app.json`) and can include any combination of agents, skills, cron jobs, a dashboard UI page, and a backend service. An app must do something beyond what a single capability package provides. It may coordinate multiple resources, adds a UI, runs a backend service, or manages its own scheduling. An app may bundle capability packages as part of its resources, so the two systems compose naturally.
 
 ### App types
 
@@ -43,15 +43,15 @@ A key architectural distinction: **plugins extend the Gateway's capabilities; ap
 |Permission level	|Higher — can modify platform behavior	|Standard — operates within declared permissions	|
 |Review bar	|Requires core team review (changes platform contract)	|Standard pull-request review	|
 
-Apps can depend on plugins (e.g., Mochi depends on the context injection plugin), but apps themselves do not modify KiroClaw's behavior. This separation ensures that the core platform remains stable — only reviewed plugins can change how the Gateway works.
+Apps can depend on plugins (e.g., Mochi depends on the context injection plugin), but apps themselves do not modify KiroCrew's behavior. This separation ensures that the core platform remains stable — only reviewed plugins can change how the Gateway works.
 
-### KiroClaw App Store
+### KiroCrew App Store
 
 The App Store is the single place where users discover, install, and manage apps (see Section 5 for the full design).
 
 ### Apps vs capability packages
 
-|A	|Capability Package	|KiroClaw App	|
+|A	|Capability Package	|KiroCrew App	|
 |---	|---	|---	|
 |Scope	|Single agent, skill, or MCP server	|Full application with lifecycle	|
 |---	|---	|---	|
@@ -69,7 +69,7 @@ Derived from the user stories and the "what is an app" definition. These require
 
 |Requirement	|Rationale	|
 |---	|---	|
-|Apps must be installable without modifying core KiroClaw files	|Decouples app development from core releases	|
+|Apps must be installable without modifying core KiroCrew files	|Decouples app development from core releases	|
 |---	|---	|
 |Apps must have a standard manifest format declaring capabilities and permissions	|Enables automated validation, App Store display, and security enforcement	|
 |App builders need a type-safe client library for Gateway HTTP and WebSocket APIs	|Eliminates reimplementation of auth, retry, reconnection across consumers	|
@@ -77,7 +77,7 @@ Derived from the user stories and the "what is an app" definition. These require
 |Apps must be isolated from each other — a buggy app cannot destroy another app's data	|Protects user data and other apps from accidental damage	|
 |The platform must support apps that run outside the Gateway process (desktop apps, CLI tools)	|Enables Mochi, external CLI tools, and future external integrations	|
 |App installation and auth must be transparent to the developer	|Reduces friction and auth-related bugs	|
-|App builders must be able to distribute their apps to other KiroClaw users without requiring manual setup	|Enables an app ecosystem where users discover and install apps with one click	|
+|App builders must be able to distribute their apps to other KiroCrew users without requiring manual setup	|Enables an app ecosystem where users discover and install apps with one click	|
 |The security model must protect critical data (memory, lessons, chat history) from unauthorized access	|Prevents data leakage between apps	|
 
 |10|Apps must declare what data they access (memory, lessons) and why|Gives users visibility and control over their data, similar to OS-level permission prompts|
@@ -94,7 +94,7 @@ A three-layer architecture addresses these requirements:
   │  — every app uses this layer                                 │
   ├────────────────────────────┬─────────────────────────────────┤
   │  Layer 2: App SDK          │  Layer 1: Client SDK            │
-  │  (@kiroclaw/app-sdk,       │  (kiroclaw-client, Python; or   │
+  │  (@kirocrew/app-sdk,       │  (kirocrew-client, Python; or   │
   │   host-provided)           │   direct REST/WS)               │
   │  React hooks + shared      │  HTTP + WS client for Gateway   │
   │  components for dashboard  │  Auth, retry, reconnection      │
@@ -127,13 +127,13 @@ The SDK wraps existing Gateway endpoints. If a newer SDK calls an endpoint that 
 
 ## 5. App Store & Distribution
 
-The App Store solves the distribution problem. App builders can reach all KiroClaw users without requiring them to clone repos or run manual setup.
+The App Store solves the distribution problem. App builders can reach all KiroCrew users without requiring them to clone repos or run manual setup.
 
 ### Discovery
 
 The App Store lives in the dashboard sidebar. It has two tabs:
 
-* **Apps** — Full KiroClaw Apps with UI, backend, or workflow integration. Curated — each app must provide a differentiated experience.
+* **Apps** — Full KiroCrew Apps with UI, backend, or workflow integration. Curated — each app must provide a differentiated experience.
 * **Agents & Skills** — capability packages (agent configs, skills, MCP servers).
 
 ### Installation
@@ -161,12 +161,12 @@ The Gateway API is open, meaning app builders can always bypass the SDK and call
 
 ### 6.1 App Identity & Authentication
 
-Apps need a cryptographically verified identity so the Gateway can enforce isolation. We extend KiroClaw's existing HMAC-SHA256 token system with an `app` scope.
+Apps need a cryptographically verified identity so the Gateway can enforce isolation. We extend KiroCrew's existing HMAC-SHA256 token system with an `app` scope.
 
 **Flow:**
 
 1. **Install** — Gateway generates a per-app secret and stores it securely on disk
-2. **SDK init** — SDK reads the secret automatically. Developer only writes `KiroClawClient({ appName: 'my-app' })`
+2. **SDK init** — SDK reads the secret automatically. Developer only writes `KiroCrewClient({ appName: 'my-app' })`
 3. **Token exchange** — SDK exchanges the secret for a short-lived HMAC token with the app's identity embedded
 4. **Request auth** — Every request carries the token. Gateway middleware verifies the signature and extracts the app identity
 5. **Refresh** — On token expiry, SDK auto-re-exchanges using the on-disk secret. Developer never sees a token error
@@ -227,7 +227,7 @@ App permissions are declared in the manifest (`app.json`), specifying which API 
 
 Memory write operations are not exposed to apps — only the Gateway's internal consolidation process writes to memory. This prevents apps from corrupting the user's learned context.
 
-**Note:** KiroClaw's memory system is actively being redesigned to support multiple tiers of memory. The permission levels above will evolve as the memory architecture matures — apps may need to declare which memory tiers they access, not just the access level.
+**Note:** KiroCrew's memory system is actively being redesigned to support multiple tiers of memory. The permission levels above will evolve as the memory architecture matures — apps may need to declare which memory tiers they access, not just the access level.
 
 ### 6.5 Trust Model & Review
 
@@ -257,7 +257,7 @@ All security-relevant operations are logged via SEL:
 |---	|---	|---	|
 |**Phase 0: App Store**	|✅ Complete	|App manifest, manager, registry, App Store UI, builtin app registration, data-driven sidebar, blob proxy, reverse proxy	|
 |---	|---	|---	|
-|**Phase 1: Client SDK**	|✅ Complete	|`@kiroclaw/app-sdk` (dashboard UI hooks, host-provided via import map) and `kiroclaw-client` (Python, pip) — HTTP client, WebSocket, retry, context injection, manifest validation, app lifecycle, gateway manager, agent/skill/MCP installation helpers	|
+|**Phase 1: Client SDK**	|✅ Complete	|`@kirocrew/app-sdk` (dashboard UI hooks, host-provided via import map) and `kirocrew-client` (Python, pip) — HTTP client, WebSocket, retry, context injection, manifest validation, app lifecycle, gateway manager, agent/skill/MCP installation helpers	|
 |**Phase 2: App Identity**	|🔧 In progress	|Per-app secrets, app-scoped tokens, `request["app"]` in middleware, resource `_app` tagging, destructive operation scoping	|
 |**Phase 3: Validation**	|⏳ Next	|Mochi migration to SDK	|
 |**Phase 4: Hardening**	|⏳ Planned	|AutoSDE app review	|
@@ -269,14 +269,14 @@ All security-relevant operations are logged via SEL:
 
 ## 8. Future Vision
 
-The SDK is location-agnostic by design — it takes a `baseUrl` and authenticates via app-scoped tokens (Section 6.1), regardless of where the Gateway runs. Today that's localhost or a remote host over an SSH tunnel. If KiroClaw moves to a dedicated cloud service, the same `KiroClawClient` works without changes — only the auth model evolves (local secret → OAuth). This positions the SDK as the universal integration point for any tool that wants to tap into a user's KiroClaw context (memory, lessons, agents).
+The SDK is location-agnostic by design — it takes a `baseUrl` and authenticates via app-scoped tokens (Section 6.1), regardless of where the Gateway runs. Today that's localhost or a remote host over an SSH tunnel. If KiroCrew moves to a dedicated cloud service, the same `KiroCrewClient` works without changes — only the auth model evolves (local secret → OAuth). This positions the SDK as the universal integration point for any tool that wants to tap into a user's KiroCrew context (memory, lessons, agents).
 * * *
 
 ## 9. Open Questions
 
 **Destructive operation scoping boundary.** Is "destructive only" the right cut? Should we also scope update operations (e.g., `PUT /api/crons/{id}`)? Or is that over-engineering for internal apps?
 
-**SDK distribution.** The dashboard UI SDK (`@kiroclaw/app-sdk`) ships inside the KiroClaw frontend and is provided to apps at runtime via the host's import map (`window.__kiroclaw_modules`) — apps do not install it. The Python client (`kiroclaw-client`) is a standalone package installable via `pip` from this repo (`packages/kiroclaw-client-py/`). Node.js/Electron apps call the Gateway REST/WS endpoints directly.
+**SDK distribution.** The dashboard UI SDK (`@kirocrew/app-sdk`) ships inside the KiroCrew frontend and is provided to apps at runtime via the host's import map (`window.__kirocrew_modules`) — apps do not install it. The Python client (`kirocrew-client`) is a standalone package installable via `pip` from this repo (`packages/kirocrew-client-py/`). Node.js/Electron apps call the Gateway REST/WS endpoints directly.
 
 **Memory access scoping.** Should `GET /api/memory/episodic/search` be scoped per-app, or is read access to the user's memory acceptable for all apps? Current design: unrestricted read, no write.
 * * *
@@ -285,7 +285,7 @@ The SDK is location-agnostic by design — it takes a `baseUrl` and authenticate
 
 ### A. SDK Implementation Details
 
-**Client SDK (`@kiroclaw/app-sdk` for dashboard UI / `kiroclaw-client` for Python)** provides:
+**Client SDK (`@kirocrew/app-sdk` for dashboard UI / `kirocrew-client` for Python)** provides:
 
 * Authenticated HTTP requests (Cookie-based port-specific tokens, localhost skip, app-secret auto-exchange)
 * Retry with exponential backoff (5xx, 429 with Retry-After, network errors)
@@ -302,7 +302,7 @@ The SDK is a thin wrapper over existing Gateway endpoints — it does not add ne
 
 ```
 import WebSocket from 'ws'
-const mc = new KiroClawClient({ WebSocketImpl: WebSocket })
+const mc = new KiroCrewClient({ WebSocketImpl: WebSocket })
 ```
 
 **API stability tiers:**
@@ -318,9 +318,9 @@ const mc = new KiroClawClient({ WebSocketImpl: WebSocket })
 
 ### B. Mochi Migration Path
 
-Mochi currently manages tokens manually (`obtainToken` → `kiroclaw token` CLI). After migration:
+Mochi currently manages tokens manually (`obtainToken` → `kirocrew token` CLI). After migration:
 
-1. `registerExternal()` writes `.app_secret` to `~/.kiroclaw/apps/mochi/`
+1. `registerExternal()` writes `.app_secret` to `~/.kirocrew/apps/mochi/`
 2. Mochi passes `appName: 'mochi'` to the SDK
 3. SDK auto-reads secret, auto-exchanges token, auto-refreshes on expiry
 4. Mochi's custom `obtainToken` / `onAuthExpired` code can be removed
@@ -330,10 +330,10 @@ Mochi currently manages tokens manually (`obtainToken` → `kiroclaw token` CLI)
 ### C. Package Structure
 
 ```
-packages/kiroclaw-client-py/         # kiroclaw-client (pip — standalone Python client)
-├── kiroclaw_client/
-│   ├── errors.py              # KiroClawError + error codes
-│   ├── client.py              # KiroClawClient (async HTTP, aiohttp)
+packages/kirocrew-client-py/         # kirocrew-client (pip — standalone Python client)
+├── kirocrew_client/
+│   ├── errors.py              # KiroCrewError + error codes
+│   ├── client.py              # KiroCrewClient (async HTTP, aiohttp)
 │   ├── ws_client.py           # WebSocket client
 │   ├── manifest.py            # AppManifest validation
 │   ├── lifecycle.py           # App lifecycle management
@@ -341,16 +341,16 @@ packages/kiroclaw-client-py/         # kiroclaw-client (pip — standalone Pytho
 ├── tests/
 └── pyproject.toml
 
-website/src/app-sdk/                 # @kiroclaw/app-sdk (host-provided, import-map)
+website/src/app-sdk/                 # @kirocrew/app-sdk (host-provided, import-map)
 ├── index.ts                   # React hooks (useAppApi, useAppEvents, etc.)
-├── shared-modules.ts          # Registers host modules on window.__kiroclaw_modules
+├── shared-modules.ts          # Registers host modules on window.__kirocrew_modules
 ├── ChatPanel.tsx / ChatEmbed.tsx / ... # Shared chat components
 └── useChatSession.ts
 ```
 
-The `@kiroclaw/app-sdk` hooks are bundled into the dashboard and exposed to apps
-at runtime through the import map (`@kiroclaw/app-sdk` → `/vendor/*.mjs` stubs →
-`window.__kiroclaw_modules`) — there is no separately published npm package, and
+The `@kirocrew/app-sdk` hooks are bundled into the dashboard and exposed to apps
+at runtime through the import map (`@kirocrew/app-sdk` → `/vendor/*.mjs` stubs →
+`window.__kirocrew_modules`) — there is no separately published npm package, and
 no separate TypeScript gateway-client package. Node.js/Electron apps call the
 Gateway REST/WS endpoints directly.
 
@@ -386,7 +386,7 @@ The app directory should contain:
 * `app.json` — manifest with name, version, capabilities
 * `agents/` — agent config JSON files
 * `skills/` — skill directories with SKILL.md
-* `ui/` (if app has UI) — Vite + React using the host-provided `@kiroclaw/app-sdk` hooks and `@kiroclaw/app-sdk/ui` components
+* `ui/` (if app has UI) — Vite + React using the host-provided `@kirocrew/app-sdk` hooks and `@kirocrew/app-sdk/ui` components
 * Cron entries in manifest (if app needs scheduling)
 
 Agent and skill changes take effect on the next agent invocation (no rebuild). UI changes require `npm run build` + dashboard refresh.
@@ -394,7 +394,7 @@ Agent and skill changes take effect on the next agent invocation (no rebuild). U
 
 ### F. Security Implementation Details
 
-**App secret storage:** Per-app secret generated via `os.urandom(32).hex()`, written to `~/.kiroclaw/apps/{name}/.app_secret` with file mode `0o600`.
+**App secret storage:** Per-app secret generated via `os.urandom(32).hex()`, written to `~/.kirocrew/apps/{name}/.app_secret` with file mode `0o600`.
 
 **Token exchange endpoint:** `POST /api/apps/{name}/token` with `X-App-Secret` header. Returns `{ "token": "<HMAC token>" }`. Token payload includes `"app": "<name>"`.
 

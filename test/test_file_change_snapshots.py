@@ -18,14 +18,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from kiro_claw.dashboard.chat_runner import (
+from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
     _flush_file_changes,
     _safe_read_snapshot,
     _snapshot_write_target,
     _truncate_snapshot,
 )
-from kiro_claw.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.state import _ChatSlot
 
 # ── _truncate_snapshot ──────────────────────────────────────────────────────
 

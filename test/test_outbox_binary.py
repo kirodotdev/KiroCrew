@@ -10,7 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers import api_outbox_download, api_outbox_notify
+from kiro_crew.dashboard.handlers import api_outbox_download, api_outbox_notify
 
 
 def _make_app(state=None) -> web.Application:
@@ -23,7 +23,7 @@ def _make_app(state=None) -> web.Application:
 
 @pytest.fixture
 def mock_sel():
-    with patch("kiro_claw.dashboard.handlers.files._sel") as m:
+    with patch("kiro_crew.dashboard.handlers.files._sel") as m:
         instance = MagicMock()
         m.return_value = instance
         yield instance
@@ -37,7 +37,7 @@ def outbox(tmp_path):
     import tempfile
     odir = Path(tempfile.mkdtemp(dir="/tmp")) / "outbox"
     odir.mkdir()
-    with patch("kiro_claw.config.loader.outbox_dir", return_value=odir):
+    with patch("kiro_crew.config.loader.outbox_dir", return_value=odir):
         yield odir
 
 

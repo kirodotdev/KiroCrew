@@ -26,7 +26,7 @@ class TestRealSlackClientFetchThreadReplies:
 
     @pytest.mark.asyncio
     async def test_returns_messages(self):
-        from kiro_claw.slack.client import RealSlackClient
+        from kiro_crew.slack.client import RealSlackClient
 
         web = AsyncMock()
         web.conversations_replies = AsyncMock(
@@ -47,7 +47,7 @@ class TestRealSlackClientFetchThreadReplies:
 
     @pytest.mark.asyncio
     async def test_logs_warning_on_pagination(self):
-        from kiro_claw.slack.client import RealSlackClient
+        from kiro_crew.slack.client import RealSlackClient
 
         web = AsyncMock()
         web.conversations_replies = AsyncMock(
@@ -59,7 +59,7 @@ class TestRealSlackClientFetchThreadReplies:
         client = RealSlackClient.__new__(RealSlackClient)
         client._web = web
 
-        with patch("kiro_claw.slack.client.logger") as mock_logger:
+        with patch("kiro_crew.slack.client.logger") as mock_logger:
             result = await client.fetch_thread_replies("C1", "100.0")
             assert len(result) == 1
             mock_logger.warning.assert_called_once()
@@ -69,7 +69,7 @@ class TestRealSlackClientFetchThreadReplies:
     async def test_returns_empty_on_error(self):
         import aiohttp
 
-        from kiro_claw.slack.client import RealSlackClient
+        from kiro_crew.slack.client import RealSlackClient
 
         web = AsyncMock()
         web.conversations_replies = AsyncMock(
@@ -83,7 +83,7 @@ class TestRealSlackClientFetchThreadReplies:
 
     @pytest.mark.asyncio
     async def test_no_pagination_warning_without_cursor(self):
-        from kiro_claw.slack.client import RealSlackClient
+        from kiro_crew.slack.client import RealSlackClient
 
         web = AsyncMock()
         web.conversations_replies = AsyncMock(
@@ -95,6 +95,6 @@ class TestRealSlackClientFetchThreadReplies:
         client = RealSlackClient.__new__(RealSlackClient)
         client._web = web
 
-        with patch("kiro_claw.slack.client.logger") as mock_logger:
+        with patch("kiro_crew.slack.client.logger") as mock_logger:
             await client.fetch_thread_replies("C1", "100.0")
             mock_logger.warning.assert_not_called()

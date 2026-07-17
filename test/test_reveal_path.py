@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.files import api_reveal_path
+from kiro_crew.dashboard.handlers.files import api_reveal_path
 
 
 def _make_app() -> web.Application:
@@ -19,7 +19,7 @@ def _make_app() -> web.Application:
 
 @pytest.fixture
 def mock_sel():
-    with patch("kiro_claw.sel.sel") as m:
+    with patch("kiro_crew.sel.sel") as m:
         instance = MagicMock()
         m.return_value = instance
         yield instance
@@ -58,7 +58,7 @@ async def test_reveal_path_sensitive_denied(mock_sel):
     """Given a path containing ~/.ssh/id_rsa, when POST /api/reveal is called,
     then response is 403 with {"error": "access denied"} and SEL logs the denial."""
     with patch(
-        "kiro_claw.dashboard.handlers.files.is_sensitive_path", return_value=True
+        "kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True
     ):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post(

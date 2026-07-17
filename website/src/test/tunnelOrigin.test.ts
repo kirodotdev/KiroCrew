@@ -13,7 +13,7 @@ describe('parseLoopbackOriginPort', () => {
     expect(parseLoopbackOriginPort('http://127.0.0.1:65535')).toBe(65535)
     expect(parseLoopbackOriginPort('http://127.0.0.1:1')).toBe(1)
     expect(parseLoopbackOriginPort('http://localhost:7778')).toBe(7778)
-    expect(parseLoopbackOriginPort('http://kiroclaw.localhost:7778')).toBe(7778)
+    expect(parseLoopbackOriginPort('http://kirocrew.localhost:7778')).toBe(7778)
   })
 
   it('rejects https, non-loopback hosts, paths, and out-of-range ports', () => {
@@ -55,7 +55,7 @@ describe('resolveTunnelOrigin', () => {
 
   it('maps loopback hostnames (localhost / *.localhost) to their instance id', () => {
     expect(resolveTunnelOrigin('http://localhost:7778', portToId)).toBe('cd-1')
-    expect(resolveTunnelOrigin('http://kiroclaw.localhost:7779', portToId)).toBe('cd-2')
+    expect(resolveTunnelOrigin('http://kirocrew.localhost:7779', portToId)).toBe('cd-2')
   })
 
   it('returns null for a valid loopback port we do not own', () => {

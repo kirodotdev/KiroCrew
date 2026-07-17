@@ -1,4 +1,4 @@
-"""Tests for the kiroclaw.session.startup.duration histogram contract.
+"""Tests for the kirocrew.session.startup.duration histogram contract.
 
 Drives AcpClient.ensure_ready() through each exit path (success / auth_required /
 error / unexpected) and asserts the emitted histogram attributes -- in particular
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.acp.client import AcpAuthRequired, AcpClient, AcpError
+from kiro_crew.acp.client import AcpAuthRequired, AcpClient, AcpError
 
 
 class _CapturingRecorder:
@@ -44,7 +44,7 @@ def _spawn_ok(client):
 def _last_outcome(rec):
     assert rec.calls, "startup histogram must be emitted"
     name, attrs = rec.calls[-1]
-    assert name == "kiroclaw.session.startup.duration"
+    assert name == "kirocrew.session.startup.duration"
     return attrs
 
 
@@ -58,7 +58,7 @@ async def test_success_outcome_ready():
 
     client._initialize_session = _init
     rec = _CapturingRecorder()
-    with patch("kiro_claw.metrics.provider.get_recorder", return_value=rec):
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
         await client.ensure_ready()
     attrs = _last_outcome(rec)
     assert attrs["outcome"] == "ready"
@@ -75,7 +75,7 @@ async def test_auth_required_outcome():
 
     client._initialize_session = _init
     rec = _CapturingRecorder()
-    with patch("kiro_claw.metrics.provider.get_recorder", return_value=rec):
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
         with pytest.raises(AcpAuthRequired):
             await client.ensure_ready()
     assert _last_outcome(rec)["outcome"] == "auth_required"
@@ -96,7 +96,7 @@ async def test_acp_error_outcome_error():
     client._initialize_session = _init
     client._reset_state = _reset
     rec = _CapturingRecorder()
-    with patch("kiro_claw.metrics.provider.get_recorder", return_value=rec):
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
         with pytest.raises(AcpError):
             await client.ensure_ready()
     assert _last_outcome(rec)["outcome"] == "error"
@@ -113,7 +113,7 @@ async def test_unexpected_exception_not_ready():
 
     client._initialize_session = _init
     rec = _CapturingRecorder()
-    with patch("kiro_claw.metrics.provider.get_recorder", return_value=rec):
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
         with pytest.raises(RuntimeError):
             await client.ensure_ready()
     outcome = _last_outcome(rec)["outcome"]

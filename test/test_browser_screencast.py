@@ -16,8 +16,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.browser.screencast import build_frame_payload
-from kiro_claw.dashboard.handlers.messaging import api_browser_frame
+from kiro_crew.browser.screencast import build_frame_payload
+from kiro_crew.dashboard.handlers.messaging import api_browser_frame
 
 
 class TestBuildFramePayload:
@@ -75,16 +75,16 @@ class TestProxyFrameHelpers:
     def test_post_frame_to_gateway_never_raises_when_gateway_down(self, monkeypatch):
         # Point at a port nothing is listening on; the threaded POST must swallow
         # the connection error so the agent's screenshot is never affected.
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
-        monkeypatch.setenv("KIROCLAW_PORT", "1")  # unroutable
+        monkeypatch.setenv("KIROCREW_PORT", "1")  # unroutable
         # Must return immediately (spawns a daemon thread) and not raise.
         proxy._post_frame_to_gateway(b"\xff\xd8\xff", "jpeg")
 
     def test_post_frame_suppressed_in_extension_mode(self, monkeypatch):
         # Extension mode attaches to the user's own visible Chrome — the mirror is
         # redundant, so no frame POST should be spawned at all.
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         spawned = []
 
@@ -106,7 +106,7 @@ class TestProxyFrameHelpers:
         assert spawned  # headless mode still mirrors
 
     def test_prune_keeps_newest(self, monkeypatch, tmp_path):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         d = tmp_path / "shots"
         d.mkdir()
@@ -121,7 +121,7 @@ class TestProxyFrameHelpers:
         assert remaining == ["screenshot-3.jpeg", "screenshot-4.jpeg", "screenshot-5.jpeg"]
 
     def test_encode_frame_returns_bytes_and_ext(self):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         # 1x1 transparent PNG.
         png_b64 = (
@@ -135,10 +135,10 @@ class TestProxyFrameHelpers:
         # Round-trips as valid base64 input.
         assert base64.b64decode(png_b64)
 
-    def test_internal_secret_read_from_kiroclaw_home(self, monkeypatch, tmp_path):
-        import kiro_claw.mcp_playwright_proxy as proxy
+    def test_internal_secret_read_from_kirocrew_home(self, monkeypatch, tmp_path):
+        import kiro_crew.mcp_playwright_proxy as proxy
 
-        monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         assert proxy._internal_secret() == ""  # absent file -> empty (POST then dropped)
         (tmp_path / ".local_secret").write_text("s3cr3t\n")
         assert proxy._internal_secret() == "s3cr3t"  # stripped
@@ -173,8 +173,8 @@ class TestApiBrowserFrameHandler:
         state = MagicMock()
         app = _make_frame_app(state)
         with (
-            patch("kiro_claw.dashboard.handlers.messaging.is_loopback", return_value=False),
-            patch("kiro_claw.dashboard.handlers.messaging._sel"),
+            patch("kiro_crew.dashboard.handlers.messaging.is_loopback", return_value=False),
+            patch("kiro_crew.dashboard.handlers.messaging._sel"),
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/browser/frame", json=_VALID_FRAME)
@@ -186,8 +186,8 @@ class TestApiBrowserFrameHandler:
         state = MagicMock()
         app = _make_frame_app(state)
         with (
-            patch("kiro_claw.dashboard.handlers.messaging.is_loopback", return_value=True),
-            patch("kiro_claw.dashboard.handlers.messaging._sel"),
+            patch("kiro_crew.dashboard.handlers.messaging.is_loopback", return_value=True),
+            patch("kiro_crew.dashboard.handlers.messaging._sel"),
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/browser/frame", json=_VALID_FRAME)
@@ -202,8 +202,8 @@ class TestApiBrowserFrameHandler:
         state = MagicMock()
         app = _make_frame_app(state)
         with (
-            patch("kiro_claw.dashboard.handlers.messaging.is_loopback", return_value=True),
-            patch("kiro_claw.dashboard.handlers.messaging._sel"),
+            patch("kiro_crew.dashboard.handlers.messaging.is_loopback", return_value=True),
+            patch("kiro_crew.dashboard.handlers.messaging._sel"),
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -219,8 +219,8 @@ class TestApiBrowserFrameHandler:
         state = MagicMock()
         app = _make_frame_app(state)
         with (
-            patch("kiro_claw.dashboard.handlers.messaging.is_loopback", return_value=True),
-            patch("kiro_claw.dashboard.handlers.messaging._sel"),
+            patch("kiro_crew.dashboard.handlers.messaging.is_loopback", return_value=True),
+            patch("kiro_crew.dashboard.handlers.messaging._sel"),
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/browser/frame", json={"format": "jpeg"})
@@ -243,7 +243,7 @@ class TestActivePump:
         return now
 
     def test_is_pump_id(self):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         assert proxy._is_pump_id("__mc_pump_7")
         assert not proxy._is_pump_id(7)
@@ -251,31 +251,31 @@ class TestActivePump:
         assert not proxy._is_pump_id(None)
 
     def test_should_pump_all_gates_pass(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         now = self._reset(proxy, monkeypatch)
         assert proxy._should_pump(now) is True
 
     def test_should_pump_blocked_when_disabled(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         now = self._reset(proxy, monkeypatch, enabled=False)
         assert proxy._should_pump(now) is False
 
     def test_should_pump_blocked_when_agent_request_in_flight(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         now = self._reset(proxy, monkeypatch, pending={1: {"id": 1}})
         assert proxy._should_pump(now) is False
 
     def test_should_pump_blocked_when_pump_in_flight_within_timeout(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         now = self._reset(proxy, monkeypatch, inflight="__mc_pump_1", sent_at=1000.0)
         assert proxy._should_pump(now) is False  # just sent, still in flight
 
     def test_should_pump_allowed_after_inflight_timeout(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         # stuck pump older than _PUMP_TIMEOUT no longer blocks
         now = self._reset(proxy, monkeypatch, inflight="__mc_pump_1",
@@ -283,20 +283,20 @@ class TestActivePump:
         assert proxy._should_pump(now) is True
 
     def test_should_pump_blocked_when_session_idle_cold(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         # last browse activity older than the active window
         now = self._reset(proxy, monkeypatch, activity=1000.0 - proxy._PUMP_ACTIVE_WINDOW - 1)
         assert proxy._should_pump(now) is False
 
     def test_should_pump_blocked_when_no_subscribers(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         now = self._reset(proxy, monkeypatch, subs=0)
         assert proxy._should_pump(now) is False
 
     def test_note_browse_activity_only_for_browser_tools(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_last_browse_activity", 0.0)
         proxy._note_browse_activity({"method": "tools/call", "params": {"name": "browser_navigate"}})
@@ -309,7 +309,7 @@ class TestActivePump:
         proxy._note_browse_activity({"method": "initialize"})  # not a tools/call
 
     def test_relay_pump_frame_posts_decoded_image(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         posted = []
         monkeypatch.setattr(proxy, "_post_frame_to_gateway",
@@ -325,7 +325,7 @@ class TestActivePump:
         assert posted[0][2] == "pump"
 
     def test_relay_pump_frame_ignores_non_image(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         posted = []
         monkeypatch.setattr(proxy, "_post_frame_to_gateway", lambda b, fmt, source="agent": posted.append(b))
@@ -334,7 +334,7 @@ class TestActivePump:
         assert posted == []
 
     def test_relay_pump_frame_swallows_bad_base64(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         posted = []
         monkeypatch.setattr(proxy, "_post_frame_to_gateway",
@@ -346,7 +346,7 @@ class TestActivePump:
         assert posted == []
 
     def test_clear_pump_inflight(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_pump_inflight_id", "__mc_pump_9")
         proxy._clear_pump_inflight("__mc_pump_8")  # different id: no-op
@@ -355,7 +355,7 @@ class TestActivePump:
         assert proxy._pump_inflight_id is None
 
     def test_record_subscriber_count(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_last_subscriber_count", 1)
         proxy._record_subscriber_count(b'{"ok": true, "subscribers": 3}')
@@ -373,7 +373,7 @@ class TestApiBrowserFrameSelSource:
     def _run(self, body, monkeypatch):
         import asyncio
 
-        from kiro_claw.dashboard.handlers import messaging
+        from kiro_crew.dashboard.handlers import messaging
 
         captured: dict = {}
 
@@ -435,7 +435,7 @@ class TestPumpAudit:
         return _Resp()
 
     def test_post_pump_audit_skipped_in_extension_mode(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         calls = []
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", True)
@@ -448,21 +448,21 @@ class TestPumpAudit:
         assert calls == []
 
     def test_post_pump_audit_true_on_2xx(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", False)
         monkeypatch.setattr(proxy.urllib.request, "urlopen", lambda *a, **k: self._resp(200))
         assert proxy._post_pump_audit() is True  # gateway acked -> injection allowed
 
     def test_post_pump_audit_false_on_non_2xx(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", False)
         monkeypatch.setattr(proxy.urllib.request, "urlopen", lambda *a, **k: self._resp(500))
         assert proxy._post_pump_audit() is False  # not acked -> caller skips the injection
 
     def test_post_pump_audit_false_on_failure(self, monkeypatch):
-        import kiro_claw.mcp_playwright_proxy as proxy
+        import kiro_crew.mcp_playwright_proxy as proxy
 
         def _boom(*a, **k):
             raise OSError("gateway down")
@@ -481,7 +481,7 @@ class TestApiBrowserPumpAudit:
     def _run(self, monkeypatch, *, loopback):
         import asyncio
 
-        from kiro_claw.dashboard.handlers import messaging
+        from kiro_crew.dashboard.handlers import messaging
 
         captured: dict = {}
 

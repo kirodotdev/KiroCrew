@@ -4,7 +4,7 @@ Covers:
 - ``list_kiro_skills`` discovery of ``~/.kiro/skills/`` and workspace ``.kiro/skills/``
 - ``_resolve_loaded_by_agents`` glob-matching against installed agent JSONs
 - ``list_skill_tree`` / ``read_skill_file`` size + sensitive-path + escape guards
-- ``_resolve_skill_root`` cross-source resolution (kiroclaw / kiro-user / aim)
+- ``_resolve_skill_root`` cross-source resolution (kirocrew / kiro-user / aim)
 - ``GET /api/skills/<name>/tree`` and ``GET /api/skills/<name>/file`` end-to-end
 
 Tests use a tmp_path fake $HOME so we never touch the real filesystem.
@@ -19,7 +19,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers._shared import (
+from kiro_crew.dashboard.handlers._shared import (
     SKILL_FILE_MAX_BYTES,
     SKILL_TREE_MAX_ENTRIES,
     _agent_loads_skill,
@@ -45,12 +45,12 @@ from kiro_claw.dashboard.handlers._shared import (
 def fake_home(tmp_path, monkeypatch):
     """Pin $HOME to tmp_path so Path.home() returns a writable sandbox.
 
-    Also clears KIROCLAW_HOME so ``skills_dir()`` resolves to
-    ``<tmp>/.kiroclaw/skills`` rather than any value leaked from the
+    Also clears KIROCREW_HOME so ``skills_dir()`` resolves to
+    ``<tmp>/.kirocrew/skills`` rather than any value leaked from the
     surrounding build environment.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("KIROCLAW_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     return tmp_path
 
@@ -419,7 +419,7 @@ class TestAnnotateSkillsWithAgents:
             for n in ("s1", "s2", "s3", "s4", "s5")
         ]
 
-        import kiro_claw.dashboard.handlers._shared as shared
+        import kiro_crew.dashboard.handlers._shared as shared
 
         calls = {"n": 0}
         real = shared._load_parsed_agents
@@ -568,7 +568,7 @@ class TestAimListStdoutErrorHandling:
 
     @pytest.mark.asyncio
     async def test_permission_error_returns_none(self, monkeypatch):
-        import kiro_claw.dashboard.handlers._shared as shared
+        import kiro_crew.dashboard.handlers._shared as shared
 
         async def _boom(*a, **k):
             # `aim` present but not executable → PermissionError (an OSError
@@ -582,7 +582,7 @@ class TestAimListStdoutErrorHandling:
 
     @pytest.mark.asyncio
     async def test_missing_binary_returns_none(self, monkeypatch):
-        import kiro_claw.dashboard.handlers._shared as shared
+        import kiro_crew.dashboard.handlers._shared as shared
 
         async def _missing(*a, **k):
             raise FileNotFoundError(2, "No such file")
@@ -622,8 +622,8 @@ class TestCollectSkillsBlocking:
         result = collect_skills_blocking(loader, aim_stdout, project_dir=None)
 
         by_key = {s["key"]: s for s in result}
-        # kiroclaw source defaulted, aim parsed, kiro discovered.
-        assert by_key["mc"]["source"] == "kiroclaw"
+        # kirocrew source defaulted, aim parsed, kiro discovered.
+        assert by_key["mc"]["source"] == "kirocrew"
         assert "aim/aim-one" in by_key
         assert "kiro-user/kiro-one" in by_key
         # Every entry carries loaded_by_agents; the kiro skill matches loader.
@@ -681,7 +681,7 @@ class TestExpandAgentGlobs:
 
 class TestListSkillTree:
     def test_returns_files_and_dirs(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "demo"
+        skill = fake_home / ".kirocrew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\n---\n")
         (skill / "helper.sh").write_text("echo hi\n")
@@ -695,7 +695,7 @@ class TestListSkillTree:
         assert ("references/doc.md", "file") in kinds
 
     def test_caps_at_max_entries(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "huge"
+        skill = fake_home / ".kirocrew" / "skills" / "huge"
         skill.mkdir(parents=True)
         for i in range(SKILL_TREE_MAX_ENTRIES + 50):
             (skill / f"f{i:04d}.txt").write_text("x")
@@ -703,7 +703,7 @@ class TestListSkillTree:
         assert len(out) == SKILL_TREE_MAX_ENTRIES
 
     def test_empty_skill_dir_returns_empty(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "empty"
+        skill = fake_home / ".kirocrew" / "skills" / "empty"
         skill.mkdir(parents=True)
         assert list_skill_tree(skill) == []
 
@@ -713,7 +713,7 @@ class TestListSkillTree:
 
 class TestReadSkillFile:
     def test_reads_file_inside_skill(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "demo"
+        skill = fake_home / ".kirocrew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("hello\n")
         content, err = read_skill_file(skill, "SKILL.md")
@@ -721,7 +721,7 @@ class TestReadSkillFile:
         assert content == "hello\n"
 
     def test_rejects_path_traversal(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "demo"
+        skill = fake_home / ".kirocrew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("x")
         outside = fake_home / "secret.txt"
@@ -730,26 +730,26 @@ class TestReadSkillFile:
         assert err == "invalid path"
 
     def test_rejects_absolute_path(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "demo"
+        skill = fake_home / ".kirocrew" / "skills" / "demo"
         skill.mkdir(parents=True)
         _, err = read_skill_file(skill, "/etc/passwd")
         assert err == "invalid path"
 
     def test_rejects_oversized_file(self, fake_home, monkeypatch):
-        skill = fake_home / ".kiroclaw" / "skills" / "demo"
+        skill = fake_home / ".kirocrew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "big.txt").write_bytes(b"x" * (SKILL_FILE_MAX_BYTES + 1))
         _, err = read_skill_file(skill, "big.txt")
         assert err and err.startswith("file too large")
 
     def test_missing_file_returns_not_found(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "demo"
+        skill = fake_home / ".kirocrew" / "skills" / "demo"
         skill.mkdir(parents=True)
         _, err = read_skill_file(skill, "no-such.txt")
         assert err == "not found"
 
     def test_directory_target_rejected(self, fake_home):
-        skill = fake_home / ".kiroclaw" / "skills" / "demo"
+        skill = fake_home / ".kirocrew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "subdir").mkdir()
         _, err = read_skill_file(skill, "subdir")
@@ -760,8 +760,8 @@ class TestReadSkillFile:
 
 
 class TestResolveSkillRoot:
-    def test_kiroclaw_skill(self, fake_home):
-        skill_dir = _write_skill(fake_home / ".kiroclaw" / "skills", "foo")
+    def test_kirocrew_skill(self, fake_home):
+        skill_dir = _write_skill(fake_home / ".kirocrew" / "skills", "foo")
         state = MagicMock(_slots={})
         out = _resolve_skill_root("foo", state)
         assert out == skill_dir.resolve()
@@ -773,7 +773,7 @@ class TestResolveSkillRoot:
         assert out == skill_dir.resolve()
 
     def test_path_traversal_rejected(self, fake_home):
-        _write_skill(fake_home / ".kiroclaw" / "skills", "ok")
+        _write_skill(fake_home / ".kirocrew" / "skills", "ok")
         state = MagicMock(_slots={})
         assert _resolve_skill_root("../etc", state) is None
         assert _resolve_skill_root("/abs/path", state) is None
@@ -801,13 +801,13 @@ class TestResolveSkillRoot:
         out = _resolve_skill_root("kiro-user/linked", state)
         assert out == target_dir.resolve()
 
-    def test_nested_kiroclaw_skill_resolves(self, fake_home):
+    def test_nested_kirocrew_skill_resolves(self, fake_home):
         """Regression: category-keyed skills (``utils/multi-badger``,
         ``code/builder-toolbox``) live one level below the skills root.
         An over-strict symlink guard that required the candidate's parent
         to *be* the root 404'd every nested skill even though the GET
         ``/api/skills`` listing (via SkillsLoader) surfaced them fine."""
-        skill_dir = _write_skill(fake_home / ".kiroclaw" / "skills", "utils/multi-badger")
+        skill_dir = _write_skill(fake_home / ".kirocrew" / "skills", "utils/multi-badger")
         state = MagicMock(_slots={})
         out = _resolve_skill_root("utils/multi-badger", state)
         assert out == skill_dir.resolve()
@@ -819,26 +819,26 @@ class TestResolveSkillRoot:
         out = _resolve_skill_root("kiro-user/cat/nested-one", state)
         assert out == skill_dir.resolve()
 
-    def test_kiroclaw_skill_honors_kiroclaw_home(self, tmp_path, monkeypatch):
-        """``_resolve_skill_root`` must resolve kiroclaw skills under the
+    def test_kirocrew_skill_honors_kirocrew_home(self, tmp_path, monkeypatch):
+        """``_resolve_skill_root`` must resolve kirocrew skills under the
         active config home (``skills_dir()``), not a hardcoded
-        ``~/.kiroclaw``.  An isolated dev gateway sets KIROCLAW_HOME to a
+        ``~/.kirocrew``.  An isolated dev gateway sets KIROCREW_HOME to a
         separate directory; the tree/file endpoints must follow it."""
         home_dir = tmp_path / "real-home"
         home_dir.mkdir()
         monkeypatch.setenv("HOME", str(home_dir))
         monkeypatch.setattr(Path, "home", lambda: home_dir)
 
-        # Isolated config home elsewhere, selected via KIROCLAW_HOME.
+        # Isolated config home elsewhere, selected via KIROCREW_HOME.
         mc_home = tmp_path / "dev-home"
-        monkeypatch.setenv("KIROCLAW_HOME", str(mc_home))
+        monkeypatch.setenv("KIROCREW_HOME", str(mc_home))
         skill_dir = _write_skill(mc_home / "skills", "isolated-skill")
 
         state = MagicMock(_slots={})
         out = _resolve_skill_root("isolated-skill", state)
         assert out == skill_dir.resolve()
-        # And nothing was created under the real ~/.kiroclaw.
-        assert not (home_dir / ".kiroclaw" / "skills" / "isolated-skill").exists()
+        # And nothing was created under the real ~/.kirocrew.
+        assert not (home_dir / ".kirocrew" / "skills" / "isolated-skill").exists()
 
     def test_symlinked_intermediate_dir_escape_rejected(self, fake_home, tmp_path):
         """Security: a leaf skill symlink is allowed (AIM installs), but a
@@ -849,7 +849,7 @@ class TestResolveSkillRoot:
         outside.mkdir(parents=True)
         (outside / "SKILL.md").write_text("---\nname: x\n---\nsecret")
 
-        skills_root = fake_home / ".kiroclaw" / "skills"
+        skills_root = fake_home / ".kirocrew" / "skills"
         skills_root.mkdir(parents=True)
         # ``evil`` is a symlinked intermediate dir → points at ../../outside.
         (skills_root / "evil").symlink_to(tmp_path / "outside")
@@ -884,7 +884,7 @@ class TestResolveSkillRoot:
 
 
 def _make_app(state):
-    from kiro_claw.dashboard.handlers import api_skill_file, api_skill_tree, api_skills
+    from kiro_crew.dashboard.handlers import api_skill_file, api_skill_tree, api_skills
 
     app = web.Application()
     app["state"] = state
@@ -903,7 +903,7 @@ class TestEndpoints:
         (skill_dir / "helper.sh").write_text("#!/bin/sh\n")
 
         state = MagicMock(_slots={}, context_builder=None)
-        # SkillsLoader will use ~/.kiroclaw/skills (empty here) — fine.
+        # SkillsLoader will use ~/.kirocrew/skills (empty here) — fine.
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/skills/kiro-user/demo/-/tree")
             assert resp.status == 200
@@ -967,7 +967,7 @@ class TestEndpoints:
         events.  Failed access (traversal/sensitive-path) is a probing signal."""
         _write_skill(fake_home / ".kiro" / "skills", "demo")
         sel_mock = MagicMock()
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.sel", lambda: sel_mock)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: sel_mock)
 
         state = MagicMock(_slots={}, context_builder=None)
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -988,15 +988,15 @@ class TestEndpoints:
         """Route collision regression: a nested skill whose last path segment
         is literally ``tree`` (``utils/tree``) must reach the detail endpoint,
         not the tree browser.  The ``/-/`` separator keeps them distinct."""
-        from kiro_claw.dashboard.handlers import (
+        from kiro_crew.dashboard.handlers import (
             api_skill_detail,
             api_skill_file,
             api_skill_tree,
         )
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.skills import SkillsLoader
 
-        # A real skill literally named ``utils/tree`` under the kiroclaw root.
-        _write_skill(fake_home / ".kiroclaw" / "skills", "utils/tree", description="edge")
+        # A real skill literally named ``utils/tree`` under the kirocrew root.
+        _write_skill(fake_home / ".kirocrew" / "skills", "utils/tree", description="edge")
 
         app = web.Application()
         # Seed a *real* SkillsLoader so api_skill_detail can load the skill —

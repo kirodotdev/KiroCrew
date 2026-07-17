@@ -10,7 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.agents import api_agents_rescan
+from kiro_crew.dashboard.handlers.agents import api_agents_rescan
 
 
 def _make_app() -> web.Application:
@@ -24,10 +24,10 @@ class TestApiAgentsRescan:
     async def test_invalid_body_falls_back_to_registry(self):
         """Malformed/missing body defaults to {} and falls back to registry reload."""
         with patch(
-            "kiro_claw.dashboard.handlers.agents.load_registry",
+            "kiro_crew.dashboard.handlers.agents.load_registry",
             return_value={},
         ), patch(
-            "kiro_claw.dashboard.handlers.agents.list_agents",
+            "kiro_crew.dashboard.handlers.agents.list_agents",
             return_value=[],
         ):
             async with TestClient(TestServer(_make_app())) as client:
@@ -54,7 +54,7 @@ class TestApiAgentsRescan:
     @pytest.mark.asyncio
     async def test_sensitive_path_rejected(self, tmp_path: Path):
         with patch(
-            "kiro_claw.dashboard.handlers.agents.is_sensitive_path",
+            "kiro_crew.dashboard.handlers.agents.is_sensitive_path",
             return_value=True,
         ):
             async with TestClient(TestServer(_make_app())) as client:
@@ -77,13 +77,13 @@ class TestApiAgentsRescan:
         )
 
         with patch(
-            "kiro_claw.dashboard.handlers.agents.list_agents",
+            "kiro_crew.dashboard.handlers.agents.list_agents",
             return_value=[],
         ), patch(
-            "kiro_claw.aim_agents._registry_path",
+            "kiro_crew.aim_agents._registry_path",
             return_value=tmp_path / "reg.json",
         ), patch(
-            "kiro_claw.dashboard.handlers.agents.Path.home",
+            "kiro_crew.dashboard.handlers.agents.Path.home",
             return_value=tmp_path,
         ):
             async with TestClient(TestServer(_make_app())) as client:
@@ -99,10 +99,10 @@ class TestApiAgentsRescan:
     async def test_empty_body_falls_back_to_registry(self, tmp_path: Path):
         """No paths → reloads from existing registry."""
         with patch(
-            "kiro_claw.dashboard.handlers.agents.load_registry",
+            "kiro_crew.dashboard.handlers.agents.load_registry",
             return_value={},
         ), patch(
-            "kiro_claw.dashboard.handlers.agents.list_agents",
+            "kiro_crew.dashboard.handlers.agents.list_agents",
             return_value=[],
         ):
             async with TestClient(TestServer(_make_app())) as client:
@@ -148,13 +148,13 @@ class TestApiAgentsRescanPathValidation:
     async def test_home_itself_is_accepted(self, tmp_path: Path) -> None:
         """Scanning HOME itself is valid — user should be able to scan ~/."""
         with patch(
-            "kiro_claw.dashboard.handlers.agents.load_registry",
+            "kiro_crew.dashboard.handlers.agents.load_registry",
             return_value={},
         ), patch(
-            "kiro_claw.dashboard.handlers.agents.list_agents",
+            "kiro_crew.dashboard.handlers.agents.list_agents",
             return_value=[],
         ), patch(
-            "kiro_claw.dashboard.handlers.agents.scan_directory",
+            "kiro_crew.dashboard.handlers.agents.scan_directory",
             return_value=[],
         ):
             async with TestClient(TestServer(_make_app())) as client:

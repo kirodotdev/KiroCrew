@@ -2,7 +2,7 @@
 
 ## Overview
 
-This feature adds a provider-agnostic session file cleanup mechanism to the KiroClaw gateway. Each LLM provider backend stores session data differently on disk — the ACP provider uses `~/.kiro/sessions/cli/{session_id}.json` and `{session_id}.jsonl` files, while Claude Code and Bedrock have different (or no) persistence. The cleanup mechanism integrates with the existing subagent lifecycle at three points: normal completion, reaper force-kill, and tombstone pruning.
+This feature adds a provider-agnostic session file cleanup mechanism to the KiroCrew gateway. Each LLM provider backend stores session data differently on disk — the ACP provider uses `~/.kiro/sessions/cli/{session_id}.json` and `{session_id}.jsonl` files, while Claude Code and Bedrock have different (or no) persistence. The cleanup mechanism integrates with the existing subagent lifecycle at three points: normal completion, reaper force-kill, and tombstone pruning.
 
 The design adds a `session_id` property and a `cleanup_session` method to `LLMProvider`, a `cleanup` parameter to `SessionManager.release()`, session ID tracking in subagent persistence, and a startup sweep that runs during orphan reconciliation.
 
@@ -227,7 +227,7 @@ def _is_safe_path(target: Path, expected_root: Path) -> bool:
 {
     "id": "abc123",
     "task": "...",
-    "agent": "kiroclaw",
+    "agent": "kirocrew",
     "parent_session": "dashboard:chat-1",
     "started": 1700000000.0,
     "max_turns": 100,

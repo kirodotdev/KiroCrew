@@ -1,5 +1,5 @@
 /**
- * ChatEmbed — embeddable chat widget using KiroClaw's native rendering.
+ * ChatEmbed — embeddable chat widget using KiroCrew's native rendering.
  *
  * Uses ChatMessageList (shared with ChatPage) for message rendering.
  * Manages its own state via useAppApi() + React Query. No Redux dependency.

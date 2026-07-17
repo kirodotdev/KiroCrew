@@ -1,13 +1,13 @@
 ---
 name: meshclaw-sync
-description: How to sync fixes from the upstream MeshClaw mainline into this de-Amazoned KiroClaw fork. Use for porting commits, upstream sync, picking fixes from MeshClaw, daily merge, cherry-pick from internal.
+description: How to sync fixes from the upstream MeshClaw mainline into this de-Amazoned KiroCrew fork. Use for porting commits, upstream sync, picking fixes from MeshClaw, daily merge, cherry-pick from internal.
 always: false
 triggers: meshclaw, upstream, sync, port, cherry-pick, mainline, internal fork, de-amazon, deamazon, pick fixes, merge upstream
 ---
-# Syncing fixes from MeshClaw → KiroClaw
+# Syncing fixes from MeshClaw → KiroCrew
 
-KiroClaw is the **public, de-Amazoned fork** of the internal `MeshClaw` package.
-The two repos **share no git history** (KiroClaw was created fresh, not cloned),
+KiroCrew is the **public, de-Amazoned fork** of the internal `MeshClaw` package.
+The two repos **share no git history** (KiroCrew was created fresh, not cloned),
 so you **cannot** `git cherry-pick`/`git merge`/`git apply` between them. Every
 fix must be ported **by content**, path- and symbol-mapped, and re-verified.
 
@@ -21,14 +21,14 @@ The fork bundles **two** upstream packages into one repo, so a full sync tracks
 **both**:
 
 - **Backend upstream (internal):** `/Volumes/workplace/MeshClaw/src/MeshClaw`
-  (package `mesh_claw`) → fork `src/kiro_claw/`.
+  (package `mesh_claw`) → fork `src/kiro_crew/`.
 - **Frontend upstream (internal):** `/Volumes/workplace/MeshClaw/src/MeshClawWebsite`
   (the React/Vite SPA, package dir `src/`) → fork `website/src/`. The `mesh_claw`
   backend ships only a server-rendered `static/dashboard.html`; the fork's SPA's
   real upstream is **MeshClawWebsite**, a separate package — sync it too or the
   dashboard silently drifts behind.
-- **Fork (this repo):** `/Volumes/workplace/kiroclaw`
-  (package `kiro_claw` + `website/`).
+- **Fork (this repo):** `/Volumes/workplace/kirocrew`
+  (package `kiro_crew` + `website/`).
 
 ## Step 1 — Find the candidate commits
 
@@ -43,7 +43,7 @@ The fork shares the backend's content lineage, so a plain SHA range works:
 ```bash
 cd /Volumes/workplace/MeshClaw/src/MeshClaw
 git fetch -q
-STATE=/Volumes/workplace/kiroclaw/skills/meshclaw-sync/last-synced.txt
+STATE=/Volumes/workplace/kirocrew/skills/meshclaw-sync/last-synced.txt
 BETA=$(grep '^beta ' "$STATE" | awk '{print $2}')
 MAIN=$(grep '^mainline ' "$STATE" | awk '{print $2}')
 git log --no-merges --oneline "$BETA"..origin/beta-braveheart      # new beta commits
@@ -95,9 +95,9 @@ removed or stubbed. These have no public-fork equivalent:
 | `code_reviewer` / `secretary` / `taskkeeper` | deleted; `sync_aim_packages` is a no-op stub (`return None`) |
 | CodeArtifact / vendored `claude-agent-acp` | fork uses **public** `npm i -g @agentclientprotocol/claude-agent-acp` |
 | Cognito / RUM ids / AEA | removed identity/telemetry |
-| **non-KiroACP providers**: `providers/claude_code.py` (`ClaudeCodeProvider`), `providers/bedrock.py` (`BedrockProvider`), `cc_agent.py`, `mirror.py` | **KiroClaw is KiroACP (kiro-cli) ONLY.** These modules + the config `claude_code`/`bedrock` factory branches, the `cc_*`/`bedrock_*` `AgentConfig` fields, and the `provider` enum beyond `["acp"]` were deleted. Any upstream commit confined to them is SKIP/NA_INTERNAL. |
+| **non-KiroACP providers**: `providers/claude_code.py` (`ClaudeCodeProvider`), `providers/bedrock.py` (`BedrockProvider`), `cc_agent.py`, `mirror.py` | **KiroCrew is KiroACP (kiro-cli) ONLY.** These modules + the config `claude_code`/`bedrock` factory branches, the `cc_*`/`bedrock_*` `AgentConfig` fields, and the `provider` enum beyond `["acp"]` were deleted. Any upstream commit confined to them is SKIP/NA_INTERNAL. |
 
-> **NOT a SKIP — `platform/` (CPP seam + Governance):** `src/kiro_claw/platform/`
+> **NOT a SKIP — `platform/` (CPP seam + Governance):** `src/kiro_crew/platform/`
 > and the two-level governance wiring are **fork-side generic core**, not an
 > Amazon coupling. A commit touching them (or colliding security/hooks/sandbox/sel
 > files) is KEEP-and-reconcile, never SKIP. See "What stays KEPT → `platform/`"
@@ -128,7 +128,7 @@ apps the fork HAS, like `/file-explorer`).
 SKIP/NA_INTERNAL. A commit that merely *mentions* an internal name in a
 docstring/comment is still KEEP — the literal is inert in OSS. **EXCEPTION —
 `HEARTBEAT_SAFE_TOOLS` (`slack/gateway.py`) was TRIMMED** (P472753900) to the
-generic + kiroclaw-core reads (`Read`/`Grep`/`Glob`/`WorkspaceSearch` +
+generic + kirocrew-core reads (`Read`/`Grep`/`Glob`/`WorkspaceSearch` +
 `learn_list`/`cron_list`/`spawn_list`/`spawn_status`/`artifact_*`/
 `local_knowledge_search`). The Amazon-internal names (`TaskeiGetTask`,
 `ReadInternalWebsites`, `search_arcc`, `recall`, `BrazilBuildAnalyzerTool`,
@@ -153,12 +153,12 @@ internal ones. Examples:
   fork's `get_tunnel_url() if cfg.slack.use_tunnel_url else ""` gate in
   `send_dashboard_link` (tunnel is deliberately opt-in here).
 - A new `_install_<x>_agent()` that pulls `builder-mcp` into a dedicated agent
-  JSON — **de-Amazon it to `kiroclaw-core`-only**, matching how the fork already
+  JSON — **de-Amazon it to `kirocrew-core`-only**, matching how the fork already
   rewrote `_install_research_agent` / `_install_knowledge_agent` (see
   `MIGRATION_PLAN.md`). Port the generic *mechanism* (dedicated agent, dynamic
   `tools`-from-resolved-`mcpServers`, prompt), drop `builder-mcp` from the pull
   tuple, and soften any internal-tool prose in the system prompt. Then **adapt
-  the tests** that assert the builder-mcp behavior to the kiroclaw-core reality.
+  the tests** that assert the builder-mcp behavior to the kirocrew-core reality.
 - A hunk anchored on a fork stub with no upstream pre-image (e.g. the
   `sync_aim_packages` iterdir loop the fork replaced with `return None`) has
   **no anchor — drop it.**
@@ -235,7 +235,7 @@ only effect re-adds a forbidden coupling (`e62422ae`'s `_INTERNAL_READ_ALLOWLIST
 existed solely to read `~/.midway/cookie` for the absent `scanner_sync`).
 
 If unsure whether a fix is already in the fork, check by **content**, not SHA:
-read the upstream diff, then read the corresponding `kiro_claw` file. Verdicts:
+read the upstream diff, then read the corresponding `kiro_crew` file. Verdicts:
 ALREADY_PRESENT / MISSING / PARTIAL / N/A_INTERNAL.
 
 **Scaling the triage:** a triage+verify Workflow (one analyzer + one verifier
@@ -249,18 +249,18 @@ say-so.
 
 ## Step 3 — Port a KEEP commit
 
-Path map — **backend:** `src/mesh_claw/X` → `src/kiro_claw/X`. **frontend:**
+Path map — **backend:** `src/mesh_claw/X` → `src/kiro_crew/X`. **frontend:**
 `MeshClawWebsite` `src/X` → fork `website/src/X` (tests: upstream `src/test/` or
 `integration/` → fork `website/src/test/` or `website/integration/` — check which
 exists). Symbol/string map (apply everywhere, including comments and test bodies):
 
 ```
-mesh_claw → kiro_claw      MeshClaw → KiroClaw      meshclaw → kiroclaw
-MESHCLAW_ → KIROCLAW_      .meshclaw → .kiroclaw    meshclaw-lite → kiroclaw-lite
-_meshclaw_managed → _kiroclaw_managed     CLI `meshclaw` → `kiroclaw`
+mesh_claw → kiro_crew      MeshClaw → KiroCrew      meshclaw → kirocrew
+MESHCLAW_ → KIROCREW_      .meshclaw → .kirocrew    meshclaw-lite → kirocrew-lite
+_meshclaw_managed → _kirocrew_managed     CLI `meshclaw` → `kirocrew`
 # frontend-specific:
-meshclaw-ui → kiroclaw-ui  MeshClawNavBridge → KiroClawNavBridge
-source: 'meshclaw' → 'kiroclaw'   /api/config/meshclaw → /api/config/kiroclaw
+meshclaw-ui → kirocrew-ui  MeshClawNavBridge → KiroCrewNavBridge
+source: 'meshclaw' → 'kirocrew'   /api/config/meshclaw → /api/config/kirocrew
 # KEEP verbatim (load-bearing literals, NOT brand tokens):
 'mc-*' localStorage/postMessage keys (mc-nav, mc-unread-slots, mc-auth-expired),
 the 'mc_token_' cookie prefix, and inert tool-name allowlist strings.
@@ -281,7 +281,7 @@ pre-image (modulo the rename), it's safe to regenerate from the post-image:
 
 ```bash
 git -C /Volumes/workplace/MeshClaw/src/MeshClaw show <sha>:test/test_x.py \
-  | sed 's/mesh_claw/kiro_claw/g; s/MeshClaw/KiroClaw/g; s/meshclaw/kiroclaw/g; s/MESHCLAW/KIROCLAW/g' \
+  | sed 's/mesh_claw/kiro_crew/g; s/MeshClaw/KiroCrew/g; s/meshclaw/kirocrew/g; s/MESHCLAW/KIROCREW/g' \
   > test/test_x.py
 ```
 
@@ -292,7 +292,7 @@ clobber the fork's divergence.
 **New data files** (e.g. `model_registry.json`): add them to **all three**
 packaging manifests or they won't ship:
 - `setup.cfg` `[options.package_data]`
-- `packaging/kiroclaw-backend.spec` (the explicit data-file list — separate
+- `packaging/kirocrew-backend.spec` (the explicit data-file list — separate
   from setup.cfg; the PyInstaller DMG misses files not listed here)
 - the frontend copy under `website/src/` if the frontend reads it (+ a parity
   test guarding drift)
@@ -305,7 +305,7 @@ relying on grep alone. **Run the tests.**
 ```bash
 # BACKEND per-fix: run the touched test files (override the hardcoded --cov in setup.cfg)
 python -m pytest test/test_x.py --override-ini="addopts=" -p no:cacheprovider -q
-flake8 src/kiro_claw/<files> test/<files>      # the real gate (NOT black --check)
+flake8 src/kiro_crew/<files> test/<files>      # the real gate (NOT black --check)
 
 # FRONTEND per-fix: typecheck + the touched vitest files (from website/)
 cd website
@@ -345,10 +345,10 @@ Gotchas:
   the rename), it is safe to regenerate wholesale from the POST-image —
   `diff <(git show <sha>^:path | sed '<rename map>') fork/path` == empty proves
   it, then `git show <sha>:path | sed '<rename map>' > fork/path`. The rename
-  map: `s/mesh_claw/kiro_claw/g; s/MeshClaw/KiroClaw/g; s/MESHCLAW/KIROCLAW/g; s/meshclaw/kiroclaw/g`.
+  map: `s/mesh_claw/kiro_crew/g; s/MeshClaw/KiroCrew/g; s/MESHCLAW/KIROCREW/g; s/meshclaw/kirocrew/g`.
   Watch for load-bearing literals the broad map also rewrites correctly
-  (e.g. `meshclaw browse *` → `kiroclaw browse *`, `mcp__meshclaw-core__` →
-  `mcp__kiroclaw-core__`) — grep the result for residual `mesh` tokens.
+  (e.g. `meshclaw browse *` → `kirocrew browse *`, `mcp__meshclaw-core__` →
+  `mcp__kirocrew-core__`) — grep the result for residual `mesh` tokens.
 - **Insert big verbatim blocks with a Python splice**, not Edit, when the block
   is large and clean (e.g. a new function or test class) — extract via
   `git show <sha>:path | awk/sed`, map symbols, then `str.replace(anchor, block
@@ -381,7 +381,7 @@ reviewer must be one click from every source.
 |---|---|
 | upstream commit (internal) | `https://code.amazon.com/packages/<Pkg>/commits/<FULL-40-char-sha>` (NOT the short sha — the full SHA; `Pkg` = `MeshClaw` or `MeshClawWebsite`) |
 | upstream CR (internal) | `https://code.amazon.com/reviews/CR-<id>` |
-| this fork's PR (GitHub) | `https://github.com/kirodotdev-labs/kiroclaw/pull/<number>` |
+| this fork's PR (GitHub) | `https://github.com/kirodotdev/KiroCrew/pull/<number>` |
 | Taskei task | `https://taskei.amazon.dev/tasks/<Mesh-NNNN>` |
 | SIM issue (if a commit cites one) | `https://sim.amazon.com/issues/<Mesh-NNNN>` |
 | upstream package commit browser (internal) | `https://code.amazon.com/packages/<Pkg>/commits/mainline` |
@@ -427,7 +427,7 @@ extra was removed with the providers).
 
 ### `platform/` (CPP seam + Governance) — fork-side core, sync with care
 
-`src/kiro_claw/platform/` (the Composed Platform Providers seam) and the
+`src/kiro_crew/platform/` (the Composed Platform Providers seam) and the
 **two-level Governance model** (`platform/governance.py`,
 `platform/governance_profiles.py`, the `security._SENSITIVE_HOME_DIRS` keystone,
 the `hooks.on_tool_call` governance check, and the `governance_permits`
@@ -447,7 +447,7 @@ other KEPT controls. Specifically, when triaging/porting:
   `test_governance_*.py` suites still pass after porting (Step 4).
 - `CONTRACT_VERSION` (`platform/context.py`) is a lockstep marker — never lower it
   on a sync; bump only when a `PlatformContext` field/interface genuinely changes.
-- The governance trust-root files (`~/.kiroclaw/security_policy.json`,
+- The governance trust-root files (`~/.kirocrew/security_policy.json`,
   `profiles/`, `admission_policy.json`) MUST stay in `_SENSITIVE_HOME_DIRS` — if a
   sync reorders or rewrites that list, re-add them (the keystone; a missing entry
   fails the boot integrity check and the `test_governance_self_protection.py`
@@ -467,13 +467,13 @@ with a build and a PR:
 1. **Rebuild both macOS DMGs** (the ported backend must ship). Dual-arch from
    one Apple-Silicon Mac via Rosetta — full recipe in `docs/DESKTOP_APP.md`:
    ```bash
-   cd website && npm install && npm run build && cp -R dist ../src/kiro_claw/static/dist && cd ..
+   cd website && npm install && npm run build && cp -R dist ../src/kiro_crew/static/dist && cd ..
    SKIP_FRONTEND=1 PYTHON=$PWD/.venv/bin/python bash packaging/build-desktop.sh   # arm64
    # x86_64: arch -x86_64 .venv-x86 (system py3 universal2) + electron-builder --x64,
    #   then RESTORE the arm64 backend into website/electron/backend-dist.
    ```
    Mount-verify each DMG carries the matching backend arch
-   (`file …/Resources/backend-dist/kiroclaw-backend/kiroclaw-backend`) — a
+   (`file …/Resources/backend-dist/kirocrew-backend/kirocrew-backend`) — a
    mismatch crashes on launch. Keep electron `package.json` version at `0.1.0`;
    `rm` stale DMGs (`dist/` is not auto-cleaned). DMGs are gitignored artifacts.
    - `.venv`/`.venv-x86` only carry runtime deps from the editable install —
@@ -487,14 +487,14 @@ with a build and a PR:
    ```bash
    # Push the sync branch, then open a PR:
    git push -u origin HEAD
-   gh pr create --base main --title "[KiroClaw] MeshClaw beta sync <date>: N commits ported" \
+   gh pr create --base main --title "[KiroCrew] MeshClaw beta sync <date>: N commits ported" \
      --body "$(cat <<'EOF'
    ## Summary
    ...per-commit triage table here...
    EOF
    )"
    ```
-   The PR **title** names the batch (e.g. `[KiroClaw] MeshClaw beta sync
+   The PR **title** names the batch (e.g. `[KiroCrew] MeshClaw beta sync
    <date>: N commits ported`). When the batch spans both repos, say so (e.g.
    `... dual-repo sync: N backend + M frontend ported`). The **description MUST
    list, per commit, both what was synced AND what was left out** — every
@@ -509,7 +509,7 @@ with a build and a PR:
    `gh pr comment <number> --body "..."`). Provenance across the history-less
    boundary lives entirely in this description + comment.
 
-   Origin = `https://github.com/kirodotdev-labs/kiroclaw.git`. Per the global
+   Origin = `https://github.com/kirodotdev/KiroCrew.git`. Per the global
    git rule, `commit`/`push`/PR need explicit user authorization — the recurring
    auto-sync cron job **is** that standing authorization; a manual invocation is
    not (ask first).
@@ -560,5 +560,5 @@ content**:
 Rescues are almost always **PARTIAL** (the headline was correctly internal; a
 bundled generic hunk was the miss). Port the generic part with de-Amazon renames
 (`*ForBedrock`→`*ForModel`), drop the internal part, and add/adapt the test.
-Record the re-audit outcome in the `kiroclaw-meshclaw-sync` memory so the backlog
+Record the re-audit outcome in the `kirocrew-meshclaw-sync` memory so the backlog
 state is durable.

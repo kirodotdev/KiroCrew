@@ -4,15 +4,15 @@
 
 const { DEFAULT_REMOTE_BIN } = require("./remote-token");
 
-// Migrate legacy single-host config (remoteHost + kiroclawBinPath) to the
+// Migrate legacy single-host config (remoteHost + kirocrewBinPath) to the
 // per-port remoteHosts map. Returns true if migration occurred.
 function migrateRemoteHostConfig(store, port) {
   const legacy = store.get("remoteHost");
   if (legacy && Object.keys(store.get("remoteHosts") || {}).length === 0) {
-    const bin = store.get("kiroclawBinPath") || DEFAULT_REMOTE_BIN;
+    const bin = store.get("kirocrewBinPath") || DEFAULT_REMOTE_BIN;
     store.set("remoteHosts", { [port]: { host: legacy, binPath: bin } });
     store.delete("remoteHost");
-    store.delete("kiroclawBinPath");
+    store.delete("kirocrewBinPath");
     return true;
   }
   return false;

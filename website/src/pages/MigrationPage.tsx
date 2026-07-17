@@ -120,8 +120,8 @@ export default function MigrationPage() {
                 {displayName} has moved to a standalone app
               </CardTitle>
               <p className="text-[13px] text-muted leading-relaxed mb-4">
-                This feature was previously built into KiroClaw but has been extracted into a standalone app package.
-                The builtin version has been removed from this KiroClaw release.
+                This feature was previously built into KiroCrew but has been extracted into a standalone app package.
+                The builtin version has been removed from this KiroCrew release.
               </p>
 
               {/* Data preservation notice */}

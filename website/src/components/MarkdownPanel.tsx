@@ -156,7 +156,7 @@ interface Props {
 }
 
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
-import { kiroclawDark, kiroclawLight } from './monacoTheme'
+import { kirocrewDark, kirocrewLight } from './monacoTheme'
 import type { IDisposable } from 'monaco-editor'
 const MonacoDiffEditor = lazy(async () => {
   const { ensureMonacoLocal } = await import('../utils/monacoLocal')
@@ -178,7 +178,7 @@ function CommentHint({ onDismiss }: { onDismiss: () => void }) {
   )
 }
 
-const HINT_KEY = 'kiroclaw:comment-hint-dismissed'
+const HINT_KEY = 'kirocrew:comment-hint-dismissed'
 
 const DOWNLOAD_FAILED = 'Download failed'
 
@@ -477,8 +477,8 @@ function DiffEditorBlock({ diffMode, lang, originalContent, content, dark, diffA
     <div className="w-full h-full border border-border rounded-md overflow-hidden">
       <Suspense fallback={<div className="p-3 text-muted text-[12px] animate-pulse">Loading diff…</div>}>
         <MonacoDiffEditor height="100%" language={monacoLang(lang)} original={originalContent} modified={content}
-          beforeMount={(monaco) => { if (!diffThemesRegistered) { monaco.editor.defineTheme('kiroclaw-dark', kiroclawDark); monaco.editor.defineTheme('kiroclaw-light', kiroclawLight); diffThemesRegistered = true } }}
-          theme={dark ? 'kiroclaw-dark' : 'kiroclaw-light'} onMount={(editor) => {
+          beforeMount={(monaco) => { if (!diffThemesRegistered) { monaco.editor.defineTheme('kirocrew-dark', kirocrewDark); monaco.editor.defineTheme('kirocrew-light', kirocrewLight); diffThemesRegistered = true } }}
+          theme={dark ? 'kirocrew-dark' : 'kirocrew-light'} onMount={(editor) => {
             const mod = editor.getModifiedEditor()
             disposableRef.current = mod.onDidChangeModelContent(() => { if (!diffActiveRef.current) return; handleChangeRef.current(mod.getValue()) })
             selDisposableRef.current = mod.onMouseUp(() => {

@@ -1,6 +1,6 @@
 """Tests for the gateway singleton lock (Mesh-2386).
 
-Covers the P1 acceptance criteria: a second gateway on the same KIROCLAW_HOME is
+Covers the P1 acceptance criteria: a second gateway on the same KIROCREW_HOME is
 refused naming the holder pid, a stale lock is reclaimed, and distinct homes
 both start.
 """
@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from kiro_claw.gateway_lock import (
+from kiro_crew.gateway_lock import (
     LOCK_FILENAME,
     GatewayLock,
     GatewayLockError,

@@ -9,8 +9,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.chat import _dequeue_next_message
-from kiro_claw.dashboard.state import (
+from kiro_crew.dashboard.chat import _dequeue_next_message
+from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
@@ -180,7 +180,7 @@ def _make_state(tmp_path):
 
 
 def _make_config_app(tmp_path):
-    from kiro_claw.dashboard.handlers import api_dashboard_config
+    from kiro_crew.dashboard.handlers import api_dashboard_config
 
     state = _make_state(tmp_path)
     app = web.Application()
@@ -195,10 +195,10 @@ class TestDashboardConfigMergeQueued:
     async def test_get_includes_merge_queued_messages(self, tmp_path, monkeypatch):
         """GET /api/dashboard/config returns merge_queued_messages field."""
         monkeypatch.setattr(
-            "kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json"
+            "kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json"
         )
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_config_app(tmp_path)
             async with TestClient(TestServer(app)) as client:
@@ -213,10 +213,10 @@ class TestDashboardConfigMergeQueued:
         """PUT merge_queued_messages=true persists to config.json."""
         cfg_file = tmp_path / "config.json"
         monkeypatch.setattr(
-            "kiro_claw.config.loader.config_path", lambda: cfg_file
+            "kiro_crew.config.loader.config_path", lambda: cfg_file
         )
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_config_app(tmp_path)
             async with TestClient(TestServer(app)) as client:
@@ -240,10 +240,10 @@ class TestDashboardConfigMergeQueued:
     async def test_put_rejects_non_dict_body(self, tmp_path, monkeypatch):
         """PUT with a non-object JSON body returns 400."""
         monkeypatch.setattr(
-            "kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json"
+            "kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json"
         )
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_config_app(tmp_path)
             async with TestClient(TestServer(app)) as client:
@@ -256,10 +256,10 @@ class TestDashboardConfigMergeQueued:
     async def test_put_rejects_unknown_fields(self, tmp_path, monkeypatch):
         """PUT with unknown fields returns 400."""
         monkeypatch.setattr(
-            "kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json"
+            "kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json"
         )
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_config_app(tmp_path)
             async with TestClient(TestServer(app)) as client:
@@ -274,10 +274,10 @@ class TestDashboardConfigMergeQueued:
     async def test_put_rejects_non_boolean_merge_queued(self, tmp_path, monkeypatch):
         """PUT merge_queued_messages with non-boolean returns 400."""
         monkeypatch.setattr(
-            "kiro_claw.config.loader.config_path", lambda: tmp_path / "config.json"
+            "kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json"
         )
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
-        with patch("kiro_claw.sel.sel") as mock_sel:
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             app = _make_config_app(tmp_path)
             async with TestClient(TestServer(app)) as client:

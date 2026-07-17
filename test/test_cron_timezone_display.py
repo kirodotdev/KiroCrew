@@ -8,9 +8,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from kiro_claw.cron import CronJob, CronSchedule, CronService, format_schedule
-from kiro_claw.mcp_cron import _call_tool
-from kiro_claw.slack.handler import _handle_cron_command
+from kiro_crew.cron import CronJob, CronSchedule, CronService, format_schedule
+from kiro_crew.mcp_cron import _call_tool
+from kiro_crew.slack.handler import _handle_cron_command
 
 
 def _make_job(timezone: str = "", **kwargs) -> CronJob:
@@ -45,7 +45,7 @@ class TestDashboardCronsTimezone:
 
     @pytest.mark.asyncio
     async def test_api_crons_uses_job_timezone(self, monkeypatch, tmp_path) -> None:
-        from kiro_claw.dashboard.handlers.cron import api_crons
+        from kiro_crew.dashboard.handlers.cron import api_crons
 
         job = _make_job(timezone="UTC")
         mock_state = MagicMock()
@@ -58,7 +58,7 @@ class TestDashboardCronsTimezone:
         request.app = {"state": mock_state}
 
         with patch(
-            "kiro_claw.cron.get_local_tz",
+            "kiro_crew.cron.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
         ):
             resp = await api_crons(request)
@@ -71,7 +71,7 @@ class TestDashboardCronsTimezone:
 
     @pytest.mark.asyncio
     async def test_api_crons_falls_back_to_server_tz(self, monkeypatch, tmp_path) -> None:
-        from kiro_claw.dashboard.handlers.cron import api_crons
+        from kiro_crew.dashboard.handlers.cron import api_crons
 
         job = _make_job(timezone="")
         mock_state = MagicMock()
@@ -84,7 +84,7 @@ class TestDashboardCronsTimezone:
         request.app = {"state": mock_state}
 
         with patch(
-            "kiro_claw.cron.get_local_tz",
+            "kiro_crew.cron.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
         ):
             resp = await api_crons(request)
@@ -103,8 +103,8 @@ class TestMcpCronListTimezone:
     def test_cron_list_uses_job_timezone(self, tmp_path) -> None:
         job = _make_job(timezone="UTC")
         mock_tz = ("America/New_York", ZoneInfo("America/New_York"))
-        with patch("kiro_claw.mcp_cron.CronService") as mock_cls, \
-                patch("kiro_claw.mcp_cron.get_local_tz", return_value=mock_tz):
+        with patch("kiro_crew.mcp_cron.CronService") as mock_cls, \
+                patch("kiro_crew.mcp_cron.get_local_tz", return_value=mock_tz):
             mock_cls.return_value.list_jobs.return_value = [job]
             result = _call_tool("cron_list", {})
         assert "UTC" in result
@@ -112,8 +112,8 @@ class TestMcpCronListTimezone:
     def test_cron_list_falls_back_to_local_tz(self, tmp_path) -> None:
         job = _make_job(timezone="")
         mock_tz = ("America/New_York", ZoneInfo("America/New_York"))
-        with patch("kiro_claw.mcp_cron.CronService") as mock_cls, \
-                patch("kiro_claw.mcp_cron.get_local_tz", return_value=mock_tz):
+        with patch("kiro_crew.mcp_cron.CronService") as mock_cls, \
+                patch("kiro_crew.mcp_cron.get_local_tz", return_value=mock_tz):
             mock_cls.return_value.list_jobs.return_value = [job]
             result = _call_tool("cron_list", {})
         assert "EDT" in result or "EST" in result
@@ -126,9 +126,9 @@ class TestSlackCronListTimezone:
         svc = CronService(base_dir=tmp_path)
         svc._jobs = [_make_job(timezone="UTC")]
         with patch(
-            "kiro_claw.slack.handler.get_local_tz",
+            "kiro_crew.slack.handler.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
-        ), patch("kiro_claw.slack.handler.compute_next_run_ts", return_value=None):
+        ), patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=None):
             result = _handle_cron_command("cron list", svc, "C123", "t123")
         assert result is not None
         assert "UTC" in result
@@ -137,9 +137,9 @@ class TestSlackCronListTimezone:
         svc = CronService(base_dir=tmp_path)
         svc._jobs = [_make_job(timezone="")]
         with patch(
-            "kiro_claw.slack.handler.get_local_tz",
+            "kiro_crew.slack.handler.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
-        ), patch("kiro_claw.slack.handler.compute_next_run_ts", return_value=None):
+        ), patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=None):
             result = _handle_cron_command("cron list", svc, "C123", "t123")
         assert result is not None
         assert "EDT" in result or "EST" in result

@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.handlers import api_agent_config
+from kiro_crew.dashboard.handlers import api_agent_config
 
 
 @pytest.mark.asyncio
 async def test_api_agent_config_put_succeeds(tmp_path):
-    installed = tmp_path / "kiroclaw.json"
-    installed.write_text(json.dumps({"name": "kiroclaw"}))
+    installed = tmp_path / "kirocrew.json"
+    installed.write_text(json.dumps({"name": "kirocrew"}))
     defaults = tmp_path / "defaults.json"
     mc_cfg = tmp_path / "config.json"
 
@@ -31,12 +31,12 @@ async def test_api_agent_config_put_succeeds(tmp_path):
 
     request.json = mock_json
 
-    with patch("kiro_claw.dashboard.handlers._installed_agent_config", return_value=installed), \
-         patch("kiro_claw.dashboard.handlers._find_agent_config", return_value=defaults), \
-         patch("kiro_claw.dashboard.handlers._reset_all_sessions", new_callable=AsyncMock), \
-         patch("kiro_claw.dashboard.handlers.config_path", return_value=mc_cfg), \
-         patch("kiro_claw.agent.build_agent_config", return_value={"toolsSettings": {"execute_bash": {"deniedCommands": ["rm -rf"]}}}), \
-         patch("kiro_claw.agent.get_shipped_tools", return_value={"tools": ["a", "c"], "allowedTools": ["b"]}):
+    with patch("kiro_crew.dashboard.handlers._installed_agent_config", return_value=installed), \
+         patch("kiro_crew.dashboard.handlers._find_agent_config", return_value=defaults), \
+         patch("kiro_crew.dashboard.handlers._reset_all_sessions", new_callable=AsyncMock), \
+         patch("kiro_crew.dashboard.handlers.config_path", return_value=mc_cfg), \
+         patch("kiro_crew.agent.build_agent_config", return_value={"toolsSettings": {"execute_bash": {"deniedCommands": ["rm -rf"]}}}), \
+         patch("kiro_crew.agent.get_shipped_tools", return_value={"tools": ["a", "c"], "allowedTools": ["b"]}):
 
         response = await api_agent_config(request)
 

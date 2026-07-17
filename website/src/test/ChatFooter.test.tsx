@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import ChatFooter from '../pages/chat/ChatFooter'
 
-const base = { running: false, stopping: false, state: '', lastRole: '', avatar: '/logo.png', botName: 'KiroClaw' }
+const base = { running: false, stopping: false, state: '', lastRole: '', avatar: '/logo.png', botName: 'KiroCrew' }
 
 describe('ChatFooter', () => {
   it('returns null when not running', () => {

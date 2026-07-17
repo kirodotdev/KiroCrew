@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.workflows.runner import WorkflowRunner
-from kiro_claw.workflows.validate import validate
+from kiro_crew.workflows.runner import WorkflowRunner
+from kiro_crew.workflows.validate import validate
 
 NOW = "2026-06-18T00:00:00Z"
 

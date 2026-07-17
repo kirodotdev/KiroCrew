@@ -1,14 +1,14 @@
 # Signing Infrastructure
 
 This directory contains the macOS code signing and notarization scaffolding
-for the KiroClaw desktop app, using Amazon's internal CDSigner service.
+for the KiroCrew desktop app, using Amazon's internal CDSigner service.
 
 ## Why internal identifiers are committed here
 
-KiroClaw is distributed as an Amazon-signed desktop application under the
+KiroCrew is distributed as an Amazon-signed desktop application under the
 `AMZN Mobile LLC (94KV3E626L)` Apple Developer identity — the same identity
 used by kiro-cli, Kiro IDE, and other Amazon developer tools. The bundle
-identifier (`com.amazon.kiro.claw`) and team ID are required by Apple's
+identifier (`com.amazon.kiro.crew`) and team ID are required by Apple's
 code signing infrastructure and are not secrets — they're embedded in every
 signed `.app` bundle users download.
 

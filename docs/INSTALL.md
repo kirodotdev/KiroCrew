@@ -1,6 +1,6 @@
-# Installing & Building KiroClaw
+# Installing & Building KiroCrew
 
-This guide covers how to build, install, and run KiroClaw. There are three ways
+This guide covers how to build, install, and run KiroCrew. There are three ways
 to do it, from lightest (a developer checkout) to heaviest (a double-clickable
 desktop app). All builds are driven by the repo-root [`Makefile`](../Makefile)
 and use plain `pip` + `npm`/Vite + `pytest` — there is no proprietary build
@@ -8,9 +8,9 @@ tooling.
 
 > **Platforms: macOS, Linux, and Windows.** macOS/Linux use the `Makefile` +
 > `setup.sh` path below; Windows runs natively from a Python source install
-> (`pip install -e . tzdata`, launched via `python -m kiro_claw gateway`). All
+> (`pip install -e . tzdata`, launched via `python -m kiro_crew gateway`). All
 > POSIX-only process/signal/file-lock/metrics calls are routed through
-> `kiro_claw.platform_compat`. See
+> `kiro_crew.platform_compat`. See
 > [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md) for the Windows setup steps.
 
 ## Prerequisites
@@ -24,7 +24,7 @@ tooling.
 
 ### Agent backend (required)
 
-KiroClaw drives an LLM through the **`kiro-cli`** agent over the
+KiroCrew drives an LLM through the **`kiro-cli`** agent over the
 [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol)
 (ACP). It is the only provider (`agent.provider = acp`).
 
@@ -34,12 +34,12 @@ Install `kiro-cli` per its own docs, make sure it is on your `PATH`, and log in:
 kiro-cli login
 ```
 
-`kiroclaw doctor` reports whether `kiro-cli` is found and logged in.
+`kirocrew doctor` reports whether `kiro-cli` is found and logged in.
 
 ### Ollama (optional — for memory / knowledge embeddings)
 
 Memory and the knowledge library use a local [Ollama](https://ollama.com) server
-for embeddings. If Ollama is absent, KiroClaw degrades gracefully (embedding
+for embeddings. If Ollama is absent, KiroCrew degrades gracefully (embedding
 search is disabled) rather than crashing.
 
 ```bash
@@ -60,19 +60,19 @@ run the gateway directly from `src/`:
 
 ```bash
 make build                                   # npm build + editable backend install into .venv
-PYTHONPATH=src python -m kiro_claw gateway   # → http://localhost:5476
+PYTHONPATH=src python -m kiro_crew gateway   # → http://localhost:5476
 ```
 
 `make build` runs two steps:
 
 1. **`frontend`** — `npm ci` (or `npm install`) + `npm run build` in `website/`,
-   then copies `website/dist` into `src/kiro_claw/static/dist` so the backend
+   then copies `website/dist` into `src/kiro_crew/static/dist` so the backend
    serves the SPA.
 2. **`backend`** — creates `.venv` and runs an editable install (`pip install -e .`).
 
 You can also invoke any CLI subcommand the same way, e.g.
-`PYTHONPATH=src python -m kiro_claw setup` or
-`PYTHONPATH=src python -m kiro_claw doctor`.
+`PYTHONPATH=src python -m kiro_crew setup` or
+`PYTHONPATH=src python -m kiro_crew doctor`.
 
 ### b. Self-contained pip wheel
 
@@ -81,23 +81,23 @@ that has Python:
 
 ```bash
 make wheel                # builds the frontend, then python -m build --wheel → dist/
-pip install dist/*.whl    # → installs the kiroclaw / kiroclaw-browse commands onto PATH
-kiroclaw gateway          # → http://localhost:5476
+pip install dist/*.whl    # → installs the kirocrew / kirocrew-browse commands onto PATH
+kirocrew gateway          # → http://localhost:5476
 ```
 
-The wheel is `dist/kiroclaw-0.1.0-*.whl`. The dashboard is bundled into the
+The wheel is `dist/kirocrew-0.1.0-*.whl`. The dashboard is bundled into the
 package via the custom `BuildWithFrontend` build step in
-[`setup.py`](../setup.py); the pip install name is **`kiroclaw`** (the import
-package is `kiro_claw`).
+[`setup.py`](../setup.py); the pip install name is **`kirocrew`** (the import
+package is `kiro_crew`).
 
 Installed console scripts:
 
 | Command | Entry point |
 |---------|-------------|
-| `kiroclaw` | `kiro_claw.cli:main` |
-| `kiroclaw-browse` | `kiro_claw.browser.cli:main` |
+| `kirocrew` | `kiro_crew.cli:main` |
+| `kirocrew-browse` | `kiro_crew.browser.cli:main` |
 
-Optional extras (install with e.g. `pip install kiroclaw[voice]`):
+Optional extras (install with e.g. `pip install kirocrew[voice]`):
 
 | Extra | Adds |
 |-------|------|
@@ -112,8 +112,8 @@ interpreter + uv-installed deps inside an Electron shell. End users need **no**
 Python, pip, npm, or node:
 
 ```bash
-make desktop              # → website/electron/dist/KiroClaw-*.dmg (macOS)
-                          #   or website/electron/dist/KiroClaw-*.AppImage (Linux)
+make desktop              # → website/electron/dist/KiroCrew-*.dmg (macOS)
+                          #   or website/electron/dist/KiroCrew-*.AppImage (Linux)
 ```
 
 See [DESKTOP_APP.md](DESKTOP_APP.md) for the full build pipeline (frontend →
@@ -137,25 +137,25 @@ Override the Python interpreter with `make PY=python3.12 build`.
 After installing (any of the three methods), set up and verify:
 
 ```bash
-kiroclaw setup            # interactive wizard: data dir, agent, credentials
-kiroclaw doctor           # verify everything is wired up
-kiroclaw gateway          # start the server → open http://localhost:5476
+kirocrew setup            # interactive wizard: data dir, agent, credentials
+kirocrew doctor           # verify everything is wired up
+kirocrew gateway          # start the server → open http://localhost:5476
 ```
 
-From a source checkout, prefix with `PYTHONPATH=src python -m kiro_claw` instead
-of `kiroclaw`.
+From a source checkout, prefix with `PYTHONPATH=src python -m kiro_crew` instead
+of `kirocrew`.
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KIROCLAW_HOME` | `~/.kiroclaw` | Data directory (config, credentials, databases) |
-| `KIROCLAW_PORT` | `5476` | Port the gateway / dashboard listens on |
+| `KIROCREW_HOME` | `~/.kirocrew` | Data directory (config, credentials, databases) |
+| `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
 
-- Config file: `~/.kiroclaw/config.json` (manage via `kiroclaw config get/set/edit`).
-- Credentials: `~/.kiroclaw/.env` (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCLAW_OWNER_ID`).
+- Config file: `~/.kirocrew/config.json` (manage via `kirocrew config get/set/edit`).
+- Credentials: `~/.kirocrew/.env` (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`).
 
-> **Note:** `KIROCLAW_PORT` is an environment variable (validated at CLI entry),
+> **Note:** `KIROCREW_PORT` is an environment variable (validated at CLI entry),
 > not a config key; it sets the port the gateway / dashboard binds to. You can
 > also pass `--port` on the CLI to override it. The `dashboard.url` config key is
 > only for advertising a remote URL.
@@ -167,5 +167,5 @@ MCP server cleanup), see the **Troubleshooting** section of the
 [README](../README.md#troubleshooting). A quick health check is always:
 
 ```bash
-kiroclaw doctor
+kirocrew doctor
 ```

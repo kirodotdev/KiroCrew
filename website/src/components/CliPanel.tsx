@@ -23,8 +23,8 @@ import {
 import { useTerminalWs } from '../hooks/useTerminalWs'
 import { setActiveTerminalSession } from '../utils/terminalRegistry'
 
-const HEIGHT_KEY = 'kiroclaw-terminal-height'
-const WIDTH_KEY = 'kiroclaw-terminal-width'
+const HEIGHT_KEY = 'kirocrew-terminal-height'
+const WIDTH_KEY = 'kirocrew-terminal-width'
 const MIN_H = 120
 const MIN_W = 300
 const DEFAULT_H = 280

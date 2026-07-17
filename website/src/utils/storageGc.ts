@@ -14,7 +14,7 @@
 /** Prefixes that are scoped per-session and should be cleaned up. */
 const SESSION_PREFIXES = [
   'vc_heights_',
-  'kiroclaw:touched-files:',
+  'kirocrew:touched-files:',
 ] as const
 
 /**

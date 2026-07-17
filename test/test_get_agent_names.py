@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from kiro_claw.slack.events import _get_agent_names
+from kiro_crew.slack.events import _get_agent_names
 
 
 def _write_agent(agents_dir, filename: str, data: dict) -> None:
@@ -30,8 +30,8 @@ def test_returns_name_field_not_stem(agents_dir):
 def test_multiple_agents_sorted(agents_dir):
     _write_agent(agents_dir, "local-B-zebra.json", {"name": "zebra"})
     _write_agent(agents_dir, "local-A-alpha.json", {"name": "alpha"})
-    _write_agent(agents_dir, "kiroclaw.json", {"name": "kiroclaw"})
-    assert _get_agent_names() == ["alpha", "kiroclaw", "zebra"]
+    _write_agent(agents_dir, "kirocrew.json", {"name": "kirocrew"})
+    assert _get_agent_names() == ["alpha", "kirocrew", "zebra"]
 
 
 def test_falls_back_to_stem_when_name_missing(agents_dir):

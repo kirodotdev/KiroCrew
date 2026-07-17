@@ -2,7 +2,7 @@
 #
 # The wheel gets its package data from setup.cfg [options.package_data] plus the
 # custom BuildWithFrontend step in setup.py (which copies the pre-built
-# src/kiro_claw/static/dist tree into build_lib). The sdist, however, is built
+# src/kiro_crew/static/dist tree into build_lib). The sdist, however, is built
 # from this file's rules, so we must explicitly ship the same data here —
 # especially the built dashboard under static/dist/, which is .gitignored and
 # deliberately excluded from the package_data globs (Vite emits content-hashed
@@ -17,21 +17,21 @@ include setup.cfg
 include setup.py
 
 # --- Top-level package data files (mirror [options.package_data]) ------------
-include src/kiro_claw/py.typed
-include src/kiro_claw/slack-manifest.yaml
-include src/kiro_claw/model_tokens.json
+include src/kiro_crew/py.typed
+include src/kiro_crew/slack-manifest.yaml
+include src/kiro_crew/model_tokens.json
 
 # --- The built dashboard SPA --------------------------------------------------
 # Excluded from package_data globs and .gitignored, but it MUST ship so that a
 # `pip install .` / sdist install serves the dashboard with no npm/node present.
-recursive-include src/kiro_claw/static *
+recursive-include src/kiro_crew/static *
 
 # --- Other package_data directories ------------------------------------------
-recursive-include src/kiro_claw/config *
-recursive-include src/kiro_claw/apps *.json
-recursive-include src/kiro_claw/eval/scenarios *.json
-recursive-include src/kiro_claw/docs *.md
-recursive-include src/kiro_claw/tests_fixtures *
+recursive-include src/kiro_crew/config *
+recursive-include src/kiro_crew/apps *.json
+recursive-include src/kiro_crew/eval/scenarios *.json
+recursive-include src/kiro_crew/docs *.md
+recursive-include src/kiro_crew/tests_fixtures *
 
 # --- Pruning: never ship test trees, vendored node deps, or build cruft ------
 prune test

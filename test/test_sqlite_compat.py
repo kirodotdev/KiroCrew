@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw import _sqlite_compat
+from kiro_crew import _sqlite_compat
 
 
 def test_fts5_available_true_on_this_platform():
@@ -35,7 +35,7 @@ def test_require_fts5_raises_with_hint_when_unavailable(monkeypatch):
 
 def test_memory_get_db_raises_clear_error_when_fts5_missing(tmp_path, monkeypatch):
     """_get_db must fail loudly (not loop) when FTS5 is genuinely missing."""
-    from kiro_claw import memory as memory_mod
+    from kiro_crew import memory as memory_mod
 
     store = memory_mod.MemoryStore(workspace=tmp_path)
 

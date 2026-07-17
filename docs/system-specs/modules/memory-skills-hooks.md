@@ -8,12 +8,12 @@ Persistent memory, skill system, and config-driven hooks. Assembled by `ContextB
 
 ## Memory (`memory.py`)
 
-Structured files under `~/.kiroclaw/workspace/memory/`:
+Structured files under `~/.kirocrew/workspace/memory/`:
 - `preferences.md` — learned user preferences (replaced wholesale by consolidator)
 - `projects.md` — active project context (replaced wholesale by consolidator)
 - `history/{date}.md` — daily conversation summaries (append-only, pruned by heartbeat)
 
-FTS5 search via `~/.kiroclaw/memory_index.db` (SQLite via `pysqlite3-binary` on Linux for FTS5/UPSERT compat, stdlib `sqlite3` on macOS). Self-healing: corrupted DB auto-rebuilt. Incremental updates on writes, full rebuild on gateway startup. Snowball stemming for keyword scoring. Connection leak prevention: all FTS methods use try/finally.
+FTS5 search via `~/.kirocrew/memory_index.db` (SQLite via `pysqlite3-binary` on Linux for FTS5/UPSERT compat, stdlib `sqlite3` on macOS). Self-healing: corrupted DB auto-rebuilt. Incremental updates on writes, full rebuild on gateway startup. Snowball stemming for keyword scoring. Connection leak prevention: all FTS methods use try/finally.
 
 Context injection includes source citations per section. Agent can update memory files via kiro-cli's file tools.
 
@@ -58,7 +58,7 @@ The history consolidation prompt includes a `"lessons"` key that extracts only i
 
 ### Configuration
 
-`~/.kiroclaw/config.json` → `"memory"` section:
+`~/.kirocrew/config.json` → `"memory"` section:
 ```json
 {"history_idle_hours": 3.0, "history_max_days": 365}
 ```
@@ -121,7 +121,7 @@ Manages Ollama server lifecycle and model provisioning:
 - `_needs_sudo_cache` persists across `OllamaManager` instances within the gateway process
 
 **Model loading** (`pull_model()`):
-- Clones `KiroClawModelQwen3Embedding` from Gitfarm (internal, no external model download)
+- Clones `KiroCrewModelQwen3Embedding` from Gitfarm (internal, no external model download)
 - Finds `qwen3-embedding-0.6b.gguf` (Q8_0 quantized, 610MB) in cloned package
 - Creates Ollama model via `ollama create qwen3:0.6b -f Modelfile` from local GGUF
 - IMPORTANT: `ollama pull qwen3:0.6b` from registry is a CHAT model — does NOT support embeddings
@@ -130,7 +130,7 @@ Manages Ollama server lifecycle and model provisioning:
 
 **Server** (`start_server()` / `stop()`):
 - Native: starts `ollama serve` as subprocess (Metal GPU on macOS, CUDA/CPU on Linux)
-- Docker fallback: `docker rm -f kiroclaw-ollama` then `docker run -d` (only if native fails and brew unavailable)
+- Docker fallback: `docker rm -f kirocrew-ollama` then `docker run -d` (only if native fails and brew unavailable)
 - Health polling with 30s timeout
 - SIGTERM → SIGKILL cleanup (native) or `docker stop` (Docker)
 
@@ -205,10 +205,10 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 
 ### CLI
 
-`kiroclaw memory {list,search,stats,audit,export,migrate,import}` — manage vector memory from command line:
+`kirocrew memory {list,search,stats,audit,export,migrate,import}` — manage vector memory from command line:
 - `migrate` — one-time markdown → structured migration (preferences.md → semantic, history/*.md → episodic)
 - `import <file>` — restore from JSON export with full validation
-- `kiroclaw security audit` also scans vector memory for injection patterns
+- `kirocrew security audit` also scans vector memory for injection patterns
 
 ### Migration (`migrate_from_markdown`)
 
@@ -222,7 +222,7 @@ Parses legacy markdown files into structured memory:
 
 ### Cross-Platform
 
-macOS (Apple Silicon) and Linux (x86_64, arm64/Graviton) supported. All paths use `pathlib.Path`. GGUF model loaded from internal `KiroClawModelQwen3Embedding` Gitfarm package (no external model downloads).
+macOS (Apple Silicon) and Linux (x86_64, arm64/Graviton) supported. All paths use `pathlib.Path`. GGUF model loaded from internal `KiroCrewModelQwen3Embedding` Gitfarm package (no external model downloads).
 
 | Platform | Ollama Install | GPU | Notes |
 |----------|---------------|-----|-------|
@@ -235,7 +235,7 @@ macOS (Apple Silicon) and Linux (x86_64, arm64/Graviton) supported. All paths us
 User-taught corrections ("always do X", "never do Y"). Single write path through `vector_memory.write_lesson()`:
 
 1. **Vector memory** (primary): stored as `lesson.<md5hash>` semantic entries with `confidence=1.0, source=user_explicit`. Negative rules stored as `"rule — NOT: negative"`. Injected via `get_lessons_context()` — separate from `[Semantic Memory]` block.
-2. **JSONL fallback** (`~/.kiroclaw/lessons.jsonl`): only used when vector memory is not initialized. Read-only migration source once vector memory is active.
+2. **JSONL fallback** (`~/.kirocrew/lessons.jsonl`): only used when vector memory is not initialized. Read-only migration source once vector memory is active.
 
 **Priority**: vector lessons override JSONL. If `vector_store.get_lessons()` returns entries, JSONL is skipped entirely.
 
@@ -256,11 +256,11 @@ Categories: `tool`, `preference`, `knowledge`. Injected as `[Learned corrections
 
 ## Skills (`skills.py`)
 
-Markdown files at `~/.kiroclaw/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
+Markdown files at `~/.kirocrew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
 
 Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill name is the relative path from the skills root (e.g. `utils/tiny-url`).
 
-**Source precedence** (project-level wins): `$KIROCLAW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiroclaw/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
+**Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kirocrew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
 **Loading:**
 1. **Always-on**: skills with `always: true` have full content injected every new session
@@ -272,9 +272,9 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 - **OFF** (`get_context(budget=None)`): the byte-for-byte legacy full dump — every on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`.
 - **ON** (`get_context(budget)`): `always: true` pinned skills are injected in full, plus a usage-ranked **top-K** of on-demand skills filled up to `budget`. Ranking is by `_rank_key` (`skills.py`) — `(usage_hits, effective_recency)` from the `SkillUsageLedger`, with a recency boost so freshly-added skills escape cold start. The long tail is left discoverable via the `skill_search` tool, the `$skillname` inline token, `cat`, and the per-message trigger auto-loader.
 
-**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the KiroClaw home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
+**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the KiroCrew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
-**`skill_search` MCP tool (`kiroclaw-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using.
+**`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using.
 
 **Trigger matching (`get_triggered_skills`) — per-message hot path.** Runs on
 every non-custom-agent message via the context builder, scoring word-overlap of
@@ -283,7 +283,7 @@ exclude). To keep it off the per-message filesystem/config hot path:
 - the discovered skill-file list is TTL-cached (`_iter`, `_ITER_CACHE_TTL_SECS`),
   invalidated by `create_auto_skill`;
 - the `max_triggered` cap is snapshotted on the loader in `__init__`
-  (`self._max_triggered`) — no `KiroClawConfig.load()` per message — refreshed
+  (`self._max_triggered`) — no `KiroCrewConfig.load()` per message — refreshed
   when the loader is rebuilt (per gateway), matching `extra_paths` semantics;
 - exactly **one** SEL audit event is emitted for the matched set (skipped
   entirely when nothing matched, the common case), not one per skill scanned.
@@ -294,22 +294,22 @@ exclude). To keep it off the per-message filesystem/config hot path:
 - `delete_skill(name)` — removes entire skill directory
 - Path traversal protection: `_safe_name()` rejects `..` and `\` (allows `/` for nesting)
 
-**Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. GET `/api/skills` discovery (kiroclaw `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep.
+**Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. GET `/api/skills` discovery (kirocrew `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep.
 
 **LLM tool mechanisms:**
 - MCP tools (native): kiro-cli calls directly — **preferred for all LLM-facing operations**
-  - `kiroclaw-cron`: cron scheduling
-  - `kiroclaw-core`: spawn, learn, task tools
+  - `kirocrew-cron`: cron scheduling
+  - `kirocrew-core`: spawn, learn, task tools
 - Skills are for on-demand knowledge only (not for CLI command wrappers — use MCP tools instead)
 
 ## MCP Discovery (`mcp_discovery.py`)
 
-Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kiroclaw-cron`, `kiroclaw-core`.
+Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kirocrew-cron`, `kirocrew-core`.
 
 **Server sources** (merged by `list_servers()`):
 1. `agents/defaults.json` → `mcpServers` (default: none beyond the managed servers)
-2. `~/.kiro/agents/kiroclaw.json` → `mcpServers` (installed config, merged)
-3. `~/.kiro/settings/mcp.json` and `~/.kiroclaw/mcp.json` (scanned at startup and on-demand)
+2. `~/.kiro/agents/kirocrew.json` → `mcpServers` (installed config, merged)
+3. `~/.kiro/settings/mcp.json` and `~/.kirocrew/mcp.json` (scanned at startup and on-demand)
 
 **Startup behavior**: gateway calls `_init_mcp_discovery()` which runs `discover_servers_to_sync()` + `sync_to_agent_config()` to auto-add new servers from mcp.json, then logs all configured servers. Discovery/sync failures are caught independently so `list_servers()` always runs. Additionally, `server.py` fires `_bg_mcp_probe()` as a background task at startup to populate the probe cache.
 
@@ -319,9 +319,9 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 
 **Probing**: spawns each MCP server, sends JSON-RPC `initialize` + `tools/list` handshake, reports status + tool names. 30-second timeout, 1MB stdout buffer (an MCP server's responses exceed the default 64KB). Cleanup via `finally` block (no zombie processes). Results cached in `handlers.py` with 10-min TTL; GET `/api/mcp/probe` returns cached results non-blocking, POST `/api/mcp/probe` forces a fresh probe and updates cache.
 
-**Enable/Disable**: `POST /api/mcp/toggle` adds/removes `@name` from `tools` and `allowedTools` arrays in installed config (`~/.kiro/agents/kiroclaw.json`). Does NOT modify `agents/defaults.json`. Disabled servers stay in `mcpServers` but kiro-cli won't load their tools.
+**Enable/Disable**: `POST /api/mcp/toggle` adds/removes `@name` from `tools` and `allowedTools` arrays in installed config (`~/.kiro/agents/kirocrew.json`). Does NOT modify `agents/defaults.json`. Disabled servers stay in `mcpServers` but kiro-cli won't load their tools.
 
-**Sync**: `POST /api/mcp/sync` uses `kiro-cli mcp add --agent kiroclaw --force` to properly register new servers with kiro-cli. Falls back to direct JSON edit if kiro-cli unavailable. After sync, all active sessions are reset so kiro-cli picks up the new config (~30s).
+**Sync**: `POST /api/mcp/sync` uses `kiro-cli mcp add --agent kirocrew --force` to properly register new servers with kiro-cli. Falls back to direct JSON edit if kiro-cli unavailable. After sync, all active sessions are reset so kiro-cli picks up the new config (~30s).
 
 **Dashboard workflow**: ① Probe All → ② Enable/Disable → ③ Apply & Restart Sessions.
 
@@ -358,7 +358,7 @@ Prompt keys are only appended when ALL hold:
 
 ### Namespace
 
-Auto-generated skills live under `~/.kiroclaw/skills/auto/<slug>/SKILL.md`. Slug validated against `^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`. The `auto/` prefix:
+Auto-generated skills live under `~/.kirocrew/skills/auto/<slug>/SKILL.md`. Slug validated against `^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`. The `auto/` prefix:
 - Makes provenance visible without parsing frontmatter (`list_auto_skills()`)
 - Prevents accidental overwrite of hand-authored skills via the refine path (`update_auto_skill()` explicitly refuses names outside `auto/`)
 
@@ -412,10 +412,10 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 
 No new command. Users interact via the existing skill management surface:
 
-- Enable: `kiroclaw config set skills.auto_create_from_sessions true`
-- List auto skills: filter `kiroclaw` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
-- Remove unwanted auto skill: `rm -rf ~/.kiroclaw/skills/auto/<slug>` (or dashboard skill delete when UI lands)
-- Audit trail: `kiroclaw security events -n 20 | grep auto_skill`
+- Enable: `kirocrew config set skills.auto_create_from_sessions true`
+- List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
+- Remove unwanted auto skill: `rm -rf ~/.kirocrew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
+- Audit trail: `kirocrew security events -n 20 | grep auto_skill`
 
 ## Hooks (`hooks.py`)
 
@@ -435,8 +435,8 @@ kiro-cli tool calls must go through this function — never call `is_sensitive_p
 
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)
 
-User-defined kiro-cli hooks that persist across `kiroclaw update`. Follows the
-`removedTools` precedent — a raw key in `~/.kiroclaw/config.json` read by
+User-defined kiro-cli hooks that persist across `kirocrew update`. Follows the
+`removedTools` precedent — a raw key in `~/.kirocrew/config.json` read by
 `_refresh_dynamic_fields()` at install time.
 
 ```json
@@ -483,7 +483,7 @@ are still injected:
 | Block | Skip on resume? | Why |
 |-------|-----------------|-----|
 | `[THREAD CONVERSATION HISTORY]` | ✅ Skip | kiro-cli has full native history |
-| Memory + skills + lessons | ❌ Keep | KiroClaw-specific, not in kiro-cli |
+| Memory + skills + lessons | ❌ Keep | KiroCrew-specific, not in kiro-cli |
 | `[Other chat tabs]` (cross-tab) | ❌ Keep | Reads OTHER sessions' JSONL |
 | `[Recent Session Context]` (provenance) | ❌ Keep | Cross-thread entries |
 | Agent system prompt | ❌ Keep | kiro-cli ACP doesn't load agent prompts |

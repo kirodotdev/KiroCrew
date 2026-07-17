@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiro_claw.apps.builtins.deploy_web import engine
-from kiro_claw.apps.builtins.deploy_web import iam as iam_mod
+from kiro_crew.apps.builtins.deploy_web import engine
+from kiro_crew.apps.builtins.deploy_web import iam as iam_mod
 
 _PKG = Path(iam_mod.__file__).parent
 
@@ -21,9 +21,9 @@ def test_policy_is_valid_json_with_expected_sids():
 def test_policy_scoping_levers_present():
     doc = json.loads(iam_mod.policy_json())
     s3 = next(s for s in doc["Statement"] if s["Sid"] == "S3BucketLevel")
-    assert s3["Resource"] == "arn:aws:s3:::kiroclaw-web-*"  # name-prefix scope
+    assert s3["Resource"] == "arn:aws:s3:::kirocrew-web-*"  # name-prefix scope
     cf = next(s for s in doc["Statement"] if s["Sid"] == "CloudFrontManageTagged")
-    assert cf["Condition"]["StringEquals"]["aws:ResourceTag/kiroclaw:managed"] == "true"  # tag scope
+    assert cf["Condition"]["StringEquals"]["aws:ResourceTag/kirocrew:managed"] == "true"  # tag scope
 
 
 def test_policy_no_iam_or_billing_actions():

@@ -8,8 +8,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.messaging import api_delete_message
-from kiro_claw.mcp_core import _call_tool
+from kiro_crew.dashboard.handlers.messaging import api_delete_message
+from kiro_crew.mcp_core import _call_tool
 
 # ── Endpoint tests ──
 
@@ -86,7 +86,7 @@ class TestDeleteMessageTool:
         assert "invalid" in result.lower() and "timestamp" in result.lower()
 
     def test_successful_delete(self):
-        with patch("kiro_claw.mcp_core._post") as mock_post:
+        with patch("kiro_crew.mcp_core._post") as mock_post:
             mock_post.return_value = {"ok": True}
             result = _call_tool("delete_message", {"channel": "C0ABC123", "ts": "1780088134.952549"})
             assert "deleted" in result.lower()
@@ -95,7 +95,7 @@ class TestDeleteMessageTool:
             )
 
     def test_api_error(self):
-        with patch("kiro_claw.mcp_core._post") as mock_post:
+        with patch("kiro_crew.mcp_core._post") as mock_post:
             mock_post.return_value = {"error": "message_not_found"}
             result = _call_tool("delete_message", {"channel": "C0ABC123", "ts": "1780088134.952549"})
             assert "message_not_found" in result

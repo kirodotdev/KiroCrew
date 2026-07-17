@@ -17,8 +17,8 @@ import json
 
 import pytest
 
-import kiro_claw.workflows as wf
-from kiro_claw.workflows.events import (
+import kiro_crew.workflows as wf
+from kiro_crew.workflows.events import (
     REQUIRED_DATA_KEYS,
     EventStream,
     deserialize_events,
@@ -139,7 +139,7 @@ def test_deserialize_rejects_non_array_json() -> None:
 
 def test_events_module_has_no_pickle_import() -> None:
     """B4 guard: the persistence module must not import pickle/marshal/shelve."""
-    import kiro_claw.workflows.events as ev_mod
+    import kiro_crew.workflows.events as ev_mod
 
     src = __import__("inspect").getsource(ev_mod)
     for banned in ("import pickle", "import marshal", "import shelve"):

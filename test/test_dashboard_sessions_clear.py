@@ -19,11 +19,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.handlers import api_sessions_clear
+from kiro_crew.dashboard.handlers import api_sessions_clear
 
 
 def _history_key_for(key: str) -> str:
-    from kiro_claw.dashboard.chat import _history_key_for as _hkf
+    from kiro_crew.dashboard.chat import _history_key_for as _hkf
     return _hkf(key)
 
 
@@ -80,9 +80,9 @@ async def _call_and_parse(request: web.Request) -> tuple[int, dict]:
     from unittest.mock import patch
 
     with patch(
-        "kiro_claw.dashboard.handlers._remove_slot_for_history_key",
+        "kiro_crew.dashboard.handlers._remove_slot_for_history_key",
         new=AsyncMock(return_value=None),
-    ), patch("kiro_claw.dashboard.handlers.sel"):
+    ), patch("kiro_crew.dashboard.handlers.sel"):
         resp = await api_sessions_clear(request)
     return resp.status, json.loads(resp.body.decode("utf-8"))
 

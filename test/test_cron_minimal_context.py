@@ -14,12 +14,12 @@ import json
 
 import pytest
 
-from kiro_claw.cron import CronJob, CronService, build_cron_session_context
+from kiro_crew.cron import CronJob, CronService, build_cron_session_context
 
 
 @pytest.fixture(autouse=True)
 def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_claw.cron._DEFAULT_DIR", tmp_path)
+    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
     yield
 
 
@@ -123,9 +123,9 @@ class TestBuildSessionContextMinimal:
     """build_session_context with minimal_context=True returns minimal output."""
 
     def test_minimal_context_has_date(self, tmp_path):
-        from kiro_claw.context import ContextBuilder
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),
@@ -139,9 +139,9 @@ class TestBuildSessionContextMinimal:
         assert "[CURRENT AGENT]" in ctx
 
     def test_minimal_context_agent_without_session_key(self, tmp_path):
-        from kiro_claw.context import ContextBuilder
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),
@@ -151,13 +151,13 @@ class TestBuildSessionContextMinimal:
             session_key=None,
             minimal_context=True,
         )
-        assert "[CURRENT AGENT] kiroclaw" in ctx
+        assert "[CURRENT AGENT] kirocrew" in ctx
         assert "[RUNTIME]" not in ctx
 
     def test_minimal_context_skips_memory(self, tmp_path):
-        from kiro_claw.context import ContextBuilder
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),
@@ -172,9 +172,9 @@ class TestBuildSessionContextMinimal:
         assert "Learned corrections" not in ctx
 
     def test_minimal_context_is_short(self, tmp_path):
-        from kiro_claw.context import ContextBuilder
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),
@@ -187,9 +187,9 @@ class TestBuildSessionContextMinimal:
         assert len(ctx) < 500
 
     def test_full_context_is_longer_than_minimal(self, tmp_path):
-        from kiro_claw.context import ContextBuilder
-        from kiro_claw.memory import MemoryStore
-        from kiro_claw.skills import SkillsLoader
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
 
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),

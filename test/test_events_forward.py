@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_claw.slack.events import (
+from kiro_crew.slack.events import (
     _MAX_RECOVERED_TEXT_CHARS,
     _SLACK_BLOCK_FALLBACKS,
     _extract_blocks_text,
@@ -427,7 +427,7 @@ class TestRouteMessageFallbackRecovery:
     async def test_placeholder_text_with_no_recoverable_blocks_drops_message(self):
         """When blocks have no extractable text and text is placeholder, message is dropped
         by the (not text and not files) guard — _route_message returns without dispatching."""
-        from kiro_claw.slack.events import _route_message
+        from kiro_crew.slack.events import _route_message
 
         event = {
             "user": "U123",
@@ -444,10 +444,10 @@ class TestRouteMessageFallbackRecovery:
         mock_seen = AsyncMock()
         mock_seen.check_and_add = lambda x: False
 
-        with patch("kiro_claw.slack.enterprise.check_message_origin", return_value=True), \
-             patch("kiro_claw.slack.events.sel") as mock_sel, \
-             patch("kiro_claw.slack.events.is_allowed_user", return_value=True), \
-             patch("kiro_claw.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+        with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+             patch("kiro_crew.slack.events.sel") as mock_sel, \
+             patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
             mock_sel.return_value.log_api_access = lambda **kw: None
             await _route_message(mock_orch, event, mock_seen, is_mention=False)
             # Message should be dropped — handle_message never called
@@ -456,7 +456,7 @@ class TestRouteMessageFallbackRecovery:
     @pytest.mark.asyncio
     async def test_placeholder_text_replaced_by_block_content(self):
         """_route_message passes recovered text (not the placeholder) past the early guard."""
-        from kiro_claw.slack.events import _route_message
+        from kiro_crew.slack.events import _route_message
 
         event = {
             "user": "U123",
@@ -494,11 +494,11 @@ class TestRouteMessageFallbackRecovery:
         mock_seen = MagicMock()
         mock_seen.check_and_add = lambda x: False
 
-        with patch("kiro_claw.slack.enterprise.check_message_origin", return_value=True), \
-             patch("kiro_claw.slack.events.sel") as mock_sel, \
-             patch("kiro_claw.slack.events.is_allowed_user", return_value=True), \
-             patch("kiro_claw.slack.events.is_owner", return_value=True), \
-             patch("kiro_claw.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+        with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+             patch("kiro_crew.slack.events.sel") as mock_sel, \
+             patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.is_owner", return_value=True), \
+             patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
             mock_sel.return_value.log_api_access = lambda **kw: None
             await _route_message(mock_orch, event, mock_seen, is_mention=True)
             # handle_message SHOULD be called — text was recovered and is non-empty

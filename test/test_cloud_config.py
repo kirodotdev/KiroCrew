@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kiro_claw.cloud.config import DEFAULT_REGION, CloudConfig
+from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
 
 
 class TestCloudConfig:
@@ -26,7 +26,7 @@ class TestCloudConfig:
         # into the resume path where validate_tag (cap 51) would raise. The
         # sanitizer's job is "no last launch", not a crash. Keep _TAG_RE in
         # lockstep with ec2._TAG_RE.
-        from kiro_claw.cloud import ec2
+        from kiro_crew.cloud import ec2
 
         assert ec2._TAG_RE.pattern == r"^[a-zA-Z0-9-]{1,51}$"  # the cap we mirror
         p = tmp_path / "cloud.json"
@@ -57,7 +57,7 @@ class TestCloudConfig:
     def test_non_object_json_falls_back_to_defaults(self, tmp_path):
         # Valid JSON that isn't an object ("hello", [1,2], 42, null) must not
         # raise AttributeError out of load() — that would give a raw traceback on
-        # every `kiroclaw cloud` command (handle_cloud only catches AWS/validation
+        # every `kirocrew cloud` command (handle_cloud only catches AWS/validation
         # errors). Honor the tolerate-a-corrupt-file promise.
         for body in ('"hello"', "[1, 2, 3]", "42", "null", "true"):
             p = tmp_path / "cloud.json"

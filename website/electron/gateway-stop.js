@@ -24,7 +24,7 @@ const path = require("path");
  */
 function postShutdown({
   backendUrl,
-  kiroclawHome,
+  kirocrewHome,
   httpMod = http,
   fsMod = fs,
   pathMod = path,
@@ -33,7 +33,7 @@ function postShutdown({
   return new Promise((resolve) => {
     let secret = "";
     try {
-      secret = fsMod.readFileSync(pathMod.join(kiroclawHome, ".local_secret"), "utf8").trim();
+      secret = fsMod.readFileSync(pathMod.join(kirocrewHome, ".local_secret"), "utf8").trim();
     } catch {
       return resolve(false);
     }
@@ -73,7 +73,7 @@ async function stopGatewayGracefully(
   proc,
   {
     backendUrl,
-    kiroclawHome,
+    kirocrewHome,
     timeoutMs = 15000,
     postShutdownFn = postShutdown,
     httpMod,
@@ -96,14 +96,14 @@ async function stopGatewayGracefully(
     const hardTimer = setTimeout(done, timeoutMs + 3000);
     proc.once("exit", () => { clearTimeout(killTimer); clearTimeout(hardTimer); });
     // Prefer the clean endpoint; signal-nudge only if it didn't take.
-    postShutdownFn({ backendUrl, kiroclawHome, httpMod, fsMod, pathMod }).then((ok) => {
+    postShutdownFn({ backendUrl, kirocrewHome, httpMod, fsMod, pathMod }).then((ok) => {
       if (!ok && proc.exitCode === null) { try { proc.kill("SIGTERM"); } catch {} }
     });
   });
 }
 
 /**
- * Force-stop whatever KiroClaw process is LISTENing on `port`, then VERIFY the
+ * Force-stop whatever KiroCrew process is LISTENing on `port`, then VERIFY the
  * port actually freed before reporting success.
  *
  * The old inline version SIGKILLed the owner and resolved after a fixed 800ms
@@ -115,8 +115,8 @@ async function stopGatewayGracefully(
  *
  * This version polls the listener set after killing and returns `freed` based on
  * whether the port is ACTUALLY free afterwards (not merely whether our targets
- * died), plus `survivors` (the KiroClaw PIDs we tried to kill that are still
- * holding the port) and `foreignHolder` (a non-KiroClaw process still owns it).
+ * died), plus `survivors` (the KiroCrew PIDs we tried to kill that are still
+ * holding the port) and `foreignHolder` (a non-KiroCrew process still owns it).
  * `freed === false` means a respawn would just fail to bind — the caller MUST
  * NOT respawn; it should tell the user a restart is required (`survivors`, an
  * unkillable wedge) or that another app holds the port (`foreignHolder`).
@@ -137,7 +137,10 @@ async function forceStopPort(
     getCommand,
     kill,
     sleep,
-    isKiroclaw = /kiro_claw|kiroclaw/i,
+    // Also match the legacy kiroclaw process names: after the KiroClaw → KiroCrew
+    // rename, a leftover kiroclaw gateway can still be holding the port on an
+    // upgraded host, and must be recoverable (not treated as a foreign holder).
+    isKirocrew = /kiro_crew|kirocrew|kiro_claw|kiroclaw/i,
     verifyTimeoutMs = 4000,
     pollIntervalMs = 250,
     log = () => {},
@@ -149,12 +152,12 @@ async function forceStopPort(
     return { killed: 0, freed: true, survivors: [], foreignHolder: false };
   }
 
-  // Only signal PIDs we can positively identify as KiroClaw — never SIGKILL an
+  // Only signal PIDs we can positively identify as KiroCrew — never SIGKILL an
   // unrelated app that happens to share the port.
   const targets = [];
   for (const pid of owners) {
     const cmd = (await getCommand(pid)).trim();
-    if (isKiroclaw.test(cmd)) {
+    if (isKirocrew.test(cmd)) {
       try {
         kill(pid, "SIGKILL");
         targets.push(pid);
@@ -163,7 +166,7 @@ async function forceStopPort(
         log(`force-stop: kill pid=${pid} failed: ${e && e.message}`);
       }
     } else {
-      log(`force-stop: SKIP pid=${pid} — not a KiroClaw process (${cmd.slice(0, 80)})`);
+      log(`force-stop: SKIP pid=${pid} — not a KiroCrew process (${cmd.slice(0, 80)})`);
     }
   }
 
@@ -198,7 +201,7 @@ async function forceStopPort(
     log(`force-stop: port :${port} STILL held after ${waited}ms by pid ${survivors.join(", ")} `
       + `— process is unkillable (likely uninterruptible sleep); a system restart is required`);
   } else if (foreignHolder) {
-    log(`force-stop: port :${port} held by a non-KiroClaw process we won't kill — respawn would fail to bind`);
+    log(`force-stop: port :${port} held by a non-KiroCrew process we won't kill — respawn would fail to bind`);
   }
   return { killed, freed, survivors, foreignHolder };
 }

@@ -13,7 +13,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.lifecycle import LifecycleDispatcher
+from kiro_crew.apps.lifecycle import LifecycleDispatcher
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -74,10 +74,10 @@ class TestLifecycleHookOrdering:
         work_dir = tmp_path / uuid.uuid4().hex
         work_dir.mkdir()
         # dispatch_startup → _build_context → app_dir(name)/"data".mkdir() resolves
-        # against config_dir() == ~/.kiroclaw unless KIROCLAW_HOME is isolated. Each
+        # against config_dir() == ~/.kirocrew unless KIROCREW_HOME is isolated. Each
         # generated name would otherwise leak a real apps/<name>/data/ dir (one per
         # hypothesis example → thousands over a dev's test history). Pin it to tmp.
-        monkeypatch.setenv("KIROCLAW_HOME", str(work_dir))
+        monkeypatch.setenv("KIROCREW_HOME", str(work_dir))
 
         apps = [_make_app_info(n, on_startup="backend.hooks:on_startup") for n in names]
         dispatcher = LifecycleDispatcher()
@@ -165,19 +165,19 @@ class TestShellBeforePython:
         }
 
         # Pre-mock dashboard.server to avoid circular import with mimir
-        if "kiro_claw.dashboard.server" not in sys.modules:
-            sys.modules["kiro_claw.dashboard.server"] = MagicMock()
+        if "kiro_crew.dashboard.server" not in sys.modules:
+            sys.modules["kiro_crew.dashboard.server"] = MagicMock()
 
         with (
-            patch("kiro_claw.apps.routes.get_app", return_value=fake_app_info),
-            patch("kiro_claw.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
-            patch("kiro_claw.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
-            patch("kiro_claw.apps.routes.start_app_backend", return_value=None),
-            patch("kiro_claw.apps.routes._run_lifecycle_script", side_effect=mock_shell),
-            patch("kiro_claw.apps.routes.on_app_enable", side_effect=mock_python),
-            patch("kiro_claw.apps.routes.sel", return_value=MagicMock()),
+            patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
+            patch("kiro_crew.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
+            patch("kiro_crew.apps.routes.register_app", return_value=MagicMock(to_dict=lambda: {})),
+            patch("kiro_crew.apps.routes.start_app_backend", return_value=None),
+            patch("kiro_crew.apps.routes._run_lifecycle_script", side_effect=mock_shell),
+            patch("kiro_crew.apps.routes.on_app_enable", side_effect=mock_python),
+            patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
         ):
-            from kiro_claw.apps.routes import handle_enable_app
+            from kiro_crew.apps.routes import handle_enable_app
 
             # Build a minimal fake request
             request = MagicMock()

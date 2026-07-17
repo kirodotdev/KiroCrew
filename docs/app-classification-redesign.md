@@ -10,7 +10,7 @@ The current `managed` field on `InstalledApp` conflates three orthogonal concern
 | Current value | Actual meaning |
 |---------------|----------------|
 | `"builtin"` | origin=built-in + resources=gateway + lifecycle=locked |
-| `"kiroclaw"` | origin=registry-or-local + resources=gateway + lifecycle=gateway |
+| `"kirocrew"` | origin=registry-or-local + resources=gateway + lifecycle=gateway |
 | `"self"` | origin=external + resources=app + lifecycle=app |
 
 This makes it impossible to express valid combinations like:
@@ -22,7 +22,7 @@ The setup hooks are also incomplete — only `onInstall` and `onUninstall`
 exist, with no support for update or enable/disable scripts.
 
 Finally, apps can declare `mcpServers` and AIM dependencies in their
-manifest, but KiroClaw never auto-installs them.
+manifest, but KiroCrew never auto-installs them.
 
 ---
 
@@ -42,7 +42,7 @@ lifecycle  — who manages updates, uninstall, and removability
 
 | Value | Meaning |
 |-------|---------|
-| `"builtin"` | Baked into the KiroClaw dashboard (agent-worlds, channels, secretary) |
+| `"builtin"` | Baked into the KiroCrew dashboard (agent-worlds, channels, secretary) |
 | `"registry"` | Installed from the curated app registry (app-registry.json) |
 | `"local"` | Installed from a local directory path |
 | `"external"` | Self-registered via the `/api/apps/register` endpoint or SDK |
@@ -53,14 +53,14 @@ Read-only after installation. Determines how the app was acquired.
 
 | Value | Meaning | Behavior |
 |-------|---------|----------|
-| `"gateway"` | KiroClaw manages agent/skill/cron registration via bridges.py | enable → `register_app()`, disable → `deregister_app()` |
+| `"gateway"` | KiroCrew manages agent/skill/cron registration via bridges.py | enable → `register_app()`, disable → `deregister_app()` |
 | `"app"` | App manages its own resource registration | enable/disable skip bridge operations |
 
 #### `lifecycle`
 
 | Value | Meaning | Behavior |
 |-------|---------|----------|
-| `"gateway"` | KiroClaw handles updates and uninstall | update endpoint re-clones + re-installs; uninstall removes files |
+| `"gateway"` | KiroCrew handles updates and uninstall | update endpoint re-clones + re-installs; uninstall removes files |
 | `"app"` | App handles its own updates | update endpoint returns 400; uninstall removes metadata only |
 | `"locked"` | Cannot be uninstalled (builtin only) | uninstall returns 400; only enable/disable allowed |
 
@@ -289,7 +289,7 @@ The update flow with rollback:
 
 ```
 1. Preserve data/ → tmp
-2. Preserve entire old app dir → ~/.kiroclaw/apps/.{name}-rollback/
+2. Preserve entire old app dir → ~/.kirocrew/apps/.{name}-rollback/
 3. Replace app files with new version
 4. Restore data/ from tmp
 5. register_app() with new manifest
@@ -350,8 +350,8 @@ on `InstalledApp` which controls **resource registration** (agents/skills/crons)
 
 | Value | Behavior |
 |-------|----------|
-| `"gateway"` (default) | KiroClaw runs `aim install` for each dependency |
-| `"app"` | KiroClaw only checks existence, does not install |
+| `"gateway"` (default) | KiroCrew runs `aim install` for each dependency |
+| `"app"` | KiroCrew only checks existence, does not install |
 
 Per-dependency override is supported for mixed cases:
 
@@ -419,13 +419,13 @@ class DependencyResult:
 
 ### 4.6 Dependency Ledger (Reference Tracking)
 
-To safely clean up dependencies on uninstall, KiroClaw maintains a
+To safely clean up dependencies on uninstall, KiroCrew maintains a
 lightweight reference ledger.
 
-**Location:** `~/.kiroclaw/dependency-ledger.json`
+**Location:** `~/.kirocrew/dependency-ledger.json`
 
 **Concurrency:** All reads and writes to the ledger file use `fcntl.flock()`
-(consistent with KiroClaw's existing file locking pattern in `cron.py`).
+(consistent with KiroCrew's existing file locking pattern in `cron.py`).
 This prevents corruption when two apps install concurrently and both need
 the same dependency.
 
@@ -653,9 +653,9 @@ register_app(app_name)
 ### 7.1 Registry Server-Side App (standard)
 
 ```
-1. Clone repo → ~/.kiroclaw/app-sources/{repo}/
+1. Clone repo → ~/.kirocrew/app-sources/{repo}/
 2. resolve_dependencies()          ← aim install for managedBy=gateway deps
-3. Copy to ~/.kiroclaw/apps/{name}/
+3. Copy to ~/.kirocrew/apps/{name}/
 4. register_app()                  ← symlink agents/skills/crons + register MCP
 5. Run onInstall script            ← compile, initialize
 6. Start backend                   ← if backend.entryPoint declared
@@ -664,7 +664,7 @@ register_app(app_name)
 ### 7.2 Registry Client-Side App (e.g. Mochi, new user)
 
 ```
-1. Clone repo → ~/.kiroclaw/app-sources/{repo}/
+1. Clone repo → ~/.kirocrew/app-sources/{repo}/
 2. resolve_dependencies()          ← aim install for managedBy=gateway deps
 3. Run onInstall script            ← build + package .app + copy to ~/Applications
 4. App launches → SDK authenticate() → register_external_app()
@@ -693,8 +693,8 @@ register_app(app_name)
 | `apps/dependency_ledger.py` | New file: ledger CRUD, `classify_for_uninstall()` |
 | `apps/dependencies.py` | New file: `resolve_dependencies()` using AIM CLI |
 | `apps/app-registry.json` | Replace `managed` with `resources`/`lifecycle` for Mochi entry |
-| `KiroClawWebsite/src/pages/AppsPage.tsx` | Update badge logic, button visibility; update uninstall dialog with dependency preview |
-| `KiroClawWebsite/src/api/client.ts` | Add `uninstallPreview()` API call |
+| `KiroCrewWebsite/src/pages/AppsPage.tsx` | Update badge logic, button visibility; update uninstall dialog with dependency preview |
+| `KiroCrewWebsite/src/api/client.ts` | Add `uninstallPreview()` API call |
 
 ---
 

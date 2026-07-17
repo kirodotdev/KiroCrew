@@ -9,7 +9,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.event_bus import EventBus
+from kiro_crew.apps.event_bus import EventBus
 
 # ---------------------------------------------------------------------------
 # Strategies

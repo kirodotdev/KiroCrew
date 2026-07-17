@@ -18,7 +18,7 @@ upstream OpenClaw `/btw` protocol.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Frontend (KiroClawWebsite)                                     │
+│  Frontend (KiroCrewWebsite)                                     │
 │  ┌────────────┐  ┌────────────────┐  ┌───────────────────────┐ │
 │  │ SideChat   │→ │ chatSlice      │← │ useWebSocket          │ │
 │  │ .tsx       │  │ slotSide state │  │ chat.side_result case │ │
@@ -27,7 +27,7 @@ upstream OpenClaw `/btw` protocol.
          │ HTTP                              ▲ WS
          ▼                                  │
 ┌─────────────────────────────────────────────────────────────────┐
-│  Backend (KiroClaw)                                             │
+│  Backend (KiroCrew)                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐ │
 │  │ handlers/    │→ │ side_state   │  │ ws.py                 │ │
 │  │ side.py      │  │ .py          │  │ broadcast_side_result │ │
@@ -181,7 +181,7 @@ Backend invariants are covered by `test/test_side.py`:
 | Channel separation | `test_side_run_id_never_leaks_to_main_channels` |
 | Tool-rejection fallback | `test_empty_llm_output_produces_visible_fallback` |
 
-Frontend invariants are covered in KiroClawWebsite under `src/test/`:
+Frontend invariants are covered in KiroCrewWebsite under `src/test/`:
 `SideChat.close.test.tsx`, `SideChat.multiturn.test.tsx`,
 `SideChat.refresh.test.tsx`, `SideChat.thinking.test.tsx`,
 `SideSlashCommand.test.tsx`, and the `sseSideResult` block in
@@ -201,10 +201,10 @@ Structural greps enforce compile-time invariants:
 - Context injection: sidecar storage on the parent ``_ChatSlot``
   (per-slot ``_side: SideState | None``) — keeps side messages reachable
   to the side handler without touching the main agent's context builder.
-- Build strategy: native KiroClaw implementation reusing only the
+- Build strategy: native KiroCrew implementation reusing only the
   upstream wire format for the ``chat.side_result`` event.
 - Memory mode: side conversations are born ephemeral and never write to
-  vector store, learn store, KiroClaw session JSONL, or the consolidation
+  vector store, learn store, KiroCrew session JSONL, or the consolidation
   pipeline. Tool execution is rejected via `ToolApprovalPolicy.REJECT_ALL`
   so the side LLM cannot call `learn_add` or any other write tool. The
   `side:` prefix is registered in `session._STATELESS_PREFIXES`, so the

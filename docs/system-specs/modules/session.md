@@ -43,7 +43,7 @@ Callers: heartbeat callback, taskrunner lesson extraction.
 
 `get_bg_session()` acquires a `_bg` handle, dispatching by provider backend and
 returning `AcpSessionHandle | _ProviderBgSession`. Provider dispatch is via
-`_bg_provider_is_kiro()`, which resolves the `kiroclaw-lite` agent backend:
+`_bg_provider_is_kiro()`, which resolves the `kirocrew-lite` agent backend:
 
 - **kiro (`acp`)** — the only backend the multiplexed `AcpRuntime` supports.
   Each caller (title generation, suggestions, folders, nav) gets its **own**
@@ -55,7 +55,7 @@ returning `AcpSessionHandle | _ProviderBgSession`. Provider dispatch is via
 - **non-kiro** — falls back to a `_ProviderBgSession` over the shared
   `BACKGROUND_KEY` `_Session`, serialized by its `Semaphore(1)`. `AcpRuntime` is
   kiro-only, so any non-kiro backend must use the provider path. In the public
-  KiroClaw edition `agent.provider` is fixed to `acp`, so this branch is the
+  KiroCrew edition `agent.provider` is fixed to `acp`, so this branch is the
   dormant fallback for the reserved `ACP_BACKEND_CLAUDE` seam only.
 
 Both paths yield `AcpEvent` through the shared
@@ -93,7 +93,7 @@ check (`dashboard/handlers/cron.py`).
 | Method | Purpose |
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm + background sessions. `blocking=False` for non-blocking mode. |
-| `get_or_create(key, agent=None, approval_policy="")` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kiroclaw` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. |
+| `get_or_create(key, agent=None, approval_policy="")` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 90%), warns at 75%. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
 | `release(key)` | Release per-session semaphore (must call in `finally`). |
@@ -133,13 +133,13 @@ After a hard kill, `_eager_respawn(key)` calls `get_or_create(key)` in a backgro
 ## Session Resume (SessionMap)
 
 Persistent mapping of `session_key → kiro_session_id` stored at
-`~/.kiroclaw/session_map.json`. Enables `session/load` to restore full
+`~/.kirocrew/session_map.json`. Enables `session/load` to restore full
 kiro-cli conversation history when a session is recycled.
 
 **Only long-lived conversational sessions are mapped.** Stateless sessions
 (cron, subagent, taskrunner, channel, secretary, side, heartbeat/background)
 are excluded via `_STATELESS_PREFIXES`. The `side:` prefix is included so
-`/side` conversations never resume across KiroClaw restarts — each cold-start
+`/side` conversations never resume across KiroCrew restarts — each cold-start
 triggers `is_first_turn=True` in `build_side_message` which re-seeds the
 parent snapshot + accumulated side history.
 
@@ -174,7 +174,7 @@ when a switch is detected (stored SID exists AND providers differ).
 4. The new provider's session_id (once obtained) is saved with the correct
    provider label
 5. On the first prompt after the switch, `chat_runner` detects the flag and
-   injects history from `compress_thread_history()` (KiroClaw's conversation_log)
+   injects history from `compress_thread_history()` (KiroCrew's conversation_log)
 6. The flag is consumed (set to False) — replay fires exactly once per switch
 
 **Same-provider resume:** unaffected. Normal `session/load` path with full
@@ -268,8 +268,8 @@ opens a DM thread, links the session, and posts the last 5 messages as context.
 the frontend can show a link indicator.
 
 **Slash commands** (`slack/events.py`):
-- `/kiroclaw sessions` — lists active sessions with Slack link status
-- `/kiroclaw sessions resume <key>` — resumes a session in the current thread
+- `/kirocrew sessions` — lists active sessions with Slack link status
+- `/kirocrew sessions resume <key>` — resumes a session in the current thread
 
 **Block Kit builders** (`slack/blocks.py`): reusable Block Kit dict builders
 for slash command UIs. Action IDs follow `mc_<command>_<action>[_<id>]`.
@@ -401,23 +401,23 @@ start_pool()
 patterns into agent configs in `~/.kiro/agents/`. The scope is controlled by
 `agent.enforce_denied_commands` config option:
 
-- `"all"` (default): enforce on ALL agent configs (kiroclaw + AIM + third-party)
-- `"kiroclaw"`: only enforce on `kiroclaw.json`, skip other agents (lite agents always skipped)
+- `"all"` (default): enforce on ALL agent configs (kirocrew + AIM + third-party)
+- `"kirocrew"`: only enforce on `kirocrew.json`, skip other agents (lite agents always skipped)
 
-This addresses user complaints about KiroClaw overwriting customizations on non-KiroClaw agents every ~60 seconds.
+This addresses user complaints about KiroCrew overwriting customizations on non-KiroCrew agents every ~60 seconds.
 
 - **At startup**: `start_pool()` calls it before spawning any sessions
 - **Periodic**: `_cleanup_loop()` calls it every ~60s (catches manual edits)
-- **At install**: `install_agent()` calls it after writing `kiroclaw.json`
+- **At install**: `install_agent()` calls it after writing `kirocrew.json`
 - **Mtime-based**: skips unchanged files for efficiency
 - **Merge semantics**: union of existing + bundled patterns (never removes agent's own)
 - **Targets**: both `execute_bash` and `shell` tool settings
-- **Config**: set via `~/.kiroclaw/config.json` or Dashboard Config Summary
+- **Config**: set via `~/.kirocrew/config.json` or Dashboard Config Summary
 
 ## Orphaned MCP Server Cleanup
 
 `_cleanup_orphaned_mcp_servers()` kills MCP server processes that survived
-session teardown.  kiro-cli-chat spawns MCP servers (kiro_claw mcp-core/cron,
+session teardown.  kiro-cli-chat spawns MCP servers (kiro_crew mcp-core/cron,
 builder-mcp, andes-mcp, aim slack-mcp) in separate process groups.  When a
 session dies, `killpg` only reaches the kiro-cli process group — MCP servers
 in other groups get reparented to init and leak memory.
@@ -470,7 +470,7 @@ untracked orphans and SIGKILLed them mid-chat (surfacing as
 ### Cross-platform process management (platform_compat)
 
 All process liveness/kill/PID-file-lock operations in `session.py` and
-`session_pid.py` go through `kiro_claw.platform_compat` so KiroClaw runs natively on
+`session_pid.py` go through `kiro_crew.platform_compat` so KiroCrew runs natively on
 Windows as well as macOS/Linux (Mesh-2329). The critical correctness reason is that
 **`os.kill(pid, 0)` is NOT a liveness probe on Windows — it terminates the process** —
 so every liveness check uses `platform_compat.pid_exists(pid)` (or the tri-state

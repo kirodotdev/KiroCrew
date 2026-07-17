@@ -4,7 +4,7 @@ per-section caps (Joe Guo's design), so skills/steering can't eat memory space.
 
 from __future__ import annotations
 
-from kiro_claw import context as ctx
+from kiro_crew import context as ctx
 
 
 def test_global_cap_is_sum_of_section_caps():

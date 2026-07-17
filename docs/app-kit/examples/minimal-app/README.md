@@ -1,13 +1,13 @@
-# Hello World — Minimal KiroClaw App
+# Hello World — Minimal KiroCrew App
 
-The simplest possible KiroClaw app: one agent + one skill, no UI.
+The simplest possible KiroCrew app: one agent + one skill, no UI.
 
 ## Install
 
 ```bash
-kiroclaw app install ./minimal-app
+kirocrew app install ./minimal-app
 ```
 
 ## Use
 
-Chat with the `greeter` agent from any KiroClaw slot.
+Chat with the `greeter` agent from any KiroCrew slot.

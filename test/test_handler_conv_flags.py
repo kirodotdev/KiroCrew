@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.session_map import SessionMap
-from kiro_claw.slack import handler as h
+from kiro_crew.session_map import SessionMap
+from kiro_crew.slack import handler as h
 
 
 @pytest.fixture()
 def patched(tmp_path, monkeypatch):
-    monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
-    monkeypatch.setattr("kiro_claw.session_map._KIRO_SESSIONS_DIR", tmp_path / "kiro")
+    monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", tmp_path / "kiro")
     # Isolate the module-global LRUs between tests.
     h._thread_temporary.clear()
     h._thread_incognito.clear()

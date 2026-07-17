@@ -1,4 +1,4 @@
-"""Tests for plugin admission control (kiro_claw.platform.admission)."""
+"""Tests for plugin admission control (kiro_crew.platform.admission)."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ import json
 
 import pytest
 
-from kiro_claw.platform import discovery as discovery_mod
-from kiro_claw.platform.admission import (
+from kiro_crew.platform import discovery as discovery_mod
+from kiro_crew.platform.admission import (
     MODE_ENFORCE,
     MODE_OPEN,
     AdmissionPolicy,
     PluginManifest,
     evaluate_admission,
 )
-from kiro_claw.platform.discovery import PluginAdmissionError, discover_companion_context
+from kiro_crew.platform.discovery import PluginAdmissionError, discover_companion_context
 
 
 class _FakeEntryPoint:
@@ -29,7 +29,7 @@ class _FakeEntryPoint:
     def __init__(self, name="amazon", value="m:build", loaded=None):
         self.name = name
         self.value = value
-        self.group = "kiroclaw.plugins"
+        self.group = "kirocrew.plugins"
         self._loaded = loaded
 
     def load(self):
@@ -53,7 +53,7 @@ def patch_manifest(monkeypatch):
 
     def _set(manifest):
         monkeypatch.setattr(
-            "kiro_claw.platform.admission._read_plugin_manifest",
+            "kiro_crew.platform.admission._read_plugin_manifest",
             lambda ep: manifest,
         )
 
@@ -312,11 +312,11 @@ class TestEnforceRequiresManifest:
 class TestPolicyLoading:
     def test_no_policy_fails_closed(self, monkeypatch, tmp_path):
         """AVP-23427: an absent policy file must fail closed, not admit-all."""
-        monkeypatch.delenv("KIROCLAW_ADMISSION_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         monkeypatch.setattr(
-            "kiro_claw.platform.admission._POLICY_DEFAULT_PATH", tmp_path / "nope.json"
+            "kiro_crew.platform.admission._POLICY_DEFAULT_PATH", tmp_path / "nope.json"
         )
-        from kiro_claw.platform.admission import load_admission_policy
+        from kiro_crew.platform.admission import load_admission_policy
 
         policy = load_admission_policy()
         # fail-closed: enforce + signature + empty allowlist (admits nothing).
@@ -327,8 +327,8 @@ class TestPolicyLoading:
     def test_unreadable_policy_fails_closed(self, monkeypatch, tmp_path):
         bad = tmp_path / "admission_policy.json"
         bad.write_text("{ not valid json")
-        monkeypatch.setenv("KIROCLAW_ADMISSION_POLICY", str(bad))
-        from kiro_claw.platform.admission import load_admission_policy
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(bad))
+        from kiro_crew.platform.admission import load_admission_policy
 
         policy = load_admission_policy()
         # fail-closed: enforce + signature + empty allowlist (admits nothing)
@@ -338,9 +338,9 @@ class TestPolicyLoading:
 
     def test_seed_then_load_is_open(self, monkeypatch, tmp_path):
         """The first-run seed writes a permissive file so a fresh install stays open."""
-        import kiro_claw.platform.admission as adm
+        import kiro_crew.platform.admission as adm
 
-        monkeypatch.delenv("KIROCLAW_ADMISSION_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", tmp_path / "admission_policy.json")
         monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
         monkeypatch.setattr(adm, "_CHECKSUM_PATH", tmp_path / ".migrations" / "policy.sha256")
@@ -352,9 +352,9 @@ class TestPolicyLoading:
 
     def test_deletion_after_seed_fails_closed_no_reseed(self, monkeypatch, tmp_path):
         """AVP-23427: deleting the seeded file must NOT re-seed; load fails closed."""
-        import kiro_claw.platform.admission as adm
+        import kiro_crew.platform.admission as adm
 
-        monkeypatch.delenv("KIROCLAW_ADMISSION_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         pol = tmp_path / "admission_policy.json"
         monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", pol)
         monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
@@ -373,10 +373,10 @@ class TestPolicyLoading:
         but a legitimate edit must NOT force the dashboard to 'degraded'."""
         import logging as _logging
 
-        import kiro_claw.platform.admission as adm
-        from kiro_claw.platform import governance_health as gh
+        import kiro_crew.platform.admission as adm
+        from kiro_crew.platform import governance_health as gh
 
-        monkeypatch.delenv("KIROCLAW_ADMISSION_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         pol = tmp_path / "admission_policy.json"
         monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", pol)
         monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
@@ -397,10 +397,10 @@ class TestPolicyLoading:
         assert gh.governance_status() != "degraded"
 
     def test_absent_policy_reports_degraded_health(self, monkeypatch, tmp_path):
-        import kiro_claw.platform.admission as adm
-        from kiro_claw.platform import governance_health as gh
+        import kiro_crew.platform.admission as adm
+        from kiro_crew.platform import governance_health as gh
 
-        monkeypatch.delenv("KIROCLAW_ADMISSION_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", tmp_path / "nope.json")
         gh.reset()
         adm.load_admission_policy()
@@ -420,8 +420,8 @@ class TestPolicyLoading:
                 }
             )
         )
-        monkeypatch.setenv("KIROCLAW_ADMISSION_POLICY", str(p))
-        from kiro_claw.platform.admission import load_admission_policy
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(p))
+        from kiro_crew.platform.admission import load_admission_policy
 
         policy = load_admission_policy()
         assert policy.mode == MODE_ENFORCE
@@ -441,7 +441,7 @@ class TestDiscoveryGate:
         ep = _FakeEntryPoint(name="amazon", loaded=_should_not_run)
         monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [ep])
         monkeypatch.setattr(
-            "kiro_claw.platform.admission._read_plugin_manifest",
+            "kiro_crew.platform.admission._read_plugin_manifest",
             lambda e: PluginManifest(name="amazon", publisher="p13n", version="1"),
         )
         policy = AdmissionPolicy(mode=MODE_OPEN, banned=["amazon"])
@@ -454,7 +454,7 @@ class TestDiscoveryGate:
         ep = _FakeEntryPoint(name="amazon", loaded=lambda _cfg: sentinel)
         monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [ep])
         monkeypatch.setattr(
-            "kiro_claw.platform.admission._read_plugin_manifest",
+            "kiro_crew.platform.admission._read_plugin_manifest",
             lambda e: PluginManifest(name="amazon", publisher="p13n", version="1"),
         )
         policy = AdmissionPolicy(mode=MODE_OPEN)
@@ -465,9 +465,9 @@ class TestDiscoveryGate:
         """AVP-23427 ordering: discovery (which runs before the gateway seed on a
         fleet's first boot) seeds the permissive default, so the companion is
         admitted instead of fail-closing when no policy file exists yet."""
-        import kiro_claw.platform.admission as adm
+        import kiro_crew.platform.admission as adm
 
-        monkeypatch.delenv("KIROCLAW_ADMISSION_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", tmp_path / "admission_policy.json")
         monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
         monkeypatch.setattr(adm, "_CHECKSUM_PATH", tmp_path / ".migrations" / "policy.sha256")

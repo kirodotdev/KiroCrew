@@ -9,7 +9,7 @@ beforeAll(() => {
 })
 
 const globalAgents: AgentItem[] = [
-  { name: 'kiroclaw', source: 'kiroclaw', description: 'Main agent' },
+  { name: 'kirocrew', source: 'kirocrew', description: 'Main agent' },
   { name: 'builtin', source: 'builtin' },
 ]
 
@@ -22,14 +22,14 @@ const mixed = [...projectAgents, ...globalAgents]
 
 describe('AgentDropdownList', () => {
   it('renders only Global Agents section when no project agents', () => {
-    render(<AgentDropdownList agents={globalAgents} activeAgent="kiroclaw" defaultAgent="kiroclaw" onSelect={() => {}} />)
+    render(<AgentDropdownList agents={globalAgents} activeAgent="kirocrew" defaultAgent="kirocrew" onSelect={() => {}} />)
     expect(screen.queryByText('Project Agents')).not.toBeInTheDocument()
-    expect(screen.getAllByText('kiroclaw').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('kirocrew').length).toBeGreaterThan(0)
     expect(screen.getAllByText('builtin').length).toBeGreaterThan(0)
   })
 
   it('renders Project Agents section when project agents present', () => {
-    render(<AgentDropdownList agents={mixed} activeAgent="kiroclaw" activeProjectPath="/home/user/QBR" defaultAgent="kiroclaw" onSelect={() => {}} />)
+    render(<AgentDropdownList agents={mixed} activeAgent="kirocrew" activeProjectPath="/home/user/QBR" defaultAgent="kirocrew" onSelect={() => {}} />)
     expect(screen.getByText('Project Agents')).toBeInTheDocument()
     expect(screen.getByText('Global Agents')).toBeInTheDocument()
   })
@@ -84,10 +84,10 @@ describe('AgentDropdownList', () => {
     render(<AgentDropdownList agents={globalAgents} activeAgent="" defaultAgent="" onSelect={onSelect} />)
     // Find button by font-mono span content
     const btn = Array.from(document.querySelectorAll('button')).find(
-      b => b.querySelector('.font-mono')?.textContent === 'kiroclaw'
+      b => b.querySelector('.font-mono')?.textContent === 'kirocrew'
     )
     fireEvent.click(btn!)
-    expect(onSelect).toHaveBeenCalledWith('kiroclaw', undefined)
+    expect(onSelect).toHaveBeenCalledWith('kirocrew', undefined)
   })
 
   it('shows description when present', () => {

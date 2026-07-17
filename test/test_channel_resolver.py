@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kiro_claw.slack.channel_resolver import (
+from kiro_crew.slack.channel_resolver import (
     _CACHE_FILENAME,
     _CACHE_TTL_SECS,
     ChannelNameResolver,

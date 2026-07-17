@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.cloud import aws, source
+from kiro_crew.cloud import aws, source
 
 
 class TestRepoRoot:
@@ -20,7 +20,7 @@ class TestRepoRoot:
         # Installed as a wheel (no install.sh + setup.cfg above the module):
         # must raise, NOT fall back to an ancestor dir that could tar up
         # unrelated packages and ship them to S3.
-        fake_module = tmp_path / "site-packages" / "kiro_claw" / "cloud" / "source.py"
+        fake_module = tmp_path / "site-packages" / "kiro_crew" / "cloud" / "source.py"
         fake_module.parent.mkdir(parents=True)
         fake_module.write_text("# stub\n")
         monkeypatch.setattr(source, "__file__", str(fake_module))
@@ -66,8 +66,8 @@ class TestBuildTarball:
     def test_tar_fallback_excludes_secrets(self, tmp_path):
         # Secret-bearing files/dirs must never be packaged by the fallback.
         (tmp_path / "install.sh").write_text("echo hi\n")
-        (tmp_path / ".kiroclaw-dev").mkdir()
-        (tmp_path / ".kiroclaw-dev" / "config.json").write_text('{"token":"secret"}\n')
+        (tmp_path / ".kirocrew-dev").mkdir()
+        (tmp_path / ".kirocrew-dev" / "config.json").write_text('{"token":"secret"}\n')
         (tmp_path / ".env").write_text("SLACK_BOT_TOKEN=xoxb-secret\n")
         (tmp_path / "server.pem").write_text("-----BEGIN KEY-----\n")
         (tmp_path / "id_rsa.key").write_text("privatekey\n")
@@ -78,23 +78,23 @@ class TestBuildTarball:
             with tarfile.open(tarball) as tf:
                 names = tf.getnames()
             assert any(n.endswith("ok.py") for n in names)  # normal file shipped
-            assert not any(".kiroclaw-dev" in n for n in names)
+            assert not any(".kirocrew-dev" in n for n in names)
             assert not any(n.endswith(".env") for n in names)
             assert not any(n.endswith(".pem") for n in names)
             assert not any(n.endswith(".key") for n in names)
         finally:
             tarball.unlink()
 
-    def test_tar_fallback_excludes_custom_kiroclaw_home(self, monkeypatch, tmp_path):
-        # Dev mode can set KIROCLAW_HOME to a custom-named dir at the repo root;
+    def test_tar_fallback_excludes_custom_kirocrew_home(self, monkeypatch, tmp_path):
+        # Dev mode can set KIROCREW_HOME to a custom-named dir at the repo root;
         # the tarfile fallback must exclude it by its actual name (not just the
-        # hardcoded .kiroclaw* entries) so its data/secrets don't ship to S3.
+        # hardcoded .kirocrew* entries) so its data/secrets don't ship to S3.
         (tmp_path / "install.sh").write_text("echo hi\n")
         home = tmp_path / "my-custom-home"
         home.mkdir()
         (home / "contacts.json").write_text('{"secret":"x"}\n')
         (tmp_path / "ok.py").write_text("x=1\n")
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
 
         tarball = source._tar_fallback(tmp_path)
         try:
@@ -106,14 +106,14 @@ class TestBuildTarball:
             tarball.unlink()
 
     def test_tar_fallback_excludes_nested_custom_home(self, monkeypatch, tmp_path):
-        # A custom KIROCLAW_HOME nested below the repo root (root/data/kc-home)
+        # A custom KIROCREW_HOME nested below the repo root (root/data/kc-home)
         # must also be excluded from the tarfile fallback.
         (tmp_path / "install.sh").write_text("echo hi\n")
         home = tmp_path / "data" / "kc-home"
         home.mkdir(parents=True)
         (home / "secrets.json").write_text('{"k":"v"}\n')
         (tmp_path / "data" / "keep.txt").write_text("keep\n")  # sibling stays
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
 
         tarball = source._tar_fallback(tmp_path)
         try:
@@ -125,14 +125,14 @@ class TestBuildTarball:
             tarball.unlink()
 
     def test_custom_home_not_excluded_when_outside_repo(self, monkeypatch, tmp_path):
-        # An absolute ~/.kiroclaw OUTSIDE the repo root isn't in the tarball
+        # An absolute ~/.kirocrew OUTSIDE the repo root isn't in the tarball
         # anyway; _custom_home_rel_parts must return None so we don't accidentally
         # drop a same-named dir that legitimately lives in the repo. Use a
         # sibling dir that is genuinely not under the packaged root.
         repo = tmp_path / "repo"
         repo.mkdir()
-        outside = tmp_path / "home" / ".kiroclaw"
-        monkeypatch.setenv("KIROCLAW_HOME", str(outside))
+        outside = tmp_path / "home" / ".kirocrew"
+        monkeypatch.setenv("KIROCREW_HOME", str(outside))
         assert source._custom_home_rel_parts(repo) is None
 
     def test_env_exclusion_is_exact_not_prefix_greedy(self, tmp_path):
@@ -240,7 +240,7 @@ class TestBuildTarball:
                 ("src/app.py", b"x=1\n"),
                 ("server.pem", b"-----BEGIN KEY-----\n"),
                 (".env", b"TOKEN=secret\n"),
-                (".kiroclaw/config.json", b"{}\n"),
+                (".kirocrew/config.json", b"{}\n"),
             ):
                 ti = tarfile.TarInfo(name)
                 ti.size = len(data)
@@ -263,7 +263,7 @@ class TestBuildTarball:
         import tarfile as _tf
         import tempfile as _tmp
 
-        import kiro_claw.cloud.source as _src
+        import kiro_crew.cloud.source as _src
 
         created: list[str] = []
         real_ntf = _tmp.NamedTemporaryFile
@@ -315,7 +315,7 @@ class TestBuildTarball:
 class TestBucketNaming:
     def test_bucket_name(self, monkeypatch):
         monkeypatch.setattr(source, "_account_id", lambda *a: "814959995281")
-        assert source.bucket_name("dev", "us-east-1") == "kiroclaw-src-814959995281-us-east-1"
+        assert source.bucket_name("dev", "us-east-1") == "kirocrew-src-814959995281-us-east-1"
 
 
 class TestEnsureBucket:
@@ -327,7 +327,7 @@ class TestEnsureBucket:
             aws, "checked", lambda args, *a, action="", **k: actions.append(action) or ""
         )
         b = source.ensure_bucket("dev", "us-east-1")
-        assert b == "kiroclaw-src-123-us-east-1"
+        assert b == "kirocrew-src-123-us-east-1"
         # existing bucket: no create-bucket...
         assert "s3:CreateBucket" not in actions
         # ...but the public-access block MUST still be (re-)enforced on reuse,
@@ -370,7 +370,7 @@ class TestEnsureBucket:
             aws, "checked", lambda *a, **k: created.update(n=created["n"] + 1) or ""
         )
         b = source.ensure_bucket("dev", "us-west-2")
-        assert b == "kiroclaw-src-123-us-west-2"
+        assert b == "kirocrew-src-123-us-west-2"
         assert created["n"] >= 1
 
     def test_raises_when_account_id_unresolved(self, monkeypatch):
@@ -405,7 +405,7 @@ class TestEnsureInstanceBoundary:
     def test_reuses_existing_boundary_when_content_matches(self, monkeypatch):
         # An existing boundary is reused (never re-versioned) ONLY after its
         # content is verified to match the fixed document.
-        from kiro_claw.cloud import iam
+        from kiro_crew.cloud import iam
 
         monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
         calls = []
@@ -447,7 +447,7 @@ class TestEnsureInstanceBoundary:
         # The compare is canonical JSON (sort_keys), so the same document with its
         # dict KEYS in a different order (as AWS may return them) still matches and
         # is reused — we don't spuriously reject our own boundary over key order.
-        from kiro_claw.cloud import iam
+        from kiro_crew.cloud import iam
 
         monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
         monkeypatch.setattr(aws, "run_aws", lambda args, *a, **k: (0, "{}", ""))
@@ -467,7 +467,7 @@ class TestEnsureInstanceBoundary:
         assert source.ensure_instance_boundary("dev", "us-east-1") == iam.boundary_arn(_ACCT12)
 
     def test_creates_when_absent_with_fixed_document(self, monkeypatch):
-        from kiro_claw.cloud import iam
+        from kiro_crew.cloud import iam
 
         monkeypatch.setattr(source, "_account_id", lambda *a: "123456789012")
         created = {}
@@ -496,7 +496,7 @@ class TestEnsureInstanceBoundary:
         # get-policy says absent, but a concurrent launch created it first →
         # create-policy returns EntityAlreadyExists → we VERIFY content matches
         # ours, then treat as success.
-        from kiro_claw.cloud import iam
+        from kiro_crew.cloud import iam
 
         monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
 
@@ -540,20 +540,20 @@ class TestEnsureInstanceBoundary:
 
 
 _ACCT = "123456789012"
-_BUCKET = f"kiroclaw-src-{_ACCT}-us-east-1"
+_BUCKET = f"kirocrew-src-{_ACCT}-us-east-1"
 
 
 class TestAccountFromBucket:
     def test_extracts_12_digit_account(self):
         assert source._account_from_bucket(_BUCKET) == _ACCT
         # region with hyphens doesn't confuse the first-field split
-        assert source._account_from_bucket("kiroclaw-src-123456789012-ap-south-1") == "123456789012"
+        assert source._account_from_bucket("kirocrew-src-123456789012-ap-south-1") == "123456789012"
 
     def test_rejects_unknown_fallback_and_bad_shapes(self):
-        # The `kiroclaw-src-unknown-*` fallback (account didn't resolve) yields ""
+        # The `kirocrew-src-unknown-*` fallback (account didn't resolve) yields ""
         # so callers fail closed instead of pinning a bogus owner.
-        assert source._account_from_bucket("kiroclaw-src-unknown-us-east-1") == ""
-        assert source._account_from_bucket("kiroclaw-src-123-us-east-1") == ""  # too short
+        assert source._account_from_bucket("kirocrew-src-unknown-us-east-1") == ""
+        assert source._account_from_bucket("kirocrew-src-123-us-east-1") == ""  # too short
         assert source._account_from_bucket("some-other-bucket") == ""
 
 
@@ -571,7 +571,7 @@ class TestUploadDelete:
         )
         bucket, key = source.upload_source("kc-1", "dev", "us-east-1")
         assert bucket == _BUCKET
-        assert key == "kc-1/kiroclaw-src.tar.gz"
+        assert key == "kc-1/kirocrew-src.tar.gz"
         # low-level s3api put-object (only it accepts --expected-bucket-owner)
         assert cp["args"][:2] == ["s3api", "put-object"]
         assert "--bucket" in cp["args"] and bucket in cp["args"]
@@ -586,8 +586,8 @@ class TestUploadDelete:
 
     def test_upload_source_fails_closed_when_owner_underivable(self, monkeypatch, tmp_path):
         # If the bucket name isn't the expected shape (account unresolved →
-        # `kiroclaw-src-unknown-*`), we must NOT upload without an owner pin.
-        monkeypatch.setattr(source, "ensure_bucket", lambda *a: "kiroclaw-src-unknown-us-east-1")
+        # `kirocrew-src-unknown-*`), we must NOT upload without an owner pin.
+        monkeypatch.setattr(source, "ensure_bucket", lambda *a: "kirocrew-src-unknown-us-east-1")
 
         def _boom_build(*a, **k):  # pragma: no cover - must not build/upload
             raise AssertionError("must not build/upload without an owner pin")
@@ -609,15 +609,15 @@ class TestUploadDelete:
         # low-level s3api delete-object (only it accepts --expected-bucket-owner)
         assert rm["args"][:2] == ["s3api", "delete-object"]
         assert "--bucket" in rm["args"] and _BUCKET in rm["args"]
-        assert "--key" in rm["args"] and "kc-1/kiroclaw-src.tar.gz" in rm["args"]
+        assert "--key" in rm["args"] and "kc-1/kirocrew-src.tar.gz" in rm["args"]
         assert "--expected-bucket-owner" in rm["args"] and _ACCT in rm["args"]
         assert res["removed"] is True
         assert res["error"] == ""
-        assert res["uri"] == f"s3://{_BUCKET}/kc-1/kiroclaw-src.tar.gz"
+        assert res["uri"] == f"s3://{_BUCKET}/kc-1/kirocrew-src.tar.gz"
 
     def test_delete_source_fails_closed_when_owner_underivable(self, monkeypatch):
         # bucket_name fell back to unknown → skip the unpinned delete, report it.
-        monkeypatch.setattr(source, "bucket_name", lambda *a: "kiroclaw-src-unknown-us-east-1")
+        monkeypatch.setattr(source, "bucket_name", lambda *a: "kirocrew-src-unknown-us-east-1")
         monkeypatch.setattr(
             aws, "run_aws", lambda *a, **k: pytest.fail("must not issue unpinned delete")
         )

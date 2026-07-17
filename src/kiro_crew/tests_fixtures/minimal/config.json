@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "version": 1,
+    "created_by": "kirocrew-fixture-minimal"
+  },
+  "agent": {
+    "approval_mode": "auto",
+    "streaming": true,
+    "bot_name": "kirocrew",
+    "default_agent": "kirocrew",
+    "sandbox": "off"
+  },
+  "session": {
+    "idle_timeout_secs": 1800,
+    "max_turns_per_session": 200
+  },
+  "memory": {
+    "enabled": true
+  },
+  "workspaces": {
+    "default": {
+      "path": "workspace"
+    },
+    "extra": {
+      "path": "workspace-extra"
+    }
+  },
+  "default_workspace": "default",
+  "dashboard": {
+    "host": "127.0.0.1",
+    "port": 7979,
+    "theme_mode": "dark",
+    "theme_color": "kiro",
+    "onboarded": true
+  },
+  "timezone": "UTC"
+}

@@ -5,9 +5,9 @@ cron execution latency (scheduler polls every 30s + agent LLM processing time).
 
 ## Prerequisites
 
-1. Stop production: `systemctl --user stop kiroclaw.service`
-2. Build frontend: `cd ../KiroClawWebsite && npm run build`
-3. Start gateway: `cd ../KiroClaw && kiroclaw gateway`
+1. Stop production: `systemctl --user stop kirocrew.service`
+2. Build frontend: `cd ../KiroCrewWebsite && npm run build`
+3. Start gateway: `cd ../KiroCrew && kirocrew gateway`
 4. Open dashboard at localhost:5476
 
 ## Test 1: One-Shot Cron → "View last result"
@@ -38,7 +38,7 @@ cron execution latency (scheduler polls every 30s + agent LLM processing time).
 ## Cleanup
 
 ```bash
-systemctl --user start kiroclaw.service
+systemctl --user start kirocrew.service
 ```
 
 ## Why not automated?

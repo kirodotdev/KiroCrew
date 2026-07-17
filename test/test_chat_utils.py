@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from kiro_claw.dashboard.chat_utils import (
+from kiro_crew.dashboard.chat_utils import (
     _extract_bash_command,
     _history_key_for,
     _normalize_model,

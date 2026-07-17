@@ -23,7 +23,7 @@ export default function AgentCfgTab() {
   })
 
   return (
-    <Card><CardTitle>Agent Config ({provider.labels.configFile}) <InfoTip text={`The ${provider.labels.sessionProcess} agent definition — prompt, tools, MCP servers, model settings. This is the execution layer config, separate from KiroClaw's operational bindings.`} /> <Btn onClick={() => {
+    <Card><CardTitle>Agent Config ({provider.labels.configFile}) <InfoTip text={`The ${provider.labels.sessionProcess} agent definition — prompt, tools, MCP servers, model settings. This is the execution layer config, separate from KiroCrew's operational bindings.`} /> <Btn onClick={() => {
       try { const config = JSON.parse(cfg); saveMut.mutate(config) } catch { alert('Invalid JSON') }
     }}>{saveMut.isSuccess ? <><Check className="lucide-inline" /> Saved</> : 'Save'}</Btn></CardTitle>
       <p className="text-muted text-[13px] mb-3">After saving, use <Zap className="lucide-inline" /> Apply & Restart Sessions at the top to apply changes.</p>

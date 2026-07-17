@@ -1,9 +1,9 @@
-"""Tests for ``kiro_claw.testing.harness`` — gateway-spawning context manager.
+"""Tests for ``kiro_crew.testing.harness`` — gateway-spawning context manager.
 
 Most tests exercise the harness's internal helpers in isolation with a
 stand-in for ``subprocess.Popen``. Spawning a real gateway takes 5–15s
 and pulls in the full MCP probe / config init / dashboard bind path, so
-the end-to-end test is gated behind ``KIROCLAW_HARNESS_INTEGRATION``.
+the end-to-end test is gated behind ``KIROCREW_HARNESS_INTEGRATION``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.testing.harness import (
+from kiro_crew.testing.harness import (
     DEFAULT_READY_TIMEOUT,
     READY_PREFIX,
     GatewayHandle,
@@ -127,7 +127,7 @@ def test_ready_line_raises_on_timeout_with_stderr() -> None:
 
     assert "did not emit" in str(exc.value)
     assert "WARNING something" in str(exc.value)
-    assert "KIROCLAW_HARNESS_READY_TIMEOUT" in str(exc.value)
+    assert "KIROCREW_HARNESS_READY_TIMEOUT" in str(exc.value)
 
 
 def test_ready_line_timeout_fires_when_subprocess_silent_but_alive() -> None:
@@ -266,7 +266,7 @@ def test_terminate_falls_back_to_sigkill() -> None:
         ready_line = proc.stdout.readline()
         assert ready_line == b"READY\n", f"child did not signal ready: {ready_line!r}"
 
-        with patch("kiro_claw.testing.harness.TERMINATE_GRACE_SECONDS", 0.5):
+        with patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.5):
             _terminate_process_group(proc)
         assert proc.poll() is not None
         # On POSIX, SIGKILL is signal 9; returncode is -9 when killed.
@@ -386,7 +386,7 @@ def test_terminate_pgid_grace_default_resolved_at_call_time() -> None:
         assert proc.stdout is not None
         assert proc.stdout.readline() == b"READY\n"
         start = time.monotonic()
-        with patch("kiro_claw.testing.harness.TERMINATE_GRACE_SECONDS", 0.5):
+        with patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.5):
             terminate_pgid(proc.pid)  # default grace — must pick up the patch
         elapsed = time.monotonic() - start
         assert elapsed < 3.0, f"patched grace ignored, took {elapsed:.2f}s"
@@ -436,7 +436,7 @@ def test_terminate_pgid_wait_hook_used_for_exit_detection() -> None:
 def test_resolve_workspace_src_finds_package() -> None:
     """When run from inside the package, returns ``<pkg>/src``."""
     src = _resolve_workspace_src()
-    assert (src / "kiro_claw" / "__init__.py").exists()
+    assert (src / "kiro_crew" / "__init__.py").exists()
 
 
 def test_gateway_handle_is_frozen() -> None:
@@ -498,9 +498,9 @@ def test_spawn_feature_gateway_happy_path() -> None:
         return fake_proc
 
     with (
-        patch("kiro_claw.testing.harness.subprocess.Popen", side_effect=fake_popen),
+        patch("kiro_crew.testing.harness.subprocess.Popen", side_effect=fake_popen),
         patch(
-            "kiro_claw.testing.harness._terminate_process_group",
+            "kiro_crew.testing.harness._terminate_process_group",
             side_effect=fake_terminate,
         ),
     ):
@@ -515,7 +515,7 @@ def test_spawn_feature_gateway_happy_path() -> None:
     # Tmp home is cleaned up on context exit.
     assert not captured_home.exists()
 
-    # Spawn invokes ``kiroclaw gateway --test-mode --seed <fixture>`` —
+    # Spawn invokes ``kirocrew gateway --test-mode --seed <fixture>`` —
     # seeding is atomic with gateway startup (no separate seed pass).
     assert captured_cmd, "Popen was not called"
     cmd_str = " ".join(captured_cmd[0])
@@ -547,8 +547,8 @@ def test_spawn_feature_gateway_crons_opt_in() -> None:
         return fake_proc
 
     with (
-        patch("kiro_claw.testing.harness.subprocess.Popen", side_effect=fake_popen),
-        patch("kiro_claw.testing.harness._terminate_process_group"),
+        patch("kiro_crew.testing.harness.subprocess.Popen", side_effect=fake_popen),
+        patch("kiro_crew.testing.harness._terminate_process_group"),
     ):
         with spawn_feature_gateway(fixture="empty", crons=True):
             pass
@@ -564,7 +564,7 @@ def test_parallel_spawns_get_distinct_homes_and_ports() -> None:
     """Two concurrent spawns must each get their own tmp home + port.
 
     Pins the PRD acceptance "parallel invocations don't share
-    KIROCLAW_HOME or port". Mocks Popen so each call returns a fake
+    KIROCREW_HOME or port". Mocks Popen so each call returns a fake
     process emitting a different READY payload; the harness must
     propagate the distinct ports and create separate tmp dirs.
     """
@@ -581,10 +581,10 @@ def test_parallel_spawns_get_distinct_homes_and_ports() -> None:
 
     with (
         patch(
-            "kiro_claw.testing.harness.subprocess.Popen",
+            "kiro_crew.testing.harness.subprocess.Popen",
             side_effect=lambda *a, **kw: next(procs),
         ),
-        patch("kiro_claw.testing.harness._terminate_process_group"),
+        patch("kiro_crew.testing.harness._terminate_process_group"),
     ):
         with spawn_feature_gateway(fixture="empty") as outer:
             with spawn_feature_gateway(fixture="empty") as inner:
@@ -605,9 +605,9 @@ def test_default_timeout_constant() -> None:
 
 
 @pytest.mark.skipif(
-    not os.environ.get("KIROCLAW_HARNESS_INTEGRATION"),
+    not os.environ.get("KIROCREW_HARNESS_INTEGRATION"),
     reason=(
-        "Real-gateway integration test. Set KIROCLAW_HARNESS_INTEGRATION=1 to run. "
+        "Real-gateway integration test. Set KIROCREW_HARNESS_INTEGRATION=1 to run. "
         "Requires the composable-gateway CLI flags (--test-mode + --seed) to be "
         "present on the local feature branch."
     ),

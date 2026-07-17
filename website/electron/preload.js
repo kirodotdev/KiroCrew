@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld("kiroclaw", {
+contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
   isElectron: true,
 });

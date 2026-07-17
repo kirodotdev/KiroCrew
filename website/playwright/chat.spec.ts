@@ -131,7 +131,7 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
  * Soft-stop E2E tests.
  *
  * These tests require the backend running with:
- *   KIROCLAW_HOME=.kiroclaw-dev KIROCLAW_PORT=6777
+ *   KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777
  * per TEST_README.md. If the gateway is not running, tests will fail on
  * navigation timeout — that is acceptable for offline development.
  */

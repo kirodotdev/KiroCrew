@@ -12,7 +12,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.cron_sdk import CronSDK
+from kiro_crew.apps.cron_sdk import CronSDK
 
 # ---------------------------------------------------------------------------
 # Mock CronService and CronJob

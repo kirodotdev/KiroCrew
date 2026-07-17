@@ -2,5 +2,5 @@
   "name": "greeter",
   "model": "auto",
   "description": "A friendly greeting agent",
-  "prompt": "You are a friendly assistant. Greet users warmly and help them get started with KiroClaw."
+  "prompt": "You are a friendly assistant. Greet users warmly and help them get started with KiroCrew."
 }

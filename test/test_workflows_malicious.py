@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.workflows.validate import validate
+from kiro_crew.workflows.validate import validate
 
 _CORPUS_DIR = Path(__file__).resolve().parent.parent / "tests" / "workflows" / "malicious"
 

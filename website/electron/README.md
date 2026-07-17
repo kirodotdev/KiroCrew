@@ -1,6 +1,6 @@
-# KiroClaw Desktop (Electron)
+# KiroCrew Desktop (Electron)
 
-Native macOS app wrapping the KiroClaw web dashboard. Automatically starts `kiroclaw gateway` and connects to `localhost:5476`.
+Native macOS app wrapping the KiroCrew web dashboard. Automatically starts `kirocrew gateway` and connects to `localhost:5476`.
 
 ## Quick Start
 
@@ -11,7 +11,7 @@ npx electron .
 ```
 
 The app will:
-1. Launch `kiroclaw gateway` if it's not already running
+1. Launch `kirocrew gateway` if it's not already running
 2. Show a loading screen while the backend boots
 3. Load the dashboard once ready
 
@@ -24,11 +24,11 @@ cd electron
 npm install
 npx electron-builder --mac --dir
 APP_DIR=$([ "$(uname -m)" = "arm64" ] && echo "dist/mac-arm64" || echo "dist/mac")
-sudo rm -rf /Applications/KiroClaw.app
-sudo cp -R "$APP_DIR/KiroClaw.app" /Applications/KiroClaw.app
+sudo rm -rf /Applications/KiroCrew.app
+sudo cp -R "$APP_DIR/KiroCrew.app" /Applications/KiroCrew.app
 ```
 
-Launch via Spotlight (Cmd+Space → "KiroClaw"), Dock, or `open /Applications/KiroClaw.app`.
+Launch via Spotlight (Cmd+Space → "KiroCrew"), Dock, or `open /Applications/KiroCrew.app`.
 Right-click the Dock icon → Options → Keep in Dock to pin it.
 
 ## Build `.dmg`
@@ -47,23 +47,23 @@ After pulling new code and rebuilding (`brazil-build clean && brazil-build`):
 # Rebuild and reinstall the desktop app
 cd electron && npx electron-builder --mac --dir
 APP_DIR=$([ "$(uname -m)" = "arm64" ] && echo "dist/mac-arm64" || echo "dist/mac")
-sudo rm -rf /Applications/KiroClaw.app
-sudo cp -R "$APP_DIR/KiroClaw.app" /Applications/KiroClaw.app
+sudo rm -rf /Applications/KiroCrew.app
+sudo cp -R "$APP_DIR/KiroCrew.app" /Applications/KiroCrew.app
 
 # Restart the gateway (if using Launch Agent)
-launchctl stop com.amazon.kiroclaw.gateway
-launchctl start com.amazon.kiroclaw.gateway
+launchctl stop com.amazon.kirocrew.gateway
+launchctl start com.amazon.kirocrew.gateway
 ```
 
 ## Uninstall
 
 ```bash
 # Remove the desktop app
-sudo rm -rf /Applications/KiroClaw.app
+sudo rm -rf /Applications/KiroCrew.app
 
 # Remove the Launch Agent (if configured from main README)
-launchctl unload ~/Library/LaunchAgents/com.amazon.kiroclaw.gateway.plist 2>/dev/null
-rm -f ~/Library/LaunchAgents/com.amazon.kiroclaw.gateway.plist
+launchctl unload ~/Library/LaunchAgents/com.amazon.kirocrew.gateway.plist 2>/dev/null
+rm -f ~/Library/LaunchAgents/com.amazon.kirocrew.gateway.plist
 ```
 
 ## Remote Tunnel Mode (Headless CDE)
@@ -80,7 +80,7 @@ via SSH instead of reading the local `.local_secret`.
    ```
    Or use a macOS LaunchAgent (see `docs/persistent-sessions/`).
 
-2. `kiroclaw` installed on the remote host. The default auto-discovers across common
+2. `kirocrew` installed on the remote host. The default auto-discovers across common
    install layouts — no configuration needed unless you installed somewhere unusual.
 
 ### Configure
@@ -91,14 +91,14 @@ Remote host settings are **per-port** — each tab can have its own remote host
 
 1. The modal shows which port it's configuring (e.g. "Remote host for :5476")
 2. Enter your remote host's hostname or SSH config alias (e.g. `myhost.example.com` or `clouddesk`)
-3. Leave the binary path at the default unless you installed kiroclaw somewhere
+3. Leave the binary path at the default unless you installed kirocrew somewhere
    unusual. The default tries, in order:
-   - `~/.toolbox/bin/kiroclaw` (toolbox install — recommended)
-   - `~/.local/bin/kiroclaw` (install.sh / source install)
-   - `~/.kiroclaw-app/.venv/bin/kiroclaw` (one-liner installer venv)
+   - `~/.toolbox/bin/kirocrew` (toolbox install — recommended)
+   - `~/.local/bin/kirocrew` (install.sh / source install)
+   - `~/.kirocrew-app/.venv/bin/kirocrew` (one-liner installer venv)
 4. Optionally set a **Remote port** if the gateway port on the remote host differs
    from the local tab port (default: same as tab port)
-5. Optionally set a **Remote PATH** if kiroclaw needs additional directories
+5. Optionally set a **Remote PATH** if kirocrew needs additional directories
    (default: `~/.toolbox/bin:/usr/bin:/bin`)
 6. Click Save. Leave hostname empty to clear (use local token for that port).
 
@@ -106,15 +106,15 @@ Remote host settings are **per-port** — each tab can have its own remote host
 - Tab 1 on `:5476` — local gateway, no remote host needed
 - Tab 2 on `:7778` — SSH tunnel to another host, remote host configured
 
-The app will SSH into the configured remote host and run `kiroclaw token` on
+The app will SSH into the configured remote host and run `kirocrew token` on
 each launch to get a fresh JWT — no manual paste required.
 
 ### Token flow (per tab)
 
 ```
-1. Try local ~/.kiroclaw/.local_secret  →  /api/token/local on tab's port
+1. Try local ~/.kirocrew/.local_secret  →  /api/token/local on tab's port
 2. If remote host configured for this port:
-   SSH: export PATH=<remotePath> KIROCLAW_PORT=<port>; <bin> token
+   SSH: export PATH=<remotePath> KIROCREW_PORT=<port>; <bin> token
 3. Fallback: show manual token prompt
 ```
 
@@ -135,14 +135,14 @@ automatically. Names are stored in `remoteHosts[port].defaultName`.
 ### Config file
 
 Settings are persisted via `electron-store` in
-`~/Library/Application Support/KiroClaw/config.json`:
+`~/Library/Application Support/KiroCrew/config.json`:
 
 ```json
 {
   "remoteHosts": {
     "5476": {
       "host": "myhost.example.com",
-      "binPath": "~/.toolbox/bin/kiroclaw",
+      "binPath": "~/.toolbox/bin/kirocrew",
       "remotePort": "",
       "remotePath": "",
       "defaultName": "Cloud"
@@ -159,10 +159,10 @@ Open via **Tab menu → Open Config File** or tray menu.
 | Issue | Fix |
 |-------|-----|
 | "SSH token fetch failed" | Check `ssh YOUR_HOST` works from Terminal |
-| "kiroclaw binary not found in any of …" | Install kiroclaw (`pip install kiroclaw`), or set a custom path |
+| "kirocrew binary not found in any of …" | Install kirocrew (`pip install kirocrew`), or set a custom path |
 | "command not found: kiro-cli" | Set Remote PATH to include `~/.toolbox/bin` (default does this) |
 | "command not found: dirname" | Remote PATH missing `/usr/bin` — reset to default or add it |
-| Token fetched but 403 | Gateway may need restart — `ssh host systemctl --user restart kiroclaw` |
+| Token fetched but 403 | Gateway may need restart — `ssh host systemctl --user restart kirocrew` |
 | Wrong tab refreshed | Focus the target tab first (use Tab menu, not tray) |
 
 ## Notes

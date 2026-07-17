@@ -3,7 +3,7 @@ import { urlTransform } from '../utils/urlTransform'
 
 describe('urlTransform', () => {
   it('allows vscode remote SSH URL', () => {
-    const url = 'vscode://vscode-remote/ssh-remote+dev-host.example.com/home/user/workspace/KiroClaw'
+    const url = 'vscode://vscode-remote/ssh-remote+dev-host.example.com/home/user/workspace/KiroCrew'
     expect(urlTransform(url)).toBe(url)
   })
 

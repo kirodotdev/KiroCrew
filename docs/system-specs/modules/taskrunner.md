@@ -17,7 +17,7 @@ exhaustion.
 
 ## Module Architecture
 
-The task runner is split into an orchestrator plus 4 focused helper modules under `src/kiro_claw/`:
+The task runner is split into an orchestrator plus 4 focused helper modules under `src/kiro_crew/`:
 
 ```
 taskrunner.py        (orchestrator, ~1270 lines)
@@ -52,7 +52,7 @@ The domain model was renamed `Step` → `Task`, `StepStatus` → `TaskStatus`, a
 `TaskRun` → `Project`. `taskrunner.py` re-exports the real symbols from
 `task_models` and also defines back-compat aliases so existing imports keep working:
 ```python
-from kiro_claw.task_models import Task, TaskStatus, WorkingMemory, Project, NotifyCallback  # noqa: F401
+from kiro_crew.task_models import Task, TaskStatus, WorkingMemory, Project, NotifyCallback  # noqa: F401
 
 # ── Backward-compat re-exports ──
 Step = Task
@@ -60,7 +60,7 @@ StepStatus = TaskStatus
 TaskRun = Project
 ```
 
-These files import from `kiro_claw.taskrunner` and require no changes:
+These files import from `kiro_crew.taskrunner` and require no changes:
 - `dashboard/handlers.py` → `StepStatus`, `TaskRun`
 - `dashboard/server.py` → `TaskRunner`
 - `dashboard/state.py` → `TaskRunner`
@@ -125,7 +125,7 @@ dashboard_sources = {"text", "spec", "file", "chat", "dashboard"}
 | Dashboard UI | `"dashboard"` | ✅ |
 | Slack `run <path>` | `"chat"` | ✅ |
 | MCP `task_run` tool | `"file"` (default) | ✅ |
-| CLI `kiroclaw run` | `"file"` (default) | ✅ |
+| CLI `kirocrew run` | `"file"` (default) | ✅ |
 | `plan()` API | `"text"`, `"spec"`, `"file"` | ✅ |
 | Cron job | must pass `source="cron"` | ❌ (filtered out) |
 
@@ -167,7 +167,7 @@ class Project:
     task_id: str
     work_dir: str
     last_task_time: float  # tracks activity for watchdog
-    branch_name: str       # git branch for task (e.g. kiroclaw/task/{task_id})
+    branch_name: str       # git branch for task (e.g. kirocrew/task/{task_id})
     base_branch: str       # original branch before task started
     commit_hashes: list[str]  # per-step commit SHAs
     worktree_path: str     # git worktree path (empty if git init)
@@ -262,7 +262,7 @@ Loaded on `__init__` — survives gateway restarts.
 
 | Path | Entry Point | Behavior |
 |------|-------------|----------|
-| CLI | `kiroclaw run TASK.md` | Blocking, stdout progress, `--no-test` flag |
+| CLI | `kirocrew run TASK.md` | Blocking, stdout progress, `--no-test` flag |
 | Slack | `run <path>`, `run status`, `run cancel` | Keyword interception in handler |
 | Dashboard | REST API + Tasks UI panel | See API Endpoints below |
 
@@ -308,7 +308,7 @@ Loaded on `__init__` — survives gateway restarts.
       "status": "passed", "error": "", "result": "...(up to 2K)...", "attempts": 1
     }],
     "work_dir": "/path/to/work/dir",
-    "branch_name": "kiroclaw/task/my-task_1771822344"
+    "branch_name": "kirocrew/task/my-task_1771822344"
   }]
 }
 ```
@@ -362,7 +362,7 @@ All notifications prefixed with `[spec_name]` via `_notify(title, body, run=run)
 Each task runs on an isolated git branch via `git_coord.py`:
 
 - **Existing repo**: `git worktree add` creates isolated working directory; user's checkout untouched
-- **No repo**: `git init` in work_dir, then `git checkout -b kiroclaw/task/{task_id}`
+- **No repo**: `git init` in work_dir, then `git checkout -b kirocrew/task/{task_id}`
 - **Per-step commits**: `git add -A && git commit` after each passed step
 - **Revert on failure**: `git reset --hard HEAD~1` when review fails (before retry)
 - **State summary**: `git log --oneline` + `git diff --stat` injected into step prompts

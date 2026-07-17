@@ -1,0 +1,38 @@
+{
+  "name": "workflows",
+  "version": "1.0.0",
+  "displayName": "Workflows",
+  "description": "Author, run, and watch dynamic workflows — agent-authored Python scripts that orchestrate KiroCrew agents with a live phase/progress view.",
+  "author": "zedmor",
+  "tags": [
+    "workflows",
+    "orchestration",
+    "automation",
+    "agents"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/apps/workflows/api"
+    ],
+    "events": [
+      "workflow_run_event"
+    ]
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/workflows",
+        "label": "Workflows",
+        "icon": "Workflow"
+      }
+    ]
+  },
+  "backend": {
+    "entryPoint": "kiro_crew.apps.builtins.workflows.server",
+    "port": "auto",
+    "healthCheck": "/health"
+  },
+  "heroImage": "/apps/workflows/ui/hero-light.svg",
+  "heroImageDark": "/apps/workflows/ui/hero-dark.svg"
+}

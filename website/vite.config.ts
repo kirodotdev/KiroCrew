@@ -8,7 +8,7 @@ import path from 'path'
 import { TAILWIND_RUNTIME_PATH, TAILWIND_RUNTIME_SRC } from './src/lib/vendorPaths'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
-const backendPort = process.env.KIROCLAW_PORT || 5476
+const backendPort = process.env.KIROCREW_PORT || 5476
 
 /**
  * Dev-only plugin: when the browser hits `/?token=xxx`, proxy that request
@@ -17,7 +17,7 @@ const backendPort = process.env.KIROCLAW_PORT || 5476
  */
 function tokenProxyPlugin(): Plugin {
   return {
-    name: 'kiroclaw-token-proxy',
+    name: 'kirocrew-token-proxy',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const url = new URL(req.url || '/', `http://localhost:3000`)
@@ -51,13 +51,13 @@ function tokenProxyPlugin(): Plugin {
  * that maps bare module specifiers to vendor stubs in /vendor/*.mjs.
  *
  * The stubs are hand-written files in public/vendor/ that read from
- * window.__kiroclaw_modules (registered by shared-modules.ts at startup).
+ * window.__kirocrew_modules (registered by shared-modules.ts at startup).
  * This approach is bundler-agnostic — stubs never go through Rollup,
  * so exports are never renamed or tree-shaken.
  */
 function appImportMapPlugin(): Plugin {
   return {
-    name: 'kiroclaw-app-importmap',
+    name: 'kirocrew-app-importmap',
     enforce: 'post',
     transformIndexHtml: {
       order: 'post',
@@ -68,6 +68,10 @@ function appImportMapPlugin(): Plugin {
             'react-dom': '/vendor/react-dom.mjs',
             'react-dom/client': '/vendor/react-dom-client.mjs',
             'react/jsx-runtime': '/vendor/react-jsx-runtime.mjs',
+            '@kirocrew/app-sdk': '/vendor/kirocrew-app-sdk.mjs',
+            '@kirocrew/app-sdk/ui': '/vendor/kirocrew-ui.mjs',
+            // Legacy specifiers (KiroClaw → KiroCrew): keep already-installed app
+            // bundles built against the old SDK resolving to the same host stubs.
             '@kiroclaw/app-sdk': '/vendor/kiroclaw-app-sdk.mjs',
             '@kiroclaw/app-sdk/ui': '/vendor/kiroclaw-ui.mjs',
             'lucide-react': '/vendor/lucide-react.mjs',
@@ -93,7 +97,7 @@ function tailwindRuntimePlugin(): Plugin {
   const RUNTIME_SRC = TAILWIND_RUNTIME_SRC
   const SERVE_PATH = TAILWIND_RUNTIME_PATH
   return {
-    name: 'kiroclaw-tailwind-runtime',
+    name: 'kirocrew-tailwind-runtime',
     // Dev: the build output doesn't exist, so serve straight from node_modules.
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
@@ -170,7 +174,7 @@ export default defineConfig({
         ws: true,
         changeOrigin: true, // Backend validates Host header for CSRF; without this, dev proxy sends localhost:3000
       },
-      // Proxy app UI bundle file requests to the backend (serves from ~/.kiroclaw/apps/)
+      // Proxy app UI bundle file requests to the backend (serves from ~/.kirocrew/apps/)
       // Only matches /apps/{name}/ui/* — not /apps (React Router page)
       '^/apps/[^/]+/ui/': {
         target: `http://localhost:${backendPort}`,
@@ -185,7 +189,7 @@ export default defineConfig({
       // in dev mode, Vite serves them directly from src/vendor/ via the
       // multi-entry input config, so no proxy needed.
       '/logo.png': `http://localhost:${backendPort}`,
-      '/static/kiroclaw-logo.png': `http://localhost:${backendPort}`,
+      '/static/kirocrew-logo.png': `http://localhost:${backendPort}`,
     },
   },
   build: {

@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.slack.format import (
+from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     build_link_dashboard_button,
     split_message,
 )
-from kiro_claw.slack.handler import _append_footer_actions
+from kiro_crew.slack.handler import _append_footer_actions
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. format.py — LINK_DASHBOARD_ACTION + build_link_dashboard_button
@@ -131,7 +131,7 @@ def _make_orch_for_link() -> MagicMock:
 
 @pytest.fixture
 def link_orch(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    from kiro_claw.slack import interactions
+    from kiro_crew.slack import interactions
 
     orch = _make_orch_for_link()
     monkeypatch.setattr(interactions, "_orch", orch)
@@ -141,7 +141,7 @@ def link_orch(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_link_dashboard_creates_slot_and_imports(link_orch: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
-    from kiro_claw.slack import interactions
+    from kiro_crew.slack import interactions
 
     mock_sel_inst = MagicMock()
     monkeypatch.setattr(interactions, "sel", lambda: mock_sel_inst)
@@ -155,7 +155,7 @@ async def test_link_dashboard_creates_slot_and_imports(link_orch: MagicMock, mon
         "response_url": "",
     }
 
-    with patch("kiro_claw.dashboard.chat._save_slot_to_history"):
+    with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
         await interactions.dispatch(payload)
 
     ds = link_orch.dashboard_state
@@ -172,7 +172,7 @@ async def test_link_dashboard_creates_slot_and_imports(link_orch: MagicMock, mon
 @pytest.mark.asyncio
 async def test_link_dashboard_null_slot_returns(link_orch: MagicMock) -> None:
     """When _import_thread_to_slot returns None, handler should return without crash."""
-    from kiro_claw.slack import interactions
+    from kiro_crew.slack import interactions
 
     link_orch.slack.fetch_thread_replies = AsyncMock(return_value=[])
 
@@ -191,7 +191,7 @@ async def test_link_dashboard_null_slot_returns(link_orch: MagicMock) -> None:
 
 @pytest.mark.asyncio
 async def test_link_dashboard_no_thread_ts_returns(link_orch: MagicMock) -> None:
-    from kiro_claw.slack import interactions
+    from kiro_crew.slack import interactions
 
     payload = {
         "type": "block_actions",
@@ -207,7 +207,7 @@ async def test_link_dashboard_no_thread_ts_returns(link_orch: MagicMock) -> None
 
 @pytest.mark.asyncio
 async def test_link_dashboard_no_dashboard_state_returns(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kiro_claw.slack import interactions
+    from kiro_crew.slack import interactions
 
     orch = MagicMock()
     orch.slack = MagicMock()
@@ -229,7 +229,7 @@ async def test_link_dashboard_no_dashboard_state_returns(monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_link_dashboard_skips_link_command_messages(link_orch: MagicMock) -> None:
     """Messages starting with '!link-to-dashboard' should be skipped."""
-    from kiro_claw.slack import interactions
+    from kiro_crew.slack import interactions
 
     link_orch.slack.fetch_thread_replies = AsyncMock(
         return_value=[
@@ -246,7 +246,7 @@ async def test_link_dashboard_skips_link_command_messages(link_orch: MagicMock) 
         "actions": [{"action_id": "mc_link_dashboard", "value": ""}],
         "response_url": "",
     }
-    with patch("kiro_claw.dashboard.chat._save_slot_to_history"):
+    with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
         await interactions.dispatch(payload)
 
     slot = link_orch.dashboard_state.get_or_create_slot.return_value
@@ -257,7 +257,7 @@ async def test_link_dashboard_skips_link_command_messages(link_orch: MagicMock) 
 
 @pytest.mark.asyncio
 async def test_link_dashboard_unauthorized_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kiro_claw.slack import interactions
+    from kiro_crew.slack import interactions
 
     orch = _make_orch_for_link()
     monkeypatch.setattr(interactions, "_orch", orch)

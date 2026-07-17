@@ -6,14 +6,14 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.mcp_core import _call_tool
+from kiro_crew.mcp_core import _call_tool
 
 
 class TestSpawnRunSessionKeyRouting:
     def test_uses_env_var_when_set(self):
-        """KIROCLAW_SESSION_KEY env var is used as parent_session."""
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "sess-from-env"}
+        """KIROCREW_SESSION_KEY env var is used as parent_session."""
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "sess-from-env"}
         ):
             mock_post.return_value = {"id": "agent1"}
 
@@ -25,16 +25,16 @@ class TestSpawnRunSessionKeyRouting:
     def test_falls_back_to_pid_file(self, tmp_path):
         import os
 
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch(
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch(
             "pathlib.Path.home", return_value=tmp_path / "fake_home"
         ):
             env = os.environ.copy()
-            env.pop("KIROCLAW_SESSION_KEY", None)
-            env.pop("KIROCLAW_HOME", None)  # ensure config_dir() uses patched Path.home()
+            env.pop("KIROCREW_SESSION_KEY", None)
+            env.pop("KIROCREW_HOME", None)  # ensure config_dir() uses patched Path.home()
             with patch.dict("os.environ", env, clear=True):
-                kiroclaw_dir = tmp_path / "fake_home" / ".kiroclaw"
-                kiroclaw_dir.mkdir(parents=True)
-                (kiroclaw_dir / f"session_pid_{os.getppid()}.txt").write_text("sess-from-pid")
+                kirocrew_dir = tmp_path / "fake_home" / ".kirocrew"
+                kirocrew_dir.mkdir(parents=True)
+                (kirocrew_dir / f"session_pid_{os.getppid()}.txt").write_text("sess-from-pid")
 
                 mock_post.return_value = {"id": "agent1"}
                 _call_tool("spawn_run", {"task": "test"})
@@ -45,7 +45,7 @@ class TestSpawnRunSessionKeyRouting:
 class TestSendMessageUnfurlForwarding:
     def test_unfurl_params_forwarded_in_payload(self):
         """unfurl_links and unfurl_media are forwarded to /api/send-message."""
-        with patch("kiro_claw.mcp_core._post") as mock_post:
+        with patch("kiro_crew.mcp_core._post") as mock_post:
             mock_post.return_value = {"ok": True}
 
             _call_tool(
@@ -63,7 +63,7 @@ class TestSendMessageUnfurlForwarding:
 
     def test_unfurl_params_omitted_when_absent(self):
         """unfurl params are not in payload when not provided."""
-        with patch("kiro_claw.mcp_core._post") as mock_post:
+        with patch("kiro_crew.mcp_core._post") as mock_post:
             mock_post.return_value = {"ok": True}
 
             _call_tool("send_message", {"text": "test"})
@@ -80,15 +80,15 @@ class TestSendMessageCronSession:
 
     @pytest.fixture(autouse=True)
     def _permit_messaging(self, monkeypatch):
-        """Stub governance vets so a real ~/.kiroclaw/profiles/cron.json that
+        """Stub governance vets so a real ~/.kirocrew/profiles/cron.json that
         disables messaging doesn't block these payload-routing tests."""
-        monkeypatch.setattr("kiro_claw.mcp_core._vet_messaging_governance", lambda _sk: None)
-        monkeypatch.setattr("kiro_claw.mcp_core._vet_channel_governance", lambda _sk, _t: None)
+        monkeypatch.setattr("kiro_crew.mcp_core._vet_messaging_governance", lambda _sk: None)
+        monkeypatch.setattr("kiro_crew.mcp_core._vet_channel_governance", lambda _sk, _t: None)
 
     def test_default_notification_only(self):
         """Non-cron bare send_message(text=...) → no session in payload, notification only."""
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "dashboard:chat-1"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "dashboard:chat-1"}
         ):
             mock_post.return_value = {"ok": True}
             result = _call_tool("send_message", {"text": "build passed"})
@@ -101,8 +101,8 @@ class TestSendMessageCronSession:
     def test_cron_bare_send_attaches_caller_session(self):
         """A cron bare send attaches caller_session so the gateway can apply
         the cron→Slack default, and reports the Slack landing site."""
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "cron:abc123"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
         ):
             mock_post.return_value = {"ok": True, "slack": True, "delivered_to": "slack", "ts": "9.9"}
             result = _call_tool("send_message", {"text": "sweep done"})
@@ -115,8 +115,8 @@ class TestSendMessageCronSession:
     def test_cron_send_notification_only_warns(self):
         """When a cron send only reaches the dashboard (no Slack), surface a
         loud warning instead of a success string."""
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "cron:abc123"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
         ):
             mock_post.return_value = {"ok": True, "delivered_to": "notification"}
             result = _call_tool("send_message", {"text": "sweep done"})
@@ -126,8 +126,8 @@ class TestSendMessageCronSession:
 
     def test_explicit_session_origin_passes_through(self):
         """LLM explicitly passes session=origin → origin in payload."""
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "cron:abc123"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
         ):
             mock_post.return_value = {"ok": True}
             _call_tool("send_message", {"text": "hi", "session": "origin"})
@@ -137,8 +137,8 @@ class TestSendMessageCronSession:
 
     def test_explicit_session_slack(self):
         """session='slack' routes to Slack DM + notification."""
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "cron:abc123"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
         ):
             mock_post.return_value = {"ok": True, "slack": True, "ts": "123.456"}
             result = _call_tool("send_message", {"text": "hi", "session": "slack"})
@@ -149,8 +149,8 @@ class TestSendMessageCronSession:
 
     def test_invalid_session_value_rejected(self):
         """session must be 'origin' or 'slack'; other values rejected."""
-        with patch("kiro_claw.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCLAW_SESSION_KEY": "cron:abc123"}
+        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
+            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
         ):
             result = _call_tool("send_message", {"text": "hi", "session": "bogus"})
             assert "session" in result.lower() or "error" in result.lower()
@@ -161,12 +161,12 @@ class TestKnowledgeSearchCache:
     """_get_knowledge_search reuses store+embedder until the DB/config changes."""
 
     def _reset(self):
-        import kiro_claw.mcp_core as mc
+        import kiro_crew.mcp_core as mc
 
         mc._KNOWLEDGE_CACHE = None
 
     def test_reuses_store_when_db_unchanged(self, tmp_path):
-        from kiro_claw.mcp_core import _get_knowledge_search
+        from kiro_crew.mcp_core import _get_knowledge_search
 
         self._reset()
         db_path = tmp_path / "knowledge.db"
@@ -180,7 +180,7 @@ class TestKnowledgeSearchCache:
         self._reset()
 
     def test_rebuilds_after_ingest(self, tmp_path):
-        from kiro_claw.mcp_core import _get_knowledge_search
+        from kiro_crew.mcp_core import _get_knowledge_search
 
         self._reset()
         db_path = tmp_path / "knowledge.db"
@@ -198,7 +198,7 @@ class TestKnowledgeSearchCache:
         self._reset()
 
     def test_config_change_rebuilds(self, tmp_path):
-        from kiro_claw.mcp_core import _get_knowledge_search
+        from kiro_crew.mcp_core import _get_knowledge_search
 
         self._reset()
         db_path = tmp_path / "knowledge.db"
@@ -217,8 +217,8 @@ class TestKnowledgeSearchCache:
     def test_failed_rebuild_keeps_old_store_usable(self, tmp_path, monkeypatch):
         """If a rebuild's KnowledgeStore() raises, the cached store must NOT be
         left with a closed connection — the old store stays usable."""
-        import kiro_claw.mcp_core as mc
-        from kiro_claw.mcp_core import _get_knowledge_search
+        import kiro_crew.mcp_core as mc
+        from kiro_crew.mcp_core import _get_knowledge_search
 
         self._reset()
         db_path = tmp_path / "knowledge.db"
@@ -245,13 +245,13 @@ class TestSessionKeyHeaderError:
     """The header-safety guard for session keys (Mesh-2241)."""
 
     def test_ascii_key_is_header_safe(self):
-        from kiro_claw.mcp_core import _session_key_header_error
+        from kiro_crew.mcp_core import _session_key_header_error
 
         assert _session_key_header_error("dashboard:Plain ASCII Title") is None
         assert _session_key_header_error("") is None
 
     def test_non_latin1_key_returns_actionable_error(self):
-        from kiro_claw.mcp_core import _session_key_header_error
+        from kiro_crew.mcp_core import _session_key_header_error
 
         # Em-dash (U+2014) and emoji are non-latin-1 and crash http.client.
         for sk in ("dashboard:A — B", "dashboard:done \U0001f680"):
@@ -260,13 +260,13 @@ class TestSessionKeyHeaderError:
             assert "rename" in err.lower()
 
     def test_latin1_supplement_is_allowed(self):
-        from kiro_claw.mcp_core import _session_key_header_error
+        from kiro_crew.mcp_core import _session_key_header_error
 
         # Chars in latin-1 range (e.g. é, U+00E9) encode fine — not flagged.
         assert _session_key_header_error("dashboard:café") is None
 
     def test_post_short_circuits_on_non_latin1_key(self):
-        from kiro_claw import mcp_core
+        from kiro_crew import mcp_core
 
         # The actual user-facing fix path: a non-latin-1 resolved key makes
         # _post early-return the error dict WITHOUT issuing the HTTP request.

@@ -1,12 +1,12 @@
-"""Tests for kiro_claw.metrics.provider — consent gate + recorder singleton."""
+"""Tests for kiro_crew.metrics.provider — consent gate + recorder singleton."""
 
-from kiro_claw.config.loader import KiroClawConfig, TelemetryConfig
-from kiro_claw.metrics.provider import get_recorder, reset_for_testing
+from kiro_crew.config.loader import KiroCrewConfig, TelemetryConfig
+from kiro_crew.metrics.provider import get_recorder, reset_for_testing
 
 
 def _patch_config(monkeypatch, **tel_kwargs):
-    fake = KiroClawConfig(telemetry=TelemetryConfig(**tel_kwargs))
-    monkeypatch.setattr(KiroClawConfig, "load", classmethod(lambda cls: fake))
+    fake = KiroCrewConfig(telemetry=TelemetryConfig(**tel_kwargs))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
 
 
 def test_disabled_by_default(monkeypatch):
@@ -30,7 +30,7 @@ def test_enabled_builds_live_recorder(tmp_path, monkeypatch):
         rec = get_recorder()
         assert rec.enabled is True
         # Routes through a real MeterProvider without raising.
-        rec.histogram("kiroclaw.session.startup.duration", 1.0, unit="ms")
+        rec.histogram("kirocrew.session.startup.duration", 1.0, unit="ms")
     finally:
         reset_for_testing()
 

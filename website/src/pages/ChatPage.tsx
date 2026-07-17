@@ -110,10 +110,10 @@ import SlotTagPopover from '../components/SlotTagPopover'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
 
 const APPROVAL_SEGMENTS = [
-  { key: 'normal' as const, label: 'Normal', icon: <ShieldCheck size={13} />, tooltip: 'KiroClaw asks you before doing anything', desc: 'KiroClaw checks with you before doing anything' },
-  { key: 'trust_reads' as const, label: 'Reads', icon: <BookOpen size={13} />, tooltip: 'KiroClaw looks things up on its own, but asks before making changes', desc: 'KiroClaw looks things up on its own, but asks before making any changes' },
-  { key: 'trust' as const, label: 'Trust', icon: <Handshake size={13} />, tooltip: 'In this chat, KiroClaw works without asking you first', desc: 'In this chat, KiroClaw works without asking you first' },
-  { key: 'yolo' as const, label: 'YOLO', icon: <Rocket size={13} />, tooltip: 'In every chat, KiroClaw works without asking you first', desc: 'In every chat, KiroClaw works without asking you first' },
+  { key: 'normal' as const, label: 'Normal', icon: <ShieldCheck size={13} />, tooltip: 'KiroCrew asks you before doing anything', desc: 'KiroCrew checks with you before doing anything' },
+  { key: 'trust_reads' as const, label: 'Reads', icon: <BookOpen size={13} />, tooltip: 'KiroCrew looks things up on its own, but asks before making changes', desc: 'KiroCrew looks things up on its own, but asks before making any changes' },
+  { key: 'trust' as const, label: 'Trust', icon: <Handshake size={13} />, tooltip: 'In this chat, KiroCrew works without asking you first', desc: 'In this chat, KiroCrew works without asking you first' },
+  { key: 'yolo' as const, label: 'YOLO', icon: <Rocket size={13} />, tooltip: 'In every chat, KiroCrew works without asking you first', desc: 'In every chat, KiroCrew works without asking you first' },
 ]
 import { AnimatePresence, motion } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
@@ -1140,8 +1140,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // it can open the file natively in the IDE editor. If the plugin
     // handles file opens, skip the dashboard's DiffPanel — the user wanted
     // IDE-native, not in-dashboard.
-    try { window.dispatchEvent(new CustomEvent('kiroclaw-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
-    if ((window as unknown as { __kiroclawPluginHandlesFiles?: boolean }).__kiroclawPluginHandlesFiles) return
+    try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
+    if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
     try {
       const [{ text, ok }] = await Promise.all([
         queryClient.fetchQuery({
@@ -1189,11 +1189,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // diff viewer (with syntax highlighting). Skip the dashboard's
     // own DiffPanel in that case — the plugin sets the flag on page load.
     try {
-      window.dispatchEvent(new CustomEvent('kiroclaw-file-open', {
+      window.dispatchEvent(new CustomEvent('kirocrew-file-open', {
         detail: { path: filePath, before: original, after: modified },
       }))
     } catch { /* ignore */ }
-    if ((window as unknown as { __kiroclawPluginHandlesFiles?: boolean }).__kiroclawPluginHandlesFiles) return
+    if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
     panel.closePanel()
     if (activityOpen) dispatch(toggleActivity())
     diffPanel.openDiff(filePath, modified, original)

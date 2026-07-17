@@ -1,6 +1,6 @@
 """Unit tests for mcp_playwright_proxy — compression, framing, error handling."""
 
-from kiro_claw.mcp_playwright_proxy import (
+from kiro_crew.mcp_playwright_proxy import (
     _compress_to_outline,
     _is_accessibility_tree,
     _maybe_compress_response,

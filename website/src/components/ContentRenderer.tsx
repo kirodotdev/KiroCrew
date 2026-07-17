@@ -18,7 +18,7 @@ import DOMPurify from 'dompurify'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, SvgViewer } from './FileRenderers'
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
-import { kiroclawDark, kiroclawLight } from './monacoTheme'
+import { kirocrewDark, kirocrewLight } from './monacoTheme'
 
 // Route through ensureMonacoLocal() so Monaco loads from the locally-bundled
 // package instead of the default cdn.jsdelivr.net loader (blocked by CSP
@@ -80,12 +80,12 @@ export function CodeEditor({
           onChange={v => onChange(v ?? '')}
           beforeMount={(monaco) => {
             if (!themesRegistered) {
-              monaco.editor.defineTheme('kiroclaw-dark', kiroclawDark)
-              monaco.editor.defineTheme('kiroclaw-light', kiroclawLight)
+              monaco.editor.defineTheme('kirocrew-dark', kirocrewDark)
+              monaco.editor.defineTheme('kirocrew-light', kirocrewLight)
               themesRegistered = true
             }
           }}
-          theme={dark ? 'kiroclaw-dark' : 'kiroclaw-light'}
+          theme={dark ? 'kirocrew-dark' : 'kirocrew-light'}
           options={{
             minimap: { enabled: false },
             scrollBeyondLastLine: false,

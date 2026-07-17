@@ -1,7 +1,7 @@
-# KiroClaw Desktop App
+# KiroCrew Desktop App
 
 The desktop app is an [Electron](https://www.electronjs.org/) shell that wraps
-the KiroClaw web dashboard and embeds a **self-contained Python backend**. The
+the KiroCrew web dashboard and embeds a **self-contained Python backend**. The
 backend uses a [python-build-standalone](https://github.com/indygreg/python-build-standalone)
 (PBS) interpreter with all dependencies installed via `uv`/`pip` into the bundled
 interpreter — end users need **no** Python, pip, npm, or node. They just
@@ -20,15 +20,15 @@ Output lands in **`website/electron/dist/`**:
 
 | Platform | Artifact |
 |----------|----------|
-| macOS | `KiroClaw-*.dmg` |
-| Linux | `KiroClaw-*.AppImage` |
+| macOS | `KiroCrew-*.dmg` |
+| Linux | `KiroCrew-*.AppImage` |
 
 The artifact for the host OS is built (DMG on macOS, AppImage on Linux). The
 electron-builder configuration lives in
 [`website/electron/package.json`](../website/electron/package.json):
 
-- **appId:** `dev.kiroclaw.desktop`
-- **productName:** `KiroClaw`
+- **appId:** `dev.kirocrew.desktop`
+- **productName:** `KiroCrew`
 - mac target: `dmg` (category `public.app-category.developer-tools`)
 - linux target: `AppImage` (category `Development`)
 
@@ -74,26 +74,26 @@ cd website && npm ci && npm run build && cd ..
 
 # 1. arm64 (native):
 SKIP_FRONTEND=1 bash packaging/build-desktop.sh
-#    → website/electron/dist/KiroClaw-<version>-arm64.dmg
+#    → website/electron/dist/KiroCrew-<version>-arm64.dmg
 
 # 2. x86_64 (under Rosetta): uv installs the x86_64 PBS interpreter.
 arch -x86_64 uv python install cpython-3.12
 # Then run the build script under Rosetta to pick up the x86_64 interpreter:
 arch -x86_64 bash -c 'SKIP_FRONTEND=1 bash packaging/build-desktop.sh'
-#    → website/electron/dist/KiroClaw-<version>.dmg (x64)
+#    → website/electron/dist/KiroCrew-<version>.dmg (x64)
 ```
 
-electron-builder names the host-arch (arm64) DMG `KiroClaw-<v>-arm64.dmg` and the
-x64 DMG `KiroClaw-<v>.dmg` (no suffix), so the two coexist in
+electron-builder names the host-arch (arm64) DMG `KiroCrew-<v>-arm64.dmg` and the
+x64 DMG `KiroCrew-<v>.dmg` (no suffix), so the two coexist in
 `website/electron/dist/`. Verify each actually carries the matching backend:
 
 ```bash
 # The embedded backend's arch MUST match the DMG's arch (an arm64 DMG carrying
 # an x86_64 backend would crash on launch). Mount and check:
-hdiutil attach -nobrowse -readonly website/electron/dist/KiroClaw-<v>-arm64.dmg
-file "/Volumes/KiroClaw <v>-arm64/KiroClaw.app/Contents/Resources/backend-dist/kiroclaw-backend/kiroclaw-backend"
+hdiutil attach -nobrowse -readonly website/electron/dist/KiroCrew-<v>-arm64.dmg
+file "/Volumes/KiroCrew <v>-arm64/KiroCrew.app/Contents/Resources/backend-dist/kirocrew-backend/kirocrew-backend"
 #   → …executable arm64
-hdiutil detach "/Volumes/KiroClaw <v>-arm64"
+hdiutil detach "/Volumes/KiroCrew <v>-arm64"
 ```
 
 > CI is still the cleaner path for releases (`macos-14` for arm64, `macos-13`
@@ -103,13 +103,13 @@ hdiutil detach "/Volumes/KiroClaw <v>-arm64"
 ### Refreshing / cleaning the DMGs
 
 The `dist/` directory is **not** cleaned between builds, so old artifacts pile up
-(e.g. a `KiroClaw-1.0.0.dmg` from before a version bump, or a stale `mac/`
+(e.g. a `KiroCrew-1.0.0.dmg` from before a version bump, or a stale `mac/`
 app-staging dir). After a version change or a re-build, remove the stale ones so
 only the current set remains:
 
 ```bash
 cd website/electron/dist
-rm -f KiroClaw-<old-version>*.dmg            # stale DMGs from a prior version
+rm -f KiroCrew-<old-version>*.dmg            # stale DMGs from a prior version
 rm -rf mac mac-arm64                          # app-staging dirs (regenerated each build)
 rm -f builder-debug.yml
 ```
@@ -136,7 +136,7 @@ pipeline end-to-end:
 ```
 1. Build the React dashboard (npm)                    → website/dist
 2. Provision a python-build-standalone interpreter    → via uv python install
-3. pip-install kiro_claw + deps into the bundled interpreter
+3. pip-install kiro_crew + deps into the bundled interpreter
 4. Stage the dashboard into the package's static dir
 5. Prune caches/tests/unused stdlib to shrink bundle
 6. Package with electron-builder                      → website/electron/dist/ (DMG / AppImage)
@@ -145,18 +145,18 @@ pipeline end-to-end:
 Step by step:
 
 1. **Frontend** — in `website/`, runs `npm ci` (or `npm install`) + `npm run
-   build`, then copies `website/dist` into `src/kiro_claw/static/dist`. The
+   build`, then copies `website/dist` into `src/kiro_crew/static/dist`. The
    script aborts if `website/dist/index.html` is missing.
 2. **PBS interpreter** — uses `uv python install cpython-3.12` to provision a
    self-contained python-build-standalone interpreter. PBS interpreters use
    `@executable_path`-relative dylib references, making the bundle portable
    across machines without needing the same system Python.
 3. **Install into bundle** — copies the PBS interpreter into
-   `website/electron/backend-dist/kiroclaw-backend/`, removes the
+   `website/electron/backend-dist/kirocrew-backend/`, removes the
    `EXTERNALLY-MANAGED` marker, then runs `pip install` with
    `PYTHONNOUSERSITE=1` to force the full closure into the bundle.
 4. **Stage dashboard** — copies the built SPA into the bundled
-   `kiro_claw/static/dist` inside site-packages.
+   `kiro_crew/static/dist` inside site-packages.
 5. **Prune** — removes `__pycache__`, test dirs, and unused stdlib modules
    (tkinter, idlelib, etc.) to shrink the bundle.
 6. **Package** — in `website/electron/`, runs electron-builder to produce the
@@ -174,18 +174,18 @@ The script honors two environment flags:
 ## The bundled backend (python-build-standalone)
 
 The build produces a self-contained Python interpreter with all dependencies
-installed, located at `website/electron/backend-dist/kiroclaw-backend/`. Key
+installed, located at `website/electron/backend-dist/kirocrew-backend/`. Key
 details:
 
 - **Interpreter** is a python-build-standalone CPython 3.12 with `@executable_path`-
   relative dylib references (genuinely portable, no system Python dependency).
-- **Entry point** is `bin/kiroclaw` — a shell script that execs
-  `bin/python3.12 -s -m kiro_claw "$@"`.
+- **Entry point** is `bin/kirocrew` — a shell script that execs
+  `bin/python3.12 -s -m kiro_crew "$@"`.
 - **Self-containment verified** — the build script runs
-  `PYTHONNOUSERSITE=1 bin/python3.12 -m kiro_claw --version` to catch any
+  `PYTHONNOUSERSITE=1 bin/python3.12 -m kiro_crew --version` to catch any
   missing dependency before packaging.
 - **Dashboard bundled** — the SPA is staged into
-  `lib/python3.12/site-packages/kiro_claw/static/dist/` inside the bundle.
+  `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,
   turtledemo, ensurepip, lib2to3) are removed to shrink the bundle.
 
@@ -194,47 +194,47 @@ details:
 When the app starts, [`main.js`](../website/electron/main.js) first checks
 whether a gateway is already running; if not, it locates the backend binary via
 [`find-bin.js`](../website/electron/find-bin.js) and spawns it as
-`kiroclaw gateway --no-open`, then polls `/api/status` (up to 2 minutes)
+`kirocrew gateway --no-open`, then polls `/api/status` (up to 2 minutes)
 and loads the dashboard once it is healthy.
 
 ### `find-bin.js` — locating the binary
 
-`findKiroclawBin()` checks well-known paths in order and returns the first
-executable it finds, falling back to bare `kiroclaw` on `PATH`:
+`findKirocrewBin()` checks well-known paths in order and returns the first
+executable it finds, falling back to bare `kirocrew` on `PATH`:
 
-1. `<resourcesPath>/backend-dist/kiroclaw-backend/bin/kiroclaw` — the bundled
+1. `<resourcesPath>/backend-dist/kirocrew-backend/bin/kirocrew` — the bundled
    PBS backend inside the packaged `.app` (electron-builder ships
-   `backend-dist/kiroclaw-backend` as `extraResources`).
-2. `<__dirname>/backend-dist/kiroclaw-backend/bin/kiroclaw` — the same binary
+   `backend-dist/kirocrew-backend` as `extraResources`).
+2. `<__dirname>/backend-dist/kirocrew-backend/bin/kirocrew` — the same binary
    when running unpackaged from `website/electron/` in development.
-3. `<__dirname>/../bin/kiroclaw`
-4. Well-known install paths under `$HOME` (e.g. `~/.local/bin/kiroclaw`,
-   `~/.kiroclaw-app/.venv/bin/kiroclaw`).
-5. Bare `"kiroclaw"` (resolved via `PATH`).
+3. `<__dirname>/../bin/kirocrew`
+4. Well-known install paths under `$HOME` (e.g. `~/.local/bin/kirocrew`,
+   `~/.kirocrew-app/.venv/bin/kirocrew`).
+5. Bare `"kirocrew"` (resolved via `PATH`).
 
 The function is pure — `fs`, `os`, `path`, `process.resourcesPath`, and
 `__dirname` are injected — so it is unit-testable without mocking globals.
 
 ### `main.js` — spawning the gateway
 
-- Ensures `KIROCLAW_HOME` (default `~/.kiroclaw`, overridable via the
-  `KIROCLAW_HOME` env var) exists, then spawns the backend with
+- Ensures `KIROCREW_HOME` (default `~/.kirocrew`, overridable via the
+  `KIROCREW_HOME` env var) exists, then spawns the backend with
   `["gateway", "--no-open"]`.
-- Honors the **`KIROCLAW_PORT`** env var for the dashboard port (default `5476`,
+- Honors the **`KIROCREW_PORT`** env var for the dashboard port (default `5476`,
   validated to `1–65535`). `BACKEND_URL` / health checks target that port.
-- Sets `KIROCLAW_PROJECT_DIR` to the Electron app's parent directory so the
+- Sets `KIROCREW_PROJECT_DIR` to the Electron app's parent directory so the
   bundled `agents/` and `skills/` are discovered.
 - On window close the app hides to the tray; quitting sends `SIGTERM` to the
   gateway process.
 
 ## Code signing & notarization (macOS)
 
-An unsigned `.app`/DMG is quarantined by Gatekeeper and shows **"KiroClaw is
+An unsigned `.app`/DMG is quarantined by Gatekeeper and shows **"KiroCrew is
 damaged and can't be opened"** when downloaded on another Mac. To distribute a
 DMG that opens cleanly you must sign it with a **Developer ID Application**
 certificate and **notarize** it with Apple. (Local builds without credentials
 still work — they produce an ad-hoc–signed DMG you can open on the build machine
-after right-click → Open or `xattr -dr com.apple.quarantine KiroClaw.app`.)
+after right-click → Open or `xattr -dr com.apple.quarantine KiroCrew.app`.)
 
 The build is already wired for this — `website/electron/package.json` enables
 `hardenedRuntime` with `build/entitlements.mac.plist`, and the
@@ -262,7 +262,7 @@ export APPLE_TEAM_ID=XXXXXXXXXX
 make desktop
 ```
 
-Verify the result: `spctl -a -vv "KiroClaw.app"` should report
+Verify the result: `spctl -a -vv "KiroCrew.app"` should report
 `source=Notarized Developer ID` and `codesign -dv` should show your Team ID
 (not `Signature=adhoc`).
 
@@ -274,7 +274,7 @@ clear the quarantine flag.
 
 The desktop app can also connect to a gateway running on a **remote** host (e.g.
 an always-on server) over an SSH tunnel, fetching a fresh token via
-`ssh <host> kiroclaw token` on each launch instead of starting a local backend.
+`ssh <host> kirocrew token` on each launch instead of starting a local backend.
 See [`website/electron/README.md`](../website/electron/README.md) and
 [REMOTE_DESKTOP_SETUP.md](REMOTE_DESKTOP_SETUP.md) for setup.
 

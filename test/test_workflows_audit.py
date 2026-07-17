@@ -3,7 +3,7 @@
 A run must record (via the SEL security event log): author, runner, args, each
 agent call, and a result hash. The audit sink is injectable so tests capture
 records without touching the real SEL log; the default sink writes to
-``kiro_claw.sel``. Audit failures must never break a run.
+``kiro_crew.sel``. Audit failures must never break a run.
 
 See ``docs/system-specs/modules/workflows.md`` and GATES.md (B10).
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.workflows.runner import WorkflowRunner, _result_hash
+from kiro_crew.workflows.runner import WorkflowRunner, _result_hash
 
 pytestmark = pytest.mark.asyncio
 
@@ -118,7 +118,7 @@ async def test_audit_failure_never_breaks_run() -> None:
     assert res.ok and res.result == {"done": True}
 
     # The default sink also swallows any internal error (sel() unavailable, etc.).
-    from kiro_claw.workflows.runner import _default_audit
+    from kiro_crew.workflows.runner import _default_audit
 
     _default_audit("run_started", run_id="x", fields={"runner": "x"})  # must not raise
     # result hash is stable + key-order-independent + short (16 hex chars)

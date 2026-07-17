@@ -6,12 +6,12 @@ import { renderWithProviders, createTestStore } from './helpers'
 import { sseSlots } from '../store/dashboardSlice'
 
 function frameEvent(data: string, sessionKey?: string) {
-  return new CustomEvent('kiroclaw-browser-frame', {
+  return new CustomEvent('kirocrew-browser-frame', {
     detail: { data, format: 'jpeg', ...(sessionKey ? { session_key: sessionKey } : {}) },
   })
 }
 function toggle() {
-  return new CustomEvent('kiroclaw-toggle-browser-live')
+  return new CustomEvent('kirocrew-toggle-browser-live')
 }
 
 describe('BrowserLiveView', () => {

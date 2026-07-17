@@ -1,17 +1,17 @@
-"""Tests for the `kiroclaw doctor` OS-aware fix hints.
+"""Tests for the `kirocrew doctor` OS-aware fix hints.
 
 Guards _os_fix_hint: it returns the macOS Homebrew command on Darwin and the
-Linux/AL2023 guidance otherwise, so `kiroclaw doctor` never prints a brew
+Linux/AL2023 guidance otherwise, so `kirocrew doctor` never prints a brew
 command on Linux where there is no brew.
 """
 
 from __future__ import annotations
 
-from kiro_claw import cli_doctor
+from kiro_crew import cli_doctor
 
 
 class TestFixHint:
-    """OS-aware `kiroclaw doctor` fix hints."""
+    """OS-aware `kirocrew doctor` fix hints."""
 
     def test_os_fix_hint_macos_returns_brew(self, monkeypatch) -> None:
         monkeypatch.setattr(cli_doctor._plat, "system", lambda: "Darwin")

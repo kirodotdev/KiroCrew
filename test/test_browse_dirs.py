@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers import api_browse_dirs
+from kiro_crew.dashboard.handlers import api_browse_dirs
 
 
 def _make_app() -> web.Application:
@@ -19,7 +19,7 @@ def _make_app() -> web.Application:
 
 @pytest.fixture()
 def mock_sel():
-    with patch("kiro_claw.dashboard.handlers.sel") as m:
+    with patch("kiro_crew.dashboard.handlers.sel") as m:
         m.return_value = MagicMock()
         yield m.return_value
 

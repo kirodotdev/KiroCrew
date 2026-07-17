@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.handlers import _reset_all_sessions
+from kiro_crew.dashboard.handlers import _reset_all_sessions
 
 
 class _FakeSession:
@@ -91,7 +91,7 @@ class TestResetAllSessionsShutdown:
         sessions = _FakeSessionManager([p1, p2])
         request, state = _make_request(sessions)
 
-        with patch("kiro_claw.dashboard.handlers._sync_kill_provider") as mock_kill:
+        with patch("kiro_crew.dashboard.handlers._sync_kill_provider") as mock_kill:
             count = await _reset_all_sessions(request)
             # Wait for the background task to finish so we can observe side effects.
             for task in list(state._background_tasks):
@@ -114,7 +114,7 @@ class TestResetAllSessionsShutdown:
         # Shorten timeout so the test doesn't take 5s. The production default
         # is 5.0 but tests only need to verify the timeout->kill path fires.
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05
+            "kiro_crew.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05
         )
 
         async def _never_returns() -> None:
@@ -127,7 +127,7 @@ class TestResetAllSessionsShutdown:
         sessions = _FakeSessionManager([hung, healthy])
         request, state = _make_request(sessions)
 
-        with patch("kiro_claw.dashboard.handlers._sync_kill_provider") as mock_kill:
+        with patch("kiro_crew.dashboard.handlers._sync_kill_provider") as mock_kill:
             await _reset_all_sessions(request)
             for task in list(state._background_tasks):
                 await task
@@ -143,7 +143,7 @@ class TestResetAllSessionsShutdown:
         and ``start_pool`` runs. Regression guard for AutoSDE comment on CR-268228120.
         """
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05
+            "kiro_crew.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05
         )
 
         async def _never_returns() -> None:
@@ -159,7 +159,7 @@ class TestResetAllSessionsShutdown:
             raise PermissionError("simulated kill failure")
 
         with patch(
-            "kiro_claw.dashboard.handlers._sync_kill_provider", side_effect=_raising_kill
+            "kiro_crew.dashboard.handlers._sync_kill_provider", side_effect=_raising_kill
         ) as mock_kill:
             await _reset_all_sessions(request)
             for task in list(state._background_tasks):

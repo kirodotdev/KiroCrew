@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 from conftest import MockSlackClient
 
-from kiro_claw.history import ConversationLog
-from kiro_claw.sync_bridge import (
+from kiro_crew.history import ConversationLog
+from kiro_crew.sync_bridge import (
     _PENDING_RESUME_TTL,
     _pending_resume_msg_ts,
     _pending_resumes,
@@ -112,7 +112,7 @@ class TestPendingResumeStateMachine:
     def test_ttl_expiry(self):
         set_pending_resume("thread-1", [{"key": "k1"}])
         # Simulate time passing beyond TTL
-        with patch("kiro_claw.sync_bridge.time") as mock_time:
+        with patch("kiro_crew.sync_bridge.time") as mock_time:
             # set_pending_resume used real time.monotonic(); now peek uses mock
             mock_time.monotonic.return_value = time.monotonic() + _PENDING_RESUME_TTL + 1
             assert peek_pending_resume("thread-1") is None

@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.stats module."""
+"""Tests for kiro_crew.stats module."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from kiro_claw.stats import Stats
+from kiro_crew.stats import Stats
 
 
 class TestStats(unittest.TestCase):
@@ -99,13 +99,13 @@ class TestStats(unittest.TestCase):
 
     def test_uptime_str(self) -> None:
         s = Stats()
-        with patch("kiro_claw.stats.time") as mock_time:
+        with patch("kiro_crew.stats.time") as mock_time:
             mock_time.monotonic.return_value = s._start_time + 3661
             assert s.uptime_str() == "1h 1m"
 
     def test_uptime_str_with_days(self) -> None:
         s = Stats()
-        with patch("kiro_claw.stats.time") as mock_time:
+        with patch("kiro_crew.stats.time") as mock_time:
             mock_time.monotonic.return_value = s._start_time + 3 * 86400 + 14 * 3600 + 22 * 60
             assert s.uptime_str() == "3d 14h 22m"
 

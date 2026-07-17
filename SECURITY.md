@@ -5,7 +5,7 @@
 If you discover a potential security issue in this project, please **do not** create a public
 GitHub issue. Instead, report it privately:
 
-- **Email:** [security@kiroclaw.dev](mailto:security@kiroclaw.dev)
+- **Email:** [security@kirocrew.dev](mailto:security@kirocrew.dev)
 - **Subject prefix:** `[SECURITY]`
 
 Please include:
@@ -24,5 +24,5 @@ running the most recent version.
 
 ## Scope
 
-This policy covers the KiroClaw source code and its bundled dependencies. It does not cover
-third-party services (LLM providers, Ollama, etc.) that KiroClaw connects to.
+This policy covers the KiroCrew source code and its bundled dependencies. It does not cover
+third-party services (LLM providers, Ollama, etc.) that KiroCrew connects to.

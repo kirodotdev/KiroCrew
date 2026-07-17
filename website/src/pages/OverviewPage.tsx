@@ -4,9 +4,9 @@ import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { api } from '../api/client'
 import { StatCard } from '../components/ui'
-import { MemoryTab, AgentCfgTab, KiroClawCfgTab, UsageTab, PortabilityTab } from './overview'
+import { MemoryTab, AgentCfgTab, KiroCrewCfgTab, UsageTab, PortabilityTab } from './overview'
 
-const tabs = ['memory', 'usage', 'kiroclawcfg', 'agentcfg', 'portability']
+const tabs = ['memory', 'usage', 'kirocrewcfg', 'agentcfg', 'portability']
 
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
@@ -15,7 +15,7 @@ export default function OverviewPage() {
   const [tab, setTab] = useState('memory')
   const [restarting, setRestarting] = useState(false); const [restartMsg, setRestartMsg] = useState<ReactNode>('')
   const restart = async () => { setRestarting(true); await api.restartSessions(); setRestartMsg(<><CheckCircle className="lucide-inline" /> Sessions restarted — config applied.</>); setRestarting(false); setTimeout(() => setRestartMsg(''), 5000) }
-  const tabLabel = (t: string) => ({ agentcfg: 'Agent Config', kiroclawcfg: 'KiroClaw Config', usage: 'Usage', portability: 'Import/Export' }[t] || t.charAt(0).toUpperCase() + t.slice(1))
+  const tabLabel = (t: string) => ({ agentcfg: 'Agent Config', kirocrewcfg: 'KiroCrew Config', usage: 'Usage', portability: 'Import/Export' }[t] || t.charAt(0).toUpperCase() + t.slice(1))
 
   const content = (
     <>
@@ -57,7 +57,7 @@ export default function OverviewPage() {
         </div>
         {tab === 'memory' && <MemoryTab refreshTrigger={refreshTrigger} />}
         {tab === 'usage' && <UsageTab />}
-        {tab === 'kiroclawcfg' && <KiroClawCfgTab />}
+        {tab === 'kirocrewcfg' && <KiroCrewCfgTab />}
         {tab === 'agentcfg' && <AgentCfgTab />}
         {tab === 'portability' && <PortabilityTab />}
     </>

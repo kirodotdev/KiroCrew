@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.handlers import mcp as mcp_mod
+from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
 # ── Mesh-2661: background probe must use the bounded probe_all() path ──
 
@@ -28,13 +28,13 @@ class TestBgMcpProbeBoundedFanout:
 
     @pytest.mark.asyncio
     async def test_routes_through_probe_all(self, monkeypatch, tmp_path) -> None:
-        import kiro_claw.mcp_discovery as disc
+        import kiro_crew.mcp_discovery as disc
 
         srv = MagicMock()
         srv.name = "builder-mcp"
         srv.to_dict.return_value = {"name": "builder-mcp", "status": "ok"}
         probe_all_mock = AsyncMock(return_value=[srv])
-        # _bg_mcp_probe does `from kiro_claw.mcp_discovery import probe_all`
+        # _bg_mcp_probe does `from kiro_crew.mcp_discovery import probe_all`
         # at call time, so patching the attribute on the module is picked up.
         monkeypatch.setattr(disc, "probe_all", probe_all_mock)
 

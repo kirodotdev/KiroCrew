@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.dashboard.chat import _validate_tool_name
-from kiro_claw.validation import MAX_TOOL_NAME_LEN
+from kiro_crew.dashboard.chat import _validate_tool_name
+from kiro_crew.validation import MAX_TOOL_NAME_LEN
 
 
 class TestToolNameValidation:

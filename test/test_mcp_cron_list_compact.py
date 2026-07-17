@@ -12,9 +12,9 @@ import uuid
 
 import pytest
 
-from kiro_claw.cron import CronService
-from kiro_claw.mcp_cron import _call_tool_inner, _validate_args
-from kiro_claw.validation import ValidationError
+from kiro_crew.cron import CronService
+from kiro_crew.mcp_cron import _call_tool_inner, _validate_args
+from kiro_crew.validation import ValidationError
 
 # ── Fixtures ──
 
@@ -35,8 +35,8 @@ def _seed_jobs(tmp_path, count: int, msg_size: int = 1500) -> CronService:
 
 @pytest.fixture
 def home(monkeypatch, tmp_path):
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
-    monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
     return tmp_path
 
 

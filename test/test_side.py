@@ -6,7 +6,7 @@
 3. Non-blocking: ``api_side_turn`` returns before ``_run_side_turn`` finishes.
 4. Channel separation: side run_id never appears in main-channel payloads.
 5. Tool rejection: empty LLM output produces a visible fallback bubble.
-6. Agent resolution: the KiroClaw slot agent name (e.g. "default") is resolved
+6. Agent resolution: the KiroCrew slot agent name (e.g. "default") is resolved
    to the real kiro-cli agent before get_or_create, so set_mode never rejects
    it with "Mode '<name>' not found".
 7. Streaming redaction: a credential split across streaming chunk boundaries is
@@ -24,17 +24,17 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
-from kiro_claw.context import ContextBuilder
-from kiro_claw.dashboard.handlers.side import (
+from kiro_crew.context import ContextBuilder
+from kiro_crew.dashboard.handlers.side import (
     _run_side_turn,
     api_side_close,
     api_side_open,
     api_side_turn,
 )
-from kiro_claw.dashboard.side_state import SideState
-from kiro_claw.learn import LessonStore
-from kiro_claw.memory import MemoryStore
-from kiro_claw.skills import SkillsLoader
+from kiro_crew.dashboard.side_state import SideState
+from kiro_crew.learn import LessonStore
+from kiro_crew.memory import MemoryStore
+from kiro_crew.skills import SkillsLoader
 
 _SIDE_QUESTION = "what is the difference between TCP and UDP?"
 _SIDE_ANSWER = "TCP is connection-oriented and UDP is not."
@@ -64,7 +64,7 @@ def _stub_run_side_turn(monkeypatch, *, answer: str = _SIDE_ANSWER):
             slot._side.append_assistant(answer)
 
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side._run_side_turn", _fake_run
+        "kiro_crew.dashboard.handlers.side._run_side_turn", _fake_run
     )
 
 
@@ -149,7 +149,7 @@ async def test_side_turn_returns_before_run_finishes(tmp_path, monkeypatch):
         await release.wait()
 
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side._run_side_turn", _blocking
+        "kiro_crew.dashboard.handlers.side._run_side_turn", _blocking
     )
     state = _make_state(tmp_path)
     state.get_or_create_slot("parent")
@@ -180,7 +180,7 @@ async def test_side_run_id_never_leaks_to_main_channels(tmp_path, monkeypatch):
     side_release = asyncio.Event()
 
     async def _streaming(state, slot, run_id, question, *, is_first_turn):
-        from kiro_claw.dashboard.ws import broadcast_side_result
+        from kiro_crew.dashboard.ws import broadcast_side_result
 
         side_started.set()
         await side_release.wait()
@@ -190,7 +190,7 @@ async def test_side_run_id_never_leaks_to_main_channels(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side._run_side_turn", _streaming
+        "kiro_crew.dashboard.handlers.side._run_side_turn", _streaming
     )
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
@@ -243,7 +243,7 @@ async def test_empty_llm_output_produces_visible_fallback(tmp_path, monkeypatch)
     state.sessions.get_or_create = _fake_get_or_create
     state.sessions.release = MagicMock()
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side.stream_and_collect",
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
         AsyncMock(return_value=""),
     )
 
@@ -263,7 +263,7 @@ async def test_empty_llm_output_produces_visible_fallback(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch):
-    """slot.agent (a KiroClaw name like "default") is resolved to the real
+    """slot.agent (a KiroCrew name like "default") is resolved to the real
     kiro-cli agent before get_or_create -> create_session -> set_mode.
 
     Regression: passing the raw slot name straight through made kiro-cli reject
@@ -290,21 +290,21 @@ async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch
     state.sessions.release = MagicMock()
 
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side.KiroClawConfig.load",
+        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load",
         lambda: MagicMock(),
     )
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side.resolve_agent_bindings",
-        lambda cfg, agent: MagicMock(kiro_agent="kiroclaw"),
+        "kiro_crew.dashboard.handlers.side.resolve_agent_bindings",
+        lambda cfg, agent: MagicMock(kiro_agent="kirocrew"),
     )
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side.stream_and_collect",
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
         AsyncMock(return_value="ok"),
     )
 
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
-    assert captured["agent"] == "kiroclaw", (
+    assert captured["agent"] == "kirocrew", (
         f"side turn passed an unresolved agent to get_or_create: "
         f"{captured.get('agent')!r}"
     )
@@ -319,7 +319,7 @@ async def test_side_turn_agent_resolution_falls_back_on_error(
     state = _make_state(tmp_path)
     _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
-    parent.agent = "kiroclaw"
+    parent.agent = "kirocrew"
     parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
     parent._side.append_user("q")
     parent._side.last_run_id = "run-1"
@@ -338,16 +338,16 @@ async def test_side_turn_agent_resolution_falls_back_on_error(
         raise RuntimeError("config unavailable")
 
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side.KiroClawConfig.load", _boom
+        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load", _boom
     )
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side.stream_and_collect",
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
         AsyncMock(return_value="ok"),
     )
 
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
-    assert captured["agent"] == "kiroclaw", (
+    assert captured["agent"] == "kirocrew", (
         f"fallback did not use raw slot.agent: {captured.get('agent')!r}"
     )
 
@@ -373,7 +373,7 @@ async def test_side_stream_redacts_credential_split_across_chunks(
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
-    parent.agent = "kiroclaw"
+    parent.agent = "kirocrew"
     parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
     parent._side.append_user("q")
     parent._side.last_run_id = "run-1"
@@ -394,7 +394,7 @@ async def test_side_stream_redacts_credential_split_across_chunks(
         return f"here is a key AKIAIOSFODNN7EXAMPLE see {exfil_url} done"
 
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.side.stream_and_collect", _fake_stream
+        "kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream
     )
 
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)

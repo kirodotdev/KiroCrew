@@ -102,13 +102,13 @@ jobs:
           echo "::endgroup::"
 
       - name: Check backend security rules
-        if: contains(steps.changed.outputs.files, 'src/kiro_claw/')
+        if: contains(steps.changed.outputs.files, 'src/kiro_crew/')
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "::group::sensitive-path reads must go through is_sensitive_path()"
-          SENSITIVE_PATHS='\.aws/|\.ssh/|\.gnupg/|\.docker/|\.kube/|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.kiroclaw/security_policy|\.kiroclaw/admission_policy'
+          SENSITIVE_PATHS='\.aws/|\.ssh/|\.gnupg/|\.docker/|\.kube/|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.kirocrew/security_policy|\.kirocrew/admission_policy|\.kiroclaw/security_policy|\.kiroclaw/admission_policy'
           # Best-effort: covers open()/Path.open()/read_text()/os.open()/aiofiles.
           # The authoritative control is security.py/hooks.py + their unit tests;
           # this grep is a fast pre-filter, not the guarantee.
@@ -229,7 +229,7 @@ jobs:
       - name: Install and run backend tests with coverage
         run: |
           pip install -e ".[voice,desktop,dev]" --quiet
-          pytest -q --timeout=120 --cov=kiro_claw --cov-report=xml \
+          pytest -q --timeout=120 --cov=kiro_crew --cov-report=xml \
             --deselect=test/test_script_hooks.py \
             --deselect=test/test_cron_script.py \
             --deselect=test/test_run_aim_path.py \

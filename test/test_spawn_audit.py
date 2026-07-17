@@ -1,6 +1,6 @@
 """Subprocess-spawn audit — Talos finding 92e24570 (V2287169889).
 
-Every subprocess spawn in ``src/kiro_claw`` must be either
+Every subprocess spawn in ``src/kiro_crew`` must be either
 
 * routed through the sandbox chokepoint (its enclosing function calls
   ``sandboxed_spawn_argv`` or ``wrap_argv``), so the spawned process gets
@@ -26,7 +26,7 @@ The remaining unrouted spawns below are pre-existing and fall into these
 groups, none of which is the finding's agent-influenced-spawn vector:
 
 * Operator-invoked CLI / setup / doctor / self-update (fixed argv against our
-  own install: git pull, pip, npm, kiro-cli/kiroclaw update,
+  own install: git pull, pip, npm, kiro-cli/kirocrew update,
   systemctl/launchctl, node/ollama bootstrap).
 * Internal process management (read our own ppid; enumerate/kill our own
   managed/orphaned processes) and system-metrics probes (fixed sysctl/ps/etc).
@@ -51,7 +51,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_claw"
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 # Attribute names that actually spawn a child process.
 _SPAWN_ATTRS = {
@@ -142,7 +142,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "instances/ssh_tunnel_manager.py::_ps_lines",
         "instances/ssh_tunnel_manager.py::start",
         "instances/token_mint.py::mint_remote_token",
-        "instances/token_mint.py::run_remote_kiroclaw",
+        "instances/token_mint.py::run_remote_kirocrew",
         "mcp_caller.py::_parent_pid",
         "mcp_core.py::_get_ppid",
         "mcp_discovery.py::sync_to_agent_config",
@@ -240,10 +240,10 @@ def test_every_spawn_is_routed_or_allowlisted():
     unrouted = _collect_unrouted_spawns()
     unexpected = unrouted - BENIGN_SPAWNS
     assert not unexpected, (
-        "New unrouted subprocess spawn(s) found in src/kiro_claw:\n  "
+        "New unrouted subprocess spawn(s) found in src/kiro_crew:\n  "
         + "\n  ".join(sorted(unexpected))
         + "\n\nRoute agent-influenced spawns through "
-        "kiro_claw.sandbox.sandboxed_spawn_argv (OS sandbox + scrubbed env), "
+        "kiro_crew.sandbox.sandboxed_spawn_argv (OS sandbox + scrubbed env), "
         "or, if the command/args/cwd are NOT agent-influenced, add the "
         "file::function key to BENIGN_SPAWNS in this test with a justification. "
         "See Talos finding 92e24570 / V2287169889."

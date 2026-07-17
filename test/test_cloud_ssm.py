@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.cloud import aws, ssm
+from kiro_crew.cloud import aws, ssm
 
 
 class TestArgvBuilders:
@@ -63,7 +63,7 @@ class TestOpenPortForward:
     def test_open_port_forward_refused_under_agent_session(self, monkeypatch):
         # The streaming tunnel bypasses run_aws, so it carries its own
         # human-action guard: an agent session must not open a tunnel.
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-1")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-1")
         monkeypatch.setattr(
             ssm.subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn tunnel")
         )

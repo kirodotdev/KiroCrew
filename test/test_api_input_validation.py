@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.dashboard.handlers import api_crons_create, api_lessons_create
+from kiro_crew.dashboard.handlers import api_crons_create, api_lessons_create
 
 
 def _crons_request(body: object) -> MagicMock:
@@ -95,8 +95,8 @@ class TestLessonsCreateTypeValidation:
         """Reproduction: rule as a JSON array must 400, not crash on .strip()."""
         request = _lessons_request({"rule": ["injected", "array", "payload"], "category": "tool"})
         with (
-            patch("kiro_claw.dashboard.handlers.cron._sel"),
-            patch("kiro_claw.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
         ):
             resp = await api_lessons_create(request)
         assert resp.status == 400
@@ -105,8 +105,8 @@ class TestLessonsCreateTypeValidation:
     async def test_rule_dict_returns_400(self):
         request = _lessons_request({"rule": {"x": "y"}, "category": "tool"})
         with (
-            patch("kiro_claw.dashboard.handlers.cron._sel"),
-            patch("kiro_claw.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
         ):
             resp = await api_lessons_create(request)
         assert resp.status == 400
@@ -116,8 +116,8 @@ class TestLessonsCreateTypeValidation:
         """category outside the {tool, preference, knowledge} enum is rejected."""
         request = _lessons_request({"rule": "valid rule", "category": "arbitrary_value"})
         with (
-            patch("kiro_claw.dashboard.handlers.cron._sel"),
-            patch("kiro_claw.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
         ):
             resp = await api_lessons_create(request)
         assert resp.status == 400
@@ -127,8 +127,8 @@ class TestLessonsCreateTypeValidation:
         """A 100KB+ rule exceeds the schema length bound and is rejected."""
         request = _lessons_request({"rule": "x" * 100_000, "category": "tool"})
         with (
-            patch("kiro_claw.dashboard.handlers.cron._sel"),
-            patch("kiro_claw.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
         ):
             resp = await api_lessons_create(request)
         assert resp.status == 400
@@ -137,8 +137,8 @@ class TestLessonsCreateTypeValidation:
     async def test_non_object_body_returns_400(self):
         request = _lessons_request(["not", "an", "object"])
         with (
-            patch("kiro_claw.dashboard.handlers.cron._sel"),
-            patch("kiro_claw.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
         ):
             resp = await api_lessons_create(request)
         assert resp.status == 400
@@ -148,10 +148,10 @@ class TestLessonsCreateTypeValidation:
         """A well-formed lesson writes via the JSONL fallback and returns 200."""
         request = _lessons_request({"rule": "always do X", "category": "preference"})
         with (
-            patch("kiro_claw.dashboard.handlers.cron._sel"),
-            patch("kiro_claw.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
             patch(
-                "kiro_claw.dashboard.handlers.cron._get_memory",
+                "kiro_crew.dashboard.handlers.cron._get_memory",
                 MagicMock(return_value=MagicMock(vector_store=None)),
             ),
         ):

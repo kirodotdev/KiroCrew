@@ -28,7 +28,7 @@ describe('dashboardSlice unread relay', () => {
 
     expect(postMessage).toHaveBeenCalled()
     const [payload] = postMessage.mock.calls[0]
-    expect(payload).toMatchObject({ source: 'kiroclaw', type: 'mc-unread-slots', count: 1 })
+    expect(payload).toMatchObject({ source: 'kirocrew', type: 'mc-unread-slots', count: 1 })
 
     // Reading clears it -> relays count 0.
     postMessage.mockClear()

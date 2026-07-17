@@ -1,7 +1,7 @@
 # Governance Model (two-level Policy ∩ Profile)
 
-The `kiro_claw.platform.governance` + `kiro_claw.platform.governance_profiles`
-modules implement KiroClaw's **two-level security governance model**. Governance
+The `kiro_crew.platform.governance` + `kiro_crew.platform.governance_profiles`
+modules implement KiroCrew's **two-level security governance model**. Governance
 is resolved by a single rule — *the tightest boundary wins*:
 
 - **Level 1 — POLICY** (`GovernanceCeiling`): the enterprise security ceiling,
@@ -11,12 +11,12 @@ is resolved by a single rule — *the tightest boundary wins*:
   that may only *narrow* what policy permits.
 
 The effective permission for any item is `policy ∩ profile`. This spec is the
-implementation companion to the design doc (Pippin `kiroclaw/MVTDhLpm2SSW`).
+implementation companion to the design doc (Pippin `kirocrew/MVTDhLpm2SSW`).
 
-> Scope: this governs **KiroClaw's own** security boundaries — what the host
+> Scope: this governs **KiroCrew's own** security boundaries — what the host
 > performs on behalf of the agent across every surface (CLI, dashboard, Slack,
 > cron, heartbeat, sub-agents, apps). The underlying kiro-cli agent config
-> (`~/.kiro/agents/*.json`) is **out of scope**: KiroClaw enforces its own
+> (`~/.kiro/agents/*.json`) is **out of scope**: KiroCrew enforces its own
 > ceiling at its own gate even when the kiro side grants more.
 
 ## The four archetypes (one composition algebra each)
@@ -79,10 +79,10 @@ evaluator edits.
 
 `load_security_policy()` precedence (first present wins):
 
-1. `KIROCLAW_SECURITY_POLICY` env path — fleet hot-override, highest.
+1. `KIROCREW_SECURITY_POLICY` env path — fleet hot-override, highest.
 2. companion-bundled resource (the `amazon` edition packages it; the public core
    passes `None`).
-3. `~/.kiroclaw/security_policy.json` — standalone operator-authored.
+3. `~/.kirocrew/security_policy.json` — standalone operator-authored.
 4. none → `None` → editable secure-defaults (ungoverned ceiling).
 
 A **present-but-unreadable / invalid** policy raises `PlatformCompositionError`
@@ -106,8 +106,8 @@ Under *"secure by default, not by mandate"* there is **no compiled-in floor** �
 the entire posture is operator-editable. The only invariant is the
 **agent-vs-operator split**: the agent cannot edit the policy/profile files.
 This is enforced solely by adding them to `security._SENSITIVE_HOME_DIRS`
-(`~/.kiroclaw/security_policy.json`, `~/.kiroclaw/profiles`,
-`~/.kiroclaw/admission_policy.json`) — `is_sensitive_path` is the shared
+(`~/.kirocrew/security_policy.json`, `~/.kirocrew/profiles`,
+`~/.kirocrew/admission_policy.json`) — `is_sensitive_path` is the shared
 read+write gate across every surface. `assert_governance_paths_protected()` is a
 boot integrity check that fails closed if a refactor ever drops them.
 
@@ -151,7 +151,7 @@ profile falls back to deny-all (Validation rule 5), **not** the ceiling.
   kiro agent config granted. The call sites thread `session_key`/`agent` (they
   default to `""`, so non-governed callers are unaffected).
 - **Plane B — kiro agent JSON**: out of scope (v1). The gate is authoritative;
-  KiroClaw does not regenerate `~/.kiro/agents/*.json`.
+  KiroCrew does not regenerate `~/.kiro/agents/*.json`.
 - **Plane C — out-of-band executors**: the cron `command` (runs via `sh -c`
   outside the ACP flow) is gated in `mcp_cron._vet_command_governance`; the
   cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`
@@ -248,10 +248,10 @@ denials leave the same forensic trail.
   model uses (a shell command is a `commands` item, never re-parsed into its
   sub-effects).
 - **Per-app profile binding via MCP chokepoints is best-effort.** The managed
-  `kiroclaw-core` MCP server is spawned by kiro-cli, not by an app backend, so
-  `KIROCLAW_APP_NAME` is absent there — `learn_add`/`send_message` resolve the
+  `kirocrew-core` MCP server is spawned by kiro-cli, not by an app backend, so
+  `KIROCREW_APP_NAME` is absent there — `learn_add`/`send_message` resolve the
   per-SURFACE profile + policy ceiling (the enforced path), not a per-app
-  profile. An app's own in-process tool calls (which carry `KIROCLAW_APP_NAME`)
+  profile. An app's own in-process tool calls (which carry `KIROCREW_APP_NAME`)
   do bind a per-app profile. App blast-radius is contained today by the `apps`
   activation allowlist + per-surface profiles.
 
@@ -268,7 +268,7 @@ denials leave the same forensic trail.
 
 > **Capability `profile-absence` semantics (deliberate deviation from spec A.4
 > rule 8).** The spec says a profile that OMITS a capability defaults it to
-> `false`. KiroClaw instead treats an omitted scope as *not governed by the
+> `false`. KiroCrew instead treats an omitted scope as *not governed by the
 > profile* (truth-table "not-governed" → bounded by policy alone), because the
 > stricter reading would turn every minimal profile (e.g. one that governs only
 > `tools`) into a near-deny-all of all capabilities. To disable a capability a
@@ -293,7 +293,7 @@ operation / item / reason are redacted via `redact_via_context` **before** `log`
 
 ## CLI
 
-`kiroclaw policy {show | validate | explain <scope> <item> | profile <name>}` —
+`kirocrew policy {show | validate | explain <scope> <item> | profile <name>}` —
 read-only operator diagnostics. `explain` traces the rule/layer/reason and the
 live gate verdict. Deliberately **not** exposed as an MCP tool: it surfaces
 governance internals that the agent (the governed subject) should not enumerate.

@@ -9,14 +9,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.chat import _extract_bash_command
-from kiro_claw.dashboard.state import (
+from kiro_crew.dashboard.chat import _extract_bash_command
+from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
     is_read_only_bash,
     unsafe_bash_reason,
 )
-from kiro_claw.history import ConversationLog
+from kiro_crew.history import ConversationLog
 
 # ── Helpers ──
 
@@ -35,7 +35,7 @@ def _make_state(tmp_path):
 
 
 def _make_app(state: DashboardState) -> web.Application:
-    from kiro_claw.dashboard.chat import api_chat_mode, api_chat_slot_approve
+    from kiro_crew.dashboard.chat import api_chat_mode, api_chat_slot_approve
 
     app = web.Application()
     app["state"] = state
@@ -271,7 +271,7 @@ class TestExtractBashCommand:
 class TestTrustReadsApproval:
     @pytest.mark.asyncio
     async def test_trust_reads_sets_flag(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         loop = asyncio.get_running_loop()
@@ -289,7 +289,7 @@ class TestTrustReadsApproval:
 
     @pytest.mark.asyncio
     async def test_trust_reads_mode_endpoint(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
 
@@ -303,7 +303,7 @@ class TestTrustReadsApproval:
 
     @pytest.mark.asyncio
     async def test_normal_mode_resets_trust_reads(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         slot._trust_reads = True
@@ -341,7 +341,7 @@ class TestSlotTrustReadsDict:
 class TestTrustReadsModeAllSlots:
     @pytest.mark.asyncio
     async def test_trust_reads_all_slots(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         s1 = state.get_or_create_slot("s1")
         s2 = state.get_or_create_slot("s2")
@@ -354,7 +354,7 @@ class TestTrustReadsModeAllSlots:
 
     @pytest.mark.asyncio
     async def test_normal_resets_all_slots(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         s1 = state.get_or_create_slot("s1")
         s2 = state.get_or_create_slot("s2")

@@ -1,5 +1,5 @@
 /**
- * Right-click context menu for the KiroClaw dashboard window.
+ * Right-click context menu for the KiroCrew dashboard window.
  *
  * Electron enables its built-in spellchecker by default and draws the red
  * underlines under misspelled words, but it does NOT ship a default UI for

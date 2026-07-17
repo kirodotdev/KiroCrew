@@ -45,7 +45,7 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
         <div className="grid grid-cols-2 gap-4 mb-6 max-[900px]:grid-cols-1">
           <div className="flex flex-col">
             <div className="card-glow border border-border border-l-[3px] border-l-accent bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
-              <h3 className="text-sm font-semibold text-accent mb-3.5 flex items-center gap-1.5"><PawPrint className="lucide-inline" /> KiroClaw Process <InfoTip text="Gateway process info: PID, uptime, Python version, and runtime stats (messages, tool calls, sessions)." /></h3>
+              <h3 className="text-sm font-semibold text-accent mb-3.5 flex items-center gap-1.5"><PawPrint className="lucide-inline" /> KiroCrew Process <InfoTip text="Gateway process info: PID, uptime, Python version, and runtime stats (messages, tool calls, sessions)." /></h3>
               <Info k="PID" v={d?.pid} /><Info k="Python" v={d?.python} /><Info k="Uptime" v={statusUptime} /><Info k="Sessions" v={statusSessions} />
               <Info k="Process Memory (RSS)" v={d?.proc_mem_mb ? d.proc_mem_mb + ' MB' : '—'} />
               <Info k="Child Processes" v={d?.child_processes} /><Info k="Threads" v={d?.thread_count} />

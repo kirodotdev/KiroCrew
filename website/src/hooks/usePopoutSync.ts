@@ -81,7 +81,7 @@ export function usePopoutSync(isPopout: boolean, onSceneChange?: (scene: string)
     const top = (multiScreen.availTop ?? 0) + (screen.availHeight - h) / 2
     popoutRef.current = window.open(
       '/worlds-popout',
-      'kiroclaw-worlds',
+      'kirocrew-worlds',
       `width=${w},height=${h},left=${left},top=${top},resizable=yes`,
     )
   }, [])

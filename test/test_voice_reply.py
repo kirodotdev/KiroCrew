@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.voice_reply import (
+from kiro_crew.voice_reply import (
     DEFAULT_LENGTH_SCALE,
     DEFAULT_PITCH,
     DEFAULT_PROVIDER,
@@ -239,18 +239,18 @@ class TestProviderConstants:
 
 class TestIsAvailable:
     def test_polly_available_when_aws_on_path(self) -> None:
-        with patch("kiro_claw.voice_reply.shutil.which", return_value="/usr/bin/aws"):
+        with patch("kiro_crew.voice_reply.shutil.which", return_value="/usr/bin/aws"):
             assert is_available(PROVIDER_POLLY) is True
 
     def test_polly_unavailable_when_aws_missing(self) -> None:
-        with patch("kiro_claw.voice_reply.shutil.which", return_value=None):
+        with patch("kiro_crew.voice_reply.shutil.which", return_value=None):
             assert is_available(PROVIDER_POLLY) is False
 
     def test_piper_unavailable_when_binary_missing(self, tmp_path) -> None:
         model = tmp_path / "voice.onnx"
         model.write_bytes(b"fake")
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=None,
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=None,
         ):
             assert is_available(
                 PROVIDER_PIPER, piper_binary="", piper_model=str(model),
@@ -260,7 +260,7 @@ class TestIsAvailable:
         bin_path = tmp_path / "piper"
         _make_executable(str(bin_path))
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ):
             assert is_available(PROVIDER_PIPER, piper_model="") is False
 
@@ -268,7 +268,7 @@ class TestIsAvailable:
         bin_path = tmp_path / "piper"
         _make_executable(str(bin_path))
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ):
             # Model path provided but file doesn't exist.
             assert is_available(
@@ -281,7 +281,7 @@ class TestIsAvailable:
         model = tmp_path / "voice.onnx"
         model.write_bytes(b"fake model")
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ):
             assert is_available(
                 PROVIDER_PIPER, piper_model=str(model),
@@ -316,7 +316,7 @@ class TestResolvePiperBinary:
 
     def test_falls_back_to_path(self, tmp_path) -> None:
         with patch(
-            "kiro_claw.voice_reply.shutil.which", return_value="/usr/local/bin/piper",
+            "kiro_crew.voice_reply.shutil.which", return_value="/usr/local/bin/piper",
         ), patch("os.path.isfile", return_value=False):
             assert _resolve_piper_binary("") == "/usr/local/bin/piper"
 
@@ -326,12 +326,12 @@ class TestResolvePiperBinary:
         bin_path = venv_bin / "piper"
         _make_executable(str(bin_path))
         monkeypatch.setenv("HOME", str(tmp_path))
-        with patch("kiro_claw.voice_reply.shutil.which", return_value=None):
+        with patch("kiro_crew.voice_reply.shutil.which", return_value=None):
             assert _resolve_piper_binary("") == str(bin_path)
 
     def test_nothing_found_returns_none(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))  # no venv exists
-        with patch("kiro_claw.voice_reply.shutil.which", return_value=None):
+        with patch("kiro_crew.voice_reply.shutil.which", return_value=None):
             assert _resolve_piper_binary("") is None
 
 
@@ -341,7 +341,7 @@ class TestResolvePiperBinary:
 class TestSynthesizePiper:
     @pytest.mark.asyncio
     async def test_binary_not_found_returns_none(self) -> None:
-        with patch("kiro_claw.voice_reply._resolve_piper_binary", return_value=None):
+        with patch("kiro_crew.voice_reply._resolve_piper_binary", return_value=None):
             assert await _synthesize_piper("hi") is None
 
     @pytest.mark.asyncio
@@ -349,7 +349,7 @@ class TestSynthesizePiper:
         bin_path = tmp_path / "piper"
         _make_executable(str(bin_path))
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ):
             # Empty model
             assert await _synthesize_piper("hi", piper_model="") is None
@@ -380,8 +380,8 @@ class TestSynthesizePiper:
             return proc
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
-        ), patch("kiro_claw.voice_reply.wrap_argv", side_effect=fake_wrap), patch(
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+        ), patch("kiro_crew.voice_reply.wrap_argv", side_effect=fake_wrap), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
         ):
             result = await _synthesize_piper(
@@ -415,8 +415,8 @@ class TestSynthesizePiper:
             return proc
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
-        ), patch("kiro_claw.voice_reply.wrap_argv", side_effect=fake_wrap), patch(
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+        ), patch("kiro_crew.voice_reply.wrap_argv", side_effect=fake_wrap), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
         ):
             result = await _synthesize_piper(
@@ -443,9 +443,9 @@ class TestSynthesizePiper:
         proc = _mock_subprocess(returncode=1, stderr=b"bad voice")
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ):
@@ -467,9 +467,9 @@ class TestSynthesizePiper:
             return proc
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
         ), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
         ):
@@ -491,9 +491,9 @@ class TestSynthesizePiper:
             raise _asyncio.TimeoutError()
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
@@ -520,9 +520,9 @@ class TestSynthesizePiper:
             raise _asyncio.TimeoutError()
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
@@ -536,9 +536,9 @@ class TestSynthesizePiper:
         model.write_bytes(b"m")
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
         ), patch(
             "asyncio.create_subprocess_exec", side_effect=OSError("boom"),
         ):
@@ -563,9 +563,9 @@ class TestSynthesizePiper:
             return proc
 
         with patch(
-            "kiro_claw.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_claw.voice_reply.wrap_argv",
+            "kiro_crew.voice_reply.wrap_argv",
             side_effect=lambda c, mode: (c, str(cleanup_path)),
         ), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
@@ -587,7 +587,7 @@ class TestSynthesizePolly:
         # On macOS 26 wrap_argv raises, which is caught and returns None.
         # Patch to passthrough so the existing create_subprocess_exec mocks run.
         monkeypatch.setattr(
-            "kiro_claw.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
         )
 
     @pytest.mark.asyncio
@@ -677,7 +677,7 @@ class TestSynthesizePolly:
             return proc
 
         with patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=fake_wrap,
+            "kiro_crew.voice_reply.wrap_argv", side_effect=fake_wrap,
         ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
             result = await _synthesize_polly("<speak>hi</speak>")
         assert result is not None
@@ -696,7 +696,7 @@ class TestSynthesizePolly:
             raise _asyncio.TimeoutError()
 
         with patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
@@ -718,7 +718,7 @@ class TestSynthesizePolly:
             raise _asyncio.TimeoutError()
 
         with patch(
-            "kiro_claw.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
@@ -738,7 +738,7 @@ class TestSynthesizePolly:
             return proc
 
         with patch(
-            "kiro_claw.voice_reply.wrap_argv",
+            "kiro_crew.voice_reply.wrap_argv",
             side_effect=lambda c, mode: (c, str(cleanup_path)),
         ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
             result = await _synthesize_polly("<speak>hi</speak>")
@@ -754,10 +754,10 @@ class TestSynthesizeSpeechDispatcher:
     @pytest.mark.asyncio
     async def test_polly_dispatch(self) -> None:
         with patch(
-            "kiro_claw.voice_reply._synthesize_polly",
+            "kiro_crew.voice_reply._synthesize_polly",
             new=AsyncMock(return_value="/tmp/out.mp3"),
         ) as mock_polly, patch(
-            "kiro_claw.voice_reply._synthesize_piper",
+            "kiro_crew.voice_reply._synthesize_piper",
             new=AsyncMock(return_value="/tmp/out.wav"),
         ) as mock_piper:
             out = await synthesize_speech("hello world", provider=PROVIDER_POLLY)
@@ -768,10 +768,10 @@ class TestSynthesizeSpeechDispatcher:
     @pytest.mark.asyncio
     async def test_piper_dispatch(self) -> None:
         with patch(
-            "kiro_claw.voice_reply._synthesize_polly",
+            "kiro_crew.voice_reply._synthesize_polly",
             new=AsyncMock(return_value="/tmp/out.mp3"),
         ) as mock_polly, patch(
-            "kiro_claw.voice_reply._synthesize_piper",
+            "kiro_crew.voice_reply._synthesize_piper",
             new=AsyncMock(return_value="/tmp/out.wav"),
         ) as mock_piper:
             out = await synthesize_speech("hello world", provider=PROVIDER_PIPER)
@@ -787,7 +787,7 @@ class TestSynthesizeSpeechDispatcher:
     async def test_polly_empty_ssml_returns_none(self) -> None:
         # Pure markdown that strip_markdown reduces to empty yields empty ssml.
         with patch(
-            "kiro_claw.voice_reply._synthesize_polly",
+            "kiro_crew.voice_reply._synthesize_polly",
             new=AsyncMock(return_value=None),
         ) as mock_polly:
             out = await synthesize_speech("", provider=PROVIDER_POLLY)
@@ -797,7 +797,7 @@ class TestSynthesizeSpeechDispatcher:
     @pytest.mark.asyncio
     async def test_piper_empty_plain_returns_none(self) -> None:
         with patch(
-            "kiro_claw.voice_reply._synthesize_piper",
+            "kiro_crew.voice_reply._synthesize_piper",
             new=AsyncMock(return_value=None),
         ) as mock_piper:
             out = await synthesize_speech("   ", provider=PROVIDER_PIPER)
@@ -816,7 +816,7 @@ class TestSynthesizeSpeechDispatcher:
             return "/tmp/out.mp3"
 
         with patch(
-            "kiro_claw.voice_reply._synthesize_polly", side_effect=capture_polly,
+            "kiro_crew.voice_reply._synthesize_polly", side_effect=capture_polly,
         ):
             await synthesize_speech(raw, provider=PROVIDER_POLLY)
 
@@ -876,7 +876,7 @@ class TestVoiceReplyEndToEnd:
     async def test_synthesis_fails_returns_false(self) -> None:
         client = MagicMock()
         with patch(
-            "kiro_claw.voice_reply.synthesize_speech",
+            "kiro_crew.voice_reply.synthesize_speech",
             new=AsyncMock(return_value=None),
         ):
             assert await voice_reply(client, "C1", "t1", "hi") is False
@@ -888,7 +888,7 @@ class TestVoiceReplyEndToEnd:
         client = MagicMock()
         client.upload_file = AsyncMock(return_value=None)
         with patch(
-            "kiro_claw.voice_reply.synthesize_speech",
+            "kiro_crew.voice_reply.synthesize_speech",
             new=AsyncMock(return_value=str(audio)),
         ):
             ok = await voice_reply(
@@ -906,7 +906,7 @@ class TestVoiceReplyEndToEnd:
         client = MagicMock()
         client.upload_file = AsyncMock(side_effect=RuntimeError("boom"))
         with patch(
-            "kiro_claw.voice_reply.synthesize_speech",
+            "kiro_crew.voice_reply.synthesize_speech",
             new=AsyncMock(return_value=str(audio)),
         ):
             ok = await voice_reply(client, "C1", "t1", "hi")
@@ -920,7 +920,7 @@ class TestVoiceReplyEndToEnd:
 class TestStreamingVoiceReply:
     @pytest.mark.asyncio
     async def test_redacts_credentials_before_synthesis(self, tmp_path) -> None:
-        from kiro_claw.voice_reply import streaming_voice_reply
+        from kiro_crew.voice_reply import streaming_voice_reply
 
         sentences_seen: list[str] = []
 
@@ -931,7 +931,7 @@ class TestStreamingVoiceReply:
             return str(out)
 
         with patch(
-            "kiro_claw.voice_reply._synthesize_polly", side_effect=fake_polly,
+            "kiro_crew.voice_reply._synthesize_polly", side_effect=fake_polly,
         ):
             gen = streaming_voice_reply("AKIAIOSFODNN7EXAMPLE is secret. Bye.")
             async for _idx, _sent, _bytes in gen:
@@ -943,7 +943,7 @@ class TestStreamingVoiceReply:
 
     @pytest.mark.asyncio
     async def test_skips_sentences_with_failed_synth(self, tmp_path) -> None:
-        from kiro_claw.voice_reply import streaming_voice_reply
+        from kiro_crew.voice_reply import streaming_voice_reply
 
         calls = {"n": 0}
 
@@ -956,7 +956,7 @@ class TestStreamingVoiceReply:
             return str(out)
 
         with patch(
-            "kiro_claw.voice_reply._synthesize_polly", side_effect=alternating,
+            "kiro_crew.voice_reply._synthesize_polly", side_effect=alternating,
         ):
             collected = []
             async for idx, sent, data in streaming_voice_reply(
@@ -975,7 +975,7 @@ class TestTextTypeAutoDetection:
     def _passthrough_sandbox(self, monkeypatch):
         # See TestSynthesizePolly._passthrough_sandbox.
         monkeypatch.setattr(
-            "kiro_claw.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
         )
 
     @pytest.mark.asyncio

@@ -44,7 +44,7 @@ export default function DisplayTab() {
         </div>
       </Card>
       <Card>
-        <CardTitle>Color Theme <InfoTip text="Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kiroclaw/themes/." /></CardTitle>
+        <CardTitle>Color Theme <InfoTip text="Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kirocrew/themes/." /></CardTitle>
         <div className="flex flex-wrap items-center gap-2">
           {allThemes.map(t => (
             <div key={t.value} className="relative group">

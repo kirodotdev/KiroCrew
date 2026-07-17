@@ -14,7 +14,7 @@ class TestMacOsSysctlPaths:
         with patch("shutil.which", side_effect=lambda cmd: f"/found/{cmd}" if cmd == "sysctl" else None):
             import importlib
 
-            from kiro_claw.dashboard import handlers_system
+            from kiro_crew.dashboard import handlers_system
 
             importlib.reload(handlers_system)
             assert handlers_system._SYSCTL == "/found/sysctl"
@@ -24,7 +24,7 @@ class TestMacOsSysctlPaths:
         with patch("shutil.which", return_value=None):
             import importlib
 
-            from kiro_claw.dashboard import handlers_system
+            from kiro_crew.dashboard import handlers_system
 
             importlib.reload(handlers_system)
             assert handlers_system._SYSCTL == "/usr/sbin/sysctl"
@@ -34,7 +34,7 @@ class TestMacOsSysctlPaths:
         with patch("shutil.which", return_value=None):
             import importlib
 
-            from kiro_claw.dashboard import handlers_system
+            from kiro_crew.dashboard import handlers_system
 
             importlib.reload(handlers_system)
             assert handlers_system._VM_STAT == "/usr/bin/vm_stat"
@@ -51,7 +51,7 @@ class TestMacOsSysctlPaths:
         if sys.platform != "darwin":
             return  # Skip on non-macOS
 
-        from kiro_claw.dashboard import handlers_system
+        from kiro_crew.dashboard import handlers_system
 
         vm_stat_out = (
             "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
@@ -70,7 +70,7 @@ class TestMacOsSysctlPaths:
         with (
             patch.object(handlers_system, "_get_static_system_info", return_value={}),
             patch(
-                "kiro_claw.dashboard.handlers_system.subprocess.check_output",
+                "kiro_crew.dashboard.handlers_system.subprocess.check_output",
                 side_effect=fake_check_output,
             ),
         ):

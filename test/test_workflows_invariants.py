@@ -1,6 +1,6 @@
 """GATE group B (static half) — sandbox & determinism invariants for workflow scripts.
 
-These assert that ``kiro_claw.workflows.validate.validate`` rejects the dangerous
+These assert that ``kiro_crew.workflows.validate.validate`` rejects the dangerous
 constructs an LLM-authored workflow script must never contain:
 
 * B1 — no ``import``, no ``open``/``eval``/``exec``/``compile``/``__import__``/...
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.workflows.validate import SAFE_BUILTINS, validate
+from kiro_crew.workflows.validate import SAFE_BUILTINS, validate
 
 # A minimal valid script we mutate per-case so failures isolate to the construct.
 GOOD = 'META = {"name": "ok", "description": "d"}\n' "async def workflow(ctx):\n" "    return {}\n"

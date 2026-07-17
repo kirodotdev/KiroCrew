@@ -8,7 +8,7 @@ Immutable, tamper-evident audit trail for all tool invocations, MCP calls, and d
 
 See also the SEL section in [`security.md`](security.md) for the threat-model view of these events.
 
-Storage: `~/.kiroclaw/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
+Storage: `~/.kirocrew/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
 
 ## Event Schema
 
@@ -20,13 +20,13 @@ Each entry records:
 | `timestamp` | ISO 8601 UTC |
 | `event_type` | `tool_invocation`, `api_access`, `config_bounds_clamped`, `governance_decision`, `governance_degraded` |
 | `caller_identity` | Session key (e.g. `dashboard:abc`, `cron:xyz`, `subagent:123`) |
-| `agent` | Agent name (`kiroclaw`, custom agent name) |
+| `agent` | Agent name (`kirocrew`, custom agent name) |
 | `source` | Interface: `slack`, `dashboard`, `cli`, `cron`, `subagent`, `taskrunner`, `mcp`, `background`, `acp` (ACP-transport events, e.g. `tool_interrupted`), `token_auth` / `refresh_tokens` (dashboard auth), `host` (the `_host` sentinel — an in-process host action like app activation / workspace admission), `unknown` (empty/unrecognized session key, which must NOT be mis-tagged `slack`) |
 | `operation` | Tool name or `METHOD /api/path` |
 | `tool_kind` | Tool category (`execute_bash`, `fs_write`, `mcp_core`, `mcp_cron`, etc.) |
 | `outcome` | `invoked`, `auto_approved`, `approved`, `rejected`, `denied`, `completed`, `failed`, `clamped`, `degraded` (a governance chokepoint failed OPEN) |
 | `resources` | Affected resources summary (truncated to 500 chars) |
-| `downstream_service` | MCP server name if applicable (`kiroclaw-core`, `kiroclaw-cron`, `builder-mcp`) |
+| `downstream_service` | MCP server name if applicable (`kirocrew-core`, `kirocrew-cron`, `builder-mcp`) |
 | `request_id` | ACP permission request ID |
 | `error` | Error message if failed/denied |
 | `prev_hash` | HMAC of previous entry (chain link) |
@@ -38,7 +38,7 @@ The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `oper
 ## Integrity
 
 - HMAC-SHA256 chain: each entry signs over the previous entry's hash
-- HMAC key: `~/.kiroclaw/sel_hmac.key` (32 random bytes, `chmod 600`)
+- HMAC key: `~/.kirocrew/sel_hmac.key` (32 random bytes, `chmod 600`)
 - **Key + log are on the sensitive-path floor (Talos cdf82704):** both `sel_hmac.key` and `security_events.jsonl` are in `security._SENSITIVE_HOME_DIRS`, so the audited agent's `fs_read`/file-edit tools (gated by `is_sensitive_path()`) cannot read the key to forge the chain or rewrite the log. The gateway's own writer/reader (`sel.py`, `dashboard/session_health.py`) opens the files directly and bypasses that gate. Residual: the key still lives in the agent's home namespace — a deeper out-of-process signer is future hardening.
 - Verification: `verify_integrity()` walks the chain and reports tampered entries
 - Append-only: no in-place edits; pruning rewrites with chain rebuild
@@ -95,8 +95,8 @@ Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 ## CLI
 
 ```
-kiroclaw security events [-n 20]   # Show recent events
-kiroclaw security verify            # Verify HMAC chain integrity
+kirocrew security events [-n 20]   # Show recent events
+kirocrew security verify            # Verify HMAC chain integrity
 ```
 
 ## Thread Safety

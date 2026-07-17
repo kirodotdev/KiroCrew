@@ -9,7 +9,7 @@ references" / "Returns '' for an empty or unknown folder id" contract.
 
 from __future__ import annotations
 
-from kiro_claw.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState
 
 
 def test_agent_defect() -> None:

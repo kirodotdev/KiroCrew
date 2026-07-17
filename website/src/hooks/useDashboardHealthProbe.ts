@@ -26,7 +26,7 @@
  *     - 403 with `X-Auth-Required: true`: gateway is back up but the cookie
  *       is invalid. The existing `checkSessionExpired` helper in
  *       `api/client.ts` already injects the in-tab auth banner, so the user
- *       can paste a fresh `kiroclaw token` URL without leaving the tab. Once
+ *       can paste a fresh `kirocrew token` URL without leaving the tab. Once
  *       they do, the page navigates to `?token=X`, gets a fresh cookie, and
  *       reloads — recovery complete.
  *     - Network error / non-403 4xx-5xx: gateway still down or in a bad

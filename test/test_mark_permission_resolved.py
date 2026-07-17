@@ -2,7 +2,7 @@
 
 import json
 
-from kiro_claw.dashboard.state import _mark_permission_resolved
+from kiro_crew.dashboard.state import _mark_permission_resolved
 
 
 class TestMarkPermissionResolved:

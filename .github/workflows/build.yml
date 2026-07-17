@@ -39,9 +39,9 @@ jobs:
 
       - name: Stage frontend into package
         run: |
-          rm -rf src/kiro_claw/static/dist
-          mkdir -p src/kiro_claw/static
-          cp -R website/dist src/kiro_claw/static/dist
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
 
       - name: Build wheel
         run: |
@@ -51,7 +51,7 @@ jobs:
       - name: Verify wheel installs cleanly
         run: |
           pip install dist/*.whl
-          kiroclaw --version
+          kirocrew --version
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4

@@ -8,7 +8,7 @@ blocks leak into the linked Slack thread.
 
 from __future__ import annotations
 
-from kiro_claw.dashboard.chat_runner import _prepare_mirror_msg
+from kiro_crew.dashboard.chat_runner import _prepare_mirror_msg
 
 
 class TestPrepareMirrorMsg:

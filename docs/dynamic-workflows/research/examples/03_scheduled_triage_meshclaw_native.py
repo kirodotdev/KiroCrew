@@ -1,6 +1,6 @@
-"""Example dynamic workflow: KiroClaw-native scheduled morning triage.
+"""Example dynamic workflow: KiroCrew-native scheduled morning triage.
 
-Shows the primitives that make KiroClaw workflows MORE than Claude Code
+Shows the primitives that make KiroCrew workflows MORE than Claude Code
 workflows — persistence, cron self-scheduling, memory-aware behavior, nudges,
 and Slack delivery. Illustrative only — DSL not implemented yet.
 

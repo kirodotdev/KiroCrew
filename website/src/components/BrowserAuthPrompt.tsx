@@ -38,8 +38,8 @@ export default function BrowserAuthPrompt() {
   }, [])
 
   useEffect(() => {
-    window.addEventListener('kiroclaw-browser-event', handleEvent)
-    return () => window.removeEventListener('kiroclaw-browser-event', handleEvent)
+    window.addEventListener('kirocrew-browser-event', handleEvent)
+    return () => window.removeEventListener('kirocrew-browser-event', handleEvent)
   }, [handleEvent])
 
   const handleRetry = useCallback(() => {

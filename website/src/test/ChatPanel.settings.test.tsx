@@ -12,7 +12,7 @@ vi.mock('../api/client', () => ({
     dashboardConfig: () => Promise.resolve({ restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' }),
     voiceConfig: () => Promise.resolve({ enabled: false, voice: 'Ruth', engine: 'neural', rate: '100%', autoSpeak: false, aws_profile: '', region: '' }),
     sttConfig: () => Promise.resolve({ enabled: false, provider: '', model: '', available: false, streaming: false, transcribe_region: '', transcribe_profile: '', language_code: 'en-US', models: {}, language_codes: [] }),
-    kiroclawConfig: () => Promise.resolve({ agent: { completion_keep: 'head', completion_keep_chars: 3000 } }),
+    kirocrewConfig: () => Promise.resolve({ agent: { completion_keep: 'head', completion_keep_chars: 3000 } }),
     patchConfig: patchConfigMock,
     updateDashboardConfig: () => Promise.resolve({}),
     updateVoiceConfig: () => Promise.resolve({}),

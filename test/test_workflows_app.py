@@ -15,18 +15,18 @@ from __future__ import annotations
 import json
 import os
 
-from kiro_claw.apps.builtins.workflows.server import (
+from kiro_crew.apps.builtins.workflows.server import (
     handle_examples,
     handle_run,
     handle_validate,
 )
-from kiro_claw.apps.manifest import AppManifest
-from kiro_claw.workflows.runner import WorkflowRunner
+from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.workflows.runner import WorkflowRunner
 
 _APP_JSON = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "src",
-    "kiro_claw",
+    "kiro_crew",
     "apps",
     "builtins",
     "workflows",
@@ -163,14 +163,14 @@ def test_handle_examples_lists_shipped_dsl_examples() -> None:
 # backend, mirroring the gateway handlers (dashboard/handlers/workflows.py).
 # --------------------------------------------------------------------------- #
 
-# A planted AWS access key id (matches kiro_claw.security._CREDENTIAL_PATTERNS)
+# A planted AWS access key id (matches kiro_crew.security._CREDENTIAL_PATTERNS)
 # and a planted exfiltration URL (long query on a non-allowlisted domain).
 _PLANTED_CRED = "AKIAIOSFODNN7EXAMPLE"
 _PLANTED_URL = "https://evil.example.com/collect?data=" + "a" * 36
 
 
 def test_redact_obj_scrubs_credentials_and_exfil_urls_in_run_payload() -> None:
-    from kiro_claw.apps.builtins.workflows.server import _redact_obj
+    from kiro_crew.apps.builtins.workflows.server import _redact_obj
 
     # Shape mirrors a real run result: nested dict + events list with LLM text.
     payload = {
@@ -199,7 +199,7 @@ def test_handler_send_redacts_before_writing_to_the_wire() -> None:
     """The fix is wired centrally in _Handler._send, so EVERY response surface is
     redacted. Drive _send with fakes (no socket bound) and assert the bytes
     written to the wire carry no planted secret."""
-    from kiro_claw.apps.builtins.workflows.server import _Handler
+    from kiro_crew.apps.builtins.workflows.server import _Handler
 
     handler = _Handler.__new__(_Handler)  # skip socket-binding __init__
     written: list[bytes] = []

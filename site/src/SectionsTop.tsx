@@ -34,16 +34,16 @@ export function Nav() {
     <motion.nav initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.5 }}
       className={`fixed top-0 left-0 right-0 z-[100] flex items-center justify-between px-6 md:px-10 py-4 max-w-[1200px] mx-auto transition-all duration-300 ${scrolled ? 'bg-white/85 dark:bg-[#06080f]/85 backdrop-blur-xl border-b border-amber-500/10' : ''}`}>
       <a href={import.meta.env.BASE_URL} className="flex items-center gap-2 no-underline">
-        <img src={`${import.meta.env.BASE_URL}kiroclaw-logo.png`} alt="KiroClaw" className="w-8 h-8 rounded-lg" />
+        <img src={`${import.meta.env.BASE_URL}kirocrew-logo.png`} alt="KiroCrew" className="w-8 h-8 rounded-lg" />
         <span className="text-xl font-bold text-slate-900 dark:text-white font-space tracking-tight">
-          <span className="text-amber-500">Kiro</span>Claw
+          <span className="text-amber-500">Kiro</span>Crew
         </span>
       </a>
       <div className="flex gap-1 items-center">
         {[['#features', 'Features'], ['#in-action', 'Demo'], ['#how-it-works', 'Setup']].map(([href, label]) => (
           <a key={href} href={href} className="hidden md:block px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 no-underline transition-all">{label}</a>
         ))}
-        <a href="https://github.com/kirodotdev-labs/kiroclaw" target="_blank" rel="noopener noreferrer" className="hidden md:block px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 no-underline transition-all">Source</a>
+        <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" className="hidden md:block px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 no-underline transition-all">Source</a>
         <button onClick={toggle} className="p-2 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-black/5 dark:hover:bg-white/5 transition-all" aria-label="Toggle theme">
           {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
@@ -77,7 +77,7 @@ export function Hero() {
       </motion.p>
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.65 }} className="flex gap-3 justify-center flex-wrap">
         <a href="#how-it-works" className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-[0_0_24px_rgba(245,158,11,0.35),0_4px_16px_rgba(0,0,0,0.4)] hover:-translate-y-0.5 hover:shadow-[0_0_40px_rgba(245,158,11,0.4)] transition-all no-underline font-space">Install in 3 Minutes</a>
-        <a href="https://github.com/kirodotdev-labs/kiroclaw" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-slate-100 dark:bg-white/5 text-slate-800 dark:text-white border border-amber-500/15 hover:bg-slate-200 dark:hover:bg-white/8 hover:border-amber-500/30 hover:-translate-y-0.5 transition-all no-underline font-space">View Source</a>
+        <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-slate-100 dark:bg-white/5 text-slate-800 dark:text-white border border-amber-500/15 hover:bg-slate-200 dark:hover:bg-white/8 hover:border-amber-500/30 hover:-translate-y-0.5 transition-all no-underline font-space">View Source</a>
       </motion.div>
     </motion.section>
     <AppPreview />
@@ -101,7 +101,7 @@ export function TerminalDemo() {
       <div ref={ref} className="bg-slate-900 dark:bg-[#111827] border border-amber-500/12 rounded-2xl overflow-hidden shadow-lg dark:shadow-[0_24px_80px_rgba(0,0,0,0.5),0_0_60px_rgba(245,158,11,0.08)]">
         <div className="flex items-center gap-2 px-4 py-3 bg-black/20 dark:bg-black/40 border-b border-amber-500/12">
           <div className="w-3 h-3 rounded-full bg-red-500" /><div className="w-3 h-3 rounded-full bg-amber-500" /><div className="w-3 h-3 rounded-full bg-green-500" />
-          <span className="flex-1 text-center text-xs text-slate-400 font-mono">kiroclaw — gateway</span>
+          <span className="flex-1 text-center text-xs text-slate-400 font-mono">kirocrew — gateway</span>
         </div>
         <div className="p-6 font-mono text-[13.5px] leading-[1.8] min-h-[220px]">
           <AnimatePresence>

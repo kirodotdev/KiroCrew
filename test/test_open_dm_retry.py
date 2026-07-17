@@ -10,7 +10,7 @@ from slack_sdk.errors import SlackApiError
 
 def _make_gateway():
     """Build a minimal GatewayOrchestrator with mocked dependencies."""
-    from kiro_claw.slack.gateway import GatewayOrchestrator
+    from kiro_crew.slack.gateway import GatewayOrchestrator
 
     gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
     gw.slack = MagicMock()
@@ -37,7 +37,7 @@ async def test_success_first_attempt():
 async def test_transient_failure_then_success():
     gw = _make_gateway()
     gw.slack.open_dm.side_effect = [_slack_error(429), "D123"]
-    with patch("kiro_claw.slack.gateway.asyncio.sleep", new_callable=AsyncMock):
+    with patch("kiro_crew.slack.gateway.asyncio.sleep", new_callable=AsyncMock):
         result = await gw._open_dm_with_retry("U1", "job1")
     assert result == "D123"
     assert gw.slack.open_dm.await_count == 2
@@ -47,7 +47,7 @@ async def test_transient_failure_then_success():
 async def test_all_attempts_exhausted():
     gw = _make_gateway()
     gw.slack.open_dm.side_effect = [_slack_error(500)] * 3
-    with patch("kiro_claw.slack.gateway.asyncio.sleep", new_callable=AsyncMock):
+    with patch("kiro_crew.slack.gateway.asyncio.sleep", new_callable=AsyncMock):
         with pytest.raises(SlackApiError):
             await gw._open_dm_with_retry("U1", "job1", max_attempts=3)
     assert gw.slack.open_dm.await_count == 3
@@ -75,7 +75,7 @@ async def test_backoff_values():
     gw = _make_gateway()
     gw.slack.open_dm.side_effect = [_slack_error(500)] * 3
     mock_sleep = AsyncMock()
-    with patch("kiro_claw.slack.gateway.asyncio.sleep", mock_sleep):
+    with patch("kiro_crew.slack.gateway.asyncio.sleep", mock_sleep):
         with pytest.raises(SlackApiError):
             await gw._open_dm_with_retry("U1", "job1", max_attempts=3)
     mock_sleep.assert_any_await(1)
@@ -87,8 +87,8 @@ async def test_backoff_values():
 async def test_logging_with_exc_info():
     gw = _make_gateway()
     gw.slack.open_dm.side_effect = [_slack_error(429), "D123"]
-    with patch("kiro_claw.slack.gateway.asyncio.sleep", new_callable=AsyncMock), \
-         patch("kiro_claw.slack.gateway.logger") as mock_logger:
+    with patch("kiro_crew.slack.gateway.asyncio.sleep", new_callable=AsyncMock), \
+         patch("kiro_crew.slack.gateway.logger") as mock_logger:
         await gw._open_dm_with_retry("U1", "job1")
     mock_logger.warning.assert_called_once()
     _, kwargs = mock_logger.warning.call_args
@@ -99,7 +99,7 @@ async def test_logging_with_exc_info():
 async def test_connection_error_retried():
     gw = _make_gateway()
     gw.slack.open_dm.side_effect = [ConnectionError("reset"), "D123"]
-    with patch("kiro_claw.slack.gateway.asyncio.sleep", new_callable=AsyncMock):
+    with patch("kiro_crew.slack.gateway.asyncio.sleep", new_callable=AsyncMock):
         result = await gw._open_dm_with_retry("U1", "job1")
     assert result == "D123"
     assert gw.slack.open_dm.await_count == 2

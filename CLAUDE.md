@@ -1,4 +1,4 @@
-# CLAUDE.md — KiroClaw (backend)
+# CLAUDE.md — KiroCrew (backend)
 
 Guidance for Claude Code working in this repository. This file is the
 high-signal quick reference; **`AGENTS.md` holds the exhaustive conventions**
@@ -10,15 +10,15 @@ before non-trivial changes. The frontend has its own `website/CLAUDE.md`.
 
 ## What this is
 
-KiroClaw is an open-source personal AI agent that runs on your own machine —
+KiroCrew is an open-source personal AI agent that runs on your own machine —
 chat from Slack, a web dashboard, or the CLI; run multi-step tasks unattended;
 schedule cron jobs; persist memory across sessions. It drives an LLM through
 the KiroACP provider — the ACP adapter running the `kiro-cli` backend over the
 ACP JSON-RPC protocol — plus MCP tools.
 
-- **Backend:** Python package `kiro_claw` in `src/kiro_claw/` (~216 modules).
+- **Backend:** Python package `kiro_crew` in `src/kiro_crew/` (~216 modules).
 - **Frontend:** React + TS + Vite SPA in `website/`; built `dist/` is staged
-  into `src/kiro_claw/static/dist/` and served by the backend.
+  into `src/kiro_crew/static/dist/` and served by the backend.
 - **Distribution:** public GitHub → `pip install` (backend) + `npm`/Vite
   (frontend). Plain setuptools — **no Brazil, no internal build tooling.**
 
@@ -37,7 +37,7 @@ changing code, **never reintroduce** any of the following (see
   `dashboard/handlers/mwinit.py`, `tunnel/manager.py`, `aim_agents.py`): their
   public symbols are preserved as no-ops so the import graph stays intact — keep
   them stubbed, don't wire them back to internal services.
-- KiroClaw is **KiroACP-only**: the sole provider is the ACP adapter driving
+- KiroCrew is **KiroACP-only**: the sole provider is the ACP adapter driving
   the **`kiro-cli`** backend (`agent.provider` is fixed to `acp` and kiro-cli is
   REQUIRED). The standalone `ClaudeCodeProvider`, `BedrockProvider`, `cc_agent`,
   and `mirror` modules were deleted; the `claude_code`/`bedrock` factory
@@ -50,7 +50,7 @@ changing code, **never reintroduce** any of the following (see
   Ollama registry (`ollama pull qwen3-embedding:0.6b`); voice TTS defaults to
   **Piper** (local), not Polly; Slack enterprise gate is default-open (opt-in
   allowlist via `slack.allowed_enterprise_ids`); `boto3` / `amazon-transcribe`
-  are **optional** lazy imports for STT only (`pip install kiroclaw[voice]`).
+  are **optional** lazy imports for STT only (`pip install kirocrew[voice]`).
 
 **Keep** the generic security controls (these are not Amazon-specific): AKIA/ASIA
 credential redaction, destructive-command deny patterns, `~/.aws` / `~/.ssh`
@@ -71,7 +71,7 @@ feature divergences" (verdict `SKIP_FORKUX`).
 
 ## Platform layer: CPP seam + Governance (read before touching `platform/`)
 
-`src/kiro_claw/platform/` is the **Composed Platform Providers (CPP)** edition
+`src/kiro_crew/platform/` is the **Composed Platform Providers (CPP)** edition
 seam **and** the two-level security **Governance model**. It is load-bearing and
 generic core infrastructure — it survives the MeshClaw sync. See
 `docs/system-specs/modules/platform-context.md` + `.../governance.md`, and
@@ -89,7 +89,7 @@ generic core infrastructure — it survives the MeshClaw sync. See
   PROFILE`, tightest-wins; the PreToolUse gate denies a tool/MCP call even if the
   kiro agent granted it. The evaluator is scope-name-agnostic — adding a scope is
   a `SCOPE_CATALOG` data change, never an evaluator edit.
-- **Keystone (do NOT weaken):** `~/.kiroclaw/security_policy.json`, `profiles/`,
+- **Keystone (do NOT weaken):** `~/.kirocrew/security_policy.json`, `profiles/`,
   and `admission_policy.json` are in `security._SENSITIVE_HOME_DIRS` so the agent
   cannot read/write its own ceiling. This is the single mechanism that makes the
   ceiling un-disableable. When editing `security.py`'s sensitive-path or
@@ -103,14 +103,14 @@ generic core infrastructure — it survives the MeshClaw sync. See
 ```bash
 # Frontend first (so the dashboard is bundled), then backend:
 cd website && npm install && npm run build      # → website/dist
-cp -R website/dist ../src/kiro_claw/static/dist  # stage into the package
+cp -R website/dist ../src/kiro_crew/static/dist  # stage into the package
 cd .. && pip install -e ".[voice]"               # editable; [voice] = STT extras
 
 # Or use the Makefile (does frontend build + dist staging + venv install):
 make build
 ```
 
-`kiroclaw` and `kiroclaw-browse` are installed onto `PATH`. Self-update is
+`kirocrew` and `kirocrew-browse` are installed onto `PATH`. Self-update is
 `git pull` + rebuild + `pip install -e .` + execv restart (no toolbox/brazil).
 
 ## Test / lint / type-check
@@ -118,9 +118,9 @@ make build
 Run the full quality cycle before committing:
 
 ```bash
-black src/kiro_claw test && isort src/kiro_claw test
-flake8 src/kiro_claw test
-mypy src/kiro_claw
+black src/kiro_crew test && isort src/kiro_crew test
+flake8 src/kiro_crew test
+mypy src/kiro_crew
 python -m pytest                 # full suite: -n auto worksteal, --cov (from setup.cfg)
 ```
 
@@ -155,14 +155,14 @@ python -m pytest -k "flush_segment" --override-ini="addopts=" -p no:cacheprovide
 
 When adding an LLM-facing CLI command, **also add it as an MCP tool**
 (`mcp_cron.py` / `mcp_core.py`). The LLM reliably calls MCP tools but may refuse
-bash CLI commands. `kiroclaw-cron` + `kiroclaw-core` are the managed servers
+bash CLI commands. `kirocrew-cron` + `kirocrew-core` are the managed servers
 (`agent.py:_MANAGED_MCP_SERVERS`). Full CLI↔MCP mapping is in `AGENTS.md`.
 
 ## Platform support
 
 macOS, Linux (x86_64 and ARM/Graviton), **and Windows** (native, Mesh-2329).
 Route every POSIX-only process/signal/metrics/file-lock call through
-`kiro_claw.platform_compat` — never raw `os.getuid`/`os.killpg`/`os.getpgid`/
+`kiro_crew.platform_compat` — never raw `os.getuid`/`os.killpg`/`os.getpgid`/
 `signal.SIG*`/`fcntl`/`os.kill(pid, 0)` (the last *terminates* the target on
 Windows). The shim keeps macOS + Linux behavior byte-for-byte identical while
 adding Windows fallbacks (`taskkill`/`netstat`/`msvcrt.locking`/WMI). See

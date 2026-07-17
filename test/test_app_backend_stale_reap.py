@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-import kiro_claw.apps.backend as backend_mod
+import kiro_crew.apps.backend as backend_mod
 
 
 @pytest.fixture

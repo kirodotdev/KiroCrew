@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# KiroClaw — Minimal OSS Quickstart
+# KiroCrew — Minimal OSS Quickstart
 #
-# The canonical public install. Builds KiroClaw from a local clone using
+# The canonical public install. Builds KiroCrew from a local clone using
 # only public tooling: python3 + pip (backend) and npm + vite (frontend).
 # No Brazil, no Builder Toolbox, no internal registries.
 #
 # Run from inside a cloned repo:
-#   git clone https://github.com/kirodotdev-labs/kiroclaw.git
-#   cd kiroclaw
+#   git clone https://github.com/kirodotdev/KiroCrew.git
+#   cd kirocrew
 #   bash minimal_install.sh
 #
 # Prerequisites: Python 3.10+, Node.js 18+, npm, git
@@ -48,14 +48,14 @@ done
 has node || die "Node.js not found. Install Node.js 18+ (https://nodejs.org) and re-run."
 has npm  || die "npm not found. Install Node.js 18+ (https://nodejs.org) and re-run."
 
-echo "🐾 KiroClaw — minimal install"
+echo "🐾 KiroCrew — minimal install"
 echo "  Repo:    $REPO_DIR"
 echo "  Python:  $("$_py" --version 2>&1)"
 echo "  Node:    $(node --version)"
 echo ""
 
 # ── 1. Frontend build (npm + vite) ──
-# Vite emits to website/dist; setup.py copies src/kiro_claw/static/dist into
+# Vite emits to website/dist; setup.py copies src/kiro_crew/static/dist into
 # the package at install time, so we stage the build there first.
 if [ -d "$REPO_DIR/website" ]; then
     echo "→ Building frontend (website/)…"
@@ -70,12 +70,12 @@ if [ -d "$REPO_DIR/website" ]; then
     ) || die "Frontend build failed. Fix the npm/vite error above and re-run."
     # Stage built assets where setup.py expects them.
     _dist_src="$REPO_DIR/website/dist"
-    _dist_dst="$REPO_DIR/src/kiro_claw/static/dist"
+    _dist_dst="$REPO_DIR/src/kiro_crew/static/dist"
     if [ -d "$_dist_src" ]; then
         rm -rf "$_dist_dst"
         mkdir -p "$(dirname "$_dist_dst")"
         cp -R "$_dist_src" "$_dist_dst"
-        echo "✓ Frontend built and staged → src/kiro_claw/static/dist"
+        echo "✓ Frontend built and staged → src/kiro_crew/static/dist"
     else
         echo "⚠ website/dist not found after build — dashboard assets may be missing"
     fi
@@ -91,17 +91,17 @@ if [ ! -d "$_venv" ] || [ ! -x "$_venv/bin/python" ]; then
     "$_py" -m venv "$_venv" || die "Failed to create venv. Try: $_py -m pip install --user virtualenv"
 fi
 
-echo "→ Installing kiroclaw (pip)…"
+echo "→ Installing kirocrew (pip)…"
 "$_venv/bin/pip" install --upgrade pip setuptools wheel -q \
     || die "Failed to upgrade pip/setuptools/wheel"
 
 # Frontend is already built and staged above; tell setup.py not to rebuild it.
 if [ "$WITH_VOICE" -eq 1 ]; then
     echo "  (including voice extras)"
-    KIROCLAW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$REPO_DIR"'[voice]' \
+    KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$REPO_DIR"'[voice]' \
         || die "pip install failed"
 else
-    KIROCLAW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$REPO_DIR" \
+    KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$REPO_DIR" \
         || die "pip install failed"
 fi
 
@@ -128,17 +128,17 @@ echo ""
 
 # ── 4. Symlink CLI (no shell rc modification) ──
 mkdir -p "$HOME/.local/bin"
-ln -sf "$_venv/bin/kiroclaw" "$HOME/.local/bin/kiroclaw"
-echo "✓ Symlinked kiroclaw → ~/.local/bin/kiroclaw"
+ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
+echo "✓ Symlinked kirocrew → ~/.local/bin/kirocrew"
 echo ""
 
 # ── Done ──
-echo "🐾 KiroClaw installed!"
+echo "🐾 KiroCrew installed!"
 echo ""
 echo "  Next steps:"
-echo "    1. Run setup:    $HOME/.local/bin/kiroclaw setup"
-echo "    2. Start it:     $HOME/.local/bin/kiroclaw gateway"
-echo "       (or add ~/.local/bin to PATH and just run: kiroclaw gateway)"
+echo "    1. Run setup:    $HOME/.local/bin/kirocrew setup"
+echo "    2. Start it:     $HOME/.local/bin/kirocrew gateway"
+echo "       (or add ~/.local/bin to PATH and just run: kirocrew gateway)"
 echo ""
 echo "  Optional — local vector memory (embeddings):"
 echo "    Install ollama (https://ollama.com), then:"

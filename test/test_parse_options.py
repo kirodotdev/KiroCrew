@@ -1,5 +1,5 @@
 """Tests for _parse_options — powers inline Waiting-lane buttons on the board."""
-from kiro_claw.dashboard.state import _parse_options
+from kiro_crew.dashboard.state import _parse_options
 
 
 def test_parse_simple_options():

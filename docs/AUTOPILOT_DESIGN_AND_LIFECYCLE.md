@@ -1,4 +1,4 @@
-# KiroClaw Autopilot — Design, Lifecycle & Research
+# KiroCrew Autopilot — Design, Lifecycle & Research
 
 **Date:** 2026-04-09
 **Status:** Implemented (Beta)
@@ -52,7 +52,7 @@ Autopilot           ✅ Direct response    ✅ Plan + execute     ✅ Learns to 
 | Task Runner | No changes. Future: `task_run` opens orchestrated session with spec pre-loaded. |
 | Cron / Heartbeat | Plan lesson consolidation added to daily cycle. Stale session cleanup added. |
 | Sub-Agent System | Disk streaming, spawn queuing (2s stagger), Activity Viewer events, resource caps. |
-| Memory | New plan memory (`~/.kiroclaw/plan_memory/`). Plan lessons consolidated periodically. |
+| Memory | New plan memory (`~/.kirocrew/plan_memory/`). Plan lessons consolidated periodically. |
 
 ---
 
@@ -350,7 +350,7 @@ If `tracker.has_escalated` but user sends a non-stop message:
 | # | Issue | Resolution |
 |---|-------|------------|
 | ~~1~~ | ~~Recursive call stack for auto-run~~ | Fixed in CR-266105689: converted to iterative via `slot._auto_run_pending` + `asyncio.create_task` in `finally` block. Call stack stays flat regardless of plan size. |
-| ~~2~~ | ~~No stage timeout~~ | Fixed in CR-266105689: 30 min default, configurable via `~/.kiroclaw/config.json` `orchestrator.stage_timeout_seconds`. |
+| ~~2~~ | ~~No stage timeout~~ | Fixed in CR-266105689: 30 min default, configurable via `~/.kirocrew/config.json` `orchestrator.stage_timeout_seconds`. |
 | ~~3~~ | ~~Context overflow~~ | Already handled: `_MAX_HISTORY_CHARS=8000`, per-message truncation at 500 chars, `build_stage_context()` uses stage summaries not full transcripts. Only current stage messages are unbounded (single stage rarely gets huge). |
 | ~~4~~ | ~~No replanning~~ | By design. Human-in-the-loop: fail → retry with error → escalate to user → user guides → learning improves future plans. |
 | ~~5~~ | ~~Escalation not code-enforced~~ | Already 2-tier: tier 1 is prompt-based (soft nudge), tier 2 is Python-enforced via `is_force_failed()` after 2 escalations (9 rounds). Acceptable. |

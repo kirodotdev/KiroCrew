@@ -1,8 +1,8 @@
-"""Tests for kiro_claw.apps.permissions — permission validation and enforcement."""
+"""Tests for kiro_crew.apps.permissions — permission validation and enforcement."""
 from __future__ import annotations
 
-from kiro_claw.apps.manifest import AppManifest, Permissions
-from kiro_claw.apps.permissions import (
+from kiro_crew.apps.manifest import AppManifest, Permissions
+from kiro_crew.apps.permissions import (
     PermissionCheck,
     check_tool_permission,
     format_permissions_summary,

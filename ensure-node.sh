@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ensure Node.js >= 18 is available. Installs via mise (preferred) or nvm.
-# Called by: setup.sh, kiroclaw update, kiroclaw gateway
+# Called by: setup.sh, kirocrew update, kirocrew gateway
 # Platforms: macOS, Linux
 
 MIN_VERSION=18

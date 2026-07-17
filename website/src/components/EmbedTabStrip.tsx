@@ -10,15 +10,15 @@ interface Tab { slug: string }
 
 /** Tab state injected by the host embedding plugin onto `window`. */
 interface EmbedTabsWindow extends Window {
-  __kiroclawTabs?: string[]
-  __kiroclawActiveTabIndex?: number
+  __kirocrewTabs?: string[]
+  __kirocrewActiveTabIndex?: number
 }
 
-const STORAGE_KEY = 'kiroclaw-embed-tabs'
-const STORAGE_INDEX_KEY = 'kiroclaw-embed-active-index'
+const STORAGE_KEY = 'kirocrew-embed-tabs'
+const STORAGE_INDEX_KEY = 'kirocrew-embed-active-index'
 
 function loadTabs(activeSlot: string | null): { tabs: Tab[]; index: number } {
-  // Priority: sessionStorage > window.__kiroclawTabs > activeSlot > empty
+  // Priority: sessionStorage > window.__kirocrewTabs > activeSlot > empty
   try {
     const stored = sessionStorage.getItem(STORAGE_KEY)
     const storedIndex = sessionStorage.getItem(STORAGE_INDEX_KEY)
@@ -28,8 +28,8 @@ function loadTabs(activeSlot: string | null): { tabs: Tab[]; index: number } {
     }
   } catch {}
   const w = window as EmbedTabsWindow
-  const injected = w.__kiroclawTabs
-  if (injected?.length) return { tabs: injected.map(s => ({ slug: s })), index: w.__kiroclawActiveTabIndex ?? 0 }
+  const injected = w.__kirocrewTabs
+  if (injected?.length) return { tabs: injected.map(s => ({ slug: s })), index: w.__kirocrewActiveTabIndex ?? 0 }
   if (activeSlot) return { tabs: [{ slug: activeSlot }], index: 0 }
   return { tabs: [{ slug: '' }], index: 0 }
 }
@@ -78,7 +78,7 @@ export default function EmbedTabStrip() {
     const slugs = newTabs.map(t => t.slug)
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(slugs))
     sessionStorage.setItem(STORAGE_INDEX_KEY, String(newIndex))
-    window.dispatchEvent(new CustomEvent('kiroclaw-tab-update', {
+    window.dispatchEvent(new CustomEvent('kirocrew-tab-update', {
       detail: { tabs: slugs, activeIndex: newIndex }
     }))
   }, [])
@@ -98,8 +98,8 @@ export default function EmbedTabStrip() {
         else navigate('/embed/sessions')
       }
     }
-    window.addEventListener('kiroclaw-tab-state', handler)
-    return () => window.removeEventListener('kiroclaw-tab-state', handler)
+    window.addEventListener('kirocrew-tab-state', handler)
+    return () => window.removeEventListener('kirocrew-tab-state', handler)
   }, [persist, navigate])
 
   // When activeSlot changes (user picked a session in a new/empty tab)

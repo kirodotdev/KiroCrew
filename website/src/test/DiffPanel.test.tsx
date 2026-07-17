@@ -122,6 +122,6 @@ describe('DiffPanel', () => {
   it('uses light theme by default (useIsDark stubbed to false)', async () => {
     render(<DiffPanel filePath="/x/a.ts" original="" modified="" />)
     const editor = await screen.findByTestId('monaco-diff')
-    expect(editor.getAttribute('data-theme')).toBe('kiroclaw-light')
+    expect(editor.getAttribute('data-theme')).toBe('kirocrew-light')
   })
 })

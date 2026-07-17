@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.tunnel.manager import TunnelManager, TunnelState, TunnelStatus
+from kiro_crew.tunnel.manager import TunnelManager, TunnelState, TunnelStatus
 
 
 @pytest.fixture
@@ -17,13 +17,13 @@ def manager():
 
 class TestTunnelName:
     def test_username_mode(self, manager: TunnelManager):
-        assert manager._tunnel_name() == "kiroclaw"
+        assert manager._tunnel_name() == "kirocrew"
 
     def test_hash_mode(self):
         mgr = TunnelManager(port=5476, name_mode="hash")
         name = mgr._tunnel_name()
-        assert name.startswith("kiroclaw-")
-        assert len(name) == len("kiroclaw-") + 8  # 8-char hash
+        assert name.startswith("kirocrew-")
+        assert len(name) == len("kirocrew-") + 8  # 8-char hash
 
     def test_override(self):
         mgr = TunnelManager(port=5476, name_override="my-custom-tunnel")
@@ -60,7 +60,7 @@ class TestStateTransitions:
 class TestTunnelStatusEndpoint:
     @pytest.mark.asyncio
     async def test_disabled_when_no_manager(self):
-        from kiro_claw.dashboard.handlers.tunnel import api_tunnel_status
+        from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 
         state = MagicMock()
         state.tunnel_manager = None
@@ -74,7 +74,7 @@ class TestTunnelStatusEndpoint:
 
     @pytest.mark.asyncio
     async def test_returns_connected_state(self):
-        from kiro_claw.dashboard.handlers.tunnel import api_tunnel_status
+        from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 
         status = TunnelStatus(
             state=TunnelState.CONNECTED,
@@ -99,10 +99,10 @@ class TestTunnelStatusEndpoint:
 
 class TestPresignedLinkIntegration:
     def test_set_tunnel_url(self):
-        from kiro_claw.tunnel import get_tunnel_url, set_tunnel_url
+        from kiro_crew.tunnel import get_tunnel_url, set_tunnel_url
 
-        set_tunnel_url("https://kiroclaw-gsanc.tunnels.corp.amazon.com")
-        assert get_tunnel_url() == "https://kiroclaw-gsanc.tunnels.corp.amazon.com"
+        set_tunnel_url("https://kirocrew-gsanc.tunnels.corp.amazon.com")
+        assert get_tunnel_url() == "https://kirocrew-gsanc.tunnels.corp.amazon.com"
 
         set_tunnel_url("")
         assert get_tunnel_url() == ""
@@ -110,7 +110,7 @@ class TestPresignedLinkIntegration:
 
 class TestConfigIntegration:
     def test_tunnel_config_defaults(self):
-        from kiro_claw.config.loader import TunnelConfig
+        from kiro_crew.config.loader import TunnelConfig
 
         cfg = TunnelConfig()
         assert cfg.enabled is False
@@ -121,12 +121,12 @@ class TestConfigIntegration:
         """TunnelConfig is properly deserialized from config JSON."""
         import json
 
-        from kiro_claw.config.loader import KiroClawConfig
+        from kiro_crew.config.loader import KiroCrewConfig
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"tunnel": {"enabled": True, "name_mode": "hash"}}))
-        with patch("kiro_claw.config.loader.config_path", return_value=config_file):
-            cfg = KiroClawConfig.load()
+        with patch("kiro_crew.config.loader.config_path", return_value=config_file):
+            cfg = KiroCrewConfig.load()
         assert cfg.tunnel.enabled is True
         assert cfg.tunnel.name_mode == "hash"
         assert cfg.tunnel.name_override == ""
@@ -135,12 +135,12 @@ class TestConfigIntegration:
         """Missing tunnel section uses defaults."""
         import json
 
-        from kiro_claw.config.loader import KiroClawConfig
+        from kiro_crew.config.loader import KiroCrewConfig
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"agent": {"model": "auto"}}))
-        with patch("kiro_claw.config.loader.config_path", return_value=config_file):
-            cfg = KiroClawConfig.load()
+        with patch("kiro_crew.config.loader.config_path", return_value=config_file):
+            cfg = KiroCrewConfig.load()
         assert cfg.tunnel.enabled is False
 
 
@@ -150,7 +150,7 @@ class TestSetupTunnel:
     @pytest.mark.asyncio
     async def test_denied_without_token_auth(self):
         """Refuses to start tunnel when token auth middleware is missing."""
-        from kiro_claw.tunnel.setup import setup_tunnel
+        from kiro_crew.tunnel.setup import setup_tunnel
 
         mock_log = MagicMock()
         result = await setup_tunnel(
@@ -167,12 +167,12 @@ class TestSetupTunnel:
     @pytest.mark.asyncio
     async def test_starts_when_token_auth_present(self):
         """Starts tunnel when token auth middleware is active."""
-        from kiro_claw.tunnel.setup import setup_tunnel
+        from kiro_crew.tunnel.setup import setup_tunnel
 
         mw = MagicMock()
         mw._is_token_auth = True
 
-        with patch("kiro_claw.tunnel.setup.TunnelManager") as mock_tm:
+        with patch("kiro_crew.tunnel.setup.TunnelManager") as mock_tm:
             mock_mgr = AsyncMock()
             mock_tm.return_value = mock_mgr
             result = await setup_tunnel(
@@ -190,8 +190,8 @@ class TestSetupTunnel:
     @pytest.mark.asyncio
     async def test_connect_callback_adds_origin(self):
         """Connect callback adds URL to CORS origins and sets tunnel URL."""
-        from kiro_claw.tunnel import get_tunnel_url, set_tunnel_url
-        from kiro_claw.tunnel.setup import setup_tunnel
+        from kiro_crew.tunnel import get_tunnel_url, set_tunnel_url
+        from kiro_crew.tunnel.setup import setup_tunnel
 
         set_tunnel_url("")
         allowed_origins: set = set()
@@ -206,7 +206,7 @@ class TestSetupTunnel:
         mw = MagicMock()
         mw._is_token_auth = True
 
-        with patch("kiro_claw.tunnel.setup.TunnelManager", side_effect=capture_tm):
+        with patch("kiro_crew.tunnel.setup.TunnelManager", side_effect=capture_tm):
             await setup_tunnel(
                 middlewares=[mw],
                 allowed_origins=allowed_origins,
@@ -216,16 +216,16 @@ class TestSetupTunnel:
                 log_api_access=MagicMock(),
             )
 
-        await captured_on_connect("https://gsanc-kiroclaw.tunnels.dev")
-        assert "https://gsanc-kiroclaw.tunnels.dev" in allowed_origins
-        assert get_tunnel_url() == "https://gsanc-kiroclaw.tunnels.dev"
+        await captured_on_connect("https://gsanc-kirocrew.tunnels.dev")
+        assert "https://gsanc-kirocrew.tunnels.dev" in allowed_origins
+        assert get_tunnel_url() == "https://gsanc-kirocrew.tunnels.dev"
         set_tunnel_url("")
 
     @pytest.mark.asyncio
     async def test_disconnect_callback_removes_origin(self):
         """Disconnect callback removes URL from CORS origins."""
-        from kiro_claw.tunnel import get_tunnel_url, set_tunnel_url
-        from kiro_claw.tunnel.setup import setup_tunnel
+        from kiro_crew.tunnel import get_tunnel_url, set_tunnel_url
+        from kiro_crew.tunnel.setup import setup_tunnel
 
         set_tunnel_url("")
         allowed_origins: set = set()
@@ -242,7 +242,7 @@ class TestSetupTunnel:
         mw = MagicMock()
         mw._is_token_auth = True
 
-        with patch("kiro_claw.tunnel.setup.TunnelManager", side_effect=capture_tm):
+        with patch("kiro_crew.tunnel.setup.TunnelManager", side_effect=capture_tm):
             await setup_tunnel(
                 middlewares=[mw],
                 allowed_origins=allowed_origins,
@@ -264,7 +264,7 @@ class TestStartLogsDisabledNotice:
     @pytest.mark.asyncio
     async def test_start_logs_oss_disabled_notice(self, manager: TunnelManager):
         """Stub: start() logs that the tunnel feature is unavailable in OSS."""
-        with patch("kiro_claw.tunnel.manager.logger") as mock_log:
+        with patch("kiro_crew.tunnel.manager.logger") as mock_log:
             await manager.start()
         mock_log.info.assert_called()
         assert manager._status.started_at > 0
@@ -274,7 +274,7 @@ class TestTunnelStatusEndpointDisabledField:
     @pytest.mark.asyncio
     async def test_disabled_response_has_reconnect_attempt(self):
         """Disabled response includes reconnect_attempt field."""
-        from kiro_claw.dashboard.handlers.tunnel import api_tunnel_status
+        from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 
         state = MagicMock()
         state.tunnel_manager = None
@@ -290,12 +290,12 @@ class TestTunnelStatusEndpointDisabledField:
 class TestAllowlistTunnelBranch:
     def test_send_dashboard_link_uses_tunnel_url(self):
         """When tunnel URL is set, presigned link uses it."""
-        from kiro_claw.tunnel import get_tunnel_url, set_tunnel_url
+        from kiro_crew.tunnel import get_tunnel_url, set_tunnel_url
 
-        set_tunnel_url("https://gsanc-kiroclaw.tunnels.dev")
+        set_tunnel_url("https://gsanc-kirocrew.tunnels.dev")
         try:
             url = get_tunnel_url()
-            assert url == "https://gsanc-kiroclaw.tunnels.dev"
+            assert url == "https://gsanc-kirocrew.tunnels.dev"
             # The actual send_dashboard_link requires too many deps to mock,
             # but we verify the get_tunnel_url path works
         finally:
@@ -307,11 +307,11 @@ class TestLoaderEdgeCases:
         """When tunnel value is not a dict, defaults are used."""
         import json
 
-        from kiro_claw.config.loader import KiroClawConfig
+        from kiro_crew.config.loader import KiroCrewConfig
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"tunnel": "invalid_string"}))
-        with patch("kiro_claw.config.loader.config_path", return_value=config_file):
-            cfg = KiroClawConfig.load()
+        with patch("kiro_crew.config.loader.config_path", return_value=config_file):
+            cfg = KiroCrewConfig.load()
         assert cfg.tunnel.enabled is False
         assert cfg.tunnel.name_mode == "username"

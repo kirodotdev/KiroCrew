@@ -13,10 +13,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.apps.discovery import _manifest_to_builtin_dict
-from kiro_claw.apps.manager import APP_MANIFEST_FILENAME, apps_dir, enable_app, install_app
-from kiro_claw.apps.manifest import AppManifest
-from kiro_claw.apps.routes import (
+from kiro_crew.apps.discovery import _manifest_to_builtin_dict
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, apps_dir, enable_app, install_app
+from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.routes import (
     _provider_is_configured,
     collect_publish_providers,
     register_app_routes,
@@ -101,7 +101,7 @@ def test_collect_skips_provider_without_id_or_endpoint():
 # --- filesystem configured-check -------------------------------------------
 
 def test_provider_is_configured_reads_app_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     data_dir = apps_dir() / "deploy-web" / "data"
     data_dir.mkdir(parents=True)
     # No config yet → not configured.
@@ -115,13 +115,13 @@ def test_provider_is_configured_reads_app_config(tmp_path, monkeypatch):
 
 
 def test_provider_is_configured_no_field_means_always(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     pp = {**_PP, "configuredField": ""}
     assert _provider_is_configured("deploy-web", pp) is True
 
 
 def test_provider_is_configured_rejects_path_traversal(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     pp = {**_PP, "configFile": "../../../etc/passwd"}
     assert _provider_is_configured("deploy-web", pp) is False
 
@@ -129,14 +129,14 @@ def test_provider_is_configured_rejects_path_traversal(tmp_path, monkeypatch):
 # --- live endpoint ----------------------------------------------------------
 
 def _setup_env(tmp_path, monkeypatch):
-    home = tmp_path / "kiroclaw-home"
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
-    import kiro_claw.apps.bridges as bridges_mod
+    import kiro_crew.apps.bridges as bridges_mod
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    import kiro_claw.apps.backend as bmod
+    import kiro_crew.apps.backend as bmod
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return home

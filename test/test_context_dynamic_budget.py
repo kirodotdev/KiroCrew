@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw import context as ctx
-from kiro_claw.memory import MemoryStore
-from kiro_claw.skills import SkillsLoader
+from kiro_crew import context as ctx
+from kiro_crew.memory import MemoryStore
+from kiro_crew.skills import SkillsLoader
 
 
 def _builder_for(store, tmp_path):
@@ -169,7 +169,7 @@ def test_per_message_cap_scales_and_never_exceeds_history_budget():
 def test_small_window_still_injects_recent_history(tmp_path):
     # A single very large recent message must still produce SOME history on a
     # 200K model (the newest message, truncated) — not an empty history block.
-    from kiro_claw.history import ConversationLog
+    from kiro_crew.history import ConversationLog
 
     log = ConversationLog(base_dir=tmp_path / "hist")
     key = "thread-small-win"
@@ -192,7 +192,7 @@ def test_small_window_still_injects_recent_history(tmp_path):
 
 
 def test_session_replay_budget_scales_with_window(tmp_path):
-    from kiro_claw.history import ConversationLog
+    from kiro_crew.history import ConversationLog
 
     log = ConversationLog(base_dir=tmp_path / "hist")
     key = "replay-scale"
@@ -209,7 +209,7 @@ def test_session_replay_budget_scales_with_window(tmp_path):
 
 def test_session_replay_default_window_unchanged(tmp_path):
     # No model_window ⇒ 1M reference ⇒ full _REPLAY_BUDGET_CHARS (unchanged).
-    from kiro_claw.history import ConversationLog
+    from kiro_crew.history import ConversationLog
 
     log = ConversationLog(base_dir=tmp_path / "hist")
     key = "replay-default"

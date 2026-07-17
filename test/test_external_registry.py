@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.apps.registry — External (federated) registry support."""
+"""Tests for kiro_crew.apps.registry — External (federated) registry support."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.apps.registry import (
+from kiro_crew.apps.registry import (
     _clone_sandbox_mode,
     _external_registry_cache_path,
     _external_registry_repos,
@@ -34,7 +34,7 @@ def cache_dir(tmp_path, monkeypatch):
     cache = tmp_path / "cache" / "app-manifests"
     cache.mkdir(parents=True)
     monkeypatch.setattr(
-        "kiro_claw.apps.registry._manifest_cache_dir",
+        "kiro_crew.apps.registry._manifest_cache_dir",
         lambda: cache,
     )
     return cache
@@ -102,12 +102,12 @@ class TestFetchExternalRegistryValidation:
         """Patch _sel_fn so tests don't abort on SEL unavailability."""
         mock_sel_instance = MagicMock()
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._sel_fn",
+            "kiro_crew.apps.registry._sel_fn",
             mock_sel_instance,
         )
         # Bypass OS-sandbox wrap — macOS 26 has no sandbox backend.
         monkeypatch.setattr(
-            "kiro_claw.apps.registry.wrap_argv", lambda argv, **k: (list(argv), None)
+            "kiro_crew.apps.registry.wrap_argv", lambda argv, **k: (list(argv), None)
         )
 
     @pytest.mark.asyncio
@@ -179,12 +179,12 @@ class TestFetchExternalRegistryParsing:
         """Patch _sel_fn so tests don't abort on SEL unavailability."""
         mock_sel_instance = MagicMock()
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._sel_fn",
+            "kiro_crew.apps.registry._sel_fn",
             mock_sel_instance,
         )
         # Bypass OS-sandbox wrap — macOS 26 has no sandbox backend.
         monkeypatch.setattr(
-            "kiro_claw.apps.registry.wrap_argv", lambda argv, **k: (list(argv), None)
+            "kiro_crew.apps.registry.wrap_argv", lambda argv, **k: (list(argv), None)
         )
 
     @pytest.mark.asyncio
@@ -255,7 +255,7 @@ class TestLoadExternalRegistries:
         mock_config = MagicMock()
         mock_config.registries = []
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
         result = await _load_external_registries()
@@ -274,7 +274,7 @@ class TestLoadExternalRegistries:
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
 
@@ -296,7 +296,7 @@ class TestLoadExternalRegistries:
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
 
@@ -326,11 +326,11 @@ class TestGetRegistryAppExternal:
         mock_config.registries = [mock_reg]
 
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._load_registry_file",
+            "kiro_crew.apps.registry._load_registry_file",
             lambda: [],  # empty core registry
         )
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
 
@@ -342,11 +342,11 @@ class TestGetRegistryAppExternal:
         mock_config = MagicMock()
         mock_config.registries = []
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._load_registry_file",
+            "kiro_crew.apps.registry._load_registry_file",
             lambda: [],
         )
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
 
@@ -367,11 +367,11 @@ class TestGetRegistryAppExternal:
         mock_config.registries = [mock_reg]
 
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._load_registry_file",
+            "kiro_crew.apps.registry._load_registry_file",
             lambda: [core_entry],
         )
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
 
@@ -459,13 +459,13 @@ class TestCloneSandboxMode:
 class TestKnownRegistryRepos:
     def test_includes_bundled_repos_when_no_external(self, cache_dir, monkeypatch):
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._load_registry_file",
+            "kiro_crew.apps.registry._load_registry_file",
             lambda: [{"name": "core", "repo": "CoreRepo"}],
         )
         mock_config = MagicMock()
         mock_config.registries = []
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
         assert known_registry_repos() == {"CoreRepo"}
@@ -482,11 +482,11 @@ class TestKnownRegistryRepos:
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._load_registry_file",
+            "kiro_crew.apps.registry._load_registry_file",
             lambda: [{"name": "core", "repo": "CoreRepo"}],
         )
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
         repos = known_registry_repos()
@@ -507,18 +507,18 @@ class TestKnownRegistryRepos:
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._load_registry_file",
+            "kiro_crew.apps.registry._load_registry_file",
             lambda: [],
         )
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
         assert "PCNRadar" in known_registry_repos()
 
     def test_fails_open_to_bundled_when_config_raises(self, cache_dir, monkeypatch):
         monkeypatch.setattr(
-            "kiro_claw.apps.registry._load_registry_file",
+            "kiro_crew.apps.registry._load_registry_file",
             lambda: [{"name": "core", "repo": "CoreRepo"}],
         )
 
@@ -526,7 +526,7 @@ class TestKnownRegistryRepos:
             raise RuntimeError("config blew up")
 
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             _boom,
         )
         # Must not raise — the allowlist falls open to the bundled set.
@@ -549,7 +549,7 @@ class TestExternalRegistryRepos:
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             lambda: mock_config,
         )
         # No bundled lookup here — helper returns ONLY external repos.
@@ -560,7 +560,7 @@ class TestExternalRegistryRepos:
             raise RuntimeError("config blew up")
 
         monkeypatch.setattr(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
             _boom,
         )
         # Distinct from known_registry_repos: the helper falls open to EMPTY,
@@ -581,16 +581,16 @@ class TestRegistryInstallAdmission:
 
     @pytest.fixture()
     def reg_home(self, tmp_path, monkeypatch):
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
         return home
 
     def _signed_manifest(self, name, secret, signer="acme"):
         import hashlib
         import hmac
 
-        from kiro_claw.apps.manifest import AppManifest
+        from kiro_crew.apps.manifest import AppManifest
 
         data = {
             "name": name, "version": "1.0.0", "displayName": name,
@@ -604,7 +604,7 @@ class TestRegistryInstallAdmission:
 
     @pytest.mark.asyncio
     async def test_signed_app_admitted_under_require_signature(self, reg_home):
-        from kiro_claw.apps.registry import install_from_registry
+        from kiro_crew.apps.registry import install_from_registry
 
         secret = "s3cr3t"
         self._write_policy(reg_home, {
@@ -613,14 +613,14 @@ class TestRegistryInstallAdmission:
         })
         manifest = self._signed_manifest("signed-reg", secret)
         with patch(
-            "kiro_claw.apps.registry.get_registry_app",
+            "kiro_crew.apps.registry.get_registry_app",
             return_value={"name": "signed-reg", "repo": "https://example.com/SignedRepo.git",
                           "branch": "mainline"},
         ), patch(
-            "kiro_claw.apps.registry._fetch_app_manifest",
+            "kiro_crew.apps.registry._fetch_app_manifest",
             new=AsyncMock(return_value=manifest),
         ), patch(
-            "kiro_claw.apps.registry._clone_build_app",
+            "kiro_crew.apps.registry._clone_build_app",
             new=AsyncMock(return_value={"ok": False, "error": "stop-after-admission"}),
         ) as mock_build:
             result = await install_from_registry("signed-reg")
@@ -631,21 +631,21 @@ class TestRegistryInstallAdmission:
 
     @pytest.mark.asyncio
     async def test_unsigned_app_denied_under_require_signature(self, reg_home):
-        from kiro_claw.apps.registry import install_from_registry
+        from kiro_crew.apps.registry import install_from_registry
 
         self._write_policy(reg_home, {
             "mode": "enforce", "require_signature": True,
             "approved": ["unsigned-reg"], "trust_keys": {"acme": "s3cr3t"},
         })
         with patch(
-            "kiro_claw.apps.registry.get_registry_app",
+            "kiro_crew.apps.registry.get_registry_app",
             return_value={"name": "unsigned-reg", "repo": "https://example.com/UnsignedRepo.git",
                           "branch": "mainline"},
         ), patch(
-            "kiro_claw.apps.registry._fetch_app_manifest",
+            "kiro_crew.apps.registry._fetch_app_manifest",
             new=AsyncMock(return_value={"name": "unsigned-reg", "version": "1.0.0"}),
         ), patch(
-            "kiro_claw.apps.registry._clone_build_app",
+            "kiro_crew.apps.registry._clone_build_app",
             new=AsyncMock(return_value={"ok": True, "pkg_dir": reg_home}),
         ) as mock_build:
             result = await install_from_registry("unsigned-reg")

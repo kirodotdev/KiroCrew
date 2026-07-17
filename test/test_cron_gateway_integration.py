@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.cron import CronJob, CronSchedule
+from kiro_crew.cron import CronJob, CronSchedule
 
 
 def _make_gw():
-    from kiro_claw.slack.gateway import GatewayOrchestrator
+    from kiro_crew.slack.gateway import GatewayOrchestrator
 
     gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
     gw.sessions = MagicMock()
@@ -45,7 +45,7 @@ def _make_script_job(**overrides):
         name="script-job",
         message="CR-123",
         schedule=CronSchedule(kind="every", every_secs=60),
-        script="~/.kiroclaw/crons/monitor.py:run",
+        script="~/.kirocrew/crons/monitor.py:run",
     )
     defaults.update(overrides)
     return CronJob(**defaults)
@@ -67,10 +67,10 @@ async def _run_script_callback(gw, job, script_result):
     """Run the cron callback with a mocked run_script_sandboxed result."""
     captured_cb = None
 
-    with patch("kiro_claw.slack.gateway.CronService") as mock_cron_cls, \
-         patch("kiro_claw.slack.gateway.run_script_sandboxed", return_value=script_result) as mock_run, \
-         patch("kiro_claw.slack.gateway.resolve_script_path"), \
-         patch("kiro_claw.slack.gateway.sel"):
+    with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
+         patch("kiro_crew.slack.gateway.run_script_sandboxed", return_value=script_result) as mock_run, \
+         patch("kiro_crew.slack.gateway.resolve_script_path"), \
+         patch("kiro_crew.slack.gateway.sel"):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -93,9 +93,9 @@ async def _run_command_callback(gw, job, cmd_result):
     """Run the cron callback with a mocked run_command_sandboxed result."""
     captured_cb = None
 
-    with patch("kiro_claw.slack.gateway.CronService") as mock_cron_cls, \
-         patch("kiro_claw.slack.gateway.run_command_sandboxed", return_value=cmd_result) as mock_run, \
-         patch("kiro_claw.slack.gateway.sel"):
+    with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
+         patch("kiro_crew.slack.gateway.run_command_sandboxed", return_value=cmd_result) as mock_run, \
+         patch("kiro_crew.slack.gateway.sel"):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -170,9 +170,9 @@ class TestScriptExecution:
         # Should skip without calling run_script_sandboxed
         captured_cb = None
 
-        with patch("kiro_claw.slack.gateway.CronService") as mock_cron_cls, \
-             patch("kiro_claw.slack.gateway.run_script_sandboxed") as mock_run, \
-             patch("kiro_claw.slack.gateway.sel"):
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
+             patch("kiro_crew.slack.gateway.run_script_sandboxed") as mock_run, \
+             patch("kiro_crew.slack.gateway.sel"):
 
             def capture_cron(on_job=None, **kw):
                 nonlocal captured_cb
@@ -234,7 +234,7 @@ class TestTimeoutPersistence:
     """Test that timeout field survives save/load cycle."""
 
     def test_timeout_round_trips(self, tmp_path):
-        from kiro_claw.cron import CronService
+        from kiro_crew.cron import CronService
         svc = CronService(base_dir=tmp_path)
         job = svc.add_job(
             name="timeout-test",

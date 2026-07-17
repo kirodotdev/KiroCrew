@@ -11,7 +11,7 @@ from pathlib import Path
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.discovery import discover_builtin_apps
+from kiro_crew.apps.discovery import discover_builtin_apps
 
 # ---------------------------------------------------------------------------
 # Helpers

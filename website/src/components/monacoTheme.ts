@@ -8,7 +8,7 @@ import type { editor } from 'monaco-editor'
  * Monarch grammars — they fall through to the default foreground.
  */
 
-export const kiroclawDark: editor.IStandaloneThemeData = {
+export const kirocrewDark: editor.IStandaloneThemeData = {
   base: 'vs-dark',
   inherit: true,
   rules: [
@@ -40,7 +40,7 @@ export const kiroclawDark: editor.IStandaloneThemeData = {
   },
 }
 
-export const kiroclawLight: editor.IStandaloneThemeData = {
+export const kirocrewLight: editor.IStandaloneThemeData = {
   base: 'vs',
   inherit: true,
   rules: [

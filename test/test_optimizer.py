@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.handlers.optimizer import (
+from kiro_crew.dashboard.handlers.optimizer import (
     OPTIMIZER_SYSTEM,
     handle_optimize,
 )
@@ -52,7 +52,7 @@ class TestOptimizerEndpoint:
 
     @pytest.mark.asyncio
     async def test_unchanged_response_from_llm(self):
-        from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
         mock_client = AsyncMock()
 
@@ -80,7 +80,7 @@ class TestOptimizerEndpoint:
 
     @pytest.mark.asyncio
     async def test_optimized_response_from_llm(self):
-        from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
         mock_client = AsyncMock()
         optimized_text = "Refactor the auth module: extract token validation into a separate service."
@@ -110,7 +110,7 @@ class TestOptimizerEndpoint:
     @pytest.mark.asyncio
     async def test_short_prompt_still_optimized(self):
         """Explicit user action means even short prompts get optimized."""
-        from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
         mock_client = AsyncMock()
 
@@ -155,7 +155,7 @@ class TestOptimizerEndpoint:
 
     @pytest.mark.asyncio
     async def test_quoted_response_stripped(self):
-        from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
         mock_client = AsyncMock()
 
@@ -182,7 +182,7 @@ class TestOptimizerEndpoint:
 
     @pytest.mark.asyncio
     async def test_context_truncated_to_2000_chars(self):
-        from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
         mock_client = AsyncMock()
         captured_prompt = []

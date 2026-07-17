@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 
-from kiro_claw.skill_usage import (
+from kiro_crew.skill_usage import (
     _MAX_AGE_SECS,
     SkillUsageLedger,
 )

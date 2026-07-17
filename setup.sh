@@ -1,28 +1,28 @@
 #!/bin/sh
-# KiroClaw first-time setup script (public build)
+# KiroCrew first-time setup script (public build)
 # Usage: source setup.sh   (bash or zsh), or: bash setup.sh
 #
-# Sets up KiroClaw using only public tooling:
+# Sets up KiroCrew using only public tooling:
 #   1. Node.js (via ensure-node.sh)
 #   2. Optional tools (git-lfs, ffmpeg for voice)
 #   3. Agent backend: claude-agent-acp (npm i -g)
 #   4. Build frontend (npm/vite) + backend (pip)
 #   5. PATH config
-#   6. Agent config (kiroclaw setup --agent-only)
+#   6. Agent config (kirocrew setup --agent-only)
 
 # Resolve script directory (works in bash and zsh, sourced or executed)
 if [ -n "$BASH_SOURCE" ]; then
-    _kiroclaw_dir="$(cd "$(dirname "$BASH_SOURCE")" && pwd)"
+    _kirocrew_dir="$(cd "$(dirname "$BASH_SOURCE")" && pwd)"
 elif [ -n "$ZSH_VERSION" ]; then
-    _kiroclaw_dir="$(cd "$(dirname "${(%):-%x}")" && pwd)"
+    _kirocrew_dir="$(cd "$(dirname "${(%):-%x}")" && pwd)"
 else
-    _kiroclaw_dir="$(pwd)"
+    _kirocrew_dir="$(pwd)"
 fi
-cd "$_kiroclaw_dir" || return 1
+cd "$_kirocrew_dir" || return 1
 
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
 
-echo "🐾 KiroClaw Setup"
+echo "🐾 KiroCrew Setup"
 echo ""
 
 # ── Ensure PATH includes common install locations ──
@@ -63,8 +63,8 @@ echo ""
 echo "── Step 2: Dependencies ──"
 
 # Node.js (>= 18 recommended for the website build)
-if [ -x "$_kiroclaw_dir/ensure-node.sh" ]; then
-    bash "$_kiroclaw_dir/ensure-node.sh"
+if [ -x "$_kirocrew_dir/ensure-node.sh" ]; then
+    bash "$_kirocrew_dir/ensure-node.sh"
     # Re-source managers so newly-installed node lands on PATH
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -143,20 +143,20 @@ echo ""
 
 echo "── Step 4: Build ──"
 
-# Frontend: vite emits to website/dist; stage into src/kiro_claw/static/dist
-if _check node && [ -d "$_kiroclaw_dir/website" ]; then
+# Frontend: vite emits to website/dist; stage into src/kiro_crew/static/dist
+if _check node && [ -d "$_kirocrew_dir/website" ]; then
     echo "→ Building frontend (website/)..."
-    if (cd "$_kiroclaw_dir/website" \
+    if (cd "$_kirocrew_dir/website" \
             && { [ -f package-lock.json ] && npm ci --no-audit --no-fund --loglevel=error \
                  || npm install --no-audit --no-fund --loglevel=error; } \
             && npm run build); then
-        _dist_src="$_kiroclaw_dir/website/dist"
-        _dist_dst="$_kiroclaw_dir/src/kiro_claw/static/dist"
+        _dist_src="$_kirocrew_dir/website/dist"
+        _dist_dst="$_kirocrew_dir/src/kiro_crew/static/dist"
         if [ -d "$_dist_src" ]; then
             rm -rf "$_dist_dst"
             mkdir -p "$(dirname "$_dist_dst")"
             cp -R "$_dist_src" "$_dist_dst"
-            echo "  ✅ Frontend built and staged → src/kiro_claw/static/dist"
+            echo "  ✅ Frontend built and staged → src/kiro_crew/static/dist"
         else
             echo "  ⚠️  website/dist not found after build — dashboard will use legacy fallback"
         fi
@@ -168,7 +168,7 @@ else
 fi
 
 # Backend: venv + pip install -e .
-_venv="$_kiroclaw_dir/.venv"
+_venv="$_kirocrew_dir/.venv"
 if [ ! -d "$_venv" ] || [ ! -x "$_venv/bin/python" ]; then
     echo "→ Creating virtual environment..."
     "$_py" -m venv "$_venv" || {
@@ -177,24 +177,24 @@ if [ ! -d "$_venv" ] || [ ! -x "$_venv/bin/python" ]; then
         return 1 2>/dev/null || exit 1
     }
 fi
-echo "→ Installing kiroclaw (pip)..."
+echo "→ Installing kirocrew (pip)..."
 "$_venv/bin/pip" install --upgrade pip setuptools wheel -q 2>/dev/null || true
-if KIROCLAW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_kiroclaw_dir" -q; then
+if KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_kirocrew_dir" -q; then
     echo "  ✅ Build succeeded"
     # Record install method for tooling that branches on it
-    echo "pip" > "$_kiroclaw_dir/.install-method"
+    echo "pip" > "$_kirocrew_dir/.install-method"
 else
     echo "  ❌ pip install failed"
     cd - > /dev/null 2>&1
     return 1 2>/dev/null || exit 1
 fi
-# Symlink CLI so `kiroclaw` works on PATH
+# Symlink CLI so `kirocrew` works on PATH
 mkdir -p "$HOME/.local/bin"
-ln -sf "$_venv/bin/kiroclaw" "$HOME/.local/bin/kiroclaw"
-if _check kiroclaw; then
-    echo "  ✅ kiroclaw command available ($(which kiroclaw))"
+ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
+if _check kirocrew; then
+    echo "  ✅ kirocrew command available ($(which kirocrew))"
 else
-    echo "  ✅ kiroclaw symlinked → ~/.local/bin/kiroclaw (restart shell or fix PATH in Step 5)"
+    echo "  ✅ kirocrew symlinked → ~/.local/bin/kirocrew (restart shell or fix PATH in Step 5)"
 fi
 echo ""
 
@@ -213,9 +213,9 @@ _add_to_rc() {
         echo "  ✅ Already in $_rc"
         return
     fi
-    # Remove any old KiroClaw PATH entry and replace with current
-    if grep -qF "KiroClaw" "$_rc" 2>/dev/null; then
-        sed -i.bak '/# KiroClaw/d;/KiroClaw.*bin/d;/\.local\/bin/d' "$_rc"
+    # Remove any old KiroCrew PATH entry and replace with current
+    if grep -qF "KiroCrew" "$_rc" 2>/dev/null; then
+        sed -i.bak '/# KiroCrew/d;/KiroCrew.*bin/d;/\.local\/bin/d' "$_rc"
         rm -f "${_rc}.bak"
     fi
     printf "→ Add ~/.local/bin to PATH permanently in %s? [Y/n] " "$_rc"
@@ -223,7 +223,7 @@ _add_to_rc() {
     case "${_answer:-Y}" in
         [Yy]*)
             echo "" >> "$_rc"
-            echo "# KiroClaw" >> "$_rc"
+            echo "# KiroCrew" >> "$_rc"
             echo "$_path_line" >> "$_rc"
             echo "  ✅ Added to $_rc"
             ;;
@@ -238,15 +238,15 @@ echo ""
 
 echo "── Step 6: Agent Config ──"
 echo "→ Installing agent config..."
-KIROCLAW_PROJECT_DIR="$_kiroclaw_dir" kiroclaw setup --agent-only \
-    || echo "  ⚠️  kiroclaw setup --agent-only failed (run manually later)"
+KIROCREW_PROJECT_DIR="$_kirocrew_dir" kirocrew setup --agent-only \
+    || echo "  ⚠️  kirocrew setup --agent-only failed (run manually later)"
 
 echo ""
 echo "🐾 Setup complete!"
 echo ""
-echo "  kiroclaw doctor     # verify everything"
-echo "  kiroclaw gateway    # start dashboard + gateway"
-echo "  kiroclaw chat       # interactive chat"
+echo "  kirocrew doctor     # verify everything"
+echo "  kirocrew gateway    # start dashboard + gateway"
+echo "  kirocrew chat       # interactive chat"
 echo ""
 echo "  Optional — local vector memory (embeddings):"
 echo "    Install ollama (https://ollama.com), then: ollama pull qwen3-embedding:0.6b"

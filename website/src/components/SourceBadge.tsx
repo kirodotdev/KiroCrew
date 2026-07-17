@@ -1,6 +1,6 @@
 const sourceColorMap: Record<string, string> = {
   aim: 'bg-aim/15 text-aim',
-  kiroclaw: 'bg-accent/15 text-accent',
+  kirocrew: 'bg-accent/15 text-accent',
   project: 'text-ok',
 }
 const defaultColor = 'bg-muted/10 text-muted'

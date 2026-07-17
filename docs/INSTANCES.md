@@ -2,8 +2,8 @@
 
 **Status:** Implemented (opt-in, Phases 1–4)
 
-> Lets a single KiroClaw gateway manage and switch between several **remote**
-> KiroClaw instances (dev hosts, EC2, home servers) over SSH tunnels, embedding
+> Lets a single KiroCrew gateway manage and switch between several **remote**
+> KiroCrew instances (dev hosts, EC2, home servers) over SSH tunnels, embedding
 > each remote dashboard in one `/instances` page. Opt-in: off by default.
 
 ---
@@ -25,7 +25,7 @@
 
 ## 1. Overview
 
-A KiroClaw gateway normally binds the dashboard to loopback only. The Instances
+A KiroCrew gateway normally binds the dashboard to loopback only. The Instances
 feature lets one gateway (the **hub**) reach *other* gateways running on remote
 hosts by opening an SSH `-L` forward to each remote's loopback dashboard port,
 minting a short-lived dashboard token on the remote, and embedding the remote
@@ -50,8 +50,8 @@ registry, auto-tunneling, warm-set management, health probing, and self-healing.
 ## 2. Enabling the feature
 
 ```bash
-kiroclaw config set instances.enabled true
-kiroclaw restart
+kirocrew config set instances.enabled true
+kirocrew restart
 ```
 
 When enabled, the gateway:
@@ -78,16 +78,16 @@ shows an opt-in hint.
  │  dashboard/handlers_instances.py                                         │
  │            │                                                             │
  │  instances/ package                                                      │
- │   ├─ registry.py         ~/.kiroclaw/instances.json                      │
+ │   ├─ registry.py         ~/.kirocrew/instances.json                      │
  │   ├─ port_allocator.py   loopback ports from base 7778                   │
- │   ├─ token_mint.py       `ssh <host> kiroclaw token` → JWT (never logged)│
+ │   ├─ token_mint.py       `ssh <host> kirocrew token` → JWT (never logged)│
  │   ├─ ssh_tunnel_manager  supervised `ssh -N -L`, probe, self-heal, refresh│
  │   └─ diagnostics.py      ssh → remote-dashboard → local-forward ladder    │
  └──────────────────────────────────────────────────────────────────────────┘
         │ ssh -N -L 127.0.0.1:<local>:127.0.0.1:<remote>  <ssh_host>
         ▼
  ┌──────────────── Remote gateway (dev host / EC2 / home server) ───────────┐
- │  kiroclaw gateway bound to 127.0.0.1:<remote_port> (default 7777)        │
+ │  kirocrew gateway bound to 127.0.0.1:<remote_port> (default 7777)        │
  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -95,9 +95,9 @@ Module responsibilities:
 
 | Module | Responsibility |
 |--------|----------------|
-| `registry.py` | Persistent list of configured instances (`~/.kiroclaw/instances.json`) + `last_active_id`. Validates `ssh_host`/`remote_bin` at add/update. |
+| `registry.py` | Persistent list of configured instances (`~/.kirocrew/instances.json`) + `last_active_id`. Validates `ssh_host`/`remote_bin` at add/update. |
 | `port_allocator.py` | Hands out free loopback ports from `tunnel_base_port` (7778), skipping bound/excluded ports. |
-| `token_mint.py` | Runs `kiroclaw token` on the remote over SSH via a bin-candidate ladder; parses the JWT from the printed URL. Token is returned in-memory only, **never logged**. |
+| `token_mint.py` | Runs `kirocrew token` on the remote over SSH via a bin-candidate ladder; parses the JWT from the printed URL. Token is returned in-memory only, **never logged**. |
 | `ssh_tunnel_manager.py` | Supervises one `ssh -N -L` child per instance: readiness wait, health probe, 2-tier self-heal, proactive token refresh, remote restart. |
 | `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
@@ -136,7 +136,7 @@ Module responsibilities:
 
 ## 5. Configuration
 
-All under `instances.*` (defaults in `kiro_claw.instances.constants`):
+All under `instances.*` (defaults in `kiro_crew.instances.constants`):
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -145,10 +145,10 @@ All under `instances.*` (defaults in `kiro_claw.instances.constants`):
 | `instances.tunnel_base_port` | `7778` | First local loopback port for an SSH `-L` forward; the allocator increments from here. |
 
 ```bash
-kiroclaw config set instances.warm_set_cap 3
+kirocrew config set instances.warm_set_cap 3
 ```
 
-**Registry** (`~/.kiroclaw/instances.json`) — one record per instance:
+**Registry** (`~/.kirocrew/instances.json`) — one record per instance:
 `id, name, ssh_host, remote_port (default 7777), local_port, ttl (default 20h),
 remote_bin, was_connected`, plus a top-level `last_active_id`.
 
@@ -194,7 +194,7 @@ denial) emits a SEL audit event.
 
 ## 8. Using it (step by step)
 
-1. **Enable** on the hub: `kiroclaw config set instances.enabled true && kiroclaw restart`.
+1. **Enable** on the hub: `kirocrew config set instances.enabled true && kirocrew restart`.
 2. Open the dashboard and go to **Instances** (`/instances`).
 3. **Add** an instance in the Manage panel:
    - *Name* — any label (e.g. "Dev Host 1").
@@ -210,7 +210,7 @@ denial) emits a SEL audit event.
 
 > Prerequisite: you can already `ssh <ssh_host>` non-interactively from the hub
 > (a valid SSH key/cert in your `ssh-agent`, no password prompt), and the remote
-> has `kiroclaw` installed and a gateway running on its loopback port.
+> has `kirocrew` installed and a gateway running on its loopback port.
 
 ---
 
@@ -258,7 +258,7 @@ Host my-ec2
 
 Then add an instance with **SSH host / alias = `my-ec2`** and remote port `7777`.
 Prerequisites on the hub: a passphrase-less key (or an `ssh-agent` already
-holding it — `BatchMode` will not prompt), and `kiroclaw` installed + a gateway
+holding it — `BatchMode` will not prompt), and `kirocrew` installed + a gateway
 running on the EC2 instance's loopback port.
 
 Simpler cases also work without an alias: `ec2-user@10.0.1.5` or

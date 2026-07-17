@@ -98,7 +98,7 @@ describe('safeSetItem', () => {
   })
 
   it('escalates past tier 1 to evict mc-paste-store-v1 when height caches are absent', () => {
-    // The real-world failure mode behind the looping KIROCLAW boot reveal: the
+    // The real-world failure mode behind the looping KIROCREW boot reveal: the
     // quota hog is the multi-MB mc-paste-store-v1 side table, and there are no
     // vc_heights_* keys to reclaim. Single-tier reclaim freed nothing and the
     // write was silently lost; tier escalation must drop mc-paste-store-v1.
@@ -126,7 +126,7 @@ describe('safeSetItem', () => {
   })
 
   it('reclaims touched-files lists as part of tier 2', () => {
-    window.localStorage.setItem('kiroclaw:touched-files:chat-1-100', '["a.ts"]')
+    window.localStorage.setItem('kirocrew:touched-files:chat-1-100', '["a.ts"]')
 
     const real = Storage.prototype.setItem
     const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
@@ -134,15 +134,15 @@ describe('safeSetItem', () => {
       key: string,
       value: string,
     ) {
-      if (this.getItem('kiroclaw:touched-files:chat-1-100') !== null
-        && !key.startsWith('kiroclaw:touched-files:')) {
+      if (this.getItem('kirocrew:touched-files:chat-1-100') !== null
+        && !key.startsWith('kirocrew:touched-files:')) {
         throw quotaError()
       }
       real.call(this, key, value)
     })
 
     expect(safeSetItem('k', 'v')).toBe(true)
-    expect(window.localStorage.getItem('kiroclaw:touched-files:chat-1-100')).toBeNull()
+    expect(window.localStorage.getItem('kirocrew:touched-files:chat-1-100')).toBeNull()
     spy.mockRestore()
   })
 
@@ -166,8 +166,8 @@ describe('safeSetItem', () => {
     // The watermark (useTouchedFiles) shares the touched-files prefix but must
     // survive a tier-2 sweep — evicting it would resurface previously-cleared
     // agent-touched files. Only the list entry should be reclaimed.
-    window.localStorage.setItem('kiroclaw:touched-files:chat-1-100', '["a.ts"]')
-    window.localStorage.setItem('kiroclaw:touched-files:chat-1-100:toolClearedAt', '1700000000000')
+    window.localStorage.setItem('kirocrew:touched-files:chat-1-100', '["a.ts"]')
+    window.localStorage.setItem('kirocrew:touched-files:chat-1-100:toolClearedAt', '1700000000000')
 
     const real = Storage.prototype.setItem
     const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
@@ -176,17 +176,17 @@ describe('safeSetItem', () => {
       value: string,
     ) {
       // Fail until the (non-watermark) list entry is gone.
-      if (this.getItem('kiroclaw:touched-files:chat-1-100') !== null
-        && !key.startsWith('kiroclaw:touched-files:')) {
+      if (this.getItem('kirocrew:touched-files:chat-1-100') !== null
+        && !key.startsWith('kirocrew:touched-files:')) {
         throw quotaError()
       }
       real.call(this, key, value)
     })
 
     expect(safeSetItem('k', 'v')).toBe(true)
-    expect(window.localStorage.getItem('kiroclaw:touched-files:chat-1-100')).toBeNull()
+    expect(window.localStorage.getItem('kirocrew:touched-files:chat-1-100')).toBeNull()
     // Watermark survived the sweep.
-    expect(window.localStorage.getItem('kiroclaw:touched-files:chat-1-100:toolClearedAt'))
+    expect(window.localStorage.getItem('kirocrew:touched-files:chat-1-100:toolClearedAt'))
       .toBe('1700000000000')
     spy.mockRestore()
   })

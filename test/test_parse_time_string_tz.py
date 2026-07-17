@@ -4,7 +4,7 @@ from datetime import datetime
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-import kiro_claw.mcp_cron as mcp_cron_mod
+import kiro_crew.mcp_cron as mcp_cron_mod
 
 
 def test_at_time_uses_config_timezone_not_system():

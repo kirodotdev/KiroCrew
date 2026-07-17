@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.vector_memory import (
+from kiro_crew.vector_memory import (
     _HAS_FAISS,
     _HAS_NUMPY,
     _MMR_MAX_POOL,
@@ -1177,7 +1177,7 @@ class TestFaissDimMismatch:
 
         import numpy as np
 
-        import kiro_claw.vector_memory as vm_mod
+        import kiro_crew.vector_memory as vm_mod
 
         # Mock faiss with a real-behaving IndexFlatIP stand-in
         mock_index = MagicMock()
@@ -1233,7 +1233,7 @@ class TestFaissDimMismatch:
 
         import numpy as np
 
-        import kiro_claw.vector_memory as vm_mod
+        import kiro_crew.vector_memory as vm_mod
 
         mock_index = MagicMock()
         mock_index.ntotal = 0
@@ -1280,14 +1280,14 @@ class TestEmbeddingDimPlumbing:
             original_init(self, *args, **kwargs)
 
         with (
-            patch("kiro_claw.cli_commands.KiroClawConfig.load", return_value=mock_cfg),
+            patch("kiro_crew.cli_commands.KiroCrewConfig.load", return_value=mock_cfg),
             patch.object(VectorMemoryStore, "__init__", capturing_init),
             patch.object(VectorMemoryStore, "init", return_value=None),
             patch.object(VectorMemoryStore, "close", return_value=None),
         ):
             import argparse
 
-            from kiro_claw.cli_commands import _learn
+            from kiro_crew.cli_commands import _learn
 
             args = argparse.Namespace(learn_action="list")
             try:
@@ -1313,14 +1313,14 @@ class TestEmbeddingDimPlumbing:
             original_init(self, *args, **kwargs)
 
         with (
-            patch("kiro_claw.cli_commands.KiroClawConfig.load", return_value=mock_cfg),
+            patch("kiro_crew.cli_commands.KiroCrewConfig.load", return_value=mock_cfg),
             patch.object(VectorMemoryStore, "__init__", capturing_init),
             patch.object(VectorMemoryStore, "init", return_value=None),
             patch.object(VectorMemoryStore, "close", return_value=None),
         ):
             import argparse
 
-            from kiro_claw.cli_commands import _memory_cmd
+            from kiro_crew.cli_commands import _memory_cmd
 
             args = argparse.Namespace(mem_action="list")
             try:
@@ -1334,7 +1334,7 @@ class TestEmbeddingDimPlumbing:
         """Dashboard _get_vector_store fallback constructs store with cfg embedding_dim."""
         from unittest.mock import MagicMock
 
-        import kiro_claw.dashboard.handlers.memory as mem_mod
+        import kiro_crew.dashboard.handlers.memory as mem_mod
 
         mock_cfg = MagicMock()
         mock_cfg.memory.embedding_dim = 384
@@ -1350,16 +1350,16 @@ class TestEmbeddingDimPlumbing:
             def init(self):
                 pass
 
-        # _get_vector_store does lazy `from kiro_claw.config.loader import KiroClawConfig`
-        # and `from kiro_claw.vector_memory import VectorMemoryStore` inside the function.
+        # _get_vector_store does lazy `from kiro_crew.config.loader import KiroCrewConfig`
+        # and `from kiro_crew.vector_memory import VectorMemoryStore` inside the function.
         # Patch at the source module so the local import picks them up.
-        import kiro_claw.config.loader as loader_mod
-        import kiro_claw.vector_memory as vm_mod
+        import kiro_crew.config.loader as loader_mod
+        import kiro_crew.vector_memory as vm_mod
 
         mock_config_cls = MagicMock()
         mock_config_cls.load.return_value = mock_cfg
 
-        monkeypatch.setattr(loader_mod, "KiroClawConfig", mock_config_cls)
+        monkeypatch.setattr(loader_mod, "KiroCrewConfig", mock_config_cls)
         monkeypatch.setattr(vm_mod, "VectorMemoryStore", TrackingStore)
 
         # Mock _get_memory to return a Memory with no vector_store
@@ -1393,7 +1393,7 @@ class TestWriteEpisodicWithoutEmbedding:
         """Store whose FAISS index is a populated mock (ntotal=1)."""
         from unittest.mock import MagicMock
 
-        import kiro_claw.vector_memory as vm_mod
+        import kiro_crew.vector_memory as vm_mod
 
         mock_faiss = MagicMock()
         monkeypatch.setattr(vm_mod, "_HAS_FAISS", True)

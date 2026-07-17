@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ======================================================================
-#  KiroClaw — cloud launcher bootstrap (macOS / Linux)
+#  KiroCrew — cloud launcher bootstrap (macOS / Linux)
 # ======================================================================
 #  Ensures the client prerequisites — Python, the AWS CLI, and the SSM
 #  Session Manager plugin — then hands off to the Python launcher wizard
-#  (`kiroclaw cloud launch`), which provisions + configures an EC2 instance
+#  (`kirocrew cloud launch`), which provisions + configures an EC2 instance
 #  in YOUR OWN AWS account and opens the dashboard.
 #
 #  This is the thin cold-start bootstrapper: all interesting logic lives in
-#  the Python `kiro_claw.cloud` module (testable, cross-platform). It NEVER
+#  the Python `kiro_crew.cloud` module (testable, cross-platform). It NEVER
 #  stores AWS credentials — the aws CLI resolves them from your profile/SSO.
 #
 #  Usage (from a clone):   bash cloud-install.sh [--size <tier>] [--non-interactive]
@@ -46,7 +46,7 @@ ARCH="$(uname -m)"
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 echo
-echo "  ${MAGENTA}${BOLD}KiroClaw — run on your own AWS${RESET}"
+echo "  ${MAGENTA}${BOLD}KiroCrew — run on your own AWS${RESET}"
 echo "  ${DIM}Platform: $OS $ARCH${RESET}"
 
 # --- 1. Python -------------------------------------------------------------
@@ -125,31 +125,31 @@ else
     rm -rf "$tmp"
 fi
 
-# --- 4. KiroClaw client + launch ------------------------------------------
-step 4 "KiroClaw client"
-info "Installing the KiroClaw client (pip, editable)…"
+# --- 4. KiroCrew client + launch ------------------------------------------
+step 4 "KiroCrew client"
+info "Installing the KiroCrew client (pip, editable)…"
 _venv="$REPO_ROOT/.venv"
 [ -x "$_venv/bin/python" ] || "$PY" -m venv "$_venv"
 "$_venv/bin/pip" install --upgrade pip -q 2>/dev/null || true
-KIROCLAW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$REPO_ROOT" -q && ok "KiroClaw client installed" || { warn "pip install failed"; exit 1; }
+KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$REPO_ROOT" -q && ok "KiroCrew client installed" || { warn "pip install failed"; exit 1; }
 mkdir -p "$HOME/.local/bin"
-ln -sf "$_venv/bin/kiroclaw" "$HOME/.local/bin/kiroclaw"
-KC="$_venv/bin/kiroclaw"
+ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
+KC="$_venv/bin/kirocrew"
 
 # Confirm AWS is configured before launching.
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
     warn "AWS credentials aren't configured yet."
     info "Run one of:  ${CYAN}aws configure sso${RESET}  (recommended)  or  ${CYAN}aws configure${RESET}"
-    info "Then launch:  ${CYAN}kiroclaw cloud launch${RESET}"
+    info "Then launch:  ${CYAN}kirocrew cloud launch${RESET}"
     exit 0
 fi
 ok "AWS credentials resolve."
 
 if [ "$NONINTERACTIVE" -eq 1 ]; then
-    info "Prerequisites ready. Launch when you're set:  ${CYAN}kiroclaw cloud launch${RESET}"
+    info "Prerequisites ready. Launch when you're set:  ${CYAN}kirocrew cloud launch${RESET}"
     exit 0
 fi
 
 echo
-echo "  ${CYAN}Launching KiroClaw on AWS…${RESET}"
+echo "  ${CYAN}Launching KiroCrew on AWS…${RESET}"
 if [ -n "$SIZE" ]; then "$KC" cloud launch --size "$SIZE"; else "$KC" cloud launch; fi

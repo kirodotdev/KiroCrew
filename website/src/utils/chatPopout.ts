@@ -21,7 +21,7 @@ import {
  * The pure helpers are re-exported so tests keep importing them from here.
  */
 
-export const CHAT_POPOUT_CHANNEL = 'kiroclaw-chat-popout'
+export const CHAT_POPOUT_CHANNEL = 'kirocrew-chat-popout'
 
 export { HEARTBEAT_MS, STALE_MS, applyMessage, pruneStale }
 export type { PopoutMap, PopoutMsg }

@@ -1,4 +1,4 @@
-"""Tests for the extracted ``kiro_claw.config.validation`` module.
+"""Tests for the extracted ``kiro_crew.config.validation`` module.
 
 Covers the schema-introspection helpers, the ``validate_config_data`` entry
 point, and — most importantly — the new ``ConfigCache`` object, whose explicit
@@ -12,8 +12,8 @@ import logging
 
 import pytest
 
-from kiro_claw.config import loader as _loader_module
-from kiro_claw.config import validation
+from kiro_crew.config import loader as _loader_module
+from kiro_crew.config import validation
 
 
 class TestConfigCache:
@@ -116,21 +116,21 @@ class TestValidateConfigData:
     def test_unrecognized_top_level_key_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         # Warnings must land on the loader's logger channel, not validation's
         # own __name__ logger (preserves the observable contract).
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.config.loader"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             validation.validate_config_data({"totally_unknown_key": 1})
         assert any("unrecognized top-level keys" in r.message for r in caplog.records)
 
     def test_warning_logger_name_is_loader_not_validation(self) -> None:
         # Pin the deliberate logger-name choice so an accidental
         # getLogger(__name__) refactor is caught.
-        assert validation.logger.name == "kiro_claw.config.loader"
+        assert validation.logger.name == "kiro_crew.config.loader"
 
     @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_enum_violation_warns_and_strips_value(self, caplog: pytest.LogCaptureFixture) -> None:
         # agent.provider is an enum field; an out-of-enum value must be warned
         # about and stripped in-place so the loader falls back to the default.
         data = {"agent": {"provider": "not_a_real_provider"}}
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.config.loader"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             validation.validate_config_data(data)
         assert any("enum violation" in r.message for r in caplog.records)
         # the invalid value was removed (so the dataclass default applies)
@@ -141,7 +141,7 @@ class TestValidateConfigData:
         # session.timeout_secs is an integer field; a string value is a type
         # mismatch that must be warned about and stripped.
         data = {"session": {"timeout_secs": "not-an-int"}}
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.config.loader"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             validation.validate_config_data(data)
         assert any("type mismatch" in r.message for r in caplog.records)
         assert "timeout_secs" not in data.get("session", {})
@@ -166,7 +166,7 @@ class TestValidateConfigData:
 
 
 class TestLoaderBackCompatReexport:
-    """The C3 symbols remain importable from ``kiro_claw.config.loader``."""
+    """The C3 symbols remain importable from ``kiro_crew.config.loader``."""
 
     def test_validate_alias_points_at_validation_impl(self) -> None:
         assert _loader_module._validate_config_data is validation.validate_config_data

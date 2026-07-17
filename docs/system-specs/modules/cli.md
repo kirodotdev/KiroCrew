@@ -4,94 +4,94 @@ Last Updated: 2026-07-09 (cloud launch resume safety)
 
 ## Overview
 
-The CLI module (`kiro_claw/cli.py`) provides the `kiroclaw` command using stdlib `argparse`.
+The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
 
 ## Project Directory Detection
 
-At startup, `main()` auto-detects the project root and sets `KIROCLAW_PROJECT_DIR`:
+At startup, `main()` auto-detects the project root and sets `KIROCREW_PROJECT_DIR`:
 
-1. If `KIROCLAW_PROJECT_DIR` env var is already set, use it
-2. Walk up from CWD looking for a directory with both `skills/` and `src/kiro_claw/` (`_PROJECT_MARKERS`). The project-level `agents/` dir was removed when agent config was consolidated into `src/kiro_claw/config/` (commit bbbc1f6e), so the marker no longer references it — a stale `agents/` requirement left detection (and the dashboard changelog) silently broken.
-3. Read saved path from `~/.kiroclaw/project_dir` (written by `kiroclaw setup`); the saved path is re-validated against the same markers
+1. If `KIROCREW_PROJECT_DIR` env var is already set, use it
+2. Walk up from CWD looking for a directory with both `skills/` and `src/kiro_crew/` (`_PROJECT_MARKERS`). The project-level `agents/` dir was removed when agent config was consolidated into `src/kiro_crew/config/` (commit bbbc1f6e), so the marker no longer references it — a stale `agents/` requirement left detection (and the dashboard changelog) silently broken.
+3. Read saved path from `~/.kirocrew/project_dir` (written by `kirocrew setup`); the saved path is re-validated against the same markers
 
-This allows `kiroclaw` to find project-level agent config and skills from any directory.
+This allows `kirocrew` to find project-level agent config and skills from any directory.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `kiroclaw chat -m "msg"` | Send a single message, print streaming response |
-| `kiroclaw chat` | Interactive chat mode (readline, exit with Ctrl+D) |
-| `kiroclaw chat --model X` | Override model for this session |
-| `kiroclaw gateway` | Start the KiroClaw server (dashboard + Slack) |
-| `kiroclaw gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
-| `kiroclaw gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
-| `kiroclaw setup` | Install agent config, save project dir, configure credentials |
-| `kiroclaw setup --agent-only` | Only install agent config (skip credentials) |
-| `kiroclaw doctor` | Verify kiro-cli is installed and config is valid |
-| `kiroclaw cron add/list/remove` | Manage cron jobs |
-| `kiroclaw spawn run/list` | Manage background subagents |
-| `kiroclaw learn add/list/remove` | Manage learned corrections |
-| `kiroclaw run TASK.md` | Run an autonomous task from a spec file |
-| `kiroclaw token` | Print a dashboard access URL with auth token |
-| `kiroclaw logout` | Revoke all active dashboard sessions |
-| `kiroclaw manifest` | Generate Slack manifest with user alias auto-populated |
-| `kiroclaw update` | Update to latest version (git pull + rebuild) |
-| `kiroclaw status` | Show runtime stats from running gateway |
-| `kiroclaw stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
-| `kiroclaw restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active, otherwise terminates the foreground gateway and respawns it detached). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
-| `kiroclaw service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
-| `kiroclaw service uninstall` | Stop and remove the systemd unit / launchd plist. |
-| `kiroclaw service status` | Show service status (`systemctl status` or `launchctl list`). No sudo required. |
-| `kiroclaw logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kiroclaw/gateway.log`. |
-| `kiroclaw logs -f` | Follow logs live (long-running tail). |
-| `kiroclaw cloud launch/list/status/connect/stop/start/destroy/iam-policy/doctor` | Provision, connect to, and manage a KiroClaw EC2 instance in the user's AWS account. |
-| `kiroclaw security events` | Show recent SEL audit events (`-n N` for count) |
-| `kiroclaw security verify` | Verify SEL HMAC chain integrity |
-| `kiroclaw snapshot` | Create a .tar.gz snapshot of all KiroClaw state |
-| `kiroclaw snapshot --keep N` | Auto-prune to N most recent snapshots (default 7) |
-| `kiroclaw snapshot --list` | List existing snapshots |
-| `kiroclaw restore <file>` | Restore from a snapshot (auto-detects replace vs merge) |
-| `kiroclaw restore <file> --mode replace\|merge` | Force restore mode |
-| `kiroclaw restore <file> --components X,Y` | Selective component restore |
-| `kiroclaw restore <file> --dry-run` | Preview restore without writing |
-| `kiroclaw restore --list-components` | Show available component names |
-| `kiroclaw config get [key]` | Print full config or a dot-path value |
-| `kiroclaw config set <key> <val>` | Set a config value (auto type detection) |
-| `kiroclaw config set --file <path>` | Replace config from a JSON file |
-| `kiroclaw config edit` | Open config in `$EDITOR` |
-| `kiroclaw memory show/edit` | Show or edit memory (preferences, projects, history) |
-| `kiroclaw mcp-cron` | MCP server for cron tools (spawned by kiro-cli) |
-| `kiroclaw mcp-core` | MCP server for spawn, learn, task tools (spawned by kiro-cli) |
-| `kiroclaw --version` | Print version |
+| `kirocrew chat -m "msg"` | Send a single message, print streaming response |
+| `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
+| `kirocrew chat --model X` | Override model for this session |
+| `kirocrew gateway` | Start the KiroCrew server (dashboard + Slack) |
+| `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
+| `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
+| `kirocrew setup` | Install agent config, save project dir, configure credentials |
+| `kirocrew setup --agent-only` | Only install agent config (skip credentials) |
+| `kirocrew doctor` | Verify kiro-cli is installed and config is valid |
+| `kirocrew cron add/list/remove` | Manage cron jobs |
+| `kirocrew spawn run/list` | Manage background subagents |
+| `kirocrew learn add/list/remove` | Manage learned corrections |
+| `kirocrew run TASK.md` | Run an autonomous task from a spec file |
+| `kirocrew token` | Print a dashboard access URL with auth token |
+| `kirocrew logout` | Revoke all active dashboard sessions |
+| `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
+| `kirocrew update` | Update to latest version (git pull + rebuild) |
+| `kirocrew status` | Show runtime stats from running gateway |
+| `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
+| `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active, otherwise terminates the foreground gateway and respawns it detached). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
+| `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
+| `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. |
+| `kirocrew service status` | Show service status (`systemctl status` or `launchctl list`). No sudo required. |
+| `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kirocrew/gateway.log`. |
+| `kirocrew logs -f` | Follow logs live (long-running tail). |
+| `kirocrew cloud launch/list/status/connect/stop/start/destroy/iam-policy/doctor` | Provision, connect to, and manage a KiroCrew EC2 instance in the user's AWS account. |
+| `kirocrew security events` | Show recent SEL audit events (`-n N` for count) |
+| `kirocrew security verify` | Verify SEL HMAC chain integrity |
+| `kirocrew snapshot` | Create a .tar.gz snapshot of all KiroCrew state |
+| `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7) |
+| `kirocrew snapshot --list` | List existing snapshots |
+| `kirocrew restore <file>` | Restore from a snapshot (auto-detects replace vs merge) |
+| `kirocrew restore <file> --mode replace\|merge` | Force restore mode |
+| `kirocrew restore <file> --components X,Y` | Selective component restore |
+| `kirocrew restore <file> --dry-run` | Preview restore without writing |
+| `kirocrew restore --list-components` | Show available component names |
+| `kirocrew config get [key]` | Print full config or a dot-path value |
+| `kirocrew config set <key> <val>` | Set a config value (auto type detection) |
+| `kirocrew config set --file <path>` | Replace config from a JSON file |
+| `kirocrew config edit` | Open config in `$EDITOR` |
+| `kirocrew memory show/edit` | Show or edit memory (preferences, projects, history) |
+| `kirocrew mcp-cron` | MCP server for cron tools (spawned by kiro-cli) |
+| `kirocrew mcp-core` | MCP server for spawn, learn, task tools (spawned by kiro-cli) |
+| `kirocrew --version` | Print version |
 
 ## Setup Command
 
-`kiroclaw setup` performs:
+`kirocrew setup` performs:
 
-1. Saves `KIROCLAW_PROJECT_DIR` to `~/.kiroclaw/project_dir`
-2. Installs agent config to `~/.kiro/agents/kiroclaw.json`
+1. Saves `KIROCREW_PROJECT_DIR` to `~/.kirocrew/project_dir`
+2. Installs agent config to `~/.kiro/agents/kirocrew.json`
 3. Prompts for Slack credentials (unless `--agent-only`)
-4. Offers to set up custom domain `kiroclaw.localhost` (macOS/Linux)
+4. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
 
-The saved project dir enables running `kiroclaw` from any directory.
+The saved project dir enables running `kirocrew` from any directory.
 
 ### Custom Domain
 
-After credentials, `kiroclaw setup` offers to add `127.0.0.1 kiroclaw.localhost` to the system hosts file so the dashboard is accessible at `http://kiroclaw.localhost:5476`:
+After credentials, `kirocrew setup` offers to add `127.0.0.1 kirocrew.localhost` to the system hosts file so the dashboard is accessible at `http://kirocrew.localhost:5476`:
 
 - **macOS/Linux**: Uses `sudo tee -a /etc/hosts` for safe append
 
-Skipped if `kiroclaw.localhost` is already present or user declines.
+Skipped if `kirocrew.localhost` is already present or user declines.
 
 ## Cloud Command
 
-`kiroclaw cloud` is a human installer/control-plane surface for running
-KiroClaw on the user's own AWS EC2 instance. Provisioning and teardown are not
-LLM-facing tools. AWS credentials are resolved by the AWS CLI; KiroClaw stores
+`kirocrew cloud` is a human installer/control-plane surface for running
+KiroCrew on the user's own AWS EC2 instance. Provisioning and teardown are not
+LLM-facing tools. AWS credentials are resolved by the AWS CLI; KiroCrew stores
 only profile, region, and the most recent instance tag in `cloud.json`.
 
-`kiroclaw cloud launch` runs a six-step wizard: check AWS reachability, explain
+`kirocrew cloud launch` runs a six-step wizard: check AWS reachability, explain
 permissions, choose whether to keep an existing deployment or create a new one,
 choose an instance size when creating a new stack, deploy or resume the
 CloudFormation stack, sign in the remote `kiro-cli`, and open the dashboard
@@ -99,8 +99,8 @@ through SSM port forwarding. Launch is resume-safe by default: if `cloud.json`
 contains a `last_tag` whose stack still exists in the same saved profile/region,
 rerunning interactive `launch` offers to keep/resume that stack or create a new
 installation. If `cloud.json` is missing or stale, launch discovers existing
-`kiroclaw-*` CloudFormation stacks with `cloudformation:ListStacks` and offers a
-choice to resume one or create a new installation. `kiroclaw cloud launch --new`
+`kirocrew-*` CloudFormation stacks with `cloudformation:ListStacks` and offers a
+choice to resume one or create a new installation. `kirocrew cloud launch --new`
 is the explicit escape hatch for creating a separate new stack. `--yes` keeps a
 single or saved existing stack; if multiple unsaved stacks exist it fails closed
 instead of choosing one arbitrarily. For a new launch, the generated tag is
@@ -135,18 +135,18 @@ local browser URL. The temporary callback tunnel is closed after the sign-in
 poll completes. In headless local terminals, browser auto-open is skipped and
 the URL is printed for manual opening.
 
-`kiroclaw cloud connect` mints a dashboard token over SSM, opens an
+`kirocrew cloud connect` mints a dashboard token over SSM, opens an
 `AWS-StartPortForwardingSession`, waits for the local tunnel port to accept TCP
 connections, and opens or prints the local dashboard URL. If the tunnel port
 does not become reachable, the command reports failure, does not present the
 dashboard URL as usable, and does not keep a dead tunnel process open. If final
 dashboard opening fails during `cloud launch`, the instance remains running but
-launch returns non-zero and tells the user to rerun `kiroclaw cloud connect`
+launch returns non-zero and tells the user to rerun `kirocrew cloud connect`
 after fixing the local SSM tunnel issue.
 
 ## Config Command
 
-`kiroclaw config` manages `~/.kiroclaw/config.json`:
+`kirocrew config` manages `~/.kirocrew/config.json`:
 
 - **get** — prints full effective config (with defaults resolved) or a single dot-path value
 - **set key value** — sets a value with auto type detection (bool/int/float/JSON/string). Rejects unknown leaf keys.
@@ -157,7 +157,7 @@ All write paths emit SEL audit events (`config_get`, `config_set`, `config_set_f
 
 ### Gateway Auto-Create
 
-`kiroclaw gateway` creates `~/.kiroclaw/config.json` with defaults if the file doesn't exist. Does nothing if it already exists.
+`kirocrew gateway` creates `~/.kirocrew/config.json` with defaults if the file doesn't exist. Does nothing if it already exists.
 
 ## Verbosity
 
@@ -183,23 +183,23 @@ CLI compaction is blocking (single-user, acceptable).
 
 ## Entry Point
 
-`console_scripts` in `setup.cfg` maps `kiroclaw` → `kiro_claw.cli:main`.
+`console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew.cli:main`.
 
 ## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
-| `KIROCLAW_HOME` | Override config/data directory (default `~/.kiroclaw`) |
-| `KIROCLAW_PORT` | Override dashboard port (default `5476`, validated as int at CLI startup) |
-| `KIROCLAW_PROJECT_DIR` | Override agent config/skills directory |
-| `KIROCLAW_WORKSPACE` | Override workspace root directory |
+| `KIROCREW_HOME` | Override config/data directory (default `~/.kirocrew`) |
+| `KIROCREW_PORT` | Override dashboard port (default `5476`, validated as int at CLI startup) |
+| `KIROCREW_PROJECT_DIR` | Override agent config/skills directory |
+| `KIROCREW_WORKSPACE` | Override workspace root directory |
 
 For local dev:
-- **macOS/Linux**: `bin/kiroclaw` (POSIX shell wrapper); `source setup.sh` adds `bin/` to PATH
+- **macOS/Linux**: `bin/kirocrew` (POSIX shell wrapper); `source setup.sh` adds `bin/` to PATH
 
-The wrapper sets `KIROCLAW_PROJECT_DIR` and routes to the right runtime based on install type:
+The wrapper sets `KIROCREW_PROJECT_DIR` and routes to the right runtime based on install type:
 
-- **One-liner install** (`install.sh` clones the repo into `~/.kiroclaw-app/`): if a sibling `.venv/bin/kiroclaw` exists, the wrapper execs it directly.
+- **One-liner install** (`install.sh` clones the repo into `~/.kirocrew-app/`): if a sibling `.venv/bin/kirocrew` exists, the wrapper execs it directly.
 - **pip editable install** (`pip install -e .`): the console_scripts entry point resolves directly.
 
 ## Setup Scripts (First-Time Bootstrap)
@@ -216,7 +216,7 @@ The wrapper sets `KIROCLAW_PROJECT_DIR` and routes to the right runtime based on
 5. Frontend build (`npm install && npm run build`)
 6. Backend build (`pip install -e .`)
 7. PATH setup + shell profile persistence
-8. `kiroclaw setup --agent-only` (install kiro-cli agent config)
+8. `kirocrew setup --agent-only` (install kiro-cli agent config)
 9. Optional Slack credential configuration
 
 Each step checks if the tool is already installed and skips if present.
@@ -227,8 +227,8 @@ Each step checks if the tool is already installed and skips if present.
 2. Project directory and git repo
 3. Agent config installed
 4. Config values (provider, model, approval mode, dashboard port)
-5. **MCP tools**: `@kiroclaw-cron` and `@kiroclaw-core` in `tools`, `allowedTools`, and `mcpServers` — auto-fixes missing entries
-6. **Global mcp.json**: kiroclaw MCP servers present with valid binary paths — auto-fixes stale paths
+5. **MCP tools**: `@kirocrew-cron` and `@kirocrew-core` in `tools`, `allowedTools`, and `mcpServers` — auto-fixes missing entries
+6. **Global mcp.json**: kirocrew MCP servers present with valid binary paths — auto-fixes stale paths
 7. **Python environment**: checks Python 3.9+ availability and dependency installation
 8. **Vector memory**: Ollama server health and embedding model status
 9. Slack credentials (optional)
@@ -237,15 +237,15 @@ Each step checks if the tool is already installed and skips if present.
 
 ## Update Command
 
-`kiroclaw update` pulls the latest source and rebuilds:
+`kirocrew update` pulls the latest source and rebuilds:
 
-1. `git pull` from `KIROCLAW_PROJECT_DIR`
+1. `git pull` from `KIROCREW_PROJECT_DIR`
 2. Rebuilds frontend via `build-frontend.sh` (non-fatal on failure)
 3. Reinstalls backend via `pip install -e .`
 
 ## Stop Command
 
-`kiroclaw stop [--port PORT]` stops a running gateway:
+`kirocrew stop [--port PORT]` stops a running gateway:
 
 1. If a systemd/launchd service is active **and** the caller did not pass
    `--port` explicitly (see Service Management), stop it via the service
@@ -255,12 +255,12 @@ Each step checks if the tool is already installed and skips if present.
    target a non-default dev gateway): `platform_compat.find_listening_pids(port)`
    to find PIDs — `lsof -ti TCP:{port} -sTCP:LISTEN` on POSIX, `netstat -ano`
    parsing on Windows (there is no `lsof` there; this previously made
-   `kiroclaw stop` a no-op on Windows). `listening_pid_tool_available()`
+   `kirocrew stop` a no-op on Windows). `listening_pid_tool_available()`
    distinguishes "no listener" from "lookup tool missing".
-3. `platform_compat.process_command_line(pid)` to verify it's a KiroClaw process —
+3. `platform_compat.process_command_line(pid)` to verify it's a KiroCrew process —
    `/proc/<pid>/cmdline` (Linux), `ps -o command=` (macOS), `Win32_Process.CommandLine`
-   via WMI (Windows). The Windows venv `kiroclaw.exe` re-execs `python.exe`, so the
-   match is on the command line (`-m kiro_claw gateway` / `\Scripts\kiroclaw.exe gateway`),
+   via WMI (Windows). The Windows venv `kirocrew.exe` re-execs `python.exe`, so the
+   match is on the command line (`-m kiro_crew gateway` / `\Scripts\kirocrew.exe gateway`),
    not the image name.
 4. Terminate each verified PID: `os.kill(SIGTERM)` on POSIX; `taskkill /T /F`
    (via `platform_compat.kill_process_tree`) on Windows so the gateway's detached
@@ -271,12 +271,12 @@ Each step checks if the tool is already installed and skips if present.
 
 ## Restart Command
 
-`kiroclaw restart [--port PORT]` restarts a running gateway. Mirrors
+`kirocrew restart [--port PORT]` restarts a running gateway. Mirrors
 `stop`'s service-aware structure:
 
 1. If a systemd/launchd service is active **and** the caller did not
    pass `--port` explicitly, ask the platform to restart it. On Linux:
-   `sudo systemctl restart kiroclaw.service` (single
+   `sudo systemctl restart kirocrew.service` (single
    atomic operation, smaller down-window than stop+start, and the
    supervisor stays in charge of the lifecycle the whole time). On
    macOS: `launchctl unload <plist>` + `launchctl load <plist>` (no
@@ -295,58 +295,58 @@ Each step checks if the tool is already installed and skips if present.
      in a `try / except SystemExit` so a TOCTOU race (gateway exits between
      the listener check and `_stop`'s own lookup → `_stop` calls
      `sys.exit(1)`) does not abort the restart before the spawn.
-   - Spawn a detached `kiroclaw gateway` via `subprocess.Popen`, stdin set
+   - Spawn a detached `kirocrew gateway` via `subprocess.Popen`, stdin set
      to `subprocess.DEVNULL`, and stdout + stderr redirected to
-     `~/.kiroclaw/gateway.log` (the same file the `kiroclaw logs` command
+     `~/.kirocrew/gateway.log` (the same file the `kirocrew logs` command
      tails for foreground gateways). Detach is per-platform: POSIX uses
      `start_new_session=True`; Windows uses `creationflags=DETACHED_PROCESS
      | CREATE_NEW_PROCESS_GROUP` (there is no setsid) — both via
      `platform_compat`. The shell returns immediately and the user can
-     follow logs via `kiroclaw logs -f`.
+     follow logs via `kirocrew logs -f`.
 3. SEL audit event logged with `via=service` or `via=fork pid=<n>` so
    the audit trail distinguishes the two paths.
 
 ## Service Management
 
-`kiroclaw service {install,uninstall,status}` registers the gateway
+`kirocrew service {install,uninstall,status}` registers the gateway
 with the OS service manager so it survives SSH disconnects, restarts
-on crash, and starts on boot. Implemented in `src/kiro_claw/service/`.
+on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
 
 - **Linux** (`current_platform() == SYSTEMD`):
-  - Unit file: `/etc/systemd/system/kiroclaw.service` (root-owned).
+  - Unit file: `/etc/systemd/system/kirocrew.service` (root-owned).
   - Install: `sudo tee` writes the unit, then `sudo systemctl
-    daemon-reload && sudo systemctl enable --now kiroclaw.service`.
-  - The gateway runs as `User=$USER Group=$(id -gn)` — kiroclaw
+    daemon-reload && sudo systemctl enable --now kirocrew.service`.
+  - The gateway runs as `User=$USER Group=$(id -gn)` — kirocrew
     code never runs under sudo. Only `tee` and `systemctl` invocations
     are elevated.
   - Boot survival via `WantedBy=multi-user.target` (no linger needed —
     that's a user-service concept; this is system-level).
   - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
-  - Logs are read from the journal: `sudo journalctl -u kiroclaw -f`,
+  - Logs are read from the journal: `sudo journalctl -u kirocrew -f`,
     or unprivileged if the user is in `systemd-journal` / `adm`.
 - **macOS** (`current_platform() == LAUNCHD`):
-  - Plist: `~/Library/LaunchAgents/com.amazon.kiroclaw.gateway.plist`
+  - Plist: `~/Library/LaunchAgents/com.amazon.kirocrew.gateway.plist`
   - Install: `launchctl load -w <plist>`. `RunAtLoad=true` and
     `KeepAlive` ensure auto-start and crash recovery.
   - Stdout and stderr are written to
-    `~/Library/Logs/KiroClaw/gateway.{log,err}`.
+    `~/Library/Logs/KiroCrew/gateway.{log,err}`.
 - **Other platforms**: install/uninstall return exit code 2 with a
   message pointing to manual setup.
 
-`kiroclaw stop` is service-aware: if the service is active it calls
+`kirocrew stop` is service-aware: if the service is active it calls
 the platform's stop instead of SIGTERM, so the manager does not
 immediately restart the gateway under us.
 
 ## Logs Command
 
-`kiroclaw logs [-n LINES] [-f]` tails the gateway log from whichever
+`kirocrew logs [-n LINES] [-f]` tails the gateway log from whichever
 source is most appropriate:
 
 1. systemd journal if the system service is installed on Linux. Tries
    unprivileged `journalctl` first; falls back to `sudo journalctl`
    only if the unprivileged probe returns no rows.
 2. launchd stdout file if a plist exists on macOS
-3. `~/.kiroclaw/gateway.log` for foreground gateways
+3. `~/.kirocrew/gateway.log` for foreground gateways
 
 Uses `os.execvp` so signals (Ctrl+C) propagate naturally to the
 underlying `journalctl`/`tail` process.
@@ -367,5 +367,5 @@ are ignored).
 
 ## Status Command
 
-`kiroclaw status` queries the running gateway's `/api/status` endpoint
+`kirocrew status` queries the running gateway's `/api/status` endpoint
 and prints uptime, sessions, messages, tool calls, subagents, crons, lessons.

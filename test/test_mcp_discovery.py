@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.mcp_discovery import (
+from kiro_crew.mcp_discovery import (
     McpServerInfo,
     _cache_probe,
     _get_cached,
@@ -41,7 +41,7 @@ def _passthrough_sandbox(monkeypatch):
     def _passthrough(argv, *a, env=None, **k):
         return list(argv), dict(env if env is not None else _os.environ), None
 
-    monkeypatch.setattr("kiro_claw.mcp_discovery.sandboxed_spawn_argv", _passthrough)
+    monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _passthrough)
 
 
 class TestMcpServerInfo:
@@ -102,20 +102,20 @@ class TestListServers:
         _clear_cache()
 
     def test_list_merges_installed_config(self, tmp_path, monkeypatch) -> None:
-        """defaults.json has no mcpServers; installed kiroclaw.json does."""
+        """defaults.json has no mcpServers; installed kirocrew.json does."""
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kiroclaw"}))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
-        installed = {"mcpServers": {"kiroclaw-cron": {"command": "kiroclaw", "args": ["mcp-cron"]}}}
-        (kiro_dir / "kiroclaw.json").write_text(json.dumps(installed))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "nope.json",))
+        installed = {"mcpServers": {"kirocrew-cron": {"command": "kirocrew", "args": ["mcp-cron"]}}}
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(installed))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "nope.json",))
         servers = list_servers()
         names = {s.name for s in servers}
-        assert "kiroclaw-cron" in names
+        assert "kirocrew-cron" in names
 
     def test_list_from_agent_config(self, tmp_path, monkeypatch) -> None:
         agent_dir = tmp_path / "agents"
@@ -127,16 +127,16 @@ class TestListServers:
             }
         }
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         servers = list_servers()
         names = {s.name for s in servers}
         assert "my-server" in names
         assert "other-srv" in names
 
     def test_list_empty_no_config(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "nope.json",))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "nope.json",))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         servers = list_servers()
         assert servers == []
 
@@ -145,12 +145,12 @@ class TestListServers:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"agent-srv": {"command": "a"}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps({"mcpServers": {"ext-srv": {"command": "b", "args": ["--x"]}}})
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         servers = list_servers()
         names = {s.name for s in servers}
         assert "agent-srv" in names
@@ -164,10 +164,10 @@ class TestListServers:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"shared": {"command": "agent-cmd"}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(json.dumps({"mcpServers": {"shared": {"command": "mcp-cmd"}}}))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         servers = list_servers()
         shared = [s for s in servers if s.name == "shared"]
         assert len(shared) == 1
@@ -181,20 +181,20 @@ class TestListServers:
         cfg = {
             "mcpServers": {
                 "npm:@playwright/mcp": {
-                    "command": "kiroclaw",
+                    "command": "kirocrew",
                     "args": ["mcp-playwright-proxy"],
                 },
                 "playwright-mcp": {
-                    "command": "kiroclaw",
+                    "command": "kirocrew",
                     "args": ["mcp-playwright-proxy"],
                 },
                 "plain-srv": {"command": "p"},
             }
         }
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "nope.json",))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "nope.json",))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         servers = list_servers()
         names = [s.name for s in servers]
         assert names.count("playwright-mcp") == 1
@@ -212,9 +212,9 @@ class TestListServers:
             }
         }
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "x",))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "x",))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         servers = list_servers()
         names = {s.name for s in servers}
         assert "enabled-srv" in names
@@ -222,8 +222,8 @@ class TestListServers:
 
     def test_list_skips_disabled_mcp_json_servers(self, tmp_path, monkeypatch) -> None:
         """Disabled servers in mcp.json are also excluded."""
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps(
@@ -235,7 +235,7 @@ class TestListServers:
                 }
             )
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         servers = list_servers()
         names = {s.name for s in servers}
         assert "active" in names
@@ -250,9 +250,9 @@ class TestListServers:
         )
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(json.dumps({"mcpServers": {"srv": {"command": "b"}}}))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         assert not any(s.name == "srv" for s in list_servers())
 
     def test_disabled_mcp_json_still_carries_disabled_tools(self, tmp_path, monkeypatch) -> None:
@@ -266,9 +266,9 @@ class TestListServers:
         mcp_json.write_text(
             json.dumps({"mcpServers": {"srv": {"disabled": True, "disabledTools": ["t1"]}}})
         )
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         servers = list_servers()
         assert len(servers) == 1
         assert servers[0].disabled_tools == ["t1"]
@@ -286,9 +286,9 @@ class TestListServers:
             }
         }
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "x",))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "x",))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         servers = list_servers()
         assert len(servers) == 1
         s = servers[0]
@@ -303,7 +303,7 @@ class TestListServers:
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
         (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         _clear_cache()
 
         kiro_mcp = tmp_path / "kiro_mcp.json"
@@ -312,13 +312,13 @@ class TestListServers:
                 {"mcpServers": {"shared": {"command": "kiro"}, "kiro-only": {"command": "k"}}}
             )
         )
-        kiroclaw_mcp = tmp_path / "kiroclaw_mcp.json"
-        kiroclaw_mcp.write_text(
+        kirocrew_mcp = tmp_path / "kirocrew_mcp.json"
+        kirocrew_mcp.write_text(
             json.dumps(
-                {"mcpServers": {"shared": {"command": "kiroclaw"}, "mc-only": {"command": "m"}}}
+                {"mcpServers": {"shared": {"command": "kirocrew"}, "mc-only": {"command": "m"}}}
             )
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (kiro_mcp, kiroclaw_mcp))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (kiro_mcp, kirocrew_mcp))
 
         servers = list_servers()
         names = {s.name for s in servers}
@@ -333,14 +333,14 @@ class TestListServers:
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
         (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         _clear_cache()
 
         bad = tmp_path / "bad.json"
         bad.write_text("{invalid json")
         good = tmp_path / "good.json"
         good.write_text(json.dumps({"mcpServers": {"srv": {"command": "x"}}}))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (bad, good))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (bad, good))
 
         servers = list_servers()
         assert any(s.name == "srv" for s in servers)
@@ -350,14 +350,14 @@ class TestListServers:
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
         (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         _clear_cache()
 
         bad = tmp_path / "bad.json"
         bad.write_text(json.dumps({"mcpServers": ["not", "a", "dict"]}))
         good = tmp_path / "good.json"
         good.write_text(json.dumps({"mcpServers": {"srv": {"command": "x"}}}))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (bad, good))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (bad, good))
 
         servers = list_servers()
         assert any(s.name == "srv" for s in servers)
@@ -367,23 +367,23 @@ class TestListServers:
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
         (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         _clear_cache()
 
         blocked = tmp_path / "blocked.json"
         blocked.write_text("{}")
         good = tmp_path / "good.json"
         good.write_text(json.dumps({"mcpServers": {"srv": {"command": "x"}}}))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (blocked, good))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (blocked, good))
 
-        original = __import__("kiro_claw.hooks", fromlist=["safe_read_file"]).safe_read_file
+        original = __import__("kiro_crew.hooks", fromlist=["safe_read_file"]).safe_read_file
 
         def _mock_safe_read(path: str) -> str:
             if "blocked" in path:
                 raise PermissionError("Blocked: sensitive path")
             return original(path)
 
-        monkeypatch.setattr("kiro_claw.mcp_discovery.safe_read_file", _mock_safe_read)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.safe_read_file", _mock_safe_read)
 
         servers = list_servers()
         assert any(s.name == "srv" for s in servers)
@@ -395,7 +395,7 @@ class TestDiscoverNew:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"existing": {"command": "a"}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps(
@@ -407,7 +407,7 @@ class TestDiscoverNew:
                 }
             )
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         new = discover_servers_to_sync()
         assert len(new) == 1
         assert new[0].name == "brand-new"
@@ -418,10 +418,10 @@ class TestDiscoverNew:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"srv": {"command": "a"}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(json.dumps({"mcpServers": {"srv": {"command": "a"}}}))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         new = discover_servers_to_sync()
         assert new == []
 
@@ -431,12 +431,12 @@ class TestDiscoverNew:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"srv": {"command": "a", "env": {}}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps({"mcpServers": {"srv": {"command": "a", "env": {"KEY": "val"}}}})
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         result = discover_servers_to_sync()
         assert len(result) == 1
         assert result[0].name == "srv"
@@ -448,12 +448,12 @@ class TestDiscoverNew:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"srv": {"command": "a", "env": {"KEY": "val"}}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps({"mcpServers": {"srv": {"command": "a", "env": {"KEY": "val"}}}})
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         result = discover_servers_to_sync()
         assert result == []
 
@@ -463,12 +463,12 @@ class TestDiscoverNew:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"srv": {"command": "a", "env": {"EXISTING": "keep", "NEW": "val"}}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps({"mcpServers": {"srv": {"command": "a", "env": {"NEW": "val"}}}})
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         result = discover_servers_to_sync()
         assert result == []
 
@@ -490,7 +490,7 @@ class TestDiscoverNew:
             }
         }
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps(
@@ -504,7 +504,7 @@ class TestDiscoverNew:
                 }
             )
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         result = discover_servers_to_sync()
         assert result == []
 
@@ -514,7 +514,7 @@ class TestDiscoverNew:
         agent_dir.mkdir()
         cfg = {"mcpServers": {}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
             json.dumps(
@@ -526,7 +526,7 @@ class TestDiscoverNew:
                 }
             )
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         result = discover_servers_to_sync()
         assert len(result) == 1
         assert result[0].name == "enabled-srv"
@@ -537,39 +537,39 @@ class TestDiscoverNew:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"srv": {"command": "/usr/local/bin/my-server"}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(json.dumps({"mcpServers": {"srv": {"command": "my-server"}}}))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         result = discover_servers_to_sync()
         assert result == []
 
 
 class TestCommandsDiverged:
     def test_identical_commands(self) -> None:
-        from kiro_claw.mcp_discovery import _commands_diverged
+        from kiro_crew.mcp_discovery import _commands_diverged
 
         assert _commands_diverged("foo", "foo") is False
 
     def test_short_vs_resolved_path(self) -> None:
-        from kiro_claw.mcp_discovery import _commands_diverged
+        from kiro_crew.mcp_discovery import _commands_diverged
 
         assert _commands_diverged("deep-research", "/home/user/.toolbox/bin/deep-research") is False
 
     def test_resolved_vs_short(self) -> None:
-        from kiro_claw.mcp_discovery import _commands_diverged
+        from kiro_crew.mcp_discovery import _commands_diverged
 
         assert _commands_diverged("/usr/bin/server", "server") is False
 
     def test_genuinely_different_commands(self) -> None:
-        from kiro_claw.mcp_discovery import _commands_diverged
+        from kiro_crew.mcp_discovery import _commands_diverged
 
         assert _commands_diverged("old-server", "new-server") is True
 
 
 class TestSyncToAgentConfig:
     def test_sync_uses_kiro_cli(self, tmp_path, monkeypatch) -> None:
-        """sync_to_agent_config calls kiro-cli mcp add --agent kiroclaw for new servers."""
+        """sync_to_agent_config calls kiro-cli mcp add --agent kirocrew for new servers."""
         calls: list[list[str]] = []
 
         def mock_which(x: str, **kw: object) -> str | None:
@@ -590,11 +590,11 @@ class TestSyncToAgentConfig:
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps({"mcpServers": {}, "tools": [], "allowedTools": []}))
 
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: config_path,
         )
 
@@ -603,7 +603,7 @@ class TestSyncToAgentConfig:
         assert ok is True
         assert len(calls) == 1
         assert "--agent" in calls[0]
-        assert "kiroclaw" in calls[0]
+        assert "kirocrew" in calls[0]
         assert "new-srv" in calls[0]
 
     def test_sync_fallback_writes_json(self, tmp_path, monkeypatch) -> None:
@@ -615,14 +615,14 @@ class TestSyncToAgentConfig:
             "tools": ["execute_bash"],
             "allowedTools": [],
         }
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps(cfg))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         monkeypatch.setattr("shutil.which", lambda x, **kw: None)
 
         install_called = []
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: install_called.append(True) or config_path,
         )
 
@@ -635,13 +635,13 @@ class TestSyncToAgentConfig:
         """Works even when no config exists yet — install_agent creates it."""
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
-        config_path = kiro_dir / "kiroclaw.json"
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        config_path = kiro_dir / "kirocrew.json"
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         monkeypatch.setattr("shutil.which", lambda x, **kw: None)
 
         install_called = []
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: install_called.append(True) or config_path,
         )
 
@@ -655,14 +655,14 @@ class TestSyncToAgentConfig:
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
         cfg: dict = {"mcpServers": {}, "tools": [], "allowedTools": []}
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps(cfg))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         monkeypatch.setattr("shutil.which", lambda x, **kw: None)
 
         install_called = []
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: install_called.append(True) or config_path,
         )
 
@@ -697,11 +697,11 @@ class TestSyncToAgentConfig:
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps({"mcpServers": {}, "tools": [], "allowedTools": []}))
 
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: config_path,
         )
 
@@ -724,14 +724,14 @@ class TestSyncToAgentConfig:
             "tools": ["@aws-outlook-mcp"],
             "allowedTools": ["@aws-outlook-mcp"],
         }
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps(cfg))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         monkeypatch.setattr("shutil.which", lambda x, **kw: None)
 
         install_called = []
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: install_called.append(True) or config_path,
         )
 
@@ -759,14 +759,14 @@ class TestSyncToAgentConfig:
             "tools": ["@my-mcp"],
             "allowedTools": ["@my-mcp"],
         }
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps(cfg))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         monkeypatch.setattr("shutil.which", lambda x, **kw: None)
 
         install_called = []
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: install_called.append(True) or config_path,
         )
 
@@ -788,15 +788,15 @@ class TestSyncToAgentConfig:
             "tools": ["@my-mcp"],
             "allowedTools": ["@my-mcp"],
         }
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps(cfg))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         monkeypatch.setattr("shutil.which", lambda x, **kw: None)
 
         # install_agent() is called internally — mock it to verify delegation
         install_called = []
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: install_called.append(True) or config_path,
         )
 
@@ -820,14 +820,14 @@ class TestSyncToAgentConfig:
             "tools": ["@my-mcp"],
             "allowedTools": ["@my-mcp"],
         }
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps(cfg))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         monkeypatch.setattr("shutil.which", lambda x, **kw: None)
 
         install_called = []
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: install_called.append(True) or config_path,
         )
 
@@ -863,11 +863,11 @@ class TestSyncToAgentConfig:
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
-        config_path = kiro_dir / "kiroclaw.json"
+        config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps({"mcpServers": {}, "tools": [], "allowedTools": []}))
 
         monkeypatch.setattr(
-            "kiro_claw.agent.install_agent",
+            "kiro_crew.agent.install_agent",
             lambda **kw: config_path,
         )
 
@@ -876,7 +876,7 @@ class TestSyncToAgentConfig:
         mcp_json.write_text(
             json.dumps({"mcpServers": {"disabled-srv": {"command": "x", "disabled": True}}})
         )
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
 
         disabled_srv = McpServerInfo(name="disabled-srv", command="x")
         sync_to_agent_config([disabled_srv])
@@ -937,9 +937,9 @@ class TestProbeCache:
         agent_dir.mkdir()
         cfg = {"mcpServers": {"my-srv": {"command": "cmd"}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_claw.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "x",))
-        monkeypatch.setattr("kiro_claw.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "x",))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
 
         # Before probe: unknown
         servers = list_servers()
@@ -1034,7 +1034,7 @@ class TestProbeRemote:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("kiro_claw.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
             result = await _probe_remote(server)
 
         assert result.status == "ok"
@@ -1055,7 +1055,7 @@ class TestProbeRemote:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("kiro_claw.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
             result = await _probe_remote(server)
 
         assert result.status == "error"
@@ -1071,7 +1071,7 @@ class TestProbeRemote:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("kiro_claw.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
             result = await _probe_remote(server)
 
         assert result.status == "error"
@@ -1081,7 +1081,7 @@ class TestProbeRemote:
         """probe_server dispatches to _probe_remote for url-based servers."""
         server = McpServerInfo(name="remote", url="https://example.com/mcp")
 
-        with patch("kiro_claw.mcp_discovery._probe_remote", new_callable=AsyncMock) as mock_remote:
+        with patch("kiro_crew.mcp_discovery._probe_remote", new_callable=AsyncMock) as mock_remote:
             mock_remote.return_value = server
             result = await probe_server(server)
 
@@ -1093,7 +1093,7 @@ class TestProbeRemote:
         """probe_server does NOT dispatch to _probe_remote for command-based servers."""
         server = McpServerInfo(name="local", command="nonexistent-cmd-xyz")
 
-        with patch("kiro_claw.mcp_discovery._probe_remote", new_callable=AsyncMock) as mock_remote:
+        with patch("kiro_crew.mcp_discovery._probe_remote", new_callable=AsyncMock) as mock_remote:
             result = await probe_server(server)
 
         mock_remote.assert_not_awaited()
@@ -1122,8 +1122,8 @@ class TestProbeServerProcessCleanup:
         server = McpServerInfo(name="test", command="echo")
 
         with (
-            patch("kiro_claw.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_claw.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
         ):
             proc.stdout = AsyncMock()
             proc.stdout.readline = AsyncMock(return_value=b"")
@@ -1141,8 +1141,8 @@ class TestProbeServerProcessCleanup:
         server = McpServerInfo(name="test", command="echo")
 
         with (
-            patch("kiro_claw.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_claw.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
         ):
             proc.stdout = AsyncMock()
             proc.stdout.readline = AsyncMock(return_value=b"")
@@ -1160,8 +1160,8 @@ class TestProbeServerProcessCleanup:
         server = McpServerInfo(name="test", command="echo")
 
         with (
-            patch("kiro_claw.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_claw.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
         ):
             proc.stdout = AsyncMock()
             proc.stdout.readline = AsyncMock(return_value=b"")
@@ -1179,8 +1179,8 @@ class TestProbeServerProcessCleanup:
         server = McpServerInfo(name="test", command="echo")
 
         with (
-            patch("kiro_claw.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_claw.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
         ):
             proc.stdout = AsyncMock()
             proc.stdout.readline = AsyncMock(return_value=b"")
@@ -1194,13 +1194,13 @@ class TestInstallAgentRemote:
     """Test that install_agent preserves remote url-based MCP servers."""
 
     def test_install_preserves_remote_server(self, tmp_path, monkeypatch) -> None:
-        from kiro_claw.agent import install_agent
+        from kiro_crew.agent import install_agent
 
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kiroclaw"}))
+        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
         (agent_dir / "prompt.md").write_text("prompt")
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
@@ -1212,32 +1212,32 @@ class TestInstallAgentRemote:
             "tools": [],
             "allowedTools": [],
         }
-        (kiro_dir / "kiroclaw.json").write_text(json.dumps(existing))
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
-        monkeypatch.setattr("kiro_claw.agent.KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir)
         monkeypatch.setattr(
-            "kiro_claw.agent._KIRO_MCP_JSON", tmp_path / "nonexistent_kiro_mcp.json"
+            "kiro_crew.agent._KIRO_MCP_JSON", tmp_path / "nonexistent_kiro_mcp.json"
         )
-        monkeypatch.setattr("kiro_claw.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
-        monkeypatch.setattr("kiro_claw.agent._KIROCLAW_BIN", "/usr/bin/kiroclaw")
+        monkeypatch.setattr("kiro_crew.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
+        monkeypatch.setattr("kiro_crew.agent._KIROCREW_BIN", "/usr/bin/kirocrew")
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: None)
 
         install_agent()
 
-        data = json.loads((kiro_dir / "kiroclaw.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text())
         assert "deepwiki" in data["mcpServers"]
         assert data["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
         assert "local-srv" not in data["mcpServers"]
 
     def test_install_merges_kiro_mcp_json(self, tmp_path, monkeypatch) -> None:
         """install_agent picks up servers from ~/.kiro/settings/mcp.json."""
-        from kiro_claw.agent import install_agent
+        from kiro_crew.agent import install_agent
 
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kiroclaw"}))
+        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
         (agent_dir / "prompt.md").write_text("prompt")
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
@@ -1248,15 +1248,15 @@ class TestInstallAgentRemote:
             json.dumps({"mcpServers": {"deepwiki": {"url": "https://mcp.deepwiki.com/mcp"}}})
         )
 
-        monkeypatch.setattr("kiro_claw.agent.KIRO_AGENTS_DIR", kiro_dir)
-        monkeypatch.setattr("kiro_claw.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
-        monkeypatch.setattr("kiro_claw.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
-        monkeypatch.setattr("kiro_claw.agent._KIROCLAW_BIN", "/usr/bin/kiroclaw")
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
+        monkeypatch.setattr("kiro_crew.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
+        monkeypatch.setattr("kiro_crew.agent._KIROCREW_BIN", "/usr/bin/kirocrew")
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: None)
 
         install_agent()
 
-        data = json.loads((kiro_dir / "kiroclaw.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text())
         assert "deepwiki" in data["mcpServers"]
         assert data["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
 
@@ -1266,25 +1266,25 @@ class TestGetProbeTimeout:
 
     def test_get_probe_timeout_reads_config(self) -> None:
         """_get_probe_timeout() returns the config value when available."""
-        from kiro_claw.mcp_discovery import _get_probe_timeout
+        from kiro_crew.mcp_discovery import _get_probe_timeout
 
         mock_cfg = MagicMock()
         mock_cfg.dashboard.mcp_probe_timeout_secs = 45
         mock_cls = MagicMock()
         mock_cls.load.return_value = mock_cfg
 
-        with patch("kiro_claw.config.loader.KiroClawConfig", mock_cls):
+        with patch("kiro_crew.config.loader.KiroCrewConfig", mock_cls):
             result = _get_probe_timeout()
         assert result == 45
 
     def test_get_probe_timeout_fallback(self) -> None:
         """_get_probe_timeout() returns 15 when config is unavailable."""
-        from kiro_claw.mcp_discovery import _PROBE_TIMEOUT_SECS, _get_probe_timeout
+        from kiro_crew.mcp_discovery import _PROBE_TIMEOUT_SECS, _get_probe_timeout
 
         mock_cls = MagicMock()
         mock_cls.load.side_effect = RuntimeError("no config")
 
-        with patch("kiro_claw.config.loader.KiroClawConfig", mock_cls):
+        with patch("kiro_crew.config.loader.KiroCrewConfig", mock_cls):
             result = _get_probe_timeout()
         assert result == _PROBE_TIMEOUT_SECS
         assert result == 15
@@ -1312,7 +1312,7 @@ class TestProbeServerTimeout:
 
         with (
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("kiro_claw.config.loader.KiroClawConfig") as mock_cls,
+            patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls,
         ):
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 42
@@ -1339,7 +1339,7 @@ class TestProbeServerTimeout:
 
         with (
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("kiro_claw.config.loader.KiroClawConfig") as mock_cls,
+            patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls,
         ):
             mock_cls.load.side_effect = RuntimeError("corrupt config")
 
@@ -1358,7 +1358,7 @@ class TestProbeRemoteTimeout:
         server = McpServerInfo(name="remote", url="https://example.com/mcp")
 
         with (
-            patch("kiro_claw.config.loader.KiroClawConfig") as mock_cls,
+            patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls,
             patch("aiohttp.ClientSession") as mock_session_cls,
         ):
             mock_cfg = MagicMock()
@@ -1384,69 +1384,69 @@ class TestProbeRemoteTimeout:
 class TestFixStaleManagedCommand:
     """Tests for _fix_stale_managed_command.
 
-    The managed invocation is delegated to ``_kiroclaw_mcp_invocation`` (the
+    The managed invocation is delegated to ``_kirocrew_mcp_invocation`` (the
     single source of truth), which returns a runnable ``(command, args)`` —
-    either a standalone ``kiroclaw`` binary (POSIX ``bin/kiroclaw`` / Windows
-    ``Scripts\\kiroclaw.exe``) or the ``<interpreter> -m kiro_claw <sub>``
+    either a standalone ``kirocrew`` binary (POSIX ``bin/kirocrew`` / Windows
+    ``Scripts\\kirocrew.exe``) or the ``<interpreter> -m kiro_crew <sub>``
     fallback. ``_fix_stale_managed_command`` must rewrite BOTH command and args
     onto the spec (rewriting only the command silently dropped the fallback's
-    args and spawned a bare ``kiroclaw`` that isn't on PATH — the Windows
-    ``command not found: kiroclaw`` regression)."""
+    args and spawned a bare ``kirocrew`` that isn't on PATH — the Windows
+    ``command not found: kirocrew`` regression)."""
 
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
-        import kiro_claw.mcp_discovery as _d
+        import kiro_crew.mcp_discovery as _d
 
         _d._resolved_managed_invocation = {}
         yield
         _d._resolved_managed_invocation = {}
 
     def test_rewrites_command_and_args_from_invocation(self):
-        """Both command and args come from _kiroclaw_mcp_invocation."""
-        from kiro_claw.mcp_discovery import _fix_stale_managed_command
+        """Both command and args come from _kirocrew_mcp_invocation."""
+        from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
-        spec = {"command": "/stale/bin/kiroclaw", "args": ["mcp-core"]}
+        spec = {"command": "/stale/bin/kirocrew", "args": ["mcp-core"]}
         with patch(
-            "kiro_claw.agent._kiroclaw_mcp_invocation",
-            return_value=("/usr/local/bin/kiroclaw", ["mcp-core"]),
+            "kiro_crew.agent._kirocrew_mcp_invocation",
+            return_value=("/usr/local/bin/kirocrew", ["mcp-core"]),
         ) as inv:
-            _fix_stale_managed_command("kiroclaw-core", spec)
+            _fix_stale_managed_command("kirocrew-core", spec)
         inv.assert_called_once_with("mcp-core")
-        assert spec["command"] == "/usr/local/bin/kiroclaw"
+        assert spec["command"] == "/usr/local/bin/kirocrew"
         assert spec["args"] == ["mcp-core"]
 
     def test_applies_python_dash_m_fallback_with_args(self):
-        """When no standalone binary resolves, the python -m kiro_claw fallback
+        """When no standalone binary resolves, the python -m kiro_crew fallback
         (command + its args) is applied — regression for Windows where rewriting
-        the command alone left a bare 'kiroclaw' that isn't on PATH."""
-        from kiro_claw.mcp_discovery import _fix_stale_managed_command
+        the command alone left a bare 'kirocrew' that isn't on PATH."""
+        from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
-        spec = {"command": "kiroclaw", "args": []}
+        spec = {"command": "kirocrew", "args": []}
         with patch(
-            "kiro_claw.agent._kiroclaw_mcp_invocation",
-            return_value=("/venv/Scripts/python.exe", ["-m", "kiro_claw", "mcp-cron"]),
+            "kiro_crew.agent._kirocrew_mcp_invocation",
+            return_value=("/venv/Scripts/python.exe", ["-m", "kiro_crew", "mcp-cron"]),
         ):
-            _fix_stale_managed_command("kiroclaw-cron", spec)
+            _fix_stale_managed_command("kirocrew-cron", spec)
         assert spec["command"] == "/venv/Scripts/python.exe"
-        assert spec["args"] == ["-m", "kiro_claw", "mcp-cron"]
+        assert spec["args"] == ["-m", "kiro_crew", "mcp-cron"]
 
     def test_maps_each_managed_server_to_its_subcommand(self):
-        from kiro_claw.mcp_discovery import _fix_stale_managed_command
+        from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
-        for name, sub in (("kiroclaw-core", "mcp-core"), ("kiroclaw-cron", "mcp-cron")):
+        for name, sub in (("kirocrew-core", "mcp-core"), ("kirocrew-cron", "mcp-cron")):
             spec = {"command": "x", "args": []}
             with patch(
-                "kiro_claw.agent._kiroclaw_mcp_invocation", return_value=("/bin/kiroclaw", [sub])
+                "kiro_crew.agent._kirocrew_mcp_invocation", return_value=("/bin/kirocrew", [sub])
             ) as inv:
                 _fix_stale_managed_command(name, spec)
             inv.assert_called_once_with(sub)
             assert spec["args"] == [sub]
 
     def test_skips_non_managed_server(self):
-        from kiro_claw.mcp_discovery import _fix_stale_managed_command
+        from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
         spec = {"command": "/nonexistent/path/other", "args": []}
-        with patch("kiro_claw.agent._kiroclaw_mcp_invocation") as inv:
+        with patch("kiro_crew.agent._kirocrew_mcp_invocation") as inv:
             _fix_stale_managed_command("other-server", spec)
         inv.assert_not_called()
         assert spec["command"] == "/nonexistent/path/other"
@@ -1454,23 +1454,23 @@ class TestFixStaleManagedCommand:
     def test_caches_resolution_across_calls(self):
         """The invocation is resolved once and reused (no repeated subprocess
         work on every list_servers() call)."""
-        from kiro_claw.mcp_discovery import _fix_stale_managed_command
+        from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
         with patch(
-            "kiro_claw.agent._kiroclaw_mcp_invocation", return_value=("/bin/kiroclaw", ["mcp-core"])
+            "kiro_crew.agent._kirocrew_mcp_invocation", return_value=("/bin/kirocrew", ["mcp-core"])
         ) as inv:
-            _fix_stale_managed_command("kiroclaw-core", {"command": "x", "args": []})
-            _fix_stale_managed_command("kiroclaw-core", {"command": "y", "args": []})
+            _fix_stale_managed_command("kirocrew-core", {"command": "x", "args": []})
+            _fix_stale_managed_command("kirocrew-core", {"command": "y", "args": []})
         inv.assert_called_once()  # cached after the first resolve
 
     def test_resolution_failure_leaves_spec_untouched(self):
         """If invocation resolution raises, the spec is left as-is (no crash)."""
-        from kiro_claw.mcp_discovery import _fix_stale_managed_command
+        from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
-        spec = {"command": "/old/kiroclaw", "args": ["mcp-core"]}
-        with patch("kiro_claw.agent._kiroclaw_mcp_invocation", side_effect=RuntimeError("boom")):
-            _fix_stale_managed_command("kiroclaw-core", spec)
-        assert spec["command"] == "/old/kiroclaw"
+        spec = {"command": "/old/kirocrew", "args": ["mcp-core"]}
+        with patch("kiro_crew.agent._kirocrew_mcp_invocation", side_effect=RuntimeError("boom")):
+            _fix_stale_managed_command("kirocrew-core", spec)
+        assert spec["command"] == "/old/kirocrew"
 
 
 class TestSharedServerToolsRegistration:
@@ -1478,13 +1478,13 @@ class TestSharedServerToolsRegistration:
 
     def test_shared_servers_added_to_tools_and_allowedtools(self, tmp_path, monkeypatch) -> None:
         """Enabled shared servers appear in both tools and allowedTools."""
-        from kiro_claw.agent import rebuild_agent_config
+        from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kiroclaw"}))
+        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
         (agent_dir / "prompt.md").write_text("prompt")
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
@@ -1501,32 +1501,32 @@ class TestSharedServerToolsRegistration:
             )
         )
 
-        monkeypatch.setattr("kiro_claw.agent.KIRO_AGENTS_DIR", kiro_dir)
-        monkeypatch.setattr("kiro_claw.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
-        monkeypatch.setattr("kiro_claw.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
-        monkeypatch.setattr("kiro_claw.agent._KIROCLAW_BIN", "/usr/bin/kiroclaw")
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
+        monkeypatch.setattr("kiro_crew.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
+        monkeypatch.setattr("kiro_crew.agent._KIROCREW_BIN", "/usr/bin/kirocrew")
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: "/usr/bin/srv")
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kiroclaw.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text())
         assert "my-srv" in data["mcpServers"]
         assert "@my-srv" in data.get("tools", [])
         assert "@my-srv" in data.get("allowedTools", [])
 
     def test_disabled_shared_server_removed_from_tools(self, tmp_path, monkeypatch) -> None:
         """Disabled shared server is removed from tools/allowedTools."""
-        from kiro_claw.agent import rebuild_agent_config
+        from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kiroclaw"}))
+        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
         (agent_dir / "prompt.md").write_text("prompt")
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
-        (kiro_dir / "kiroclaw.json").write_text(
+        (kiro_dir / "kirocrew.json").write_text(
             json.dumps(
                 {
                     "mcpServers": {"my-srv": {"command": "srv"}},
@@ -1548,31 +1548,31 @@ class TestSharedServerToolsRegistration:
             )
         )
 
-        monkeypatch.setattr("kiro_claw.agent.KIRO_AGENTS_DIR", kiro_dir)
-        monkeypatch.setattr("kiro_claw.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
-        monkeypatch.setattr("kiro_claw.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
-        monkeypatch.setattr("kiro_claw.agent._KIROCLAW_BIN", "/usr/bin/kiroclaw")
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
+        monkeypatch.setattr("kiro_crew.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
+        monkeypatch.setattr("kiro_crew.agent._KIROCREW_BIN", "/usr/bin/kirocrew")
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: "/usr/bin/srv")
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kiroclaw.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text())
         assert "@my-srv" not in data.get("tools", [])
         assert "@my-srv" not in data.get("allowedTools", [])
 
     def test_reenabled_server_added_back(self, tmp_path, monkeypatch) -> None:
         """Server re-enabled in mcp.json gets added back to tools/allowedTools."""
-        from kiro_claw.agent import rebuild_agent_config
+        from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kiroclaw"}))
+        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
         (agent_dir / "prompt.md").write_text("prompt")
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
-        (kiro_dir / "kiroclaw.json").write_text(
+        (kiro_dir / "kirocrew.json").write_text(
             json.dumps(
                 {
                     "mcpServers": {"my-srv": {"command": "srv", "disabled": True}},
@@ -1594,28 +1594,28 @@ class TestSharedServerToolsRegistration:
             )
         )
 
-        monkeypatch.setattr("kiro_claw.agent.KIRO_AGENTS_DIR", kiro_dir)
-        monkeypatch.setattr("kiro_claw.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
-        monkeypatch.setattr("kiro_claw.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
-        monkeypatch.setattr("kiro_claw.agent._KIROCLAW_BIN", "/usr/bin/kiroclaw")
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
+        monkeypatch.setattr("kiro_crew.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
+        monkeypatch.setattr("kiro_crew.agent._KIROCREW_BIN", "/usr/bin/kirocrew")
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: "/usr/bin/srv")
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kiroclaw.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text())
         assert "@my-srv" in data.get("tools", [])
         assert "@my-srv" in data.get("allowedTools", [])
         assert "disabled" not in data["mcpServers"]["my-srv"]
 
     def test_disabled_removal_no_tools_key(self, tmp_path, monkeypatch) -> None:
         """Disabled removal doesn't crash when config has no tools key."""
-        from kiro_claw.agent import rebuild_agent_config
+        from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kiroclaw"}))
+        (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
         (agent_dir / "prompt.md").write_text("prompt")
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         kiro_dir = tmp_path / ".kiro" / "agents"
         kiro_dir.mkdir(parents=True)
@@ -1632,15 +1632,15 @@ class TestSharedServerToolsRegistration:
             )
         )
 
-        monkeypatch.setattr("kiro_claw.agent.KIRO_AGENTS_DIR", kiro_dir)
-        monkeypatch.setattr("kiro_claw.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
-        monkeypatch.setattr("kiro_claw.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
-        monkeypatch.setattr("kiro_claw.agent._KIROCLAW_BIN", "/usr/bin/kiroclaw")
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
+        monkeypatch.setattr("kiro_crew.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
+        monkeypatch.setattr("kiro_crew.agent._KIROCREW_BIN", "/usr/bin/kirocrew")
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: None)
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kiroclaw.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text())
         assert "@disabled-srv" not in data.get("tools", [])
         assert "@disabled-srv" not in data.get("allowedTools", [])
 
@@ -1655,7 +1655,7 @@ class TestProbeServerStderrCapture:
     async def test_stderr_captured_when_child_exits_before_response(self, tmp_path) -> None:
         """Child writes to stderr and exits without speaking MCP → stderr
         tail is appended to `server.error`."""
-        from kiro_claw.mcp_discovery import probe_server
+        from kiro_crew.mcp_discovery import probe_server
 
         stub = tmp_path / "broken-server.sh"
         stub.write_text(
@@ -1664,7 +1664,7 @@ class TestProbeServerStderrCapture:
         stub.chmod(0o755)
 
         server = McpServerInfo(name="broken", command=str(stub))
-        with patch("kiro_claw.config.loader.KiroClawConfig") as mock_cls:
+        with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
             mock_cls.load.return_value = mock_cfg
@@ -1679,7 +1679,7 @@ class TestProbeServerStderrCapture:
     async def test_successful_probe_does_not_mention_stderr(self, tmp_path) -> None:
         """Healthy server's benign stderr warnings must not bleed into
         `server.error`."""
-        from kiro_claw.mcp_discovery import probe_server
+        from kiro_crew.mcp_discovery import probe_server
 
         stub = tmp_path / "noisy-ok-server.sh"
         stub.write_text(
@@ -1697,7 +1697,7 @@ class TestProbeServerStderrCapture:
         stub.chmod(0o755)
 
         server = McpServerInfo(name="noisy-ok", command=str(stub))
-        with patch("kiro_claw.config.loader.KiroClawConfig") as mock_cls:
+        with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 3
             mock_cls.load.return_value = mock_cfg
@@ -1712,7 +1712,7 @@ class TestProbeServerStderrCapture:
     async def test_stderr_tail_is_bounded(self, tmp_path) -> None:
         """Very large stderr is truncated so it cannot explode logs or
         dashboard responses."""
-        from kiro_claw.mcp_discovery import probe_server
+        from kiro_crew.mcp_discovery import probe_server
 
         stub = tmp_path / "verbose-broken.sh"
         stub.write_text(
@@ -1725,7 +1725,7 @@ class TestProbeServerStderrCapture:
         stub.chmod(0o755)
 
         server = McpServerInfo(name="verbose", command=str(stub))
-        with patch("kiro_claw.config.loader.KiroClawConfig") as mock_cls:
+        with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
             mock_cls.load.return_value = mock_cfg
@@ -1740,7 +1740,7 @@ class TestProbeServerStderrCapture:
     async def test_credential_in_stderr_is_redacted(self, tmp_path) -> None:
         """stderr is untrusted output — credentials and exfiltration URLs
         must be scrubbed before they land in `server.error`."""
-        from kiro_claw.mcp_discovery import probe_server
+        from kiro_crew.mcp_discovery import probe_server
 
         stub = tmp_path / "leaky-server.sh"
         stub.write_text(
@@ -1751,7 +1751,7 @@ class TestProbeServerStderrCapture:
         stub.chmod(0o755)
 
         server = McpServerInfo(name="leaky", command=str(stub))
-        with patch("kiro_claw.config.loader.KiroClawConfig") as mock_cls:
+        with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
             mock_cls.load.return_value = mock_cfg
@@ -1799,7 +1799,7 @@ class TestProbeStdioMalformedResponse:
 
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: "/usr/bin/srv")
         with patch(
-            "kiro_claw.mcp_discovery.asyncio.create_subprocess_exec",
+            "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
             AsyncMock(return_value=proc),
         ):
             result = asyncio.run(probe_server(server))
@@ -1816,7 +1816,7 @@ class TestProbeStdioMalformedResponse:
 
         monkeypatch.setattr("shutil.which", lambda cmd, path=None: "/usr/bin/srv")
         with patch(
-            "kiro_claw.mcp_discovery.asyncio.create_subprocess_exec",
+            "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
             AsyncMock(return_value=proc),
         ):
             result = asyncio.run(probe_server(server))
@@ -1890,7 +1890,7 @@ class TestReadStdioJsonrpcResponse:
     @pytest.mark.asyncio
     async def test_banner_flood_capped(self) -> None:
         """More than _MAX_BANNER_LINES junk lines → give up (None), don't hang."""
-        from kiro_claw.mcp_discovery import _MAX_BANNER_LINES
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
 
         lines = [b"noise\n"] * (_MAX_BANNER_LINES + 5)
         lines.append(b'{"jsonrpc":"2.0","id":1,"result":{}}\n')
@@ -1916,7 +1916,7 @@ class TestReadStdioJsonrpcResponse:
     @pytest.mark.asyncio
     async def test_notifications_do_not_count_toward_cap(self) -> None:
         """>_MAX_BANNER_LINES JSON-RPC notifications must NOT trip the banner cap."""
-        from kiro_claw.mcp_discovery import _MAX_BANNER_LINES
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
 
         notif = b'{"jsonrpc":"2.0","method":"notifications/progress","params":{}}\n'
         lines = [notif] * (_MAX_BANNER_LINES + 10)
@@ -1929,7 +1929,7 @@ class TestReadStdioJsonrpcResponse:
     @pytest.mark.asyncio
     async def test_blank_lines_do_not_count_toward_cap(self) -> None:
         """>_MAX_BANNER_LINES blank lines must NOT trip the banner cap."""
-        from kiro_claw.mcp_discovery import _MAX_BANNER_LINES
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
 
         lines = [b"\n"] * (_MAX_BANNER_LINES + 10)
         lines.append(b'{"jsonrpc":"2.0","id":3,"result":{}}\n')
@@ -1941,7 +1941,7 @@ class TestReadStdioJsonrpcResponse:
     @pytest.mark.asyncio
     async def test_cap_boundary_exact(self) -> None:
         """Exactly _MAX_BANNER_LINES junk lines still lets the response through."""
-        from kiro_claw.mcp_discovery import _MAX_BANNER_LINES
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
 
         lines = [b"noise\n"] * _MAX_BANNER_LINES
         lines.append(b'{"jsonrpc":"2.0","id":7,"result":{}}\n')
@@ -1953,7 +1953,7 @@ class TestReadStdioJsonrpcResponse:
     @pytest.mark.asyncio
     async def test_cap_boundary_one_over(self) -> None:
         """One junk line past the cap drops the response (returns None)."""
-        from kiro_claw.mcp_discovery import _MAX_BANNER_LINES
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
 
         lines = [b"noise\n"] * (_MAX_BANNER_LINES + 1)
         lines.append(b'{"jsonrpc":"2.0","id":7,"result":{}}\n')
@@ -1994,8 +1994,8 @@ class TestProbeServerBannerTolerance:
         server = McpServerInfo(name="local-chorus-mcp", command="local-chorus-mcp")
 
         with (
-            patch("kiro_claw.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_claw.mcp_discovery.shutil.which", return_value="/usr/bin/local-chorus-mcp"),
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/local-chorus-mcp"),
         ):
             result = await probe_server(server)
 

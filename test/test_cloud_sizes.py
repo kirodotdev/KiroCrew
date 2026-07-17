@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.cloud import sizes
+from kiro_crew.cloud import sizes
 
 
 class TestTierCatalog:
@@ -12,7 +12,7 @@ class TestTierCatalog:
         d = sizes.default_tier()
         assert d.key == sizes.DEFAULT_TIER_KEY
         assert d.recommended is True
-        # KiroClaw uses ~10 GB; default must have headroom.
+        # KiroCrew uses ~10 GB; default must have headroom.
         assert d.ram_gb >= 16
 
     def test_default_is_arm64(self):

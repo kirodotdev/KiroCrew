@@ -1,7 +1,7 @@
 """Phase 6 + 8 — the PreToolUse gate enforces governance, and audits denials.
 
 The headline behavior: a profile (or policy) that excludes an MCP tool causes
-KiroClaw to refuse the call at its own host gate, EVEN IF the kiro agent config
+KiroCrew to refuse the call at its own host gate, EVEN IF the kiro agent config
 granted it.  Plus: a governance deny wins over a user auto-approve, and a deny
 emits a redacted ``governance_decision`` SEL record.
 """
@@ -13,11 +13,11 @@ import json
 
 import pytest
 
-from kiro_claw.hooks import TOOL_DENY, HookManager, HooksConfig
-from kiro_claw.platform import context as ctx_mod
-from kiro_claw.platform import governance_profiles as gp
-from kiro_claw.platform.bootstrap import build_default_context
-from kiro_claw.platform.governance import parse_policy
+from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+from kiro_crew.platform import context as ctx_mod
+from kiro_crew.platform import governance_profiles as gp
+from kiro_crew.platform.bootstrap import build_default_context
+from kiro_crew.platform.governance import parse_policy
 
 
 @pytest.fixture
@@ -32,9 +32,9 @@ def profiles_dir(tmp_path, monkeypatch):
 
 def _install_ceiling(monkeypatch, policy_body):
     """Compose a context carrying the given policy and install it as active."""
-    from kiro_claw.config.loader import KiroClawConfig
+    from kiro_crew.config.loader import KiroCrewConfig
 
-    base = build_default_context(KiroClawConfig.load())
+    base = build_default_context(KiroCrewConfig.load())
     ceiling = parse_policy(policy_body) if policy_body is not None else None
     ctx = dataclasses.replace(base, governance=ceiling)
     ctx_mod.set_context(ctx)
@@ -53,7 +53,7 @@ def _write(d, name, body):
 
 def test_profile_denies_mcp_tool_kiro_would_grant(profiles_dir, monkeypatch):
     # Policy: ungoverned mcp (deny[] = allow-all).  Profile bound to the cron
-    # surface denies the whole @kiroclaw-cron server.
+    # surface denies the whole @kirocrew-cron server.
     _install_ceiling(monkeypatch, {"version": 1, "boot": {"fail_closed": True}})
     _write(
         profiles_dir,
@@ -61,11 +61,11 @@ def test_profile_denies_mcp_tool_kiro_would_grant(profiles_dir, monkeypatch):
         {
             "name": "cron",
             "bind": {"type": "surface", "id": "cron"},
-            "mcp": {"mode": "deny", "deny": ["@kiroclaw-cron"]},
+            "mcp": {"mode": "deny", "deny": ["@kirocrew-cron"]},
         },
     )
     hooks = HookManager(HooksConfig(auto_approve_tools=["*"]))  # kiro would auto-approve!
-    result = hooks.on_tool_call("mcp__kiroclaw-cron__cron_add", session_key="cron:job-1:run-1")
+    result = hooks.on_tool_call("mcp__kirocrew-cron__cron_add", session_key="cron:job-1:run-1")
     assert result.action == TOOL_DENY
     assert "governance" in result.reason.lower()
 
@@ -135,7 +135,7 @@ def test_denial_emits_redacted_audit(profiles_dir, monkeypatch):
         def log_governance_decision(self, **kw):
             events.append(kw)
 
-    monkeypatch.setattr("kiro_claw.sel.sel", lambda: _FakeSel())
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: _FakeSel())
     _install_ceiling(
         monkeypatch,
         {

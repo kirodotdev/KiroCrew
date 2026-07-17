@@ -34,7 +34,7 @@ Or use the App Store UI in the dashboard to install from a local path.
 
 ### Verify in dashboard
 
-1. Open KiroClaw dashboard (`kiroclaw token` → open URL)
+1. Open KiroCrew dashboard (`kirocrew token` → open URL)
 2. Check App Store → Installed tab — your app should appear
 3. If it has UI, click the sidebar entry and verify the page loads
 4. If it has agents, test them from chat: ask the agent to do something
@@ -105,12 +105,12 @@ MyAppRepo/
 
 ## 4. Submit to App Registry
 
-The App Registry is a curated list in `src/kiro_claw/apps/app-registry.json`.
-Adding your app means opening a pull request against the KiroClaw repo.
+The App Registry is a curated list in `src/kiro_crew/apps/app-registry.json`.
+Adding your app means opening a pull request against the KiroCrew repo.
 
 ### Add registry entry
 
-Edit `app-registry.json` in the KiroClaw repo:
+Edit `app-registry.json` in the KiroCrew repo:
 
 ```json
 [
@@ -148,10 +148,10 @@ If your app is in a subdirectory of a larger repo:
 ### Submit a pull request
 
 ```bash
-cd /path/to/KiroClaw
+cd /path/to/KiroCrew
 git checkout -b add-my-app
-# Edit src/kiro_claw/apps/app-registry.json
-git add src/kiro_claw/apps/app-registry.json
+# Edit src/kiro_crew/apps/app-registry.json
+git add src/kiro_crew/apps/app-registry.json
 git commit -m "feat(apps): add my-app to registry"
 git push origin add-my-app
 # Open a pull request titled "Add my-app to App Store registry"
@@ -164,7 +164,7 @@ Reviewers check:
 2. Permissions are reasonable (no unnecessary access)
 3. No path traversal in resource paths
 4. Install script (if any) is safe
-5. App provides value to KiroClaw users
+5. App provides value to KiroCrew users
 
 ## 5. User Installation Flow
 
@@ -172,7 +172,7 @@ After your pull request merges, users can install your app:
 
 ### From App Store UI
 
-1. Open KiroClaw dashboard → App Store
+1. Open KiroCrew dashboard → App Store
 2. Browse tab → find your app
 3. Click Install
 4. Wait for clone + install script to complete
@@ -188,9 +188,9 @@ curl -X POST http://localhost:5476/api/apps/registry/install \
 
 ### What happens during install
 
-1. KiroClaw clones your repo (shallow clone, specific branch)
+1. KiroCrew clones your repo (shallow clone, specific branch)
 2. Runs `setup.onInstall` script if defined (e.g. `cd ui && npm install && npm run build`)
-3. Copies app to `~/.kiroclaw/apps/my-app/`
+3. Copies app to `~/.kirocrew/apps/my-app/`
 4. Registers agents, skills, crons via symlinks
 5. App appears in dashboard
 
@@ -215,7 +215,7 @@ This re-clones, re-runs install script, and re-registers resources.
 ## 7. Self-Managed Apps
 
 Some apps manage their own installation and resource registration. They
-register with KiroClaw for App Store visibility but handle their own
+register with KiroCrew for App Store visibility but handle their own
 agent/skill/MCP setup independently.
 
 ```json
@@ -233,7 +233,7 @@ Self-managed apps:
 - Show in App Store as "Self-managed"
 - Handle their own install/update/uninstall
 - Register via `POST /api/apps/register` at runtime
-- KiroClaw only tracks metadata
+- KiroCrew only tracks metadata
 
 ## Quick Reference
 

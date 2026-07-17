@@ -2,7 +2,7 @@
 
 ## Overview
 
-Formalize KiroClaw's configuration by making the Python dataclass hierarchy the single source of truth. Add field metadata, introduce `SlackConfig` and `DashboardConfig`, build a schema registry, expose it via API, add a baseline generator, and wire in runtime validation with graceful degradation. All work is in Python, targeting the existing `config/loader.py`, a new `config/schema.py`, `dashboard/handlers.py`, and associated test files.
+Formalize KiroCrew's configuration by making the Python dataclass hierarchy the single source of truth. Add field metadata, introduce `SlackConfig` and `DashboardConfig`, build a schema registry, expose it via API, add a baseline generator, and wire in runtime validation with graceful degradation. All work is in Python, targeting the existing `config/loader.py`, a new `config/schema.py`, `dashboard/handlers.py`, and associated test files.
 
 ## Tasks
 
@@ -16,15 +16,15 @@ Formalize KiroClaw's configuration by making the Python dataclass hierarchy the 
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
   - [x] 1.2 Create `SlackConfig` and `DashboardConfig` dataclasses with metadata
-    - Define `SlackConfig` with fields: `allowed_users` (list[dict]), `tracking_channels` (list[dict]), `command` (str, default `"kiroclaw"`)
+    - Define `SlackConfig` with fields: `allowed_users` (list[dict]), `tracking_channels` (list[dict]), `command` (str, default `"kirocrew"`)
     - Define `DashboardConfig` with field: `url` (str, default `""`)
     - All fields carry `_meta(...)` metadata
     - _Requirements: 2.1_
 
-  - [x] 1.3 Add `slack`, `dashboard`, `workspaces`, `default_workspace` fields to `KiroClawConfig` and update `load()` / `to_dict()`
+  - [x] 1.3 Add `slack`, `dashboard`, `workspaces`, `default_workspace` fields to `KiroCrewConfig` and update `load()` / `to_dict()`
     - Add `slack: SlackConfig`, `dashboard: DashboardConfig`, `workspaces: dict[str, str]`, `default_workspace: str`, `auto_update: bool`, `hooks: dict` as proper typed fields with metadata
-    - Update `KiroClawConfig.load()` to parse `slack.*`, `dashboard.*`, `workspaces`, `default_workspace` from JSON into the new dataclass fields, removing all ad-hoc `data.get("slack", {})` parsing
-    - Update `KiroClawConfig.to_dict()` to serialize the new fields back to the same JSON structure for backward compatibility
+    - Update `KiroCrewConfig.load()` to parse `slack.*`, `dashboard.*`, `workspaces`, `default_workspace` from JSON into the new dataclass fields, removing all ad-hoc `data.get("slack", {})` parsing
+    - Update `KiroCrewConfig.to_dict()` to serialize the new fields back to the same JSON structure for backward compatibility
     - Ensure existing callers of `slack` / `workspaces` / `default_workspace` attributes still work
     - _Requirements: 2.2, 2.3, 2.4, 2.5, 9.4_
 
@@ -37,7 +37,7 @@ Formalize KiroClaw's configuration by making the Python dataclass hierarchy the 
     - `build_json_schema(root_cls)` walks `dataclasses.fields()` recursively, maps Python types to JSON Schema types, embeds `x-meta` extensions for label/help/tags/sensitive/deprecated
     - `flatten_to_entries(json_schema, prefix)` DFS flattens nested JSON Schema into flat `ConfigEntry` list
     - `config_entry_to_dict(entry)` serializes a `ConfigEntry` to a JSON-compatible dict
-    - Module-level `JSON_SCHEMA = build_json_schema(KiroClawConfig)` and `SCHEMA_REGISTRY = flatten_to_entries(JSON_SCHEMA)` built at import time
+    - Module-level `JSON_SCHEMA = build_json_schema(KiroCrewConfig)` and `SCHEMA_REGISTRY = flatten_to_entries(JSON_SCHEMA)` built at import time
     - Type mapping: str→string, int→integer, float→number, bool→boolean, list→array, dict/dataclass→object
     - Safe defaults for missing optional metadata: tags=[], sensitive=False, deprecated=False, enum=None
     - _Requirements: 1.5, 3.1, 3.2, 3.3, 3.4_
@@ -54,7 +54,7 @@ Formalize KiroClaw's configuration by making the Python dataclass hierarchy the 
 
   - [x]* 3.4 Write property test: registry entries are structurally complete (Property 3)
     - **Property 3: Registry entries are structurally complete**
-    - Iterate all SCHEMA_REGISTRY entries, verify all required fields present and every path reachable via dataclasses.fields() recursion on KiroClawConfig
+    - Iterate all SCHEMA_REGISTRY entries, verify all required fields present and every path reachable via dataclasses.fields() recursion on KiroCrewConfig
     - **Validates: Requirements 3.2, 2.6**
 
   - [x]* 3.5 Write property test: Python-to-schema type mapping is correct (Property 4)
@@ -76,7 +76,7 @@ Formalize KiroClaw's configuration by making the Python dataclass hierarchy the 
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 5. Add runtime validation to config/loader.py
-  - [x] 5.1 Integrate `jsonschema.validate()` into `KiroClawConfig.load()` with graceful degradation
+  - [x] 5.1 Integrate `jsonschema.validate()` into `KiroCrewConfig.load()` with graceful degradation
     - Import `jsonschema` and `JSON_SCHEMA` from `config/schema.py`
     - After parsing JSON, run `jsonschema.validate(data, JSON_SCHEMA)` wrapped in try/except
     - On `ValidationError`, log warnings with dot-path, expected type, actual type; fall back to field defaults for invalid values
@@ -84,13 +84,13 @@ Formalize KiroClaw's configuration by making the Python dataclass hierarchy the 
     - For unrecognized top-level keys, log warning listing them
     - For deprecated fields, log deprecation warning with dot-path and help text
     - For sensitive fields, mask actual value as `"***"` in log messages
-    - For malformed JSON, log warning and return default `KiroClawConfig`
-    - Always return a valid `KiroClawConfig` regardless of validation errors
+    - For malformed JSON, log warning and return default `KiroCrewConfig`
+    - Always return a valid `KiroCrewConfig` regardless of validation errors
     - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 7.2, 8.1, 8.2_
 
-  - [x]* 5.2 Write property test: KiroClawConfig load/to_dict round-trip (Property 6)
-    - **Property 6: KiroClawConfig load/to_dict round-trip**
-    - Generate KiroClawConfig instances with hypothesis, call to_dict() then load() from that dict, verify equivalence
+  - [x]* 5.2 Write property test: KiroCrewConfig load/to_dict round-trip (Property 6)
+    - **Property 6: KiroCrewConfig load/to_dict round-trip**
+    - Generate KiroCrewConfig instances with hypothesis, call to_dict() then load() from that dict, verify equivalence
     - **Validates: Requirements 2.4, 2.5, 9.4, 9.6**
 
   - [x]* 5.3 Write property test: type mismatch falls back to default (Property 9)
@@ -108,9 +108,9 @@ Formalize KiroClaw's configuration by making the Python dataclass hierarchy the 
     - Generate config dicts with random extra top-level keys, verify load() detects them
     - **Validates: Requirements 6.4**
 
-  - [x]* 5.6 Write property test: load() always returns valid KiroClawConfig (Property 12)
-    - **Property 12: load() always returns valid KiroClawConfig**
-    - Generate arbitrary strings/bytes as config input, verify load() returns a KiroClawConfig without raising
+  - [x]* 5.6 Write property test: load() always returns valid KiroCrewConfig (Property 12)
+    - **Property 12: load() always returns valid KiroCrewConfig**
+    - Generate arbitrary strings/bytes as config input, verify load() returns a KiroCrewConfig without raising
     - **Validates: Requirements 6.6**
 
   - [x]* 5.7 Write property test: deprecated fields are accepted during loading (Property 14)

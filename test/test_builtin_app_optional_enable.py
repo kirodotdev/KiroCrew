@@ -12,7 +12,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.manager import (
+from kiro_crew.apps.manager import (
     InstalledApp,
     _read_installed,
     _validate_builtin_app,
@@ -30,10 +30,10 @@ from kiro_claw.apps.manager import (
 
 @pytest.fixture()
 def app_home(tmp_path, monkeypatch):
-    """Set KIROCLAW_HOME to a temp directory for isolated testing."""
-    home = tmp_path / "kiroclaw-home"
+    """Set KIROCREW_HOME to a temp directory for isolated testing."""
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
     return home
 
 
@@ -43,11 +43,11 @@ def _no_disk_discovery(monkeypatch):
     explicitly inject via ``monkeypatch.setattr(mgr, "_BUILTIN_APPS", ...)``.
 
     Without this, ``register_builtin_apps()`` also picks up real builtins
-    discovered from ``src/kiro_claw/apps/builtins/*/app.json`` (e.g.
+    discovered from ``src/kiro_crew/apps/builtins/*/app.json`` (e.g.
     ``code-reviewer``), which would inflate counts in tests that rely on
     ``_BUILTIN_APPS`` being the sole source.
     """
-    import kiro_claw.apps.manager as mgr
+    import kiro_crew.apps.manager as mgr
     monkeypatch.setattr(mgr, "discover_builtin_apps", lambda: [])
 
 
@@ -87,9 +87,9 @@ class TestProperty1FirstTimeRegistration:
         import tempfile
 
         home = tempfile.mkdtemp()
-        monkeypatch.setenv("KIROCLAW_HOME", home)
+        monkeypatch.setenv("KIROCREW_HOME", home)
 
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [app_def])
         monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
 
@@ -103,13 +103,13 @@ class TestProperty1FirstTimeRegistration:
 
     def test_explicit_default_enabled_false(self, app_home, monkeypatch):
         """A builtin app with defaultEnabled: false registers as disabled."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "test-opt-in",
             "version": "1.0.0",
             "displayName": "Test Opt-In",
             "description": "An opt-in feature",
-            "author": "kiroclaw",
+            "author": "kirocrew",
             "defaultEnabled": False,
         }])
 
@@ -120,13 +120,13 @@ class TestProperty1FirstTimeRegistration:
 
     def test_missing_default_enabled_defaults_to_true(self, app_home, monkeypatch):
         """A builtin app without defaultEnabled registers as enabled (backward compat)."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "test-legacy",
             "version": "1.0.0",
             "displayName": "Test Legacy",
             "description": "A legacy-style builtin",
-            "author": "kiroclaw",
+            "author": "kirocrew",
         }])
 
         register_builtin_apps()
@@ -154,9 +154,9 @@ class TestProperty2ReRegistrationPreservesState:
         import tempfile
 
         home = tempfile.mkdtemp()
-        monkeypatch.setenv("KIROCLAW_HOME", home)
+        monkeypatch.setenv("KIROCREW_HOME", home)
 
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [app_def])
         monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
 
@@ -205,9 +205,9 @@ class TestProperty3LifecycleLocked:
         import tempfile
 
         home = tempfile.mkdtemp()
-        monkeypatch.setenv("KIROCLAW_HOME", home)
+        monkeypatch.setenv("KIROCREW_HOME", home)
 
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [app_def])
         monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
 
@@ -219,13 +219,13 @@ class TestProperty3LifecycleLocked:
 
     def test_uninstall_locked_rejected(self, app_home, monkeypatch):
         """Calling uninstall_app() on a builtin app SHALL return an error."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "locked-app",
             "version": "1.0.0",
             "displayName": "Locked App",
             "description": "Cannot uninstall",
-            "author": "kiroclaw",
+            "author": "kirocrew",
         }])
 
         register_builtin_apps()
@@ -244,7 +244,7 @@ class TestProperty8InvalidDefinitionsSkipped:
 
     def test_invalid_skipped_valid_registered(self, app_home, monkeypatch):
         """A mix of valid and invalid definitions: valid ones register, invalid skip."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
 
         apps_list = [
             # Invalid: missing description
@@ -253,7 +253,7 @@ class TestProperty8InvalidDefinitionsSkipped:
                 "version": "1.0.0",
                 "displayName": "Bad App",
                 "description": "",
-                "author": "kiroclaw",
+                "author": "kirocrew",
             },
             # Valid
             {
@@ -261,7 +261,7 @@ class TestProperty8InvalidDefinitionsSkipped:
                 "version": "1.0.0",
                 "displayName": "Good App",
                 "description": "A valid app",
-                "author": "kiroclaw",
+                "author": "kirocrew",
             },
             # Invalid: non-boolean defaultEnabled
             {
@@ -269,7 +269,7 @@ class TestProperty8InvalidDefinitionsSkipped:
                 "version": "1.0.0",
                 "displayName": "Bad Default",
                 "description": "Has bad defaultEnabled",
-                "author": "kiroclaw",
+                "author": "kirocrew",
                 "defaultEnabled": "yes",
             },
         ]
@@ -285,7 +285,7 @@ class TestProperty8InvalidDefinitionsSkipped:
 
     def test_unsafe_name_skipped(self, app_home, monkeypatch):
         """An app with path-traversal in name is skipped."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "../evil",
             "version": "1.0.0",
@@ -367,7 +367,7 @@ class TestValidateBuiltinApp:
 
     def test_existing_builtins_all_valid(self):
         """The shipped builtin apps must all pass validation."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
         for app_data in mgr._BUILTIN_APPS:
             errors = _validate_builtin_app(app_data)
             assert errors == [], f"{app_data['name']} failed validation: {errors}"
@@ -380,7 +380,7 @@ class TestValidateBuiltinApp:
         ``defaultEnabled: False`` explicitly rather than relying on the field's
         backward-compat default of True.
         """
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
 
         for app_data in mgr._BUILTIN_APPS:
             assert app_data.get("defaultEnabled") is False, (
@@ -396,7 +396,7 @@ class TestValidateBuiltinApp:
         (or sets it true) would surface the app on a fresh install, so require an
         explicit False on every discovered manifest.
         """
-        from kiro_claw.apps.discovery import discover_builtin_apps
+        from kiro_crew.apps.discovery import discover_builtin_apps
 
         for app_data in discover_builtin_apps():
             assert app_data.get("defaultEnabled") is False, (
@@ -415,15 +415,15 @@ class TestProperty6EnableDisableRoundTrip:
 
     def test_enable_then_read(self, app_home, monkeypatch):
         """Enabling a disabled builtin app persists enabled=True."""
-        import kiro_claw.apps.manager as mgr
-        from kiro_claw.apps.manager import enable_app
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import enable_app
 
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "roundtrip-app",
             "version": "1.0.0",
             "displayName": "Roundtrip",
             "description": "Test round-trip",
-            "author": "kiroclaw",
+            "author": "kirocrew",
             "defaultEnabled": False,
         }])
 
@@ -445,15 +445,15 @@ class TestProperty6EnableDisableRoundTrip:
 
     def test_disable_then_read(self, app_home, monkeypatch):
         """Disabling an enabled builtin app persists enabled=False."""
-        import kiro_claw.apps.manager as mgr
-        from kiro_claw.apps.manager import disable_app
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import disable_app
 
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "roundtrip-app2",
             "version": "1.0.0",
             "displayName": "Roundtrip 2",
             "description": "Test round-trip disable",
-            "author": "kiroclaw",
+            "author": "kirocrew",
             "defaultEnabled": True,
         }])
 
@@ -480,17 +480,17 @@ class TestProperty6EnableDisableRoundTrip:
         import tempfile
 
         home = tempfile.mkdtemp()
-        monkeypatch.setenv("KIROCLAW_HOME", home)
+        monkeypatch.setenv("KIROCREW_HOME", home)
 
-        import kiro_claw.apps.manager as mgr
-        from kiro_claw.apps.manager import disable_app, enable_app
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import disable_app, enable_app
 
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "toggle-app",
             "version": "1.0.0",
             "displayName": "Toggle",
             "description": "Toggle test",
-            "author": "kiroclaw",
+            "author": "kirocrew",
             "defaultEnabled": initial_enabled,
         }])
         monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
@@ -520,7 +520,7 @@ class TestProperty7APIReturnsCompleteManifest:
 
     def test_list_apps_includes_all_fields(self, app_home, monkeypatch):
         """list_apps() returns origin, enabled, lifecycle, and full manifest."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
 
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [
             {
@@ -528,7 +528,7 @@ class TestProperty7APIReturnsCompleteManifest:
                 "version": "2.0.0",
                 "displayName": "Full Manifest",
                 "description": "Has all fields",
-                "author": "kiroclaw",
+                "author": "kirocrew",
                 "tags": ["test", "full"],
                 "defaultEnabled": False,
                 "ui": {
@@ -560,14 +560,14 @@ class TestProperty7APIReturnsCompleteManifest:
 
     def test_disabled_builtin_has_complete_manifest(self, app_home, monkeypatch):
         """A disabled builtin app still returns full manifest in list_apps()."""
-        import kiro_claw.apps.manager as mgr
+        import kiro_crew.apps.manager as mgr
 
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "disabled-full",
             "version": "1.0.0",
             "displayName": "Disabled Full",
             "description": "Disabled but complete",
-            "author": "kiroclaw",
+            "author": "kirocrew",
             "tags": ["hidden"],
             "defaultEnabled": False,
             "permissions": {"api": ["/api/test"], "events": ["test_event"]},

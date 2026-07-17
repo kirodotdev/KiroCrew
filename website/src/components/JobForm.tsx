@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { api } from '../api/client'
 import { Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
-import AgentSelector, { type KiroClawAgent } from './AgentSelector'
+import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
 import type { CronJob } from '../types'
 import { SaveCreateLabel, CRON_SEL, expandDow } from '../utils/cronUtils'
 
@@ -67,7 +67,7 @@ function buildBody(
 
 interface Props {
   job?: CronJob // if provided, edit mode
-  agents: KiroClawAgent[]
+  agents: KiroCrewAgent[]
   defaultAgent: string
   onSaved: () => void
   /** Vertical layout for side panel, horizontal for inline create */

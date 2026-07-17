@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from kiro_claw.apps.builtins.deploy_web import engine
+from kiro_crew.apps.builtins.deploy_web import engine
 
 
 class FakeAWS:
@@ -60,8 +60,8 @@ def fake(monkeypatch):
 
 def test_random_bucket_name_format():
     name = engine.random_bucket_name()
-    assert name.startswith("kiroclaw-web-")
-    suffix = name[len("kiroclaw-web-"):]
+    assert name.startswith("kirocrew-web-")
+    suffix = name[len("kirocrew-web-"):]
     assert re.fullmatch(r"[0-9a-f]{12}", suffix), name
     # No account id, opaque
     assert "123456789012" not in name
@@ -73,7 +73,7 @@ def test_first_deploy_full_flow_and_ordering(fake):
     result = engine.deploy("cr-dashboard", "/tmp/site", profile="p", region="us-west-2")
     assert result["reused"] is False
     assert result["url"] == "https://d111abc.cloudfront.net/"
-    assert result["bucket"].startswith("kiroclaw-web-")
+    assert result["bucket"].startswith("kirocrew-web-")
     assert result["distribution_id"] == "DIST123"
 
     acts = fake.actions()
@@ -110,7 +110,7 @@ def test_redeploy_is_idempotent_reuses_infra(monkeypatch):
     def fake_run(args, profile, timeout=30):  # noqa: ANN001
         if args[0] == "resourcegroupstaggingapi":
             return 0, json.dumps({"ResourceTagMappingList": [
-                {"ResourceARN": "arn:aws:s3:::kiroclaw-web-deadbeef0001"},
+                {"ResourceARN": "arn:aws:s3:::kirocrew-web-deadbeef0001"},
                 {"ResourceARN": "arn:aws:cloudfront::123456789012:distribution/DISTOLD"},
             ]}), ""
         return f(args, profile, timeout)
@@ -118,7 +118,7 @@ def test_redeploy_is_idempotent_reuses_infra(monkeypatch):
     monkeypatch.setattr(engine, "run_aws", fake_run)
     result = engine.deploy("existing", "/tmp/site", profile="p")
     assert result["reused"] is True
-    assert result["bucket"] == "kiroclaw-web-deadbeef0001"
+    assert result["bucket"] == "kirocrew-web-deadbeef0001"
     assert result["distribution_id"] == "DISTOLD"
     acts = f.actions()
     # Re-deploy must NOT create new infra — only sync + invalidate (+ status read).
@@ -172,11 +172,11 @@ def test_partial_deploy_recovery_reuses_bucket(fake, monkeypatch):
     monkeypatch.setattr(
         engine, "find_site_by_tag",
         lambda sid, p, region=engine.DEFAULT_REGION: {
-            "bucket": "kiroclaw-web-deadbeef0000", "distribution_id": "", "distribution_arn": ""},
+            "bucket": "kirocrew-web-deadbeef0000", "distribution_id": "", "distribution_arn": ""},
     )
     result = engine.deploy("cr-dash", "/tmp/site", profile="p", region="us-west-2")
     # Reused the tagged bucket; created the missing distribution (not a full reuse).
-    assert result["bucket"] == "kiroclaw-web-deadbeef0000"
+    assert result["bucket"] == "kirocrew-web-deadbeef0000"
     assert result["reused"] is False
     # No new bucket was allocated — the existing one was not orphaned.
     assert "s3api create-bucket" not in fake.actions()

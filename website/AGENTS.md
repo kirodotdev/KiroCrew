@@ -1,6 +1,6 @@
-# KiroClawWebsite — Agent Guidelines
+# KiroCrewWebsite — Agent Guidelines
 
-KiroClaw dashboard frontend — React + TypeScript SPA. Built assets are bundled into `KiroClaw/src/kiro_claw/static/dist/`.
+KiroCrew dashboard frontend — React + TypeScript SPA. Built assets are bundled into `KiroCrew/src/kiro_crew/static/dist/`.
 
 ## Stack
 
@@ -140,7 +140,7 @@ All dashboard pages MUST follow this consistent layout pattern. Do NOT invent cu
 
 **Status indicators**:
 - `Badge variant="ok"` (green), `variant="err"` (red), `variant="warn"` (amber), `variant="aim"` (purple)
-- `AimBadge source="kiroclaw"` (orange), `source="aim"` (purple), `source="builtin"` (gray)
+- `AimBadge source="kirocrew"` (orange), `source="aim"` (purple), `source="builtin"` (gray)
 - Toggle switches: `w-9 h-5 rounded-full` with `bg-accent` (on) / `bg-border` (off)
 
 **Errors** — dismissible banner:
@@ -169,7 +169,7 @@ All dashboard pages MUST follow this consistent layout pattern. Do NOT invent cu
 - **Helpers**: `src/api/helpers.ts` — `esc()` (HTML escape), `md()` (markdown + DOMPurify), `sanitize()` (DOMPurify wrapper), `fmtSpeed()` (network speed formatting)
 - **Types**: `src/types/index.ts` — shared interfaces (`ChatSlot`, `SessionInfo`, `ChatMessage`, `StatusData`, `Notification`, etc.)
 - **Diff rendering**: `MarkdownRenderer` auto-detects diff code blocks (standard `+`/`-` format and kiro-cli `+N:`/`-N:` format) and renders with colored lines (green additions, red deletions, blue hunks)
-- **Build output**: `vite.config.ts` outputs to `KiroClaw/src/kiro_claw/static/dist/`; `build-frontend.sh` runs the production build
+- **Build output**: `vite.config.ts` outputs to `KiroCrew/src/kiro_crew/static/dist/`; `build-frontend.sh` runs the production build
 - **Dev mode**: `./dev-frontend.sh` runs Vite dev server on port 3000 with API proxy to backend on 5476
 
 ## New Features
@@ -179,15 +179,15 @@ All dashboard pages MUST follow this consistent layout pattern. Do NOT invent cu
 Widgets (`<mcwidget>`) now support bidirectional communication via `data-action` events. Widget JS can emit structured events back to the agent session:
 
 ```js
-window.parent.postMessage({type: 'kiroclaw:action', action: 'submit', payload: {value: 42}}, '*')
+window.parent.postMessage({type: 'kirocrew:action', action: 'submit', payload: {value: 42}}, '*')
 ```
 
 ### Chat Embedding (App SDK)
 
-Apps can embed a full chat interface via the `ChatEmbed` component from `@kiroclaw/sdk`:
+Apps can embed a full chat interface via the `ChatEmbed` component from `@kirocrew/sdk`:
 
 ```tsx
-import { ChatEmbed } from '@kiroclaw/sdk'
+import { ChatEmbed } from '@kirocrew/sdk'
 <ChatEmbed agent="my-agent" height={400} />
 ```
 

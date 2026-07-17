@@ -2,7 +2,7 @@
 
 ## Overview
 
-This feature implements a graceful two-phase migration mechanism for KiroClaw builtin apps being extracted to standalone packages. The design ensures users never experience a sudden loss of functionality — they receive advance warnings (Phase 1) and helpful guidance (Phase 2) throughout the transition.
+This feature implements a graceful two-phase migration mechanism for KiroCrew builtin apps being extracted to standalone packages. The design ensures users never experience a sudden loss of functionality — they receive advance warnings (Phase 1) and helpful guidance (Phase 2) throughout the transition.
 
 The system leverages the existing `InstalledApp` metadata, `_BUILTIN_APPS` registration, and the dynamic app navigation system in the frontend to provide a seamless migration experience.
 
@@ -250,13 +250,13 @@ class InstalledApp:
 
 ### Data Directory Sharing (Critical Design Decision)
 
-**Problem**: If the standalone app has a different name than the builtin (e.g. builtin `agent-worlds` → standalone `agent-worlds-standalone`), their data directories differ (`~/.kiroclaw/apps/agent-worlds/data/` vs `~/.kiroclaw/apps/agent-worlds-standalone/data/`).
+**Problem**: If the standalone app has a different name than the builtin (e.g. builtin `agent-worlds` → standalone `agent-worlds-standalone`), their data directories differ (`~/.kirocrew/apps/agent-worlds/data/` vs `~/.kirocrew/apps/agent-worlds-standalone/data/`).
 
 **Solution**: Enforce that the standalone app uses the **same name** as the builtin it replaces. The `migratedTo` field format is `"registry:{same-name}"` — the name after the colon MUST match the builtin's name.
 
 This means:
 - Builtin `agent-worlds` → standalone `agent-worlds` (same name, same data path)
-- The standalone app installs to `~/.kiroclaw/apps/agent-worlds/` — the same directory
+- The standalone app installs to `~/.kirocrew/apps/agent-worlds/` — the same directory
 - During cleanup, we only remove `installed.json` and `app.json`; the standalone installer writes its own
 - The `data/` directory is shared by identity (same path), no symlinks needed
 
@@ -272,7 +272,7 @@ This means:
     "version": "1.0.0",
     "displayName": "Agent Worlds",
     "description": "...",
-    "author": "kiroclaw",
+    "author": "kirocrew",
     "tags": ["visualization"],
     "migratedTo": "registry:agent-worlds",  # Same name — standalone replaces builtin in-place
     "ui": { ... },
@@ -332,7 +332,7 @@ interface AppInfo {
 
 ### Property 6: Data Directory Invariant
 
-*For any* sequence of migration operations (registration, orphan detection, listing, cleanup), the contents of `~/.kiroclaw/apps/{name}/data/` SHALL remain byte-for-byte identical before and after the operation.
+*For any* sequence of migration operations (registration, orphan detection, listing, cleanup), the contents of `~/.kirocrew/apps/{name}/data/` SHALL remain byte-for-byte identical before and after the operation.
 
 **Validates: Requirements 3.4, 7.1**
 

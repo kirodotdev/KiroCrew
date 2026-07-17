@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.state import DashboardState
-from kiro_claw.history import ConversationLog
-from kiro_claw.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT, ScriptHookStore
+from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import ConversationLog
+from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT, ScriptHookStore
 
 
 def _make_state(tmp_path):
@@ -66,11 +66,11 @@ class TestAgentSpawnHookInjection:
 
     @pytest.mark.asyncio
     async def test_not_injected_on_existing_session(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard.chat import _run_chat
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import LLMEvent
 
-        monkeypatch.setattr("kiro_claw.dashboard.chat.config_dir", lambda: tmp_path)
-        monkeypatch.setattr("kiro_claw.dashboard.chat.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
 
         state = _make_state(tmp_path)
         hook_store = ScriptHookStore(config_dir=tmp_path)
@@ -110,11 +110,11 @@ class TestHookSessionKeyForwarding:
 
     @pytest.mark.asyncio
     async def test_session_key_passed_to_fire(self, tmp_path, monkeypatch):
-        from kiro_claw.dashboard.chat import _run_chat
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import LLMEvent
 
-        monkeypatch.setattr("kiro_claw.dashboard.chat.config_dir", lambda: tmp_path)
-        monkeypatch.setattr("kiro_claw.dashboard.chat.sel", lambda: MagicMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
 
         state = _make_state(tmp_path)
         # Mock the hook store so we can inspect the kwargs passed to fire().

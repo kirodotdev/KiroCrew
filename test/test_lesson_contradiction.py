@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore
 
 
 class TestFindContradictionCandidates:
@@ -70,7 +70,7 @@ class TestResolveContradictions:
     """Tests for _resolve_contradictions async helper."""
 
     async def test_contradictory_verdict_returns_key(self):
-        from kiro_claw.dashboard.handlers.cron import _resolve_contradictions
+        from kiro_crew.dashboard.handlers.cron import _resolve_contradictions
 
         state = MagicMock()
         mock_provider = AsyncMock()
@@ -80,7 +80,7 @@ class TestResolveContradictions:
         candidates = [{"key": "lesson.old", "rule": "Use X format", "similarity": 0.65}]
 
         with patch(
-            "kiro_claw.dashboard.handlers.cron.stream_and_collect",
+            "kiro_crew.dashboard.handlers.cron.stream_and_collect",
             new=AsyncMock(return_value="CONTRADICTORY"),
         ):
             result = await _resolve_contradictions(state, "Do NOT use X format", candidates)
@@ -88,7 +88,7 @@ class TestResolveContradictions:
         assert result == ["lesson.old"]
 
     async def test_complementary_verdict_keeps_lesson(self):
-        from kiro_claw.dashboard.handlers.cron import _resolve_contradictions
+        from kiro_crew.dashboard.handlers.cron import _resolve_contradictions
 
         state = MagicMock()
         mock_provider = AsyncMock()
@@ -98,7 +98,7 @@ class TestResolveContradictions:
         candidates = [{"key": "lesson.keep", "rule": "Add CR links", "similarity": 0.55}]
 
         with patch(
-            "kiro_claw.dashboard.handlers.cron.stream_and_collect",
+            "kiro_crew.dashboard.handlers.cron.stream_and_collect",
             new=AsyncMock(return_value="COMPLEMENTARY"),
         ):
             result = await _resolve_contradictions(state, "Add stakeholder quotes", candidates)
@@ -106,7 +106,7 @@ class TestResolveContradictions:
         assert result == []
 
     async def test_llm_failure_skips_gracefully(self):
-        from kiro_claw.dashboard.handlers.cron import _resolve_contradictions
+        from kiro_crew.dashboard.handlers.cron import _resolve_contradictions
 
         state = MagicMock()
         state.sessions.get_or_create = AsyncMock(side_effect=RuntimeError("no provider"))
@@ -121,27 +121,27 @@ class TestResolveAndSupersede:
     """Tests for the backgrounded _resolve_and_supersede helper."""
 
     async def test_deletes_contradicted_keys(self):
-        from kiro_claw.dashboard.handlers.cron import _resolve_and_supersede
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
         state = MagicMock()
         vs = MagicMock()
         candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
         with patch(
-            "kiro_claw.dashboard.handlers.cron._resolve_contradictions",
+            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
             new=AsyncMock(return_value=["lesson.old"]),
-        ), patch("kiro_claw.dashboard.handlers.cron._sel"):
+        ), patch("kiro_crew.dashboard.handlers.cron._sel"):
             await _resolve_and_supersede(state, "dashboard:ui", "Do NOT use X", candidates, vs)
         vs.delete_semantic.assert_called_once_with("lesson.old", "contradiction_superseded")
 
     async def test_swallows_exceptions(self):
         """A failed sweep must not propagate — the lesson is already persisted."""
-        from kiro_claw.dashboard.handlers.cron import _resolve_and_supersede
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
         state = MagicMock()
         vs = MagicMock()
         candidates = [{"key": "lesson.x", "rule": "r", "similarity": 0.5}]
         with patch(
-            "kiro_claw.dashboard.handlers.cron._resolve_contradictions",
+            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
             new=AsyncMock(side_effect=RuntimeError("boom")),
         ):
             # Must not raise.
@@ -150,16 +150,16 @@ class TestResolveAndSupersede:
 
     async def test_one_bad_key_does_not_abort_batch(self):
         """A failure on one key still drains the remaining contradicted keys."""
-        from kiro_claw.dashboard.handlers.cron import _resolve_and_supersede
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
         state = MagicMock()
         vs = MagicMock()
         vs.delete_semantic.side_effect = [RuntimeError("already deleted"), None]
         candidates = [{"key": "lesson.a", "rule": "r", "similarity": 0.6}]
         with patch(
-            "kiro_claw.dashboard.handlers.cron._resolve_contradictions",
+            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
             new=AsyncMock(return_value=["lesson.a", "lesson.b"]),
-        ), patch("kiro_claw.dashboard.handlers.cron._sel"):
+        ), patch("kiro_crew.dashboard.handlers.cron._sel"):
             await _resolve_and_supersede(state, "dashboard:ui", "new", candidates, vs)
         # Both keys attempted despite the first raising.
         assert vs.delete_semantic.call_count == 2
@@ -178,7 +178,7 @@ class TestApiLessonsCreateSchedulesSweep:
         return request
 
     async def _run(self, candidates):
-        from kiro_claw.dashboard.handlers import cron
+        from kiro_crew.dashboard.handlers import cron
 
         state = MagicMock()
         state._background_tasks = set()

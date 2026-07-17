@@ -1,4 +1,4 @@
-# KiroClaw Release Automation
+# KiroCrew Release Automation
 
 Design for the three-channel release pipeline: Nightly → Beta → Stable.
 
@@ -18,20 +18,20 @@ Beta:     0.2.0-beta.1, 0.2.0-beta.2 (increments on hotfix cherry-picks)
 Stable:   0.2.0                       (promoted from last beta)
 ```
 
-Version source: `src/kiro_claw/__init__.py` (`__version__`).
+Version source: `src/kiro_crew/__init__.py` (`__version__`).
 Nightly appends `-nightly.{date}`. Beta uses the release branch version + `-beta.{n}`.
 
 ## Update Feed Structure (S3 + CloudFront)
 
 ```
-s3://kiroclaw-update-feed-{account}/
+s3://kirocrew-update-feed-{account}/
 ├── pre-signed/                     ← CI uploads here (unsigned)
 │   ├── nightly/
 │   │   └── 0.2.0-nightly.20260708/
-│   │       ├── KiroClaw-...-arm64.dmg
-│   │       ├── KiroClaw-...-arm64.zip
-│   │       ├── KiroClaw-...-x64.AppImage
-│   │       └── kiroclaw-...-py3-none-any.whl
+│   │       ├── KiroCrew-...-arm64.dmg
+│   │       ├── KiroCrew-...-arm64.zip
+│   │       ├── KiroCrew-...-x64.AppImage
+│   │       └── kirocrew-...-py3-none-any.whl
 │   ├── beta/
 │   │   └── 0.2.0-beta.1/...
 │   └── stable/
@@ -54,10 +54,10 @@ s3://kiroclaw-update-feed-{account}/
 └── blocked-versions.json           ← versions to force-update away from
 ```
 
-**CloudFront** sits in front with `updates.kiroclaw.dev` CNAME.
+**CloudFront** sits in front with `updates.kirocrew.dev` CNAME.
 The client's `auto-update.js` already calls:
 ```
-GET https://updates.kiroclaw.dev/feed?platform=darwin-arm64&channel=insider&version=0.1.9
+GET https://updates.kirocrew.dev/feed?platform=darwin-arm64&channel=insider&version=0.1.9
 ```
 
 A CloudFront Function routes `?channel=X&platform=Y` to `/feed/{channel}/latest-{platform}.json`.
@@ -113,7 +113,7 @@ reach users.
    ```json
    {
      "version": "0.2.0-nightly.20260708",
-     "url": "https://updates.kiroclaw.dev/signed/nightly/0.2.0-nightly.20260708/KiroClaw-...-arm64.zip",
+     "url": "https://updates.kirocrew.dev/signed/nightly/0.2.0-nightly.20260708/KiroCrew-...-arm64.zip",
      "name": "0.2.0-nightly.20260708",
      "pub_date": "2026-07-08T06:15:00Z"
    }
@@ -244,16 +244,16 @@ maps "beta" → "insider" channel and "stable" → "stable" channel. We extend:
 - `getFlavor()` reads this preference instead of the build-time constant
 - Default: "stable" for release builds, "beta" for beta-tagged builds
 
-## Infrastructure (CDK additions to KiroClawPublishCDK)
+## Infrastructure (CDK additions to KiroCrewPublishCDK)
 
 ### Existing (already deployed)
-- `KiroClawGitHubCi` — GitHub OIDC + Bedrock access
-- `KiroClawCdSigner` — S3 bucket (`kiroclaw-signing-artifacts-116101834266`), CDSigner IAM roles, CI signing invoker role
+- `KiroCrewGitHubCi` — GitHub OIDC + Bedrock access
+- `KiroCrewCdSigner` — S3 bucket (`kirocrew-signing-artifacts-116101834266`), CDSigner IAM roles, CI signing invoker role
 
-### New: `KiroClawUpdateFeedStack`
+### New: `KiroCrewUpdateFeedStack`
 
 ```
-S3 Bucket: reuse existing kiroclaw-signing-artifacts bucket
+S3 Bucket: reuse existing kirocrew-signing-artifacts bucket
   - pre-signed/{channel}/{version}/ — CI uploads here
   - signed/{channel}/{version}/     — CDSigner deposits here
   - feed/{channel}/latest-*.json    — Lambda writes here
@@ -271,7 +271,7 @@ S3 Event Notification:
   - Event: s3:ObjectCreated:*
   - Target: Feed Lambda
 
-Lambda: kiroclaw-update-feed-writer
+Lambda: kirocrew-update-feed-writer
   - Runtime: Python 3.12
   - Trigger: S3 PUT on signed/**/*.zip
   - Action: parse channel+version from key, write feed/{channel}/latest-mac.json
@@ -281,7 +281,7 @@ Lambda: kiroclaw-update-feed-writer
 
 CloudFront Distribution:
   - Origin: S3 bucket (signed/ and feed/ prefixes)
-  - Custom domain: updates.kiroclaw.dev (ACM cert in us-east-1)
+  - Custom domain: updates.kirocrew.dev (ACM cert in us-east-1)
   - CloudFront Function: route ?channel=X&platform=Y queries to /feed/{channel}/latest-{platform}.json
   - Cache: 5 min TTL on feed/*.json, 1 year on signed/ artifacts
   - Origin Access Control (OAC) — no public bucket access

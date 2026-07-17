@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_claw.apps.builtins.deploy_web import engine, handlers
+from kiro_crew.apps.builtins.deploy_web import engine, handlers
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +102,7 @@ def test_deploy_proceeds_with_confirm_and_override(monkeypatch):
         captured["src_dir"] = src_dir
         captured["index"] = Path(src_dir, "index.html").read_text(encoding="utf-8")
         return {"site_id": site_id, "url": "https://d.cloudfront.net/", "reused": False,
-                "bucket": "kiroclaw-web-x", "distribution_id": "D1", "status": "InProgress"}
+                "bucket": "kirocrew-web-x", "distribution_id": "D1", "status": "InProgress"}
 
     monkeypatch.setattr(engine, "deploy", fake_deploy)
     status, payload = _run(handlers._do_deploy(
@@ -156,7 +156,7 @@ def test_deploy_rejects_local_dir_outside_allowed_roots(monkeypatch, tmp_path):
 
 def test_deploy_missing_artifact_404(monkeypatch):
     _set_profile(monkeypatch)
-    from kiro_claw.artifacts import ArtifactNotFoundError
+    from kiro_crew.artifacts import ArtifactNotFoundError
 
     def boom():
         return SimpleNamespace(get=lambda slug: (_ for _ in ()).throw(ArtifactNotFoundError("x")))
@@ -171,7 +171,7 @@ def test_deploy_missing_artifact_404(monkeypatch):
 
 def test_recall_preview_then_confirm(monkeypatch):
     _set_profile(monkeypatch)
-    site = {"bucket": "kiroclaw-web-x", "distribution_id": "D1", "distribution_arn": "arn"}
+    site = {"bucket": "kirocrew-web-x", "distribution_id": "D1", "distribution_arn": "arn"}
     monkeypatch.setattr(engine, "find_site_by_tag", lambda sid, p, r=None: site)
     # preview (no confirm)
     status, payload = _run(handlers._do_recall({"site_id": "s"}))
@@ -184,12 +184,12 @@ def test_recall_preview_then_confirm(monkeypatch):
 
 def test_destroy_preview_echoes_resources(monkeypatch):
     _set_profile(monkeypatch)
-    site = {"bucket": "kiroclaw-web-x", "distribution_id": "D1"}
+    site = {"bucket": "kirocrew-web-x", "distribution_id": "D1"}
     monkeypatch.setattr(engine, "find_site_by_tag", lambda sid, p, r=None: site)
     status, payload = _run(handlers._do_destroy({"site_id": "s"}))
     assert status == 200
     assert payload["requires_confirm"] is True and payload["destructive"] is True
-    assert "kiroclaw-web-x" in payload["message"] and "D1" in payload["message"]
+    assert "kirocrew-web-x" in payload["message"] and "D1" in payload["message"]
 
 
 def test_destroy_confirm_runs_engine(monkeypatch):

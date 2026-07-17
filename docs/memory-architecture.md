@@ -1,6 +1,6 @@
 # Memory Architecture
 
-How KiroClaw builds, stores, retrieves, and manages memories across sessions.
+How KiroCrew builds, stores, retrieves, and manages memories across sessions.
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@ How KiroClaw builds, stores, retrieves, and manages memories across sessions.
 
 ## Memory Types
 
-KiroClaw has 6 distinct memory layers, each serving a different purpose:
+KiroCrew has 6 distinct memory layers, each serving a different purpose:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -53,7 +53,7 @@ User habits, tool preferences, communication style. Replaced wholesale by the co
 
 | Property    | Value                                              |
 |-------------|----------------------------------------------------|
-| Source      | `~/.kiroclaw/workspace/memory/preferences.md`      |
+| Source      | `~/.kirocrew/workspace/memory/preferences.md`      |
 | Injected    | Every new session via `get_context()`               |
 | Updated     | Every 30 messages by `HistoryConsolidator`          |
 | Context cap | 4,250 chars                                        |
@@ -72,14 +72,14 @@ Active work context — CRs, packages, branches, status.
 
 | Property    | Value                                              |
 |-------------|----------------------------------------------------|
-| Source      | `~/.kiroclaw/workspace/memory/projects.md`         |
+| Source      | `~/.kirocrew/workspace/memory/projects.md`         |
 | Injected    | Every new session                                  |
 | Updated     | Every 30 messages by `HistoryConsolidator`          |
 | Context cap | 6,400 chars                                        |
 
 Example content:
 ```markdown
-## KiroClaw CR-264843843 Zoom Fix (REVISION 4)
+## KiroCrew CR-264843843 Zoom Fix (REVISION 4)
 - CR: CR-264843843 revision 4
 - Changes: useZoom.ts CSS custom properties, ChatInput effectiveVh() fix
 - Status: Published, awaiting AutoSDE review
@@ -99,7 +99,7 @@ Daily conversation summaries with 3-tier natural decay:
 
 | Property    | Value                                              |
 |-------------|----------------------------------------------------|
-| Source      | `~/.kiroclaw/workspace/memory/history/`            |
+| Source      | `~/.kirocrew/workspace/memory/history/`            |
 | Injected    | Every new session                                  |
 | Updated     | On 3h idle per session (history consolidation)     |
 | Context cap | 26,600 chars                                       |
@@ -120,7 +120,7 @@ Structured facts stored as key-value pairs in SQLite. Opt-in — requires enabli
 Example entries:
 ```
 user.dev_desktop_host_current: dev-host.example.com
-project.kiroclaw.zoom_fix_implemented: True
+project.kirocrew.zoom_fix_implemented: True
 pref.prefers_configregions_over_null_guards: True
 ```
 
@@ -153,7 +153,7 @@ Search uses decay scoring (see [Fading Mechanism](#fading-mechanism)) with MMR d
 
 **FAISS embeddings are NOT created by default.** Episodic memory requires Vector Memory to be enabled via the dashboard. The enable flow:
 1. Click "Enable Vector Memory" in dashboard
-2. KiroClaw installs Ollama via `brew install ollama` (recommended). On Linux without brew, it falls back to `curl -fsSL https://ollama.com/install.sh | sh`
+2. KiroCrew installs Ollama via `brew install ollama` (recommended). On Linux without brew, it falls back to `curl -fsSL https://ollama.com/install.sh | sh`
 3. Loads `Qwen/Qwen3-Embedding-0.6B` model from internal Gitfarm package
 4. All future episodic writes get FAISS embeddings for vector search
 5. Without embeddings, episodic search falls back to keyword matching (OR logic, LIKE on text + tags)
@@ -272,7 +272,7 @@ Budget: **opt-in** via `skills.lazy_load` (default **off**, like MCP `prewarm_co
 
 ## Memory Across Channels
 
-KiroClaw extracts and uses memory differently depending on the channel type and activation mode:
+KiroCrew extracts and uses memory differently depending on the channel type and activation mode:
 
 ### Channel Types and Memory Behavior
 
@@ -286,13 +286,13 @@ KiroClaw extracts and uses memory differently depending on the channel type and 
 
 ### How Channel History Feeds Into Context
 
-When KiroClaw is @mentioned in a group channel, the channel history buffer provides conversational context about what was being discussed:
+When KiroCrew is @mentioned in a group channel, the channel history buffer provides conversational context about what was being discussed:
 
 ```
 #oncall-channel (observe mode):
   alice (5m ago): The pipeline is broken, seeing 5xx errors
   bob (3m ago): I see it too, us-west-2 is affected
-  carol (1m ago): @kiroclaw what's going on with the pipeline?
+  carol (1m ago): @kirocrew what's going on with the pipeline?
                     │
                     ▼
   context_for("C0123ONCALL") injects:
@@ -305,12 +305,12 @@ When KiroClaw is @mentioned in a group channel, the channel history buffer provi
 Key differences between modes:
 
 - **`mention` mode**: Only the last 50 messages within a 5-minute window are available. If nobody talked for 6 minutes, the buffer is empty when you @mention the bot. History is in-memory only — lost on restart.
-- **`observe` mode**: Up to 200 messages within a 1-week window, persisted to `~/.kiroclaw/history/<channel_id>.jsonl`. Survives restarts. Lazy compaction removes expired entries on load.
+- **`observe` mode**: Up to 200 messages within a 1-week window, persisted to `~/.kirocrew/history/<channel_id>.jsonl`. Survives restarts. Lazy compaction removes expired entries on load.
 - **Security**: Only messages from authorized users (owner + allowlist) are recorded in observe mode. Non-authorized messages are silently dropped to prevent prompt injection.
 
 ### All Channels Share the Same Memory Store
 
-Regardless of which channel a conversation happens in, all sessions write to the same memory store (`~/.kiroclaw/workspace/memory/`). A lesson learned in a DM is available when responding in a group channel, and vice versa.
+Regardless of which channel a conversation happens in, all sessions write to the same memory store (`~/.kirocrew/workspace/memory/`). A lesson learned in a DM is available when responding in a group channel, and vice versa.
 
 The exception is **workspace-scoped lessons** — if different channels use different workspaces (via per-channel config), their workspace-scoped lessons are isolated. Global lessons are always shared.
 
@@ -400,7 +400,7 @@ When the 165K char (~55k token) context cap is approached, each layer has its ow
 | Episodic memory  | 3,000 chars  | Top-8 results only, relevance-scored (injected per new-session message via `get_episodic_context`) |
 | **Hard total**   | **165,000 chars (~55k tokens)** | **Truncation at newline boundary after assembly** |
 
-Beyond KiroClaw's context assembly, kiro-cli has its own context window management:
+Beyond KiroCrew's context assembly, kiro-cli has its own context window management:
 - **ACP-level compaction**: when kiro-cli's context window fills, it summarizes older conversation turns
 - **Circuit breaker**: trips at 5 consecutive compactions — session is reset to prevent degraded responses
 
@@ -418,7 +418,7 @@ Heartbeat tick (every 60s)
     │        └── Yes → fire history consolidation
     │
     ├──► Every 15 ticks (15 min): rebuild FTS index
-    │    └── Rebuilds ~/.kiroclaw/memory_index.db (SQLite FTS5, porter stemming)
+    │    └── Rebuilds ~/.kirocrew/memory_index.db (SQLite FTS5, porter stemming)
     │
     └──► Every 1440 ticks (24h): prune old history + SEL
          ├── Delete history files older than history_max_days (default 365)
@@ -434,13 +434,13 @@ The consolidator has two paths (prefs and history), but neither has its own time
 
 ### HEARTBEAT.md — User-Facing Task Queue
 
-Separate from memory maintenance, the heartbeat also processes `~/.kiroclaw/workspace/HEARTBEAT.md`:
+Separate from memory maintenance, the heartbeat also processes `~/.kirocrew/workspace/HEARTBEAT.md`:
 
 ```markdown
 # Heartbeat Tasks
 - [ ] Check CR-264843843 for new AutoSDE comments. If found, fix and push.
       If none, remove this item and notify user.  <!-- deliver:D0OWNER_DM -->
-- [ ] Monitor pipeline KiroClaw-pipeline for failures. Alert if blocked.
+- [ ] Monitor pipeline KiroCrew-pipeline for failures. Alert if blocked.
 ```
 
 | Lifecycle step | Behavior                                                |
@@ -506,7 +506,7 @@ For API Gateway-fronted Ollama instances (removes SSH reverse-tunnel dependency)
 - Config: `embedding_managed: false` + `embedding_auth: "aws_sigv4"`
 - `_sigv4_sign()` uses botocore `SigV4Auth` (optional dep, import-guarded)
 - Reads `AWS_REGION` / `AWS_DEFAULT_REGION` (defaults to `us-east-1` with warning)
-- Service overridable via `KIROCLAW_EMBEDDING_SERVICE` env var
+- Service overridable via `KIROCREW_EMBEDDING_SERVICE` env var
 - Deny-by-default validation: `_VALID_AUTH_SCHEMES = {"none", "aws_sigv4"}` — unknown values raise `ValueError`
 - External Ollama containers: 5-attempt retry loop (8s max) for health check on startup
 
@@ -522,7 +522,7 @@ Knowledge Library is a built-in surface (positioned in sidebar after Autopilot, 
 **Problem**: If two concurrent sessions write conflicting semantic entries, last-write-wins with no notification.
 **Suggestion**: Add optimistic locking (version field) to semantic entries. Surface conflicts in dashboard with merge UI.
 
-**Thread-safety today (intra-process)**: Within a single gateway process, `VectorMemoryStore` serializes all sqlite + FAISS mutations under a `threading.RLock` (`vector_memory.py`). The lock guards three critical sections — the semantic `SELECT → conflict-resolve → UPSERT` (`_write_semantic`), the episodic FAISS-add + `_faiss_id_map` append + `INSERT` (`write_episodic`), and the episodic FAISS-search + id_map lookup (`search_episodic`) — so writer worker threads and event-loop readers can't corrupt the shared connection or the non-thread-safe FAISS index. The lock is deliberately **never** held across the blocking Ollama embed (embeds run before the locked region), and every embed-bearing write is offloaded off the event loop: `HistoryConsolidator._consolidate` wraps `_write_structured_memory` in `asyncio.to_thread` (`history.py`) and the dashboard memory handlers do the same (`dashboard/handlers/memory.py`), so a slow/hung embedding endpoint no longer freezes the gateway loop. This serialization is **per-process only** — Gap 1 stays open because the RLock adds no conflict detection/notification and does not coordinate across separate KiroClaw processes.
+**Thread-safety today (intra-process)**: Within a single gateway process, `VectorMemoryStore` serializes all sqlite + FAISS mutations under a `threading.RLock` (`vector_memory.py`). The lock guards three critical sections — the semantic `SELECT → conflict-resolve → UPSERT` (`_write_semantic`), the episodic FAISS-add + `_faiss_id_map` append + `INSERT` (`write_episodic`), and the episodic FAISS-search + id_map lookup (`search_episodic`) — so writer worker threads and event-loop readers can't corrupt the shared connection or the non-thread-safe FAISS index. The lock is deliberately **never** held across the blocking Ollama embed (embeds run before the locked region), and every embed-bearing write is offloaded off the event loop: `HistoryConsolidator._consolidate` wraps `_write_structured_memory` in `asyncio.to_thread` (`history.py`) and the dashboard memory handlers do the same (`dashboard/handlers/memory.py`), so a slow/hung embedding endpoint no longer freezes the gateway loop. This serialization is **per-process only** — Gap 1 stays open because the RLock adds no conflict detection/notification and does not coordinate across separate KiroCrew processes.
 
 ### Gap 2: No Memory Importance Feedback Loop
 **Problem**: Episodic importance is set at write time and never updated. Frequently-retrieved memories should gain importance.
@@ -533,12 +533,12 @@ Knowledge Library is a built-in surface (positioned in sidebar after Autopilot, 
 **Suggestion**: During memory consolidation, cross-reference lessons against preferences/semantic entries. Flag contradictions for user review in dashboard.
 
 ### Gap 4: No Memory Sharing Between Instances
-**Problem**: Each KiroClaw instance has isolated memory. No way to share learned lessons or project context across team members' instances.
+**Problem**: Each KiroCrew instance has isolated memory. No way to share learned lessons or project context across team members' instances.
 **Suggestion**: Export/import memory subsets (lessons, project context) as portable JSON bundles. See [persistent-agent-channels](system-specs/modules/persistent-agent-channels.md) for multi-agent collaboration features.
 
 ### Gap 5: No Selective Memory Forget
 **Problem**: Users can delete individual entries but can't say "forget everything about project X" — requires manual cleanup across all memory layers.
-**Suggestion**: Add `kiroclaw memory forget "project X"` CLI command that cascades deletion across semantic, episodic, history, and preferences.
+**Suggestion**: Add `kirocrew memory forget "project X"` CLI command that cascades deletion across semantic, episodic, history, and preferences.
 
 ### Gap 6: History Consolidation Can Miss Short Sessions
 **Problem**: 3h idle trigger means a quick 5-minute session that answers a critical question may never get consolidated if the user starts a new session before the idle timer fires.

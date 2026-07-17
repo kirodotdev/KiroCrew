@@ -29,10 +29,10 @@ from typing import Any, Optional
 
 import pytest
 
-from kiro_claw.mcp_gateway import claim as claim_mod
-from kiro_claw.mcp_gateway import gatewayd as gw
-from kiro_claw.mcp_gateway import socketsec
-from kiro_claw.mcp_gateway import stub as stub_mod
+from kiro_crew.mcp_gateway import claim as claim_mod
+from kiro_crew.mcp_gateway import gatewayd as gw
+from kiro_crew.mcp_gateway import socketsec
+from kiro_crew.mcp_gateway import stub as stub_mod
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 

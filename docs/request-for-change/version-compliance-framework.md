@@ -1,4 +1,4 @@
-# Version Compliance Framework for KiroClaw
+# Version Compliance Framework for KiroCrew
 
 **Author:** Bolin Chen (bolichen)
 **Requested by:** Gabe Sanchez (gsanc)
@@ -9,7 +9,7 @@
 
 ## 1. Problem Statement
 
-KiroClaw is a security-sensitive agent orchestration platform with shell access, credential
+KiroCrew is a security-sensitive agent orchestration platform with shell access, credential
 proximity, and persistent sessions. There is currently no mechanism to enforce that all running
 instances are on an approved version. A critical security patch (e.g., a new deny pattern for a
 novel exfiltration vector) has no guaranteed propagation timeline — users can defer updates for
@@ -26,7 +26,7 @@ are additional controls needed?
 
 ### 2.1 Distribution: Builder Toolbox
 
-KiroClaw publishes via Builder Toolbox (`configuration/toolbox/`). Toolbox provides:
+KiroCrew publishes via Builder Toolbox (`configuration/toolbox/`). Toolbox provides:
 
 | Capability | How It Works | Enforcement Strength |
 |---|---|---|
@@ -40,11 +40,11 @@ KiroClaw publishes via Builder Toolbox (`configuration/toolbox/`). Toolbox provi
 > Builder Toolbox does NOT support forced push or emergency propagation. The minimum
 > client-side rollback time is ~24h (next auto-update check).
 
-### 2.2 Existing Update Infrastructure in KiroClaw
+### 2.2 Existing Update Infrastructure in KiroCrew
 
 | Component | Mechanism | Limitation |
 |---|---|---|
-| `kiroclaw update` CLI | Delegates to `toolbox update kiroclaw` | Manual; user must invoke |
+| `kirocrew update` CLI | Delegates to `toolbox update kirocrew` | Manual; user must invoke |
 | Dashboard `/api/update/check` | Checks for new version via Toolbox | Informational only |
 | `auto_update` config (default `True`) | 12-hour check intervals on gateway | Advisory — does not block execution |
 | Gateway reconnect | Reloads version, auto-restarts if newer | Only triggers on reconnect events |
@@ -65,7 +65,7 @@ them in production use.
 | No push-update capability | Cannot force-update fleet in security emergencies | **High** |
 | 180-day pause window | Users can run vulnerable versions for 6 months | **High** |
 | Non-Toolbox installs bypass entirely | git-clone installs receive zero compliance enforcement | **High** |
-| No startup version gate | KiroClaw starts and operates regardless of version age | Medium |
+| No startup version gate | KiroCrew starts and operates regardless of version age | Medium |
 | No fleet visibility | No central telemetry on running versions across the org | Medium |
 | No backend API gate | Backend accepts requests from any client version | Low |
 
@@ -77,7 +77,7 @@ them in production use.
 |---|---|---|
 | **Kiro Learn (VS Code)** | DynamoDB-backed `extension.minVersion` gate. Client checks on startup; shows "update required" overlay if below minimum. 60s cache TTL. Staged rollout (beta → gamma → prod). CAZ approval for prod changes. | Best prior art. Proven at scale. |
 | **STIP Tools** | `/version` API + `X-Tool-Version` header. Three states: up-to-date / update-available / blocked. DDB stores `latest_version` + `minimum_required_version`. 24h local cache. | CLI refuses to run when below minimum. |
-| **AIM (Agent Install Manager)** | Background 24h check cycle (configurable to 1h min). Auto-applies silently. | Good for agent packages; KiroClaw is already in this ecosystem. |
+| **AIM (Agent Install Manager)** | Background 24h check cycle (configurable to 1h min). Auto-applies silently. | Good for agent packages; KiroCrew is already in this ecosystem. |
 
 ---
 
@@ -96,7 +96,7 @@ Implement a minimum-version check at gateway startup, modeled on Kiro Learn's pa
 
 ```
 ┌─────────────────┐         ┌──────────────────────────┐
-│  KiroClaw       │  HTTPS  │  Version Authority       │
+│  KiroCrew       │  HTTPS  │  Version Authority       │
 │  Gateway Start  │────────→│  (DynamoDB or S3 JSON)   │
 │                 │         │                          │
 │  Compare:       │←────────│  { "min_version": "X",   │
@@ -134,7 +134,7 @@ Implement a minimum-version check at gateway startup, modeled on Kiro Learn's pa
   "min_version": "2.14.0",
   "recommended_version": "2.15.1",
   "enforcement": "warn | block",
-  "message": "Security patch for CVE-2026-XXXX. Update with: kiroclaw update",
+  "message": "Security patch for CVE-2026-XXXX. Update with: kirocrew update",
   "grace_period_end": "2026-06-15T00:00:00Z",
   "channels": {
     "beta": { "min_version": "2.15.0", "enforcement": "warn" },
@@ -157,7 +157,7 @@ Add periodic version telemetry to enable governance visibility.
 {
   "version": "2.15.1",
   "install_method": "toolbox | pip | git",
-  "owner_id_hash": "sha256(KIROCLAW_OWNER_ID)[:16]",
+  "owner_id_hash": "sha256(KIROCREW_OWNER_ID)[:16]",
   "uptime_hours": 48,
   "platform": "linux-aarch64",
   "enforcement_status": "compliant | warned | grace_period"
@@ -196,7 +196,7 @@ per-channel enforcement.
 |---|---|
 | **Block non-Toolbox at startup** | Breaks development workflow (`pip install -e .`). Not recommended for default. |
 | **Warn non-Toolbox installs** | Prints advisory; does not block. Still checks version authority. |
-| **Exempt `--dev` flag** | `kiroclaw --dev server` skips compliance check. Only works in dev workspaces. |
+| **Exempt `--dev` flag** | `kirocrew --dev server` skips compliance check. Only works in dev workspaces. |
 | **Environment detection** | If running inside development checkout → exempt. Otherwise → enforce. |
 
 **Recommendation:** Warn but do not block non-Toolbox installs. The version authority check
@@ -211,7 +211,7 @@ for development use only, gated behind dev-workspace detection.
 
 1. Add version heartbeat to existing `/api/status` periodic cycle
 2. Central S3 bucket + CloudFront for version authority JSON
-3. Admin CLI: `kiroclaw admin set-min-version --version X --enforcement warn`
+3. Admin CLI: `kirocrew admin set-min-version --version X --enforcement warn`
 4. Gateway startup: fetch + cache version authority (60s TTL, fail-open)
 5. Dashboard banner when running below recommended version
 6. SEL event: `version_compliance_check` (outcome: compliant/warned/blocked)
@@ -220,7 +220,7 @@ for development use only, gated behind dev-workspace detection.
 
 1. Add `block` enforcement mode (refuses gateway start)
 2. Staged rollout: beta channel enforced first, stable after 7-day grace
-3. `kiroclaw doctor` reports compliance status
+3. `kirocrew doctor` reports compliance status
 4. Integrate with governance dashboard (fleet version histogram, alerts)
 5. Migrate version authority to DynamoDB for atomic updates + per-channel config
 
@@ -277,6 +277,6 @@ for development use only, gated behind dev-workspace detection.
 
 - an internal min-version gate
 - the toolbox distribution mechanism — distribution and recall mechanisms
-- [KiroClaw Security Deep Dive](../security-deep-dive.md) — Defense-in-depth architecture
-- [KiroClaw apps/version.py](../../src/kiro_claw/apps/version.py) — Existing `check_min_version` implementation
+- [KiroCrew Security Deep Dive](../security-deep-dive.md) — Defense-in-depth architecture
+- [KiroCrew apps/version.py](../../src/kiro_crew/apps/version.py) — Existing `check_min_version` implementation
 - Mesh-1648: YOLO Override Governance (related compliance work)

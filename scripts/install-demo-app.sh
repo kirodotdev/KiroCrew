@@ -1,11 +1,11 @@
 #!/bin/bash
-# Install the demo app to ~/.kiroclaw/apps/ so the full pipeline can be tested.
-# Run this once, then navigate to /apps/demo-app in the KiroClaw dashboard.
+# Install the demo app to ~/.kirocrew/apps/ so the full pipeline can be tested.
+# Run this once, then navigate to /apps/demo-app in the KiroCrew dashboard.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_SOURCE="$SCRIPT_DIR/../frontend/public/apps/demo-app"
-APP_DEST="$HOME/.kiroclaw/apps/demo-app"
+APP_DEST="$HOME/.kirocrew/apps/demo-app"
 
 if [ -d "$APP_DEST" ]; then
     echo "Demo app already installed at $APP_DEST"
@@ -30,7 +30,7 @@ cat > "$APP_DEST/installed.json" << 'EOF'
 EOF
 
 echo "✓ Demo app installed to $APP_DEST"
-echo "  Navigate to /apps/demo-app in the KiroClaw dashboard to test."
+echo "  Navigate to /apps/demo-app in the KiroCrew dashboard to test."
 echo ""
 echo "  The app will:"
 echo "  - Load dynamically via import('/apps/demo-app/ui/index.mjs')"

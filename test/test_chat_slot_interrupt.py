@@ -8,8 +8,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.chat import api_chat_slot_interrupt
-from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.chat import api_chat_slot_interrupt
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 
 def _make_app(state: DashboardState) -> web.Application:
@@ -38,7 +38,7 @@ def _patch_sel():
     """Patch sel() to avoid SecurityEventLog initialization."""
     mock_sel = MagicMock()
     mock_sel.log_tool_invocation = MagicMock()
-    with patch("kiro_claw.dashboard.chat_handlers.sel", return_value=mock_sel):
+    with patch("kiro_crew.dashboard.chat_handlers.sel", return_value=mock_sel):
         yield mock_sel
 
 
@@ -185,8 +185,8 @@ class TestRefusalRecoverySkippedOnCancel:
     def test_cancelled_turn_suppresses_recovery(self):
         """The guard must return False when stop_reason is cancelled,
         even with non-empty refusal_reasons."""
-        from kiro_claw.acp.types import STOP_REASON_CANCELLED
-        from kiro_claw.dashboard.state import should_queue_refusal_recovery
+        from kiro_crew.acp.types import STOP_REASON_CANCELLED
+        from kiro_crew.dashboard.state import should_queue_refusal_recovery
 
         refusal_reasons = [("Creating /tmp/name.txt", "command '---' is not on the read-only allowlist")]
         assert not should_queue_refusal_recovery(
@@ -196,7 +196,7 @@ class TestRefusalRecoverySkippedOnCancel:
     def test_normal_refusal_still_triggers_recovery(self):
         """When the turn ends normally (not cancelled) with refusal reasons,
         recovery should still fire."""
-        from kiro_claw.dashboard.state import should_queue_refusal_recovery
+        from kiro_crew.dashboard.state import should_queue_refusal_recovery
 
         refusal_reasons = [("write /tmp/x", "not on read-only allowlist")]
         assert should_queue_refusal_recovery(

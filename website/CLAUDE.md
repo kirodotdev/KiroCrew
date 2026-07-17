@@ -1,4 +1,4 @@
-# CLAUDE.md — KiroClaw dashboard (frontend)
+# CLAUDE.md — KiroCrew dashboard (frontend)
 
 Guidance for Claude Code working in `website/`. This is the high-signal quick
 reference; **`website/AGENTS.md` holds the exhaustive design system** (icon /
@@ -7,9 +7,9 @@ UI work. The backend has its own `CLAUDE.md` at the repo root.
 
 ## What this is
 
-The KiroClaw web dashboard: a React 18 + TypeScript + Vite 5 SPA. Production
+The KiroCrew web dashboard: a React 18 + TypeScript + Vite 5 SPA. Production
 builds output to `website/dist/`, which is staged into
-`src/kiro_claw/static/dist/` and served by the Python backend.
+`src/kiro_crew/static/dist/` and served by the Python backend.
 
 **Stack:** React 18, Redux Toolkit, React Query (`@tanstack/react-query`),
 React Router v7, Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify,
@@ -29,7 +29,7 @@ npm run lint         # eslint src
 After building, stage the bundle into the package so the backend serves it:
 
 ```bash
-cp -R website/dist ../src/kiro_claw/static/dist
+cp -R website/dist ../src/kiro_crew/static/dist
 ```
 
 ### Gotcha — `npm run typecheck` is a FALSE PASS
@@ -67,7 +67,7 @@ reintroduce**:
 > Stale references: `website/Config` (Brazil / `npm-pretty-much`) and
 > `website/AUTOSDE.yaml` are leftover internal files not used by the public
 > build — ignore them, and treat any "brazil-build" / "Coverlay" /
-> "`@kiroclaw/sdk`" mentions in `website/AGENTS.md` as historical, not current.
+> "`@kirocrew/sdk`" mentions in `website/AGENTS.md` as historical, not current.
 
 ## Core conventions (full details in `website/AGENTS.md`)
 
@@ -99,7 +99,7 @@ reintroduce**:
   `useWebSocket` reconnects with exponential backoff and re-fetches via Redux.
 - **API client:** `src/api/client.ts` (typed wrapper over `/api/*`).
 - **Build output:** `vite.config.ts` → `dist/`, staged into
-  `src/kiro_claw/static/dist/`.
+  `src/kiro_crew/static/dist/`.
 
 ## Browser support
 

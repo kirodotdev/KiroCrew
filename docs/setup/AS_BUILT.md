@@ -1,4 +1,4 @@
-# KiroClaw Cloud Launcher — As Built
+# KiroCrew Cloud Launcher — As Built
 
 What actually shipped, and the things live end-to-end validation on a real AWS
 account taught us (that the plan didn't anticipate).
@@ -6,22 +6,22 @@ account taught us (that the plan didn't anticipate).
 ## Command surface
 
 ```
-kiroclaw cloud launch     # provision + configure + open dashboard (interactive)
-kiroclaw cloud list       # your live cloud instances
-kiroclaw cloud status     # one instance's stack + EC2 state
-kiroclaw cloud connect    # (re)open the dashboard over an SSM tunnel
-kiroclaw cloud stop|start # pause / resume (save cost)
-kiroclaw cloud destroy    # remove EVERYTHING from AWS (clean uninstall)
-kiroclaw cloud iam-policy # print the least-privilege IAM policy to apply
-kiroclaw cloud iam-boundary # (admin, one-time) pre-create the immutable instance boundary
-kiroclaw cloud doctor     # check prerequisites + AWS reachability
+kirocrew cloud launch     # provision + configure + open dashboard (interactive)
+kirocrew cloud list       # your live cloud instances
+kirocrew cloud status     # one instance's stack + EC2 state
+kirocrew cloud connect    # (re)open the dashboard over an SSM tunnel
+kirocrew cloud stop|start # pause / resume (save cost)
+kirocrew cloud destroy    # remove EVERYTHING from AWS (clean uninstall)
+kirocrew cloud iam-policy # print the least-privilege IAM policy to apply
+kirocrew cloud iam-boundary # (admin, one-time) pre-create the immutable instance boundary
+kirocrew cloud doctor     # check prerequisites + AWS reachability
 ```
 
 Bootstrappers for a machine with nothing installed: `install.ps1` (Windows
 client) and `cloud-install.sh` (macOS/Linux) — they ensure `aws` CLI +
-`session-manager-plugin` + Python, then hand off to `kiroclaw cloud launch`.
+`session-manager-plugin` + Python, then hand off to `kirocrew cloud launch`.
 
-## Module map (`src/kiro_claw/cloud/`)
+## Module map (`src/kiro_crew/cloud/`)
 
 | Module | Role |
 |--------|------|
@@ -35,7 +35,7 @@ client) and `cloud-install.sh` (macOS/Linux) — they ensure `aws` CLI +
 | `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration. |
 | `config.py` | Persisted profile/region/tag (**never credentials**). |
 | `ui.py` / `wizard.py` | Terminal UI + the 6-step interactive launch flow. |
-| `templates/kiroclaw-ec2.yaml` | The CloudFormation stack. |
+| `templates/kirocrew-ec2.yaml` | The CloudFormation stack. |
 
 CLI wiring is `cli_cloud.py` (thin dispatchers); `cli_setup.py` gains a
 delegating `_maybe_setup_cloud()` step. No AWS logic lives in the CLI layer.
@@ -44,7 +44,7 @@ delegating `_maybe_setup_cloud()` step. No AWS logic lives in the CLI layer.
 
 The public repo is **private**, so the EC2 box cannot `git clone` it. The
 launcher therefore **packages the local checkout and uploads it to a
-launcher-owned S3 bucket** (`kiroclaw-src-<account>-<region>`); the instance
+launcher-owned S3 bucket** (`kirocrew-src-<account>-<region>`); the instance
 downloads it with **its own IAM role** (`s3:GetObject` scoped to that one
 object). Result: private-repo safe, still **zero credentials on the box**, and
 robust to any repo size. A public `git clone` remains as the fallback when no
@@ -136,13 +136,13 @@ shipped template/code, and most have a regression test.
    peaks ~3.4 GB, measured). NB on validation semantics: `PingStatus=Online` proves
    OS boot + SSM-agent registration (enough for the IAM/boundary/SSM-core checks),
    but the strict bar for "launch works" is the stack reaching `CREATE_COMPLETE`
-   AND `kiroclaw cloud connect` → dashboard HTTP 200.
+   AND `kirocrew cloud connect` → dashboard HTTP 200.
 
 ## Validated end-to-end on the dev account
 
 `launch` → `CREATE_COMPLETE` (box booted, pulled source from S3, installed
-KiroClaw + kiro-cli, `kiroclaw.service` active, gateway HTTP 200) →
-`kiroclaw cloud login` drove the kiro-cli device-code flow (Builder ID),
+KiroCrew + kiro-cli, `kirocrew.service` active, gateway HTTP 200) →
+`kirocrew cloud login` drove the kiro-cli device-code flow (Builder ID),
 verified signed-in after browser approval → `connect`/`tunnel` opened an SSM
 tunnel and the dashboard answered HTTP 200 on `localhost` with a minted token
 → `destroy` deleted the stack, IAM role, instance, security group, volume, and
@@ -163,14 +163,14 @@ dashboard's model picker (a free Builder ID account offers e.g.
 - Provisioning is a **human/installer action, never an LLM tool** — the cloud
   verbs are not MCP tools, and both the destructive AWS CLI verbs
   (`aws ec2 terminate-instances`, `aws ec2 delete-*`,
-  `aws cloudformation delete-stack`) **and** the `kiroclaw cloud
+  `aws cloudformation delete-stack`) **and** the `kirocrew cloud
   destroy|stop|start|launch|connect|tunnel|login` wrappers are blocked for the
   agent by the `deniedCommands` regexes in `config/defaults.json` (enforced by
   kiro-cli on `execute_bash`/`shell`) — only read-only `list`/`status` stay
   agent-accessible. Note this is a *different* mechanism from `security.py`'s
   `BUILTIN_DENY_PATTERNS`, which use underscored MCP-tool-name shapes
   (`*terminate_instance*`) and don't match the hyphenated CLI strings.
-- KiroClaw stores **no** AWS credentials (only a profile name + region + tag).
+- KiroCrew stores **no** AWS credentials (only a profile name + region + tag).
 - The gateway binds **loopback only** on the box; access is always tunnel + token.
 - **IMDSv2 enforced** on the instance (`HttpTokens: required`, hop limit 1): the
   box runs a prompt-injectable agent, so an SSRF/injection reaching the metadata
@@ -178,17 +178,17 @@ dashboard's model picker (a free Builder ID account offers e.g.
 - **Launcher IAM is tag-scoped for the dangerous verbs** — `ssm:StartSession` /
   `ssm:SendCommand` (RCE-adjacent) and the EC2 destructive verbs
   (`DeleteSecurityGroup` / `RevokeSecurityGroupIngress` / `DeleteTags`) require
-  `kiroclaw:managed=true`, so a leaked launcher credential can't run commands or
+  `kirocrew:managed=true`, so a leaked launcher credential can't run commands or
   delete resources across the whole account.
 - Every user/LLM-influenceable value (`profile`, `region`, `tag`, CIDR) is
   charset-validated (`validation.FieldSpec`) before it reaches subprocess argv;
   the optional SSH CIDR is refused wider than /16 (use your own IP/32).
 - **IAM escalation primitives constrained** — `iam:AttachRolePolicy` is pinned
   by `iam:PolicyARN` to exactly `AmazonSSMManagedInstanceCore` (so
-  `AdministratorAccess` can't be attached to a `kiroclaw-ec2-*` role and passed
+  `AdministratorAccess` can't be attached to a `kirocrew-ec2-*` role and passed
   to EC2), and `ec2:CreateTags` is gated by `ec2:CreateAction`
   (`RunInstances`/`CreateSecurityGroup`) so existing resources can't be
-  retagged `kiroclaw:managed=true` to subvert the tag-gated destructive verbs.
+  retagged `kirocrew:managed=true` to subvert the tag-gated destructive verbs.
   Validated with AWS Access Analyzer (`validate-policy`): 0 ERROR / 0
   SECURITY_WARNING.
 
@@ -197,13 +197,13 @@ dashboard's model picker (a free Builder ID account offers e.g.
 These were surfaced by review and are intentionally NOT shipped blind, because
 each is a load-bearing network/permission change that could break the box's
 bring-up (the WaitCondition-timeout failure class) if wrong. Each must be
-validated against a real `kiroclaw cloud launch` on the dev account first.
+validated against a real `kirocrew cloud launch` on the dev account first.
 
 - **DONE — `iam:PutRolePolicy` → required permissions boundary.** Shipped: the
-  template creates a `kiroclaw-ec2-boundary-*` managed policy (SSM-core action
+  template creates a `kirocrew-ec2-boundary-*` managed policy (SSM-core action
   set + source read) and sets it as the InstanceRole's `PermissionsBoundary`;
   the launcher policy gates `iam:CreateRole` on `ArnLike iam:PermissionsBoundary
-  == kiroclaw-ec2-boundary-*` (the enforcement point; `PutRolePolicy` is a
+  == kirocrew-ec2-boundary-*` (the enforcement point; `PutRolePolicy` is a
   separate role-ARN-scoped statement — a boundary set at CreateRole can't be
   removed by PutRolePolicy). Live-validated (role creates, instance SSM Online)
   + IAM policy simulator (CreateRole allow-with-boundary / deny-without) +
@@ -213,10 +213,10 @@ validated against a real `kiroclaw cloud launch` on the dev account first.
   conditions; use the policy simulator for condition correctness.
 - **DONE — Boundary self-authorship (ceiling is now immutable + pre-created).**
   The boundary is a **single, shared, content-fixed** managed policy named
-  `kiroclaw-ec2-boundary` (NO per-`StackTag` suffix), created **once** by launcher
+  `kirocrew-ec2-boundary` (NO per-`StackTag` suffix), created **once** by launcher
   CODE (`source.ensure_instance_boundary`), create-if-not-exists and **never
   re-versioned**. Its content = the exact `AmazonSSMManagedInstanceCore` action
-  set + `s3:GetObject` on `kiroclaw-src-<account>-*/*` (region-agnostic — IAM is
+  set + `s3:GetObject` on `kirocrew-src-<account>-*/*` (region-agnostic — IAM is
   global; safe because a boundary only *caps* and the role's inline
   `SourceObjectRead` still pins the single derived object). The template no longer
   creates a boundary; `InstanceRole` references it by a FIXED ARN via a new
@@ -230,7 +230,7 @@ validated against a real `kiroclaw cloud launch` on the dev account first.
   requires the boundary via `ArnLike iam:PermissionsBoundary`. The agent deny-list
   also blocks `aws iam create-policy`/`create-policy-version`.
   Live-validated on the dev account (account 814959995281, us-east-1): the shared
-  boundary was created; a real `kiroclaw cloud launch` created a `kiroclaw-ec2-*`
+  boundary was created; a real `kirocrew cloud launch` created a `kirocrew-ec2-*`
   InstanceRole **with** the boundary attached; the instance registered with SSM
   (`describe-instance-information` → PingStatus **Online**), proving the shared
   action set still permits SSM-core; then destroyed cleanly. Also: `cloudformation
@@ -239,7 +239,7 @@ validated against a real `kiroclaw cloud launch` on the dev account first.
   confirmed CreateRole is allowed **with** the boundary and denied **without** it
   (`ArnLike`, not `StringEquals`).
   - **Content verification on reuse (closes the first-write-race ESCALATION).**
-    `ensure_instance_boundary` no longer trusts an existing `kiroclaw-ec2-boundary`
+    `ensure_instance_boundary` no longer trusts an existing `kirocrew-ec2-boundary`
     by name alone: when the policy already exists it fetches the default version
     (`iam:GetPolicy` → `DefaultVersionId`, then `iam:GetPolicyVersion`) and
     compares it — canonically (sorted-key JSON, order-insensitive) — to the
@@ -257,22 +257,22 @@ validated against a real `kiroclaw cloud launch` on the dev account first.
     is *availability*: an attacker who seeds a non-matching boundary at the fixed
     name before the first legitimate launch would make launches fail the content
     check until it's removed. To eliminate even that, an admin runs the one-time
-    **`kiroclaw cloud iam-boundary`** to pre-create the (verified, immutable)
+    **`kirocrew cloud iam-boundary`** to pre-create the (verified, immutable)
     boundary, then removes the `IamInstanceBoundaryCreateOnce` statement from the
     applied launcher policy — after which the launcher only *references* the
     boundary ARN with no `iam:CreatePolicy` grant at all.
 - **DONE — `iam:PutRolePolicy`/`PassRole` tag-gated (was name-prefix only).**
-  Both now additionally require `aws:ResourceTag/kiroclaw:managed=true` on the
+  Both now additionally require `aws:ResourceTag/kirocrew:managed=true` on the
   target role, so a leaked launcher credential can no longer target a
-  *pre-existing, out-of-band, unbounded* `kiroclaw-ec2-*` role (created by a third
+  *pre-existing, out-of-band, unbounded* `kirocrew-ec2-*` role (created by a third
   party without our boundary), inline admin, and pass it to EC2. Non-spoofable:
   only a role WE created via the boundary-gated `CreateRole` — which applies
   `Tags` **atomically** at creation (see the template's `InstanceRole.Tags`) —
   carries the tag, and it lands in the same call, so there is **no untagged
   window** before CFN's subsequent `PutRolePolicy`.
   **Tag-timing validated (the failure mode the plan warned about):** a live
-  `kiroclaw cloud launch` on the dev account produced an `InstanceRole`
-  (`kiroclaw-ec2-kc-b2a5b9`) that carried `kiroclaw:managed=true` **and** the
+  `kirocrew cloud launch` on the dev account produced an `InstanceRole`
+  (`kirocrew-ec2-kc-b2a5b9`) that carried `kirocrew:managed=true` **and** the
   inline `SourceObjectRead` policy **and** the shared boundary all coexisting —
   i.e. the role was tagged before/with the inline-policy write, so the tag gate
   does NOT deny the legitimate deploy. Condition correctness confirmed with `iam
@@ -284,20 +284,20 @@ validated against a real `kiroclaw cloud launch` on the dev account first.
   condition-correctness oracle and the live launch proves the tag/inline
   create-order.)
 - **DONE — `iam:TagRole` gated so the tag-gate above can't be self-defeated.**
-  The `aws:ResourceTag/kiroclaw:managed=true` gate on PutRolePolicy/PassRole is
+  The `aws:ResourceTag/kirocrew:managed=true` gate on PutRolePolicy/PassRole is
   only non-spoofable if the *same* launcher policy can't apply that tag to an
-  arbitrary role. The policy also grants `iam:TagRole` on `kiroclaw-ec2-*` (needed
+  arbitrary role. The policy also grants `iam:TagRole` on `kirocrew-ec2-*` (needed
   because CloudFormation's `CreateRole` passes the role's `Tags` inline, which AWS
   authorizes as `iam:TagRole` — id_tags_roles.html), and it was **unconditioned**,
-  so a leaked credential could tag a pre-existing unbounded `kiroclaw-ec2-*` role
-  `kiroclaw:managed=true`, then inline admin + pass it — defeating the gate.
+  so a leaked credential could tag a pre-existing unbounded `kirocrew-ec2-*` role
+  `kirocrew:managed=true`, then inline admin + pass it — defeating the gate.
   Fixed: `iam:TagRole` is now its own statement (`IamTagRoleOnManaged`) gated on
-  `aws:ResourceTag/kiroclaw:managed=true`, removed from `IamRoleForInstance`.
+  `aws:ResourceTag/kirocrew:managed=true`, removed from `IamRoleForInstance`.
   **Validated with a least-privilege assumed-role harness** (a throwaway role
   carrying *exactly* the generated policy — the only valid test, since admin
   bypasses the conditions):
   - (a) least-priv boundary-gated `CreateRole` WITH inline `--tags
-    kiroclaw:managed=true` → **ALLOWED**. At CreateRole, AWS evaluates the
+    kirocrew:managed=true` → **ALLOWED**. At CreateRole, AWS evaluates the
     embedded TagRole authorization with `aws:ResourceTag` reflecting the tags
     being applied, so the key reads `true` in context → match. The deploy is not
     broken.
@@ -308,7 +308,7 @@ validated against a real `kiroclaw cloud launch` on the dev account first.
     (`ArnLike iam:PermissionsBoundary`) DENIES case (a) — AWS does **not**
     propagate `iam:PermissionsBoundary` into the CreateRole-embedded TagRole check
     — and `aws:RequestTag`/`aws:TagKeys` gates leave (b) open (the attacker sets
-    the same tag/keys). So `aws:ResourceTag/kiroclaw:managed=true` is the unique
+    the same tag/keys). So `aws:ResourceTag/kirocrew:managed=true` is the unique
     condition that passes (a) and denies (b). Access Analyzer stayed 0 ERROR / 0
     SECURITY_WARNING; a live launch created the role tagged+bounded+inline-policy'd.
 - **DONE — `last_tag` persisted only after a successful deploy.** Previously
@@ -328,7 +328,7 @@ validated against a real `kiroclaw cloud launch` on the dev account first.
   mirroring the `launch()` branch — so no social-login path orphans a
   `session-manager-plugin` child + loopback callback port.
 - **DONE — `ec2:RunInstances`/`CreateSecurityGroup` request-tag conditions.**
-  Both create verbs now require `aws:RequestTag/kiroclaw:managed=true` so a leaked
+  Both create verbs now require `aws:RequestTag/kirocrew:managed=true` so a leaked
   launcher credential can't create untagged EC2 instances / security groups that
   escape the tag-gated Stop/Terminate/Delete/Authorize statements. The nasty
   gotcha the deferral flagged is handled by a **per-resource-ARN split** (a

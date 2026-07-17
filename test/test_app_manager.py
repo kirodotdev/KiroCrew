@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.apps.manager — App lifecycle management."""
+"""Tests for kiro_crew.apps.manager — App lifecycle management."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.manager import (
+from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     AppResult,
     InstalledApp,
@@ -46,10 +46,10 @@ def _make_app_source(tmp_path, name="test-app", **manifest_overrides):
 
 @pytest.fixture()
 def app_home(tmp_path, monkeypatch):
-    """Set KIROCLAW_HOME to a temp directory for isolated testing."""
-    home = tmp_path / "kiroclaw-home"
+    """Set KIROCREW_HOME to a temp directory for isolated testing."""
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
     return home
 
 
@@ -245,13 +245,13 @@ class TestUninstall:
         src = _make_app_source(tmp_path, name="evil-app")
         sel_calls = []
         monkeypatch.setattr(
-            "kiro_claw.apps.manager.sel",
+            "kiro_crew.apps.manager.sel",
             lambda: type("FakeSel", (), {
                 "log_api_access": lambda self, **kw: sel_calls.append(kw)
             })(),
         )
         monkeypatch.setattr(
-            "kiro_claw.apps.manager._check_path_safety",
+            "kiro_crew.apps.manager._check_path_safety",
             lambda name: False,
         )
         result = install_app(src)
@@ -320,7 +320,7 @@ class TestUninstall:
         """Successful install must emit SEL audit event."""
         sel_calls = []
         monkeypatch.setattr(
-            "kiro_claw.apps.manager.sel",
+            "kiro_crew.apps.manager.sel",
             lambda: type("FakeSel", (), {
                 "log_api_access": lambda self, **kw: sel_calls.append(kw)
             })(),
@@ -396,7 +396,7 @@ class TestAppAdmission:
         assert "blocked by admission policy" in result.error
 
     def test_register_external_denied_when_banned(self, tmp_path, app_home):
-        from kiro_claw.apps.manager import register_external_app
+        from kiro_crew.apps.manager import register_external_app
 
         self._write_policy(app_home, {"mode": "enforce", "banned": ["ext-app"]})
         result = register_external_app("ext-app", "1.0.0", "Ext App")
@@ -412,8 +412,8 @@ class TestAppAdmission:
         import hashlib
         import hmac
 
-        from kiro_claw.apps.manager import register_external_app
-        from kiro_claw.apps.manifest import AppManifest
+        from kiro_crew.apps.manager import register_external_app
+        from kiro_crew.apps.manifest import AppManifest
 
         secret = "s3cr3t"
         manifest_data = {
@@ -436,7 +436,7 @@ class TestAppAdmission:
         assert _read_installed("ext-signed") is not None
 
     def test_register_external_denies_unsigned_manifest(self, tmp_path, app_home):
-        from kiro_claw.apps.manager import register_external_app
+        from kiro_crew.apps.manager import register_external_app
 
         self._write_policy(app_home, {
             "mode": "enforce", "require_signature": True,
@@ -454,7 +454,7 @@ class TestAppAdmission:
         import hashlib
         import hmac
 
-        from kiro_claw.apps.manifest import AppManifest
+        from kiro_crew.apps.manifest import AppManifest
 
         secret = "s3cr3t"
         m = AppManifest.from_dict({
@@ -487,7 +487,7 @@ class TestAppAdmission:
         # Builtins ship unsigned with defaultEnabled=False; a require_signature
         # policy must NOT strand them (they are trusted first-party code). The
         # admission gate governs third-party enable, not builtins.
-        from kiro_claw.apps.manager import _write_installed
+        from kiro_crew.apps.manager import _write_installed
         src = _make_app_source(tmp_path, name="builtin-app")
         assert install_app(src).ok
         meta = _read_installed("builtin-app")
@@ -517,8 +517,8 @@ class TestAppAdmission:
     def test_non_ascii_signature_is_clean_deny(self):
         # A non-ASCII signature (attacker-controlled) must NOT raise TypeError out
         # of hmac.compare_digest — it must be a clean deny (no unhandled 500 DoS).
-        from kiro_claw.apps.admission import AppAdmissionPolicy, _signature_valid
-        from kiro_claw.apps.manifest import AppManifest
+        from kiro_crew.apps.admission import AppAdmissionPolicy, _signature_valid
+        from kiro_crew.apps.manifest import AppManifest
 
         policy = AppAdmissionPolicy(
             mode="enforce", require_signature=True, trust_keys={"acme": "s3cr3t"}
@@ -711,28 +711,28 @@ class TestInstalledApp:
         assert meta.lifecycle == "locked"
         assert meta.schemaVersion == 2
 
-    def test_migrate_managed_kiroclaw(self):
-        """Old managed='kiroclaw' with no source → defaults to registry."""
-        meta = InstalledApp.from_dict({"name": "old", "managed": "kiroclaw"})
+    def test_migrate_managed_kirocrew(self):
+        """Old managed='kirocrew' with no source → defaults to registry."""
+        meta = InstalledApp.from_dict({"name": "old", "managed": "kirocrew"})
         assert meta.origin == "registry"
         assert meta.resources == "gateway"
         assert meta.lifecycle == "gateway"
         assert meta.schemaVersion == 2
 
-    def test_migrate_managed_kiroclaw_local_source(self):
-        """Old managed='kiroclaw' with filesystem source → origin='local'."""
+    def test_migrate_managed_kirocrew_local_source(self):
+        """Old managed='kirocrew' with filesystem source → origin='local'."""
         meta = InstalledApp.from_dict({
-            "name": "old", "managed": "kiroclaw",
+            "name": "old", "managed": "kirocrew",
             "source": "/Users/dev/my-tool",
         })
         assert meta.origin == "local"
         assert meta.resources == "gateway"
         assert meta.lifecycle == "gateway"
 
-    def test_migrate_managed_kiroclaw_registry_source(self):
-        """Old managed='kiroclaw' with registry: source → origin='registry'."""
+    def test_migrate_managed_kirocrew_registry_source(self):
+        """Old managed='kirocrew' with registry: source → origin='registry'."""
         meta = InstalledApp.from_dict({
-            "name": "old", "managed": "kiroclaw",
+            "name": "old", "managed": "kirocrew",
             "source": "registry:my-app",
         })
         assert meta.origin == "registry"
@@ -751,7 +751,7 @@ class TestInstalledApp:
 
     def test_uninstall_locked_rejected(self, tmp_path, app_home):
         """lifecycle=locked apps cannot be uninstalled."""
-        from kiro_claw.apps.manager import register_builtin_apps
+        from kiro_crew.apps.manager import register_builtin_apps
         register_builtin_apps()
         result = uninstall_app("agent-worlds")
         assert not result.ok

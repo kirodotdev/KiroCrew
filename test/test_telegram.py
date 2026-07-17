@@ -13,19 +13,19 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from kiro_claw.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
-from kiro_claw.messaging.link import ChannelLink, dashboard_mirror_key
-from kiro_claw.messaging.renderer import (
+from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.messaging.link import ChannelLink, dashboard_mirror_key
+from kiro_crew.messaging.renderer import (
     DONE,
     STEER_CONSUMED,
     TEXT_CHUNK,
     TOOL_CALL,
     OutputEvent,
 )
-from kiro_claw.messaging.transport import InboundMessage
-from kiro_claw.telegram.client import TELEGRAM_CHUNK_LIMIT, TelegramInbound
-from kiro_claw.telegram.commands import ConversationState, parse_command
-from kiro_claw.telegram.renderer import (
+from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.telegram.client import TELEGRAM_CHUNK_LIMIT, TelegramInbound
+from kiro_crew.telegram.commands import ConversationState, parse_command
+from kiro_crew.telegram.renderer import (
     TelegramApprovalDecider,
     TelegramRenderer,
     _extract_options,
@@ -34,8 +34,8 @@ from kiro_claw.telegram.renderer import (
     _split_text,
     build_inline_keyboard,
 )
-from kiro_claw.telegram.transport import TELEGRAM_CAPABILITIES, TelegramTransport
-from kiro_claw.telegram.transport_dispatch import TelegramDispatcher
+from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramTransport
+from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
 
@@ -638,12 +638,12 @@ class TestDispatcher:
 
         asyncio.run(_go())
         assert cli.sent[-1][0] == "Answer: hello world"
-        assert sess.successes == ["telegram:kiroclaw:direct:7"]
-        assert sess.released == ["telegram:kiroclaw:direct:7"]
+        assert sess.successes == ["telegram:kirocrew:direct:7"]
+        assert sess.released == ["telegram:kirocrew:direct:7"]
 
-    def test_agent_resolves_to_kiroclaw_when_unset(self) -> None:
-        # agent=None + empty default_agent must fall back to "kiroclaw" so the
-        # session loads kiroclaw-core (spawn_run), not kiro-cli's bare default.
+    def test_agent_resolves_to_kirocrew_when_unset(self) -> None:
+        # agent=None + empty default_agent must fall back to "kirocrew" so the
+        # session loads kirocrew-core (spawn_run), not kiro-cli's bare default.
         d, cli, sess = _dispatcher({7})
 
         async def _go() -> None:
@@ -652,7 +652,7 @@ class TestDispatcher:
             )
 
         asyncio.run(_go())
-        assert sess.last_agent == "kiroclaw"
+        assert sess.last_agent == "kirocrew"
 
     def test_cold_start_failure_finalizes_and_skips_release(self) -> None:
         # If get_or_create raises (cold-start), the turn must still be finalized
@@ -692,7 +692,7 @@ class TestDispatcher:
             )
 
         asyncio.run(_go())
-        assert "KiroClaw" in cli.sent[-1][0]
+        assert "KiroCrew" in cli.sent[-1][0]
 
     def test_compact_refused_while_turn_running(self) -> None:
         # /compact must NOT drive the same provider while a turn streams. The
@@ -723,8 +723,8 @@ class TestDispatcher:
             )
 
         asyncio.run(_go())
-        assert sess.acquired == ["telegram:kiroclaw:direct:7"]  # acquired the turn semaphore
-        assert sess.released == ["telegram:kiroclaw:direct:7"]  # and released it in finally
+        assert sess.acquired == ["telegram:kirocrew:direct:7"]  # acquired the turn semaphore
+        assert sess.released == ["telegram:kirocrew:direct:7"]  # and released it in finally
         assert any("Compact" in s[0] for s in cli.sent) or any(
             "Compact" in e[1] for e in cli.edits
         )
@@ -814,7 +814,7 @@ class TestClientSession:
         # Concurrent _api callers (polling loop + handler tasks) must share ONE
         # ClientSession — the double-checked lock in _ensure_session prevents a
         # leaked duplicate.
-        import kiro_claw.telegram.client as client_mod
+        import kiro_crew.telegram.client as client_mod
 
         created = {"n": 0}
 
@@ -839,7 +839,7 @@ class TestTelegramTokenRedaction:
     """#1 — a Telegram bot token echoed in output must be scrubbed."""
 
     def test_bot_token_is_redacted(self) -> None:
-        from kiro_claw.security import redact_credentials
+        from kiro_crew.security import redact_credentials
 
         token = "8412345678:AAExampleSecretTokenValue_1234567890abcd"
         cleaned, warnings = redact_credentials(f"my token is {token} ok")
@@ -848,7 +848,7 @@ class TestTelegramTokenRedaction:
         assert warnings  # at least one redaction warning recorded
 
     def test_benign_short_colon_pairs_not_redacted(self) -> None:
-        from kiro_claw.security import redact_credentials
+        from kiro_crew.security import redact_credentials
 
         # Too few digits (<6) and too-short suffix (<30) to match the token
         # shape — must not be over-redacted.
@@ -861,7 +861,7 @@ class TestConfigMasking:
     """#5 — sensitive config fields are masked in the API response only."""
 
     def test_bot_token_masked_in_response(self) -> None:
-        from kiro_claw.dashboard.handlers.core import _SENSITIVE_MASK, _masked_config_dict
+        from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK, _masked_config_dict
 
         class _Cfg:
             def to_dict(self) -> dict:
@@ -879,7 +879,7 @@ class TestConfigMasking:
         assert out["telegram"]["allowed_user_ids"] == [7]
 
     def test_empty_token_not_masked(self) -> None:
-        from kiro_claw.dashboard.handlers.core import _SENSITIVE_MASK, _masked_config_dict
+        from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK, _masked_config_dict
 
         class _Cfg:
             def to_dict(self) -> dict:
@@ -963,7 +963,7 @@ class TestTelegramMidTurn:
             )
 
         asyncio.run(_go())
-        assert sess.successes == ["telegram:kiroclaw:direct:7"]
+        assert sess.successes == ["telegram:kirocrew:direct:7"]
         assert sess._gp.steered == []
 
     def test_drain_collapses_queued_into_one_turn(self) -> None:
@@ -971,12 +971,12 @@ class TestTelegramMidTurn:
         sess.queued = [("t1", "first", {}), ("t2", "second", {})]
 
         async def _go() -> None:
-            await d._drain_queue("telegram:kiroclaw:direct:7", 7, 7)
+            await d._drain_queue("telegram:kirocrew:direct:7", 7, 7)
 
         asyncio.run(_go())
         # All queued messages collapse into ONE combined turn (drain=False ->
         # no recursion), and the queue is emptied.
-        assert sess.successes == ["telegram:kiroclaw:direct:7"]
+        assert sess.successes == ["telegram:kirocrew:direct:7"]
         assert sess.queued == []
 
     def test_queue_receipt_collapses_into_single_bubble(self) -> None:
@@ -1057,16 +1057,16 @@ class TestTelegramMidTurn:
         sess.queued = [(f"t{i}", f"m{i}", {}) for i in range(52)]
 
         async def _go() -> None:
-            await d._drain_queue("telegram:kiroclaw:direct:7", 7, 7)
+            await d._drain_queue("telegram:kirocrew:direct:7", 7, 7)
 
         asyncio.run(_go())
         # surplus (m50, m51) is deferred IN ORIGINAL ORDER, not dropped/reordered
         assert [text for _ts, text, _ in sess.queued] == ["m50", "m51"]
-        assert sess.successes == ["telegram:kiroclaw:direct:7"]  # one combined turn
+        assert sess.successes == ["telegram:kirocrew:direct:7"]  # one combined turn
 
     def test_flip_count_reflects_answered_not_full_queue(self) -> None:
         d, cli, sess = _dispatcher({7})
-        key = "telegram:kiroclaw:direct:7"
+        key = "telegram:kirocrew:direct:7"
         sess._busy = True
         d.cfg.messaging.queue_mode = "queue"
 
@@ -1090,7 +1090,7 @@ class TestTelegramMidTurn:
 
         async def _go() -> bool:
             return await d._enqueue_with_receipt(
-                "telegram:kiroclaw:direct:7", 7, "late message"
+                "telegram:kirocrew:direct:7", 7, "late message"
             )
 
         queued = asyncio.run(_go())
@@ -1106,12 +1106,12 @@ class TestLinkCommand:
         # Guards the exact seam _deliver_cross_surface_reply reads at runtime:
         # dashboard:<channel session key with ':' sanitized to '_'>.
         assert (
-            dashboard_mirror_key("telegram:kiroclaw:direct:8743158320:gen3")
-            == "dashboard:telegram_kiroclaw_direct_8743158320_gen3"
+            dashboard_mirror_key("telegram:kirocrew:direct:8743158320:gen3")
+            == "dashboard:telegram_kirocrew_direct_8743158320_gen3"
         )
         assert (
-            dashboard_mirror_key("telegram:kiroclaw:direct:7")
-            == "dashboard:telegram_kiroclaw_direct_7"
+            dashboard_mirror_key("telegram:kirocrew:direct:7")
+            == "dashboard:telegram_kirocrew_direct_7"
         )
 
     def test_parse_link_unlink(self) -> None:
@@ -1148,7 +1148,7 @@ class TestLinkCommand:
 def test_receipt_text_caps_displayed_items() -> None:
     # A large mid-turn burst must not grow the rendered receipt unbounded: only
     # the first _RECEIPT_MAX_ITEMS are listed verbatim; the count stays true.
-    from kiro_claw.telegram.transport_dispatch import _RECEIPT_MAX_ITEMS, _receipt_text
+    from kiro_crew.telegram.transport_dispatch import _RECEIPT_MAX_ITEMS, _receipt_text
 
     texts = [f"msg number {i}" for i in range(_RECEIPT_MAX_ITEMS + 3)]
     out = _receipt_text(texts)

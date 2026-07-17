@@ -2,7 +2,7 @@
  * Test: App top-bar offline pill suppression when auth banner is shown.
  *
  * When the gateway returns 403 + X-Auth-Required, api/client.ts injects
- * the red "Session expired — paste kiroclaw token" banner at the top of
+ * the red "Session expired — paste kirocrew token" banner at the top of
  * the page AND fires a `mc-auth-required` window event. Without
  * coordination, App's pulsing "Offline" pill in the top-bar would render
  * alongside that banner — two banners arguing about the same root cause,
@@ -34,11 +34,11 @@ vi.mock('../pages/SystemPage', () => ({ default: () => null }))
 vi.mock('../pages/AgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => null }))
 vi.mock('../pages/LogsPage', () => ({ default: () => null }))
-vi.mock('../pages/KiroClawAgentsPage', () => ({ default: () => null }))
+vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kiroclaw' }], defaultAgent: 'kiroclaw' })) }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
 

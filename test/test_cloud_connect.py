@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.cloud import aws, connect, ssm
+from kiro_crew.cloud import aws, connect, ssm
 
 
 class TestMintToken:
@@ -163,7 +163,7 @@ class TestConnect:
         assert opened["n"] == 0  # never opened the token URL
 
     def test_connect_tears_down_tunnel_when_mint_fails(self, monkeypatch):
-        # Tunnel comes up ready but mint_token returns "" (e.g. `kiroclaw token`
+        # Tunnel comes up ready but mint_token returns "" (e.g. `kirocrew token`
         # failed on the box). A ready tunnel with no URL is useless and would
         # leak the SSM child; connect() must tear it down and report ready=False.
         monkeypatch.setattr(ssm, "require_session_manager_plugin", lambda: None)
@@ -313,26 +313,26 @@ def _pid_alive(pid: int) -> bool:
 
 class TestRegistryIntegration:
     def test_register_instance(self, monkeypatch, tmp_path):
-        from kiro_claw.instances.registry import InstancesRegistry
+        from kiro_crew.instances.registry import InstancesRegistry
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
         monkeypatch.setattr(connect, "InstancesRegistry", InstancesRegistry, raising=False)
         # Patch the lazy import target: connect imports InstancesRegistry inside
         # the function, so patch the class used there via the module.
-        import kiro_claw.instances.registry as regmod
+        import kiro_crew.instances.registry as regmod
 
         monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
 
-        rid = connect.register_instance("i-0abc", name="KiroClaw Cloud")
+        rid = connect.register_instance("i-0abc", name="KiroCrew Cloud")
         assert rid is not None
         assert any(i.ssh_host == "i-0abc" for i in reg.list())
 
     def test_unregister_instance(self, monkeypatch, tmp_path):
-        from kiro_claw.instances.registry import InstancesRegistry
+        from kiro_crew.instances.registry import InstancesRegistry
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
-        reg.add(name="KiroClaw Cloud", ssh_host="i-0abc")
-        import kiro_claw.instances.registry as regmod
+        reg.add(name="KiroCrew Cloud", ssh_host="i-0abc")
+        import kiro_crew.instances.registry as regmod
 
         monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
 

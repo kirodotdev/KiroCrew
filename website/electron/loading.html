@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>KiroClaw</title>
+  <title>KiroCrew</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root { --kiro: #9046FF; }
@@ -37,7 +37,7 @@
     }
     .boot-word { max-width: 92vw; height: auto; }
     /* Status line — absolutely positioned below the wordmark so it never shifts
-       the centered KIROCLAW. Hidden until the reveal completes. */
+       the centered KIROCREW. Hidden until the reveal completes. */
     #status {
       position: absolute; left: 50%; top: calc(50% + 92px);
       transform: translate(-50%, 6px); opacity: 0;
@@ -75,12 +75,12 @@
     <div id="white"></div>
 
     <div id="wordWrap">
-      <!-- KIROCLAW characters are injected + laid out by JS (one <text> each;
+      <!-- KIROCREW characters are injected + laid out by JS (one <text> each;
            outline strokes on, then fills, as the ghost sweeps past). -->
       <svg class="boot-word" width="900" height="160" viewBox="0 0 900 160" aria-hidden="true"></svg>
     </div>
 
-    <!-- Appears below KIROCLAW only after the reveal finishes; shows live gateway
+    <!-- Appears below KIROCREW only after the reveal finishes; shows live gateway
          status and stays until the gateway is ready, then the whole screen fades. -->
     <div id="status"><span class="dot"></span><span id="statusText">Starting gateway&hellip;</span></div>
 
@@ -108,7 +108,7 @@
       // ── Constants (mirrors src/components/BootReveal.tsx) ──
       var KIRO_PURPLE = "#9046FF";
       var KIRO_RGB = "144,70,255";
-      var WORD = "KIROCLAW";
+      var WORD = "KIROCREW";
       var GHOST_W = 200, FADE = 70, VB_W = 900, CHAR_SPACING = 8, OUTLINE_MULT = 7;
       var FLOAT_MS = 2400, DRAW_MS = 320, FILL_MS = 260;
       var DRAW_FRAC = DRAW_MS / FLOAT_MS, FILL_FRAC = FILL_MS / FLOAT_MS;

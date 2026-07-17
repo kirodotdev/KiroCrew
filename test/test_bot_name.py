@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kiro_claw.config.loader import _sanitize_bot_name
+from kiro_crew.config.loader import _sanitize_bot_name
 
 
 class TestSanitizeBotName:
@@ -30,7 +30,7 @@ class TestSanitizeBotName:
 
 class TestBotNameSubstitution:
     def test_custom_name_substituted(self):
-        from kiro_claw.context import ContextBuilder
+        from kiro_crew.context import ContextBuilder
 
         ctx = ContextBuilder(bot_name="Alita")
         assert ctx._substitute_bot_name("You are {bot_name} 🐾") == "You are Alita 🐾"
@@ -38,29 +38,29 @@ class TestBotNameSubstitution:
     def test_empty_defaults_from_config(self):
         from unittest.mock import patch
 
-        from kiro_claw.context import ContextBuilder
+        from kiro_crew.context import ContextBuilder
 
         # When provider is ACP, default bot_name is "Kiro"
-        with patch("kiro_claw.context.KiroClawConfig.load") as mock_cfg:
+        with patch("kiro_crew.context.KiroCrewConfig.load") as mock_cfg:
             mock_cfg.return_value.agent.provider = "acp"
             ctx = ContextBuilder(bot_name="")
             assert ctx._substitute_bot_name("You are {bot_name}.") == "You are Kiro."
 
-        # When provider is claude_code, default bot_name is "KiroClaw"
-        with patch("kiro_claw.context.KiroClawConfig.load") as mock_cfg:
+        # When provider is claude_code, default bot_name is "KiroCrew"
+        with patch("kiro_crew.context.KiroCrewConfig.load") as mock_cfg:
             mock_cfg.return_value.agent.provider = "claude_code"
             ctx = ContextBuilder(bot_name="")
-            assert ctx._substitute_bot_name("You are {bot_name}.") == "You are KiroClaw."
+            assert ctx._substitute_bot_name("You are {bot_name}.") == "You are KiroCrew."
 
     def test_no_placeholder_is_noop(self):
-        from kiro_claw.context import ContextBuilder
+        from kiro_crew.context import ContextBuilder
 
         ctx = ContextBuilder(bot_name="Alita")
         assert ctx._substitute_bot_name("No placeholder here.") == "No placeholder here."
 
     def test_self_referential_no_recursion(self):
         """bot_name containing {bot_name} — braces stripped by sanitizer."""
-        from kiro_claw.context import ContextBuilder
+        from kiro_crew.context import ContextBuilder
 
         name = _sanitize_bot_name("{bot_name}")
         ctx = ContextBuilder(bot_name=name)

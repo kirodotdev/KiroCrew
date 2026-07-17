@@ -8,7 +8,7 @@ Persistent conversation history with provenance tracking and LLM-driven consolid
 
 ## ConversationLog (`history.py`)
 
-Per-thread JSONL files at `~/.kiroclaw/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`.
+Per-thread JSONL files at `~/.kirocrew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`.
 
 - Append-only for LLM cache efficiency
 - Rotation at 2MB (keeps metadata + last 200 messages, atomic write)
@@ -70,7 +70,7 @@ no longer destroy older turns.
 Lines that ARE intentionally dropped (rotation, compaction, history edits) are
 archived instead of being permanently deleted:
 
-- **Archive location**: `~/.kiroclaw/sessions/archive/{key}__{YYYYMMDD-HHMMSS}.jsonl`
+- **Archive location**: `~/.kirocrew/sessions/archive/{key}__{YYYYMMDD-HHMMSS}.jsonl`
 - **Triggers**: `_rotate()` (>2MB), `rewrite_session()` (compact), and the
   dashboard rewrite path (`_save_slot_to_history` with a snapshot /
   `rewrite=True` / `_pending_rewrite` → `_archive_dropped_lines`). The default

@@ -7,7 +7,7 @@
 
 ## 1. Problem
 
-User-initiated Stop (dashboard button, Slack `!stop`, `/kiroclaw stop`) always hard-kills the kiro-cli process. The choice was made in commit `45defbb` (2026-02-24) because cooperative `session/cancel` was observed to block indefinitely behind long tool calls — but the kill-first policy has real costs:
+User-initiated Stop (dashboard button, Slack `!stop`, `/kirocrew stop`) always hard-kills the kiro-cli process. The choice was made in commit `45defbb` (2026-02-24) because cooperative `session/cancel` was observed to block indefinitely behind long tool calls — but the kill-first policy has real costs:
 
 - Loss of in-memory kiro-cli state — conversation context must be re-injected from JSONL on every resume.
 - Process respawn penalty (~2–30s cold start; warm pool cushions but does not eliminate).
@@ -15,7 +15,7 @@ User-initiated Stop (dashboard button, Slack `!stop`, `/kiroclaw stop`) always h
 - History re-injection is lossy: mid-stream tokens that had not yet been flushed to JSONL are gone; in-flight tool results are discarded.
 - No user-visible signal about *why* a stop took a moment (cancel honored vs. tool was mid-execution), and no confirmation the stop actually succeeded — a silent return-to-idle is ambiguous.
 
-The ACP spec provides a clean acknowledgement for cancellation (`stopReason: "cancelled"` on the `session/prompt` response, per agentclientprotocol.com), but KiroClaw never wired up observation of this field. `cancel_session()` is fire-and-forget, the `stop_reason` field exists on `AcpEvent` (line 101 of `acp/types.py`) but is never populated, and the `_cancelled` flag shortcircuits the read loop before the ack can arrive.
+The ACP spec provides a clean acknowledgement for cancellation (`stopReason: "cancelled"` on the `session/prompt` response, per agentclientprotocol.com), but KiroCrew never wired up observation of this field. `cancel_session()` is fire-and-forget, the `stop_reason` field exists on `AcpEvent` (line 101 of `acp/types.py`) but is never populated, and the `_cancelled` flag shortcircuits the read loop before the ack can arrive.
 
 ## 2. Goals
 
@@ -82,8 +82,8 @@ A short summary line is also posted as a non-ephemeral thread reply on resolutio
 
 Global config: `agent.soft_stop_budget_secs` (float, default `10.0`, clamped to `[0.5, 60]`).
 
-- Lives in the `AgentConfig` dataclass in `src/kiro_claw/config/loader.py`. Automatically exposed via `config/schema.py`'s JSON Schema generation.
-- Editable via `kiroclaw config set agent.soft_stop_budget_secs 10` CLI.
+- Lives in the `AgentConfig` dataclass in `src/kiro_crew/config/loader.py`. Automatically exposed via `config/schema.py`'s JSON Schema generation.
+- Editable via `kirocrew config set agent.soft_stop_budget_secs 10` CLI.
 - Settings UI: number input in `frontend settings ChatPanel` labeled "Soft-stop budget (seconds)" with an `InfoTip` explaining the trade-off.
 
 Config reload: existing SIGHUP / `apply_config` path picks up the new value without restart.
@@ -92,12 +92,12 @@ Config reload: existing SIGHUP / `apply_config` path picks up the new value with
 
 ### 5.1 ACP client — observe the ack
 
-Update `src/kiro_claw/acp/types.py`:
+Update `src/kiro_crew/acp/types.py`:
 
 - Keep `stop_reason` field on `AcpEvent` (already exists, line 101).
 - Add `STOP_REASON_CANCELLED = "cancelled"`, `STOP_REASON_END_TURN = "end_turn"` constants.
 
-Update `src/kiro_claw/acp/client.py`:
+Update `src/kiro_crew/acp/client.py`:
 
 1. **Populate `stop_reason`** from the JSON-RPC prompt response. In `_dispatch_events`, when `action == "complete"`, read `msg.result.get("stopReason", "")` if result is a dict; set it on the emitted `AcpEvent(kind=EVENT_COMPLETE, stop_reason=...)`.
 2. **Remove the `_cancelled` short-circuit from `_read_message`** at line 730. Keep the flag itself (used by internal callers) but stop using it to raise `AcpError("Operation cancelled")` — that behavior currently prevents the client from observing the `stopReason: "cancelled"` response. Replace with a milder check: if `_cancelled` is set and a configurable grace window (default 10s) passes without a response, raise `AcpError`. This preserves the escape hatch for broken agents without sabotaging the common case.
@@ -106,7 +106,7 @@ Update `src/kiro_claw/acp/client.py`:
 
 ### 5.2 Provider API
 
-`src/kiro_claw/providers/base.py`:
+`src/kiro_crew/providers/base.py`:
 
 ```python
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
@@ -121,7 +121,7 @@ async def cancel(self, *, wait_ack_timeout: float = 0.0) -> CancelOutcome:
     """
 ```
 
-`src/kiro_claw/providers/acp.py`:
+`src/kiro_crew/providers/acp.py`:
 
 ```python
 async def cancel(self, *, wait_ack_timeout: float = 0.0) -> CancelOutcome:
@@ -149,7 +149,7 @@ Design choice: the provider API uses a single keyword float (`wait_ack_timeout`)
 The orchestration layer both stop surfaces (dashboard + Slack) share:
 
 ```python
-# src/kiro_claw/session.py
+# src/kiro_crew/session.py
 
 StopOutcome = Literal["soft", "hard", "idle"]
 
@@ -286,7 +286,7 @@ if slot._stop_state != 'soft_pending':
 
 ## 7. State on `_ChatSlot`
 
-Extend `_ChatSlot` in `src/kiro_claw/dashboard/state.py`:
+Extend `_ChatSlot` in `src/kiro_crew/dashboard/state.py`:
 
 ```python
 # Replace scalar _stopping with enum (keep _stopping as a property for backward compat)
@@ -323,7 +323,7 @@ and mirrored into `content` for consumers that only read content.
 
 **Role / kind convention:** role `system`, with `kind` held inside the JSON payload of `cls`/`content`. This keeps `history.py` persistence generic (any role/content/cls triple) while making entries discoverable via structural parsing.
 
-**LLM context restore after cancel:** kiro-cli does not persist cancelled turns to its ACP conversation log, so the LLM has no memory of the interrupted prompt on the next turn. KiroClaw re-injects the cancelled turn as a short preamble:
+**LLM context restore after cancel:** kiro-cli does not persist cancelled turns to its ACP conversation log, so the LLM has no memory of the interrupted prompt on the next turn. KiroCrew re-injects the cancelled turn as a short preamble:
 
 ```
 [PREVIOUS TURN WAS CANCELLED BY THE USER — context restore]
@@ -336,7 +336,7 @@ The preamble is built once on the first prompt after a cancel and consumed one-s
 
 ## 9. Slack block-kit message
 
-Ephemeral message structure (`src/kiro_claw/slack/blocks.py`):
+Ephemeral message structure (`src/kiro_crew/slack/blocks.py`):
 
 ```python
 def build_stopping_blocks(session_key: str) -> list[dict]:
@@ -367,7 +367,7 @@ def build_stop_failed_blocks() -> list[dict]:
              "text": {"type": "mrkdwn", "text": "⛔  *[Stop Failed, Session Reset]*"}}]
 ```
 
-Action handler in `src/kiro_claw/slack/interactions.py`: new `stop_kill_now` action routes to `sessions.stop_turn(session_key, force=True, ...)` with the same `on_hard` callback.
+Action handler in `src/kiro_crew/slack/interactions.py`: new `stop_kill_now` action routes to `sessions.stop_turn(session_key, force=True, ...)` with the same `on_hard` callback.
 
 **Authorization:** the `[Kill Now]` button enforces the standard
 `is_allowed_user()` allowlist check (deny-by-default). While the
@@ -385,7 +385,7 @@ attacker can still craft a raw HTTP POST with `action_id:
 
 ## 11. Config
 
-`src/kiro_claw/config/loader.py` — add to `AgentConfig`:
+`src/kiro_crew/config/loader.py` — add to `AgentConfig`:
 
 ```python
 @dataclass

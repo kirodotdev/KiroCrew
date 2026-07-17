@@ -1,6 +1,6 @@
 """Tests for ACP types."""
 
-from kiro_claw.acp.types import AcpPromptStats, JsonRpcMessage, JsonRpcRequest
+from kiro_crew.acp.types import AcpPromptStats, JsonRpcMessage, JsonRpcRequest
 
 
 class TestJsonRpcRequest:

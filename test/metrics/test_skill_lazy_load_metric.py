@@ -1,4 +1,4 @@
-"""Tests for kiroclaw.skill.lazy_load.duration histogram + count counter.
+"""Tests for kirocrew.skill.lazy_load.duration histogram + count counter.
 
 Verifies that SkillsLoader.load_skill() emits OTEL metrics on both cache-hit
 (skill found) and cache-miss (skill not found) paths.
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.skills import SkillsLoader
+from kiro_crew.skills import SkillsLoader
 
 
 class _CapturingRecorder:
@@ -40,19 +40,19 @@ def test_load_skill_hit_emits_metric(skill_dir: Path):
     mgr = SkillsLoader(skills_path=skill_dir, install_builtins=False)
     rec = _CapturingRecorder()
 
-    with patch("kiro_claw.skills.get_recorder", return_value=rec):
+    with patch("kiro_crew.skills.get_recorder", return_value=rec):
         result = mgr.load_skill("test-skill")
 
     assert result is not None
     assert len(rec.histograms) == 1
     name, value_ms, attrs = rec.histograms[0]
-    assert name == "kiroclaw.skill.lazy_load.duration"
+    assert name == "kirocrew.skill.lazy_load.duration"
     assert value_ms >= 0
     assert attrs == {"hit": True}
 
     assert len(rec.counters) == 1
     cname, cattrs = rec.counters[0]
-    assert cname == "kiroclaw.skill.lazy_load.count"
+    assert cname == "kirocrew.skill.lazy_load.count"
     assert cattrs == {"hit": True}
 
 
@@ -61,7 +61,7 @@ def test_load_skill_miss_emits_metric(skill_dir: Path):
     mgr = SkillsLoader(skills_path=skill_dir, install_builtins=False)
     rec = _CapturingRecorder()
 
-    with patch("kiro_claw.skills.get_recorder", return_value=rec):
+    with patch("kiro_crew.skills.get_recorder", return_value=rec):
         result = mgr.load_skill("nonexistent-skill")
 
     assert result is None
@@ -79,7 +79,7 @@ def test_load_skill_invalid_name_no_metric(skill_dir: Path):
     mgr = SkillsLoader(skills_path=skill_dir, install_builtins=False)
     rec = _CapturingRecorder()
 
-    with patch("kiro_claw.skills.get_recorder", return_value=rec):
+    with patch("kiro_crew.skills.get_recorder", return_value=rec):
         result = mgr.load_skill("../escape-attempt")
 
     assert result is None

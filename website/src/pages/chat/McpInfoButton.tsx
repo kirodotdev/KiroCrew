@@ -56,9 +56,9 @@ export default function McpInfoButton({ agent }: { agent?: string }) {
             </div>
           ))}
           <div className="mt-2 pt-2 border-t border-border text-[11px] text-muted leading-snug">
-            {agent && agent !== 'kiroclaw'
+            {agent && agent !== 'kirocrew'
               ? `Agent "${agent}" loads only its own MCP servers.`
-              : 'kiroclaw loads all configured MCP servers — manage from Overview → MCP tab.'}
+              : 'kirocrew loads all configured MCP servers — manage from Overview → MCP tab.'}
           </div>
         </div>,
         document.body

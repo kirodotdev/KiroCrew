@@ -10,9 +10,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import kiro_claw.dashboard.handlers.memory as mem_mod
+import kiro_crew.dashboard.handlers.memory as mem_mod
 
-_MOD = "kiro_claw.dashboard.handlers.memory"
+_MOD = "kiro_crew.dashboard.handlers.memory"
 
 
 def _make_app() -> web.Application:
@@ -64,12 +64,12 @@ def _common_patches(cfg_path, faiss_available=False, proc_rc=0, proc_stderr=b"")
     faiss_mod = MagicMock() if faiss_available else None
 
     patches = {
-        "ollama": patch("kiro_claw.embeddings.OllamaManager", return_value=_mock_mgr()),
-        "cfg_load": patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=cfg),
-        "cfg_path": patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+        "ollama": patch("kiro_crew.embeddings.OllamaManager", return_value=_mock_mgr()),
+        "cfg_load": patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg),
+        "cfg_path": patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
         "subprocess": patch("asyncio.create_subprocess_exec", return_value=proc),
-        "validate": patch("kiro_claw.embeddings._validate_url"),
-        "embed_fn": patch("kiro_claw.embeddings.make_sync_embed_fn", return_value=lambda t: [0.0]),
+        "validate": patch("kiro_crew.embeddings._validate_url"),
+        "embed_fn": patch("kiro_crew.embeddings.make_sync_embed_fn", return_value=lambda t: [0.0]),
         # Inject a fake ``pip`` so ``_ensure_pip_available`` short-circuits and
         # these faiss-focused tests see exactly one subprocess (the faiss install).
         "faiss": patch.dict("sys.modules", {"faiss": faiss_mod, "pip": MagicMock()}),
@@ -82,7 +82,7 @@ def _common_patches(cfg_path, faiss_available=False, proc_rc=0, proc_stderr=b"")
 class TestFaissInstallSuccess:
     @pytest.mark.asyncio
     async def test_pip_install_runs_when_faiss_missing(self, tmp_path: Path) -> None:
-        cfg_path = tmp_path / "kiroclaw.json"
+        cfg_path = tmp_path / "kirocrew.json"
         cfg_path.write_text("{}", encoding="utf-8")
         patches, store, proc = _common_patches(cfg_path, faiss_available=False, proc_rc=0)
 
@@ -104,7 +104,7 @@ class TestFaissInstallSuccess:
 class TestFaissInstallFailure:
     @pytest.mark.asyncio
     async def test_returns_500_and_resets_status(self, tmp_path: Path) -> None:
-        cfg_path = tmp_path / "kiroclaw.json"
+        cfg_path = tmp_path / "kirocrew.json"
         cfg_path.write_text("{}", encoding="utf-8")
         patches, store, proc = _common_patches(
             cfg_path, faiss_available=False, proc_rc=1, proc_stderr=b"No matching distribution"
@@ -126,7 +126,7 @@ class TestFaissInstallFailure:
 class TestFaissAlreadyInstalled:
     @pytest.mark.asyncio
     async def test_skips_pip_when_faiss_importable(self, tmp_path: Path) -> None:
-        cfg_path = tmp_path / "kiroclaw.json"
+        cfg_path = tmp_path / "kirocrew.json"
         cfg_path.write_text("{}", encoding="utf-8")
         patches, store, proc = _common_patches(cfg_path, faiss_available=True)
 
@@ -144,7 +144,7 @@ class TestFaissAlreadyInstalled:
 class TestLoadFaissIndexCalled:
     @pytest.mark.asyncio
     async def test_called_after_successful_setup(self, tmp_path: Path) -> None:
-        cfg_path = tmp_path / "kiroclaw.json"
+        cfg_path = tmp_path / "kirocrew.json"
         cfg_path.write_text("{}", encoding="utf-8")
         patches, store, proc = _common_patches(cfg_path, faiss_available=True)
 
@@ -162,7 +162,7 @@ class TestLoadFaissIndexCalled:
 class TestLoadFaissIndexFailure:
     @pytest.mark.asyncio
     async def test_returns_500_when_load_faiss_raises(self, tmp_path: Path) -> None:
-        cfg_path = tmp_path / "kiroclaw.json"
+        cfg_path = tmp_path / "kirocrew.json"
         cfg_path.write_text("{}", encoding="utf-8")
         patches, store, proc = _common_patches(cfg_path, faiss_available=True)
         store.load_faiss_index.side_effect = RuntimeError("corrupted index")
@@ -184,7 +184,7 @@ class TestLoadFaissIndexFailure:
 class TestFaissInstallTimeout:
     @pytest.mark.asyncio
     async def test_returns_500_on_timeout(self, tmp_path: Path) -> None:
-        cfg_path = tmp_path / "kiroclaw.json"
+        cfg_path = tmp_path / "kirocrew.json"
         cfg_path.write_text("{}", encoding="utf-8")
         patches, store, proc = _common_patches(cfg_path, faiss_available=False, proc_rc=0)
         proc.kill = MagicMock()
@@ -253,7 +253,7 @@ class TestEnsurePipBootstrap:
     async def test_enable_returns_500_when_pip_bootstrap_fails(self, tmp_path: Path) -> None:
         # End-to-end: faiss missing AND pip bootstrap fails -> handler 500s
         # before attempting the faiss install, with status reset to idle.
-        cfg_path = tmp_path / "kiroclaw.json"
+        cfg_path = tmp_path / "kirocrew.json"
         cfg_path.write_text("{}", encoding="utf-8")
         # faiss_available=False, but do NOT inject a fake pip -> force the
         # bootstrap path; make ensurepip (the only subprocess) fail.
@@ -262,9 +262,9 @@ class TestEnsurePipBootstrap:
         store.load_faiss_index = MagicMock()
         proc = _mock_proc(rc=1, stderr=b"ensurepip is not available")
 
-        with patch("kiro_claw.embeddings.OllamaManager", return_value=_mock_mgr()), \
-             patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=_mock_cfg()), \
-             patch("kiro_claw.config.loader.config_path", return_value=cfg_path), \
+        with patch("kiro_crew.embeddings.OllamaManager", return_value=_mock_mgr()), \
+             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_mock_cfg()), \
+             patch("kiro_crew.config.loader.config_path", return_value=cfg_path), \
              patch("asyncio.create_subprocess_exec", return_value=proc), \
              patch.dict("sys.modules", {"faiss": None, "pip": None}), \
              patch(f"{_MOD}._get_vector_store", return_value=store), \

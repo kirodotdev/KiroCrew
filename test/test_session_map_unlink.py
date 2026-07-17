@@ -11,13 +11,13 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.session_map import SessionMap
+from kiro_crew.session_map import SessionMap
 
 
 @pytest.fixture()
 def session_map(tmp_path):
     """Create a SessionMap backed by a temp directory."""
-    with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+    with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
         yield SessionMap()
 
 
@@ -106,14 +106,14 @@ class TestClearSlackLink:
     def test_clear_persists_to_disk(self, tmp_path):
         # provider="claude_code" so get() returns the sid without a kiro-session
         # file existence check (which would otherwise prune the entry).
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm = SessionMap()
             sm.set("dash:1", "sid-abc", provider="claude_code")
             sm.set_slack_link("dash:1", "ts-1", "C-1")
             sm.clear_slack_link("dash:1")
 
         # Reload from disk: the cleared link must stay cleared, sid preserved.
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm2 = SessionMap()
             assert sm2.get_slack_link("dash:1") == (None, None)
             assert sm2.get("dash:1") == "sid-abc"

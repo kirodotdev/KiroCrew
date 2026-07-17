@@ -1,11 +1,11 @@
-"""Tests for kiro_claw.metrics.local_exporter — JsonlMetricExporter."""
+"""Tests for kiro_crew.metrics.local_exporter — JsonlMetricExporter."""
 
 import json
 
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
-from kiro_claw.metrics.local_exporter import JsonlMetricExporter
+from kiro_crew.metrics.local_exporter import JsonlMetricExporter
 
 
 def _provider(tmp_path):
@@ -20,7 +20,7 @@ def _provider(tmp_path):
 def test_export_writes_valid_jsonl(tmp_path):
     provider = _provider(tmp_path)
     try:
-        provider.get_meter("test").create_counter("kiroclaw.test.count").add(
+        provider.get_meter("test").create_counter("kirocrew.test.count").add(
             5, attributes={"ok": "yes"}
         )
         provider.force_flush()
@@ -31,7 +31,7 @@ def test_export_writes_valid_jsonl(tmp_path):
         assert lines, "expected at least one JSON line"
         parsed = json.loads(lines[0])  # each line is one valid JSON object
         assert "resource_metrics" in parsed
-        assert "kiroclaw.test.count" in lines[0]
+        assert "kirocrew.test.count" in lines[0]
     finally:
         provider.shutdown()
 
@@ -39,7 +39,7 @@ def test_export_writes_valid_jsonl(tmp_path):
 def test_export_appends_one_line_per_flush(tmp_path):
     provider = _provider(tmp_path)
     try:
-        counter = provider.get_meter("test").create_counter("kiroclaw.test.count")
+        counter = provider.get_meter("test").create_counter("kirocrew.test.count")
         counter.add(1)
         provider.force_flush()
         counter.add(1)

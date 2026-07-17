@@ -29,7 +29,7 @@ const FEATURES: SecurityFeature[] = [
   { icon: <EyeOff size={14} />, label: 'Observe Mode Isolation', description: 'Only owner/allowlisted messages recorded in shared channels — prevents context poisoning', layer: 'Auth' },
 ]
 
-const CODE_BASE = 'https://github.com/kirodotdev-labs/kiroclaw/blob/main'
+const CODE_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main'
 
 /* ── Layer color mapping ── */
 function layerColor(layer: string): 'ok' | 'aim' | 'warn' {
@@ -89,7 +89,7 @@ export function SecurityPanel() {
         <div>
           <div className="text-[13px] font-semibold text-text-strong">Data Classification Notice</div>
           <div className="text-[12px] text-muted mt-1 leading-relaxed">
-            Do not enter highly sensitive or restricted data into KiroClaw. Follow your organization's data handling policy when deciding what content to share with the agent.
+            Do not enter highly sensitive or restricted data into KiroCrew. Follow your organization's data handling policy when deciding what content to share with the agent.
           </div>
         </div>
       </div>
@@ -98,7 +98,7 @@ export function SecurityPanel() {
       <SettingsSection title="Live Security Posture">
         <SettingsCard>
           <StatusRow icon={<Lock size={14} />} label="Process Sandbox" value="Standard" variant="ok"
-            href={`${CODE_BASE}/src/kiro_claw/sandbox.py`} />
+            href={`${CODE_BASE}/src/kiro_crew/sandbox.py`} />
           <StatusRow
             icon={yolo ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />}
             label="Tool Approval"
@@ -106,7 +106,7 @@ export function SecurityPanel() {
             variant={yolo ? 'err' : 'ok'}
           />
           <StatusRow icon={<Fingerprint size={14} />} label="Dashboard Auth" value="Token + IP-pinned" variant="ok"
-            href={`${CODE_BASE}/src/kiro_claw/dashboard/token_auth.py`} />
+            href={`${CODE_BASE}/src/kiro_crew/dashboard/token_auth.py`} />
           <StatusRow icon={<Terminal size={14} />}
             label="Denied Commands"
             value={stats ? `${stats.denied_commands + stats.suspicious_patterns} patterns` : '...'}
@@ -117,13 +117,13 @@ export function SecurityPanel() {
             label="Input Validation"
             value={stats ? `${stats.tool_schemas} tool schemas` : '...'}
             variant="ok"
-            href={`${CODE_BASE}/src/kiro_claw/validation.py`}
+            href={`${CODE_BASE}/src/kiro_crew/validation.py`}
           />
           <StatusRow icon={<KeyRound size={14} />}
             label="Output Redaction"
             value={stats ? `${stats.redaction_paths} output paths` : '...'}
             variant="ok"
-            href={`${CODE_BASE}/src/kiro_claw/security.py`}
+            href={`${CODE_BASE}/src/kiro_crew/security.py`}
           />
         </SettingsCard>
       </SettingsSection>
@@ -132,7 +132,7 @@ export function SecurityPanel() {
       <SettingsSection title="Defense-in-Depth Architecture">
         <SettingsCard>
           <div className="text-[12px] text-muted mb-3 leading-relaxed">
-            KiroClaw implements 6 security layers. Each layer operates independently — an attacker must bypass all layers simultaneously to succeed.
+            KiroCrew implements 6 security layers. Each layer operates independently — an attacker must bypass all layers simultaneously to succeed.
           </div>
           <div className="divide-y divide-border">
             {FEATURES.map(f => <FeatureRow key={f.label} feature={f} />)}

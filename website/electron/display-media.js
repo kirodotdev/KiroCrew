@@ -1,4 +1,4 @@
-// Screen-share request handling for the KiroClaw Electron app.
+// Screen-share request handling for the KiroCrew Electron app.
 //
 // Why this exists: in a browser, navigator.mediaDevices.getDisplayMedia() shows
 // the OS picker natively. In Electron (>= 20) the renderer's call is REJECTED

@@ -1,19 +1,19 @@
 // Helpers for Remote Tunnel mode: build the command executed on the remote
-// dev desktop over SSH to fetch a KiroClaw dashboard token.
+// dev desktop over SSH to fetch a KiroCrew dashboard token.
 //
 // Split out from main.js so the shell-construction logic can be unit-tested
 // without spinning up Electron.
 
-const DEFAULT_REMOTE_BIN = "~/.local/bin/kiroclaw";
+const DEFAULT_REMOTE_BIN = "~/.local/bin/kirocrew";
 const DEFAULT_REMOTE_PATH = "~/.toolbox/bin:/usr/bin:/bin";
 
 // Non-interactive SSH shells don't source ~/.zshrc, so PATH won't include
 // `~/.toolbox/bin`. Each candidate is a full path so the remote shell can
 // exec it directly without relying on PATH.
 const REMOTE_BIN_CANDIDATES = [
-  "~/.toolbox/bin/kiroclaw",           // toolbox install (recommended per wiki)
-  "~/.local/bin/kiroclaw",             // install.sh / source install
-  "~/.kiroclaw-app/.venv/bin/kiroclaw", // one-liner installer venv
+  "~/.toolbox/bin/kirocrew",           // toolbox install (recommended per wiki)
+  "~/.local/bin/kirocrew",             // install.sh / source install
+  "~/.kirocrew-app/.venv/bin/kirocrew", // one-liner installer venv
 ];
 
 // Build a shell snippet that tries each candidate path in order and execs the
@@ -25,7 +25,7 @@ const REMOTE_BIN_CANDIDATES = [
 // and uses $HOME expansion instead — see buildRemoteTokenCommand().
 function buildCandidateTokenCommand(candidates, { port, remotePath } = {}) {
   const pathStr = remotePath || DEFAULT_REMOTE_PATH;
-  const portExport = port ? ` KIROCLAW_PORT=${port}` : "";
+  const portExport = port ? ` KIROCREW_PORT=${port}` : "";
   const expanded = candidates.join(" ");
   return [
     `export PATH=${pathStr}${portExport};`,
@@ -34,7 +34,7 @@ function buildCandidateTokenCommand(candidates, { port, remotePath } = {}) {
     '    exec "$b" token;',
     '  fi;',
     'done;',
-    `echo "kiroclaw binary not found in any of: ${candidates.join(", ")}" >&2;`,
+    `echo "kirocrew binary not found in any of: ${candidates.join(", ")}" >&2;`,
     'exit 127',
   ].join(" ");
 }
@@ -46,7 +46,7 @@ function buildCandidateTokenCommand(candidates, { port, remotePath } = {}) {
 function buildRemoteTokenCommand(binPath, options = {}) {
   const { port, remotePath, candidates = REMOTE_BIN_CANDIDATES } = options;
   const pathStr = remotePath || DEFAULT_REMOTE_PATH;
-  const portExport = port ? ` KIROCLAW_PORT=${port}` : "";
+  const portExport = port ? ` KIROCREW_PORT=${port}` : "";
   if (!binPath || binPath === DEFAULT_REMOTE_BIN) {
     return buildCandidateTokenCommand(candidates, { port, remotePath });
   }
@@ -59,7 +59,7 @@ function buildRemoteTokenCommand(binPath, options = {}) {
   return `export PATH="${expandedPath}"${portExport}; "${expanded}" token`;
 }
 
-// Extract the JWT from a `kiroclaw token` URL. The command prints:
+// Extract the JWT from a `kirocrew token` URL. The command prints:
 //   http://localhost:5476?token=eyJ...
 // or in some configurations `https://.../?token=...&foo=bar` — match either.
 function parseTokenFromStdout(stdout) {

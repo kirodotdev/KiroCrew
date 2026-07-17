@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "displayName": "Oncall Watchtower",
   "description": "Monitor tickets, pipelines, and alarms for your on-call rotation",
-  "author": "kiroclaw",
+  "author": "kirocrew",
   "tags": ["oncall", "monitoring"],
   "agents": ["agents/ticket-analyst.json"],
   "skills": ["skills/oncall-runbook"],

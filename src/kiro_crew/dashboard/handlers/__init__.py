@@ -1,0 +1,480 @@
+"""Non-chat HTTP handlers — status, system, cron, lessons, spawn, logs, SSE.
+
+System metrics (CPU, memory, network, disk) are in ``handlers_system.py``.
+This module re-exports ``api_status`` and ``api_system`` for backward compat.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+# Imports accessed by submodules via late-binding (_h.X pattern)
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path  # noqa: F401
+from kiro_crew.dashboard.handlers_system import (  # noqa: F401
+    api_compliance_yolo_status,
+    api_midway_ttl,
+    api_status,
+    api_system,
+)
+from kiro_crew.dashboard.origin import is_loopback  # noqa: F401
+from kiro_crew.security import (  # noqa: F401
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
+from kiro_crew.session import _sync_kill_provider  # noqa: F401
+
+
+def sel():
+    """Dynamic sel() that always resolves from kiro_crew.sel for test patching."""
+    from kiro_crew.sel import sel as _s
+    return _s()
+
+
+logger = logging.getLogger(__name__)
+
+
+# ── Cron & Lessons (extracted to handlers/cron.py) ──
+from kiro_crew.dashboard.cron_inject import inject_cron_result_to_dashboard  # noqa: E402, F401
+
+# ── Memory (extracted to handlers/memory.py) ──
+from kiro_crew.dashboard.handlers._shared import (  # noqa: E402, F401
+    _blocks_reads_session,
+    _get_active_workspace,
+    _get_lessons,
+    _get_memory,
+    _get_skills,
+    _is_restricted_session,
+    _resolve_aim_skill_path,
+)
+
+# ── Agents & Themes (extracted to handlers/agents.py) ──
+from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
+    _CSS_VALUE_ALLOWED_RE,
+    _THEME_CSS_VARS_SET,
+    _auto_install_agent,
+    _find_agent_config,
+    _friendly_aim_error,
+    _get_config_lock,
+    _installed_agent_config,
+    _run_aim,
+    _sanitize_css_value,
+    _slugify_theme_name,
+    _strip_to_allowed_vars,
+    _validate_theme_data,
+    api_agent_config,
+    api_agent_detail,
+    api_agent_metadata_delete,
+    api_agent_metadata_get,
+    api_agent_metadata_put,
+    api_agents_installed,
+    api_agents_rescan,
+    api_aim_agents_install,
+    api_aim_agents_list,
+    api_aim_agents_uninstall,
+    api_aim_mcp_install,
+    api_aim_mcp_list,
+    api_aim_mcp_registry,
+    api_aim_mcp_uninstall,
+    api_aim_skills_install,
+    api_aim_skills_list,
+    api_aim_skills_uninstall,
+    api_aim_update,
+    api_cc_aim_missing,
+    api_cc_aim_sync,
+    api_config_schema,
+    api_default_agent,
+    api_effort_levels,
+    api_kirocrew_agent_delete,
+    api_kirocrew_agent_update,
+    api_kirocrew_agents,
+    api_kirocrew_agents_create,
+    api_kirocrew_agents_sync,
+    api_models,
+    api_slash_commands,
+    api_theme_detail,
+    api_themes,
+    api_themes_create,
+)
+from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
+    api_cron_ack,
+    api_cron_batch_delete,
+    api_cron_delete,
+    api_cron_enable,
+    api_cron_history,
+    api_cron_history_all,
+    api_cron_history_detail,
+    api_cron_run,
+    api_cron_to_chat,
+    api_cron_update,
+    api_crons,
+    api_crons_create,
+    api_lessons,
+    api_lessons_create,
+    api_lessons_delete,
+)
+
+# ── Files & Workspaces (extracted to handlers/files.py) ──
+from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
+    _validate_dashboard_path,
+    _write_file_restricted,
+    api_browse_dirs,
+    api_browse_files,
+    api_dashboard_config,
+    api_file_diff,
+    api_file_download,
+    api_file_raw,
+    api_file_read,
+    api_file_search,
+    api_file_watch,
+    api_file_write,
+    api_outbox_download,
+    api_outbox_list,
+    api_outbox_notify,
+    api_reveal_path,
+    api_screenshot,
+    api_slack_upload_file,
+    api_upload,
+    api_upload_file,
+    api_workspaces,
+    api_workspaces_create,
+    api_workspaces_delete,
+    api_workspaces_update,
+)
+
+# ── Hooks (extracted to handlers/hooks.py) ──
+from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
+    _get_hook_store,
+    _load_hook_context,
+    _run_hook_agent,
+    _run_hook_inner,
+    _verify_hook_token,
+    api_hook_detail,
+    api_hook_test,
+    api_hook_toggle,
+    api_hooks,
+    api_hooks_agent,
+    api_hooks_create,
+    api_kiro_hooks,
+)
+
+# ── MCP (extracted to handlers/mcp.py) ──
+from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
+    _bg_mcp_probe,
+    _sync_mcp_to_agent,
+    api_mcp_active,
+    api_mcp_apply,
+    api_mcp_gateway_enable,
+    api_mcp_gateway_metrics,
+    api_mcp_gateway_servers,
+    api_mcp_gateway_set_poolable,
+    api_mcp_gateway_status,
+    api_mcp_probe,
+    api_mcp_probe_cached,
+    api_mcp_remove,
+    api_mcp_server_detail,
+    api_mcp_servers,
+    api_mcp_sync,
+    api_mcp_toggle,
+    api_mcp_toggle_all,
+    api_mcp_toggle_tool,
+)
+from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
+    _get_vector_store,
+    _redact_memory_field,
+    _set_migrated,
+    api_memory_consolidate,
+    api_memory_context_preview,
+    api_memory_disable_embeddings,
+    api_memory_embedding_status,
+    api_memory_enable_embeddings,
+    api_memory_episodic_delete,
+    api_memory_episodic_list,
+    api_memory_episodic_search,
+    api_memory_events,
+    api_memory_graph,
+    api_memory_history,
+    api_memory_import,
+    api_memory_migrate,
+    api_memory_observability,
+    api_memory_preferences,
+    api_memory_projects,
+    api_memory_promote,
+    api_memory_semantic,
+    api_memory_semantic_delete,
+    api_memory_semantic_write,
+    api_memory_settings,
+    api_memory_stats,
+)
+
+# ── Messaging (extracted to handlers/messaging.py) ──
+from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
+    _redact,
+    _resolve_session_target,
+    _sanitize_blocks,
+    api_browser_auth_retry,
+    api_browser_config_get,
+    api_browser_config_save,
+    api_browser_event,
+    api_browser_frame,
+    api_browser_pump_audit,
+    api_delete_message,
+    api_notification_ack,
+    api_notification_delete,
+    api_notification_unack,
+    api_notifications,
+    api_notifications_ack_all,
+    api_notifications_clear,
+    api_send_message,
+    api_slack_config_get,
+    api_slack_config_save,
+    api_slack_manifest,
+    api_slack_pins,
+    api_slack_profile,
+    api_slack_reactions,
+    api_spawn,
+    api_spawn_clear,
+    api_spawn_delete,
+    api_spawn_list,
+    api_spawn_status,
+)
+from kiro_crew.dashboard.handlers.mwinit import (  # noqa: E402, F401
+    api_mwinit_ws,
+)
+from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
+    MAX_PROMPT_BYTES,
+    _extract_sop_description,
+    _find_prompt,
+    _latest_aim_event_dir,
+    _redact_prompt,
+    api_prompt_detail,
+    api_prompts,
+    api_skill_detail,
+    api_skill_file,
+    api_skill_tree,
+    api_skills,
+    api_skills_create,
+)
+
+# ── Sessions (extracted to handlers/sessions.py) ──
+from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
+    _SHUTDOWN_TIMEOUT_SECS,
+    _fetch_usage_bg,
+    _parse_usage,
+    _remove_slot_for_history_key,
+    _reset_all_sessions,
+    api_approval_resolve,
+    api_approvals,
+    api_session_archive_list,
+    api_session_archive_read,
+    api_session_delete,
+    api_session_detail,
+    api_session_keepalive,
+    api_session_tool_policy,
+    api_sessions,
+    api_sessions_clear,
+    api_sessions_context,
+    api_sessions_health,
+    api_sessions_restart,
+    api_sessions_search,
+    api_sessions_usage,
+)
+
+# ── Side conversation (extracted to handlers/side.py) ──
+from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
+    api_side_close,
+    api_side_open,
+    api_side_turn,
+)
+
+# ── Task Runner (extracted to handlers/taskrunner.py) ──
+from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401
+    _run_refine,
+    api_taskrunner_cancel,
+    api_taskrunner_delete,
+    api_taskrunner_execute_plan,
+    api_taskrunner_from_chat,
+    api_taskrunner_pause,
+    api_taskrunner_plan,
+    api_taskrunner_plan_cancel,
+    api_taskrunner_plan_context,
+    api_taskrunner_refine,
+    api_taskrunner_refine_answer,
+    api_taskrunner_refine_cancel,
+    api_taskrunner_refine_status,
+    api_taskrunner_rename,
+    api_taskrunner_retry,
+    api_taskrunner_start,
+    api_taskrunner_status,
+    api_taskrunner_to_chat,
+    api_taskrunner_update_plan,
+    api_taskrunner_update_task,
+)
+from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
+    api_telemetry_startup,
+)
+from kiro_crew.dashboard.handlers.terminal import (  # noqa: E402, F401
+    api_terminal_create,
+    api_terminal_delete,
+    api_terminal_list,
+    api_terminal_ws,
+    reap_orphaned_terminals,
+)
+
+# ── Updates & Logs (extracted to handlers/updates.py) ──
+# NOTE: api_stream passes update_available= to status_snapshot (see updates.py)
+from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
+    _UPDATE_CHECK_INTERVAL,
+    _do_update_check,
+    _log_ring,
+    _QueueLogHandler,
+    _RingLogHandler,
+    _update_info,
+    _version_tuple,
+    api_changelog,
+    api_log_level,
+    api_log_level_get,
+    api_logs,
+    api_stream,
+    api_update_apply,
+    api_update_auto,
+    api_update_cancel,
+    api_update_check,
+    api_update_simulate,
+    get_update_info,
+    install_log_ring_handler,
+)
+from kiro_crew.dashboard.handlers.usage import (  # noqa: E402, F401
+    api_kiro_usage,
+    api_usage,
+)
+
+# ── Prompts & Skills (extracted to handlers/prompts.py) ──
+
+
+_PROMPT_CACHE_TTL = 5.0  # seconds
+_prompt_cache: list[dict[str, Any]] | None = None
+_prompt_cache_ts: float = 0
+
+
+def _list_aim_prompts() -> list[dict[str, Any]]:
+    """Discover agent SOPs from installed AIM packages and user prompts."""
+    global _prompt_cache, _prompt_cache_ts  # noqa: PLW0603
+    now = time.monotonic()
+    if _prompt_cache is not None and now - _prompt_cache_ts < _PROMPT_CACHE_TTL:
+        return [dict(p) for p in _prompt_cache]
+
+    aim_dir = Path.home() / ".aim" / "packages"
+    result: list[dict[str, Any]] = []
+
+    def _collect(pkg_dir: Path) -> bool:
+        """Append SOPs from *pkg_dir*. Returns True if it looked like an AIM package."""
+        event_dir = _latest_aim_event_dir(pkg_dir)
+        # eventId-* layout (published) OR direct agent-sops/ (aim install --local)
+        sops_dir = (event_dir / "agent-sops") if event_dir else (pkg_dir / "agent-sops")
+        if not sops_dir.is_dir():
+            return event_dir is not None
+        for sop_file in sorted(sops_dir.rglob("*.sop.md")):
+            try:
+                resolved = str(sop_file.resolve())
+            except OSError:
+                continue
+            if is_sensitive_path(resolved):
+                logger.debug("Skipping sensitive path: %s", sop_file)
+                continue
+            name = sop_file.stem.removesuffix(".sop")
+            result.append({
+                "name": name,
+                "fullName": f"agent-sop:{name}",
+                "description": _extract_sop_description(sop_file),
+                "path": resolved,
+                "package": pkg_dir.name,
+                "source": "aim",
+            })
+        return True
+
+    if aim_dir.is_dir():
+        for pkg_dir in sorted(aim_dir.iterdir()):
+            if not pkg_dir.is_dir() or pkg_dir.name.startswith("."):
+                continue
+            try:
+                if not _collect(pkg_dir):
+                    # Namespace dir (e.g. ~/.aim/packages/local/): descend one level.
+                    for child in sorted(pkg_dir.iterdir()):
+                        if child.is_dir() and not child.name.startswith("."):
+                            try:
+                                _collect(child)
+                            except OSError:
+                                logger.debug("Skipping unreadable AIM package: %s", child)
+            except OSError:
+                logger.debug("Skipping unreadable AIM package: %s", pkg_dir)
+                continue
+    # Also scan ~/.kiro/prompts/ for user-created prompts
+    home = Path.home()
+    prompt_dirs: list[tuple[Path, str]] = [(home / ".kiro" / "prompts", "global")]
+    from kiro_crew.agent import _project_dir
+
+    proj = _project_dir()
+    if proj:
+        prompt_dirs.append((proj / ".kiro" / "prompts", "local"))
+    for prompts_dir, src in prompt_dirs:
+        if not prompts_dir.is_dir():
+            continue
+        for f in sorted(prompts_dir.glob("*.md")):
+            result.append({
+                "name": f.stem,
+                "fullName": f.stem,
+                "description": _extract_sop_description(f),
+                "path": str(f),
+                "package": "",
+                "source": src,
+            })
+    _prompt_cache = result
+    _prompt_cache_ts = now
+    return [dict(p) for p in result]
+
+
+# ── Core (extracted to handlers/core.py) ──
+from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
+    _DIST_DIR,
+    _STATIC_DIR,
+    _build_stt_install_script,
+    _find_suitable_python,
+    _is_al2023,
+    _stt_prereq_commands,
+    api_app_token,
+    api_branding,
+    api_health,
+    api_kirocrew_config,
+    api_kirocrew_config_patch,
+    api_logout,
+    api_security_stats,
+    api_sel_events,
+    api_sel_verify,
+    api_session_agent_result,
+    api_session_agent_stream,
+    api_session_agents_list,
+    api_shutdown,
+    api_stt_config,
+    api_stt_install,
+    api_stt_transcribe,
+    api_theme_boot,
+    api_theme_config,
+    api_token_local,
+    index,
+    logo,
+    pwa_file,
+)
+from kiro_crew.dashboard.handlers.optimizer import (  # noqa: E402, F401
+    handle_optimize,
+)
+
+# ── Portability (export/import as zip) ──
+from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
+    api_portability_export,
+    api_portability_import,
+    api_portability_preview,
+)

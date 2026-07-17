@@ -28,4 +28,4 @@ export const SCENE_LAYOUT_SCALE = 3
 /** Canvas pixel-buffer multiplier — sharp on HiDPI screens */
 export const SCENE_SCALE = SCENE_LAYOUT_SCALE * Math.min(Math.ceil(window.devicePixelRatio ?? 1), 2)
 
-export const POPOUT_CHANNEL = 'kiroclaw-worlds-popout'
+export const POPOUT_CHANNEL = 'kirocrew-worlds-popout'

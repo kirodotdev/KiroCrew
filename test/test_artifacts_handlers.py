@@ -1,4 +1,4 @@
-"""Tests for :mod:`kiro_claw.dashboard.handlers.artifacts`.
+"""Tests for :mod:`kiro_crew.dashboard.handlers.artifacts`.
 
 Uses MagicMock requests (matching the test_dashboard_cron_channel.py pattern)
 plus a real :class:`ArtifactStore` rooted at a tmp dir for end-to-end coverage.
@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw import artifacts as art_mod
-from kiro_claw.artifacts import ArtifactStore
-from kiro_claw.dashboard.handlers.artifacts import (
+from kiro_crew import artifacts as art_mod
+from kiro_crew.artifacts import ArtifactStore
+from kiro_crew.dashboard.handlers.artifacts import (
     _MAX_BODY_BYTES,
     api_artifact_delete,
     api_artifact_detail,
@@ -70,7 +70,7 @@ def _request(
 @pytest.fixture
 def patch_restricted(monkeypatch):
     """Make _is_restricted_session read req.app['_restricted_session']."""
-    from kiro_claw.dashboard.handlers import artifacts as art_handlers
+    from kiro_crew.dashboard.handlers import artifacts as art_handlers
 
     def _stub(_state, req) -> bool:
         return req.app.get("_restricted_session", False)
@@ -259,7 +259,7 @@ class TestCreate:
         # branch as ArtifactAlreadyExistsError, returning a misleading 409. Now
         # the two are distinguished — duplicates are 409, all other store
         # errors are 500.
-        from kiro_claw.artifacts import ArtifactError
+        from kiro_crew.artifacts import ArtifactError
 
         def _boom(*_a, **_kw):
             raise ArtifactError("refusing to write sensitive path: ~/.aws/credentials")
@@ -489,7 +489,7 @@ class TestUpdate:
         # sensitive-path refusal from _write_text) used to escape the handler
         # and surface as an unhandled 500 with no audit trail. Now caught
         # explicitly and audited as an error.
-        from kiro_claw.artifacts import ArtifactError
+        from kiro_crew.artifacts import ArtifactError
 
         isolated_store.create(name="x", content="v1", slug="x")
 
@@ -529,7 +529,7 @@ class TestDelete:
         # Regression: a base ArtifactError raised by store.delete() (e.g. a
         # future store-level sensitive-path or filesystem refusal) used to
         # escape the handler and 500 silently. Now caught and audited.
-        from kiro_claw.artifacts import ArtifactError
+        from kiro_crew.artifacts import ArtifactError
 
         isolated_store.create(name="x", content="a", slug="x")
 
@@ -592,7 +592,7 @@ class TestRecordEvent:
     async def test_referenced_event_recorded_with_metadata(
         self, isolated_store, patch_restricted
     ) -> None:
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         resp = await api_artifact_record_event(
@@ -623,7 +623,7 @@ class TestRecordEvent:
     async def test_mcp_actor_inferred_from_internal_secret(
         self, isolated_store, patch_restricted
     ) -> None:
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         resp = await api_artifact_record_event(
@@ -642,7 +642,7 @@ class TestRecordEvent:
         # for non-chat-scoped requests. That literal isn't a real slot key
         # and would mislead the activity timeline if recorded — the handler
         # explicitly drops it. Same rule as the create/update endpoints.
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         resp = await api_artifact_record_event(
@@ -658,7 +658,7 @@ class TestRecordEvent:
 
     @pytest.mark.asyncio
     async def test_real_session_key_recorded(self, isolated_store, patch_restricted) -> None:
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         resp = await api_artifact_record_event(
@@ -675,7 +675,7 @@ class TestRecordEvent:
     async def test_rejects_content_mutating_event_types(
         self, isolated_store, patch_restricted
     ) -> None:
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         for bad_type in ("created", "edited", "iterated", "reverted"):
@@ -689,7 +689,7 @@ class TestRecordEvent:
 
     @pytest.mark.asyncio
     async def test_unknown_slug_returns_404(self, isolated_store, patch_restricted) -> None:
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         resp = await api_artifact_record_event(
             _request(
@@ -704,7 +704,7 @@ class TestRecordEvent:
         # Appending events mutates meta.json, so a restricted session must
         # be rejected with 403 like the other mutation endpoints — it must
         # not be able to flood an artifact's event log.
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         resp = await api_artifact_record_event(
@@ -726,7 +726,7 @@ class TestRecordEvent:
         # When the session already has a CUD event, the impression is
         # suppressed: the handler must return suppressed:true with a null
         # event, NOT a stale prior event echoed as if it were recorded.
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         isolated_store.update(
@@ -757,7 +757,7 @@ class TestRecordEvent:
         # the frontend sessionStorage debounce, so the same chat session
         # re-POSTs a `referenced` for the same impression. The store must
         # record it once — the second POST returns suppressed:true.
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         isolated_store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         body = {"type": "referenced", "metadata": {"message_ts": "1780036091.1", "widget_index": 0}}
@@ -781,7 +781,7 @@ class TestRecordEvent:
         # future refactor that accidentally routes referenced events
         # through update() (which DOES bump on content change) doesn't
         # silently turn impression-logging into a version-churn engine.
-        from kiro_claw.dashboard.handlers.artifacts import api_artifact_record_event
+        from kiro_crew.dashboard.handlers.artifacts import api_artifact_record_event
 
         art = isolated_store.create(name="X", content="<div>orig</div>", slug="x", kind="widget")
         original_version = art.version

@@ -8,7 +8,7 @@ import { Input, Btn } from './ui'
 import { SourceBadge } from './SourceBadge'
 import Clickable from './Clickable'
 
-export interface KiroClawAgent {
+export interface KiroCrewAgent {
   name: string
   kiro_agent: string
   workspace: string
@@ -21,7 +21,7 @@ export interface KiroClawAgent {
 }
 
 interface Props {
-  agents: KiroClawAgent[]
+  agents: KiroCrewAgent[]
   defaultAgent: string
   value: string
   onChange: (name: string, projectPath?: string) => void
@@ -31,7 +31,7 @@ interface Props {
 
 // ── Modal for switching to a different project ──
 function SwitchProjectModal({ agent, onSwitch, onCancel }: {
-  agent: KiroClawAgent
+  agent: KiroCrewAgent
   onSwitch: () => void
   onCancel: () => void
 }) {
@@ -59,7 +59,7 @@ function SwitchProjectModal({ agent, onSwitch, onCancel }: {
 export default function AgentSelector({ agents, defaultAgent, value, onChange, activeProjectPath }: Props) {
   const provider = useProvider()
   const btnRef = useRef<HTMLButtonElement>(null)
-  const [pendingAgent, setPendingAgent] = useState<KiroClawAgent | null>(null)
+  const [pendingAgent, setPendingAgent] = useState<KiroCrewAgent | null>(null)
 
   // Filter agents: match name OR project folder name
   const { open, setOpen, filter, setFilter, dropdownRef, inputRef, filtered: rawFiltered } = useFilteredDropdown(agents)
@@ -99,7 +99,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, a
     closeToTrigger,
   })
 
-  const handleSelect = (a: KiroClawAgent) => {
+  const handleSelect = (a: KiroCrewAgent) => {
     const isOtherProject = a.source === 'project' && a.project_path && a.project_path !== activeProjectPath
     if (isOtherProject) {
       setPendingAgent(a)

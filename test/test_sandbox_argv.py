@@ -1,4 +1,4 @@
-"""Additional tests for kiro_claw.sandbox — wrap_argv, profiles, env scrubbing."""
+"""Additional tests for kiro_crew.sandbox — wrap_argv, profiles, env scrubbing."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.sandbox import (
+from kiro_crew.sandbox import (
     _CC_FILES,
     _SENSITIVE_ENV_PREFIXES,
     _STRICT_DIRS,
@@ -44,31 +44,31 @@ class TestDetectBackend:
         result = detect_backend(config_mode="off")
         assert result == "none"
 
-    @patch("kiro_claw.sandbox._probe_unshare", return_value=False)
-    @patch("kiro_claw.sandbox._probe_sandbox_exec", return_value=False)
+    @patch("kiro_crew.sandbox._probe_unshare", return_value=False)
+    @patch("kiro_crew.sandbox._probe_sandbox_exec", return_value=False)
     def test_no_backend_available(self, mock_sb, mock_ns):
         result = detect_backend(config_mode="auto")
         assert result == "none"
 
-    @patch("kiro_claw.sandbox._probe_unshare", return_value=True)
+    @patch("kiro_crew.sandbox._probe_unshare", return_value=True)
     def test_linux_namespace(self, mock_ns):
         result = detect_backend(config_mode="auto")
         assert result == "namespace"
 
-    @patch("kiro_claw.sandbox._probe_unshare", return_value=False)
-    @patch("kiro_claw.sandbox._probe_sandbox_exec", return_value=True)
+    @patch("kiro_crew.sandbox._probe_unshare", return_value=False)
+    @patch("kiro_crew.sandbox._probe_sandbox_exec", return_value=True)
     def test_macos_sandbox_exec(self, mock_sb, mock_ns):
         result = detect_backend(config_mode="auto")
         assert result == "sandbox-exec"
 
-    @patch("kiro_claw.sandbox._probe_unshare", return_value=True)
+    @patch("kiro_crew.sandbox._probe_unshare", return_value=True)
     def test_caches_result(self, mock_ns):
         detect_backend(config_mode="auto")
         detect_backend(config_mode="auto")
         # Only probed once due to caching
         assert mock_ns.call_count == 1
 
-    @patch("kiro_claw.sandbox._probe_unshare", return_value=True)
+    @patch("kiro_crew.sandbox._probe_unshare", return_value=True)
     def test_invalidates_on_mode_change(self, mock_ns):
         detect_backend(config_mode="auto")
         detect_backend(config_mode="off")
@@ -77,8 +77,8 @@ class TestDetectBackend:
 
 
 class TestWrapArgv:
-    @patch("kiro_claw.sandbox._allow_unsandboxed_exec", return_value=True)
-    @patch("kiro_claw.sandbox.detect_backend", return_value="none")
+    @patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True)
+    @patch("kiro_crew.sandbox.detect_backend", return_value="none")
     def test_no_sandbox_returns_original(self, mock_detect, mock_allow):
         argv = ["kiro-cli", "acp"]
         result, cleanup = wrap_argv(argv, mode="auto")
@@ -91,15 +91,15 @@ class TestWrapArgv:
         assert result == argv
         assert cleanup is None
 
-    @patch("kiro_claw.sandbox.detect_backend", return_value="namespace")
-    @patch("kiro_claw.sandbox.namespace_argv")
+    @patch("kiro_crew.sandbox.detect_backend", return_value="namespace")
+    @patch("kiro_crew.sandbox.namespace_argv")
     def test_namespace_backend(self, mock_ns_argv, mock_detect):
         mock_ns_argv.return_value = [sys.executable, "/tmp/launcher.py", "kiro-cli"]
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         mock_ns_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
 
-    @patch("kiro_claw.sandbox.detect_backend", return_value="sandbox-exec")
-    @patch("kiro_claw.sandbox.sandbox_exec_argv")
+    @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
+    @patch("kiro_crew.sandbox.sandbox_exec_argv")
     def test_sandbox_exec_backend(self, mock_sb_argv, mock_detect):
         mock_sb_argv.return_value = (["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli"], "/tmp/p.sb")
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
@@ -335,11 +335,11 @@ class TestSandboxExecArgv:
             if profile_path:
                 os.unlink(profile_path)
 
-    @patch.dict(os.environ, {"PYTHONPATH": "/opt/kiroclaw/site-packages", "PYTHONHOME": "/opt/py"})
+    @patch.dict(os.environ, {"PYTHONPATH": "/opt/kirocrew/site-packages", "PYTHONHOME": "/opt/py"})
     def test_strips_python_env_when_requested(self):
         # A foreign Python subprocess (kiro-cli's MCP servers, e.g. ord-mcp) must
-        # NOT inherit KiroClaw's PYTHONPATH/PYTHONHOME, or it prepends KiroClaw's
-        # site-packages to sys.path and imports KiroClaw's fastmcp/cryptography
+        # NOT inherit KiroCrew's PYTHONPATH/PYTHONHOME, or it prepends KiroCrew's
+        # site-packages to sys.path and imports KiroCrew's fastmcp/cryptography
         # instead of its own. strip_python_env=True unsets them.
         argv, profile_path = sandbox_exec_argv(
             ["kiro-cli", "acp"], "strict", strip_python_env=True
@@ -351,10 +351,10 @@ class TestSandboxExecArgv:
             if profile_path:
                 os.unlink(profile_path)
 
-    @patch.dict(os.environ, {"PYTHONPATH": "/opt/kiroclaw/site-packages", "PYTHONHOME": "/opt/py"})
+    @patch.dict(os.environ, {"PYTHONPATH": "/opt/kirocrew/site-packages", "PYTHONHOME": "/opt/py"})
     def test_preserves_python_env_by_default(self):
-        # KiroClaw's OWN sandboxed Python subprocesses (cron scripts, app
-        # backends, code-review workers) import kiro_claw via PYTHONPATH, so it
+        # KiroCrew's OWN sandboxed Python subprocesses (cron scripts, app
+        # backends, code-review workers) import kiro_crew via PYTHONPATH, so it
         # must be preserved when strip_python_env is not set (regression guard).
         argv, profile_path = sandbox_exec_argv(["python3", "worker.py"], "standard")
         try:
@@ -376,7 +376,7 @@ class TestSandboxExecArgv:
 
 
 class TestNamespaceArgv:
-    @patch("kiro_claw.sandbox._resolve_real_kiro_bin", return_value="/usr/local/bin/kiro-cli")
+    @patch("kiro_crew.sandbox._resolve_real_kiro_bin", return_value="/usr/local/bin/kiro-cli")
     def test_wraps_with_python_launcher(self, mock_resolve):
         result = namespace_argv(["kiro-cli", "acp"], "strict")
         assert result[0] == sys.executable
@@ -386,7 +386,7 @@ class TestNamespaceArgv:
         # Cleanup temp file
         os.unlink(result[1])
 
-    @patch("kiro_claw.sandbox._resolve_real_kiro_bin", return_value="/usr/local/bin/kiro-cli")
+    @patch("kiro_crew.sandbox._resolve_real_kiro_bin", return_value="/usr/local/bin/kiro-cli")
     def test_launcher_script_is_executable(self, mock_resolve):
         result = namespace_argv(["kiro-cli"], "strict")
         launcher_path = result[1]
@@ -436,14 +436,14 @@ class TestSandboxNoWarningWhenExpected:
     this preserves Mesh-2054's "don't spam on expected states" intent.
     """
 
-    @patch("kiro_claw.sandbox._allow_unsandboxed_exec", return_value=True)
-    @patch("kiro_claw.sandbox._allow_no_isolation", return_value=True)
-    @patch("kiro_claw.sandbox.detect_backend", return_value="none")
+    @patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True)
+    @patch("kiro_crew.sandbox._allow_no_isolation", return_value=True)
+    @patch("kiro_crew.sandbox.detect_backend", return_value="none")
     def test_no_sandbox_opted_in_logs_info_not_warning(self, mock_detect, mock_optin, mock_allow, caplog):
         import logging
         if hasattr(wrap_argv, "_warned"):
             del wrap_argv._warned  # type: ignore[attr-defined]
-        with caplog.at_level(logging.DEBUG, logger="kiro_claw.sandbox"):
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.sandbox"):
             wrap_argv(["kiro-cli", "acp"], mode="auto")
         warning_msgs = [r for r in caplog.records if r.levelno == logging.WARNING]
         info_msgs = [
@@ -459,43 +459,43 @@ class TestCleanupStaleSandboxProfiles:
 
     def test_removes_dead_pid_profile(self, tmp_path):
         """Profile file whose PID is dead gets removed."""
-        from kiro_claw.sandbox import cleanup_stale_sandbox_profiles
+        from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 
-        run_dir = tmp_path / ".kiroclaw" / "run"
+        run_dir = tmp_path / ".kirocrew" / "run"
         run_dir.mkdir(parents=True)
-        stale_file = run_dir / "kiroclaw_sandbox_99999_abc123.sb"
+        stale_file = run_dir / "kirocrew_sandbox_99999_abc123.sb"
         stale_file.write_text("(version 1)")
 
-        with patch("kiro_claw.sandbox.os.path.expanduser", return_value=str(tmp_path)):
-            with patch("kiro_claw.sandbox.os.kill", side_effect=OSError("No such process")):
+        with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
+            with patch("kiro_crew.sandbox.os.kill", side_effect=OSError("No such process")):
                 cleanup_stale_sandbox_profiles()
 
         assert not stale_file.exists()
 
     def test_preserves_live_pid_profile(self, tmp_path):
         """Profile file whose PID is alive (current process) is preserved."""
-        from kiro_claw.sandbox import cleanup_stale_sandbox_profiles
+        from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 
-        run_dir = tmp_path / ".kiroclaw" / "run"
+        run_dir = tmp_path / ".kirocrew" / "run"
         run_dir.mkdir(parents=True)
-        live_file = run_dir / f"kiroclaw_sandbox_{os.getpid()}_xyz789.sb"
+        live_file = run_dir / f"kirocrew_sandbox_{os.getpid()}_xyz789.sb"
         live_file.write_text("(version 1)")
 
-        with patch("kiro_claw.sandbox.os.path.expanduser", return_value=str(tmp_path)):
+        with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
             cleanup_stale_sandbox_profiles()
 
         assert live_file.exists()
 
     def test_ignores_non_sandbox_files(self, tmp_path):
-        """Files not matching kiroclaw_sandbox_*.sb pattern are left alone."""
-        from kiro_claw.sandbox import cleanup_stale_sandbox_profiles
+        """Files not matching kirocrew_sandbox_*.sb pattern are left alone."""
+        from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 
-        run_dir = tmp_path / ".kiroclaw" / "run"
+        run_dir = tmp_path / ".kirocrew" / "run"
         run_dir.mkdir(parents=True)
         other_file = run_dir / "something_else.txt"
         other_file.write_text("keep me")
 
-        with patch("kiro_claw.sandbox.os.path.expanduser", return_value=str(tmp_path)):
+        with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
             cleanup_stale_sandbox_profiles()
 
         assert other_file.exists()

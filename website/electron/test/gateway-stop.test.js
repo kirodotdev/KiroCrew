@@ -7,7 +7,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { postShutdown, stopGatewayGracefully, forceStopPort } = require("../gateway-stop");
 
-// Helper: temp KIROCLAW_HOME containing a .local_secret file.
+// Helper: temp KIROCREW_HOME containing a .local_secret file.
 function tmpHomeWithSecret(secret) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-stop-"));
   if (secret !== null) fs.writeFileSync(path.join(dir, ".local_secret"), secret);
@@ -60,7 +60,7 @@ test("postShutdown returns true on 200 with correct secret", async () => {
   const home = tmpHomeWithSecret("s3cr3t");
   const { server, port } = await startServer({ secret: "s3cr3t", status: 200 });
   try {
-    const ok = await postShutdown({ backendUrl: `http://127.0.0.1:${port}`, kiroclawHome: home });
+    const ok = await postShutdown({ backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home });
     assert.strictEqual(ok, true);
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
@@ -69,14 +69,14 @@ test("postShutdown returns false on 403 (wrong secret)", async () => {
   const home = tmpHomeWithSecret("wrong");
   const { server, port } = await startServer({ secret: "right", status: 200 });
   try {
-    const ok = await postShutdown({ backendUrl: `http://127.0.0.1:${port}`, kiroclawHome: home });
+    const ok = await postShutdown({ backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home });
     assert.strictEqual(ok, false);
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test("postShutdown returns false when no secret file exists", async () => {
   const home = tmpHomeWithSecret(null);
-  const ok = await postShutdown({ backendUrl: "http://127.0.0.1:1", kiroclawHome: home });
+  const ok = await postShutdown({ backendUrl: "http://127.0.0.1:1", kirocrewHome: home });
   assert.strictEqual(ok, false);
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -91,7 +91,7 @@ test("stopGatewayGracefully: happy path — endpoint exits process, no signal ne
   });
   try {
     await stopGatewayGracefully(proc, {
-      backendUrl: `http://127.0.0.1:${port}`, kiroclawHome: home, timeoutMs: 10000,
+      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, timeoutMs: 10000,
     });
     assert.notStrictEqual(proc.exitCode === null && proc.signalCode === null, true, "process should be gone");
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
@@ -104,7 +104,7 @@ test("stopGatewayGracefully: SIGTERM fallback when endpoint fails", async () => 
   const { server, port } = await startServer({ secret: "s3cr3t", status: 500 }); // endpoint fails
   try {
     await stopGatewayGracefully(proc, {
-      backendUrl: `http://127.0.0.1:${port}`, kiroclawHome: home, timeoutMs: 10000,
+      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, timeoutMs: 10000,
     });
     assert.strictEqual(proc.signalCode, "SIGTERM");
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
@@ -117,7 +117,7 @@ test("stopGatewayGracefully: SIGKILL fallback when SIGTERM ignored", async () =>
   const { server, port } = await startServer({ secret: "s3cr3t", status: 500 });
   try {
     await stopGatewayGracefully(proc, {
-      backendUrl: `http://127.0.0.1:${port}`, kiroclawHome: home, timeoutMs: 800,
+      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, timeoutMs: 800,
     });
     assert.strictEqual(proc.signalCode, "SIGKILL");
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
@@ -127,7 +127,7 @@ test("stopGatewayGracefully: no-op on already-dead process", async () => {
   const proc = spawnDummy({ ignoreSigterm: false });
   await new Promise((r) => { proc.once("exit", r); proc.kill("SIGKILL"); });
   // Should resolve immediately without throwing.
-  await stopGatewayGracefully(proc, { backendUrl: "http://127.0.0.1:1", kiroclawHome: "/nope", timeoutMs: 500 });
+  await stopGatewayGracefully(proc, { backendUrl: "http://127.0.0.1:1", kirocrewHome: "/nope", timeoutMs: 500 });
   assert.ok(true);
 });
 
@@ -135,7 +135,7 @@ test("stopGatewayGracefully: no-op on already-dead process", async () => {
 // Injectable deps so we exercise the verify-the-kill-worked logic without a
 // real OS process. `listenSeq` is a queue of lsof results returned on each
 // successive call, letting a test model "killed then gone" vs "never gone".
-function fakeDeps({ listenSeq, command = "python -m kiro_claw gateway", onKill = () => {} }) {
+function fakeDeps({ listenSeq, command = "python -m kiro_crew gateway", onKill = () => {} }) {
   let i = 0;
   const killed = [];
   return {
@@ -166,6 +166,20 @@ test("forceStopPort: killable owner frees the port (freed=true)", async () => {
   assert.deepStrictEqual(deps.killed, [[4242, "SIGKILL"]]);
 });
 
+test("forceStopPort: recognizes a legacy kiroclaw gateway (KiroClaw -> KiroCrew)", async () => {
+  // An upgraded host can have a leftover pre-rename `kiroclaw` gateway holding
+  // the port. It must be recognized as ours (killed), not treated as foreign.
+  const deps = fakeDeps({
+    listenSeq: [[4242], []],
+    command: "python -m kiro_claw gateway",
+  });
+  const r = await forceStopPort(7788, deps);
+  assert.strictEqual(r.killed, 1);
+  assert.strictEqual(r.freed, true);
+  assert.strictEqual(r.foreignHolder, false);
+  assert.deepStrictEqual(deps.killed, [[4242, "SIGKILL"]]);
+});
+
 test("forceStopPort: UNKILLABLE owner still holds port -> freed=false, survivors listed", async () => {
   // The regression case: SIGKILL is accepted but the process is in
   // uninterruptible sleep, so every subsequent lsof still shows it. We must
@@ -177,7 +191,7 @@ test("forceStopPort: UNKILLABLE owner still holds port -> freed=false, survivors
   assert.deepStrictEqual(r.survivors, [4242]);
 });
 
-test("forceStopPort: never signals a non-KiroClaw owner", async () => {
+test("forceStopPort: never signals a non-KiroCrew owner", async () => {
   const deps = fakeDeps({ listenSeq: [[999], [999]], command: "nginx: worker process" });
   const r = await forceStopPort(7788, deps);
   assert.strictEqual(r.killed, 0);
@@ -191,7 +205,7 @@ test("forceStopPort: never signals a non-KiroClaw owner", async () => {
 });
 
 test("forceStopPort: foreign owner that vanishes during verify reports freed", async () => {
-  // A non-KiroClaw owner we skip, but the port frees on its own before we finish
+  // A non-KiroCrew owner we skip, but the port frees on its own before we finish
   // (the other app exited). freed must reflect the real port state, not our kills.
   const deps = fakeDeps({ listenSeq: [[999], []], command: "nginx: worker process" });
   const r = await forceStopPort(7788, deps);
@@ -207,7 +221,7 @@ test("forceStopPort: freed reflects real port state even after killing our targe
   const seq = [[4242], [777]]; // ours dies, foreign 777 appears
   const deps = {
     getListenPids: async () => seq[Math.min(i++, seq.length - 1)],
-    getCommand: async () => "python -m kiro_claw gateway",
+    getCommand: async () => "python -m kiro_crew gateway",
     kill: () => {},
     sleep: async () => {},
     verifyTimeoutMs: 1000,

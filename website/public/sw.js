@@ -2,7 +2,7 @@
 // Network-first: always fetch from server, fall back to cache for offline shell.
 // Cache version updated at build time — forces re-cache on deploy.
 
-const CACHE = 'kiroclaw-' + Date.now()
+const CACHE = 'kirocrew-' + Date.now()
 const SHELL = ['/', '/index.html']
 
 self.addEventListener('install', e => {

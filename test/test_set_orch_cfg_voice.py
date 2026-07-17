@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_claw.slack import handler as handler_mod
-from kiro_claw.slack.handler import _vc, set_orch_cfg
+from kiro_crew.slack import handler as handler_mod
+from kiro_crew.slack.handler import _vc, set_orch_cfg
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +121,7 @@ def test_provider_typo_falls_back_to_polly_with_warning(tmp_path, monkeypatch, c
     import logging
 
     _cfg_file(tmp_path, monkeypatch, {"provider": "ploly"})
-    with caplog.at_level(logging.WARNING, logger="kiro_claw.slack.handler"):
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.handler"):
         set_orch_cfg(SimpleNamespace())
     assert _vc.provider == "polly"
     assert any(

@@ -789,8 +789,8 @@ function ChatSidebar({
   const pinned = useMemo(() => new Set(slots.filter(s => s.pinned).map(s => s.key)), [slots])
   // Ranks up to the configured count of sessions by recency (last_ts) for the sidebar tint —
   // see ../utils/recencyTint. Count = server-side dashboard.recent_tint_count (shared
-  // kiroclawConfig query); recomputes when the slots or the configured count change.
-  const { data: mcCfg } = useQuery({ queryKey: ['kiroclawConfig'], queryFn: () => api.kiroclawConfig() })
+  // kirocrewConfig query); recomputes when the slots or the configured count change.
+  const { data: mcCfg } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const recentTintCount = clampTintCount(mcCfg?.dashboard?.recent_tint_count)
   const recentRank = useMemo(() => computeRecentRank(slots, recentTintCount), [slots, recentTintCount])
 
@@ -1527,7 +1527,7 @@ function ChatSidebar({
               {isOut && <span className="text-accent" title="Popped out to a separate window"><ExternalLink size={10} /></span>}
               {s.slack_linked && <span className="text-[10px]" title="Linked to Slack"><Link size={10} /></span>}
               {s.clean_mode
-                ? <span className="text-accent" title="Clean — agent-only, no KiroClaw context or MCP"><Droplet size={10} /></span>
+                ? <span className="text-accent" title="Clean — agent-only, no KiroCrew context or MCP"><Droplet size={10} /></span>
                 : <>
                     {s.memory_mode === 'incognito' && <span className="text-muted" title="Incognito — no memory writes"><EyeOff size={10} /></span>}
                     {s.memory_mode === 'temporary' && <span className="text-aim" title="Temporary — no memory reads or writes"><VenetianMask size={10} /></span>}
@@ -2528,7 +2528,7 @@ function ChatSidebar({
                         <div className={`text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
                           <span className="truncate">{agentName || '\u00A0'}</span>
                           {s.clean_mode
-                            ? <span className="text-accent" title="Clean — agent-only, no KiroClaw context or MCP"><Droplet size={10} /></span>
+                            ? <span className="text-accent" title="Clean — agent-only, no KiroCrew context or MCP"><Droplet size={10} /></span>
                             : <>
                                 {s.memory_mode === 'incognito' && <span className="text-muted" title="Incognito — no memory writes"><EyeOff size={10} /></span>}
                                 {s.memory_mode === 'temporary' && <span className="text-aim" title="Temporary — no memory reads or writes"><VenetianMask size={10} /></span>}

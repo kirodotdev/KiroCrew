@@ -13,13 +13,13 @@ class TestSttReactionIndicator:
 
     async def test_reaction_added_and_removed_on_success(self):
         """Reaction is added before transcription and removed after."""
-        from kiro_claw.slack.events import _transcribe_with_reaction
+        from kiro_crew.slack.events import _transcribe_with_reaction
 
         slack = AsyncMock()
         orch = AsyncMock()
 
         with patch(
-            "kiro_claw.slack.events._transcribe_files",
+            "kiro_crew.slack.events._transcribe_files",
             new_callable=AsyncMock,
             return_value=["hello world"],
         ):
@@ -41,13 +41,13 @@ class TestSttReactionIndicator:
 
     async def test_reaction_removed_even_on_transcription_failure(self):
         """Reaction is removed in finally block even if transcription raises."""
-        from kiro_claw.slack.events import _transcribe_with_reaction
+        from kiro_crew.slack.events import _transcribe_with_reaction
 
         slack = AsyncMock()
         orch = AsyncMock()
 
         with patch(
-            "kiro_claw.slack.events._transcribe_files",
+            "kiro_crew.slack.events._transcribe_files",
             new_callable=AsyncMock,
             side_effect=RuntimeError("crash"),
         ):
@@ -65,14 +65,14 @@ class TestSttReactionIndicator:
 
     async def test_no_removal_if_add_reaction_fails(self):
         """If add_reaction fails, removal is skipped (flag stays False)."""
-        from kiro_claw.slack.events import _transcribe_with_reaction
+        from kiro_crew.slack.events import _transcribe_with_reaction
 
         slack = AsyncMock()
         slack.add_reaction = AsyncMock(side_effect=Exception("no perms"))
         orch = AsyncMock()
 
         with patch(
-            "kiro_claw.slack.events._transcribe_files",
+            "kiro_crew.slack.events._transcribe_files",
             new_callable=AsyncMock,
             return_value=[],
         ):

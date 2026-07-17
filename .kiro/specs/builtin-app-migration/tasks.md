@@ -2,7 +2,7 @@
 
 ## Overview
 
-Implement the two-phase graceful migration mechanism for builtin apps. Backend changes in Python (KiroClaw gateway), frontend changes in TypeScript/React (KiroClawWebsite).
+Implement the two-phase graceful migration mechanism for builtin apps. Backend changes in Python (KiroCrew gateway), frontend changes in TypeScript/React (KiroCrewWebsite).
 
 ## Tasks
 

@@ -4,7 +4,7 @@ Last Updated: 2026-07-13 (Initial spec: FileReader/SUPPORTED formats incl. `.org
 
 ## Overview
 
-The Knowledge Library is KiroClaw's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction/URL-fetch worker's ACP LLM turns and the local Ollama embedding endpoint.
+The Knowledge Library is KiroCrew's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction/URL-fetch worker's ACP LLM turns and the local Ollama embedding endpoint.
 
 ```
 files / uploads / artifacts / URLs
@@ -24,7 +24,7 @@ files / uploads / artifacts / URLs
 | `knowledge/folder_watcher.py` | `FolderWatcher` — recursive directory scan, per-file state, change/deletion detection |
 | `knowledge/llm_pool.py` | `LLMPool` / `Worker` / `AcpWorker` — bounded pool of long-lived, sweep-shielded ACP workers |
 | `knowledge/extractor.py` | `EntityExtractor` — LLM entity/relation extraction over the pool |
-| `knowledge/agent_fetch.py` | `fetch_url_content()` — agent-assisted URL fetch over the pool (tools opt-in via `KIROCLAW_KNOWLEDGE_FETCH_TOOLS`) |
+| `knowledge/agent_fetch.py` | `fetch_url_content()` — agent-assisted URL fetch over the pool (tools opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`) |
 | `knowledge/chunker.py` | `HeadingAwareChunker` — text/markdown/code/slide chunking |
 | `knowledge/embedder.py` | `OllamaEmbedder` — local embedding via Ollama |
 | `knowledge/store.py` | `KnowledgeStore` — SQLite schema, items/entities/graph, FTS5 sync |
@@ -34,7 +34,7 @@ files / uploads / artifacts / URLs
 | `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
 | `mcp_core.py` | `local_knowledge_search` MCP tool + cached store/embedder |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search) |
-| `agent.py:_install_knowledge_agent` | Installs the `kiroclaw-knowledge` kiro-cli agent used by the pool |
+| `agent.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
 
 ## Constants
 
@@ -44,7 +44,7 @@ files / uploads / artifacts / URLs
 | `DEFAULT_POOL_SIZE` | `3` | `llm_pool.py` | Worker count in a pool |
 | `DEFAULT_TIMEOUT` | `60.0` | `llm_pool.py` | Per-message worker timeout (extraction) |
 | `FETCH_TIMEOUT` | `120.0` | `llm_pool.py`, `agent_fetch.py` | URL-fetch worker timeout |
-| `AGENT_NAME` | `"kiroclaw-knowledge"` | `llm_pool.py` | kiro-cli agent the ACP worker drives |
+| `AGENT_NAME` | `"kirocrew-knowledge"` | `llm_pool.py` | kiro-cli agent the ACP worker drives |
 | `_VALID_SANDBOX_MODES` | `{auto, standard, strict, cc, off}` | `llm_pool.py` | Accepted `agent.sandbox` values |
 | `HARD_SKIP_DIRS` | `{.git, node_modules, __pycache__, .venv, venv}` | `folder_watcher.py` | Directories never walked |
 | `DEFAULT_MAX_FILES` | `5000` | `folder_watcher.py` | Per-source file cap (newest-first) |
@@ -102,8 +102,8 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 
 Both entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch_url_content`) acquire workers from a shared `LLMPool` — a provider-agnostic, bounded pool (`DEFAULT_POOL_SIZE` = 3) of **long-lived** ACP workers. A `Worker` ABC has two concrete paths:
 
-- **Default (kiro-cli)** — `AcpWorker` drives the `kiroclaw-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent.py:_install_knowledge_agent` (model `claude-haiku-4.5`, kiroclaw-core tools only — no internal MCP wiring in the OSS fork).
-- **`agent.provider="claude_code"` (legacy seam)** — `CCWorker` drives a long-lived `claude` CLI subprocess over stream-json I/O (haiku model, `bypassPermissions`); URL-fetch tools are opt-in via `KIROCLAW_KNOWLEDGE_FETCH_TOOLS`. KiroClaw's provider enum is `["acp"]`, so this branch is dormant in practice.
+- **Default (kiro-cli)** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent.py:_install_knowledge_agent` (model `claude-haiku-4.5`, kirocrew-core tools only — no internal MCP wiring in the OSS fork).
+- **`agent.provider="claude_code"` (legacy seam)** — `CCWorker` drives a long-lived `claude` CLI subprocess over stream-json I/O (haiku model, `bypassPermissions`); URL-fetch tools are opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`. KiroCrew's provider enum is `["acp"]`, so this branch is dormant in practice.
 
 ### Sweep shielding + audit source
 
@@ -114,7 +114,7 @@ Both entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.
 
 ### Sandbox parity
 
-`_get_sandbox_mode()` reads `agent.sandbox` (default `"auto"` → standard confinement); an out-of-set value falls back to `"auto"` rather than reaching `wrap_argv` as an unknown mode. Knowledge workers are wrapped by the same OS-level sandbox as chat/Slack providers — the earlier hardcoded `"off"` (initial Knowledge Library commit) was the only KiroClaw code path bypassing that setting, and reading config here restores least-privilege parity.
+`_get_sandbox_mode()` reads `agent.sandbox` (default `"auto"` → standard confinement); an out-of-set value falls back to `"auto"` rather than reaching `wrap_argv` as an unknown mode. Knowledge workers are wrapped by the same OS-level sandbox as chat/Slack providers — the earlier hardcoded `"off"` (initial Knowledge Library commit) was the only KiroCrew code path bypassing that setting, and reading config here restores least-privilege parity.
 
 ### Pool mechanics
 
@@ -135,7 +135,7 @@ Both entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.
 
 ### `local_knowledge_search` MCP tool (`mcp_core.py`)
 
-The LLM reaches retrieval through the `kiroclaw-core` MCP tool `local_knowledge_search`:
+The LLM reaches retrieval through the `kirocrew-core` MCP tool `local_knowledge_search`:
 - DB path: `config_dir()/workspace/knowledge/knowledge.db`; a missing DB returns "Knowledge Library is not configured…" (SEL `not_configured`).
 - `_get_knowledge_search` caches the `(KnowledgeStore, embedder)` pair across calls and rebuilds only when the knowledge DB (or its `-wal`) or `config.json` changes — avoiding the per-call schema DDL / migrate / graph-load and the Ollama availability probe.
 - Default `limit` is 3; results below `min_score = 0.012` are dropped. Output is run through `redact_exfiltration_urls()` + `redact_credentials()` before returning, and every call emits an SEL audit event (`success` / `no_results` / `not_configured`). Input is validated against `LOCAL_KNOWLEDGE_SEARCH_SCHEMA` (`validation.py`).

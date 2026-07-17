@@ -104,7 +104,7 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
         <textarea aria-label="Daily History" className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-mono outline-none resize-y leading-relaxed transition-colors focus-ring" rows={10} value={hist} onChange={e => setHist(e.target.value)} placeholder="No history yet" /></Card>
     </>)}
     {!vectorActive && (
-      <Card><CardTitle>Lessons <InfoTip text="Persistent lessons injected into every session. Auto-extracted from task runner failures. Add manually via 'kiroclaw learn add'. When vector memory is active, lessons are managed in the Semantic tab as lesson.* entries." /></CardTitle>
+      <Card><CardTitle>Lessons <InfoTip text="Persistent lessons injected into every session. Auto-extracted from task runner failures. Add manually via 'kirocrew learn add'. When vector memory is active, lessons are managed in the Semantic tab as lesson.* entries." /></CardTitle>
       <div className="flex gap-2 items-center flex-wrap mb-3">
         <Input placeholder="Rule (e.g. always use conduit for ADA)" style={{ flex: 2 }} value={rule} onChange={e => setRule(e.target.value)} />
         <select className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer appearance-none transition-colors focus-ring" style={{ flex: '0 0 140px' }} value={cat} onChange={e => setCat(e.target.value)}>

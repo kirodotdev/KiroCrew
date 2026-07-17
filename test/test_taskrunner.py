@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from conftest import requires_git
 
-from kiro_claw.task_models import PROGRESS_FILE
-from kiro_claw.taskrunner import (
+from kiro_crew.task_models import PROGRESS_FILE
+from kiro_crew.taskrunner import (
     _STALL_CANCEL_TIMEOUT,
     _STALL_TIMEOUT,
     MAX_TOTAL_TASKS,
@@ -43,7 +43,7 @@ def _make_mock_sessions() -> MagicMock:
 
 def _make_mock_provider(text: str = "done") -> MagicMock:
     """Create a mock provider that yields a text chunk + complete event."""
-    from kiro_claw.providers.base import LLMEvent
+    from kiro_crew.providers.base import LLMEvent
 
     provider = MagicMock()
 
@@ -262,7 +262,7 @@ class TestRun:
 
         # First call = decompose (returns JSON), subsequent = step execution
         def _make_stream(text: str):
-            from kiro_claw.providers.base import LLMEvent
+            from kiro_crew.providers.base import LLMEvent
 
             async def _stream(message: str):
                 yield LLMEvent(kind="text_chunk", text=text)
@@ -329,7 +329,7 @@ class TestRun:
 
         step_json = json.dumps([{"title": "Broken step", "description": "Will fail"}])
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         decompose_provider = MagicMock()
 
@@ -877,7 +877,7 @@ class TestCheckpointResume:
             ]
         )
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         decompose_provider = MagicMock()
 
@@ -919,7 +919,7 @@ class TestCheckpointResume:
             sessions=sessions, auto_test=False, on_notify=_on_notify, work_dir=tmp_path
         )
 
-        with patch("kiro_claw.task_executor.self_review", return_value=True):
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
             result = await runner.run(spec)
 
         assert result.status == "completed"
@@ -948,7 +948,7 @@ class TestCheckpointResume:
         sessions = _make_mock_sessions()
         step_json = json.dumps([{"title": "Create file", "description": "Create foo.py"}])
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         decompose_provider = MagicMock()
 
@@ -983,7 +983,7 @@ class TestCheckpointResume:
 
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path, fresh=True)
 
-        with patch("kiro_claw.task_executor.self_review", return_value=True):
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
             result = await runner.run(spec)
 
         assert result.status == "completed"
@@ -1011,8 +1011,8 @@ class TestSessionRecovery:
     @pytest.mark.asyncio
     async def test_process_died_recovers(self, tmp_path: Path) -> None:
         """AcpProcessDied → recovers and completes step."""
-        from kiro_claw.acp.client import AcpProcessDied
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.providers.base import LLMEvent
 
         sessions = _make_mock_sessions()
         call_count = 0
@@ -1057,7 +1057,7 @@ class TestSessionRecovery:
     @pytest.mark.asyncio
     async def test_process_death_does_not_consume_logic_retry(self, tmp_path: Path) -> None:
         """Process dies once then logic fails — should still get full 3 logic attempts."""
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         sessions = _make_mock_sessions()
         call_count = 0
@@ -1095,7 +1095,7 @@ class TestSessionRecovery:
     @pytest.mark.asyncio
     async def test_process_died_exceeds_budget(self, tmp_path: Path) -> None:
         """AcpProcessDied > _MAX_RECOVERIES → step fails."""
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         sessions = _make_mock_sessions()
 
@@ -1138,7 +1138,7 @@ class TestSessionRecovery:
             yield LLMEvent(kind="text_chunk", text="ok")
             yield LLMEvent(kind="complete")
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         provider.stream = _fail_twice_then_succeed
         provider.approve_tool = AsyncMock()
@@ -1161,7 +1161,7 @@ class TestSessionRecovery:
     @pytest.mark.asyncio
     async def test_mid_stream_context_overflow_compacts(self, tmp_path: Path) -> None:
         """Context ≥90% during tool call → compact and retry without burning attempt."""
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         sessions = _make_mock_sessions()
         call_count = 0
@@ -1209,8 +1209,8 @@ class TestSessionRecovery:
     @pytest.mark.asyncio
     async def test_mid_stream_context_overflow_exceeds_max_recoveries(self, tmp_path: Path) -> None:
         """Compaction exceeds MAX_RECOVERIES → task fails."""
-        from kiro_claw.providers.base import LLMEvent
-        from kiro_claw.task_executor import MAX_RECOVERIES
+        from kiro_crew.providers.base import LLMEvent
+        from kiro_crew.task_executor import MAX_RECOVERIES
 
         sessions = _make_mock_sessions()
 
@@ -1249,7 +1249,7 @@ class TestSessionRecovery:
     @pytest.mark.asyncio
     async def test_mid_stream_compaction_failure_falls_back_to_reset(self, tmp_path: Path) -> None:
         """Compaction raises → falls back to session reset, then retries."""
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         sessions = _make_mock_sessions()
         call_count = 0
@@ -1293,7 +1293,7 @@ class TestSessionRecovery:
     @pytest.mark.asyncio
     async def test_task_result_redacts_credentials(self, tmp_path: Path) -> None:
         """Final task.result must have credentials redacted."""
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         sessions = _make_mock_sessions()
         provider = MagicMock()
@@ -1327,7 +1327,7 @@ class TestExtractLesson:
     @pytest.mark.asyncio
     async def test_extract_lesson_saves(self, tmp_path: Path) -> None:
         """Failed step → lesson extracted and saved."""
-        from kiro_claw.learn import LessonStore
+        from kiro_crew.learn import LessonStore
 
         store = LessonStore(base_dir=tmp_path)
         sessions = _make_mock_sessions()
@@ -1371,7 +1371,7 @@ class TestExtractLesson:
     @pytest.mark.asyncio
     async def test_extract_lesson_invalid_response(self, tmp_path: Path) -> None:
         """Invalid Bedrock response → no lesson saved."""
-        from kiro_claw.learn import LessonStore
+        from kiro_crew.learn import LessonStore
 
         store = LessonStore(base_dir=tmp_path)
         sessions = _make_mock_sessions()
@@ -1387,7 +1387,7 @@ class TestExtractLesson:
     @pytest.mark.asyncio
     async def test_extract_lesson_missing_rule_key(self, tmp_path: Path) -> None:
         """LLM returns dict without 'rule' → no lesson saved."""
-        from kiro_claw.learn import LessonStore
+        from kiro_crew.learn import LessonStore
 
         store = LessonStore(base_dir=tmp_path)
         sessions = _make_mock_sessions()
@@ -1407,7 +1407,7 @@ class TestExtractLesson:
 class TestHistoryIntegration:
     def test_log_task(self, tmp_path: Path) -> None:
         """Completed step → entries in ConversationLog."""
-        from kiro_claw.history import ConversationLog
+        from kiro_crew.history import ConversationLog
 
         conv_log = ConversationLog(base_dir=tmp_path)
         conv_log.init()
@@ -1451,7 +1451,7 @@ class TestHistoryIntegration:
 
         step_json = json.dumps([{"title": "One step", "description": "d"}])
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         decompose_provider = MagicMock()
 
@@ -1525,7 +1525,7 @@ class TestWatchdog:
         run.last_task_time = time.time() - _STALL_TIMEOUT - 60
 
         # Run watchdog for one tick then stop
-        with patch("kiro_claw.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             mock_sleep.side_effect = [None, asyncio.CancelledError()]
             try:
                 await runner._watchdog_loop(run)
@@ -1560,7 +1560,7 @@ class TestWatchdog:
         run.started_at = time.time()
         run.last_task_time = time.time()  # just now
 
-        with patch("kiro_claw.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             mock_sleep.side_effect = [None, asyncio.CancelledError()]
             try:
                 await runner._watchdog_loop(run)
@@ -1582,7 +1582,7 @@ class TestWatchdog:
         run.started_at = time.time()
         run.last_task_time = time.time() - _STALL_CANCEL_TIMEOUT - 60
 
-        with patch("kiro_claw.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             mock_sleep.side_effect = [None, asyncio.CancelledError()]
             try:
                 await runner._watchdog_loop(run)
@@ -1610,7 +1610,7 @@ class TestWatchdog:
         # Set decoy on runner (the old bug) — watchdog must ignore this
         runner._last_task_time = 0.0  # type: ignore[attr-defined]
 
-        with patch("kiro_claw.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             mock_sleep.side_effect = [None, asyncio.CancelledError()]
             try:
                 await runner._watchdog_loop(run)
@@ -1635,7 +1635,7 @@ class TestWatchdog:
             ]
         )
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         decompose_provider = MagicMock()
 
@@ -1753,7 +1753,7 @@ class TestPlanRevision:
 
         sessions = _make_mock_sessions()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         original_steps = json.dumps([{"title": "Broken step", "description": "Will fail"}])
         replan_steps = json.dumps([{"title": "Fixed step", "description": "Will work"}])
@@ -1819,7 +1819,7 @@ class TestPlanRevision:
 
         sessions = _make_mock_sessions()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         step_json = json.dumps([{"title": "Always fails", "description": "d"}])
 
@@ -1864,7 +1864,7 @@ class TestPlanRevision:
 
         sessions = _make_mock_sessions()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         original_steps = json.dumps([{"title": "Broken", "description": "d"}])
         replan_steps = json.dumps(
@@ -1931,7 +1931,7 @@ class TestPlanRevision:
 
         sessions = _make_mock_sessions()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         original = json.dumps([{"title": "Task ", "description": "d"}])
         replan1 = json.dumps([{"title": "Replan1 step", "description": "d"}])
@@ -1995,7 +1995,7 @@ class TestSelfReview:
         sessions = _make_mock_sessions()
         provider = MagicMock()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         async def _stream(msg: str):
             yield LLMEvent(kind="text_chunk", text='{"ok": true}')
@@ -2010,7 +2010,7 @@ class TestSelfReview:
         step = Step(index=1, title="Test", description="d", status=StepStatus.PASSED)
         run.tasks = [step]
 
-        with patch("kiro_claw.task_executor.stream_and_collect_json", return_value={"ok": True}):
+        with patch("kiro_crew.task_executor.stream_and_collect_json", return_value={"ok": True}):
             result = await runner.self_review(run, step)
 
         assert result is True
@@ -2029,7 +2029,7 @@ class TestSelfReview:
         run.tasks = [step]
 
         with patch(
-            "kiro_claw.task_executor.stream_and_collect_json",
+            "kiro_crew.task_executor.stream_and_collect_json",
             return_value={"ok": False, "issue": "wrong file modified"},
         ):
             result = await runner.self_review(run, step)
@@ -2138,7 +2138,7 @@ class TestActiveStallRecovery:
         run.started_at = time.time()
         run.last_task_time = time.time() - _STALL_CANCEL_TIMEOUT - 60
 
-        with patch("kiro_claw.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             mock_sleep.side_effect = [None, asyncio.CancelledError()]
             try:
                 await runner._watchdog_loop(run)
@@ -2179,7 +2179,7 @@ class TestActiveStallRecovery:
             if tick >= 3:
                 raise asyncio.CancelledError()
 
-        with patch("kiro_claw.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             mock_sleep.side_effect = _tick_sleep
             try:
                 await runner._watchdog_loop(run)
@@ -2215,7 +2215,7 @@ class TestActiveStallRecovery:
             if tick >= 3:
                 raise asyncio.CancelledError()  # stop after task2's first check
 
-        with patch("kiro_claw.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             mock_sleep.side_effect = _tick_sleep
             try:
                 await runner._watchdog_loop(run)
@@ -2238,7 +2238,7 @@ class TestTokenBudget:
 
         sessions = _make_mock_sessions()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         step_json = json.dumps(
             [
@@ -2425,7 +2425,7 @@ class TestEdgeCases:
                 return False
             return True
 
-        with patch("kiro_claw.task_executor.self_review", side_effect=_review_once):
+        with patch("kiro_crew.task_executor.self_review", side_effect=_review_once):
             success = await runner._execute_single_task(run, step, "key")
 
         assert success is True
@@ -2462,7 +2462,7 @@ class TestEdgeCases:
 
         sessions = _make_mock_sessions()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         step_json = json.dumps(
             [
@@ -2626,7 +2626,7 @@ class TestParallelGroups:
 
         sessions = _make_mock_sessions()
 
-        from kiro_claw.providers.base import LLMEvent
+        from kiro_crew.providers.base import LLMEvent
 
         # 3 independent steps (no deps → single parallel group)
         step_json = json.dumps(
@@ -2705,7 +2705,7 @@ class TestGitCoord:
         sandbox availability, so run the command unwrapped in-test."""
         import os as _os
 
-        from kiro_claw import git_coord
+        from kiro_crew import git_coord
 
         monkeypatch.setattr(
             git_coord,
@@ -2716,7 +2716,7 @@ class TestGitCoord:
     @pytest.mark.asyncio
     async def test_init_workspace_no_repo(self, tmp_path: Path) -> None:
         """init_workspace in non-git dir → git init + branch."""
-        from kiro_claw import git_coord
+        from kiro_crew import git_coord
 
         work_dir = tmp_path / "work"
         work_dir.mkdir()
@@ -2728,14 +2728,14 @@ class TestGitCoord:
 
         await git_coord.init_workspace(run)
 
-        assert run.branch_name == "kiroclaw/task/test_123"
+        assert run.branch_name == "kirocrew/task/test_123"
         assert run.base_branch != ""
         assert run.worktree_path == ""  # no worktree for fresh init
 
     @pytest.mark.asyncio
     async def test_init_workspace_existing_repo(self, tmp_path: Path) -> None:
         """init_workspace in existing git repo → worktree created."""
-        from kiro_claw import git_coord
+        from kiro_crew import git_coord
 
         # Set up a real git repo
         work_dir = tmp_path / "repo"
@@ -2751,7 +2751,7 @@ class TestGitCoord:
 
         await git_coord.init_workspace(run)
 
-        assert run.branch_name == "kiroclaw/task/wt_test"
+        assert run.branch_name == "kirocrew/task/wt_test"
         assert run.worktree_path != ""
         assert Path(run.worktree_path).exists()
         # work_dir should have been updated to the worktree
@@ -2763,7 +2763,7 @@ class TestGitCoord:
     @pytest.mark.asyncio
     async def test_commit_and_revert(self, tmp_path: Path) -> None:
         """commit_step creates commit, revert_step undoes it."""
-        from kiro_claw import git_coord
+        from kiro_crew import git_coord
 
         work_dir = tmp_path / "work"
         work_dir.mkdir()
@@ -2789,7 +2789,7 @@ class TestGitCoord:
     @pytest.mark.asyncio
     async def test_commit_no_changes(self, tmp_path: Path) -> None:
         """commit_step with no changes → empty string."""
-        from kiro_claw import git_coord
+        from kiro_crew import git_coord
 
         work_dir = tmp_path / "work"
         work_dir.mkdir()
@@ -2807,7 +2807,7 @@ class TestGitCoord:
     @pytest.mark.asyncio
     async def test_get_state_summary(self, tmp_path: Path) -> None:
         """get_state_summary returns git log + diff stat."""
-        from kiro_claw import git_coord
+        from kiro_crew import git_coord
 
         work_dir = tmp_path / "work"
         work_dir.mkdir()
@@ -2829,7 +2829,7 @@ class TestGitCoord:
     @pytest.mark.asyncio
     async def test_revert_no_commits(self, tmp_path: Path) -> None:
         """revert_step with no commits → no-op."""
-        from kiro_claw import git_coord
+        from kiro_crew import git_coord
 
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.work_dir = str(tmp_path)

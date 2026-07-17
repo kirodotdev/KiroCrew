@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.core import api_shutdown
+from kiro_crew.dashboard.handlers.core import api_shutdown
 
 
 @pytest.fixture()
@@ -27,10 +27,10 @@ def app(shutdown_event):
 @pytest.mark.asyncio
 async def test_shutdown_rejects_non_loopback(app):
     # FORK-DIVERGENCE: api_shutdown mirrors api_logout's local-import style —
-    # it calls _h.is_loopback (where _h is the kiro_claw.dashboard.handlers
+    # it calls _h.is_loopback (where _h is the kiro_crew.dashboard.handlers
     # package), so patch the name there, not on core.
-    with patch("kiro_claw.dashboard.handlers.core._sel") as mock_sel, \
-         patch("kiro_claw.dashboard.handlers.is_loopback", return_value=False):
+    with patch("kiro_crew.dashboard.handlers.core._sel") as mock_sel, \
+         patch("kiro_crew.dashboard.handlers.is_loopback", return_value=False):
         mock_sel.return_value = MagicMock()
         async with TestClient(TestServer(app)) as c:
             resp = await c.post(
@@ -44,7 +44,7 @@ async def test_shutdown_rejects_non_loopback(app):
 
 @pytest.mark.asyncio
 async def test_shutdown_rejects_invalid_secret(app):
-    with patch("kiro_claw.dashboard.handlers.core._sel") as mock_sel:
+    with patch("kiro_crew.dashboard.handlers.core._sel") as mock_sel:
         mock_sel.return_value = MagicMock()
         async with TestClient(TestServer(app)) as c:
             resp = await c.post(
@@ -59,9 +59,9 @@ async def test_shutdown_rejects_invalid_secret(app):
 @pytest.mark.asyncio
 async def test_shutdown_success_sets_event(app, shutdown_event):
     # FORK-DIVERGENCE: the handler does a function-local
-    # `from kiro_claw import shutdown_event`, so patch the source attribute.
-    with patch("kiro_claw.dashboard.handlers.core._sel") as mock_sel, \
-         patch("kiro_claw.shutdown_event", shutdown_event):
+    # `from kiro_crew import shutdown_event`, so patch the source attribute.
+    with patch("kiro_crew.dashboard.handlers.core._sel") as mock_sel, \
+         patch("kiro_crew.shutdown_event", shutdown_event):
         mock_sel.return_value = MagicMock()
         async with TestClient(TestServer(app)) as c:
             resp = await c.post(

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import AgentSelector from '../components/AgentSelector'
-import type { KiroClawAgent } from '../components/AgentSelector'
+import type { KiroCrewAgent } from '../components/AgentSelector'
 
-const agents: KiroClawAgent[] = [
-  { name: 'coding', kiro_agent: 'kiroclaw', workspace: 'default', memory_store: 'default' },
+const agents: KiroCrewAgent[] = [
+  { name: 'coding', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' },
   { name: 'oncall', kiro_agent: 'oncall-agent', workspace: 'oncall', memory_store: 'oncall-kb' },
-  { name: 'research', kiro_agent: 'kiroclaw', workspace: 'research', memory_store: 'research-mem' },
+  { name: 'research', kiro_agent: 'kirocrew', workspace: 'research', memory_store: 'research-mem' },
 ]
 
 describe('AgentSelector', () => {
@@ -33,7 +33,7 @@ describe('AgentSelector', () => {
     expect(screen.getByText('default')).toBeInTheDocument()
   })
 
-  it('calls onChange with KiroClaw agent name on selection', () => {
+  it('calls onChange with KiroCrew agent name on selection', () => {
     const onChange = vi.fn()
     render(<AgentSelector agents={agents} defaultAgent="coding" value="coding" onChange={onChange} />)
     fireEvent.click(screen.getByLabelText('Switch agent'))

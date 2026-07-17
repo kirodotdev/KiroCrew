@@ -1,12 +1,12 @@
-# KiroClaw App Store — Publishing Guidelines
+# KiroCrew App Store — Publishing Guidelines
 
-This guide walks you through publishing an app to the KiroClaw App Store. An "app" is a package that contributes agents, skills, MCP servers, cron jobs, or UI pages to KiroClaw.
+This guide walks you through publishing an app to the KiroCrew App Store. An "app" is a package that contributes agents, skills, MCP servers, cron jobs, or UI pages to KiroCrew.
 
 ## Quick Start
 
 1. Create `app.json` at your repo root
-2. Add your app to `src/kiro_claw/apps/app-registry.json`
-3. Open a Pull Request against the KiroClaw repo
+2. Add your app to `src/kiro_crew/apps/app-registry.json`
+3. Open a Pull Request against the KiroCrew repo
 
 ## 1. The App Manifest (`app.json`)
 
@@ -62,7 +62,7 @@ These fields control how your app appears in the App Store:
 
 ### Resource Declarations
 
-Declare what your app contributes to KiroClaw:
+Declare what your app contributes to KiroCrew:
 
 ```json
 {
@@ -87,7 +87,7 @@ Declare what your app contributes to KiroClaw:
 
 ### Cron Registration Bridge (Mesh-483)
 
-When `resources: "gateway"`, KiroClaw automatically registers and deregisters cron jobs declared in your `app.json` manifest:
+When `resources: "gateway"`, KiroCrew automatically registers and deregisters cron jobs declared in your `app.json` manifest:
 
 - `_register_crons` serializes all `CronEntry` fields (including `agent_sequence`, `env`, `persistent_session`, `silent`)
 - `register_app_crons_with_service()` uses CronSDK for idempotent registration, ownership-tagged via `created_by='app:{name}'`
@@ -133,27 +133,27 @@ If your app needs a build step or dependency installation:
 ```
 
 Rules:
-- `onInstall` — runs after first install. Required if your app needs build steps, dependency installation, or creates resources outside `~/.kiroclaw/apps/{name}/`.
+- `onInstall` — runs after first install. Required if your app needs build steps, dependency installation, or creates resources outside `~/.kirocrew/apps/{name}/`.
 - `onUpdate` — runs after update (new code in place, `data/` preserved). Use for recompilation, migrations, or restarting backend processes.
-- `onUninstall` — runs before removing files. Only needed if your app creates resources outside KiroClaw's managed directories (e.g. `~/Applications/MyApp.app`, shell aliases, launchd plists). KiroClaw automatically cleans up everything it manages.
+- `onUninstall` — runs before removing files. Only needed if your app creates resources outside KiroCrew's managed directories (e.g. `~/Applications/MyApp.app`, shell aliases, launchd plists). KiroCrew automatically cleans up everything it manages.
 - `onEnable` — runs when the user enables the app. Use for starting backend processes or registering external services.
 - `onDisable` — runs when the user disables the app. Use for stopping backend processes or deregistering external services.
 - `onEnableTimeout` / `onDisableTimeout` — optional, defaults to 30 seconds. Increase for apps that need to start/stop Docker containers or heavy backends.
-- All scripts run with `set -euo pipefail` enforced by KiroClaw. This means:
+- All scripts run with `set -euo pipefail` enforced by KiroCrew. This means:
   - Unset variables cause immediate exit (prevents `rm -rf $EMPTY_VAR/` disasters)
   - Any command failure stops execution (no silent errors)
   - Pipe failures propagate (no hidden failures in `cmd1 | cmd2`)
 - All scripts run with `NONINTERACTIVE=1` in the environment. They must exit 0 on success.
 - `onUninstall` also receives `KEEP_DATA=1` or `KEEP_DATA=0` — if the user chose "Keep app data", the script should skip deleting user data directories.
 - Timeout limits: `onInstall`/`onUpdate` = 300s, `onUninstall` = 120s, `onEnable`/`onDisable` = configurable (default 30s).
-- `onUninstall` should only clean up resources that KiroClaw cannot manage (e.g. app binaries, shell aliases, external config directories). For `resources: "gateway"` apps, agent configs, skills, MCP entries, and cron jobs are handled by the gateway automatically — do not duplicate that cleanup in your uninstall script. For `resources: "app"` apps, the gateway does not deregister resources — your `onUninstall` script is responsible for cleaning up its own agent configs, skills, MCP entries, and cron jobs.
+- `onUninstall` should only clean up resources that KiroCrew cannot manage (e.g. app binaries, shell aliases, external config directories). For `resources: "gateway"` apps, agent configs, skills, MCP entries, and cron jobs are handled by the gateway automatically — do not duplicate that cleanup in your uninstall script. For `resources: "app"` apps, the gateway does not deregister resources — your `onUninstall` script is responsible for cleaning up its own agent configs, skills, MCP entries, and cron jobs.
 - If `onEnable` fails, the enable is rolled back (app stays disabled).
 - If `onDisable` fails, the disable proceeds anyway (with warnings in the response).
 - If `onUpdate` fails, the update is rolled back to the previous version.
 
 ### Dependencies
 
-Declare external dependencies that KiroClaw should install for your app:
+Declare external dependencies that KiroCrew should install for your app:
 
 ```json
 {
@@ -171,7 +171,7 @@ Declare external dependencies that KiroClaw should install for your app:
 
 | Field | Description |
 |-------|-------------|
-| `managedBy` | `"gateway"` (default) = KiroClaw installs via AIM CLI. `"app"` = app handles its own deps, KiroClaw only checks existence. |
+| `managedBy` | `"gateway"` (default) = KiroCrew installs via AIM CLI. `"app"` = app handles its own deps, KiroCrew only checks existence. |
 | `aim.mcp` | AIM MCP servers to install. |
 | `aim.skills` | AIM skill packages to install. |
 | `aim.agents` | AIM agent packages to install. |
@@ -193,7 +193,7 @@ Per-dependency override: use object format to override `managedBy` for individua
 }
 ```
 
-Dependencies are tracked in a reference-counting ledger. On uninstall, KiroClaw shows which dependencies can be safely removed (only used by this app) vs. which are shared with other apps or user-installed.
+Dependencies are tracked in a reference-counting ledger. On uninstall, KiroCrew shows which dependencies can be safely removed (only used by this app) vs. which are shared with other apps or user-installed.
 
 ### Platform
 
@@ -205,7 +205,7 @@ Declare platform requirements if your app only runs on specific operating system
     "os": ["macos"],
     "installMode": "client",
     "clientInstall": {
-      "shell": "git clone https://github.com/you/MyApp.git ~/MyApp && cd ~/MyApp && KIROCLAW_HOST={{gateway_host}} bash setup.sh",
+      "shell": "git clone https://github.com/you/MyApp.git ~/MyApp && cd ~/MyApp && KIROCREW_HOST={{gateway_host}} bash setup.sh",
       "postInstall": "open ~/Applications/MyApp.app"
     }
   }
@@ -215,20 +215,20 @@ Declare platform requirements if your app only runs on specific operating system
 | Field | Default | Description |
 |-------|---------|-------------|
 | `os` | `["macos", "linux"]` | Platforms the app can run on. Values: `macos`, `linux`. |
-| `installMode` | `"server"` | `"server"` = KiroClaw installs directly. `"client"` = must be installed on the user's local machine. |
-| `clientInstall.shell` | — | One-liner for the user to run in their local terminal. Shown when KiroClaw is on an incompatible platform. Supports template variables: `{{gateway_url}}` (full dashboard URL), `{{gateway_host}}` (cloud desktop hostname for SSH tunnel). |
+| `installMode` | `"server"` | `"server"` = KiroCrew installs directly. `"client"` = must be installed on the user's local machine. |
+| `clientInstall.shell` | — | One-liner for the user to run in their local terminal. Shown when KiroCrew is on an incompatible platform. Supports template variables: `{{gateway_url}}` (full dashboard URL), `{{gateway_host}}` (cloud desktop hostname for SSH tunnel). |
 | `clientInstall.postInstall` | — | Command to run after install (e.g. launch the app). Shown as a hint. |
 
-When `installMode` is `"client"` and KiroClaw runs on an incompatible platform (e.g. Linux cloud desktop), the App Store shows a copy-paste instruction panel instead of running the install script. The app registers itself with KiroClaw on first launch via `POST /api/apps/register`.
+When `installMode` is `"client"` and KiroCrew runs on an incompatible platform (e.g. Linux cloud desktop), the App Store shows a copy-paste instruction panel instead of running the install script. The app registers itself with KiroCrew on first launch via `POST /api/apps/register`.
 
-When KiroClaw runs on a compatible platform (e.g. macOS local), the install proceeds normally — clone + run `setup.onInstall`.
+When KiroCrew runs on a compatible platform (e.g. macOS local), the install proceeds normally — clone + run `setup.onInstall`.
 
 ### Optional Fields
 
 ```json
 {
   "license": "Amazon-Internal",
-  "minKiroClawVersion": "1.2.0",
+  "minKiroCrewVersion": "1.2.0",
   "detectInstalled": "test -d ~/Applications/MyApp.app",
   "ui": {
     "entry": "dist/index.mjs",
@@ -261,7 +261,7 @@ When KiroClaw runs on a compatible platform (e.g. macOS local), the install proc
 
 ## 3. Registry Entry
 
-To list your app in the App Store, add an entry to `src/kiro_claw/apps/app-registry.json`:
+To list your app in the App Store, add an entry to `src/kiro_crew/apps/app-registry.json`:
 
 ```json
 {
@@ -279,7 +279,7 @@ That's it. All display information (description, screenshots, highlights, tags, 
 |-------|-------------|
 | `name` | Must match the `name` in your `app.json`. |
 | `repo` | Git repository name. Used to fetch `app.json` and serve images. |
-| `versionSet` | Version set for dependency resolution (e.g. `"KiroClaw/development"`). |
+| `versionSet` | Version set for dependency resolution (e.g. `"KiroCrew/development"`). |
 
 ### Optional Fields
 
@@ -287,8 +287,8 @@ That's it. All display information (description, screenshots, highlights, tags, 
 |-------|---------|-------------|
 | `branch` | `mainline` | Git branch to fetch from. |
 | `subdirectory` | `""` | Path within the repo where `app.json` lives (if not at root). |
-| `resources` | `"gateway"` | `"gateway"` = KiroClaw manages agent/skill/cron registration via symlinks. `"app"` = app handles its own resource registration. |
-| `lifecycle` | `"gateway"` | `"gateway"` = KiroClaw handles updates and uninstall. `"app"` = app handles its own updates. |
+| `resources` | `"gateway"` | `"gateway"` = KiroCrew manages agent/skill/cron registration via symlinks. `"app"` = app handles its own resource registration. |
+| `lifecycle` | `"gateway"` | `"gateway"` = KiroCrew handles updates and uninstall. `"app"` = app handles its own updates. |
 | `detectInstalled` | `""` | Shell command that exits 0 if the app is already installed (e.g. `test -d ~/Applications/MyApp.app`). |
 
 ### How It Works
@@ -299,12 +299,12 @@ When you update your app, just bump the version in your `app.json` and push. The
 
 ### Federated External Registries
 
-Teams can host their own app registries without requiring KiroClaw team review for each app. Users opt in by adding external registries to their config:
+Teams can host their own app registries without requiring KiroCrew team review for each app. Users opt in by adding external registries to their config:
 
 ```json
 {
   "registries": [
-    {"name": "identityservices", "repo": "IdentityServicesKiroclawAppRegistry", "branch": "mainline"}
+    {"name": "identityservices", "repo": "IdentityServicesKirocrewAppRegistry", "branch": "mainline"}
   ]
 }
 ```
@@ -326,7 +326,7 @@ Teams can host their own app registries without requiring KiroClaw team review f
 | `GET /api/apps/registries` | Returns current registries list from config |
 | `PUT /api/apps/registries` | Validates and replaces the registries array |
 
-PUT validation: repo regex, branch regex, blocked repos (the KiroClaw repo itself is blocked). SEL audit on successful updates.
+PUT validation: repo regex, branch regex, blocked repos (the KiroCrew repo itself is blocked). SEL audit on successful updates.
 
 ## 4. Installation Modes
 
@@ -334,9 +334,9 @@ Your app can be installed in two ways:
 
 ### Registry Install (recommended)
 
-Users click "Install" in the App Store. KiroClaw clones the package into a workspace.
+Users click "Install" in the App Store. KiroCrew clones the package into a workspace.
 
-1. KiroClaw creates a workspace at `~/.kiroclaw/app-sources/.workspaces/{app_name}/` (one per app)
+1. KiroCrew creates a workspace at `~/.kirocrew/app-sources/.workspaces/{app_name}/` (one per app)
 2. Clones the repo at the specified branch
 3. Runs the build step (npm/pip depending on the package type)
 4. Runs `setup.onInstall` if declared
@@ -348,7 +348,7 @@ Requirements:
 
 ### Self-Managed Install
 
-For apps with their own installer (like Electron apps), the app registers itself with KiroClaw at runtime via `POST /api/apps/register`. KiroClaw tracks metadata but doesn't manage the app's resources.
+For apps with their own installer (like Electron apps), the app registers itself with KiroCrew at runtime via `POST /api/apps/register`. KiroCrew tracks metadata but doesn't manage the app's resources.
 
 Use this when:
 - Your app has its own build/package system (Electron, native binary)
@@ -389,8 +389,8 @@ Before submitting your registry Pull Request:
 - [ ] Install script is non-interactive and exits 0
 - [ ] Install script completes within 5 minutes
 - [ ] If `onInstall` is present, `onUninstall` is also present
-- [ ] Uninstall script cleans up all resources created outside `~/.kiroclaw/apps/{name}/`
-- [ ] App works with `kiroclaw app install /path/to/local/clone`
+- [ ] Uninstall script cleans up all resources created outside `~/.kirocrew/apps/{name}/`
+- [ ] App works with `kirocrew app install /path/to/local/clone`
 - [ ] Permissions are minimal — only declare what you actually use
 
 ## 6. App Types
@@ -425,13 +425,13 @@ Agents + skills + backend process + dashboard UI page. Example: a monitoring das
 
 ### Self-Managed App
 
-External app (Electron, CLI tool) that registers with KiroClaw at runtime. Example: Mochi desktop pet.
+External app (Electron, CLI tool) that registers with KiroCrew at runtime. Example: Mochi desktop pet.
 
 The app calls `POST /api/apps/register` on startup with `resources: "app"` and manages its own agent configs, skills, and MCP servers.
 
 ## 7. Version Compatibility
 
-Apps can declare `minKiroClawVersion` in `app.json`. KiroClaw checks this during install and update — if the current version is too old, the operation is rejected with a clear error message telling the user to update KiroClaw first.
+Apps can declare `minKiroCrewVersion` in `app.json`. KiroCrew checks this during install and update — if the current version is too old, the operation is rejected with a clear error message telling the user to update KiroCrew first.
 
 ## 8. Package Build Systems
 
@@ -439,7 +439,7 @@ Apps can use npm (for TypeScript/React) or pip (for Python) as their build syste
 
 ### How It Works
 
-1. On install, KiroClaw creates a workspace at `~/.kiroclaw/app-sources/.workspaces/{app_name}/` (one per app)
+1. On install, KiroCrew creates a workspace at `~/.kirocrew/app-sources/.workspaces/{app_name}/` (one per app)
 2. Clones the package at the specified branch
 3. Runs `npm install && npm run build` (for JS/TS packages) or `pip install .` (for Python packages)
 4. `setup.onInstall` runs after build (for post-build steps like `electron-builder`)
@@ -491,6 +491,6 @@ cp -R release/mac-arm64/MyApp.app ~/Applications/MyApp.app
 
 ## 10. Support
 
-- Questions: `#kiroclaw-contributors` on Slack
-- Bugs: file a [GitHub issue](https://github.com/kirodotdev-labs/kiroclaw/issues)
+- Questions: `#kirocrew-contributors` on Slack
+- Bugs: file a [GitHub issue](https://github.com/kirodotdev/KiroCrew/issues)
 - Feature requests: same, label `app-store`

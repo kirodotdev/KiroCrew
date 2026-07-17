@@ -2,10 +2,10 @@
 
 ## Overview
 
-This feature formalizes KiroClaw's configuration by making the Python dataclass hierarchy the single source of truth for all config keys. Today, several keys (`workspaces`, `default_workspace`, `slack.*`) are parsed ad-hoc in `KiroClawConfig.load()` outside the dataclass structure. This design eliminates that gap by:
+This feature formalizes KiroCrew's configuration by making the Python dataclass hierarchy the single source of truth for all config keys. Today, several keys (`workspaces`, `default_workspace`, `slack.*`) are parsed ad-hoc in `KiroCrewConfig.load()` outside the dataclass structure. This design eliminates that gap by:
 
 1. Adding structured field metadata (`label`, `help`, `tags`, `sensitive`, `deprecated`, `enum`) to every dataclass field.
-2. Introducing `SlackConfig` and `DashboardConfig` dataclasses and pulling workspace fields into `KiroClawConfig` as proper typed fields.
+2. Introducing `SlackConfig` and `DashboardConfig` dataclasses and pulling workspace fields into `KiroCrewConfig` as proper typed fields.
 3. Building a Schema Registry that walks `dataclasses.fields()` recursively to produce a flat list of `ConfigEntry` records.
 4. Exposing the registry via `GET /api/config/schema` for dashboard consumption.
 5. Adding a build-time baseline generator script that serializes the registry to `config-baseline.json`.
@@ -30,7 +30,7 @@ Flat path list (config-baseline.json, committed)       ← CI drift detection + 
 ```mermaid
 graph TD
     subgraph "Python Dataclasses (source of truth)"
-        MC[KiroClawConfig]
+        MC[KiroCrewConfig]
         AC[AgentConfig]
         SC[SessionConfig]
         MemC[MemoryConfig]
@@ -69,14 +69,14 @@ graph TD
     JSD --> ED
 
     BG -->|writes| BL["config-baseline.json"]
-    VAL -->|reads| CFG["~/.kiroclaw/config.json"]
+    VAL -->|reads| CFG["~/.kirocrew/config.json"]
 ```
 
 ### Key Design Decisions
 
 1. **Three-layer schema (like OpenClaw)**: Python dataclasses → nested JSON Schema → flat entry list. The nested JSON Schema enables `jsonschema.validate()` for runtime validation and `$schema` for editor autocomplete. The flat list enables diff-friendly CI drift detection and dashboard path-based field lookup. This mirrors OpenClaw's Zod → JSON Schema → flat baseline pipeline.
 
-2. **Flat entry format inspired by OpenClaw**: The `ConfigEntry` record mirrors OpenClaw's `config-baseline.json` entry shape (`path`, `type`, `required`, `deprecated`, `sensitive`, `tags`, `label`, `help`, `hasChildren`, `enumValues`, `defaultValue`, `kind`). KiroClaw's config surface is smaller (~50-80 entries today), but the format is compatible for tooling reuse.
+2. **Flat entry format inspired by OpenClaw**: The `ConfigEntry` record mirrors OpenClaw's `config-baseline.json` entry shape (`path`, `type`, `required`, `deprecated`, `sensitive`, `tags`, `label`, `help`, `hasChildren`, `enumValues`, `defaultValue`, `kind`). KiroCrew's config surface is smaller (~50-80 entries today), but the format is compatible for tooling reuse.
 
 3. **Schema built at import time**: Both the JSON Schema and the flat registry are constructed once when `config/schema.py` is imported. No runtime cost per request. Module-level singletons.
 
@@ -155,7 +155,7 @@ The generated JSON Schema is a standard Draft-07 schema with custom extensions:
 ```
 
 This JSON Schema is used for:
-- `jsonschema.validate()` in `KiroClawConfig.load()` for runtime validation
+- `jsonschema.validate()` in `KiroCrewConfig.load()` for runtime validation
 - Persisted as `config-schema.json` for `$schema` reference in user's `config.json` (editor autocomplete)
 - Future: plugin schema fragments merged into this root schema at runtime
 
@@ -233,14 +233,14 @@ Sensitive entries have `defaultValue` set to `null`.
 
 ### 5. Validation Logic (in `config/loader.py`)
 
-Added to `KiroClawConfig.load()`:
+Added to `KiroCrewConfig.load()`:
 
 1. **Type validation**: For each recognized key, check the JSON value type against the schema's expected type. On mismatch, log warning with dot-path, expected type, actual type; use field default.
 2. **Enum validation**: If field has `enum` metadata, check value is in the allowed set. On mismatch, log warning; use field default.
 3. **Unknown key detection**: Top-level keys not in the schema produce a warning listing them.
 4. **Deprecated key warning**: Keys marked `deprecated=True` produce a deprecation warning with the help text.
 5. **Sensitive masking**: Validation warnings for sensitive fields replace the actual value with `"***"`.
-6. **Malformed JSON**: Caught by existing `json.JSONDecodeError` handler; returns default `KiroClawConfig`.
+6. **Malformed JSON**: Caught by existing `json.JSONDecodeError` handler; returns default `KiroCrewConfig`.
 
 ## Data Models
 
@@ -366,7 +366,7 @@ class SlackConfig:
         metadata=_meta("Tracking Channels", "Slack channels to monitor. Each entry: {channel_id, name}."),
     )
     command: str = field(
-        default="kiroclaw",
+        default="kirocrew",
         metadata=_meta("Command", "Slack slash command trigger word."),
     )
 
@@ -380,7 +380,7 @@ class DashboardConfig:
 
 
 @dataclass
-class KiroClawConfig:
+class KiroCrewConfig:
     agent: AgentConfig = field(
         default_factory=AgentConfig,
         metadata=_meta("Agent", "Agent runtime configuration."),
@@ -460,7 +460,7 @@ This is what users see and edit. All keys use `snake_case` matching the Python f
     "tracking_channels": [
       { "channel_id": "C12345", "name": "general" }
     ],
-    "command": "kiroclaw"
+    "command": "kirocrew"
   },
   "dashboard": {
     "url": ""
@@ -481,15 +481,15 @@ The `load()` method reads the same JSON paths as before. The key change is struc
 
 ### OpenClaw Prior Art Reference
 
-The baseline entry format is modeled after OpenClaw's `config-baseline.json` (at `src/KiroClaw/config-baseline.json`). OpenClaw uses a flat `entries` array where each entry has: `path`, `type`, `required`, `deprecated`, `sensitive`, `tags`, `label`, `help`, `hasChildren`, `enumValues`, `defaultValue`, `kind`. KiroClaw adopts the same field set in its `ConfigEntry` dataclass, keeping the format compatible for shared tooling while tailoring the actual entries to KiroClaw's simpler config surface.
+The baseline entry format is modeled after OpenClaw's `config-baseline.json` (at `src/KiroCrew/config-baseline.json`). OpenClaw uses a flat `entries` array where each entry has: `path`, `type`, `required`, `deprecated`, `sensitive`, `tags`, `label`, `help`, `hasChildren`, `enumValues`, `defaultValue`, `kind`. KiroCrew adopts the same field set in its `ConfigEntry` dataclass, keeping the format compatible for shared tooling while tailoring the actual entries to KiroCrew's simpler config surface.
 
-OpenClaw's full config structure (36 top-level keys, ~5518 entries) is documented in `openclaw-config-structure.txt` for reference. KiroClaw currently covers ~8 of those top-level sections. The architecture is designed so new sections (plugins, channels, tools, models, etc.) can be added as the product grows without breaking changes.
+OpenClaw's full config structure (36 top-level keys, ~5518 entries) is documented in `openclaw-config-structure.txt` for reference. KiroCrew currently covers ~8 of those top-level sections. The architecture is designed so new sections (plugins, channels, tools, models, etc.) can be added as the product grows without breaking changes.
 
 ### Design Decisions Summary
 
 Decisions made during the spec session:
 
-1. **Source of truth: Python dataclasses** — not JSON Schema, not Zod. The config only lives on the customer's machine (`~/.kiroclaw/config.json`), so the code that reads it (Python) should own the schema definition. Everything else is derived.
+1. **Source of truth: Python dataclasses** — not JSON Schema, not Zod. The config only lives on the customer's machine (`~/.kirocrew/config.json`), so the code that reads it (Python) should own the schema definition. Everything else is derived.
 
 2. **Three-layer schema (like OpenClaw)** — dataclasses → nested JSON Schema (in-memory) → flat entry list (persisted). OpenClaw does Zod → JSON Schema → flat baseline. Same pattern, different source language.
 
@@ -497,13 +497,13 @@ Decisions made during the spec session:
 
 4. **Flat baseline for CI drift detection** — `config-baseline.json` committed to git, checked in CI. Same snapshot-test pattern as OpenClaw's `pnpm config:docs:gen --check`.
 
-5. **Dashboard gets schema via REST API** — `GET /api/config/schema` returns the flat `ConfigEntry` list. OpenClaw uses WebSocket RPC (`config.schema`) returning nested JSON Schema + separate `uiHints`. KiroClaw uses REST because the dashboard already uses REST for all data fetching. UI metadata lives in `x-meta` extensions inside the JSON Schema (non-standard but common), avoiding the need for a separate uiHints lookup table.
+5. **Dashboard gets schema via REST API** — `GET /api/config/schema` returns the flat `ConfigEntry` list. OpenClaw uses WebSocket RPC (`config.schema`) returning nested JSON Schema + separate `uiHints`. KiroCrew uses REST because the dashboard already uses REST for all data fetching. UI metadata lives in `x-meta` extensions inside the JSON Schema (non-standard but common), avoiding the need for a separate uiHints lookup table.
 
-6. **No ad-hoc keys** — `workspaces`, `default_workspace`, and `slack.*` are pulled into proper dataclasses (`SlackConfig`, workspace fields on `KiroClawConfig`). The schema registry derives everything purely from `dataclasses.fields()` recursion.
+6. **No ad-hoc keys** — `workspaces`, `default_workspace`, and `slack.*` are pulled into proper dataclasses (`SlackConfig`, workspace fields on `KiroCrewConfig`). The schema registry derives everything purely from `dataclasses.fields()` recursion.
 
 7. **Plugin extensibility (future)** — the `kind` field on `ConfigEntry` supports `"core"` vs `"plugin"`. Plugins will contribute JSON Schema fragments merged into the root schema at runtime. Not implemented now, but the architecture doesn't block it.
 
-8. **Validation is advisory** — `jsonschema.validate()` errors are caught and logged as warnings. The loader always returns a valid `KiroClawConfig` by falling back to defaults. Never crashes on bad config.
+8. **Validation is advisory** — `jsonschema.validate()` errors are caught and logged as warnings. The loader always returns a valid `KiroCrewConfig` by falling back to defaults. Never crashes on bad config.
 
 9. **`jsonschema` is the only new dependency** — pure Python, well-established, no C extensions. Everything else is stdlib.
 
@@ -514,7 +514,7 @@ Decisions made during the spec session:
 
 ### Property 1: All config fields carry required metadata
 
-*For any* dataclass in the config hierarchy (`AgentConfig`, `SessionConfig`, `MemoryConfig`, `SlackConfig`, `DashboardConfig`, `KiroClawConfig`), and *for any* field in that dataclass, the field's `metadata` dict must contain both `"label"` (str) and `"help"` (str) keys.
+*For any* dataclass in the config hierarchy (`AgentConfig`, `SessionConfig`, `MemoryConfig`, `SlackConfig`, `DashboardConfig`, `KiroCrewConfig`), and *for any* field in that dataclass, the field's `metadata` dict must contain both `"label"` (str) and `"help"` (str) keys.
 
 **Validates: Requirements 1.1**
 
@@ -526,7 +526,7 @@ Decisions made during the spec session:
 
 ### Property 3: Registry entries are structurally complete
 
-*For any* `ConfigEntry` in the Schema Registry, it must have all required fields (`path`, `kind`, `type`, `required`, `deprecated`, `sensitive`, `tags`, `label`, `help`, `hasChildren`, `enumValues`, `defaultValue`), and every entry's `path` must correspond to a reachable field via `dataclasses.fields()` recursion on `KiroClawConfig`.
+*For any* `ConfigEntry` in the Schema Registry, it must have all required fields (`path`, `kind`, `type`, `required`, `deprecated`, `sensitive`, `tags`, `label`, `help`, `hasChildren`, `enumValues`, `defaultValue`), and every entry's `path` must correspond to a reachable field via `dataclasses.fields()` recursion on `KiroCrewConfig`.
 
 **Validates: Requirements 3.2, 2.6**
 
@@ -542,9 +542,9 @@ Decisions made during the spec session:
 
 **Validates: Requirements 4.4**
 
-### Property 6: KiroClawConfig load/to_dict round-trip
+### Property 6: KiroCrewConfig load/to_dict round-trip
 
-*For any* valid `KiroClawConfig` instance, calling `to_dict()` to produce JSON, then constructing a new `KiroClawConfig` via `load()` from that JSON, must yield an equivalent `KiroClawConfig` instance (all field values equal).
+*For any* valid `KiroCrewConfig` instance, calling `to_dict()` to produce JSON, then constructing a new `KiroCrewConfig` via `load()` from that JSON, must yield an equivalent `KiroCrewConfig` instance (all field values equal).
 
 **Validates: Requirements 2.4, 2.5, 9.4, 9.6**
 
@@ -562,25 +562,25 @@ Decisions made during the spec session:
 
 ### Property 9: Type mismatch falls back to default
 
-*For any* config key with a known expected type, and *for any* JSON value whose type does not match, `KiroClawConfig.load()` must use the field's default value for that key (not the invalid value) and the resulting config must be valid.
+*For any* config key with a known expected type, and *for any* JSON value whose type does not match, `KiroCrewConfig.load()` must use the field's default value for that key (not the invalid value) and the resulting config must be valid.
 
 **Validates: Requirements 6.1, 6.2**
 
 ### Property 10: Enum violation falls back to default
 
-*For any* config field with an `enum` constraint, and *for any* value not in the allowed set, `KiroClawConfig.load()` must use the field's default value for that key and the resulting config must be valid.
+*For any* config field with an `enum` constraint, and *for any* value not in the allowed set, `KiroCrewConfig.load()` must use the field's default value for that key and the resulting config must be valid.
 
 **Validates: Requirements 6.3**
 
 ### Property 11: Unrecognized keys are detected
 
-*For any* config JSON dict containing top-level keys not present in the Schema Registry, `KiroClawConfig.load()` must detect and report all unrecognized keys.
+*For any* config JSON dict containing top-level keys not present in the Schema Registry, `KiroCrewConfig.load()` must detect and report all unrecognized keys.
 
 **Validates: Requirements 6.4**
 
-### Property 12: load() always returns valid KiroClawConfig
+### Property 12: load() always returns valid KiroCrewConfig
 
-*For any* input string (valid JSON, invalid JSON, empty string, random bytes), `KiroClawConfig.load()` must return a `KiroClawConfig` instance without raising an exception, and all fields must have values matching their declared types.
+*For any* input string (valid JSON, invalid JSON, empty string, random bytes), `KiroCrewConfig.load()` must return a `KiroCrewConfig` instance without raising an exception, and all fields must have values matching their declared types.
 
 **Validates: Requirements 6.6**
 
@@ -592,7 +592,7 @@ Decisions made during the spec session:
 
 ### Property 14: Deprecated fields are accepted during loading
 
-*For any* config field marked `deprecated=True` and *for any* valid value for that field, `KiroClawConfig.load()` must apply the provided value (not the default) to the resulting config instance.
+*For any* config field marked `deprecated=True` and *for any* valid value for that field, `KiroCrewConfig.load()` must apply the provided value (not the default) to the resulting config instance.
 
 **Validates: Requirements 8.2**
 
@@ -606,16 +606,16 @@ Decisions made during the spec session:
 
 | Scenario | Behavior |
 |----------|----------|
-| Malformed JSON in `config.json` | Log warning, return default `KiroClawConfig` |
+| Malformed JSON in `config.json` | Log warning, return default `KiroCrewConfig` |
 | Type mismatch on a field | Log warning with dot-path + expected/actual types, use field default |
 | Enum violation | Log warning with dot-path + allowed/actual values, use field default |
 | Unrecognized top-level key | Log warning listing all unrecognized keys |
 | Deprecated field present | Log deprecation warning with dot-path + help text, apply value normally |
 | Sensitive field validation error | Mask actual value as `"***"` in log message |
-| `config.json` missing | Return default `KiroClawConfig` (existing behavior, unchanged) |
+| `config.json` missing | Return default `KiroCrewConfig` (existing behavior, unchanged) |
 | Schema endpoint internal error | Return HTTP 500 with JSON `{"error": "..."}` |
 
-All validation is advisory. The loader never raises exceptions to callers — it always returns a usable `KiroClawConfig` instance.
+All validation is advisory. The loader never raises exceptions to callers — it always returns a usable `KiroCrewConfig` instance.
 
 ## Testing Strategy
 
@@ -629,7 +629,7 @@ Both unit tests and property-based tests are required for comprehensive coverage
 
 **Tagging:** Each property test includes a comment referencing its design property:
 ```python
-# Feature: config-schema, Property 6: KiroClawConfig load/to_dict round-trip
+# Feature: config-schema, Property 6: KiroCrewConfig load/to_dict round-trip
 ```
 
 Each correctness property above maps to a single property-based test.
@@ -639,7 +639,7 @@ Each correctness property above maps to a single property-based test.
 Unit tests cover specific examples, edge cases, and integration points:
 
 - `SlackConfig` dataclass exists with correct fields and defaults (Req 2.1)
-- `KiroClawConfig` has `slack`, `dashboard`, `workspaces`, `default_workspace` fields (Req 2.2, 2.3)
+- `KiroCrewConfig` has `slack`, `dashboard`, `workspaces`, `default_workspace` fields (Req 2.2, 2.3)
 - Known enum fields (`approval_mode`, `provider`, `sandbox`, `embedding_provider`) have `enum` in metadata (Req 1.2)
 - Schema registry is populated after import (Req 3.1)
 - `GET /api/config/schema` returns 200 with `Content-Type: application/json` (Req 5.1, 5.4)
@@ -659,7 +659,7 @@ Each correctness property (1–15) is implemented as a single `hypothesis` prope
 | P3: Structural completeness | Iterate all registry entries, verify fields and path reachability |
 | P4: Type mapping | Enumerate all fields, compare Python type to schema type |
 | P5: ConfigEntry round-trip | Generate `ConfigEntry` instances with random valid values |
-| P6: KiroClawConfig round-trip | Generate `KiroClawConfig` instances with random field values |
+| P6: KiroCrewConfig round-trip | Generate `KiroCrewConfig` instances with random field values |
 | P7: Tag filtering | Generate random tag sets and registry subsets |
 | P8: Deprecated filtering | Generate registries with random deprecated flags |
 | P9: Type mismatch fallback | Generate config dicts with random wrong-type values |

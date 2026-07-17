@@ -8,7 +8,7 @@ chunk. This test feeds such a dict and asserts a valid chunk comes back.
 
 import json
 
-from kiro_claw.dashboard.chat_utils import _build_stream_chunk
+from kiro_crew.dashboard.chat_utils import _build_stream_chunk
 
 
 def test_agent_defect():

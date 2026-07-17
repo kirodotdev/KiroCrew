@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from kiro_claw.dashboard.file_index import FileIndex, FileIndexRegistry
+from kiro_crew.dashboard.file_index import FileIndex, FileIndexRegistry
 
 
 def _populate(tmp_path):
@@ -157,7 +157,7 @@ class TestFileIndexRegistry:
     async def test_acquire_failure_cleans_up(self, tmp_path, monkeypatch):
         """Failed start() must not leave orphan entries in registry."""
         reg = FileIndexRegistry()
-        from kiro_claw.dashboard import file_index as fi_mod
+        from kiro_crew.dashboard import file_index as fi_mod
 
         async def _fail_start(self):
             raise RuntimeError("boom")
@@ -203,7 +203,7 @@ class TestFileIndexTruncation:
     @pytest.mark.asyncio
     async def test_walk_truncates_at_max_entries(self, tmp_path, monkeypatch):
         """Index must set truncated=True when entry cap is hit."""
-        from kiro_claw.dashboard import file_index as fi_mod
+        from kiro_crew.dashboard import file_index as fi_mod
 
         monkeypatch.setattr(fi_mod, "_MAX_ENTRIES", 3)
         for i in range(10):

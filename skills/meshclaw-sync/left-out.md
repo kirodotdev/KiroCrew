@@ -1,4 +1,4 @@
-# MeshClaw → KiroClaw — Left-Out Commit Provenance
+# MeshClaw → KiroCrew — Left-Out Commit Provenance
 
 > Companion to [`last-synced.txt`](./last-synced.txt). That file records the sync
 > **boundary** (what has been triaged); this file records, per commit, **what was
@@ -11,16 +11,16 @@
 This repo's current history was produced by two separate events, each of which
 "left out" commits. This document records **both** populations:
 
-1. **The MeshClaw→KiroClaw content syncs** (batches 1–18) — the bulk of this doc.
+1. **The MeshClaw→KiroCrew content syncs** (batches 1–18) — the bulk of this doc.
    The fork shares **no git history** with its upstreams
    ([MeshClaw](https://code.amazon.com/packages/MeshClaw) backend +
    [MeshClawWebsite](https://code.amazon.com/packages/MeshClawWebsite) frontend);
    every fix is ported **by content**, so a "left-out" commit is one a sync batch
    triaged and consciously declined to port.
-2. **The 2026-06-14 history replacement** — the original 49-commit KiroClaw
+2. **The 2026-06-14 history replacement** — the original 49-commit KiroCrew
    package history was wiped and replaced with the de-Amazoned fork's history.
    Those 49 commits are enumerated in
-   [The 49 wiped original-KiroClaw commits](#the-49-wiped-original-kiroclaw-commits).
+   [The 49 wiped original-KiroCrew commits](#the-49-wiped-original-kirocrew-commits).
 
 This is the consolidated record so the decisions (and their reasons) survive even
 if the source CRs or the backup branch are pruned.
@@ -132,7 +132,7 @@ PR #92 (batch-35) drew a further set of Codex findings, again all byte-identical
 
 | Upstream origin | Fork file:sym | Sev | Finding | Fix shape (upstream-first) |
 |---|---|---|---|---|
-| [`eaf62582`](https://code.amazon.com/packages/MeshClaw/commits/eaf625828a1757fc2c649a9b43a67778b14715ae) | `sandbox.py` `wrap_argv` + `detect_backend` | HIGH | Windows has no sandbox backend (`detect_backend`->`none`), and the fail-closed `_allow_unsandboxed_exec` gate (from `383eae45`) defaults False, so a fresh Windows install cannot spawn `kiro-cli` — core chat can't start. The user-facing Windows support this batch enabled needs a usable default. | Provide a Windows sandbox backend, OR have `kiroclaw setup` set `sandbox_allow_unsandboxed_exec=true` on Windows + document it in WINDOWS_INSTALL.md. Combination-gap between two faithful commits; fix in both. |
+| [`eaf62582`](https://code.amazon.com/packages/MeshClaw/commits/eaf625828a1757fc2c649a9b43a67778b14715ae) | `sandbox.py` `wrap_argv` + `detect_backend` | HIGH | Windows has no sandbox backend (`detect_backend`->`none`), and the fail-closed `_allow_unsandboxed_exec` gate (from `383eae45`) defaults False, so a fresh Windows install cannot spawn `kiro-cli` — core chat can't start. The user-facing Windows support this batch enabled needs a usable default. | Provide a Windows sandbox backend, OR have `kirocrew setup` set `sandbox_allow_unsandboxed_exec=true` on Windows + document it in WINDOWS_INSTALL.md. Combination-gap between two faithful commits; fix in both. |
 | [`eaf62582`](https://code.amazon.com/packages/MeshClaw/commits/eaf625828a1757fc2c649a9b43a67778b14715ae) | `platform_compat.py` `kill_process_tree` | HIGH (Windows-only) | On Windows `kill_process_tree` runs blocking `taskkill /T` (up to 5s) synchronously; several async callers (`acp/client.py`, `apps/backend.py`, `hooks.py`, etc.) invoke it directly, which would block the event loop **on Windows only** (POSIX uses fast non-blocking `killpg`, unchanged). `runtime.py` already offloads via `run_in_executor`. | Offload the Windows `taskkill` branch via `subprocess_executor()` at every async call site, or make an async wrapper. POSIX path is fine as-is. |
 | [`eaf62582`](https://code.amazon.com/packages/MeshClaw/commits/eaf625828a1757fc2c649a9b43a67778b14715ae) | `platform_compat.py` `restrict_to_owner` / `_current_user_sid` | HIGH (Windows-only) | On Windows these run `whoami`/`icacls` synchronously (up to ~15s) from lazy-auth/request paths (e.g. `token_secret.py`), blocking the event loop **on Windows only**. | Resolve permissions off-loop (executor) or at startup. |
 | [`1b0585bb`](https://code.amazon.com/packages/MeshClaw/commits/1b0585bb) | `apps/manifest.py` `signing_payload` | HIGH | The App-Kit admission signature covers only name/version/signer/permissions, so a valid signature survives changes to install scripts / backend entryPoint / MCP servers / source. | Sign a canonical full manifest **plus** a package/tree (or pinned-commit) digest; verify the checked-out content before build/script execution. |
@@ -150,7 +150,7 @@ PR #92 (batch-35) drew a further set of Codex findings, again all byte-identical
 | [`38864fd9`](https://code.amazon.com/packages/MeshClaw/commits/38864fd98f4fc7fabd81487b6e91ae6a49f0ebf1) (+ `d17306e1`) | backend | batch 1–3 (DEFERRED: 4331-line multi-instance SSH tunnels, no UI consumer) | **PORTED (PARTIAL) in batch-10** — kept the generic multi-instance registry / port-allocator / plain-OpenSSH tunnel manager + UI; **dropped** the Midway SSH-cert watchdog (`instances/midway.py`) and its `~/.ssh` carve-out (forbidden by `MIGRATION_PLAN.md`). |
 | [`b490c7e8`](https://code.amazon.com/packages/MeshClaw/commits/b490c7e8) | backend | batch 6–7 (DEFERRED: dynamic sub-agent concurrency cap; depended on absent `mcp_gateway.pool`) | **PORTED in batch-8** — relocated the ~50-line stdlib `/proc`-subtree RSS/CPU helpers into `subagent.py`; the absent-import objection was overcome. |
 | [`96c39b8`](https://code.amazon.com/packages/MeshClawWebsite/commits/96c39b8) | frontend | batch 18 (initially DEFER) | **RESCUED to KEEP in batch-18** — its backend pair `7b66e2e3` (MLX Whisper STT) was a keeper the same batch, so the UI was ported backend-first. |
-| [`ed984a05`](https://code.amazon.com/packages/MeshClaw/commits/ed984a05edc17e3d740c4feb32c0a6ada026184c) | backend | batch 33 (DEFER: 16-file, −2409-line legacy-HTML-dashboard removal landed after the batch-33 verdicts were verified) | **PORTED in batch-34 addendum (PR #88)** — the fork still shipped the legacy `dashboard.html`/`dashboard.js`/`purify.min.js`/`dashboard.css`/`cli-mode.css` + `_HTML_PATH` wiring + XSS test, so the generic-core XSS-surface reduction applied. `index()` now serves `dist/index.html` only (guidance page on missing bundle); `/static` route, theme assets, `kiroclaw-logo.png`, and `_BASE_CSP` preserved. Talos V2285871874 / CR-289374220. |
+| [`ed984a05`](https://code.amazon.com/packages/MeshClaw/commits/ed984a05edc17e3d740c4feb32c0a6ada026184c) | backend | batch 33 (DEFER: 16-file, −2409-line legacy-HTML-dashboard removal landed after the batch-33 verdicts were verified) | **PORTED in batch-34 addendum (PR #88)** — the fork still shipped the legacy `dashboard.html`/`dashboard.js`/`purify.min.js`/`dashboard.css`/`cli-mode.css` + `_HTML_PATH` wiring + XSS test, so the generic-core XSS-surface reduction applied. `index()` now serves `dist/index.html` only (guidance page on missing bundle); `/static` route, theme assets, `kirocrew-logo.png`, and `_BASE_CSP` preserved. Talos V2285871874 / CR-289374220. |
 
 ---
 
@@ -319,15 +319,15 @@ detail: the batch-28 block of [`last-synced.txt`](./last-synced.txt).
 | [`d0a78b07`](https://code.amazon.com/packages/MeshClaw/commits/d0a78b070b7058daad61b603dd19b67a0b295a9a) | backend | SKIP_INTERNAL | Add defusedxml to install_requires — a dead dep in the fork (no consumer). |
 | [`7cfeed18`](https://code.amazon.com/packages/MeshClaw/commits/7cfeed18289f14deb72fae285e501ab75772a503) | backend | SKIP_INTERNAL | Work Summary app registry row — `app-registry.json` is `[]` by design. |
 | [`1984ccc`](https://code.amazon.com/packages/MeshClawWebsite/commits/1984ccc4707eec0f3b3f04d143a84e17173e7f45) | frontend | SKIP_INTERNAL | Gate Shared on provider supports_shared — publish UI surface absent. |
-| [`70898ca5`](https://code.amazon.com/packages/MeshClaw/commits/70898ca54a64dc0a56666e7ae41444767efbc4e0) / [`d5819090`](https://code.amazon.com/packages/MeshClaw/commits/d58190905baf848757d6dd85af91f9984bab73d4) | backend | ALREADY_PRESENT | AcpRuntime teardown termination + age/RSS recycle — the fork did both natively via fork PR [#43](https://github.com/kirodotdev-labs/kiroclaw/pull/43). |
-| [`e4fc0ce`](https://code.amazon.com/packages/MeshClawWebsite/commits/e4fc0ce1a18776119e646fb6031beb67a96f2339) | frontend | ALREADY_PRESENT | Follow-up-bar clickable scroll arrows — present via fork PR [#45](https://github.com/kirodotdev-labs/kiroclaw/pull/45). |
-| [`3e5d7132`](https://code.amazon.com/packages/MeshClaw/commits/3e5d7132e46c3fd7dd4394dd182fba9f58656025) | backend | **DEFER** | Reject type-unsafe authored workflow scripts — the dynamic-workflows engine is absent from the fork; fork PR [#57](https://github.com/kirodotdev-labs/kiroclaw/pull/57) (workflows engine) carries all three fixes by content. Resolves when that PR lands. |
+| [`70898ca5`](https://code.amazon.com/packages/MeshClaw/commits/70898ca54a64dc0a56666e7ae41444767efbc4e0) / [`d5819090`](https://code.amazon.com/packages/MeshClaw/commits/d58190905baf848757d6dd85af91f9984bab73d4) | backend | ALREADY_PRESENT | AcpRuntime teardown termination + age/RSS recycle — the fork did both natively via fork PR [#43](https://github.com/kirodotdev/KiroCrew/pull/43). |
+| [`e4fc0ce`](https://code.amazon.com/packages/MeshClawWebsite/commits/e4fc0ce1a18776119e646fb6031beb67a96f2339) | frontend | ALREADY_PRESENT | Follow-up-bar clickable scroll arrows — present via fork PR [#45](https://github.com/kirodotdev/KiroCrew/pull/45). |
+| [`3e5d7132`](https://code.amazon.com/packages/MeshClaw/commits/3e5d7132e46c3fd7dd4394dd182fba9f58656025) | backend | **DEFER** | Reject type-unsafe authored workflow scripts — the dynamic-workflows engine is absent from the fork; fork PR [#57](https://github.com/kirodotdev/KiroCrew/pull/57) (workflows engine) carries all three fixes by content. Resolves when that PR lands. |
 | [`f8383887`](https://code.amazon.com/packages/MeshClaw/commits/f8383887d8dec0f3583a3cbcf674468172e3dd45) | backend | **DEFER** | Hero SVGs for deploy_web/workflows — needs the `fd633154` builtin-ui materialization substrate. |
 | [`0000f561`](https://code.amazon.com/packages/MeshClawWebsite/commits/0000f561ecc8f750b51203290279dcdb9ee9d6a7) / [`f746d60`](https://code.amazon.com/packages/MeshClawWebsite/commits/f746d60d6beeb1b9219bcbcb0322986bb05a3793) | frontend | **DEFER** | Comment-anchor offset fix / collapse empty comment sidebar — the anchored/durable artifact-comment subsystem is absent; port when the `affffcff` base lands. |
 
 ### Batch 27 — GitHub PR (73 ported, 62 left out) — FIRST batch on the public GitHub fork
 
-**First sync run in the public GitHub checkout** (`kirodotdev-labs/kiroclaw`, ships via PR, not
+**First sync run in the public GitHub checkout** (`kirodotdev/KiroCrew`, ships via PR, not
 CRUX). The boundary file was **stale** (recorded batch-25) but the fork had since done batch-26
 (PR #18) plus a large **GitHub-native porting wave** (PRs #10–#38) that did not cite upstream SHAs —
 so the fork is **bidirectional** with MeshClaw, not strictly downstream. Every candidate was triaged
@@ -534,7 +534,7 @@ auto-recover; `cca1191` project-agent UI (unblocked by BE `7519a5d9`). FOLD-INs:
 standalone left-out commits — each is a deliberately-dropped piece of an
 otherwise-ported upstream commit, recorded in the port commit's own body. Most
 drop a CHANGELOG/version-bump hunk, an absent-subsystem hunk
-(`writing_review`/`mcp_gateway`/`cc_session`), or a KIROCLAW-branding/placeholder
+(`writing_review`/`mcp_gateway`/`cc_session`), or a KIROCREW-branding/placeholder
 hunk the fork overrides. Examples: `570a9ccf` dropped its `acp-client.md` spec
 hunk; `73fb9dd0` dropped `writing_review` hunks + tests; `b674cd5a` dropped 3
 theme hunks (kiro-dark/light, bikini-bottom); `e7730da7` dropped the
@@ -588,7 +588,7 @@ that only says "hidden" is unenforceable when upstream ships the same default.
 | Surface | Fork mechanism | Upstream (watch for re-add) | Task |
 |---|---|---|---|
 | Artifact **Iterate** button + all its entry points | `website/src/pages/ArtifactDetailPage.tsx` module const `SHOW_ARTIFACT_ITERATE = false` gates the header button, inline comment creation (`commentable`), the pending-comments "Submit All" path, and the "click Iterate" tips. `iterateWithAgent`/`buildPromptForChat` + the `iterated` lifecycle event stay. | Upstream keeps the button visible (icon-only `Sparkles`), and its `CommentsSidebar.tsx` `onAskAgent` ("Ask agent to address") + `ArtifactPanel.tsx` SubmitBar are additional iterate triggers absent from the fork — strip those too if that comment stack is ever ported. Symbols don't rename, so a sync will treat them as directly portable. | P472753393 |
-| **Channels** app store listing | `src/kiro_claw/apps/manager.py` `_BUILTIN_APPS` "channels" entry carries `"hidden": True`; `website/src/pages/AppsPage.tsx` Browse grid filters `!(a.manifest as any)?.hidden`. Code/routes/`ChannelPage` stay (opt-in via `kiroclaw app enable channels`). This MIRRORS upstream MeshClaw CR-289326017, so it should be at parity. | `defaultEnabled:False` is parity, NOT the divergence — the guard is the `hidden:True` flag + the AppsPage filter. Don't drop either on sync. | P472750613 |
+| **Channels** app store listing | `src/kiro_crew/apps/manager.py` `_BUILTIN_APPS` "channels" entry carries `"hidden": True`; `website/src/pages/AppsPage.tsx` Browse grid filters `!(a.manifest as any)?.hidden`. Code/routes/`ChannelPage` stay (opt-in via `kirocrew app enable channels`). This MIRRORS upstream MeshClaw CR-289326017, so it should be at parity. | `defaultEnabled:False` is parity, NOT the divergence — the guard is the `hidden:True` flag + the AppsPage filter. Don't drop either on sync. | P472750613 |
 | **Board** app (fully removed) | Deleted `website/src/pages/BoardPage.tsx`, the `/board` `builtinRegistry.ts` route, the `_BUILTIN_APPS` "board" entry, the `KanbanSquare` nav icon, the Alt+B / KeyB shortcut, the `MigrationCheck` prefix, and the Board tests. MIRRORS upstream CR-289326017 (which also removed Board). | If a pre-CR-289326017 upstream commit re-adds Board, DROP it. | (CR-289326017) |
 | Voice/TTS **Piper** provider UI | `website/src/pages/settings/VoicePanel.tsx` adds a Piper/Polly provider selector + Piper fields; `dashboard/chat_voice.py` exposes/persists `provider` + `piper_*`. Upstream VoicePanel is Polly-only. | This is fork-AHEAD (a public feature upstream lacks). A sync of upstream's Polly-only VoicePanel must NOT drop the Piper selector — reconcile, keep both providers. | P472753900-adjacent |
 
@@ -597,20 +597,20 @@ that only says "hidden" is unenforceable when upstream ships the same default.
 `amazon_dev_story` eval, Secretary `.mjs` scripts) are recorded above under
 "Recurring reasons at a glance" + the SKIP tables, and in `DEAMAZON_REPORT.md`.
 Note specifically: `HEARTBEAT_SAFE_TOOLS` in `slack/gateway.py` was TRIMMED to
-generic + kiroclaw-core reads — the old rubric line calling those names
+generic + kirocrew-core reads — the old rubric line calling those names
 "inert, keep verbatim" no longer applies (see SKILL.md Step 2).
 
 ---
 
-## The 49 wiped original-KiroClaw commits
+## The 49 wiped original-KiroCrew commits
 
-Separate from the sync left-outs above: on **2026-06-14** the `KiroClaw` Brazil
+Separate from the sync left-outs above: on **2026-06-14** the `KiroCrew` Brazil
 package's original 49-commit history was **replaced** with the de-Amazoned public
 fork's 207-commit history (the package took ownership of the fork's content). The
 original 49 commits were a *different, earlier* codebase that happened to share
-the `KiroClaw` name — an internal kiro-cli **agent-pool** architecture (Slack ↔
+the `KiroCrew` name — an internal kiro-cli **agent-pool** architecture (Slack ↔
 ACP pool, FastAPI + MCP task scheduler, Taskei orchestrator, Ralph loop), not the
-fork's setuptools `kiro_claw` package.
+fork's setuptools `kiro_crew` package.
 
 **Why wiped:** the two codebases are unrelated — the original was an ancestor
 prototype, the fork is the current product. Rather than merge, the package was
@@ -644,7 +644,7 @@ bang command + `/context` ACP schema doc
 bang · `fa22221` task result retrieval + stream completions · `2e45eec` periodic
 cleanup of history/tasks/jobs/sessions · `1fbd430` move session tracking into
 AgentManager · `f310f63` task list last_run/created_at · `fbfc33a` job list API +
-mrkdwn task output · `f7d2dc0` `kiroclaw reset` command
+mrkdwn task output · `f7d2dc0` `kirocrew reset` command
 
 **CLI / packaging (3):** `9610ae9` unified CLI with uv · `13ac86c` auto-discover
 agent-browser skill from npm · `6148f7d` bundle agent-browser wrapper + PATH

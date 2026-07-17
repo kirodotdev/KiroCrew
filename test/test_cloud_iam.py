@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from kiro_claw.cloud import aws, iam
+from kiro_crew.cloud import aws, iam
 
 
 class TestPolicyDocument:
@@ -37,7 +37,7 @@ class TestPolicyDocument:
             "cloudformation:ExecuteChangeSet",
             "cloudformation:DescribeChangeSet",
             "cloudformation:DeleteChangeSet",
-            # `kiroclaw cloud list` discovers instances via the tagging API.
+            # `kirocrew cloud list` discovers instances via the tagging API.
             "tag:GetResources",
         ):
             assert needed in actions, f"missing {needed}"
@@ -52,10 +52,10 @@ class TestPolicyDocument:
         assert cond[f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
 
     def test_put_role_policy_is_tag_scoped(self):
-        # PutRolePolicy must be gated on aws:ResourceTag/kiroclaw:managed=true (in
+        # PutRolePolicy must be gated on aws:ResourceTag/kirocrew:managed=true (in
         # addition to the role-ARN prefix) so a leaked launcher credential can't
         # inline a policy onto a PRE-EXISTING, out-of-band, unbounded
-        # kiroclaw-ec2-* role. The role is tagged atomically at CreateRole, so the
+        # kirocrew-ec2-* role. The role is tagged atomically at CreateRole, so the
         # legitimate CFN deploy still satisfies it.
         st = next(
             s
@@ -70,7 +70,7 @@ class TestPolicyDocument:
         assert "iam:PermissionsBoundary" not in str(st["Condition"])
 
     def test_put_role_policy_and_passrole_not_tag_scoped_regression(self):
-        # Guard: both PutRolePolicy and PassRole on a kiroclaw-ec2-* role ARN must
+        # Guard: both PutRolePolicy and PassRole on a kirocrew-ec2-* role ARN must
         # carry the managed-tag condition — a regression that drops it re-opens
         # the pre-existing-unbounded-role escalation.
         for sid in ("IamPutRolePolicyForInstance", "IamPassRoleToEc2"):
@@ -78,13 +78,13 @@ class TestPolicyDocument:
             se = st.get("Condition", {}).get("StringEquals", {})
             assert (
                 se.get(f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}") == "true"
-            ), f"{sid} lost its aws:ResourceTag/kiroclaw:managed gate"
+            ), f"{sid} lost its aws:ResourceTag/kirocrew:managed gate"
 
     def test_tag_role_gated_on_existing_managed_tag(self):
         # iam:TagRole must be a SEPARATE statement gated on aws:ResourceTag/
-        # kiroclaw:managed=true — NOT unconditioned, and NOT in IamRoleForInstance.
+        # kirocrew:managed=true — NOT unconditioned, and NOT in IamRoleForInstance.
         # If it were unconditioned, a leaked launcher credential could tag a
-        # pre-existing UNBOUNDED kiroclaw-ec2-* role kiroclaw:managed=true and
+        # pre-existing UNBOUNDED kirocrew-ec2-* role kirocrew:managed=true and
         # thereby satisfy the PutRolePolicy/PassRole tag gate, defeating it. The
         # aws:ResourceTag gate means the launcher can only tag a role that is
         # ALREADY managed — which, at CreateRole, AWS evaluates against the tags
@@ -104,14 +104,14 @@ class TestPolicyDocument:
 
     def test_tag_role_not_unconditioned_anywhere(self):
         # Guard: iam:TagRole must NOT appear in any statement WITHOUT the
-        # aws:ResourceTag/kiroclaw:managed=true gate — an unconditioned TagRole
+        # aws:ResourceTag/kirocrew:managed=true gate — an unconditioned TagRole
         # (e.g. re-added to IamRoleForInstance) re-opens the tag-spoofing hole.
         for st in iam.policy_document()["Statement"]:
             if "iam:TagRole" in st.get("Action", []):
                 se = st.get("Condition", {}).get("StringEquals", {})
                 assert se.get(f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}") == "true", (
                     f"{st['Sid']} grants iam:TagRole without the "
-                    "aws:ResourceTag/kiroclaw:managed=true gate"
+                    "aws:ResourceTag/kirocrew:managed=true gate"
                 )
         # And specifically not in the plain role-management statement.
         base = next(
@@ -119,12 +119,12 @@ class TestPolicyDocument:
         )
         assert "iam:TagRole" not in base["Action"]
 
-    def test_cloudformation_mutation_scoped_to_kiroclaw_stacks(self):
+    def test_cloudformation_mutation_scoped_to_kirocrew_stacks(self):
         st = next(
             s for s in iam.policy_document()["Statement"] if s["Sid"] == "CloudFormationStackMutate"
         )
         assert "cloudformation:DeleteStack" in st["Action"]
-        # scoped to kiroclaw-* stacks, not "*"
+        # scoped to kirocrew-* stacks, not "*"
         assert st["Resource"] == f"arn:aws:cloudformation:*:*:stack/{iam.STACK_PREFIX}*/*"
         # read-only enumerate/validate stays account-wide (can't be stack-scoped)
         read = next(
@@ -136,7 +136,7 @@ class TestPolicyDocument:
         # `aws cloudformation deploy` authorizes change-set verbs on the
         # changeSet ARN (not just the stack ARN) — scoping to stack/* only would
         # deny the launch under the generated policy. Both ARN forms must be
-        # present, still kiroclaw-*-scoped.
+        # present, still kirocrew-*-scoped.
         st = next(
             s for s in iam.policy_document()["Statement"] if s["Sid"] == "CloudFormationChangeSet"
         )
@@ -150,16 +150,16 @@ class TestPolicyDocument:
         res = st["Resource"]
         assert any("changeSet/" in r for r in res), "changeSet ARN missing"
         assert any(":stack/" in r for r in res), "stack ARN missing"
-        assert all(iam.STACK_PREFIX in r for r in res)  # all kiroclaw-*-scoped
+        assert all(iam.STACK_PREFIX in r for r in res)  # all kirocrew-*-scoped
 
     def test_stack_prefix_matches_ec2(self):
-        from kiro_claw.cloud import ec2
+        from kiro_crew.cloud import ec2
 
         assert iam.STACK_PREFIX == ec2.STACK_PREFIX
 
     def test_create_role_requires_boundary_with_arnlike(self):
         # iam:CreateRole is the boundary enforcement point: a created
-        # kiroclaw-ec2-* role MUST carry our permissions boundary. The condition
+        # kirocrew-ec2-* role MUST carry our permissions boundary. The condition
         # MUST be ArnLike (not StringEquals) — the value is a wildcard ARN pattern
         # (account id is `*`) and StringEquals would literal-match and DENY
         # CreateRole for anyone using the generated policy. The boundary name is
@@ -176,7 +176,7 @@ class TestPolicyDocument:
 
     def test_put_role_policy_scoped_no_dead_boundary_condition(self):
         # PutRolePolicy is a SEPARATE statement scoped to the role ARN prefix. It
-        # carries the aws:ResourceTag/kiroclaw:managed gate (see
+        # carries the aws:ResourceTag/kirocrew:managed gate (see
         # test_put_role_policy_is_tag_scoped) but must NOT carry an
         # iam:PermissionsBoundary condition — that key isn't in PutRolePolicy's
         # request context, so it would never match and DENY the call. The boundary
@@ -250,10 +250,10 @@ class TestPolicyDocument:
         # The boundary is a single shared account-level policy with a FIXED name —
         # no per-StackTag suffix — so its content is identical for every launch
         # and it can be created once and reused immutably.
-        assert iam.BOUNDARY_NAME == "kiroclaw-ec2-boundary"
+        assert iam.BOUNDARY_NAME == "kirocrew-ec2-boundary"
         assert not iam.BOUNDARY_NAME.endswith("-")  # not a prefix awaiting a suffix
         assert iam.boundary_arn("123456789012") == (
-            "arn:aws:iam::123456789012:policy/kiroclaw-ec2-boundary"
+            "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary"
         )
 
     def test_boundary_document_shape(self):
@@ -275,12 +275,12 @@ class TestPolicyDocument:
             assert act in ssm_core["Action"]
         s3 = next(s for s in doc["Statement"] if s["Sid"] == "SourceBucketRead")
         assert s3["Action"] == ["s3:GetObject"]
-        assert s3["Resource"] == "arn:aws:s3:::kiroclaw-src-123456789012-*/*"
+        assert s3["Resource"] == "arn:aws:s3:::kirocrew-src-123456789012-*/*"
         # roundtrips as JSON
         assert json.loads(iam.boundary_policy_json("123456789012")) == doc
 
     def test_authorize_security_group_is_tag_gated(self):
-        # SG rule mutation must be gated to kiroclaw:managed=true SGs so a leaked
+        # SG rule mutation must be gated to kirocrew:managed=true SGs so a leaked
         # credential can't open ingress on unrelated security groups.
         st = next(
             s
@@ -308,7 +308,7 @@ class TestPolicyDocument:
         assert "ec2:AuthorizeSecurityGroupIngress" not in prov_actions
 
     def test_run_instances_request_tag_gated_on_instance_only(self):
-        # ec2:RunInstances must require aws:RequestTag/kiroclaw:managed=true, but
+        # ec2:RunInstances must require aws:RequestTag/kirocrew:managed=true, but
         # ONLY on the instance ARN — RunInstances authorizes per-resource across
         # the instance it creates AND the volume/ENI it creates + the referenced
         # image/subnet/security-group, none of which carry the request tag; a
@@ -375,7 +375,7 @@ class TestPolicyDocument:
         return next(s for s in iam.policy_document()["Statement"] if s["Sid"] == sid)
 
     def test_ssm_session_and_sendcommand_gated_to_managed_instances(self):
-        # The RCE-adjacent verbs must be tag-scoped to KiroClaw instances so a
+        # The RCE-adjacent verbs must be tag-scoped to KiroCrew instances so a
         # leaked launcher credential can't run commands account-wide.
         st = self._stmt("SsmSessionOnManagedInstances")
         assert set(st["Action"]) == {"ssm:StartSession", "ssm:SendCommand"}
@@ -418,7 +418,7 @@ class TestPolicyDocument:
 
     def test_create_tags_only_on_create(self):
         # ec2:CreateTags must be gated by ec2:CreateAction so a leaked credential
-        # can't tag arbitrary existing resources as kiroclaw:managed=true and
+        # can't tag arbitrary existing resources as kirocrew:managed=true and
         # bring them under the tag-gated Stop/Terminate/Delete statements.
         st = self._stmt("Ec2TagOnCreate")
         assert st["Action"] == ["ec2:CreateTags"]
@@ -440,7 +440,7 @@ class TestPolicyDocument:
     def test_attach_role_policy_pinned_to_ssm_core(self):
         # AttachRolePolicy must be constrained by iam:PolicyARN to exactly the
         # SSM-core managed policy, else a holder could attach AdministratorAccess
-        # to a kiroclaw-ec2-* role and pass it to EC2 (full escalation).
+        # to a kirocrew-ec2-* role and pass it to EC2 (full escalation).
         st = self._stmt("IamAttachManagedPolicyForInstance")
         assert set(st["Action"]) == {"iam:AttachRolePolicy", "iam:DetachRolePolicy"}
         pinned = st["Condition"]["ArnEquals"]["iam:PolicyARN"]
@@ -534,7 +534,7 @@ class TestAgentDenyListForCloudVerbs:
         import importlib.resources as res
 
         data = json.loads(
-            (res.files("kiro_claw.config") / "defaults.json").read_text(encoding="utf-8")
+            (res.files("kiro_crew.config") / "defaults.json").read_text(encoding="utf-8")
         )
         out = {}
         for tool in ("execute_bash", "shell"):
@@ -617,20 +617,20 @@ class TestAgentDenyListForCloudVerbs:
 
         denied = self._denied_commands()
         must_deny = [
-            "aws cloudformation deploy --template-file t --stack-name kiroclaw-x",
+            "aws cloudformation deploy --template-file t --stack-name kirocrew-x",
             "aws --profile dev cloudformation create-stack --stack-name x",
             "aws cloudformation execute-change-set --change-set-name c",
             "aws ec2 run-instances --image-id ami-1",
             "aws --region us-east-1 ec2 create-security-group --group-name g",
             "aws ec2 authorize-security-group-ingress --group-id sg-1",
-            "aws iam create-role --role-name kiroclaw-ec2-x",
+            "aws iam create-role --role-name kirocrew-ec2-x",
             "aws iam put-role-policy --role-name r --policy-name p --policy-document {}",
             "aws iam attach-role-policy --role-name r --policy-arn a",
             "aws --profile p iam create-instance-profile --instance-profile-name p",
             # The launcher policy grants iam:CreatePolicy on the fixed boundary
             # name — deny the agent shell from reaching it (first-write race +
             # consistency with the other create verbs).
-            "aws iam create-policy --policy-name kiroclaw-ec2-boundary --policy-document {}",
+            "aws iam create-policy --policy-name kirocrew-ec2-boundary --policy-document {}",
             "aws iam create-policy-version --policy-arn a --policy-document {}",
         ]
         still_allowed = [
@@ -653,7 +653,7 @@ class TestAgentDenyListForCloudVerbs:
                 ), f"{tool}: read-only call wrongly denied: {cmd!r}"
 
     def test_s3api_write_verbs_denied(self):
-        # The launcher IAM grants s3:PutObject to kiroclaw-src-* buckets; if the
+        # The launcher IAM grants s3:PutObject to kirocrew-src-* buckets; if the
         # agent shell can reach the low-level `aws s3api put-object` (or the
         # multipart / copy / bucket-policy verbs), it has a data-exfiltration
         # path that the high-level `aws s3 cp` denies don't cover. Block the whole
@@ -685,8 +685,8 @@ class TestAgentDenyListForCloudVerbs:
                     re.search(p, cmd) for p in patterns
                 ), f"{tool}: s3api read wrongly denied: {cmd!r}"
 
-    def test_kiroclaw_cloud_wrapper_denied(self):
-        # `kiroclaw cloud destroy` is a wrapper that internally runs
+    def test_kirocrew_cloud_wrapper_denied(self):
+        # `kirocrew cloud destroy` is a wrapper that internally runs
         # `aws cloudformation delete-stack`; the denylist only sees the wrapper
         # string, so it must be blocked in its own right or the agent bypasses
         # the raw-CLI teardown block.
@@ -695,17 +695,17 @@ class TestAgentDenyListForCloudVerbs:
         denied = self._denied_commands()
         for tool, patterns in denied.items():
             wrapper = [p for p in patterns if "cloud" in p and "destroy" in p]
-            assert wrapper, f"{tool} missing a kiroclaw-cloud-destroy deny pattern"
+            assert wrapper, f"{tool} missing a kirocrew-cloud-destroy deny pattern"
             pat = wrapper[0]
             for cmd in (
-                "kiroclaw cloud destroy --yes --tag kc-1",
-                "kiroclaw cloud stop",
-                "kiro-claw cloud launch",
-                "kiroclaw cloud connect",  # mints/prints a dashboard token
-                "kiroclaw cloud tunnel",
-                "kiroclaw cloud login",
+                "kirocrew cloud destroy --yes --tag kc-1",
+                "kirocrew cloud stop",
+                "kiro-crew cloud launch",
+                "kirocrew cloud connect",  # mints/prints a dashboard token
+                "kirocrew cloud tunnel",
+                "kirocrew cloud login",
             ):
                 assert re.search(pat, cmd), f"{pat!r} did not match {cmd!r}"
             # read-only observation stays allowed
-            for allowed in ("kiroclaw cloud list", "kiroclaw cloud status"):
+            for allowed in ("kirocrew cloud list", "kirocrew cloud status"):
                 assert not re.search(pat, allowed), f"{pat!r} should not match {allowed!r}"

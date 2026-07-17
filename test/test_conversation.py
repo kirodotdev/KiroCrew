@@ -11,13 +11,13 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.messaging.conversation import ConversationState
-from kiro_claw.session_map import SessionMap
+from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.session_map import SessionMap
 
 
 @pytest.fixture()
 def session_map(tmp_path):
-    with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+    with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
         yield SessionMap()
 
 
@@ -91,24 +91,24 @@ class TestSeeding:
 
 class TestMaxGeneration:
     def test_none_returns_minus_one(self, session_map):
-        assert session_map.max_generation("telegram:kiroclaw:direct:U") == -1
+        assert session_map.max_generation("telegram:kirocrew:direct:U") == -1
 
     def test_base_only_returns_zero(self, session_map):
-        session_map.set("telegram:kiroclaw:direct:U", "sid0", provider="claude_code")
-        assert session_map.max_generation("telegram:kiroclaw:direct:U") == 0
+        session_map.set("telegram:kirocrew:direct:U", "sid0", provider="claude_code")
+        assert session_map.max_generation("telegram:kirocrew:direct:U") == 0
 
     def test_highest_generation(self, session_map):
-        b = "telegram:kiroclaw:direct:U"
+        b = "telegram:kirocrew:direct:U"
         session_map.set(b, "sid0", provider="claude_code")
         session_map.set(f"{b}:gen1", "sid1", provider="claude_code")
         session_map.set(f"{b}:gen2", "sid2", provider="claude_code")
         assert session_map.max_generation(b) == 2
 
     def test_ignores_other_buckets(self, session_map):
-        session_map.set("telegram:kiroclaw:direct:U:gen5", "sid", provider="claude_code")
+        session_map.set("telegram:kirocrew:direct:U:gen5", "sid", provider="claude_code")
         # A different (prefix-lookalike) user must not leak in.
-        assert session_map.max_generation("telegram:kiroclaw:direct:U2") == -1
-        assert session_map.max_generation("telegram:kiroclaw:direct:U") == 5
+        assert session_map.max_generation("telegram:kirocrew:direct:U2") == -1
+        assert session_map.max_generation("telegram:kirocrew:direct:U") == 5
 
 
 class TestRestartRegression:
@@ -116,7 +116,7 @@ class TestRestartRegression:
         """The bug: after a gateway restart the in-memory counter reset to 0 and
         /new bumped 0→1, colliding with a stale :gen1 on disk and resuming it.
         Seeding from disk makes current resume the latest and /new go fresh."""
-        b = "telegram:kiroclaw:direct:U"
+        b = "telegram:kirocrew:direct:U"
         session_map.set(b, "sid0", provider="claude_code")
         session_map.set(f"{b}:gen1", "sid1", provider="claude_code")
         session_map.set(f"{b}:gen2", "sid2", provider="claude_code")

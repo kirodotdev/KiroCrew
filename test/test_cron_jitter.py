@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.cron import (
+from kiro_crew.cron import (
     _JITTER_DAILY_MAX,
     _JITTER_HOURLY_MAX,
     CronJob,
@@ -51,28 +51,28 @@ class TestComputeJitterEveryJobs:
         job = _job(CronSchedule(kind="every", every_secs=3540))
         assert CronService._compute_jitter(job) == 0.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=600.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=600.0)
     def test_hourly_returns_hourly_jitter(self, mock_rand):
         job = _job(CronSchedule(kind="every", every_secs=3600))
         result = CronService._compute_jitter(job)
         mock_rand.assert_called_once_with(0, _JITTER_HOURLY_MAX)
         assert result == 600.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=900.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=900.0)
     def test_3hour_returns_hourly_jitter(self, mock_rand):
         job = _job(CronSchedule(kind="every", every_secs=10800))
         result = CronService._compute_jitter(job)
         mock_rand.assert_called_once_with(0, _JITTER_HOURLY_MAX)
         assert result == 900.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=3600.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=3600.0)
     def test_daily_returns_daily_jitter(self, mock_rand):
         job = _job(CronSchedule(kind="every", every_secs=86400))
         result = CronService._compute_jitter(job)
         mock_rand.assert_called_once_with(0, _JITTER_DAILY_MAX)
         assert result == 3600.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=5000.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=5000.0)
     def test_weekly_returns_daily_jitter(self, mock_rand):
         job = _job(CronSchedule(kind="every", every_secs=604800))
         result = CronService._compute_jitter(job)
@@ -91,7 +91,7 @@ class TestComputeJitterCronExpr:
         job = _job(CronSchedule(kind="cron", cron_expr="0,30 * * * *"))
         assert CronService._compute_jitter(job) == 0.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=700.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=700.0)
     def test_hourly_wildcard_returns_hourly_jitter(self, mock_rand):
         """0 * * * * (every hour) gets hourly jitter."""
         job = _job(CronSchedule(kind="cron", cron_expr="0 * * * *"))
@@ -99,7 +99,7 @@ class TestComputeJitterCronExpr:
         mock_rand.assert_called_once_with(0, _JITTER_HOURLY_MAX)
         assert result == 700.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=500.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=500.0)
     def test_every_2_hours_returns_hourly_jitter(self, mock_rand):
         """0 */2 * * * gets hourly jitter (not daily)."""
         job = _job(CronSchedule(kind="cron", cron_expr="0 */2 * * *"))
@@ -107,7 +107,7 @@ class TestComputeJitterCronExpr:
         mock_rand.assert_called_once_with(0, _JITTER_HOURLY_MAX)
         assert result == 500.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=800.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=800.0)
     def test_twice_daily_comma_hours_returns_hourly_jitter(self, mock_rand):
         """0 1,13 * * * (twice daily) gets hourly jitter."""
         job = _job(CronSchedule(kind="cron", cron_expr="0 1,13 * * *"))
@@ -115,7 +115,7 @@ class TestComputeJitterCronExpr:
         mock_rand.assert_called_once_with(0, _JITTER_HOURLY_MAX)
         assert result == 800.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=4000.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=4000.0)
     def test_daily_single_hour_returns_daily_jitter(self, mock_rand):
         """0 3 * * * (daily at 3am) gets daily jitter."""
         job = _job(CronSchedule(kind="cron", cron_expr="0 3 * * *"))
@@ -123,7 +123,7 @@ class TestComputeJitterCronExpr:
         mock_rand.assert_called_once_with(0, _JITTER_DAILY_MAX)
         assert result == 4000.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=5500.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=5500.0)
     def test_weekly_single_hour_returns_daily_jitter(self, mock_rand):
         """0 9 * * 1-5 (weekdays at 9am) gets daily jitter."""
         job = _job(CronSchedule(kind="cron", cron_expr="0 9 * * 1-5"))
@@ -131,7 +131,7 @@ class TestComputeJitterCronExpr:
         mock_rand.assert_called_once_with(0, _JITTER_DAILY_MAX)
         assert result == 5500.0
 
-    @patch("kiro_claw.cron.random.uniform", return_value=300.0)
+    @patch("kiro_crew.cron.random.uniform", return_value=300.0)
     def test_daily_two_digit_hour_returns_daily_jitter(self, mock_rand):
         """30 15 * * * (daily at 3:30pm) gets daily jitter."""
         job = _job(CronSchedule(kind="cron", cron_expr="30 15 * * *"))
@@ -230,7 +230,7 @@ class TestReaperJitterAllowance:
         """Job running for less than timeout+jitter should NOT be reaped."""
         import time as time_mod
 
-        from kiro_claw.cron import _JOB_TIMEOUT_SECS
+        from kiro_crew.cron import _JOB_TIMEOUT_SECS
 
         svc = CronService()
         svc._sessions = None
@@ -251,7 +251,7 @@ class TestReaperJitterAllowance:
         """Job running longer than timeout+jitter should be reaped."""
         import time as time_mod
 
-        from kiro_claw.cron import _JOB_TIMEOUT_SECS
+        from kiro_crew.cron import _JOB_TIMEOUT_SECS
 
         svc = CronService()
         svc._sessions = None

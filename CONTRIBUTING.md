@@ -1,6 +1,6 @@
-# Contributing to KiroClaw
+# Contributing to KiroCrew
 
-Thanks for your interest in contributing! KiroClaw is an open-source project and
+Thanks for your interest in contributing! KiroCrew is an open-source project and
 we welcome issues and pull requests.
 
 ## Prerequisites
@@ -16,14 +16,14 @@ we welcome issues and pull requests.
 
 ```bash
 # 1. Fork the repo on GitHub, then clone your fork
-git clone https://github.com/kirodotdev-labs/kiroclaw.git
-cd kiroclaw
+git clone https://github.com/kirodotdev/KiroCrew.git
+cd kirocrew
 
 # 2. Build the frontend and bundle it into the package
 cd website
 npm install
 npm run build
-cp -r dist ../src/kiro_claw/static/dist
+cp -r dist ../src/kiro_crew/static/dist
 cd ..
 
 # 3. Editable backend install (with optional voice extras)
@@ -31,14 +31,14 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[voice]"
 
 # 4. Configure and verify
-kiroclaw setup               # data dir, agent backend, Slack tokens (optional)
-kiroclaw doctor              # verify everything works
-kiroclaw gateway             # start server (dashboard + Slack)
+kirocrew setup               # data dir, agent backend, Slack tokens (optional)
+kirocrew doctor              # verify everything works
+kirocrew gateway             # start server (dashboard + Slack)
 ```
 
 The dashboard is at `http://localhost:5476`.
 
-**Dashboard-only mode**: skip Slack tokens during `kiroclaw setup` to run
+**Dashboard-only mode**: skip Slack tokens during `kirocrew setup` to run
 without Slack.
 
 ## Building
@@ -53,7 +53,7 @@ pytest                       # run the test suite
 ### Frontend
 
 The React SPA lives in `website/`. Production builds are bundled into
-`src/kiro_claw/static/dist/` and served by the backend.
+`src/kiro_crew/static/dist/` and served by the backend.
 
 ```bash
 cd website
@@ -61,7 +61,7 @@ npm install
 npm run build                # tsc + vite build → website/dist
 ```
 
-After building, copy `website/dist` into `src/kiro_claw/static/dist/` so the
+After building, copy `website/dist` into `src/kiro_crew/static/dist/` so the
 backend serves the latest assets (the `pip` build step copies this directory
 into the wheel).
 
@@ -74,18 +74,18 @@ Run a dev gateway alongside production without data or port conflicts:
 ./dev-seed.sh
 
 # Start the dev backend (port 6777, isolated data)
-KIROCLAW_HOME=.kiroclaw-dev KIROCLAW_PORT=6777 kiroclaw gateway
+KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew gateway
 ```
 
 Browse at `http://localhost:6777`. The backend serves the built frontend assets directly.
 
 | Env var | Purpose | Default |
 |---------|---------|---------|
-| `KIROCLAW_HOME` | Config/data directory override | `~/.kiroclaw` |
-| `KIROCLAW_PORT` | Dashboard port override | `5476` |
-| `KIROCLAW_KIRO_BIN` | Explicit path to the `kiro-cli` binary (overrides PATH auto-detection) | auto-detected |
+| `KIROCREW_HOME` | Config/data directory override | `~/.kirocrew` |
+| `KIROCREW_PORT` | Dashboard port override | `5476` |
+| `KIROCREW_KIRO_BIN` | Explicit path to the `kiro-cli` binary (overrides PATH auto-detection) | auto-detected |
 
-If you don't need to run production and dev side by side, omit `KIROCLAW_PORT` —
+If you don't need to run production and dev side by side, omit `KIROCREW_PORT` —
 just stop your production gateway first.
 
 ### Full-Stack Dev Setup (Backend + Frontend Hot-Reload)
@@ -95,15 +95,15 @@ for instant hot-reload without rebuilding:
 
 ```bash
 # Terminal 1 — start the backend
-KIROCLAW_HOME=.kiroclaw-dev KIROCLAW_PORT=6777 kiroclaw gateway
+KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew gateway
 
 # Terminal 2 — start the frontend dev server (hot-reloads .tsx changes)
 cd website
-KIROCLAW_PORT=6777 npm run dev
+KIROCREW_PORT=6777 npm run dev
 # → Vite starts at http://localhost:3000, proxies /api/* to backend on port 6777
 
 # Terminal 3 — generate an auth token
-KIROCLAW_HOME=.kiroclaw-dev KIROCLAW_PORT=6777 kiroclaw token
+KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew token
 # → Outputs: http://localhost:6777?token=eyJ...
 
 # Open in browser — replace :6777 with :3000:
@@ -122,7 +122,7 @@ KIROCLAW_HOME=.kiroclaw-dev KIROCLAW_PORT=6777 kiroclaw token
 
 ```bash
 # 1. Bump version
-#    src/kiro_claw/__init__.py  →  __version__ = "X.Y.Z"
+#    src/kiro_crew/__init__.py  →  __version__ = "X.Y.Z"
 
 # 2. Update CHANGELOG.md
 
@@ -139,7 +139,7 @@ git push && git push --tags
 
 | File | Field |
 |------|-------|
-| `src/kiro_claw/__init__.py` | `__version__` (source of truth) |
+| `src/kiro_crew/__init__.py` | `__version__` (source of truth) |
 | `CHANGELOG.md` | New `## [X.Y.Z]` section |
 
 ## Project Structure
@@ -148,21 +148,21 @@ Key entry points:
 
 | File | Purpose |
 |------|---------|
-| `src/kiro_claw/cli.py` | CLI entrypoint (argparse) |
-| `src/kiro_claw/session.py` | Conversation session management |
-| `src/kiro_claw/providers/` | LLM provider layer (claude_code, acp, bedrock) |
-| `src/kiro_claw/acp/client.py` | ACP JSON-RPC client (stdio) |
-| `src/kiro_claw/slack/gateway.py` | Slack Socket Mode gateway |
-| `src/kiro_claw/slack/handler.py` | Message handling, tool approval |
-| `src/kiro_claw/dashboard/` | Web dashboard (aiohttp backend) |
-| `src/kiro_claw/mcp_core.py` | MCP tools: spawn, learn, task, wait, hook, send_message, file_send |
-| `src/kiro_claw/mcp_cron.py` | MCP tools: cron scheduling |
-| `src/kiro_claw/context.py` | Context builder (memory, skills, history) |
-| `src/kiro_claw/subagent.py` | Subagent lifecycle and timeout |
-| `src/kiro_claw/autonudge.py` | Reactive same-session self-nudge service |
-| `src/kiro_claw/snapshot.py` | Portable snapshot and restore |
-| `src/kiro_claw/apps/` | App Kit platform (manifest, manager, registry, routes) |
-| `src/kiro_claw/eval/` | Multi-session eval harness |
+| `src/kiro_crew/cli.py` | CLI entrypoint (argparse) |
+| `src/kiro_crew/session.py` | Conversation session management |
+| `src/kiro_crew/providers/` | LLM provider layer (claude_code, acp, bedrock) |
+| `src/kiro_crew/acp/client.py` | ACP JSON-RPC client (stdio) |
+| `src/kiro_crew/slack/gateway.py` | Slack Socket Mode gateway |
+| `src/kiro_crew/slack/handler.py` | Message handling, tool approval |
+| `src/kiro_crew/dashboard/` | Web dashboard (aiohttp backend) |
+| `src/kiro_crew/mcp_core.py` | MCP tools: spawn, learn, task, wait, hook, send_message, file_send |
+| `src/kiro_crew/mcp_cron.py` | MCP tools: cron scheduling |
+| `src/kiro_crew/context.py` | Context builder (memory, skills, history) |
+| `src/kiro_crew/subagent.py` | Subagent lifecycle and timeout |
+| `src/kiro_crew/autonudge.py` | Reactive same-session self-nudge service |
+| `src/kiro_crew/snapshot.py` | Portable snapshot and restore |
+| `src/kiro_crew/apps/` | App Kit platform (manifest, manager, registry, routes) |
+| `src/kiro_crew/eval/` | Multi-session eval harness |
 | `agents/` | Agent config and system prompt |
 | `agents/prompt.md` | Default system prompt — edit to change the agent's base personality and rules |
 | `skills/` | On-demand skill definitions (see [skills/README.md](skills/README.md)) |
@@ -184,12 +184,12 @@ Key entry points:
 
 Full reference: [AGENTS.md](AGENTS.md)
 
-## Extending KiroClaw
+## Extending KiroCrew
 
-- **Skills** — drop markdown files in `skills/` or `~/.kiroclaw/skills/`. See [skills/README.md](skills/README.md) for the full format reference
+- **Skills** — drop markdown files in `skills/` or `~/.kirocrew/skills/`. See [skills/README.md](skills/README.md) for the full format reference
 - **MCP tools** — add to `mcp_core.py` or `mcp_cron.py`. Every LLM-facing command must have an MCP tool
-- **Hooks** — configure in `~/.kiroclaw/config.json`
-- **Lessons** — self-learned from corrections, stored in `~/.kiroclaw/lessons.jsonl`
+- **Hooks** — configure in `~/.kirocrew/config.json`
+- **Lessons** — self-learned from corrections, stored in `~/.kirocrew/lessons.jsonl`
 
 ## Tests
 
@@ -254,7 +254,7 @@ Rules: imperative mood, lowercase summary, no trailing period, wrap body at 72 c
 
 ## Questions?
 
-Open a [GitHub issue](https://github.com/kirodotdev-labs/kiroclaw/issues) or start a
+Open a [GitHub issue](https://github.com/kirodotdev/KiroCrew/issues) or start a
 discussion in the repository.
 
 ## Security Issues

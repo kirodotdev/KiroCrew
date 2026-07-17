@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.sel — Security Event Log."""
+"""Tests for kiro_crew.sel — Security Event Log."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.sel import SecurityEvent, SecurityEventLog, _infer_source, sel
+from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +47,7 @@ def _make_event(**overrides) -> SecurityEvent:
         "timestamp": "2026-05-13T00:00:00+00:00",
         "event_type": "tool_invocation",
         "caller_identity": "dashboard:abc",
-        "agent": "kiroclaw",
+        "agent": "kirocrew",
         "source": "dashboard",
         "operation": "execute_bash",
     }
@@ -83,7 +83,7 @@ class TestEventLogging:
             timestamp="2026-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="execute_bash",
         )
@@ -99,7 +99,7 @@ class TestEventLogging:
             timestamp="2026-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="cli_chat",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="cli",
             operation="fs_write",
         )
@@ -118,7 +118,7 @@ class TestEventLogging:
                 timestamp="2026-01-01T00:00:00+00:00",
                 event_type="tool_invocation",
                 caller_identity="dashboard:slot0",
-                agent="kiroclaw",
+                agent="kirocrew",
                 source="dashboard",
                 operation=f"op{i}",
             ))
@@ -181,7 +181,7 @@ class TestVerifyIntegrity:
                 timestamp="2026-01-01T00:00:00+00:00",
                 event_type="tool_invocation",
                 caller_identity="dashboard:slot0",
-                agent="kiroclaw",
+                agent="kirocrew",
                 source="dashboard",
                 operation=f"op{i}",
             ))
@@ -195,7 +195,7 @@ class TestVerifyIntegrity:
             timestamp="2026-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="op0",
         ))
@@ -204,7 +204,7 @@ class TestVerifyIntegrity:
             timestamp="2026-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="op1",
         ))
@@ -230,7 +230,7 @@ class TestRecent:
                 timestamp=f"2026-01-01T00:0{i}:00+00:00",
                 event_type="tool_invocation",
                 caller_identity="dashboard:slot0",
-                agent="kiroclaw",
+                agent="kirocrew",
                 source="dashboard",
                 operation=f"op{i}",
             ))
@@ -251,7 +251,7 @@ class TestPrune:
             timestamp="2020-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="old_op",
         ))
@@ -260,7 +260,7 @@ class TestPrune:
             timestamp="2099-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="new_op",
         ))
@@ -284,7 +284,7 @@ class TestForwardCallback:
             timestamp="2026-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="test_op",
         ))
@@ -301,7 +301,7 @@ class TestForwardCallback:
             timestamp="2026-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="test_op",
         ))
@@ -321,7 +321,7 @@ class TestThreadSafety:
                     timestamp="2026-01-01T00:00:00+00:00",
                     event_type="tool_invocation",
                     caller_identity="dashboard:slot0",
-                    agent="kiroclaw",
+                    agent="kirocrew",
                     source="dashboard",
                     operation=f"op{start_id}_{i}",
                 ))
@@ -370,7 +370,7 @@ class TestSingleton:
 
     def test_sel_accessor(self, sel_dir):
         """The module-level sel() function returns the singleton."""
-        with patch("kiro_claw.sel._DEFAULT_DIR", sel_dir):
+        with patch("kiro_crew.sel._DEFAULT_DIR", sel_dir):
             instance = sel()
             assert isinstance(instance, SecurityEventLog)
 
@@ -382,7 +382,7 @@ class TestReadLastHash:
             timestamp="2026-01-01T00:00:00+00:00",
             event_type="tool_invocation",
             caller_identity="dashboard:slot0",
-            agent="kiroclaw",
+            agent="kirocrew",
             source="dashboard",
             operation="op1",
         ))
@@ -434,7 +434,7 @@ class TestHmacKeyManagementExtras:
         def _boom(*a, **kw):
             raise OSError("chmod denied")
 
-        monkeypatch.setattr("kiro_claw.platform_compat.os.chmod", _boom)
+        monkeypatch.setattr("kiro_crew.platform_compat.os.chmod", _boom)
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         assert (tmp_path / "sel_hmac.key").exists()
         assert log._hmac_key

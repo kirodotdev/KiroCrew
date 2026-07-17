@@ -55,7 +55,7 @@ type InstalledApp = {
     ui?: { entry?: string; pages?: { route: string; label: string; icon: string }[] }
     permissions?: { api?: string[]; events?: string[]; mcpTools?: string[]; storage?: boolean; cron?: boolean; network?: boolean }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
-    minKiroClawVersion?: string
+    minKiroCrewVersion?: string
     iconPath?: string
     repo?: string
     // Store-listing metadata (also present on RegistryApp; optional here)
@@ -323,7 +323,7 @@ export default function AppsPage() {
               <div className="text-[13px] text-text mb-4 space-y-1">
                 {uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall && uninstallTarget.origin !== 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    This is a self-managed app — only KiroClaw metadata and the app secret will be removed.
+                    This is a self-managed app — only KiroCrew metadata and the app secret will be removed.
                     The app itself and its agent/skill registrations are managed externally and will not be affected.
                     If the app is still running, it may re-register on next launch.
                   </div>
@@ -335,7 +335,7 @@ export default function AppsPage() {
                 )}
                 {uninstallTarget.origin === 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    Installed from App Store — KiroClaw metadata{uninstallTarget.resources === 'app' ? ', the app secret, and' : ' and'} the downloaded source code will be removed.{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' The app itself is managed externally.' : ''}
+                    Installed from App Store — KiroCrew metadata{uninstallTarget.resources === 'app' ? ', the app secret, and' : ' and'} the downloaded source code will be removed.{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' The app itself is managed externally.' : ''}
                   </div>
                 )}
                 {uninstallTarget.origin !== 'registry' && uninstallTarget.resources === 'app' && uninstallTarget.manifest?.setup?.onUninstall && (
@@ -473,7 +473,7 @@ export default function AppsPage() {
           <Card>
             <CardTitle>
               Installed Apps
-              <InfoTip text="Apps contribute agents, skills, and cron jobs to KiroClaw. Enable an app to activate its resources." />
+              <InfoTip text="Apps contribute agents, skills, and cron jobs to KiroCrew. Enable an app to activate its resources." />
             </CardTitle>
             <SearchInput placeholder="Filter apps…" value={filter} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilter(e.target.value)} />
 
@@ -484,7 +484,7 @@ export default function AppsPage() {
                 icon={<Package size={36} />}
                 title={installedApps.length === 0 ? 'No apps installed yet' : 'No matching apps'}
                 subtitle={installedApps.length === 0
-                  ? 'Install your first app with the "Install from Path" button above, or run: kiroclaw app install <path>'
+                  ? 'Install your first app with the "Install from Path" button above, or run: kirocrew app install <path>'
                   : 'Try a different search term'}
               />
             ) : (
@@ -509,7 +509,7 @@ export default function AppsPage() {
           <Card>
             <CardTitle>
               Browse Apps
-              <InfoTip text="Discover and install apps from the KiroClaw registry." />
+              <InfoTip text="Discover and install apps from the KiroCrew registry." />
             </CardTitle>
             <SearchInput placeholder="Search apps…" value={registryFilter} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRegistryFilter(e.target.value)} />
 
@@ -517,7 +517,7 @@ export default function AppsPage() {
               <div className="text-center py-12 text-muted text-sm">Loading registry…</div>
             ) : (() => {
               // Merge disabled builtins into browse list for discovery
-              // (hidden builtins are excluded — opt-in via `kiroclaw app enable <name>`)
+              // (hidden builtins are excluded — opt-in via `kirocrew app enable <name>`)
               const disabledBuiltins: RegistryApp[] = apps
                 .filter(a => a.origin === 'builtin' && !a.enabled && !(a.manifest as any)?.hidden)
                 .map(a => ({
@@ -525,7 +525,7 @@ export default function AppsPage() {
                   displayName: a.displayName || a.name,
                   description: a.manifest?.description || '',
                   version: a.version,
-                  author: a.manifest?.author || 'kiroclaw',
+                  author: a.manifest?.author || 'kirocrew',
                   tags: a.manifest?.tags,
                   screenshots: a.manifest?.screenshots,
                   heroImage: a.manifest?.heroImage,
@@ -601,7 +601,7 @@ export default function AppsPage() {
                               />
                             ) : null}
                             <div className={`absolute inset-0 flex items-center justify-center bg-[var(--bg-elevated)] ${hero ? 'hidden' : ''} hero-fallback`}>
-                              <span className="text-2xl font-bold text-[var(--text)] opacity-10 tracking-widest">KIROCLAW</span>
+                              <span className="text-2xl font-bold text-[var(--text)] opacity-10 tracking-widest">KIROCREW</span>
                             </div>
                           </div>
                         )
@@ -752,7 +752,7 @@ function AppCard({
             {/* Open button — all app types */}
             {hasOpenCommand && (
               <Btn primary onClick={() => api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
-                if (res?.remote) setRemoteCmd(res.command || res.message || 'App cannot be opened — KiroClaw is running in a headless environment.')
+                if (res?.remote) setRemoteCmd(res.command || res.message || 'App cannot be opened — KiroCrew is running in a headless environment.')
               }).catch(() => {})}>
                 <ExternalLink size={14} /> Open
               </Btn>
@@ -856,9 +856,9 @@ function AppCard({
           )}
           <div className="text-[11px] text-muted">
             Installed: {new Date(app.installedAt).toLocaleDateString()}
-            {m?.minKiroClawVersion && <span className="ml-3">Min version: {m.minKiroClawVersion}</span>}
+            {m?.minKiroCrewVersion && <span className="ml-3">Min version: {m.minKiroCrewVersion}</span>}
             {isSelfManaged && <div className="mt-1">Management: App handles its own agent/skill/MCP registration</div>}
-            {isBuiltin && <div className="mt-1">Built-in: This feature is part of the KiroClaw dashboard</div>}
+            {isBuiltin && <div className="mt-1">Built-in: This feature is part of the KiroCrew dashboard</div>}
             {app.source && !isBuiltin && <div className="mt-1 truncate" title={app.source}>Source: {app.source}</div>}
             {app.origin && <div className="mt-1">Origin: {app.origin} | Resources: {app.resources || 'gateway'} | Lifecycle: {app.lifecycle || 'gateway'}</div>}
           </div>

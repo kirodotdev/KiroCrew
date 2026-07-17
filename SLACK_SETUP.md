@@ -1,10 +1,10 @@
 # Slack Setup Guide
 
-How to create a Slack app for KiroClaw and connect it.
+How to create a Slack app for KiroCrew and connect it.
 
-> **Dashboard-only mode**: If you don't need Slack, skip this entirely. Leave Slack tokens empty during `kiroclaw setup` and the gateway runs the web dashboard without Slack.
+> **Dashboard-only mode**: If you don't need Slack, skip this entirely. Leave Slack tokens empty during `kirocrew setup` and the gateway runs the web dashboard without Slack.
 
-KiroClaw connects to Slack using **Socket Mode**, so it runs entirely from your own machine over an outbound WebSocket — no public URL, no inbound webhooks, and no hosting required. You just need a Slack workspace where you can install an app.
+KiroCrew connects to Slack using **Socket Mode**, so it runs entirely from your own machine over an outbound WebSocket — no public URL, no inbound webhooks, and no hosting required. You just need a Slack workspace where you can install an app.
 
 ---
 
@@ -24,7 +24,7 @@ Both paths require a Slack workspace where you can install apps (see [Prerequisi
 ## Prerequisites
 
 - A **Slack workspace** where you have permission to install apps. If you don't have one, create a free workspace at <https://slack.com/get-started> — you can install your own apps in a workspace you own.
-- Python and KiroClaw installed (`pip install kiroclaw`), so you can run the `kiroclaw` CLI.
+- Python and KiroCrew installed (`pip install kirocrew`), so you can run the `kirocrew` CLI.
 
 > **Tip**: Use a personal or test workspace for your first run. You can always export the app manifest and recreate the app in another workspace later (see [Reusing the App in Another Workspace](#reusing-the-app-in-another-workspace)).
 
@@ -35,7 +35,7 @@ Both paths require a Slack workspace where you can install apps (see [Prerequisi
 ### Step 1. Generate the Manifest
 
 ```bash
-kiroclaw manifest --url
+kirocrew manifest --url
 ```
 
 This prints a one-click URL that opens Slack's "Create New App" page with all scopes, events, and permissions pre-filled:
@@ -57,13 +57,13 @@ https://api.slack.com/apps?new_app=1&manifest_yaml=...
 If the URL doesn't work, generate the raw YAML instead:
 
 ```bash
-kiroclaw manifest -o ~/.kiroclaw/slack-manifest.yaml
+kirocrew manifest -o ~/.kirocrew/slack-manifest.yaml
 ```
 
 Then:
 1. Go to <https://api.slack.com/apps> → **Create New App** → **From a manifest**
 2. Select your workspace
-3. Paste the contents of `~/.kiroclaw/slack-manifest.yaml`
+3. Paste the contents of `~/.kirocrew/slack-manifest.yaml`
 4. Click **Create**
 
 </details>
@@ -86,25 +86,25 @@ Then:
 
 > **Workspace admin approval?** Some workspaces restrict who can install apps. If your install needs approval, an admin of that workspace must approve it. In a workspace you own, you can self-approve.
 
-### Step 5. Configure KiroClaw
+### Step 5. Configure KiroCrew
 
 Run the interactive setup — it prompts for both tokens:
 
 ```bash
-kiroclaw setup
+kirocrew setup
 ```
 
 Paste your App Token (`xapp-...`), Bot Token (`xoxb-...`), and your Slack Member ID when prompted.
 
 To find your Slack Member ID: open your workspace in Slack → click your profile picture → **Profile** → **⋮** → **Copy member ID**.
 
-> ⚠️ **Your Member ID is per-workspace.** If you install the app in a different workspace, your Member ID changes — use the ID from the workspace where KiroClaw is installed.
+> ⚠️ **Your Member ID is per-workspace.** If you install the app in a different workspace, your Member ID changes — use the ID from the workspace where KiroCrew is installed.
 
 ### Step 6. Verify & Run
 
 ```bash
-kiroclaw doctor    # verify tokens and config
-kiroclaw gateway   # start KiroClaw
+kirocrew doctor    # verify tokens and config
+kirocrew gateway   # start KiroCrew
 ```
 
 Open your workspace in Slack, find your app in the Apps section, and send it a DM. The app only lives in the workspace where you installed it.
@@ -120,7 +120,7 @@ Use this path if you want to configure each scope and event individually, or if 
 ### Step 1. Create the App
 
 1. Go to <https://api.slack.com/apps> → **Create New App** → **From scratch**
-2. Name: something unique (e.g. `kiroclaw`). Generic names may conflict with existing apps in the same workspace
+2. Name: something unique (e.g. `kirocrew`). Generic names may conflict with existing apps in the same workspace
 3. Workspace: **select your workspace**
 
 ### Step 2. Enable Socket Mode & Get App Token
@@ -168,16 +168,16 @@ Go to **Features → OAuth & Permissions → Bot Token Scopes** and add:
 
 | Field | Value |
 |-------|-------|
-| Command | `/kiroclaw` |
+| Command | `/kirocrew` |
 | Short Description | Dashboard access, allowlist, and channel tracking |
 | Usage Hint | dashboard or @user or #channel |
 
-The command name you choose here must match the `slack.command` value in `~/.kiroclaw/config.json` (default: `kiroclaw`):
+The command name you choose here must match the `slack.command` value in `~/.kirocrew/config.json` (default: `kirocrew`):
 
 ```json
 {
   "slack": {
-    "command": "kiroclaw"
+    "command": "kirocrew"
   }
 }
 ```
@@ -205,9 +205,9 @@ No Request URL needed — Socket Mode handles it. This enables tool approval but
 
 > **"Install App" button greyed out?** Use **Features → OAuth & Permissions → Install to Workspace** instead — known Slack UI bug.
 
-### Step 9. Configure KiroClaw
+### Step 9. Configure KiroCrew
 
-Same as [Path A, Step 5](#step-5-configure-kiroclaw).
+Same as [Path A, Step 5](#step-5-configure-kirocrew).
 
 ### Step 10. Verify & Run
 
@@ -219,25 +219,25 @@ Same as [Path A, Step 6](#step-6-verify--run).
 
 ### Manual Token Configuration
 
-If you prefer to configure tokens manually instead of using `kiroclaw setup`:
+If you prefer to configure tokens manually instead of using `kirocrew setup`:
 
 ```bash
-mkdir -p ~/.kiroclaw
-cat > ~/.kiroclaw/.env << 'EOF'
+mkdir -p ~/.kirocrew
+cat > ~/.kirocrew/.env << 'EOF'
 SLACK_APP_TOKEN=xapp-your-app-token-here
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
-KIROCLAW_OWNER_ID=your-slack-member-id
+KIROCREW_OWNER_ID=your-slack-member-id
 EOF
-chmod 600 ~/.kiroclaw/.env
+chmod 600 ~/.kirocrew/.env
 ```
 
 ### Owner-Only Access
 
-Only the owner (`KIROCLAW_OWNER_ID`) can interact with KiroClaw via Slack. Multi-user access, auto-allowlist on channel join, and open channels are all disabled for security.
+Only the owner (`KIROCREW_OWNER_ID`) can interact with KiroCrew via Slack. Multi-user access, auto-allowlist on channel join, and open channels are all disabled for security.
 
 ### Reaction Emojis
 
-KiroClaw adds phase-aware emoji reactions during message processing (queued → thinking → coding → done). Customize or disable:
+KiroCrew adds phase-aware emoji reactions during message processing (queued → thinking → coding → done). Customize or disable:
 
 ```json
 {
@@ -275,7 +275,7 @@ To install your app in a different Slack workspace, export the manifest and recr
 1. Export your app manifest: **App Config → App Manifest → Copy to Clipboard** (YAML)
 2. Go to <https://api.slack.com/apps> → **Create New App** → **From a manifest**
 3. Select the new workspace and paste the YAML
-4. Re-generate the App Token (Socket Mode) and Bot Token, then re-run `kiroclaw setup` with the new tokens and your Member ID for that workspace
+4. Re-generate the App Token (Socket Mode) and Bot Token, then re-run `kirocrew setup` with the new tokens and your Member ID for that workspace
 
 ---
 
@@ -290,8 +290,8 @@ Any of these work:
 ```
 !dashboard              # DM: 1-hour session (default)
 !dashboard 2h           # DM: 2-hour session
-/kiroclaw dashboard     # Slash command: 1-hour session
-/kiroclaw dashboard 30m # Slash command: 30-minute session
+/kirocrew dashboard     # Slash command: 1-hour session
+/kirocrew dashboard 30m # Slash command: 30-minute session
 ```
 
 Maximum session duration is 6 hours.
@@ -306,7 +306,7 @@ Maximum session duration is 6 hours.
 
 ### Dashboard URL Configuration
 
-Set `dashboard.url` in `~/.kiroclaw/config.json` to your host's DNS name:
+Set `dashboard.url` in `~/.kirocrew/config.json` to your host's DNS name:
 
 ```json
 {
@@ -316,11 +316,11 @@ Set `dashboard.url` in `~/.kiroclaw/config.json` to your host's DNS name:
 }
 ```
 
-From this single URL, KiroClaw derives:
+From this single URL, KiroCrew derives:
 - **Port** to bind on (8080 in this example)
 - **Local-only mode** — loopback hosts bind to `127.0.0.1`, non-loopback hosts bind to `0.0.0.0`
 - **Allowed origins** for CSRF/WebSocket protection
-- **Dashboard link hostname** for `!dashboard` and `/kiroclaw dashboard`
+- **Dashboard link hostname** for `!dashboard` and `/kirocrew dashboard`
 
 When omitted, defaults to `localhost:5476` (loopback only, no token required).
 
@@ -350,7 +350,7 @@ Type `sessions` in any Slack DM to list recent sessions. Each session shows a ti
 
 ### Slash Commands
 
-The slash command name is configurable via `slack.command` in config (default: `kiroclaw`).
+The slash command name is configurable via `slack.command` in config (default: `kirocrew`).
 
 | Command | Purpose |
 |---------|---------|
@@ -365,7 +365,7 @@ The slash command name is configurable via `slack.command` in config (default: `
 
 ### Owner-Only Bang Commands
 
-These `!`-prefixed commands are restricted to `KIROCLAW_OWNER_ID`.
+These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID`.
 
 | Command | Purpose |
 |---------|---------|
@@ -397,11 +397,11 @@ Dashboard tokens grant full session access — treat them like passwords.
 | ✅ Do | ❌ Don't |
 |-------|----------|
 | Use SSH tunnel so the dashboard is only reachable via localhost | Share dashboard URLs — they contain the token in `?token=` |
-| Run `kiroclaw logout` or restart the gateway if a token is exposed | Paste tokens in Slack channels, shared docs, or wikis |
+| Run `kirocrew logout` or restart the gateway if a token is exposed | Paste tokens in Slack channels, shared docs, or wikis |
 | Avoid showing the browser URL bar during screen shares | Leave dashboard links in screen-share recordings |
-| Keep `kiroclaw token` in your agent's denied commands list | Trust AI agents asking to run `kiroclaw token` |
+| Keep `kirocrew token` in your agent's denied commands list | Trust AI agents asking to run `kirocrew token` |
 
-> ⚠️ **Prompt injection risk**: An attacker can embed hidden instructions in a webpage or document that trick your AI agent into running `kiroclaw token` and exfiltrating the output. The `deniedCommands` list in `agents/defaults.json` blocks this by default — do not remove it.
+> ⚠️ **Prompt injection risk**: An attacker can embed hidden instructions in a webpage or document that trick your AI agent into running `kirocrew token` and exfiltrating the output. The `deniedCommands` list in `agents/defaults.json` blocks this by default — do not remove it.
 
 ---
 
@@ -413,8 +413,8 @@ Dashboard tokens grant full session access — treat them like passwords.
 | App created in wrong workspace | Delete the app on api.slack.com, then recreate it in the correct workspace |
 | No events received | Verify Socket Mode is ON, events are subscribed, App Home Chat Tab is enabled. Reinstall app after changes |
 | Home tab is blank | Add `app_home_opened` event, enable Home Tab, reinstall app |
-| `missing_scope` error | Add the scope in OAuth & Permissions, reinstall app, re-run `kiroclaw setup` |
-| Bot doesn't respond | Check `kiroclaw doctor` output. Ensure gateway is running (`kiroclaw gateway`) |
+| `missing_scope` error | Add the scope in OAuth & Permissions, reinstall app, re-run `kirocrew setup` |
+| Bot doesn't respond | Check `kirocrew doctor` output. Ensure gateway is running (`kirocrew gateway`) |
 | Install needs approval | Your workspace restricts app installs — a workspace admin must approve, or use a workspace you own |
 | Dashboard shows 403 | Token expired, IP changed, or accessing remotely without a token. Run `!dashboard` for a new link |
 

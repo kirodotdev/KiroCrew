@@ -1,8 +1,8 @@
-# KiroClawWebsite AutoSDE Rules
+# KiroCrewWebsite AutoSDE Rules
 #
-# This package is the KiroClaw dashboard frontend (React + TypeScript).
+# This package is the KiroCrew dashboard frontend (React + TypeScript).
 # Backend-only rules (Python security, hooks.py, SEL audit, etc.) live in
-# the KiroClaw package's AUTOSDE.yaml and are not duplicated here.
+# the KiroCrew package's AUTOSDE.yaml and are not duplicated here.
 
 custom-rules:
   - id: frontend-security
@@ -11,11 +11,11 @@ custom-rules:
       - "src/**/*.tsx"
       - "src/**/*.ts"
     rule: |
-      Enforce KiroClaw frontend security controls based on real vulnerabilities
+      Enforce KiroCrew frontend security controls based on real vulnerabilities
       found in this codebase.
 
       - Never use `.innerHTML = ...` — it caused ACAT findings (commit 3c40ef9 in
-        KiroClaw). Use `textContent`, `createElement`, or React elements
+        KiroCrew). Use `textContent`, `createElement`, or React elements
       - Never use `dangerouslySetInnerHTML` without DOMPurify — use `sanitize()`
         or `md()` from helpers.ts
       - Never build HTML strings with template literals containing user/LLM
@@ -35,7 +35,7 @@ custom-rules:
       check-added: true
       check-removed: false
     rule: |
-      KiroClaw's typography scale has a minimum usable text size of 10px.
+      KiroCrew's typography scale has a minimum usable text size of 10px.
       Single-digit px values (`text-[0px]` through `text-[9px]`) are not
       accessible and must not be introduced.
 
@@ -121,7 +121,7 @@ custom-rules:
       cause stale data bugs when multiple components read the same endpoint, and miss
       automatic background refetching. React Query centralizes server state with deduped
       requests, stale-while-revalidate caching, and optimistic update rollback — all of
-      which the KiroClaw dashboard relies on for real-time consistency across tabs.
+      which the KiroCrew dashboard relies on for real-time consistency across tabs.
 
       Required patterns:
       - `useQuery({ queryKey: [...], queryFn: ... })` for reads
@@ -147,7 +147,7 @@ custom-rules:
       lifecycles — removed DOM elements just vanish. Framer Motion's `AnimatePresence`
       keeps exiting elements in the DOM until their exit animation completes, which is
       critical for the sidebar collapse, panel open/close, and list reorder animations
-      throughout the KiroClaw dashboard. Mixing animation systems also makes motion
+      throughout the KiroCrew dashboard. Mixing animation systems also makes motion
       timing inconsistent and harder to maintain.
 
       Tailwind utilities are fine for:
@@ -208,7 +208,7 @@ custom-rules:
       automatically.
 
       Reference: https://i.amazon.com/Mesh-1120 (accessibility audit identified
-      ~81 instances of inaccessible clickable divs in the KiroClaw dashboard).
+      ~81 instances of inaccessible clickable divs in the KiroCrew dashboard).
 
       Bad:
       ```tsx
@@ -264,7 +264,7 @@ custom-rules:
       Do NOT use emoji characters as UI icons or status indicators. Use `lucide-react`
       components instead.
 
-      Why: KiroClaw's dashboard supports 11 color themes with CSS custom property
+      Why: KiroCrew's dashboard supports 11 color themes with CSS custom property
       design tokens (`--ok`, `--warn`, `--danger`, `--muted`, etc.). Emoji ignore
       `currentColor` and design tokens entirely, so emoji-based status badges and
       buttons render identically across all themes — breaking the visual language.

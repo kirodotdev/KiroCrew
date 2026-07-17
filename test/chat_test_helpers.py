@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
 
-from kiro_claw.dashboard.state import DashboardState
-from kiro_claw.history import ConversationLog
+from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import ConversationLog
 
 
 def _make_state(tmp_path, **kwargs):
@@ -28,7 +28,7 @@ def _make_state(tmp_path, **kwargs):
 
 def _make_app(state: DashboardState) -> web.Application:
     """Minimal aiohttp app with chat endpoints."""
-    from kiro_claw.dashboard.chat import (
+    from kiro_crew.dashboard.chat import (
         api_chat,
         api_chat_mode,
         api_chat_plan_action,
@@ -70,7 +70,7 @@ def _make_app(state: DashboardState) -> web.Application:
 
 def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
     """Minimal aiohttp app with chat endpoints including agent and create routes."""
-    from kiro_claw.dashboard.chat import (
+    from kiro_crew.dashboard.chat import (
         api_chat_slot_agent,
         api_chat_slot_approve,
         api_chat_slot_create,
@@ -98,8 +98,8 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
 
 def _make_folder_app(state: DashboardState) -> web.Application:
     """Minimal aiohttp app with folder endpoints."""
-    from kiro_claw.dashboard.chat import api_chat_slots
-    from kiro_claw.dashboard.chat_folders import (
+    from kiro_crew.dashboard.chat import api_chat_slots
+    from kiro_crew.dashboard.chat_folders import (
         api_chat_folder_create,
         api_chat_folder_delete,
         api_chat_folder_update,
@@ -122,7 +122,7 @@ def _make_folder_app(state: DashboardState) -> web.Application:
 
 def _make_tags_app(state: DashboardState) -> web.Application:
     """Minimal aiohttp app with chat_tags endpoints (vocabulary, columns, drop, slot tags)."""
-    from kiro_claw.dashboard.chat_tags import (
+    from kiro_crew.dashboard.chat_tags import (
         api_chat_slot_drop,
         api_chat_slot_tags,
         api_chat_tag_column_create,

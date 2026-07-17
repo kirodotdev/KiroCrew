@@ -11,11 +11,11 @@ vi.mock('../pages/SystemPage', () => ({ default: () => <div data-testid="system-
 vi.mock('../pages/AgentsPage', () => ({ default: () => <div data-testid="agents-page">AgentsPage</div> }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => <div data-testid="projects-page">ProjectsPage</div> }))
 vi.mock('../pages/LogsPage', () => ({ default: () => <div data-testid="logs-page">LogsPage</div> }))
-vi.mock('../pages/KiroClawAgentsPage', () => ({ default: () => <div data-testid="mc-agents-page">MCAgentsPage</div> }))
+vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => <div data-testid="mc-agents-page">MCAgentsPage</div> }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => <div data-testid="notifications-page">NotificationsPage</div> }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => <div data-testid="schedule-page">SchedulePage</div> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kiroclaw' }, { name: 'reviewer' }, { name: 'oracle' }], defaultAgent: 'kiroclaw' })) }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }, { name: 'reviewer' }, { name: 'oracle' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
 vi.mock('../api/client', () => ({
@@ -188,7 +188,7 @@ describe('App routing', () => {
 
   it('refetches the Apps nav when the gateway reconnects (post-update recovery)', async () => {
     // Regression for the empty-rail-after-update bug: the dashboard fetches
-    // /api/apps once on mount, and right after a `kiroclaw update` restart that
+    // /api/apps once on mount, and right after a `kirocrew update` restart that
     // first fetch can come back empty while the gateway is still warming. When
     // the WebSocket reconnects, the Apps nav must refetch and self-heal —
     // previously it stayed empty until a manual reload (Browse, lazy-fetched,
@@ -206,7 +206,7 @@ describe('App routing', () => {
     // Let the (empty) mount fetch settle; the app is absent.
     await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument())
     expect(screen.queryByText('Late App')).not.toBeInTheDocument()
-    // Simulate a `kiroclaw update` restart: the WS connects, drops, reconnects.
+    // Simulate a `kirocrew update` restart: the WS connects, drops, reconnects.
     // Only the reconnect (after a drop) refetches the Apps nav — the rail
     // self-heals without a manual reload.
     act(() => { store.dispatch(sseConnected()) })
@@ -318,9 +318,9 @@ describe('App routing', () => {
     fireEvent.keyDown(rows[0], { key: 'Enter' })
   })
 
-  it('renders KIROCLAW branding', () => {
+  it('renders KIROCREW branding', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    expect(screen.getAllByText('KIROCLAW').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('KIROCREW').length).toBeGreaterThan(0)
   })
 
   it('renders connection status', () => {
@@ -413,7 +413,7 @@ describe('onCycleAgent keyboard shortcut', () => {
     const { api } = await import('../api/client')
     const { store } = await import('../store')
     // Set up the real singleton store state that onCycleAgent reads via store.getState()
-    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kiroclaw' }] })
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew' }] })
     store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
     renderWithProviders(<App />, { route: '/chat' })
     act(() => {
@@ -450,7 +450,7 @@ describe('onCycleAgent edge cases', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
     })
     expect(api.chatSlotAgent).not.toHaveBeenCalled()
-    useAgentsMock.mockReturnValue({ agents: [{ name: 'kiroclaw' }, { name: 'reviewer' }, { name: 'oracle' }], defaultAgent: 'kiroclaw' })
+    useAgentsMock.mockReturnValue({ agents: [{ name: 'kirocrew' }, { name: 'reviewer' }, { name: 'oracle' }], defaultAgent: 'kirocrew' })
   })
 })
 
@@ -481,7 +481,7 @@ describe('onCyclePrevAgent edge cases', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', code: 'KeyZ', altKey: true, shiftKey: true, bubbles: true }))
     })
     expect(api.chatSlotAgent).not.toHaveBeenCalled()
-    useAgentsMock.mockReturnValue({ agents: [{ name: 'kiroclaw' }, { name: 'reviewer' }, { name: 'oracle' }], defaultAgent: 'kiroclaw' })
+    useAgentsMock.mockReturnValue({ agents: [{ name: 'kirocrew' }, { name: 'reviewer' }, { name: 'oracle' }], defaultAgent: 'kirocrew' })
   })
 })
 
@@ -560,7 +560,7 @@ describe('onCycleApprovalMode and onCyclePrevAgent shortcuts', () => {
     act(() => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', code: 'KeyZ', altKey: true, shiftKey: true, bubbles: true }))
     })
-    expect(api.chatSlotAgent).toHaveBeenCalledWith('slot-1', 'kiroclaw')
+    expect(api.chatSlotAgent).toHaveBeenCalledWith('slot-1', 'kirocrew')
   })
 
   it('cycles approval mode backward on Alt+Shift+V', async () => {

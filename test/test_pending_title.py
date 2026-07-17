@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from kiro_claw.dashboard.chat_title import (
+from kiro_crew.dashboard.chat_title import (
     _fallback_title_from_messages,
 )
-from kiro_claw.dashboard.state import NEW_SESSION_TITLE, _ChatSlot
+from kiro_crew.dashboard.state import NEW_SESSION_TITLE, _ChatSlot
 
 
 def _fake_state():
@@ -80,7 +80,7 @@ class TestFallbackTitle:
         assert _fallback_title_from_messages(msgs) == "check something"
 
     def test_strips_image_attachment_and_keeps_user_text(self):
-        attachment = f"![image](/Users/example/.kiroclaw/uploads/{'b' * 240}.jpg)"
+        attachment = f"![image](/Users/example/.kirocrew/uploads/{'b' * 240}.jpg)"
         msgs = [{"role": "user", "content": f"{attachment}\n\nsubagents seem to be failing"}]
         assert _fallback_title_from_messages(msgs) == "subagents seem to be failing"
 
@@ -116,7 +116,7 @@ class TestManualTitleFallback:
     def test_generation_failure_uses_sanitized_fallback(self):
         import asyncio
 
-        from kiro_claw.dashboard import chat_title
+        from kiro_crew.dashboard import chat_title
 
         state = _fake_state()
         slot = _ChatSlot("chat-4-1783603256")
@@ -152,7 +152,7 @@ class TestManualTitleFallback:
     def test_attachment_only_failure_keeps_auto_title_unlocked(self):
         import asyncio
 
-        from kiro_claw.dashboard import chat_title
+        from kiro_crew.dashboard import chat_title
 
         state = _fake_state()
         slot = _ChatSlot("chat-4-1783603257")
@@ -185,7 +185,7 @@ class TestAutoTitleInFlightGuard:
     def test_in_flight_guard_short_circuits(self):
         import asyncio
 
-        from kiro_claw.dashboard import chat_title
+        from kiro_crew.dashboard import chat_title
 
         state = _fake_state()
         slot = _ChatSlot("chat-4-1783603256")
@@ -212,7 +212,7 @@ class TestAutoTitleInFlightGuard:
     def test_end_of_turn_retry_waits_for_send_time_attempt(self):
         import asyncio
 
-        from kiro_claw.dashboard import chat_title
+        from kiro_crew.dashboard import chat_title
 
         async def _scenario():
             state = _fake_state()
@@ -260,7 +260,7 @@ class TestAutoTitleCancellation:
     def test_cancellation_does_not_start_pending_retry(self):
         import asyncio
 
-        from kiro_claw.dashboard import chat_title
+        from kiro_crew.dashboard import chat_title
 
         async def _scenario():
             state = _fake_state()
@@ -306,7 +306,7 @@ class TestSkipFallbackBranch:
     def _run_with_skip(self, slot):
         import asyncio
 
-        from kiro_claw.dashboard import chat_title
+        from kiro_crew.dashboard import chat_title
 
         state = _fake_state()
 

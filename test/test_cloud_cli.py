@@ -6,10 +6,10 @@ import argparse
 
 import pytest
 
-from kiro_claw import cli_cloud
-from kiro_claw.cloud import connect as connect_mod
-from kiro_claw.cloud import ec2
-from kiro_claw.cloud.config import CloudConfig
+from kiro_crew import cli_cloud
+from kiro_crew.cloud import connect as connect_mod
+from kiro_crew.cloud import ec2
+from kiro_crew.cloud.config import CloudConfig
 
 
 def _args(**kw):
@@ -25,7 +25,7 @@ class TestDispatch:
 
     def test_no_action_prints_help(self, capsys):
         assert cli_cloud.handle_cloud(_args(cloud_action=None)) == 0
-        assert "kiroclaw cloud" in capsys.readouterr().out
+        assert "kirocrew cloud" in capsys.readouterr().out
 
     def test_iam_policy(self, capsys):
         assert cli_cloud.handle_cloud(_args(cloud_action="iam-policy")) == 0
@@ -56,8 +56,8 @@ class TestDispatch:
         assert "Interrupted" in capsys.readouterr().out
 
     def test_setup_cloud_step_skips_on_eof(self, monkeypatch, capsys):
-        # Piped `kiroclaw setup` (no stdin) must skip the cloud step, not crash.
-        from kiro_claw import cli_setup
+        # Piped `kirocrew setup` (no stdin) must skip the cloud step, not crash.
+        from kiro_crew import cli_setup
 
         def raise_eof(_prompt):
             raise EOFError
@@ -69,7 +69,7 @@ class TestDispatch:
     def test_dispatch_validation_error_fails_cleanly(self, monkeypatch, capsys):
         # A malformed user value (e.g. --tag with a bad charset) must render
         # the same clean one-liner as AWSError — never a raw traceback.
-        from kiro_claw.validation import ValidationError
+        from kiro_crew.validation import ValidationError
 
         def raise_validation(_args):
             raise ValidationError("tag", "invalid characters")
@@ -84,7 +84,7 @@ class TestDispatch:
     def test_dispatch_aws_error_fails_cleanly(self, monkeypatch, capsys):
         # AWS failures outside an action's own try/except (e.g. the
         # ec2.describe() in status) must also render the clean one-liner.
-        from kiro_claw.cloud.aws import AWSError
+        from kiro_crew.cloud.aws import AWSError
 
         def raise_aws(_args):
             raise AWSError("token has expired", action="sts:GetCallerIdentity")
@@ -151,7 +151,7 @@ class TestListStatus:
     def test_list_empty(self, monkeypatch, capsys):
         monkeypatch.setattr(ec2, "list_instances", lambda *a, **k: [])
         assert cli_cloud._cloud_list(_args(profile="", region="")) == 0
-        assert "No KiroClaw cloud instances" in capsys.readouterr().out
+        assert "No KiroCrew cloud instances" in capsys.readouterr().out
 
     def test_list_rows(self, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -197,7 +197,7 @@ class TestDestroy:
             ec2,
             "destroy",
             lambda *a, **k: {
-                "argv": ["cloudformation", "delete-stack", "--stack-name", "kiroclaw-kc-1"]
+                "argv": ["cloudformation", "delete-stack", "--stack-name", "kirocrew-kc-1"]
             },
         )
         rc = cli_cloud._cloud_destroy(
@@ -223,7 +223,7 @@ class TestDestroy:
             ec2, "destroy", lambda *a, **k: destroyed.update(called=True) or {"destroyed": True}
         )
         monkeypatch.setattr(connect_mod, "unregister_instance", lambda *a, **k: True)
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         monkeypatch.setattr(
             source_mod, "delete_source", lambda *a, **k: {"removed": True, "uri": "", "error": ""}
@@ -248,14 +248,14 @@ class TestDestroy:
         )
         monkeypatch.setattr(ec2, "destroy", lambda *a, **k: {"destroyed": True})
         monkeypatch.setattr(connect_mod, "unregister_instance", lambda *a, **k: True)
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         monkeypatch.setattr(
             source_mod,
             "delete_source",
             lambda *a, **k: {
                 "removed": False,
-                "uri": "s3://kiroclaw-src-1/kc-1/kiroclaw-src.tar.gz",
+                "uri": "s3://kirocrew-src-1/kc-1/kirocrew-src.tar.gz",
                 "error": "AccessDenied",
             },
         )
@@ -269,7 +269,7 @@ class TestDestroy:
         assert rc == 0
         out = capsys.readouterr().out
         assert "could not be removed" in out
-        assert "aws s3 rm s3://kiroclaw-src-1/kc-1/kiroclaw-src.tar.gz" in out
+        assert "aws s3 rm s3://kirocrew-src-1/kc-1/kirocrew-src.tar.gz" in out
 
     def test_destroy_unconfirmed_returns_nonzero_and_preserves_state(self, monkeypatch, capsys):
         # If ec2.destroy() doesn't confirm deletion, destroy must NOT report
@@ -279,7 +279,7 @@ class TestDestroy:
             ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
         )
         monkeypatch.setattr(ec2, "destroy", lambda *a, **k: {"destroyed": False})
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         def _boom(*a, **k):  # pragma: no cover - must not run on unconfirmed delete
             raise AssertionError("source must not be deleted when teardown is unconfirmed")
@@ -316,7 +316,7 @@ class TestCloudLogin:
         assert "already signed in" in capsys.readouterr().out
 
     def test_login_surfaces_device_url_and_waits(self, monkeypatch, capsys):
-        from kiro_claw.cloud.login import LoginPrompt
+        from kiro_crew.cloud.login import LoginPrompt
 
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
         monkeypatch.setattr(cli_cloud, "_resolve_tag", lambda _a: "kc-1")
@@ -343,7 +343,7 @@ class TestCloudLogin:
         assert "Signed in" in out
 
     def test_login_not_approved_returns_1(self, monkeypatch, capsys):
-        from kiro_claw.cloud.login import LoginPrompt
+        from kiro_crew.cloud.login import LoginPrompt
 
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
         monkeypatch.setattr(cli_cloud, "_resolve_tag", lambda _a: "kc-1")

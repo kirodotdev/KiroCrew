@@ -14,13 +14,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.cron import CronService
-from kiro_claw.dashboard.handlers import api_cron_update, api_crons_create
+from kiro_crew.cron import CronService
+from kiro_crew.dashboard.handlers import api_cron_update, api_crons_create
 
 
 @pytest.fixture(autouse=True)
 def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_claw.cron._DEFAULT_DIR", tmp_path)
+    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
     yield
 
 

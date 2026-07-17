@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_claw.config import KiroClawConfig
-from kiro_claw.session import BACKGROUND_KEY, SessionManager
+from kiro_crew.config import KiroCrewConfig
+from kiro_crew.session import BACKGROUND_KEY, SessionManager
 
 
 @pytest.fixture
 def cfg():
-    c = KiroClawConfig()
+    c = KiroCrewConfig()
     c.session.timeout_secs = 2  # short for testing
     return c
 
@@ -418,7 +418,7 @@ class TestCancelRaceCondition:
 
         mgr = SessionManager(cfg, provider_factory=factory)
 
-        import kiro_claw.session as _sess_mod
+        import kiro_crew.session as _sess_mod
 
         with patch.object(_sess_mod, "_sync_kill_provider") as mock_kill:
             with pytest.raises(asyncio.CancelledError):
@@ -462,7 +462,7 @@ class TestCancelRaceCondition:
                 if self._calls < 2:
                     return await original_lock.__aexit__(*a)
 
-        import kiro_claw.session as _sess_mod
+        import kiro_crew.session as _sess_mod
 
         with patch.object(_sess_mod, "_sync_kill_provider") as mock_kill:
             mgr._lock = CancelOnSecondLock()
@@ -853,7 +853,7 @@ class TestStopTurn:
         with patch.object(
             mgr, "get_or_create", new_callable=AsyncMock, side_effect=RuntimeError("boom")
         ):
-            with caplog.at_level(logging.DEBUG, logger="kiro_claw.session"):
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.session"):
                 await mgr._eager_respawn("key1")
 
         assert "Eager respawn failed" in caplog.text
@@ -926,7 +926,7 @@ class TestCompactCallback:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr.set_compact_callback(AsyncMock())
 
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.session"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
             mgr.set_compact_callback(AsyncMock())
 
         assert any(
@@ -990,14 +990,14 @@ class TestCompactCallback:
     ):
         """A stuck turn (semaphore never released) must force-recycle after
         _COMPACT_TIMEOUT_SECS so context still clears."""
-        monkeypatch.setattr("kiro_claw.session._COMPACT_TIMEOUT_SECS", 0.1)
+        monkeypatch.setattr("kiro_crew.session._COMPACT_TIMEOUT_SECS", 0.1)
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # Hold the semaphore and never release -> simulates a stuck turn.
         await mgr.get_or_create("dashboard:chat-1")
         cb = AsyncMock()
         mgr.set_compact_callback(cb)
 
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.session"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
             await asyncio.wait_for(
                 mgr._compact_session("dashboard:chat-1", 92.0), timeout=2
             )
@@ -1015,7 +1015,7 @@ class TestCompactCallback:
         cb = AsyncMock(side_effect=RuntimeError("boom"))
         mgr.set_compact_callback(cb)
 
-        with caplog.at_level(logging.ERROR, logger="kiro_claw.session"):
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session"):
             await mgr._compact_session("dashboard:chat-1", 95.0)
 
         cb.assert_awaited_once()
@@ -1087,7 +1087,7 @@ class TestRecordSuccessFailure:
     @pytest.mark.asyncio
     async def test_pool_size_clamping(self, cfg, caplog):
         cfg.session.pool_size = 999
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.session"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
             mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         assert any("exceeds max" in r.message for r in caplog.records)
         await mgr.close_all()
@@ -1357,8 +1357,8 @@ class TestResetWithPid:
         with patch("os.kill", side_effect=[None, None]), \
              patch("os.killpg") as mock_killpg, \
              patch("os.getpgid", return_value=12345), \
-             patch("kiro_claw.acp.client._get_child_pids", return_value=[]), \
-             patch("kiro_claw.acp.client._get_start_time", return_value=None):
+             patch("kiro_crew.acp.client._get_child_pids", return_value=[]), \
+             patch("kiro_crew.acp.client._get_start_time", return_value=None):
             await mgr.reset("k1")
             mock_killpg.assert_called_once()
 
@@ -1376,8 +1376,8 @@ class TestResetWithPid:
         provider._proc = mock_proc
 
         with patch("os.kill", side_effect=ProcessLookupError), \
-             patch("kiro_claw.acp.client._get_child_pids", return_value=[]), \
-             patch("kiro_claw.acp.client._get_start_time", return_value=None):
+             patch("kiro_crew.acp.client._get_child_pids", return_value=[]), \
+             patch("kiro_crew.acp.client._get_start_time", return_value=None):
             await mgr.reset("k1")
 
         provider.shutdown.assert_awaited_once()
@@ -1394,10 +1394,10 @@ class TestResetWithPid:
         provider._client = mock_client
 
         with patch("os.kill", side_effect=ProcessLookupError), \
-             patch("kiro_claw.acp.client._get_child_pids", return_value=[333]), \
-             patch("kiro_claw.acp.client._get_start_time", return_value=3000), \
-             patch("kiro_claw.acp.client._read_basename", return_value=b"node"), \
-             patch("kiro_claw.acp.client._kill_escaped_children") as mock_sweep:
+             patch("kiro_crew.acp.client._get_child_pids", return_value=[333]), \
+             patch("kiro_crew.acp.client._get_start_time", return_value=3000), \
+             patch("kiro_crew.acp.client._read_basename", return_value=b"node"), \
+             patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep:
             await mgr.reset("k1")
             mock_sweep.assert_called_once()
             # Should include both original children and discovered ones
@@ -1425,7 +1425,7 @@ class TestReloadProviderFactory:
         mock_pool_p = AsyncMock()
         mgr._warm_pool.put_nowait((mock_pool_p, "agent"))
 
-        with patch.object(KiroClawConfig, "load", return_value=cfg), \
+        with patch.object(KiroCrewConfig, "load", return_value=cfg), \
              patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()):
             await mgr.reload_provider_factory()
 
@@ -1441,7 +1441,7 @@ class TestReloadProviderFactory:
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
 
-        with patch.object(KiroClawConfig, "load", return_value=cfg), \
+        with patch.object(KiroCrewConfig, "load", return_value=cfg), \
              patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()):
             await mgr.reload_provider_factory()
 
@@ -1456,7 +1456,7 @@ class TestReloadProviderFactory:
         mgr.release("k1")
         provider.shutdown = AsyncMock(side_effect=OSError("dead"))
 
-        with patch.object(KiroClawConfig, "load", return_value=cfg), \
+        with patch.object(KiroCrewConfig, "load", return_value=cfg), \
              patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()):
             await mgr.reload_provider_factory()  # should not raise
 
@@ -1495,7 +1495,7 @@ class TestCheckContextUsage:
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
         provider.context_usage_pct = lambda: 75.0
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.session"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
             mgr.check_context_usage("k1", provider)
         assert any("75%" in r.message for r in caplog.records)
         await mgr.close_all()
@@ -1609,15 +1609,15 @@ class TestContextInfo:
         """AcpProvider path extracts model and agent from client."""
         from unittest.mock import MagicMock
 
-        from kiro_claw.providers.acp import AcpProvider
-        from kiro_claw.session import _Session
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.session import _Session
 
         mock_provider = MagicMock(spec=AcpProvider)
         mock_provider.context_usage_pct = MagicMock(return_value=45.0)
         mock_provider.shutdown = AsyncMock()
         mock_provider.client = MagicMock()
         mock_provider.client._model = "sonnet-4"
-        mock_provider.client._agent = "kiroclaw"
+        mock_provider.client._agent = "kirocrew"
         mock_provider.client._session_id = None
 
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
@@ -1626,7 +1626,7 @@ class TestContextInfo:
         info = mgr.context_info()
         entry = info[0]
         assert entry["model"] == "sonnet-4"
-        assert entry["agent"] == "kiroclaw"
+        assert entry["agent"] == "kirocrew"
         assert entry["context_pct"] == 45.0
         await mgr.close_all()
 
@@ -1645,7 +1645,7 @@ class TestContextInfo:
         agent_file = tmp_path / "test-agent.json"
         agent_file.write_text(json.dumps({"name": "test-agent", "model": "opus-5"}))
 
-        with patch("kiro_claw.agent.KIRO_AGENTS_DIR", tmp_path):
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path):
             result = SessionManager._resolve_agent_model("test-agent")
         assert result == "opus-5"
 
@@ -1699,16 +1699,16 @@ class TestWarmPoolInternals:
     @pytest.mark.asyncio
     async def test_claim_from_pool_matching_agent(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr._pool_agent = "kiroclaw"
+        mgr._pool_agent = "kirocrew"
         mock_p = AsyncMock()
         mgr._warm_pool.put_nowait((mock_p, 100.0))
-        result = mgr._claim_from_pool("kiroclaw")
+        result = mgr._claim_from_pool("kirocrew")
         assert result == (mock_p, 100.0)
 
     @pytest.mark.asyncio
     async def test_claim_from_pool_mismatched_agent(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr._pool_agent = "kiroclaw"
+        mgr._pool_agent = "kirocrew"
         mock_p = AsyncMock()
         mgr._warm_pool.put_nowait((mock_p, 100.0))
         result = mgr._claim_from_pool("different-agent")
@@ -1887,11 +1887,11 @@ class TestCleanupLoop:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
         with patch.object(mgr, "_expire_idle", new_callable=AsyncMock) as mock_expire, \
-             patch("kiro_claw.session._cleanup_orphaned_mcp_servers", return_value=0), \
-             patch("kiro_claw.session._collect_active_pids", return_value=({}, True)), \
-             patch("kiro_claw.session._periodic_pid_sweep", return_value=([], [])), \
-             patch("kiro_claw.session._kill_confirmed_and_writeback", return_value=0), \
-             patch("kiro_claw.session.shutdown_event") as mock_event:
+             patch("kiro_crew.session._cleanup_orphaned_mcp_servers", return_value=0), \
+             patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
+             patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
+             patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.shutdown_event") as mock_event:
             # First wait_for returns TimeoutError (normal wakeup), second signals shutdown
             mock_event.is_set = lambda: mock_expire.await_count >= 1
             mock_event.wait = AsyncMock(side_effect=asyncio.TimeoutError)
@@ -1906,11 +1906,11 @@ class TestCleanupLoop:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
         with patch.object(mgr, "_expire_idle", new_callable=AsyncMock) as mock_expire, \
-             patch("kiro_claw.session._cleanup_orphaned_mcp_servers", return_value=0), \
-             patch("kiro_claw.session._collect_active_pids", return_value=({}, True)), \
-             patch("kiro_claw.session._periodic_pid_sweep", return_value=([], [])), \
-             patch("kiro_claw.session._kill_confirmed_and_writeback", return_value=0), \
-             patch("kiro_claw.session.shutdown_event") as mock_event:
+             patch("kiro_crew.session._cleanup_orphaned_mcp_servers", return_value=0), \
+             patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
+             patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
+             patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.shutdown_event") as mock_event:
             call_count = [0]
 
             async def one_pass(*a, **kw):
@@ -1931,14 +1931,14 @@ class TestCleanupLoop:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
         with patch.object(mgr, "_expire_idle", new_callable=AsyncMock) as mock_expire, \
-             patch("kiro_claw.session._cleanup_orphaned_mcp_servers", return_value=0), \
-             patch("kiro_claw.session._collect_active_pids", return_value=({}, True)), \
-             patch("kiro_claw.session._periodic_pid_sweep", return_value=([], [])), \
-             patch("kiro_claw.session._kill_confirmed_and_writeback", return_value=0), \
-             patch("kiro_claw.session.shutdown_event") as mock_event:
+             patch("kiro_crew.session._cleanup_orphaned_mcp_servers", return_value=0), \
+             patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
+             patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
+             patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.shutdown_event") as mock_event:
             mock_event.is_set = lambda: mock_expire.await_count >= 1
             mock_event.wait = AsyncMock(side_effect=asyncio.TimeoutError)
-            with caplog.at_level(logging.WARNING, logger="kiro_claw.session"):
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
                 await mgr._cleanup_loop()
 
         # Should clamp to 60
@@ -1950,7 +1950,7 @@ class TestCleanupLoop:
         cfg.session.timeout_secs = 120
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
-        with patch("kiro_claw.session.shutdown_event") as mock_event:
+        with patch("kiro_crew.session.shutdown_event") as mock_event:
             mock_event.is_set = lambda: True
             mock_event.wait = AsyncMock(return_value=None)
             # Should return immediately since shutdown is set
@@ -2215,7 +2215,7 @@ class TestClaudeBackendCompaction:
 
         mgr.set_compact_callback(cb)
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=True):
+        with patch("kiro_crew.session._is_claude_backend", return_value=True):
             await mgr._compact_session("k1", 92.0)
 
         provider.compact.assert_awaited_once()
@@ -2233,8 +2233,8 @@ class TestClaudeBackendCompaction:
         cb = AsyncMock()
         mgr.set_compact_callback(cb)
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=True), \
-             caplog.at_level(logging.ERROR, logger="kiro_claw.session"):
+        with patch("kiro_crew.session._is_claude_backend", return_value=True), \
+             caplog.at_level(logging.ERROR, logger="kiro_crew.session"):
             await mgr._compact_session("k1", 92.0)
 
         assert mgr.has_session("k1")
@@ -2254,7 +2254,7 @@ class TestClaudeBackendCompaction:
         mgr.release("k1")
         provider.context_usage_pct = lambda: 40.0
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=True), \
+        with patch("kiro_crew.session._is_claude_backend", return_value=True), \
              patch.object(mgr, "_trigger_compaction") as mock_trigger:
             mgr.check_context_usage("k1", provider)
 
@@ -2270,7 +2270,7 @@ class TestClaudeBackendCompaction:
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=True):
+        with patch("kiro_crew.session._is_claude_backend", return_value=True):
             # Simulate compact in progress.
             mgr._compacting.add("k1")
             try:
@@ -2293,7 +2293,7 @@ class TestClaudeBackendCompaction:
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=False):
+        with patch("kiro_crew.session._is_claude_backend", return_value=False):
             mgr._compacting.add("k1")
             try:
                 provider2, is_new, _ = await mgr.get_or_create("k1")
@@ -2336,7 +2336,7 @@ class TestCompactFailureCooldown:
         mgr.release("k1")
         provider.compact = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=True):
+        with patch("kiro_crew.session._is_claude_backend", return_value=True):
             await mgr._compact_session("k1", 92.0)
 
         assert mgr._compact_cooldown_until.get("k1", 0.0) > time.monotonic()
@@ -2364,7 +2364,7 @@ class TestCompactFailureCooldown:
         # Pre-existing cooldown from an earlier failure.
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 60.0
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=True):
+        with patch("kiro_crew.session._is_claude_backend", return_value=True):
             await mgr._compact_session("k1", 92.0)
 
         assert "k1" not in mgr._compact_cooldown_until
@@ -2410,8 +2410,8 @@ class TestCompactTimeout:
         mgr.set_compact_callback(cb)
 
         with (
-            patch("kiro_claw.session._is_claude_backend", return_value=True),
-            patch("kiro_claw.session._COMPACT_TIMEOUT_SECS", 0.05),
+            patch("kiro_crew.session._is_claude_backend", return_value=True),
+            patch("kiro_crew.session._COMPACT_TIMEOUT_SECS", 0.05),
         ):
             await mgr._compact_session("k1", 92.0)
 
@@ -2439,7 +2439,7 @@ class TestCompactCallbackSuccessFlag:
 
         mgr.set_compact_callback(cb)
 
-        with patch("kiro_claw.session._is_claude_backend", return_value=True):
+        with patch("kiro_crew.session._is_claude_backend", return_value=True):
             await mgr._compact_session("k1", 92.0)
 
         assert calls == [("k1", 92.0, True)]
@@ -2506,8 +2506,8 @@ class TestCloseAllPersistence:
     async def test_close_all_persists_acp_session_ids(self, cfg):
         from unittest.mock import MagicMock
 
-        from kiro_claw.providers.acp import AcpProvider
-        from kiro_claw.session import _Session
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.session import _Session
 
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mock_provider = MagicMock(spec=AcpProvider)
@@ -2586,7 +2586,7 @@ class TestSetCompactCallback:
     def test_warns_on_replace(self, cfg, caplog):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr.set_compact_callback(AsyncMock())
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.session"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
             mgr.set_compact_callback(AsyncMock())
         assert any("already registered" in r.message for r in caplog.records)
 
@@ -2632,12 +2632,12 @@ class TestGetOrCreatePoolClaim:
 
     @pytest.mark.asyncio
     async def test_claims_from_pool_on_new_session(self, cfg):
-        from kiro_claw.providers.acp import AcpProvider
+        from kiro_crew.providers.acp import AcpProvider
 
         cfg.session.pool_size = 1
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._pool_size = 1
-        mgr._pool_agent = "kiroclaw"
+        mgr._pool_agent = "kirocrew"
 
         # Pre-fill pool with a mock provider that looks like AcpProvider
         mock_pooled = AsyncMock(spec=AcpProvider)
@@ -2647,14 +2647,14 @@ class TestGetOrCreatePoolClaim:
         mock_pooled.is_process_alive = lambda: True
         mock_pooled.client = AsyncMock()
         mock_pooled.client._model = "claude-opus-4"
-        mock_pooled.client._agent = "kiroclaw"
+        mock_pooled.client._agent = "kirocrew"
         mock_pooled.client._session_id = None
         mock_pooled.client.rekey = lambda *a, **kw: None
         mock_pooled.client.resumed = False
 
         mgr._warm_pool.put_nowait((mock_pooled, time.monotonic()))
 
-        provider, is_new, _ = await mgr.get_or_create("dashboard:slot1", agent="kiroclaw")
+        provider, is_new, _ = await mgr.get_or_create("dashboard:slot1", agent="kirocrew")
         mgr.release("dashboard:slot1")
         assert provider is mock_pooled
         assert is_new is True
@@ -2892,18 +2892,18 @@ class TestCleanupLoopResilience:
             if call_count == 1:
                 raise RuntimeError("simulated crash")
             # Force loop exit on second call
-            from kiro_claw import shutdown_event
+            from kiro_crew import shutdown_event
             shutdown_event.set()
 
-        import kiro_claw
-        kiro_claw.shutdown_event.clear()
+        import kiro_crew
+        kiro_crew.shutdown_event.clear()
         with patch("asyncio.wait_for", side_effect=_fast_wait_for), \
              patch.object(mgr, "_expire_idle", side_effect=_expire_then_stop), \
-             patch("kiro_claw.session.find_orphan_mcp_candidates", return_value=[]):
+             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]):
             await asyncio.wait_for(mgr._cleanup_loop(), timeout=5)
 
         assert call_count >= 2
-        kiro_claw.shutdown_event.clear()
+        kiro_crew.shutdown_event.clear()
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -2924,20 +2924,20 @@ class TestCleanupLoopResilience:
             return await real_wait_for(coro, timeout=timeout)
 
         async def _crash_and_stop(timeout):
-            from kiro_claw import shutdown_event
+            from kiro_crew import shutdown_event
             shutdown_event.set()
             raise ValueError("boom")
 
-        import kiro_claw
-        kiro_claw.shutdown_event.clear()
+        import kiro_crew
+        kiro_crew.shutdown_event.clear()
         with patch("asyncio.wait_for", side_effect=_fast_wait_for), \
              patch.object(mgr, "_expire_idle", side_effect=_crash_and_stop), \
-             patch("kiro_claw.session.find_orphan_mcp_candidates", return_value=[]):
+             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]):
             with caplog.at_level(logging.ERROR):
                 await asyncio.wait_for(mgr._cleanup_loop(), timeout=5)
 
         assert "_expire_idle crashed" in caplog.text
-        kiro_claw.shutdown_event.clear()
+        kiro_crew.shutdown_event.clear()
         await mgr.close_all()
 
 
@@ -2963,7 +2963,7 @@ class TestGetBgSessionRecycle:
         sentinel = object()
         rt2.create_session = AsyncMock(return_value=sentinel)
 
-        with patch("kiro_claw.acp.runtime.AcpRuntime", side_effect=[rt2]):
+        with patch("kiro_crew.acp.runtime.AcpRuntime", side_effect=[rt2]):
             result = await mgr.get_bg_session()
 
         stale._is_stale.assert_awaited_once()
@@ -2990,7 +2990,7 @@ class TestGetBgSessionRecycle:
 
         # A live+reused runtime must not trigger a respawn.
         with patch(
-            "kiro_claw.acp.runtime.AcpRuntime",
+            "kiro_crew.acp.runtime.AcpRuntime",
             side_effect=AssertionError("should not respawn a live runtime"),
         ):
             result = await mgr.get_bg_session()

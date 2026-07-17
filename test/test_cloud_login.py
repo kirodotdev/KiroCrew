@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kiro_claw.cloud import login, ssm
+from kiro_crew.cloud import login, ssm
 
 
 class _DummyProcess:

@@ -13,13 +13,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kiro_claw.config.loader import KiroClawConfig
-from kiro_claw.session import SessionManager, _model_fallback
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.session import SessionManager, _model_fallback
 
 
 @pytest.fixture
 def cfg():
-    c = KiroClawConfig()
+    c = KiroCrewConfig()
     # The default provider is now ``acp`` (KiroACP/kiro-cli). These tests
     # exercise the ``agent.model`` fallback path, so pin the provider to
     # ``acp`` explicitly to be robust to future default changes.
@@ -77,17 +77,17 @@ class TestModelFallbackToGlobalConfig:
             approval_policy="trusted",
         )
         # Without the fix, model_override would be None and kiro-cli
-        # would default to 'auto' (Sonnet) for non-kiroclaw agents.
+        # would default to 'auto' (Sonnet) for non-kirocrew agents.
         assert captured["model_override"] == "claude-opus-4.6"
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_kiroclaw_agent_uses_global(self, cfg):
-        """The default 'kiroclaw' agent is excluded from per-agent resolution
+    async def test_kirocrew_agent_uses_global(self, cfg):
+        """The default 'kirocrew' agent is excluded from per-agent resolution
         and inherits the global model (it intentionally tracks the global)."""
         captured: dict = {}
         mgr = SessionManager(cfg, provider_factory=_capturing_factory(captured))
-        await mgr.get_or_create("kiroclaw-sess", agent="kiroclaw")
+        await mgr.get_or_create("kirocrew-sess", agent="kirocrew")
         assert captured["model_override"] == "claude-opus-4.6"
         await mgr.close_all()
 
@@ -114,7 +114,7 @@ class TestModelFallback:
 
 
 class TestResolveNamedAgentModel:
-    """Real-file coverage for KiroClawConfig._resolve_named_agent_model.
+    """Real-file coverage for KiroCrewConfig._resolve_named_agent_model.
 
     Uses the ``agents_dir`` dependency-injection seam to point the resolver at
     a temp directory — real files, no patching.
@@ -126,34 +126,34 @@ class TestResolveNamedAgentModel:
             json.dumps({"name": "foo-agent", "model": "claude-sonnet-3"})
         )
         assert (
-            KiroClawConfig._resolve_named_agent_model("foo-agent", agents_dir=tmp_path)
+            KiroCrewConfig._resolve_named_agent_model("foo-agent", agents_dir=tmp_path)
             == "claude-sonnet-3"
         )
 
     def test_reads_model_by_filename_stem(self, tmp_path):
         (tmp_path / "bar.json").write_text(json.dumps({"model": "claude-haiku-4.5"}))
         assert (
-            KiroClawConfig._resolve_named_agent_model("bar", agents_dir=tmp_path)
+            KiroCrewConfig._resolve_named_agent_model("bar", agents_dir=tmp_path)
             == "claude-haiku-4.5"
         )
 
     def test_returns_empty_when_not_found(self, tmp_path):
         (tmp_path / "bar.json").write_text(json.dumps({"model": "x"}))
-        assert KiroClawConfig._resolve_named_agent_model("nope", agents_dir=tmp_path) == ""
+        assert KiroCrewConfig._resolve_named_agent_model("nope", agents_dir=tmp_path) == ""
 
     def test_returns_empty_for_empty_agent(self, tmp_path):
-        assert KiroClawConfig._resolve_named_agent_model("", agents_dir=tmp_path) == ""
+        assert KiroCrewConfig._resolve_named_agent_model("", agents_dir=tmp_path) == ""
 
     def test_skips_non_dict_json(self, tmp_path):
         # stem matches "weird" but the content isn't an object -> skipped safely
         (tmp_path / "weird.json").write_text(json.dumps([1, 2, 3]))
-        assert KiroClawConfig._resolve_named_agent_model("weird", agents_dir=tmp_path) == ""
+        assert KiroCrewConfig._resolve_named_agent_model("weird", agents_dir=tmp_path) == ""
 
     def test_skips_malformed_json_and_finds_valid(self, tmp_path):
         (tmp_path / "broken.json").write_text("{not valid json")
         (tmp_path / "good.json").write_text(json.dumps({"model": "claude-opus-4.8"}))
         assert (
-            KiroClawConfig._resolve_named_agent_model("good", agents_dir=tmp_path)
+            KiroCrewConfig._resolve_named_agent_model("good", agents_dir=tmp_path)
             == "claude-opus-4.8"
         )
 
@@ -163,11 +163,11 @@ class TestResolveNamedAgentModel:
         # (Deterministic: no valid file can match first and short-circuit.)
         (tmp_path / "broken.json").write_text("{not valid json")
         assert (
-            KiroClawConfig._resolve_named_agent_model("broken", agents_dir=tmp_path) == ""
+            KiroCrewConfig._resolve_named_agent_model("broken", agents_dir=tmp_path) == ""
         )
 
     def test_match_with_no_model_field_returns_empty(self, tmp_path):
         (tmp_path / "nomodel.json").write_text(json.dumps({"name": "nomodel"}))
         assert (
-            KiroClawConfig._resolve_named_agent_model("nomodel", agents_dir=tmp_path) == ""
+            KiroCrewConfig._resolve_named_agent_model("nomodel", agents_dir=tmp_path) == ""
         )

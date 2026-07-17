@@ -11,14 +11,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiro_claw.workflows import WorkflowEvent
-from kiro_claw.workflows.registry import (
+from kiro_crew.workflows import WorkflowEvent
+from kiro_crew.workflows.registry import (
     STATUS_FINISHED,
     STATUS_RUNNING,
     RunHandle,
     RunRegistry,
 )
-from kiro_claw.workflows.store import WorkflowRunStore
+from kiro_crew.workflows.store import WorkflowRunStore
 
 
 def _store(tmp_path) -> WorkflowRunStore:

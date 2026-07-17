@@ -47,7 +47,7 @@ describe('InstancesPanel', () => {
     ;vi.mocked(api.listInstances).mockResolvedValue({ active: false, instances: [], warm_set_cap: 5 })
     renderWithProviders(<InstancesPanel />)
     expect(await screen.findByText(/not active yet/i)).toBeInTheDocument()
-    expect(screen.getByText(/kiroclaw restart/i)).toBeInTheDocument()
+    expect(screen.getByText(/kirocrew restart/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Disable multi-instance management/i })).toBeInTheDocument()
   })
 
@@ -69,7 +69,7 @@ describe('InstancesPanel', () => {
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'shizuka-alias')
     await u.type(
       screen.getByPlaceholderText(/leave blank for standard installs/i),
-      '/home/shizuka/.local/bin/kiroclaw',
+      '/home/shizuka/.local/bin/kirocrew',
     )
     await u.click(screen.getByRole('button', { name: 'Add instance' }))
 
@@ -78,7 +78,7 @@ describe('InstancesPanel', () => {
         expect.objectContaining({
           name: 'Shizuka',
           ssh_host: 'shizuka-alias',
-          remote_bin: '/home/shizuka/.local/bin/kiroclaw',
+          remote_bin: '/home/shizuka/.local/bin/kirocrew',
         }),
       ),
     )

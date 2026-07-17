@@ -11,7 +11,7 @@ vi.mock('../pages/overview', () => ({
   SkillsTab: () => <div data-testid="skills-tab">SkillsTab</div>,
   McpTab: () => <div data-testid="mcp-tab">McpTab</div>,
   AgentCfgTab: () => <div data-testid="agentcfg-tab">AgentCfgTab</div>,
-  KiroClawCfgTab: () => <div data-testid="kiroclawcfg-tab">KiroClawCfgTab</div>,
+  KiroCrewCfgTab: () => <div data-testid="kirocrewcfg-tab">KiroCrewCfgTab</div>,
   DisplayTab: () => <div data-testid="display-tab">DisplayTab</div>,
   KiroUsageTab: () => <div data-testid="usage-tab">KiroUsageTab</div>,
 }))
@@ -50,10 +50,10 @@ describe('OverviewPage', () => {
     expect(screen.getByTestId('memory-tab')).toBeInTheDocument()
   })
 
-  it('switches to KiroClaw Config tab', () => {
+  it('switches to KiroCrew Config tab', () => {
     renderWithProviders(<OverviewPage />)
-    fireEvent.click(screen.getByText('KiroClaw Config'))
-    expect(screen.getByTestId('kiroclawcfg-tab')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('KiroCrew Config'))
+    expect(screen.getByTestId('kirocrewcfg-tab')).toBeInTheDocument()
   })
 
   it('switches to Agent Config tab', () => {

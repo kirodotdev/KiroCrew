@@ -9,7 +9,7 @@ import zipfile
 
 import pytest
 
-from kiro_claw.doc_parser import (
+from kiro_crew.doc_parser import (
     extract_text,
     is_parseable_document,
 )
@@ -250,7 +250,7 @@ class TestDecompressionGuards:
         """A ZIP entry whose actual decompressed content exceeds the limit is skipped."""
         from unittest.mock import patch
 
-        import kiro_claw.doc_parser as dp
+        import kiro_crew.doc_parser as dp
 
         path = _make_docx(["Normal text"])
         try:
@@ -267,7 +267,7 @@ class TestDecompressionGuards:
         """_safe_decompress raises on output exceeding max_size."""
         import zlib as _zlib
 
-        from kiro_claw.doc_parser import _safe_decompress
+        from kiro_crew.doc_parser import _safe_decompress
 
         # Compress 1 MB of zeros
         big = _zlib.compress(b"\x00" * (1024 * 1024))

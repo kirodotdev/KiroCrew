@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`kiro_claw.artifacts` — the data layer."""
+"""Unit tests for :mod:`kiro_crew.artifacts` — the data layer."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.artifacts import (
+from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
     MAX_VERSIONS,
     Artifact,
@@ -363,7 +363,7 @@ class TestDelete:
 class TestSecurity:
     def test_root_under_sensitive_path_refused(self, tmp_path: Path, monkeypatch) -> None:
         # Pretend the root path is sensitive
-        from kiro_claw import artifacts as art_mod
+        from kiro_crew import artifacts as art_mod
 
         monkeypatch.setattr(art_mod, "is_sensitive_path", lambda _p: True)
         with pytest.raises(ArtifactError):
@@ -384,7 +384,7 @@ class TestSecurity:
         # symlink expansion landing on a sensitive path), the snapshot read
         # must refuse rather than silently leak. Verify the gated helper is
         # actually on the read path.
-        from kiro_claw import artifacts as art_mod
+        from kiro_crew import artifacts as art_mod
 
         store.create(name="x", content="v1")
         # First update succeeds — is_sensitive_path() returns False normally.
@@ -510,7 +510,7 @@ class TestLifecycleEvents:
     def test_event_log_is_fifo_capped(self, store: ArtifactStore) -> None:
         # Cap is 500 (MAX_EVENTS_PER_ARTIFACT). Force-write 510 events to
         # confirm the oldest 10 get dropped.
-        from kiro_claw.artifacts import MAX_EVENTS_PER_ARTIFACT
+        from kiro_crew.artifacts import MAX_EVENTS_PER_ARTIFACT
 
         art = store.create(name="brd", content="# v1")
         for i in range(MAX_EVENTS_PER_ARTIFACT + 10):
@@ -703,7 +703,7 @@ class TestLivePointer:
         meta.source_path = str(sensitive)
         store._write_meta(meta)
         # Pretend the path is sensitive.
-        from kiro_claw import artifacts as artifacts_mod
+        from kiro_crew import artifacts as artifacts_mod
 
         monkeypatch.setattr(
             artifacts_mod,
@@ -893,7 +893,7 @@ class TestSourcePathSecurityHardening:
         # Make is_sensitive_path return True only for the resolved path
         # (NOT the traversal string), simulating the real-world semantics
         # where the check inspects the canonical filesystem location.
-        from kiro_claw import artifacts as artifacts_mod
+        from kiro_crew import artifacts as artifacts_mod
 
         resolved = str(sensitive.resolve())
         monkeypatch.setattr(
@@ -913,7 +913,7 @@ class TestSourcePathSecurityHardening:
         sensitive.write_text("PRIVATE", encoding="utf-8")
         link = tmp_path / "innocent.md"
         link.symlink_to(sensitive)
-        from kiro_claw import artifacts as artifacts_mod
+        from kiro_crew import artifacts as artifacts_mod
 
         resolved = str(sensitive.resolve())
         monkeypatch.setattr(
@@ -933,7 +933,7 @@ class TestSourcePathSecurityHardening:
         # MAX_CONTENT_BYTES bound was silently exceeded for multi-byte text
         # — a 100-char string of 4-byte emoji would be 400 bytes after
         # encode() and bypass the cap.
-        from kiro_claw import artifacts as artifacts_mod
+        from kiro_crew import artifacts as artifacts_mod
 
         # Use a small cap so the test runs fast.
         monkeypatch.setattr(artifacts_mod, "MAX_CONTENT_BYTES", 50)
@@ -965,7 +965,7 @@ class TestRoundThirteenFixes:
         # must stop at MAX_CONTENT_BYTES+1 — verified by mocking read_text
         # to fail loudly if anyone calls it (the new code uses open('rb')
         # + bounded read instead).
-        from kiro_claw import artifacts as artifacts_mod
+        from kiro_crew import artifacts as artifacts_mod
 
         monkeypatch.setattr(artifacts_mod, "MAX_CONTENT_BYTES", 50)
         f = tmp_path / "big.txt"
@@ -1075,7 +1075,7 @@ class TestRecordImpression:
         assert store.get("x").content == "<div>orig</div>"
 
     def test_unknown_slug_raises(self, store):
-        from kiro_claw.artifacts import ArtifactNotFoundError
+        from kiro_crew.artifacts import ArtifactNotFoundError
 
         with pytest.raises(ArtifactNotFoundError):
             store.record_impression("no-such-thing", by="user")

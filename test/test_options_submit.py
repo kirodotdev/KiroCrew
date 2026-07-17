@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.slack.format import OPTIONS_CHECKBOXES_ACTION, OPTIONS_SUBMIT_ACTION
+from kiro_crew.slack.format import OPTIONS_CHECKBOXES_ACTION, OPTIONS_SUBMIT_ACTION
 
 
 def _make_payload(selected_values: list[str], all_choices: list[str], thread_ts: str = "t1") -> dict:
@@ -79,7 +79,7 @@ def orch():
 class TestHandleOptionsSubmit:
     @pytest.mark.asyncio
     async def test_denied_user_returns_early(self, orch, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: False)
 
@@ -93,7 +93,7 @@ class TestHandleOptionsSubmit:
     async def test_sends_combined_selections(self, orch, monkeypatch):
         import asyncio as _aio
 
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
 
@@ -120,7 +120,7 @@ class TestHandleOptionsSubmit:
 
     @pytest.mark.asyncio
     async def test_ignores_empty_selection(self, orch, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
 
@@ -132,7 +132,7 @@ class TestHandleOptionsSubmit:
 
     @pytest.mark.asyncio
     async def test_no_orch_returns_early(self, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", None)
 
         payload = _make_payload(["A"], ["A", "B"])
@@ -141,7 +141,7 @@ class TestHandleOptionsSubmit:
 
     @pytest.mark.asyncio
     async def test_single_selection(self, orch, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
 
@@ -154,7 +154,7 @@ class TestHandleOptionsSubmit:
 
     @pytest.mark.asyncio
     async def test_duplicate_choices_deduped(self, orch, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
 
@@ -179,7 +179,7 @@ class TestHandleOptionsSubmit:
         """When update_message raises, fall back to post_blocks + delete_message."""
         import asyncio as _aio
 
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
         orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
@@ -197,7 +197,7 @@ class TestHandleOptionsSubmit:
     @pytest.mark.asyncio
     async def test_post_blocks_failure_aborts(self, orch, monkeypatch):
         """When update fails AND post_blocks fallback also returns None, abort."""
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
         orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
@@ -215,7 +215,7 @@ class TestHandleOptionsSubmit:
         Reproduces the saved-triage-digest bug — submitting OPTIONS used to
         delete the entire digest including its 3 sections + footer context.
         """
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
 
@@ -261,7 +261,7 @@ class TestCheckboxDispatch:
 
     @pytest.mark.asyncio
     async def test_checkbox_toggle_is_noop(self, orch, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
 
@@ -284,7 +284,7 @@ class TestCheckboxDispatch:
 class TestImportThreadToSlot:
     @pytest.mark.asyncio
     async def test_imports_messages_and_links(self, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
 
         slack = MagicMock()
         slack.fetch_thread_replies = AsyncMock(
@@ -300,7 +300,7 @@ class TestImportThreadToSlot:
         ds.get_or_create_slot = MagicMock(return_value=slot)
         ds._self_bot_id = "B1"
 
-        with patch("kiro_claw.dashboard.chat._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
             result = await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
 
         assert result is slot
@@ -310,7 +310,7 @@ class TestImportThreadToSlot:
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_messages(self, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
 
         slack = MagicMock()
         slack.fetch_thread_replies = AsyncMock(return_value=[])
@@ -323,7 +323,7 @@ class TestImportThreadToSlot:
 
     @pytest.mark.asyncio
     async def test_skips_link_command_messages(self, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
 
         slack = MagicMock()
         slack.fetch_thread_replies = AsyncMock(
@@ -339,14 +339,14 @@ class TestImportThreadToSlot:
         ds.get_or_create_slot = MagicMock(return_value=slot)
         ds._self_bot_id = ""
 
-        with patch("kiro_claw.dashboard.chat._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
             await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
 
         assert slot.append.call_count == 1
 
     @pytest.mark.asyncio
     async def test_redacts_text_before_append(self, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
 
         slack = MagicMock()
         slack.fetch_thread_replies = AsyncMock(
@@ -359,7 +359,7 @@ class TestImportThreadToSlot:
         ds.get_or_create_slot = MagicMock(return_value=slot)
         ds._self_bot_id = ""
 
-        with patch("kiro_claw.dashboard.chat._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
             await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
 
         # Text should have been passed through redaction (we can't easily check
@@ -373,7 +373,7 @@ class TestImportThreadToSlot:
 class TestOptionsSubmitDispatch:
     @pytest.mark.asyncio
     async def test_submit_action_dispatches(self, orch, monkeypatch):
-        from kiro_claw.slack import interactions
+        from kiro_crew.slack import interactions
 
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kiro_claw.slack.handler import _list_all_agent_names, _resolve_cc_agent_name
+from kiro_crew.slack.handler import _list_all_agent_names, _resolve_cc_agent_name
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -132,7 +132,7 @@ class TestResolveCcAgentName:
         link.symlink_to(secret)
 
         # Force the hooks layer to treat the secret target as sensitive.
-        import kiro_claw.hooks as hooks
+        import kiro_crew.hooks as hooks
 
         real_is_sensitive = hooks.is_sensitive_path
 
@@ -165,7 +165,7 @@ class TestListAllAgentNames:
         # Monkey-patch Path.home temporarily
         import unittest.mock
 
-        with unittest.mock.patch("kiro_claw.slack.handler.Path.home", return_value=tmp_path):
+        with unittest.mock.patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
             # kiro agents dir needs to be at tmp_path / ".kiro" / "agents"
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
@@ -180,7 +180,7 @@ class TestListAllAgentNames:
 
         import unittest.mock
 
-        with unittest.mock.patch("kiro_claw.slack.handler.Path.home", return_value=tmp_path):
+        with unittest.mock.patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
             result = _list_all_agent_names(cc_plugins_dir=cc_dir)
@@ -193,7 +193,7 @@ class TestListAllAgentNames:
         nonexistent = tmp_path / "does-not-exist"
         import unittest.mock
 
-        with unittest.mock.patch("kiro_claw.slack.handler.Path.home", return_value=tmp_path):
+        with unittest.mock.patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
             result = _list_all_agent_names(cc_plugins_dir=nonexistent)
@@ -210,7 +210,7 @@ class TestListAllAgentNames:
 
         import unittest.mock
 
-        with unittest.mock.patch("kiro_claw.slack.handler.Path.home", return_value=tmp_path):
+        with unittest.mock.patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
             result = _list_all_agent_names(cc_plugins_dir=cc_dir)
@@ -221,27 +221,27 @@ class TestListAllAgentNames:
         assert "mike" in names
         assert "zulu" in names
 
-    def test_kiroclaw_lite_excluded(self, tmp_path: Path) -> None:
-        """The kiroclaw-lite agent is excluded from listings."""
+    def test_kirocrew_lite_excluded(self, tmp_path: Path) -> None:
+        """The kirocrew-lite agent is excluded from listings."""
         cc_dir = tmp_path / "cc-plugins"
-        _write_agent_md(cc_dir, "core", "kiroclaw-lite")
+        _write_agent_md(cc_dir, "core", "kirocrew-lite")
         _write_agent_md(cc_dir, "core", "useful-agent")
 
         import unittest.mock
 
-        with unittest.mock.patch("kiro_claw.slack.handler.Path.home", return_value=tmp_path):
+        with unittest.mock.patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
             result = _list_all_agent_names(cc_plugins_dir=cc_dir)
 
-        assert "kiroclaw-lite" not in result
+        assert "kirocrew-lite" not in result
         assert "useful-agent" in result
 
-    def test_kiroclaw_lite_excluded_from_kiro_agents(self, tmp_path: Path) -> None:
-        """A ~/.kiro/agents/kiroclaw-lite.json must ALSO be hidden.
+    def test_kirocrew_lite_excluded_from_kiro_agents(self, tmp_path: Path) -> None:
+        """A ~/.kiro/agents/kirocrew-lite.json must ALSO be hidden.
 
-        Regression guard for the AutoSDE finding: the kiroclaw-lite filter was
-        only applied to cc-plugins agents, so a kiro-side kiroclaw-lite.json
+        Regression guard for the AutoSDE finding: the kirocrew-lite filter was
+        only applied to cc-plugins agents, so a kiro-side kirocrew-lite.json
         leaked into the listing despite the docstring claiming it is hidden.
         """
         cc_dir = tmp_path / "cc-plugins"
@@ -249,18 +249,18 @@ class TestListAllAgentNames:
 
         import unittest.mock
 
-        with unittest.mock.patch("kiro_claw.slack.handler.Path.home", return_value=tmp_path):
+        with unittest.mock.patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
-            (kiro_agents / "kiroclaw-lite.json").write_text(
-                '{"name": "kiroclaw-lite"}', encoding="utf-8"
+            (kiro_agents / "kirocrew-lite.json").write_text(
+                '{"name": "kirocrew-lite"}', encoding="utf-8"
             )
             (kiro_agents / "real-kiro.json").write_text(
                 '{"name": "real-kiro"}', encoding="utf-8"
             )
             result = _list_all_agent_names(cc_plugins_dir=cc_dir)
 
-        assert "kiroclaw-lite" not in result
+        assert "kirocrew-lite" not in result
         assert "real-kiro" in result
         assert "useful-agent" in result
 
@@ -271,7 +271,7 @@ class TestListAllAgentNames:
 
         import unittest.mock
 
-        with unittest.mock.patch("kiro_claw.slack.handler.Path.home", return_value=tmp_path):
+        with unittest.mock.patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
             # Create a kiro agent JSON with same stem

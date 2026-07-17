@@ -7,7 +7,7 @@ import { api } from '../api/client'
 import type { TaskRunnerStatus, ProjectRun } from '../types'
 import { Card, PageHeader, SendBtn, Btn } from '../components/ui'
 import AgentSelector from '../components/AgentSelector'
-import type { KiroClawAgent } from '../components/AgentSelector'
+import type { KiroCrewAgent } from '../components/AgentSelector'
 import ProjectDetailPage from './ProjectDetailPage'
 
 type Mode = 'compose' | 'spec' | 'yaml'
@@ -44,7 +44,7 @@ export default function ProjectsPage() {
   const [specText, setSpecText] = useState(() => sessionStorage.getItem('tr-spec') || '')
   const [yamlText, setYamlText] = useState(() => sessionStorage.getItem('tr-yaml') || '')
   const [agent, setAgent] = useState('')
-  const [agents, setAgents] = useState<KiroClawAgent[]>([])
+  const [agents, setAgents] = useState<KiroCrewAgent[]>([])
   const [defaultAgentName, setDefaultAgentName] = useState('')
   const [isPlanning, setIsPlanning] = useState(() => sessionStorage.getItem('tr-planning') === '1')
   const [planError, setPlanError] = useState('')
@@ -80,7 +80,7 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     load()
-    api.kiroclawAgents().then(d => { setAgents(d.agents || []); setDefaultAgentName(d.default_agent || '') }).catch(() => {})
+    api.kirocrewAgents().then(d => { setAgents(d.agents || []); setDefaultAgentName(d.default_agent || '') }).catch(() => {})
     const iv = setInterval(load, 3000)
     return () => clearInterval(iv)
   }, [load, refreshTrigger])

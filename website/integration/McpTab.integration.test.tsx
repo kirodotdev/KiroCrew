@@ -36,7 +36,7 @@ describe('McpTab Integration Tests', () => {
             status: 'ok',
             enabled: true,
             tools: ['ReadInternalWebsites', 'TaskeiGetTask'],
-            presence: { kiroclaw: true, kiroGlobal: true, ccGlobal: false },
+            presence: { kirocrew: true, kiroGlobal: true, ccGlobal: false },
           },
           {
             name: 'ai-community-slack-mcp',
@@ -44,7 +44,7 @@ describe('McpTab Integration Tests', () => {
             error: 'Connection failed',
             enabled: false,
             tools: [],
-            presence: { kiroclaw: false, kiroGlobal: false, ccGlobal: false },
+            presence: { kirocrew: false, kiroGlobal: false, ccGlobal: false },
           },
         ])
       })
@@ -70,7 +70,7 @@ describe('McpTab Integration Tests', () => {
             tools: ['ToolAlpha', 'ToolBeta', 'ToolGamma'],
             disabledTools: [],
             command: 'node test',
-            presence: { kiroclaw: true, kiroGlobal: false, ccGlobal: false },
+            presence: { kirocrew: true, kiroGlobal: false, ccGlobal: false },
           },
         ])
       })
@@ -104,7 +104,7 @@ describe('McpTab Integration Tests', () => {
             tools: ['ToggleTool'],
             disabledTools: [],
             command: 'node toggle',
-            presence: { kiroclaw: true, kiroGlobal: false, ccGlobal: false },
+            presence: { kirocrew: true, kiroGlobal: false, ccGlobal: false },
           },
         ])
       }),
@@ -141,7 +141,7 @@ describe('McpTab Integration Tests', () => {
     })
   })
 
-  it('stages KiroClaw scope off and commits it via Apply', async () => {
+  it('stages KiroCrew scope off and commits it via Apply', async () => {
     const user = userEvent.setup()
 
     let applyPayload: any = null
@@ -158,7 +158,7 @@ describe('McpTab Integration Tests', () => {
       expect(screen.getAllByText('builder-mcp').length).toBeGreaterThan(0)
     })
 
-    // Find the builder-mcp row and click its KiroClaw scope badge
+    // Find the builder-mcp row and click its KiroCrew scope badge
     const rows = screen.getAllByRole('row')
     const builderRow = rows.find(row =>
       within(row as HTMLElement).queryByText('builder-mcp')
@@ -166,7 +166,7 @@ describe('McpTab Integration Tests', () => {
     expect(builderRow).toBeDefined()
 
     const mcBadge = within(builderRow as HTMLElement).getByRole('button', {
-      name: /KiroClaw.*click to disable/i,
+      name: /KiroCrew.*click to disable/i,
     })
     await user.click(mcBadge)
 
@@ -181,7 +181,7 @@ describe('McpTab Integration Tests', () => {
       expect(applyPayload).toBeTruthy()
       expect(applyPayload.changes).toHaveLength(1)
       expect(applyPayload.changes[0].name).toBe('builder-mcp')
-      expect(applyPayload.changes[0].kiroclaw).toBe(false)
+      expect(applyPayload.changes[0].kirocrew).toBe(false)
     })
   })
 
@@ -256,7 +256,7 @@ describe('McpTab Integration Tests', () => {
             error: 'Failed to connect',
             enabled: true,
             tools: [],
-            presence: { kiroclaw: true, kiroGlobal: false, ccGlobal: false },
+            presence: { kirocrew: true, kiroGlobal: false, ccGlobal: false },
           },
         ])
       })
@@ -306,7 +306,7 @@ describe('McpTab Integration Tests', () => {
             tools: ['T'],
             disabledTools: [],
             command: 'node t',
-            presence: { kiroclaw: true, kiroGlobal: false, ccGlobal: false },
+            presence: { kirocrew: true, kiroGlobal: false, ccGlobal: false },
           },
         ])
       ),

@@ -1,5 +1,5 @@
-"""Unit tests for kiro_claw.platform_compat — the cross-platform shim that lets
-KiroClaw run natively on Windows alongside macOS/Linux (Mesh-629).
+"""Unit tests for kiro_crew.platform_compat — the cross-platform shim that lets
+KiroCrew run natively on Windows alongside macOS/Linux (Mesh-629).
 
 These exercise the PURE / platform-dispatching surface without spawning real
 processes: the signal constants, the file-lock context managers (POSIX path on
@@ -20,7 +20,7 @@ import types
 
 import pytest
 
-from kiro_claw import platform_compat as pc
+from kiro_crew import platform_compat as pc
 
 
 class TestPlatformFlags:
@@ -282,13 +282,13 @@ class TestUtf8Console:
         pc.ensure_utf8_console()
 
     def test_emoji_print_does_not_raise_after_call(self, capsys):
-        # The bug this guards: KiroClaw prints non-ASCII glyphs everywhere, and on
+        # The bug this guards: KiroCrew prints non-ASCII glyphs everywhere, and on
         # Windows cp1252 stdout that raised UnicodeEncodeError and killed the gateway.
         # After ensure_utf8_console(), a non-ASCII print must succeed on any platform.
         pc.ensure_utf8_console()
-        print("中文 KiroClaw 日本語")  # non-cp1252-encodable glyphs
+        print("中文 KiroCrew 日本語")  # non-cp1252-encodable glyphs
         out = capsys.readouterr().out
-        assert "KiroClaw" in out
+        assert "KiroCrew" in out
 
     def test_rewraps_cp1252_stream_so_emoji_log_record_survives(self, monkeypatch):
         # Regression for the gateway-worker UnicodeEncodeError: when the worker's
@@ -796,7 +796,7 @@ class TestChmodShimsApply:
 
 
 class TestRestrictToOwner:
-    """Fail-loud owner-only lockdown used by every ~/.kiroclaw secret writer.
+    """Fail-loud owner-only lockdown used by every ~/.kirocrew secret writer.
 
     The bolichen-4d14 finding on CR-283504528 was that the earlier
     ``if IS_POSIX: os.chmod(...)`` guard left Windows with NO per-file owner-only
@@ -989,7 +989,7 @@ class TestFindListeningPidsErrors:
         # Regression: Mesh-2364. Windows netstat -ano prints IPv6 LISTEN rows
         # with proto column "TCP" (NOT "TCP6") and address form [::1]:<port>.
         # Before this fix `-p tcp` on the netstat argv dropped these entirely,
-        # so `kiroclaw stop` / `kiroclaw restart` silently no-op'd when the
+        # so `kirocrew stop` / `kirocrew restart` silently no-op'd when the
         # gateway bound v6. This canned blob mirrors what real Windows netstat
         # actually prints (verified on Windows 11 24H2 with an AF_INET6
         # loopback listener) — regression-guards without a Windows CI lane.

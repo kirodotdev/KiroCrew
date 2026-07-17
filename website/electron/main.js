@@ -5,7 +5,7 @@ const os = require("os");
 const { spawn, execFile } = require("child_process");
 const path = require("path");
 const http = require("http");
-const { findKiroclawBin } = require("./find-bin");
+const { findKirocrewBin } = require("./find-bin");
 const { createTokenRetryHandler } = require("./token-retry");
 const { createDisplayMediaHandler } = require("./display-media");
 const { initAutoUpdate } = require("./auto-update");
@@ -29,21 +29,21 @@ const { migrateRemoteHostConfig, getRemoteHostConfig, setRemoteHostConfig } = re
 const store = new Store({
   defaults: {
     remoteHost: "",                        // LEGACY — migrated to remoteHosts
-    kiroclawBinPath: DEFAULT_REMOTE_BIN,   // LEGACY — migrated to remoteHosts
+    kirocrewBinPath: DEFAULT_REMOTE_BIN,   // LEGACY — migrated to remoteHosts
     remoteHosts: {},                       // { [port]: { host, binPath, remotePort?, remotePath? } }
     sshTimeoutMs: 20000,
     windowState: null,                     // persisted main-window geometry (see window-state.js)
   },
 });
 
-const KIROCLAW_HOME = process.env.KIROCLAW_HOME || path.join(os.homedir(), ".kiroclaw");
+const KIROCREW_HOME = process.env.KIROCREW_HOME || path.join(os.homedir(), ".kirocrew");
 
 function resolvePort() {
-  const raw = process.env.KIROCLAW_PORT;
+  const raw = process.env.KIROCREW_PORT;
   if (raw) {
     const n = parseInt(raw, 10);
     if (isNaN(n) || n < 1 || n > 65535) {
-      console.warn(`Invalid KIROCLAW_PORT="${raw}", falling back to 5476`);
+      console.warn(`Invalid KIROCREW_PORT="${raw}", falling back to 5476`);
       return 5476;
     }
     return n;
@@ -54,7 +54,7 @@ function resolvePort() {
   // dashboard/origin.parse_dashboard_url), so parse the URL. The scheme-prepend
   // mirrors the backend's _ensure_scheme so a bare "host:7778" parses.
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(KIROCLAW_HOME, "config.json"), "utf8"));
+    const cfg = JSON.parse(fs.readFileSync(path.join(KIROCREW_HOME, "config.json"), "utf8"));
     let url = cfg && cfg.dashboard && cfg.dashboard.url;
     if (url) {
       if (!url.includes("://")) url = "http://" + url;
@@ -83,13 +83,13 @@ const { validateRemoteSettings } = require("./validation");
 const { attachContextMenu } = require("./context-menu");
 
 // Set app name for macOS menu bar and dock
-app.name = "KiroClaw";
+app.name = "KiroCrew";
 
 // Single-instance lock. On macOS LaunchServices reuses the already-running .app
 // when the user relaunches from the Dock / Spotlight, so a second instance is
 // harmless (a no-op there). The fork's supported non-mac target is the Linux
 // AppImage, which has no such reuse — double-clicking the AppImage again spawns
-// a fresh process. Two instances against the same ~/.kiroclaw racing
+// a fresh process. Two instances against the same ~/.kirocrew racing
 // .local_secret and stopping each other's gateway on before-quit is bad news
 // (kills the shared gateway out from under the other instance). Grab the lock;
 // if we can't, exit immediately and let the existing instance surface itself.
@@ -156,7 +156,7 @@ function glog(line) {
 
 function startGateway() {
   return new Promise((resolve) => {
-    glog(`launch: port=${PORT} home=${KIROCLAW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
+    glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
     sendStatus("Checking if gateway is running…");
     checkBackend()
       .then(() => {
@@ -169,23 +169,23 @@ function startGateway() {
         resolve(true);
       })
       .catch(() => {
-        // Ensure ~/.kiroclaw/ directory exists before starting gateway
+        // Ensure ~/.kirocrew/ directory exists before starting gateway
         // (gateway generates .local_secret itself on startup via O_CREAT|O_TRUNC)
-        const kiroclawDir = KIROCLAW_HOME;
+        const kirocrewDir = KIROCREW_HOME;
         try {
-          fs.mkdirSync(kiroclawDir, { recursive: true, mode: 0o700 });
+          fs.mkdirSync(kirocrewDir, { recursive: true, mode: 0o700 });
         } catch (err) {
-          glog(`WARN failed to create kiroclaw dir ${kiroclawDir}: ${err.message}`);
+          glog(`WARN failed to create kirocrew dir ${kirocrewDir}: ${err.message}`);
         }
 
-        const bin = findKiroclawBin(fs, os, path, process.resourcesPath, __dirname);
+        const bin = findKirocrewBin(fs, os, path, process.resourcesPath, __dirname);
         const bundled = bin.includes("backend-dist");
         let execState = "executable";
         try { fs.accessSync(bin, fs.constants.X_OK); } catch (e) { execState = `NOT-EXECUTABLE(${e.code})`; }
         glog(`no gateway on :${PORT} — spawning bundled backend: bin=${bin} bundled=${bundled} ${execState}`);
         sendStatus("Starting gateway…");
 
-        const { KIROCLAW_PORT: _ignored, ...cleanEnv } = process.env;
+        const { KIROCREW_PORT: _ignored, ...cleanEnv } = process.env;
 
         // Tee the child's stdout+stderr straight to the launch log via a file
         // descriptor — no JS pipe to drain, no backpressure on a long-running
@@ -205,7 +205,7 @@ function startGateway() {
         const child = spawn(bin, ["gateway", "--no-open"], {
           stdio: ["ignore", childOut, childOut],
           detached: false,
-          env: { ...cleanEnv, KIROCLAW_PROJECT_DIR: path.resolve(__dirname, "..") },
+          env: { ...cleanEnv, KIROCREW_PROJECT_DIR: path.resolve(__dirname, "..") },
         });
         gatewayProcess = child;
         // The child inherits its own dup of the fd; close our copy so it doesn't leak.
@@ -222,7 +222,7 @@ function startGateway() {
         child.on("exit", (code, signal) => {
           glog(`gateway child exited code=${code} signal=${signal}`);
           if (signal === "SIGKILL") {
-            glog("HINT: SIGKILL on a freshly-spawned bundled binary almost always means macOS Gatekeeper blocked an unsigned/quarantined nested executable. On the recipient's Mac run: xattr -cr <path to KiroClaw.app>");
+            glog("HINT: SIGKILL on a freshly-spawned bundled binary almost always means macOS Gatekeeper blocked an unsigned/quarantined nested executable. On the recipient's Mac run: xattr -cr <path to KiroCrew.app>");
           }
           // Only the CURRENT child may mutate the shared state. A stale child's
           // late exit (e.g. the one recoverWedgedGateway just SIGKILLed) must be
@@ -253,7 +253,7 @@ async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
   console.log("Stopping gateway gracefully...");
   await _stopGatewayGracefully(proc, {
     backendUrl: BACKEND_URL,
-    kiroclawHome: KIROCLAW_HOME,
+    kirocrewHome: KIROCREW_HOME,
     timeoutMs,
   });
   gatewayProcess = null;
@@ -296,7 +296,7 @@ function fetchRemoteToken(port) {
 
 function fetchLocalToken(backendUrl = BACKEND_URL) {
   try {
-    const secret = fs.readFileSync(path.join(KIROCLAW_HOME, ".local_secret"), "utf8").trim();
+    const secret = fs.readFileSync(path.join(KIROCREW_HOME, ".local_secret"), "utf8").trim();
     return new Promise((resolve) => {
       const req = http.get(`${backendUrl}/api/token/local`, { headers: { "X-Local-Secret": secret }, timeout: 5000 }, (res) => {
         if (res.statusCode !== 200) { res.resume(); return resolve(""); }
@@ -342,7 +342,7 @@ function waitForBackend(targetWin, healthUrl = HEALTH_URL, { watchSpawn = false 
 
 // ── Theme-aware modal styles ──
 
-/** Read CSS custom properties from the active KiroClaw dashboard. */
+/** Read CSS custom properties from the active KiroCrew dashboard. */
 async function getDashboardThemeVars() {
   const win = BaseWindow.getFocusedWindow() || mainWindow;
   if (!win || win.isDestroyed()) return null;
@@ -476,7 +476,7 @@ function setupWindowContents(win, backendUrl) {
 
   function applyTitle() {
     const suffix = customName || getRemoteHostConfig(store, port)?.defaultName || `[:${port}]`;
-    win.setTitle(`KiroClaw ${suffix}`);
+    win.setTitle(`KiroCrew ${suffix}`);
   }
 
   win._mcSetCustomName = (name) => { customName = name; applyTitle(); };
@@ -571,7 +571,7 @@ function createWindow() {
     height: state.height,
     minWidth: 550,
     minHeight: 600,
-    tabbingIdentifier: "kiroclaw",
+    tabbingIdentifier: "kirocrew",
     titleBarStyle: "hidden",
     backgroundColor: "#0f1117",
   };
@@ -642,10 +642,10 @@ function createTray() {
   const iconPath = path.join(__dirname, "icon.png");
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
   tray = new Tray(icon);
-  tray.setToolTip("KiroClaw");
+  tray.setToolTip("KiroCrew");
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "Show KiroClaw", click: () => mainWindow?.show() },
+      { label: "Show KiroCrew", click: () => mainWindow?.show() },
       { type: "separator" },
       { label: "New Connection Tab…", click: () => openNewTab() },
       { label: "Merge All Windows", click: () => mergeAllWindows() },
@@ -683,7 +683,7 @@ async function promptRemoteHost() {
     <label>Remote host for :${port}</label>
     <input id="h" value="${esc(currentHost)}" placeholder="myhost.corp.amazon.com" autofocus>
     <div class="hint">Leave empty to use local token (no SSH).</div>
-    <label>kiroclaw binary path</label>
+    <label>kirocrew binary path</label>
     <input id="b" value="${esc(currentBin)}" placeholder="${DEFAULT_REMOTE_BIN}">
     <label>Remote port <span style="font-weight:normal;opacity:0.6">(default: same as tab = ${port})</span></label>
     <input id="rp" value="${esc(currentRemotePort)}" placeholder="${port}">
@@ -900,7 +900,7 @@ function _psCommand(pid) {
 }
 
 /**
- * Best-effort force-stop of whatever holds `port`, scoped to KiroClaw processes
+ * Best-effort force-stop of whatever holds `port`, scoped to KiroCrew processes
  * only, then VERIFY the port actually freed (see forceStopPort in gateway-stop.js).
  * Returns {killed, freed, survivors}: `freed === false` means the holder could
  * not be killed (uninterruptible-sleep wedge) and a respawn would just fail to
@@ -999,8 +999,8 @@ async function showUnrecoverableGatewayError(win, port) {
   let logTail = "";
   try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); } catch { /* no log yet */ }
   const action = await showGatewayErrorDialog(win, {
-    title: `KiroClaw — backend stuck on port ${port}`,
-    message: `The KiroClaw backend is wedged and cannot be stopped — it is in an `
+    title: `KiroCrew — backend stuck on port ${port}`,
+    message: `The KiroCrew backend is wedged and cannot be stopped — it is in an `
       + `uninterruptible state and is still holding port ${port}, so it can't be `
       + `force-stopped or restarted in place. Restart your computer to clear it. `
       + `(This is a known backend hang; see the launch log below for the cause.)`,
@@ -1067,22 +1067,22 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // A wedged/other gateway already holding this flavor's port is a distinct,
     // recoverable case: the spawn dies with "address already in use" and a plain
     // retry can't help (the holder is still there). Detect it and offer to
-    // force-stop the stuck KiroClaw process. Only meaningful for OUR own port.
+    // force-stop the stuck KiroCrew process. Only meaningful for OUR own port.
     const portConflict = failedToStart && backendUrl === BACKEND_URL && isPortInUse(logTail);
 
     let title, message;
     if (portConflict) {
-      title = `KiroClaw — port ${PORT} already in use`;
-      message = `Another KiroClaw gateway is already using port ${PORT} (it may be wedged). `
+      title = `KiroCrew — port ${PORT} already in use`;
+      message = `Another KiroCrew gateway is already using port ${PORT} (it may be wedged). `
         + `Force-stop it and retry, or quit. From a terminal you can also run: `
-        + `kiroclaw stop --port ${PORT}`;
+        + `kirocrew stop --port ${PORT}`;
     } else if (failedToStart) {
-      title = "KiroClaw — gateway failed to start";
+      title = "KiroCrew — gateway failed to start";
       message = err.message;
     } else {
-      title = "KiroClaw — can't reach the gateway";
-      message = "Could not connect to the KiroClaw backend. Make sure "
-        + "'kiroclaw gateway' is running, or check kiroclaw doctor.";
+      title = "KiroCrew — can't reach the gateway";
+      message = "Could not connect to the KiroCrew backend. Make sure "
+        + "'kirocrew gateway' is running, or check kirocrew doctor.";
     }
 
     // Loop so "Reveal Log" can re-show the dialog after opening Finder.
@@ -1150,7 +1150,7 @@ async function openNewTab() {
   </style></head><body>
     <label>Gateway port</label>
     <input id="p" type="number" value="7778" min="1" max="65535" autofocus>
-    <div class="hint">Connect to a KiroClaw gateway running on another port</div>
+    <div class="hint">Connect to a KiroCrew gateway running on another port</div>
     <div class="row"><button class="ok" onclick="go()">Connect</button>
     <button class="cancel" onclick="window.close()">Cancel</button></div>
     <script>
@@ -1175,7 +1175,7 @@ async function openNewTab() {
       height: 860,
       minWidth: 550,
       minHeight: 600,
-      tabbingIdentifier: "kiroclaw",
+      tabbingIdentifier: "kirocrew",
       titleBarStyle: "hidden",
       backgroundColor: "#0f1117",
     });
@@ -1222,7 +1222,7 @@ function renameCurrentTab() {
     .check-row label { margin:0; font-size:12px; }
   </style></head><body>
     <label>Tab name</label>
-    <input id="n" value="${esc(currentTitle.replace(/^KiroClaw /g, ''))}" autofocus>
+    <input id="n" value="${esc(currentTitle.replace(/^KiroCrew /g, ''))}" autofocus>
     <div class="row"><button class="ok" onclick="go()">Rename</button>
     <button class="cancel" onclick="window.close()">Cancel</button></div>
     <div class="check-row"><input type="checkbox" id="d"><label for="d">Set as default name for :${port} tabs</label></div>
@@ -1283,16 +1283,16 @@ function mergeAllWindows() {
 // Guide the user to grant macOS Screen Recording permission when it has been
 // explicitly denied — the snip tool cannot capture any frame without it. Opens
 // the exact Privacy pane. Note: the granted entity must be the packaged
-// KiroClaw.app, not the terminal that launched a dev build.
+// KiroCrew.app, not the terminal that launched a dev build.
 function showScreenPermissionDialog() {
   const pane = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
   dialog
     .showMessageBox({
       type: "info",
       title: "Screen Recording permission needed",
-      message: "Allow KiroClaw to capture the screen",
+      message: "Allow KiroCrew to capture the screen",
       detail:
-        "The screen-snip tool needs macOS Screen Recording permission. Open System Settings › Privacy & Security › Screen Recording, enable KiroClaw, then try the snip again.",
+        "The screen-snip tool needs macOS Screen Recording permission. Open System Settings › Privacy & Security › Screen Recording, enable KiroCrew, then try the snip again.",
       buttons: ["Open System Settings", "Cancel"],
       defaultId: 0,
       cancelId: 1,
@@ -1422,7 +1422,7 @@ app.whenReady().then(async () => {
   await startGateway();
   await showLoadingThenConnect(win);
 
-  // Desktop auto-update (Squirrel.Mac). No-op in dev / non-darwin. KiroClaw
+  // Desktop auto-update (Squirrel.Mac). No-op in dev / non-darwin. KiroCrew
   // ships a single "stable" channel. The gateway is stopped gracefully before
   // any bundle swap. Update state is mirrored to the renderer so the in-app
   // UpdateModal + Settings > About can drive the prompt; the native dialog

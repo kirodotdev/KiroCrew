@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.agent_metadata CRUD operations."""
+"""Tests for kiro_crew.agent_metadata CRUD operations."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw import agent_metadata
+from kiro_crew import agent_metadata
 
 
 @pytest.fixture(autouse=True)

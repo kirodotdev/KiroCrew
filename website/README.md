@@ -1,8 +1,8 @@
-# KiroClaw Website
+# KiroCrew Website
 
-React + TypeScript + Vite single-page app for the KiroClaw dashboard. Built
+React + TypeScript + Vite single-page app for the KiroCrew dashboard. Built
 assets are emitted to `dist/` and copied into the Python package at
-`../src/kiro_claw/static/dist/` so the gateway can serve them.
+`../src/kiro_crew/static/dist/` so the gateway can serve them.
 
 ## Develop
 
@@ -20,7 +20,7 @@ npm run build        # tsc -b && vite build  → dist/
 After building, copy `dist/` into the backend package so the gateway serves it:
 
 ```bash
-rm -rf ../src/kiro_claw/static/dist && cp -r dist ../src/kiro_claw/static/dist
+rm -rf ../src/kiro_crew/static/dist && cp -r dist ../src/kiro_crew/static/dist
 ```
 
 ## Test & lint

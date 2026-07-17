@@ -22,8 +22,8 @@ from typing import Any
 
 import pytest
 
-import kiro_claw.mcp_caller
-from kiro_claw.mcp_gateway import stub as stub_mod
+import kiro_crew.mcp_caller
+from kiro_crew.mcp_gateway import stub as stub_mod
 
 # Pin to one xdist worker (requires --dist loadgroup) alongside the other
 # mcp_gateway suites.
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.xdist_group("mcp_gateway")
 # Required argv fields matching the rewriter's generated args.
 _REQUIRED_STUB_ARGV_FIELDS = (
     "--server", "fake-mcp",
-    "--agent", "kiroclaw",
+    "--agent", "kirocrew",
     "--target-command", "/usr/bin/true",
     "--target-args=--foo|bar",
     "--sandbox-mode", "standard",
@@ -56,7 +56,7 @@ def _parse(argv: list[str]) -> argparse.Namespace:
 def test_stub_session_key_from_pidfile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Warm-pool: ``KIROCLAW_SESSION_KEY`` is absent at register time, but a
+    """Warm-pool: ``KIROCREW_SESSION_KEY`` is absent at register time, but a
     ``session_pid_<pid>.txt`` exists in the config dir (written once the
     session is claimed). ``build_register_payload`` must resolve the key via
     the ancestor walk (``CallerContext.from_env``) so the Register carries a
@@ -65,12 +65,12 @@ def test_stub_session_key_from_pidfile(
     # Reset the process-lifetime from_env cache so a previously-resolved
     # identity from another test cannot leak in (and monkeypatch teardown
     # reverts whatever this test caches).
-    monkeypatch.setattr(kiro_claw.mcp_caller, "_FROM_ENV_CACHE", None)
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path))
-    monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
-    monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
+    monkeypatch.setattr(kiro_crew.mcp_caller, "_FROM_ENV_CACHE", None)
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+    monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
 
-    from kiro_claw.config.loader import config_dir
+    from kiro_crew.config.loader import config_dir
 
     cfg = config_dir()
     cfg.mkdir(parents=True, exist_ok=True)
@@ -121,9 +121,9 @@ async def test_recaller_loop_sends_frame_when_key_appears(
     # Reset the from_env cache: without this, the key this test injects would
     # be cached process-wide and poison later tests (and a leaked identity
     # from an earlier test could mask the env var this test sets).
-    monkeypatch.setattr(kiro_claw.mcp_caller, "_FROM_ENV_CACHE", None)
+    monkeypatch.setattr(kiro_crew.mcp_caller, "_FROM_ENV_CACHE", None)
     monkeypatch.setattr(stub_mod, "_RECALLER_POLL_INTERVAL_SECS", 0.01)
-    monkeypatch.setenv("KIROCLAW_SESSION_KEY", "dashboard:chat-3-7")
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-3-7")
 
     w = _CapWriter()
     stop = asyncio.Event()
@@ -146,9 +146,9 @@ async def test_recaller_loop_noop_when_stopped_before_key(
     loop exits without emitting a frame — no task leak, no bogus caller."""
     # Cache-reset for hygiene (this test never resolves an identity — stop is
     # pre-set — but a leaked cache from another test must not linger either).
-    monkeypatch.setattr(kiro_claw.mcp_caller, "_FROM_ENV_CACHE", None)
+    monkeypatch.setattr(kiro_crew.mcp_caller, "_FROM_ENV_CACHE", None)
     monkeypatch.setattr(stub_mod, "_RECALLER_POLL_INTERVAL_SECS", 5.0)
-    monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
+    monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
 
     w = _CapWriter()
     stop = asyncio.Event()

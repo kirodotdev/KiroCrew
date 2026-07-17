@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Entitlements for the KiroClaw Electron app.
+<!-- Entitlements for the KiroCrew Electron app.
      - allow-jit: required by V8's JIT compiler (Electron's renderer processes)
      - allow-unsigned-executable-memory: required for V8 + native Node.js addons (numpy, aiohttp)
      - disable-library-validation: required to load native .node/.dylib addons not signed with the same identity

@@ -14,8 +14,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.files import api_slack_upload_file
-from kiro_claw.dashboard.state import DashboardState
+from kiro_crew.dashboard.handlers.files import api_slack_upload_file
+from kiro_crew.dashboard.state import DashboardState
 
 
 def _make_app(slack_client, tmp_path, state=None):
@@ -48,13 +48,13 @@ class TestFileUploadChannel:
         app = _make_app(slack, tmp_path)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir",
+            "kiro_crew.config.loader.outbox_dir",
             return_value=outbox_file.parent,
         ), patch(
-            "kiro_claw.config.loader.workspace_root",
+            "kiro_crew.config.loader.workspace_root",
             return_value=tmp_path,
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel",
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel",
             return_value=True,
         ):
             async with TestClient(TestServer(app)) as client:
@@ -84,13 +84,13 @@ class TestFileUploadChannel:
         app = _make_app(slack, tmp_path)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir",
+            "kiro_crew.config.loader.outbox_dir",
             return_value=outbox_file.parent,
         ), patch(
-            "kiro_claw.config.loader.workspace_root",
+            "kiro_crew.config.loader.workspace_root",
             return_value=tmp_path,
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel",
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel",
             return_value=False,
         ):
             async with TestClient(TestServer(app)) as client:
@@ -118,16 +118,16 @@ class TestFileUploadChannel:
         app = _make_app(slack, tmp_path)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir",
+            "kiro_crew.config.loader.outbox_dir",
             return_value=outbox_file.parent,
         ), patch(
-            "kiro_claw.config.loader.workspace_root",
+            "kiro_crew.config.loader.workspace_root",
             return_value=tmp_path,
         ), patch(
-            "kiro_claw.config.loader.KiroClawConfig.load",
+            "kiro_crew.config.loader.KiroCrewConfig.load",
         ) as mock_cfg:
             mock_cfg.return_value.load_credentials.return_value = {
-                "KIROCLAW_OWNER_ID": "U_OWNER"
+                "KIROCREW_OWNER_ID": "U_OWNER"
             }
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -155,10 +155,10 @@ class TestFileUploadChannel:
         app = _make_app(slack, tmp_path)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir",
+            "kiro_crew.config.loader.outbox_dir",
             return_value=outbox_file.parent,
         ), patch(
-            "kiro_claw.config.loader.workspace_root",
+            "kiro_crew.config.loader.workspace_root",
             return_value=tmp_path,
         ):
             async with TestClient(TestServer(app)) as client:
@@ -194,16 +194,16 @@ class TestFileUploadBinary:
         app = _make_app(slack, tmp_path)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir",
+            "kiro_crew.config.loader.outbox_dir",
             return_value=outbox,
         ), patch(
-            "kiro_claw.config.loader.workspace_root",
+            "kiro_crew.config.loader.workspace_root",
             return_value=tmp_path,
         ), patch(
-            "kiro_claw.dashboard.handlers.files._sel",
+            "kiro_crew.dashboard.handlers.files._sel",
             return_value=MagicMock(),
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel",
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel",
             return_value=True,
         ):
             async with TestClient(TestServer(app)) as client:
@@ -232,13 +232,13 @@ class TestFileUploadBinary:
         app = _make_app(slack, tmp_path)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir",
+            "kiro_crew.config.loader.outbox_dir",
             return_value=outbox,
         ), patch(
-            "kiro_claw.config.loader.workspace_root",
+            "kiro_crew.config.loader.workspace_root",
             return_value=tmp_path,
         ), patch(
-            "kiro_claw.dashboard.handlers.files._sel",
+            "kiro_crew.dashboard.handlers.files._sel",
             return_value=MagicMock(),
         ):
             async with TestClient(TestServer(app)) as client:
@@ -286,11 +286,11 @@ class TestFileUploadSlotThreading:
         app = _make_app(slack, tmp_path, state=state)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir", return_value=outbox
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
         ), patch(
-            "kiro_claw.config.loader.workspace_root", return_value=tmp_path
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel", return_value=False
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=False
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -327,11 +327,11 @@ class TestFileUploadSlotThreading:
         app = _make_app(slack, tmp_path, state=state)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir", return_value=outbox
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
         ), patch(
-            "kiro_claw.config.loader.workspace_root", return_value=tmp_path
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel", return_value=False
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=False
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -367,14 +367,14 @@ class TestFileUploadSlotThreading:
         app = _make_app(slack, tmp_path, state=state)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir", return_value=outbox
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
         ), patch(
-            "kiro_claw.config.loader.workspace_root", return_value=tmp_path
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
         ), patch(
-            "kiro_claw.config.loader.KiroClawConfig.load"
+            "kiro_crew.config.loader.KiroCrewConfig.load"
         ) as mock_cfg:
             mock_cfg.return_value.load_credentials.return_value = {
-                "KIROCLAW_OWNER_ID": "U_OWNER"
+                "KIROCREW_OWNER_ID": "U_OWNER"
             }
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -410,11 +410,11 @@ class TestFileUploadSlotThreading:
         app = _make_app(slack, tmp_path, state=state)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir", return_value=outbox
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
         ), patch(
-            "kiro_claw.config.loader.workspace_root", return_value=tmp_path
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel", return_value=True
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -452,11 +452,11 @@ class TestFileUploadSlotThreading:
         app = _make_app(slack, tmp_path, state=state)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir", return_value=outbox
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
         ), patch(
-            "kiro_claw.config.loader.workspace_root", return_value=tmp_path
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel", return_value=True
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -493,11 +493,11 @@ class TestFileUploadSlotThreading:
         app = _make_app(slack, tmp_path, state=state)
 
         with patch(
-            "kiro_claw.config.loader.outbox_dir", return_value=outbox
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
         ), patch(
-            "kiro_claw.config.loader.workspace_root", return_value=tmp_path
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
         ), patch(
-            "kiro_claw.dashboard.handlers.files.is_tracked_channel", return_value=False
+            "kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=False
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(

@@ -18,7 +18,7 @@ import asyncio
 
 import pytest
 
-from kiro_claw.workflows.dsl import parallel, pipeline
+from kiro_crew.workflows.dsl import parallel, pipeline
 
 pytestmark = pytest.mark.asyncio
 

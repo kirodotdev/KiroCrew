@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kiro_claw.mcp_gateway.rewriter import _WRAPPER_MARKER, _rewrite_single_spec
+from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _rewrite_single_spec
 
 
 def _rewrite(spec: dict, tmp_path: Path) -> tuple[dict, int]:

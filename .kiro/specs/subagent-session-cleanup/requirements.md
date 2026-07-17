@@ -2,7 +2,7 @@
 
 ## Introduction
 
-Subagent spawns (cron notifications, watchlist checks, Mochi pet actions, user-initiated spawns) create LLM provider session files on disk that persist indefinitely after the subagent completes. The gateway's `SubagentManager` cleans up its own metadata (`~/.kiroclaw/subagents/` folders with tombstones and 7-day pruning), but the underlying LLM provider session files (e.g., `~/.kiro/sessions/cli/{session_id}/`) have no cleanup mechanism. This leads to unbounded disk growth — one user accumulated 26,000+ orphan session files in two weeks.
+Subagent spawns (cron notifications, watchlist checks, Mochi pet actions, user-initiated spawns) create LLM provider session files on disk that persist indefinitely after the subagent completes. The gateway's `SubagentManager` cleans up its own metadata (`~/.kirocrew/subagents/` folders with tombstones and 7-day pruning), but the underlying LLM provider session files (e.g., `~/.kiro/sessions/cli/{session_id}/`) have no cleanup mechanism. This leads to unbounded disk growth — one user accumulated 26,000+ orphan session files in two weeks.
 
 This feature adds a provider-agnostic session file cleanup mechanism that integrates with the existing subagent lifecycle, ensuring session files are deleted when subagents complete, are reaped, or are pruned during tombstone cleanup.
 

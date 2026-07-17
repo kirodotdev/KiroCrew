@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.dashboard.port_reclaim.
+"""Tests for kiro_crew.dashboard.port_reclaim.
 
 The decision logic in :func:`reclaim_stale_gateway_port` is exercised through
 injected collaborators so no test ever shells out to ``lsof``/``ps`` or sends a
@@ -12,7 +12,7 @@ import socket
 
 import pytest
 
-from kiro_claw.dashboard import port_reclaim as pr
+from kiro_crew.dashboard import port_reclaim as pr
 
 # ---------------------------------------------------------------------------
 # reclaim_stale_gateway_port — outcome matrix (all collaborators injected)
@@ -55,7 +55,7 @@ async def test_foreign_holder_is_never_touched() -> None:
     outcome = await pr.reclaim_stale_gateway_port(
         5476,
         list_listeners=lambda _p: [4321],
-        is_kiroclaw=lambda _pid: False,  # not a KiroClaw process
+        is_kirocrew=lambda _pid: False,  # not a KiroCrew process
         probe_healthy=_unhealthy,
         terminate=_terminate,
     )
@@ -75,7 +75,7 @@ async def test_healthy_peer_is_never_killed() -> None:
     outcome = await pr.reclaim_stale_gateway_port(
         5476,
         list_listeners=lambda _p: [1234],
-        is_kiroclaw=lambda _pid: True,
+        is_kirocrew=lambda _pid: True,
         probe_healthy=_healthy,  # responds → legitimate owner
         terminate=_terminate,
     )
@@ -84,7 +84,7 @@ async def test_healthy_peer_is_never_killed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_kiroclaw_gateway_is_reclaimed() -> None:
+async def test_stale_kirocrew_gateway_is_reclaimed() -> None:
     killed: list[int] = []
 
     async def _terminate(pids: list[int]) -> bool:
@@ -94,7 +94,7 @@ async def test_stale_kiroclaw_gateway_is_reclaimed() -> None:
     outcome = await pr.reclaim_stale_gateway_port(
         5476,
         list_listeners=lambda _p: [1234, 1234, 5678],  # dupes tolerated
-        is_kiroclaw=lambda pid: pid in (1234, 5678),
+        is_kirocrew=lambda pid: pid in (1234, 5678),
         probe_healthy=_unhealthy,  # no HTTP reply → wedged
         terminate=_terminate,
     )
@@ -122,7 +122,7 @@ async def test_pid_reuse_recheck_drops_stranger() -> None:
     outcome = await pr.reclaim_stale_gateway_port(
         5476,
         list_listeners=lambda _p: [1234],
-        is_kiroclaw=_checker,
+        is_kirocrew=_checker,
         probe_healthy=_unhealthy,
         terminate=_terminate,
     )
@@ -138,7 +138,7 @@ async def test_reclaim_failed_when_terminate_returns_false() -> None:
     outcome = await pr.reclaim_stale_gateway_port(
         5476,
         list_listeners=lambda _p: [1234],
-        is_kiroclaw=lambda _pid: True,
+        is_kirocrew=lambda _pid: True,
         probe_healthy=_unhealthy,
         terminate=_terminate,
     )
@@ -164,7 +164,7 @@ async def test_slow_identity_check_times_out_to_unavailable() -> None:
     outcome = await pr.reclaim_stale_gateway_port(
         5476,
         list_listeners=lambda _p: [1234],
-        is_kiroclaw=_slow,
+        is_kirocrew=_slow,
         probe_healthy=_unhealthy,
         terminate=_terminate,
         identity_timeout=0.05,  # trips well before _slow returns
@@ -181,7 +181,7 @@ async def test_ps_unavailable_during_identity_check_is_unavailable() -> None:
     outcome = await pr.reclaim_stale_gateway_port(
         5476,
         list_listeners=lambda _p: [1234],
-        is_kiroclaw=_boom,
+        is_kirocrew=_boom,
         probe_healthy=_unhealthy,
     )
     assert outcome == pr.UNAVAILABLE
@@ -242,7 +242,7 @@ async def test_terminate_returns_true_when_already_gone(monkeypatch) -> None:
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(pr.os, "kill", lambda pid, sig: signals.append((pid, sig)))
     # Patch the liveness check used inside _terminate_pids.
-    import kiro_claw.cli_server as cli_server
+    import kiro_crew.cli_server as cli_server
 
     monkeypatch.setattr(cli_server, "_pid_exited", lambda _pid: True)
 
@@ -256,7 +256,7 @@ async def test_terminate_returns_true_when_already_gone(monkeypatch) -> None:
 async def test_terminate_escalates_to_sigkill(monkeypatch) -> None:
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(pr.os, "kill", lambda pid, sig: signals.append((pid, sig)))
-    import kiro_claw.cli_server as cli_server
+    import kiro_crew.cli_server as cli_server
 
     # Survives SIGTERM, dies after SIGKILL is issued.
     state = {"alive": True}

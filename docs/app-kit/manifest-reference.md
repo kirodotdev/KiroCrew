@@ -17,7 +17,7 @@ The app manifest (`app.json`) declares your app's identity, resources, and requi
 |-------|------|-------------|
 | `author` | string | Author name or team |
 | `license` | string | License identifier |
-| `minKiroClawVersion` | string | Minimum Gateway version required |
+| `minKiroCrewVersion` | string | Minimum Gateway version required |
 | `tags` | string[] | Discovery tags (e.g. `["oncall", "monitoring"]`) |
 | `jobFamilies` | string[] | Job families this app is relevant to |
 
@@ -145,7 +145,7 @@ and detail cards. The path form depends on how the app is distributed:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `backend.entryPoint` | string | | Script to run (relative to app root), or a dotted Python module path launched via `python -m` (used by built-in apps like `file-explorer`, e.g. `kiro_claw.apps.builtins.file_explorer.server`) |
+| `backend.entryPoint` | string | | Script to run (relative to app root), or a dotted Python module path launched via `python -m` (used by built-in apps like `file-explorer`, e.g. `kiro_crew.apps.builtins.file_explorer.server`) |
 | `backend.port` | string | `"auto"` | Port number or `"auto"` for auto-assignment |
 | `backend.healthCheck` | string | `"/health"` | Health check endpoint path |
 | `backend.routes` | string | | Base route path for the backend |
@@ -290,12 +290,12 @@ only one app is uninstalled.
 
 ### `lifecycle` and `resources`
 
-Control how KiroClaw manages the app:
+Control how KiroCrew manages the app:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `lifecycle` | string | `"gateway"` | `"gateway"` (managed), `"app"` (self-managed), or `"locked"` (cannot uninstall) |
-| `resources` | string | `"gateway"` | `"gateway"` (KiroClaw registers agents/skills/MCP) or `"app"` (app handles its own) |
+| `resources` | string | `"gateway"` | `"gateway"` (KiroCrew registers agents/skills/MCP) or `"app"` (app handles its own) |
 
 ## Platform
 
@@ -326,7 +326,7 @@ Control how KiroClaw manages the app:
 When `installMode` is `"client"`, the App Store shows copy-paste terminal
 instructions instead of running the install on the server. This is used for
 apps that must run on the user's local machine (e.g. Electron desktop apps
-when KiroClaw runs on a remote host).
+when KiroCrew runs on a remote host).
 
 ## Open Command
 
@@ -366,7 +366,7 @@ the user to run locally instead of executing it on the server.
   "version": "1.0.0",
   "displayName": "Oncall Watchtower",
   "description": "Monitor tickets, pipelines, and alarms for your on-call rotation",
-  "author": "kiroclaw",
+  "author": "kirocrew",
   "tags": ["oncall", "monitoring"],
   "agents": ["agents/ticket-analyst.json"],
   "skills": ["skills/oncall-runbook"],
@@ -401,4 +401,4 @@ the user to run locally instead of executing it on the server.
 
 Unknown fields in `app.json` are preserved during parsing and round-tripped
 through `to_dict()` / `to_json()`. This allows newer manifest features to
-coexist with older KiroClaw versions without breaking validation.
+coexist with older KiroCrew versions without breaking validation.

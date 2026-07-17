@@ -4,8 +4,8 @@
  * Demonstrates: useAppApi, useAppEvents, useNavBadge, PageHeader,
  * StatCard, Card, Badge, and real-time event handling.
  */
-import { useAppApi, useAppEvents, useNavBadge } from '@kiroclaw/app-sdk'
-import { Card, CardTitle, PageHeader, StatCard, Badge, EmptyState } from '@kiroclaw/app-sdk/ui'
+import { useAppApi, useAppEvents, useNavBadge } from '@kirocrew/app-sdk'
+import { Card, CardTitle, PageHeader, StatCard, Badge, EmptyState } from '@kirocrew/app-sdk/ui'
 import { useState, useEffect } from 'react'
 
 interface Ticket {

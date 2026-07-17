@@ -11,7 +11,7 @@ A typical flow:
 
 1. Agent emits an `<mcwidget>` in chat ("here's your CR queue")
 2. Agent (or user) calls `artifact_save` — the widget is persisted under
-   `~/.kiroclaw/artifacts/<slug>/current.html`
+   `~/.kirocrew/artifacts/<slug>/current.html`
 3. Days later, in a fresh session, the user says "iterate on the cr-queue
    artifact and add an age column"
 4. Agent calls `artifact_get("cr-queue")` to read the current HTML, modifies
@@ -24,7 +24,7 @@ The dashboard provides a `/artifacts` library page for browse/search and a
 ## Storage Layout
 
 ```
-~/.kiroclaw/artifacts/
+~/.kirocrew/artifacts/
 └── <slug>/
     ├── meta.json        canonical metadata (no content)
     ├── current.html     latest content
@@ -49,10 +49,10 @@ The dashboard provides a `/artifacts` library page for browse/search and a
 
 ## Public API
 
-### Python (`kiro_claw.artifacts`)
+### Python (`kiro_crew.artifacts`)
 
 ```python
-from kiro_claw.artifacts import ArtifactStore, get_default_store
+from kiro_crew.artifacts import ArtifactStore, get_default_store
 
 store = get_default_store()
 art = store.create(name="CR Queue", content="<table>…</table>", tags=["ops"])
@@ -70,7 +70,7 @@ for isolated test instances.
 ### Kind inference
 
 `store.create()` (and every path that funnels through it — the HTTP create
-route, the `artifact_save` MCP tool, the `kiroclaw artifact save` CLI) infers
+route, the `artifact_save` MCP tool, the `kirocrew artifact save` CLI) infers
 `kind` when the caller omits it (`kind=None`), via `_infer_kind(content,
 source_path, explicit)`:
 
@@ -89,7 +89,7 @@ kinds need the extension signal. This is the safety prerequisite that lets
 agents save markdown deliverables without the mis-save footgun (a markdown
 doc stored as `widget` renders as raw inner HTML).
 
-### MCP tools (`@kiroclaw-core/*`)
+### MCP tools (`@kirocrew-core/*`)
 
 | Tool | Purpose |
 |---|---|
@@ -111,18 +111,18 @@ Schemas live in `validation.py` (`ARTIFACT_*_SCHEMA`) and are registered in
 SEL audit, restricted-session enforcement, and any future authorization
 middleware live in one place.
 
-### CLI (`kiroclaw artifact`)
+### CLI (`kirocrew artifact`)
 
 ```
-kiroclaw artifact list [--tag T] [--kind K] [--q SUBSTR]
-kiroclaw artifact show <slug> [--version N] [--meta]
-kiroclaw artifact save --name N [--kind K] [--content C | --content-file F] [--tags A,B] [--description D]
-kiroclaw artifact update <slug> [--content C | --content-file F] [--name N] [--description D] [--tags A,B]
-kiroclaw artifact versions <slug>
-kiroclaw artifact delete <slug>
+kirocrew artifact list [--tag T] [--kind K] [--q SUBSTR]
+kirocrew artifact show <slug> [--version N] [--meta]
+kirocrew artifact save --name N [--kind K] [--content C | --content-file F] [--tags A,B] [--description D]
+kirocrew artifact update <slug> [--content C | --content-file F] [--name N] [--description D] [--tags A,B]
+kirocrew artifact versions <slug>
+kirocrew artifact delete <slug>
 ```
 
-The CLI proxies through the gateway HTTP API (matches `kiroclaw learn`).
+The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 
 ### HTTP
 
@@ -149,7 +149,7 @@ rename-safe membership id, tolerant-loaded for legacy meta.json.
 `ArtifactStore.set_folder()` is a metadata-only move (NO version bump);
 `list(folder=)` filters (None = all, `""` = unfiled, id = that folder).
 `ArtifactFolderStore` keeps a flat `parent_id` tree in
-`~/.kiroclaw/artifact_folders.json` — create/rename/reparent (cycle- and
+`~/.kirocrew/artifact_folders.json` — create/rename/reparent (cycle- and
 depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
 rollback). Folder delete is an explicit choice: keep (re-parent direct children
@@ -234,7 +234,7 @@ a remote widget round-trips back to `kind="widget"` on clone) and `svg` is
 excluded (the file reader has no `.svg` support).
 
 The feature plugs into the existing Knowledge **source framework** rather than
-adding a parallel watcher (see `kiro_claw.knowledge.artifact_ingest`):
+adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
 
 - **One aggregate "Artifacts" source.** A single `sources` row of
   `source_type="artifact"` (uri `artifact://`) appears in the dashboard Sources

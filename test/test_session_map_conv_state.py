@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from kiro_claw.session_map import SessionMap
+from kiro_crew.session_map import SessionMap
 
 
 def _make_kiro_session(kiro_dir, sid: str) -> None:
@@ -31,8 +31,8 @@ def _make_kiro_session(kiro_dir, sid: str) -> None:
 @pytest.fixture()
 def patched(tmp_path, monkeypatch):
     kiro = tmp_path / "kiro"
-    monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
-    monkeypatch.setattr("kiro_claw.session_map._KIRO_SESSIONS_DIR", kiro)
+    monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", kiro)
     return tmp_path, kiro
 
 

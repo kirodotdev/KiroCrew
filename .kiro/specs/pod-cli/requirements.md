@@ -1,16 +1,16 @@
-# `kiroclaw pod` — Requirements
+# `kirocrew pod` — Requirements
 
 ## Overview
 
-`kiroclaw pod` gives developers **kubectl-style, throwaway, full-stack test
-instances**, one per feature worktree. A *pod* is an ephemeral KiroClaw gateway
+`kirocrew pod` gives developers **kubectl-style, throwaway, full-stack test
+instances**, one per feature worktree. A *pod* is an ephemeral KiroCrew gateway
 booted from a worktree's **own** `.venv`, on its **own** deterministic port, with
-its **own** `KIROCLAW_HOME` (isolated DB / sessions / memory), **no Slack tunnel**,
+its **own** `KIROCREW_HOME` (isolated DB / sessions / memory), **no Slack tunnel**,
 `--no-crons`, resource-capped, and `rm -rf`'d on stop.
 
 It lets a contributor exercise a worktree's full stack — the backend `/api/*`
 **and** the SPA bundle the gateway serves on the same port — **without touching
-their live gateway or the shared `~/.kiroclaw` data**.
+their live gateway or the shared `~/.kirocrew` data**.
 
 This is the *test line* (multi-active, burn-on-evict); it is orthogonal to the
 *live line* (a single gateway serving real data on the canonical port `5476`) and
@@ -19,7 +19,7 @@ MUST refuse to bind the live port.
 ## User stories
 
 ### US-1 — Bring up an isolated pod
-As a contributor, I want `kiroclaw pod up <worktree>` to boot that worktree's full
+As a contributor, I want `kirocrew pod up <worktree>` to boot that worktree's full
 stack on its own port and hand me a `{base_url, token}`, so I can click into the
 dashboard and test my branch without disturbing my live instance.
 
@@ -37,23 +37,23 @@ As a contributor, I want pod to walk me through building a worktree so it can ru
   (cheap, idempotent).
 - WHEN the worktree has no built SPA `dist`, THE SYSTEM SHALL fail loud and point
   me at the slow build, UNLESS `--provision` is given.
-- WHEN `--provision` (or `kiroclaw pod provision <worktree>`) is given, THE SYSTEM
+- WHEN `--provision` (or `kirocrew pod provision <worktree>`) is given, THE SYSTEM
   SHALL run the full chain: venv + `npm run build` in `website/` staged into the
   served `static/dist`.
 - WHEN the worktree directory does not exist, THE SYSTEM SHALL tell the user how to
   create one with `git worktree add`.
 
 ### US-3 — Lifecycle & inspection
-- `kiroclaw pod ls` SHALL list running pods with port + health (≈ `kubectl get pods`).
-- `kiroclaw pod status <wt>` SHALL report up/down + port + health.
-- `kiroclaw pod url <wt>` SHALL print the pod base URL.
-- `kiroclaw pod token <wt> [--ttl]` SHALL (re)mint a dashboard token for a running pod.
-- `kiroclaw pod logs <wt> [-n N]` SHALL tail the pod's journal.
-- `kiroclaw pod down <wt>` SHALL evict the pod and delete its isolated HOME with
+- `kirocrew pod ls` SHALL list running pods with port + health (≈ `kubectl get pods`).
+- `kirocrew pod status <wt>` SHALL report up/down + port + health.
+- `kirocrew pod url <wt>` SHALL print the pod base URL.
+- `kirocrew pod token <wt> [--ttl]` SHALL (re)mint a dashboard token for a running pod.
+- `kirocrew pod logs <wt> [-n N]` SHALL tail the pod's journal.
+- `kirocrew pod down <wt>` SHALL evict the pod and delete its isolated HOME with
   zero residue, leaving the live plane untouched.
 
 ### US-4 — One-time install
-As a contributor, I want `kiroclaw pod install` to lay down the `systemd --user`
+As a contributor, I want `kirocrew pod install` to lay down the `systemd --user`
 template unit once per machine, after which `pod up`/`down` just work.
 
 ### US-5 — Fast, attributed failure
@@ -65,8 +65,8 @@ me clearly that this is the worktree build failing — not the pod tool.
 ## Non-functional requirements
 
 ### NFR-1 — Isolation (safety-critical)
-- A pod MUST run its own `KIROCLAW_HOME`; it MUST NOT read or write the live
-  `~/.kiroclaw`.
+- A pod MUST run its own `KIROCREW_HOME`; it MUST NOT read or write the live
+  `~/.kirocrew`.
 - A pod MUST NOT bind the live port (`5476`) under any derivation or pin.
 - A pod MUST NOT be reachable off-loopback: it binds `127.0.0.1` only.
 
@@ -106,4 +106,4 @@ me clearly that this is the worktree build failing — not the pod tool.
   surface; the harness is separate.
 - A configured fixed worktree root as the *primary* resolver — git is the primary
   resolver (design.md → Worktree resolution); a root
-  (`KIROCLAW_POD_WORKTREES_ROOT`) is only an optional fallback for hermetic planes.
+  (`KIROCREW_POD_WORKTREES_ROOT`) is only an optional fallback for hermetic planes.

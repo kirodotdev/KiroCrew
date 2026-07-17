@@ -3,36 +3,36 @@
 # Add entries here for intentional stubs that reference internal names.
 
 # Auth stubs (OSS placeholders for Amazon-internal auth flows)
-src/kiro_claw/browser/auth.py
-src/kiro_claw/browser/setup.py
-src/kiro_claw/browser/screencast.py
-src/kiro_claw/dashboard/handlers/mwinit.py
-src/kiro_claw/dashboard/handlers/__init__.py
-src/kiro_claw/dashboard/handlers_system.py:.*midway
-src/kiro_claw/dashboard/handlers/messaging.py:.*Midway
-src/kiro_claw/dashboard/server.py:.*midway
-src/kiro_claw/dashboard/server.py:.*mwinit
-src/kiro_claw/midway.py
+src/kiro_crew/browser/auth.py
+src/kiro_crew/browser/setup.py
+src/kiro_crew/browser/screencast.py
+src/kiro_crew/dashboard/handlers/mwinit.py
+src/kiro_crew/dashboard/handlers/__init__.py
+src/kiro_crew/dashboard/handlers_system.py:.*midway
+src/kiro_crew/dashboard/handlers/messaging.py:.*Midway
+src/kiro_crew/dashboard/server.py:.*midway
+src/kiro_crew/dashboard/server.py:.*mwinit
+src/kiro_crew/midway.py
 
 # Brazil-aware runtime detection (checks if installed via brazil or pip)
-src/kiro_claw/slack/gateway.py:.*[Bb]razil
-src/kiro_claw/mcp_discovery.py:.*brazil
-src/kiro_claw/transcribe.py:.*brazil
+src/kiro_crew/slack/gateway.py:.*[Bb]razil
+src/kiro_crew/mcp_discovery.py:.*brazil
+src/kiro_crew/transcribe.py:.*brazil
 
 # Deny-pattern strings and security config (reference internal names as blocklist)
-src/kiro_claw/dashboard/state.py:.*brazil
-src/kiro_claw/config/defaults.json
+src/kiro_crew/dashboard/state.py:.*brazil
+src/kiro_crew/config/defaults.json
 
 # Eval test scenarios (fictional stories using internal tool names as test data)
-src/kiro_claw/eval/scenarios/
+src/kiro_crew/eval/scenarios/
 
 # Code comments referencing provenance CRs (historical context, not leaking anything)
-src/kiro_claw/agent.py:.*Amazon-specific Apollo/Brazil
-src/kiro_claw/apps/backend.py:.*Brazil
-src/kiro_claw/context.py:.*CR-
-src/kiro_claw/eval/runner.py:.*CR-
-src/kiro_claw/seed.py:.*CR-
-src/kiro_claw/slack/gateway.py:.*CR-
+src/kiro_crew/agent.py:.*Amazon-specific Apollo/Brazil
+src/kiro_crew/apps/backend.py:.*Brazil
+src/kiro_crew/context.py:.*CR-
+src/kiro_crew/eval/runner.py:.*CR-
+src/kiro_crew/seed.py:.*CR-
+src/kiro_crew/slack/gateway.py:.*CR-
 
 # Frontend tests referencing brazil-build as test input
 website/src/test/RunInTerminalBtn.test.tsx

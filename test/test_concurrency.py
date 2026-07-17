@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.taskrunner import _MAX_PARALLEL_TASKS, TaskRunner
+from kiro_crew.taskrunner import _MAX_PARALLEL_TASKS, TaskRunner
 
 # ── SessionManager cold-start semaphore ──
 
@@ -17,7 +17,7 @@ class TestSessionStartSemaphore:
 
     @pytest.mark.asyncio
     async def test_semaphore_exists_on_session_manager(self):
-        from kiro_claw.session import SessionManager
+        from kiro_crew.session import SessionManager
 
         cfg = MagicMock()
         cfg.default_agent = ""
@@ -33,7 +33,7 @@ class TestSessionStartSemaphore:
     @pytest.mark.asyncio
     async def test_semaphore_limits_concurrent_starts(self):
         """Simulate 5 concurrent get_or_create calls, verify max 2 start simultaneously."""
-        from kiro_claw.session import SessionManager
+        from kiro_crew.session import SessionManager
 
         cfg = MagicMock()
         cfg.default_agent = ""
@@ -87,7 +87,7 @@ class TestParallelBatching:
     @pytest.mark.asyncio
     async def test_large_group_batched(self):
         """A group of 6 tasks should be split into batches of 4 + 2."""
-        from kiro_claw.task_models import Project, Task, TaskStatus
+        from kiro_crew.task_models import Project, Task, TaskStatus
 
         sessions = MagicMock()
         sessions.get_pid = MagicMock(return_value=None)
@@ -124,7 +124,7 @@ class TestParallelBatching:
     @pytest.mark.asyncio
     async def test_small_group_not_batched(self):
         """A group of 3 tasks should run in a single gather (no batching needed)."""
-        from kiro_claw.task_models import Project, Task, TaskStatus
+        from kiro_crew.task_models import Project, Task, TaskStatus
 
         sessions = MagicMock()
         sessions.get_pid = MagicMock(return_value=None)
@@ -165,7 +165,7 @@ class TestSubagentSemaphoreInteraction:
     @pytest.mark.asyncio
     async def test_three_agents_all_complete(self):
         """3 subagents should all complete with semaphore(2) on cold-start."""
-        from kiro_claw.session import SessionManager
+        from kiro_crew.session import SessionManager
 
         cfg = MagicMock()
         cfg.default_agent = ""

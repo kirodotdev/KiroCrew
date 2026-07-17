@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_claw.acp.client import CLIENT_NAME, AcpClient
-from kiro_claw.acp.types import METHOD_SET_MODE
+from kiro_crew.acp.client import CLIENT_NAME, AcpClient
+from kiro_crew.acp.types import METHOD_SET_MODE
 
 
 def _make_client(agent: str, tmp_path) -> AcpClient:

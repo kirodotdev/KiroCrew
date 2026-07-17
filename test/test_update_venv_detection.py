@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState
 
 
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
-    monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     return DashboardState(
         sessions=MagicMock(count=0),
         crons=MagicMock(),
@@ -48,7 +48,7 @@ class TestVenvPipInstall:
     @pytest.mark.asyncio
     async def test_returns_true_on_success(self, monkeypatch, tmp_path) -> None:
         proj = _make_pip_proj(tmp_path)
-        from kiro_claw.dashboard.handlers.updates import _venv_pip_install
+        from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
 
@@ -64,7 +64,7 @@ class TestVenvPipInstall:
     @pytest.mark.asyncio
     async def test_returns_false_on_nonzero_exit(self, monkeypatch, tmp_path) -> None:
         proj = _make_pip_proj(tmp_path)
-        from kiro_claw.dashboard.handlers.updates import _venv_pip_install
+        from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
@@ -84,7 +84,7 @@ class TestVenvPipInstall:
     @pytest.mark.asyncio
     async def test_returns_false_on_timeout(self, monkeypatch, tmp_path) -> None:
         proj = _make_pip_proj(tmp_path)
-        from kiro_claw.dashboard.handlers.updates import _venv_pip_install
+        from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
@@ -107,7 +107,7 @@ class TestVenvPipInstall:
     async def test_timeout_swallows_process_lookup_error(self, monkeypatch, tmp_path) -> None:
         """When the process is already gone, kill() raises ProcessLookupError — handled."""
         proj = _make_pip_proj(tmp_path)
-        from kiro_claw.dashboard.handlers.updates import _venv_pip_install
+        from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
@@ -129,7 +129,7 @@ class TestVenvPipInstall:
     async def test_stderr_is_redacted(self, monkeypatch, tmp_path) -> None:
         """Credentials and exfil URLs in pip stderr are redacted before display."""
         proj = _make_pip_proj(tmp_path)
-        from kiro_claw.dashboard.handlers.updates import _venv_pip_install
+        from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
@@ -157,7 +157,7 @@ class TestRestartGateway:
         self, monkeypatch, tmp_path
     ) -> None:
         """If sys.executable is missing or not executable, error is reported."""
-        from kiro_claw.dashboard.handlers.updates import _restart_gateway
+        from kiro_crew.dashboard.handlers.updates import _restart_gateway
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
@@ -175,7 +175,7 @@ class TestRestartGateway:
     @pytest.mark.asyncio
     async def test_success_path_invokes_execv(self, monkeypatch, tmp_path) -> None:
         """Happy path: history saved, sessions closed, os.execv invoked."""
-        from kiro_claw.dashboard.handlers.updates import _restart_gateway
+        from kiro_crew.dashboard.handlers.updates import _restart_gateway
 
         state = _make_state(monkeypatch, tmp_path)
         state.sessions = MagicMock()
@@ -185,7 +185,7 @@ class TestRestartGateway:
         execv_called: list[tuple] = []
 
         monkeypatch.setattr(
-            "kiro_claw.dashboard.chat.save_all_slots_to_history",
+            "kiro_crew.dashboard.chat.save_all_slots_to_history",
             lambda s: save_called.append(True),
         )
         monkeypatch.setattr("os.execv", lambda *a, **k: execv_called.append(a))
@@ -204,7 +204,7 @@ class TestRestartGateway:
         self, monkeypatch, tmp_path
     ) -> None:
         """If save_all_slots_to_history raises, restart still proceeds."""
-        from kiro_claw.dashboard.handlers.updates import _restart_gateway
+        from kiro_crew.dashboard.handlers.updates import _restart_gateway
 
         state = _make_state(monkeypatch, tmp_path)
         state.sessions = MagicMock()
@@ -216,7 +216,7 @@ class TestRestartGateway:
             raise RuntimeError("boom")
 
         monkeypatch.setattr(
-            "kiro_claw.dashboard.chat.save_all_slots_to_history", raising_save
+            "kiro_crew.dashboard.chat.save_all_slots_to_history", raising_save
         )
         monkeypatch.setattr("os.execv", lambda *a, **k: execv_called.append(a))
         monkeypatch.setattr(
@@ -231,7 +231,7 @@ class TestRestartGateway:
         self, monkeypatch, tmp_path
     ) -> None:
         """If sessions.close_all raises, restart still proceeds."""
-        from kiro_claw.dashboard.handlers.updates import _restart_gateway
+        from kiro_crew.dashboard.handlers.updates import _restart_gateway
 
         state = _make_state(monkeypatch, tmp_path)
         state.sessions = MagicMock()
@@ -240,7 +240,7 @@ class TestRestartGateway:
         execv_called: list[tuple] = []
 
         monkeypatch.setattr(
-            "kiro_claw.dashboard.chat.save_all_slots_to_history", lambda s: None
+            "kiro_crew.dashboard.chat.save_all_slots_to_history", lambda s: None
         )
         monkeypatch.setattr("os.execv", lambda *a, **k: execv_called.append(a))
         monkeypatch.setattr(
@@ -259,8 +259,8 @@ class TestApiUpdateApplyVenvDispatch:
         self, monkeypatch, tmp_path
     ) -> None:
         proj = _make_pip_proj(tmp_path)
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(proj))
-        monkeypatch.setattr("kiro_claw.env.is_toolbox_install", lambda: False)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr("kiro_crew.env.is_toolbox_install", lambda: False)
 
         pip_called: list[bool] = []
         restart_called: list[bool] = []
@@ -273,10 +273,10 @@ class TestApiUpdateApplyVenvDispatch:
             restart_called.append(True)
 
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.updates._venv_pip_install", fake_pip
+            "kiro_crew.dashboard.handlers.updates._venv_pip_install", fake_pip
         )
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.updates._restart_gateway", fake_restart
+            "kiro_crew.dashboard.handlers.updates._restart_gateway", fake_restart
         )
 
         # Stub git pull so it succeeds.
@@ -288,7 +288,7 @@ class TestApiUpdateApplyVenvDispatch:
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
-        from kiro_claw.dashboard.handlers.updates import api_update_apply
+        from kiro_crew.dashboard.handlers.updates import api_update_apply
 
         state = _make_state(monkeypatch, tmp_path)
         app = web.Application()
@@ -310,8 +310,8 @@ class TestApiUpdateApplyVenvDispatch:
         self, monkeypatch, tmp_path
     ) -> None:
         proj = _make_pip_proj(tmp_path)
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(proj))
-        monkeypatch.setattr("kiro_claw.env.is_toolbox_install", lambda: False)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr("kiro_crew.env.is_toolbox_install", lambda: False)
 
         restart_called: list[bool] = []
 
@@ -322,10 +322,10 @@ class TestApiUpdateApplyVenvDispatch:
             restart_called.append(True)
 
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.updates._venv_pip_install", fake_pip
+            "kiro_crew.dashboard.handlers.updates._venv_pip_install", fake_pip
         )
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.updates._restart_gateway", fake_restart
+            "kiro_crew.dashboard.handlers.updates._restart_gateway", fake_restart
         )
 
         async def fake_exec(*args, **kwargs):
@@ -336,7 +336,7 @@ class TestApiUpdateApplyVenvDispatch:
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
-        from kiro_claw.dashboard.handlers.updates import api_update_apply
+        from kiro_crew.dashboard.handlers.updates import api_update_apply
 
         state = _make_state(monkeypatch, tmp_path)
         app = web.Application()

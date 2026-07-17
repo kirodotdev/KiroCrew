@@ -1,6 +1,6 @@
-# KiroClaw Dependencies
+# KiroCrew Dependencies
 
-All dependencies needed to build, install, and run KiroClaw. The backend is
+All dependencies needed to build, install, and run KiroCrew. The backend is
 distributed via `pip`; the frontend is built with `npm` + Vite. Memory and the
 knowledge library use a local [Ollama](https://ollama.com) embedding server.
 
@@ -46,8 +46,8 @@ These are installed automatically by `pip`:
 Install on demand:
 
 ```bash
-pip install "kiroclaw[voice]"   # speech-to-text (transcription)
-pip install "kiroclaw[aws]"     # AWS integrations (e.g. Bedrock provider)
+pip install "kirocrew[voice]"   # speech-to-text (transcription)
+pip install "kirocrew[aws]"     # AWS integrations (e.g. Bedrock provider)
 ```
 
 | Extra | Packages | Purpose |
@@ -55,7 +55,7 @@ pip install "kiroclaw[aws]"     # AWS integrations (e.g. Bedrock provider)
 | `voice` | `boto3>=1.34,<2`, `amazon-transcribe>=0.6,<1` | Speech-to-text transcription |
 | `aws` | `boto3>=1.34,<2` | AWS integrations (Bedrock provider, AWS-backed embeddings) |
 
-> Core KiroClaw runs **without** these extras. `boto3` / `amazon-transcribe` are
+> Core KiroCrew runs **without** these extras. `boto3` / `amazon-transcribe` are
 > only imported by optional features and are intentionally kept out of the
 > required dependencies.
 
@@ -65,8 +65,8 @@ Installed onto `PATH` by `pip`:
 
 | Command | Entry point |
 |---|---|
-| `kiroclaw` | `kiro_claw.cli:main` |
-| `kiroclaw-browse` | `kiro_claw.browser.cli:main` |
+| `kirocrew` | `kiro_crew.cli:main` |
+| `kirocrew-browse` | `kiro_crew.browser.cli:main` |
 
 ## Frontend (npm)
 
@@ -78,7 +78,7 @@ npm install        # uses the public npm registry (registry.npmjs.org)
 npm run build      # tsc + vite build → website/dist
 ```
 
-Production builds are copied into `src/kiro_claw/static/dist/` and served by the
+Production builds are copied into `src/kiro_crew/static/dist/` and served by the
 backend.
 
 ### Runtime dependencies (highlights)
@@ -113,14 +113,14 @@ See `website/package.json` for the complete, version-pinned list.
 ## Install Order
 
 ```
-1. git clone https://github.com/kirodotdev-labs/kiroclaw.git
+1. git clone https://github.com/kirodotdev/KiroCrew.git
 2. cd website && npm install && npm run build         # build frontend
-3. cp -r website/dist src/kiro_claw/static/dist        # bundle into package
+3. cp -r website/dist src/kiro_crew/static/dist        # bundle into package
 4. pip install -e ".[voice]"                           # install backend + scripts
 5. install an LLM backend on PATH (claude-agent-acp / kiro-cli / Bedrock)
 6. install Ollama + `ollama pull qwen3-embedding:0.6b` # embeddings
-7. kiroclaw setup                                      # config + credentials
-8. kiroclaw doctor && kiroclaw gateway                 # verify + run
+7. kirocrew setup                                      # config + credentials
+8. kirocrew doctor && kirocrew gateway                 # verify + run
 ```
 
 ## Embedding Model

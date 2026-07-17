@@ -1,36 +1,36 @@
-# API Reference — KiroClaw Gateway API & Client
+# API Reference — KiroCrew Gateway API & Client
 
-Reference for the KiroClaw Gateway HTTP and WebSocket APIs, and how apps consume
+Reference for the KiroCrew Gateway HTTP and WebSocket APIs, and how apps consume
 them.
 
 How you talk to the Gateway depends on where your code runs:
 
-- **Dashboard UI pages (TypeScript/React)** — use the `@kiroclaw/app-sdk` hooks
+- **Dashboard UI pages (TypeScript/React)** — use the `@kirocrew/app-sdk` hooks
   (`useAppApi`, `useAppEvents`, …). You do **not** `npm install` this package;
   the dashboard host provides it at runtime through its import map (the bare
-  specifier `@kiroclaw/app-sdk` resolves to the host's vendored copy via
-  `window.__kiroclaw_modules`). See
+  specifier `@kirocrew/app-sdk` resolves to the host's vendored copy via
+  `window.__kirocrew_modules`). See
   [getting-started.md](getting-started.md) and the [App SDK Hooks](#app-sdk-hooks)
   section below.
 - **Python apps / external CLI tools / services** — use the standalone
-  `kiroclaw-client` package (`pip install kiroclaw-client`). It is async
-  (`aiohttp`) and has no dependency on the KiroClaw main package. See the
+  `kirocrew-client` package (`pip install kirocrew-client`). It is async
+  (`aiohttp`) and has no dependency on the KiroCrew main package. See the
   [Python Client](#python-client) section.
 - **Node.js / Electron apps** — call the Gateway REST/WS endpoints directly via
   `fetch()` / a WebSocket. The full endpoint list is in
   [Gateway REST API Endpoints](#gateway-rest-api-endpoints).
 
-There is no published TypeScript gateway-client npm package. The `kiroclaw-client`
+There is no published TypeScript gateway-client npm package. The `kirocrew-client`
 method names below describe the canonical Gateway API surface — the same
 endpoints any client (including raw `fetch`) talks to.
 
 ## App SDK Hooks (dashboard UI)
 
-Dashboard UI pages import permission-scoped hooks from `@kiroclaw/app-sdk`,
+Dashboard UI pages import permission-scoped hooks from `@kirocrew/app-sdk`,
 resolved at runtime via the host import map:
 
 ```tsx
-import { useAppApi, useAppEvents } from '@kiroclaw/app-sdk'
+import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'
 
 function MyPage() {
   const api = useAppApi()        // permission-scoped GET/POST/PUT/PATCH/DELETE
@@ -48,13 +48,13 @@ For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks
 ## Gateway API Surface
 
 The sections below document the canonical Gateway API surface as exposed by the
-`kiroclaw-client` Python package (see the [Python Client](#python-client)
+`kirocrew-client` Python package (see the [Python Client](#python-client)
 section for the constructor and full method list). Method names are also a
 convenient way to refer to each endpoint — the same endpoints any client
 (including raw `fetch`) talks to.
 
 When `app_name` is set and no explicit auth is provided, the client auto-reads
-the app secret from `~/.kiroclaw/apps/{name}/.app_secret` and exchanges it
+the app secret from `~/.kirocrew/apps/{name}/.app_secret` and exchanges it
 for a short-lived token via `POST /api/apps/{name}/token`.
 
 ### Authentication
@@ -163,8 +163,8 @@ WebSocket event types: `chat_chunk`, `chat_done`, `chat_message`, `chat_error`,
 | `listMcpServers()` | `Promise<McpServerInfo[]>` | List registered MCP servers |
 | `registerMcpServer(def)` | `Promise<void>` | Register an MCP server (requires name + command) |
 | `removeMcpServer(name)` | `Promise<void>` | Remove an MCP server |
-| `registerAppMcp(name, entry)` | `Promise<void>` | Write MCP entry to `~/.kiroclaw/mcp.json` (Node.js only) |
-| `unregisterAppMcp(name)` | `Promise<void>` | Remove MCP entry from `~/.kiroclaw/mcp.json` (Node.js only) |
+| `registerAppMcp(name, entry)` | `Promise<void>` | Write MCP entry to `~/.kirocrew/mcp.json` (Node.js only) |
+| `unregisterAppMcp(name)` | `Promise<void>` | Remove MCP entry from `~/.kirocrew/mcp.json` (Node.js only) |
 
 ### Agent & Skill Installation (Node.js only)
 
@@ -172,7 +172,7 @@ WebSocket event types: `chat_chunk`, `chat_done`, `chat_message`, `chat_error`,
 |--------|---------|-------------|
 | `installAgentConfig(name, config)` | `void` | Install agent JSON to `~/.kiro/agents/` (merges mcpServers) |
 | `removeAgentConfig(name)` | `void` | Remove agent config |
-| `installSkill(name, srcDir)` | `void` | Copy skill directory to `~/.kiroclaw/skills/` |
+| `installSkill(name, srcDir)` | `void` | Copy skill directory to `~/.kirocrew/skills/` |
 | `removeSkill(name)` | `void` | Remove skill directory |
 
 ### Agent Runtime
@@ -219,7 +219,7 @@ Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
 
 ### Proxy Authentication (Server-side)
 
-Verify that an incoming request was signed by the KiroClaw gateway reverse proxy. Use in app backends to authenticate proxied requests.
+Verify that an incoming request was signed by the KiroCrew gateway reverse proxy. Use in app backends to authenticate proxied requests.
 
 | Function | Returns | Description |
 |----------|---------|-------------|
@@ -231,13 +231,13 @@ Options: `{ secret?: string, maxAgeSecs?: number }`
 
 ## Python Client
 
-Standalone async client using `aiohttp` — `pip install kiroclaw-client`. Covers
+Standalone async client using `aiohttp` — `pip install kirocrew-client`. Covers
 the full Gateway API surface documented above.
 
 ```python
-from kiroclaw_client import KiroClawClient
+from kirocrew_client import KiroCrewClient
 
-async with KiroClawClient(app_name="my-app") as mc:
+async with KiroCrewClient(app_name="my-app") as mc:
     ok = await mc.ping()
     slots = await mc.list_slots()
 ```
@@ -245,8 +245,8 @@ async with KiroClawClient(app_name="my-app") as mc:
 ### Constructor
 
 ```python
-KiroClawClient(
-    base_url="",              # default: http://localhost:{KIROCLAW_PORT or 5476}
+KiroCrewClient(
+    base_url="",              # default: http://localhost:{KIROCREW_PORT or 5476}
     token="",                 # optional for localhost
     app_name="",              # for app-scoped storage & auto-auth
     timeout=30,               # request timeout seconds
@@ -328,10 +328,10 @@ canonical API-surface name used in the sections above:
 
 ## AppManifest
 
-Validate and serialize app.json manifests, via the `kiroclaw-client` package.
+Validate and serialize app.json manifests, via the `kirocrew-client` package.
 
 ```python
-from kiroclaw_client import AppManifest
+from kirocrew_client import AppManifest
 
 m = AppManifest.from_dict({"name": "my-app", "version": "1.0.0", ...})
 errors = m.validate()   # list[str] — empty if valid
@@ -343,9 +343,9 @@ data = m.to_dict()
 Manage app installation via the Gateway REST API.
 
 ```python
-from kiroclaw_client import KiroClawClient, AppLifecycle
+from kirocrew_client import KiroCrewClient, AppLifecycle
 
-async with KiroClawClient() as mc:
+async with KiroCrewClient() as mc:
     lifecycle = AppLifecycle(mc)
     await lifecycle.install("/path/to/my-app")
     await lifecycle.enable("my-app")
@@ -356,10 +356,10 @@ async with KiroClawClient() as mc:
 
 ## GatewayManager
 
-Manage the KiroClaw Gateway process (start, stop, health check).
+Manage the KiroCrew Gateway process (start, stop, health check).
 
 ```python
-from kiroclaw_client import GatewayManager
+from kirocrew_client import GatewayManager
 
 gm = GatewayManager(port=5476)
 await gm.start()
@@ -371,7 +371,7 @@ await gm.stop()
 
 ## Error Handling
 
-All `kiroclaw-client` errors are `KiroClawError` instances with `code`,
+All `kirocrew-client` errors are `KiroCrewError` instances with `code`,
 `message`, `status`, `body`.
 
 | Code | Trigger | Retried? |
@@ -386,11 +386,11 @@ All `kiroclaw-client` errors are `KiroClawError` instances with `code`,
 | `WS_DISCONNECTED` | WebSocket not connected | No |
 
 ```python
-from kiroclaw_client import KiroClawError
+from kirocrew_client import KiroCrewError
 
 try:
     await mc.send_message("slot-1", "hello")
-except KiroClawError as e:
+except KiroCrewError as e:
     print(e.code, e.message, e.status)
 ```
 
@@ -398,7 +398,7 @@ except KiroClawError as e:
 
 ## Gateway REST API Endpoints
 
-The `useAppApi()` hook and the `kiroclaw-client` package wrap these Gateway
+The `useAppApi()` hook and the `kirocrew-client` package wrap these Gateway
 endpoints. Apps can also call them directly via `fetch()`.
 
 ### App Management
@@ -424,26 +424,26 @@ endpoints. Apps can also call them directly via `fetch()`.
 
 ### Reverse Proxy Authentication
 
-The gateway signs each proxied request with `X-KiroClaw-Proxy: <timestamp>:<hmac-sha256>`. The
+The gateway signs each proxied request with `X-KiroCrew-Proxy: <timestamp>:<hmac-sha256>`. The
 HMAC is computed over the message `timestamp:method:/api/path[?query]:sha256(body)` using the
 app secret as the key, where `sha256(body)` is the hex SHA-256 digest of the raw request body
 (an empty body hashes the empty byte string, `e3b0c442...`). Binding the body hash means a
 tampered body invalidates the signature. Backends verify with a constant-time comparison and
 reject requests whose timestamp is not within ±60s of now.
 
-Python app backends verify this with `kiroclaw-client`:
+Python app backends verify this with `kirocrew-client`:
 
 ```python
-from kiroclaw_client import verify_proxy_request
+from kirocrew_client import verify_proxy_request
 if not verify_proxy_request(request, 'my-app'): return Response(status=401)
 ```
 
 Node.js app backends can verify the signature directly: compute
 `HMAC-SHA256(timestamp:method:/api/path[?query]:sha256(body), app_secret)` and compare against
-the value in the `X-KiroClaw-Proxy` header (constant-time), rejecting stale timestamps.
+the value in the `X-KiroCrew-Proxy` header (constant-time), rejecting stale timestamps.
 
 > **Breaking change (body-bound signature):** `verify_proxy_request` /
-> `verify_proxy_request_raw` in the `kiroclaw-client` package MUST be regenerated in lockstep
+> `verify_proxy_request_raw` in the `kirocrew-client` package MUST be regenerated in lockstep
 > to bind `sha256(body)` while keeping the constant-time compare and ±60s freshness. A gateway
 > that signs body-bound HMACs will fail verification against any deployed old verifier, so the
 > client release must ship together with this change.

@@ -744,11 +744,11 @@ const chatSlice = createSlice({
       const existing = subs[action.payload.id]
       if (existing?.status === 'pending') {
         existing.status = 'running'
-        existing.agent = action.payload.agent || existing.agent || 'kiroclaw'
+        existing.agent = action.payload.agent || existing.agent || 'kirocrew'
         return
       }
       subs[action.payload.id] = {
-        id: action.payload.id, task: action.payload.task, agent: action.payload.agent || 'kiroclaw',
+        id: action.payload.id, task: action.payload.task, agent: action.payload.agent || 'kirocrew',
         status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
       }
     },
@@ -776,7 +776,7 @@ const chatSlice = createSlice({
         a.error = action.payload.error
         a.streaming = ''
       }
-      else { subs[action.payload.id] = { id: action.payload.id, task: action.payload.task || '', agent: action.payload.agent || 'kiroclaw', status: action.payload.error ? 'error' : 'done', streaming: '', lastTool: '', startedAt: Date.now() - action.payload.elapsed * 1000, elapsed: action.payload.elapsed, error: action.payload.error } }
+      else { subs[action.payload.id] = { id: action.payload.id, task: action.payload.task || '', agent: action.payload.agent || 'kirocrew', status: action.payload.error ? 'error' : 'done', streaming: '', lastTool: '', startedAt: Date.now() - action.payload.elapsed * 1000, elapsed: action.payload.elapsed, error: action.payload.error } }
     },
     sseSideResult(state, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean }>) {
       const { slot, run_id, role, content, ts, is_error, final } = action.payload
@@ -856,7 +856,7 @@ const chatSlice = createSlice({
         : state.subagents
       const existing = subs[d.id]
       subs[d.id] = {
-        id: d.id, task: d.task, agent: d.agent || 'kiroclaw',
+        id: d.id, task: d.task, agent: d.agent || 'kirocrew',
         status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
         startedAt: d.started * 1000, elapsed: 0,
         approval_id: existing?.approval_id, approving: existing?.approving,

@@ -15,18 +15,18 @@ function mockStore(initial = {}) {
 
 describe("migrateRemoteHostConfig", () => {
   it("migrates legacy remoteHost to remoteHosts[port]", () => {
-    const store = mockStore({ remoteHost: "myhost.corp.amazon.com", kiroclawBinPath: "~/.local/bin/kiroclaw", remoteHosts: {} });
+    const store = mockStore({ remoteHost: "myhost.corp.amazon.com", kirocrewBinPath: "~/.local/bin/kirocrew", remoteHosts: {} });
     const result = migrateRemoteHostConfig(store, 7778);
     assert.equal(result, true);
-    assert.deepEqual(store._data.remoteHosts, { 7778: { host: "myhost.corp.amazon.com", binPath: "~/.local/bin/kiroclaw" } });
+    assert.deepEqual(store._data.remoteHosts, { 7778: { host: "myhost.corp.amazon.com", binPath: "~/.local/bin/kirocrew" } });
     assert.equal(store._data.remoteHost, undefined);
-    assert.equal(store._data.kiroclawBinPath, undefined);
+    assert.equal(store._data.kirocrewBinPath, undefined);
   });
 
-  it("uses DEFAULT_REMOTE_BIN when kiroclawBinPath is empty", () => {
-    const store = mockStore({ remoteHost: "host.com", kiroclawBinPath: "", remoteHosts: {} });
+  it("uses DEFAULT_REMOTE_BIN when kirocrewBinPath is empty", () => {
+    const store = mockStore({ remoteHost: "host.com", kirocrewBinPath: "", remoteHosts: {} });
     migrateRemoteHostConfig(store, 7777);
-    assert.equal(store._data.remoteHosts[7777].binPath, "~/.local/bin/kiroclaw");
+    assert.equal(store._data.remoteHosts[7777].binPath, "~/.local/bin/kirocrew");
   });
 
   it("does not migrate when remoteHosts already has entries", () => {
@@ -90,6 +90,6 @@ describe("setRemoteHostConfig", () => {
   it("defaults binPath to DEFAULT_REMOTE_BIN when omitted", () => {
     const store = mockStore({ remoteHosts: {} });
     setRemoteHostConfig(store, 7777, { host: "h.com" });
-    assert.equal(store._data.remoteHosts["7777"].binPath, "~/.local/bin/kiroclaw");
+    assert.equal(store._data.remoteHosts["7777"].binPath, "~/.local/bin/kirocrew");
   });
 });

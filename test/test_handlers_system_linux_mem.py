@@ -14,7 +14,7 @@ import builtins
 from io import StringIO
 from unittest.mock import patch
 
-from kiro_claw.dashboard import handlers_system
+from kiro_crew.dashboard import handlers_system
 
 _KB = 1024  # /proc/meminfo values are in kB; 1 GiB = 1024**2 kB
 _GIB_KB = 1024 * 1024

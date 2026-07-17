@@ -1,5 +1,5 @@
 // Vendor stub: re-exports lucide-react from the host.
-const m = window.__kiroclaw_modules?.['lucide-react']
+const m = window.__kirocrew_modules?.['lucide-react']
 if (!m) throw new Error('[vendor/lucide-react] Host modules not initialized.')
 // Re-export everything — lucide-react has hundreds of icon components
 const handler = { get: (_, prop) => m[prop] }

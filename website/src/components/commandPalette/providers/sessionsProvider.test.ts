@@ -49,7 +49,7 @@ describe('createSessionsProvider — result mapping', () => {
   it('maps a backend session to a Result with id, title, subtitle, and highlight indices', async () => {
     const fetchSessions = vi.fn(
       async (): Promise<SessionSearchResponse> => ({
-        sessions: [{ key: 's-1', title: 'Session Grid', agent: 'kiroclaw' }],
+        sessions: [{ key: 's-1', title: 'Session Grid', agent: 'kirocrew' }],
       }),
     )
     const { d } = deps({ fetchSessions })
@@ -61,7 +61,7 @@ describe('createSessionsProvider — result mapping', () => {
     expect(r.id).toBe('sessions:s-1')
     expect(r.providerId).toBe('sessions')
     expect(r.title).toBe('Session Grid')
-    expect(r.subtitle).toBe('kiroclaw')
+    expect(r.subtitle).toBe('kirocrew')
     expect(r.score).toBeGreaterThan(0)
     // 'grid' lands on the second word — indices into the title, ascending.
     expect(r.indices.length).toBe(4)

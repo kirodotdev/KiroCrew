@@ -41,7 +41,7 @@ import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
-import KiroClawAgentsPage from './pages/KiroClawAgentsPage'
+import KiroCrewAgentsPage from './pages/KiroCrewAgentsPage'
 import ProjectsPage from './pages/ProjectsPage'
 import LogsPage from './pages/LogsPage'
 import HooksPage from './pages/HooksPage'
@@ -51,7 +51,7 @@ import ArtifactsPage from './pages/ArtifactsPage'
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import SettingsPage from './pages/SettingsPage'
 import EmbedSettingsPage from './pages/EmbedSettingsPage'
-import KiroClawNavBridge from './components/KiroClawNavBridge'
+import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstanceTabBar from './components/InstanceTabBar'
 import InstancesViewport from './components/InstancesViewport'
 import EmbedTabStrip from './components/EmbedTabStrip'
@@ -139,7 +139,7 @@ const BUILTIN_ICONS: Record<string, React.ReactElement> = {
 }
 
 // Apps-nav fetch resilience (see refreshAppNav). The dashboard loads
-// `/api/apps` once on mount; right after a `kiroclaw update` the gateway is
+// `/api/apps` once on mount; right after a `kirocrew update` the gateway is
 // mid-restart (cold backend, apps-dir scan) and that first request can fail or
 // time out. Retry with bounded backoff so the Apps rail self-heals instead of
 // staying empty until a manual reload or an app enable/disable.
@@ -203,7 +203,7 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         <div className="text-4xl mb-4 animate-pulse">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
-        <div className="text-lg font-bold text-text-strong mb-2">Updating KiroClaw…</div>
+        <div className="text-lg font-bold text-text-strong mb-2">Updating KiroCrew…</div>
         <div className="text-sm text-muted mb-5">{detail || 'Starting update…'}</div>
         {/* Step progress */}
         <div className="flex flex-col gap-2 text-left mb-5">
@@ -644,7 +644,7 @@ export default function App() {
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
   // the red top-banner already tells the user what to do (paste a fresh
-  // `kiroclaw token` URL) -- showing the loud pulsing "Offline" pill on top
+  // `kirocrew token` URL) -- showing the loud pulsing "Offline" pill on top
   // of that just stacks two banners arguing about the same root cause. So
   // when authRequired is true, we suppress the offline pill in the top bar;
   // auth banner is the single canonical signal. `isAuthBannerShown()` seeds
@@ -730,8 +730,8 @@ export default function App() {
   const { botName: _botName, avatar: _avatar } = useBranding()
 
   // OAuth-style token refresh: silently rotates the access cookie before
-  // it expires so the user does not have to re-mint via `kiroclaw token`
-  // URL every ~20h. See KiroClaw docs/token-refresh/REQUIREMENTS.md
+  // it expires so the user does not have to re-mint via `kirocrew token`
+  // URL every ~20h. See KiroCrew docs/token-refresh/REQUIREMENTS.md
   useRefreshScheduler()
   const isLumon = colorTheme === 'lumon'
   const botName = isLumon ? 'LumonClaw' : _botName
@@ -840,7 +840,7 @@ export default function App() {
       })
       .catch(() => {
         // A transient failure (e.g. the gateway mid-restart right after a
-        // `kiroclaw update`, or the cold apps-dir scan) used to be swallowed
+        // `kirocrew update`, or the cold apps-dir scan) used to be swallowed
         // here, leaving the Apps rail empty until a manual reload or an app
         // enable/disable. Retry with bounded exponential backoff so it
         // self-heals. The reconnect effect below covers the WS-drop case.
@@ -858,7 +858,7 @@ export default function App() {
     return () => window.removeEventListener('mc:apps-changed', handler)
   }, [refreshAppNav])
   // Refetch the Apps nav when the gateway connection is *re*-established after a
-  // drop — e.g. a `kiroclaw update` restart disconnects then reconnects the
+  // drop — e.g. a `kirocrew update` restart disconnects then reconnects the
   // WebSocket. Only fires on a connected→disconnected→connected cycle, NOT the
   // initial connect (the mount fetch already covers that), so a normal load
   // never double-fetches.
@@ -1181,7 +1181,7 @@ export default function App() {
       </Routes>
     ) : isEmbed ? (
       <div className="h-screen w-screen overflow-hidden bg-bg flex flex-col">
-        <KiroClawNavBridge />
+        <KiroCrewNavBridge />
         <EmbedTabStrip />
         <div className="flex-1 min-h-0">
           <Routes>
@@ -1267,7 +1267,7 @@ export default function App() {
             </button>)
           })()}
           {/* Usage pill. Kiro credit plan when present (internal); otherwise a
-              provider-agnostic month-to-date $ spend from KiroClaw's own token
+              provider-agnostic month-to-date $ spend from KiroCrew's own token
               log, shown against a user budget if one is set. Spinner while the
               cache warms; hidden when there's nothing to show. */}
           {kiroUsage === 'none' ? null : !kiroUsage ? (
@@ -1594,7 +1594,7 @@ export default function App() {
         {/* Watermark */}
         <div {...(effectiveCollapsed ? { inert: '' } : {})} className={`overflow-hidden transition-all duration-200 ${effectiveCollapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-40 opacity-100 mt-2'}`}>
               <div className="border-t pt-2 pb-2 px-1 whitespace-nowrap" style={{ borderColor: 'var(--muted)' }}>
-                <a href="https://github.com/kirodotdev-labs/kiroclaw" target="_blank" rel="noopener noreferrer" className="text-[13px] text-muted/60 hover:text-accent transition-colors inline-block">GitHub</a>
+                <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" className="text-[13px] text-muted/60 hover:text-accent transition-colors inline-block">GitHub</a>
               </div>
         </div>
         </div>
@@ -1613,7 +1613,7 @@ export default function App() {
             <Route path="/knowledge" element={<ErrorBoundary><KnowledgePage /></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings?tab=overview" replace />} />
             <Route path="/schedule" element={<SchedulePage />} />
-            <Route path="/agents" element={<KiroClawAgentsPage />} />
+            <Route path="/agents" element={<KiroCrewAgentsPage />} />
             <Route path="/mc-agents" element={<Navigate to="/agents" replace />} />
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/projects" element={<ProjectsPage />} />

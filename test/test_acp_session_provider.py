@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.acp.runtime import AcpRuntimeDead
-from kiro_claw.acp.session_provider import AcpSessionProvider
-from kiro_claw.acp.types import AcpEvent, AcpPromptStats
-from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.acp.runtime import AcpRuntimeDead
+from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.types import AcpEvent, AcpPromptStats
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
 
 def _make_handle(
@@ -336,7 +336,7 @@ class TestAcpSessionProviderErrorPropagation:
     @pytest.mark.asyncio
     async def test_stream_propagates_acp_process_died(self):
         """When runtime dies mid-prompt, AcpProcessDied propagates to caller."""
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         handle = _make_handle()
 
@@ -364,7 +364,7 @@ class TestAcpSessionProviderErrorPropagation:
         it -- AcpRuntimeDead (an AcpRuntimeError, NOT an AcpError) would
         otherwise escape uncaught. Auth-expiry -> AcpAuthRequired is covered by
         TestAcpSessionProviderRound4Parity."""
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         handle = _make_handle()
 
@@ -428,7 +428,7 @@ class TestAcpSessionProviderClientCompat:
         """ensure_ready raises within the AcpError hierarchy (AcpProcessDied) when
         the runtime is dead -- R6: NOT the raw AcpRuntimeError, so callers that
         catch AcpError (chat_runner) see it instead of hitting `except Exception`."""
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         handle = _make_handle()
         runtime = _make_runtime(alive=False)
@@ -639,15 +639,15 @@ class TestAcpSessionProviderRound4Parity:
         provider.client._agent; mirror AcpClient._agent via the runtime."""
         handle = _make_handle()
         runtime = _make_runtime()
-        runtime._agent = "kiroclaw-lite"
+        runtime._agent = "kirocrew-lite"
         provider = AcpSessionProvider(handle, runtime)
-        assert provider._agent == "kiroclaw-lite"
+        assert provider._agent == "kirocrew-lite"
 
     @pytest.mark.asyncio
     async def test_stream_events_translates_runtime_dead(self):
         """#3 -- stream_events delegates to stream() so AcpRuntimeDead is
         translated to AcpProcessDied (chat_runner-catchable), not left to escape."""
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         handle = _make_handle()
 
@@ -666,7 +666,7 @@ class TestAcpSessionProviderRound4Parity:
     @pytest.mark.asyncio
     async def test_stream_events_translates_auth_required(self):
         """#3 -- stream_events -> AcpAuthRequired when runtime saw 'not logged in'."""
-        from kiro_claw.acp.client import AcpAuthRequired
+        from kiro_crew.acp.client import AcpAuthRequired
 
         handle = _make_handle()
 
@@ -714,7 +714,7 @@ class TestAcpSessionProviderRound4Parity:
         tool-interrupted / unresponsive-cancel / stale) must NOT return "" — that
         makes AcpProvider.cancel misread it as a timeout and HARD-KILL the shared
         runtime (killing co-tenants). It must fall back to a benign END_TURN."""
-        from kiro_claw.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
 
         handle = _make_handle()
         handle.wait_turn_done = AsyncMock(return_value=True)
@@ -766,14 +766,14 @@ class TestAcpSessionProviderRuntimeDeadTranslation:
             lambda p: p.set_config_option("effort", "high"),
             lambda p: p.compact(),
             lambda p: p.set_model("m"),
-            lambda p: p.set_mode("kiroclaw"),
+            lambda p: p.set_mode("kirocrew"),
         ],
         ids=["approve_tool", "reject_tool", "send_command",
              "set_config_option", "compact", "set_model", "set_mode"],
     )
     @pytest.mark.asyncio
     async def test_runtime_dead_translates_to_process_died(self, call):
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         handle = _make_handle()
         for m in ("approve_tool", "reject_tool", "send_command",
@@ -789,7 +789,7 @@ class TestAcpSessionProviderRuntimeDeadTranslation:
     async def test_runtime_dead_when_not_logged_in_is_auth_required(self):
         """AcpRuntimeDead + saw_not_logged_in -> AcpAuthRequired (login prompt),
         mirroring stream()'s auth-aware translation."""
-        from kiro_claw.acp.client import AcpAuthRequired
+        from kiro_crew.acp.client import AcpAuthRequired
 
         handle = _make_handle()
         handle.approve_tool = AsyncMock(side_effect=AcpRuntimeDead("dead"))
@@ -801,7 +801,7 @@ class TestAcpSessionProviderRuntimeDeadTranslation:
 
     @pytest.mark.asyncio
     async def test_ensure_ready_dead_not_logged_in_is_auth_required(self):
-        from kiro_claw.acp.client import AcpAuthRequired
+        from kiro_crew.acp.client import AcpAuthRequired
 
         handle = _make_handle()
         runtime = _make_runtime(alive=False)
@@ -820,8 +820,8 @@ class TestAcpSessionProviderContractParity:
         """The base AcpRuntimeError ('turn already active' guard) is OUTSIDE the
         AcpError hierarchy; stream() must translate it to AcpError so callers
         catch it instead of hitting `except Exception`."""
-        from kiro_claw.acp.client import AcpError
-        from kiro_claw.acp.session_handle import AcpRuntimeError
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.acp.session_handle import AcpRuntimeError
 
         handle = _make_handle()
 
@@ -840,7 +840,7 @@ class TestAcpSessionProviderContractParity:
     async def test_steer_translates_runtime_dead(self):
         """steer() must translate AcpRuntimeDead (completes the exception-contract
         invariant across the whole provider surface)."""
-        from kiro_claw.acp.client import AcpProcessDied
+        from kiro_crew.acp.client import AcpProcessDied
 
         handle = _make_handle()
         handle.steer = AsyncMock(side_effect=AcpRuntimeDead("dead"))

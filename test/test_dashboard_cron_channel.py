@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.handlers import api_crons_create
+from kiro_crew.dashboard.handlers import api_crons_create
 
 
 class TestCronCreateChannel:

@@ -19,9 +19,9 @@ from typing import Any, List, Optional
 
 import pytest
 
-from kiro_claw import cli
-from kiro_claw.config.loader import KiroClawConfig, build_provider_factory
-from kiro_claw.platform import (
+from kiro_crew import cli
+from kiro_crew.config.loader import KiroCrewConfig, build_provider_factory
+from kiro_crew.platform import (
     PROFILE_AMAZON,
     PlatformCompositionError,
     async_safe_context_call,
@@ -32,11 +32,11 @@ from kiro_claw.platform import (
 
 
 @pytest.fixture
-def cfg() -> KiroClawConfig:
-    return KiroClawConfig()
+def cfg() -> KiroCrewConfig:
+    return KiroCrewConfig()
 
 
-# Context isolation (reset before+after every test, KIROCLAW_PROFILE=standalone)
+# Context isolation (reset before+after every test, KIROCREW_PROFILE=standalone)
 # is provided by conftest.py's autouse ``_reset_platform_context`` fixture.
 
 
@@ -44,8 +44,8 @@ def cfg() -> KiroClawConfig:
 def _jail_env_isolation(monkeypatch):
     """Clear the jail env markers so a prior test (or the ambient shell) cannot
     flip the re-entry guard / off-switch for this one."""
-    monkeypatch.delenv("KIROCLAW_JAILED", raising=False)
-    monkeypatch.delenv("KIROCLAW_NO_JAIL", raising=False)
+    monkeypatch.delenv("KIROCREW_JAILED", raising=False)
+    monkeypatch.delenv("KIROCREW_NO_JAIL", raising=False)
 
 
 @pytest.fixture
@@ -53,8 +53,8 @@ def stub_child_argv(monkeypatch):
     """Pin ``_child_argv`` to a fixed list so a gate test exercises the on-mode
     floor / re-exec wiring, not live ``sys.argv`` / binary resolution.  Opt-in
     (the ``_child_argv`` tests need the REAL implementation)."""
-    monkeypatch.setattr(cli, "_child_argv", lambda: ["kiroclaw", "chat"])
-    return ["kiroclaw", "chat"]
+    monkeypatch.setattr(cli, "_child_argv", lambda: ["kirocrew", "chat"])
+    return ["kirocrew", "chat"]
 
 
 # ── inline jail backends (test doubles, not in the core) ──
@@ -148,7 +148,7 @@ class _CompositionErrorJail:
         raise PlatformCompositionError("companion jail backend could not compose")
 
 
-def _install_jail(cfg: KiroClawConfig, jail: Any, *, jail_mode: str = "auto") -> None:
+def _install_jail(cfg: KiroCrewConfig, jail: Any, *, jail_mode: str = "auto") -> None:
     """Compose + install a context whose JailProvider is *jail* and agent.jail=*jail_mode*.
 
     Deep-copies the nested ``agent`` dataclass (``dataclasses.replace`` is a
@@ -163,7 +163,7 @@ def _install_jail(cfg: KiroClawConfig, jail: Any, *, jail_mode: str = "auto") ->
 # ── R1: public Default + jail='on' must be a NO-OP, not a brick ──
 
 
-def test_public_default_jail_on_runs_in_process(cfg: KiroClawConfig) -> None:
+def test_public_default_jail_on_runs_in_process(cfg: KiroCrewConfig) -> None:
     """available()==False + mode='on' → gate returns (no sys.exit), runs in-process.
 
     This is the rank-1 blocking regression: the DefaultJailProvider returns None,
@@ -174,7 +174,7 @@ def test_public_default_jail_on_runs_in_process(cfg: KiroClawConfig) -> None:
     cli._jail_reexec_gate("chat", no_jail_flag=False)
 
 
-def test_public_default_jail_auto_runs_in_process(cfg: KiroClawConfig) -> None:
+def test_public_default_jail_auto_runs_in_process(cfg: KiroCrewConfig) -> None:
     _install_jail(cfg, _NoJail(), jail_mode="auto")
     cli._jail_reexec_gate("run", no_jail_flag=False)
 
@@ -182,7 +182,7 @@ def test_public_default_jail_auto_runs_in_process(cfg: KiroClawConfig) -> None:
 # ── R1/R8: a present backend under mode='on' must fail closed ──
 
 
-def test_backend_returns_none_on_mode_fails_closed(cfg: KiroClawConfig) -> None:
+def test_backend_returns_none_on_mode_fails_closed(cfg: KiroCrewConfig) -> None:
     """available()==True + None return + mode='on' → SystemExit(2)."""
     _install_jail(cfg, _RealJailReturnsNone(), jail_mode="on")
     with pytest.raises(SystemExit) as ei:
@@ -190,7 +190,7 @@ def test_backend_returns_none_on_mode_fails_closed(cfg: KiroClawConfig) -> None:
     assert ei.value.code == 2
 
 
-def test_backend_raises_on_mode_fails_closed(cfg: KiroClawConfig) -> None:
+def test_backend_raises_on_mode_fails_closed(cfg: KiroCrewConfig) -> None:
     """available()==True + backend raises + mode='on' → SystemExit(2) (same as None)."""
     _install_jail(cfg, _RealJailRaises(), jail_mode="on")
     with pytest.raises(SystemExit) as ei:
@@ -198,13 +198,13 @@ def test_backend_raises_on_mode_fails_closed(cfg: KiroClawConfig) -> None:
     assert ei.value.code == 2
 
 
-def test_backend_raises_auto_mode_degrades(cfg: KiroClawConfig) -> None:
+def test_backend_raises_auto_mode_degrades(cfg: KiroCrewConfig) -> None:
     """available()==True + backend raises + mode='auto' → run in-process (no exit)."""
     _install_jail(cfg, _RealJailRaises(), jail_mode="auto")
     cli._jail_reexec_gate("chat", no_jail_flag=False)  # no SystemExit
 
 
-def test_backend_returns_none_auto_mode_degrades(cfg: KiroClawConfig) -> None:
+def test_backend_returns_none_auto_mode_degrades(cfg: KiroCrewConfig) -> None:
     _install_jail(cfg, _RealJailReturnsNone(), jail_mode="auto")
     cli._jail_reexec_gate("chat", no_jail_flag=False)  # no SystemExit
 
@@ -212,7 +212,7 @@ def test_backend_returns_none_auto_mode_degrades(cfg: KiroClawConfig) -> None:
 # ── availability-probe failure: fail closed under on, degrade under auto ──
 
 
-def test_flaky_available_on_mode_fails_closed(cfg: KiroClawConfig) -> None:
+def test_flaky_available_on_mode_fails_closed(cfg: KiroCrewConfig) -> None:
     """available() raises a transient error + mode='on' → SystemExit(2).
 
     'availability unknown' must NOT be conflated with 'no backend' under on-mode:
@@ -224,7 +224,7 @@ def test_flaky_available_on_mode_fails_closed(cfg: KiroClawConfig) -> None:
     assert ei.value.code == 2
 
 
-def test_flaky_available_auto_mode_degrades(cfg: KiroClawConfig) -> None:
+def test_flaky_available_auto_mode_degrades(cfg: KiroCrewConfig) -> None:
     """available() raises + mode='auto' → run in-process (no exit)."""
     _install_jail(cfg, _FlakyAvailable(), jail_mode="auto")
     cli._jail_reexec_gate("chat", no_jail_flag=False)  # no SystemExit
@@ -233,10 +233,10 @@ def test_flaky_available_auto_mode_degrades(cfg: KiroClawConfig) -> None:
 # ── PlatformCompositionError MUST propagate through the gate (fail-closed) ──
 
 
-def test_composition_error_propagates_through_gate(cfg: KiroClawConfig, monkeypatch) -> None:
+def test_composition_error_propagates_through_gate(cfg: KiroCrewConfig, monkeypatch) -> None:
     """A PlatformCompositionError from maybe_reexec_into_jail is never swallowed."""
     _install_jail(cfg, _CompositionErrorJail(), jail_mode="on")
-    monkeypatch.setattr(cli, "_child_argv", lambda: ["kiroclaw", "chat"])
+    monkeypatch.setattr(cli, "_child_argv", lambda: ["kirocrew", "chat"])
     with pytest.raises(PlatformCompositionError):
         cli._jail_reexec_gate("chat", no_jail_flag=False)
 
@@ -244,40 +244,40 @@ def test_composition_error_propagates_through_gate(cfg: KiroClawConfig, monkeypa
 # ── successful re-exec propagates the child's exit code ──
 
 
-def test_successful_reexec_propagates_rc(cfg: KiroClawConfig, monkeypatch) -> None:
+def test_successful_reexec_propagates_rc(cfg: KiroCrewConfig, monkeypatch) -> None:
     jail = _RealJailReturns(7)
     _install_jail(cfg, jail, jail_mode="on")
-    monkeypatch.setattr(cli, "_child_argv", lambda: ["kiroclaw", "chat"])
+    monkeypatch.setattr(cli, "_child_argv", lambda: ["kirocrew", "chat"])
     with pytest.raises(SystemExit) as ei:
         cli._jail_reexec_gate("chat", no_jail_flag=False)
     assert ei.value.code == 7
     assert jail.calls and jail.calls[0][1] == "on"
     # The gate must pass the _child_argv() result through to the backend verbatim.
-    assert jail.calls[0][0] == ("kiroclaw", "chat")
+    assert jail.calls[0][0] == ("kirocrew", "chat")
 
 
-# ── R2: --no-jail and KIROCLAW_NO_JAIL both force off (skip a present backend) ──
+# ── R2: --no-jail and KIROCREW_NO_JAIL both force off (skip a present backend) ──
 
 
-def test_no_jail_flag_skips_present_backend(cfg: KiroClawConfig) -> None:
+def test_no_jail_flag_skips_present_backend(cfg: KiroCrewConfig) -> None:
     jail = _RealJailReturns(0)
     _install_jail(cfg, jail, jail_mode="on")
     cli._jail_reexec_gate("chat", no_jail_flag=True)  # no SystemExit
     assert jail.calls == []  # backend never invoked
 
 
-def test_env_no_jail_skips_present_backend(cfg: KiroClawConfig, monkeypatch) -> None:
-    """KIROCLAW_NO_JAIL=1 is the documented env-only bypass and IS read at the gate."""
+def test_env_no_jail_skips_present_backend(cfg: KiroCrewConfig, monkeypatch) -> None:
+    """KIROCREW_NO_JAIL=1 is the documented env-only bypass and IS read at the gate."""
     jail = _RealJailReturns(0)
     _install_jail(cfg, jail, jail_mode="on")
-    monkeypatch.setenv("KIROCLAW_NO_JAIL", "1")
+    monkeypatch.setenv("KIROCREW_NO_JAIL", "1")
     cli._jail_reexec_gate("chat", no_jail_flag=False)  # no SystemExit
     assert jail.calls == []
 
 
 @pytest.mark.parametrize("falsey", ["0", "false", "no", "", " "])
-def test_env_no_jail_falsey_does_not_disable(cfg: KiroClawConfig, monkeypatch, falsey) -> None:
-    """KIROCLAW_NO_JAIL=0/false/no must NOT disable the jail (truthy-set, not bool()).
+def test_env_no_jail_falsey_does_not_disable(cfg: KiroCrewConfig, monkeypatch, falsey) -> None:
+    """KIROCREW_NO_JAIL=0/false/no must NOT disable the jail (truthy-set, not bool()).
 
     A bare ``bool(os.environ.get(...))`` would treat '0' as truthy and silently
     bypass isolation — the regression this guards against.  With jail='on' and a
@@ -285,18 +285,18 @@ def test_env_no_jail_falsey_does_not_disable(cfg: KiroClawConfig, monkeypatch, f
     floor (exit 2), proving the env value did NOT force mode=off.
     """
     _install_jail(cfg, _RealJailReturnsNone(), jail_mode="on")
-    monkeypatch.setenv("KIROCLAW_NO_JAIL", falsey)
+    monkeypatch.setenv("KIROCREW_NO_JAIL", falsey)
     with pytest.raises(SystemExit) as ei:
         cli._jail_reexec_gate("chat", no_jail_flag=False)
     assert ei.value.code == 2
 
 
 @pytest.mark.parametrize("truthy", ["1", "true", "TRUE", "On", "YES", " on ", "yes"])
-def test_env_no_jail_truthy_variants_disable(cfg: KiroClawConfig, monkeypatch, truthy) -> None:
+def test_env_no_jail_truthy_variants_disable(cfg: KiroCrewConfig, monkeypatch, truthy) -> None:
     """Case/space-insensitive truthy values DO disable the jail (the .strip().lower() path)."""
     jail = _RealJailReturns(0)
     _install_jail(cfg, jail, jail_mode="on")
-    monkeypatch.setenv("KIROCLAW_NO_JAIL", truthy)
+    monkeypatch.setenv("KIROCREW_NO_JAIL", truthy)
     cli._jail_reexec_gate("chat", no_jail_flag=False)  # no SystemExit
     assert jail.calls == []  # backend never invoked
 
@@ -304,7 +304,7 @@ def test_env_no_jail_truthy_variants_disable(cfg: KiroClawConfig, monkeypatch, t
 # ── off-mode + re-entry guard + normalize ──
 
 
-def test_off_mode_skips_present_backend(cfg: KiroClawConfig) -> None:
+def test_off_mode_skips_present_backend(cfg: KiroCrewConfig) -> None:
     """A persisted agent.jail='off' returns before the probe even with a backend."""
     jail = _RealJailReturns(0)
     _install_jail(cfg, jail, jail_mode="off")
@@ -312,7 +312,7 @@ def test_off_mode_skips_present_backend(cfg: KiroClawConfig) -> None:
     assert jail.calls == []  # never probed/jailed
 
 
-def test_garbage_mode_normalizes_to_auto(cfg: KiroClawConfig) -> None:
+def test_garbage_mode_normalizes_to_auto(cfg: KiroCrewConfig) -> None:
     """An off-spec persisted mode is re-normalized to 'auto' at the gate (deny-by-default).
 
     Non-vacuous: the backend records the mode it was handed.  If the gate passed
@@ -328,8 +328,8 @@ def test_garbage_mode_normalizes_to_auto(cfg: KiroClawConfig) -> None:
 
 
 @pytest.mark.parametrize("marker", ["1", "jailed", "ns-42", "true", "0", "false"])
-def test_reentry_marker_short_circuits(cfg: KiroClawConfig, monkeypatch, marker) -> None:
-    """KIROCLAW_JAILED PRESENT (any non-empty value) → gate returns without re-jailing,
+def test_reentry_marker_short_circuits(cfg: KiroCrewConfig, monkeypatch, marker) -> None:
+    """KIROCREW_JAILED PRESENT (any non-empty value) → gate returns without re-jailing,
     even under jail='on' with a None-returning backend (otherwise the child deadlocks).
 
     Parametrized across truthy AND non-truthy values: re-entry is detected by
@@ -344,8 +344,8 @@ def test_reentry_marker_short_circuits(cfg: KiroClawConfig, monkeypatch, marker)
     assert jail.calls == []  # never re-probed/re-jailed the child
 
 
-def test_empty_marker_does_not_short_circuit(cfg: KiroClawConfig, monkeypatch) -> None:
-    """An EMPTY KIROCLAW_JAILED is NOT 'already jailed' (presence = non-empty), so the
+def test_empty_marker_does_not_short_circuit(cfg: KiroCrewConfig, monkeypatch) -> None:
+    """An EMPTY KIROCREW_JAILED is NOT 'already jailed' (presence = non-empty), so the
     gate still runs — proving the presence check ignores a blank value."""
     jail = _RealJailReturns(5)
     _install_jail(cfg, jail, jail_mode="on")
@@ -356,8 +356,8 @@ def test_empty_marker_does_not_short_circuit(cfg: KiroClawConfig, monkeypatch) -
     assert jail.calls  # backend WAS invoked
 
 
-def test_marker_restored_after_degrade(cfg: KiroClawConfig, monkeypatch) -> None:
-    """try/finally invariant: the gate must NOT leak KIROCLAW_JAILED after the backend
+def test_marker_restored_after_degrade(cfg: KiroCrewConfig, monkeypatch) -> None:
+    """try/finally invariant: the gate must NOT leak KIROCREW_JAILED after the backend
     RETURNS (no re-exec).  A prior value is restored; an unset stays unset."""
     import os
 
@@ -379,7 +379,7 @@ def test_marker_restored_after_degrade(cfg: KiroClawConfig, monkeypatch) -> None
     assert os.environ.get(cli._JAILED_ENV_MARKER) == ""
 
 
-def test_marker_restored_before_on_mode_exit(cfg: KiroClawConfig, monkeypatch) -> None:
+def test_marker_restored_before_on_mode_exit(cfg: KiroCrewConfig, monkeypatch) -> None:
     """finally runs before the on-mode sys.exit(2), so the marker is restored even on
     the fail-closed path (no leak into a parent that catches SystemExit)."""
     import os
@@ -393,7 +393,7 @@ def test_marker_restored_before_on_mode_exit(cfg: KiroClawConfig, monkeypatch) -
 
 def test_normalize_jail_unit() -> None:
     """_normalize_jail: valid modes pass through; anything else → 'auto' (deny-by-default)."""
-    from kiro_claw.config.loader import _normalize_jail
+    from kiro_crew.config.loader import _normalize_jail
 
     assert _normalize_jail("on") == "on"
     assert _normalize_jail("off") == "off"
@@ -413,26 +413,26 @@ def test_jailed_commands_cover_agent_bearing_set() -> None:
     assert "gateway" not in cli._JAILED_COMMANDS  # excluded (execv self-update)
 
 
-# ── R5: _child_argv reuses _resolve_kiroclaw_bin incl. the sentinel branch ──
+# ── R5: _child_argv reuses _resolve_kirocrew_bin incl. the sentinel branch ──
 
 
 def test_child_argv_sentinel_falls_back_to_module(monkeypatch) -> None:
-    """When _resolve_kiroclaw_bin returns the bare 'kiroclaw' sentinel (no usable
-    binary), _child_argv falls back to ``python -m kiro_claw`` with sys.argv[1:]."""
-    import kiro_claw.agent as agent_mod
+    """When _resolve_kirocrew_bin returns the bare 'kirocrew' sentinel (no usable
+    binary), _child_argv falls back to ``python -m kiro_crew`` with sys.argv[1:]."""
+    import kiro_crew.agent as agent_mod
 
-    monkeypatch.setattr(agent_mod, "_resolve_kiroclaw_bin", lambda: "kiroclaw")
-    monkeypatch.setattr(cli.sys, "argv", ["kiroclaw", "chat", "--model", "x"])
-    assert cli._child_argv() == [cli.sys.executable, "-m", "kiro_claw", "chat", "--model", "x"]
+    monkeypatch.setattr(agent_mod, "_resolve_kirocrew_bin", lambda: "kirocrew")
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "chat", "--model", "x"])
+    assert cli._child_argv() == [cli.sys.executable, "-m", "kiro_crew", "chat", "--model", "x"]
 
 
 def test_child_argv_resolved_path_used(monkeypatch) -> None:
     """A resolved absolute path is used verbatim as argv[0], with sys.argv[1:]."""
-    import kiro_claw.agent as agent_mod
+    import kiro_crew.agent as agent_mod
 
-    monkeypatch.setattr(agent_mod, "_resolve_kiroclaw_bin", lambda: "/opt/venv/bin/kiroclaw")
-    monkeypatch.setattr(cli.sys, "argv", ["kiroclaw", "run", "TASK.md"])
-    assert cli._child_argv() == ["/opt/venv/bin/kiroclaw", "run", "TASK.md"]
+    monkeypatch.setattr(agent_mod, "_resolve_kirocrew_bin", lambda: "/opt/venv/bin/kirocrew")
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "run", "TASK.md"])
+    assert cli._child_argv() == ["/opt/venv/bin/kirocrew", "run", "TASK.md"]
 
 
 # ── R6/R3: --no-jail argparse plumbing (parent-parser + SUPPRESS, both orderings) ──
@@ -452,7 +452,7 @@ def test_child_argv_resolved_path_used(monkeypatch) -> None:
     ],
 )
 def test_no_jail_flag_accepted_in_both_orderings(monkeypatch, argv) -> None:
-    """`kiroclaw --no-jail <cmd>` AND `kiroclaw <cmd> --no-jail` both set no_jail=True
+    """`kirocrew --no-jail <cmd>` AND `kirocrew <cmd> --no-jail` both set no_jail=True
     for every jailed command, and the gate is invoked with that flag.
 
     Drives the REAL ``cli.main`` parser (so it guards the parent-parser +
@@ -468,7 +468,7 @@ def test_no_jail_flag_accepted_in_both_orderings(monkeypatch, argv) -> None:
 
     monkeypatch.setattr(cli, "boot_platform", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_jail_reexec_gate", _fake_gate)
-    monkeypatch.setattr(cli.sys, "argv", ["kiroclaw", *argv])
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", *argv])
     with pytest.raises(SystemExit) as ei:
         cli.main()
     assert ei.value.code == 0
@@ -486,7 +486,7 @@ def test_no_jail_default_false_when_absent(monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "boot_platform", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_jail_reexec_gate", _fake_gate)
-    monkeypatch.setattr(cli.sys, "argv", ["kiroclaw", "chat"])
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "chat"])
     with pytest.raises(SystemExit):
         cli.main()
     assert captured.get("no_jail") is False
@@ -513,7 +513,7 @@ class _CompositionErrorProviders:
         return None
 
 
-def test_build_provider_factory_degrades_to_public(cfg: KiroClawConfig) -> None:
+def test_build_provider_factory_degrades_to_public(cfg: KiroCrewConfig) -> None:
     """A transient providers.create_factory error degrades to cfg.create_provider_factory(),
     and the LAZY fallback_factory is invoked exactly once (no eager double-build)."""
     sentinel = object()
@@ -532,7 +532,7 @@ def test_build_provider_factory_degrades_to_public(cfg: KiroClawConfig) -> None:
     assert calls["n"] == 1
 
 
-def test_build_provider_factory_reraises_composition_error(cfg: KiroClawConfig) -> None:
+def test_build_provider_factory_reraises_composition_error(cfg: KiroCrewConfig) -> None:
     """A PlatformCompositionError from the seam MUST propagate (fail-closed)."""
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     set_context(dataclasses.replace(base, providers=_CompositionErrorProviders()))
@@ -540,7 +540,7 @@ def test_build_provider_factory_reraises_composition_error(cfg: KiroClawConfig) 
         build_provider_factory(cfg)
 
 
-def test_build_provider_factory_default_delegates_to_cfg(cfg: KiroClawConfig) -> None:
+def test_build_provider_factory_default_delegates_to_cfg(cfg: KiroCrewConfig) -> None:
     """Public Default registry delegates to cfg.create_provider_factory() (identity).
 
     create_provider_factory returns a FRESH closure each call, so object identity
@@ -731,8 +731,8 @@ async def test_async_safe_context_call_requires_a_fallback() -> None:
 # ── DashboardContributor / Jail Default no-op identity ──
 
 
-def test_default_dashboard_contributor_is_noop(cfg: KiroClawConfig) -> None:
-    from kiro_claw.platform.defaults import DefaultDashboardContributor
+def test_default_dashboard_contributor_is_noop(cfg: KiroCrewConfig) -> None:
+    from kiro_crew.platform.defaults import DefaultDashboardContributor
 
     d = DefaultDashboardContributor()
     assert d.contribute_routes(object()) is None
@@ -740,9 +740,9 @@ def test_default_dashboard_contributor_is_noop(cfg: KiroClawConfig) -> None:
 
 
 @pytest.mark.asyncio
-async def test_default_dashboard_services_symmetric_app(cfg: KiroClawConfig) -> None:
+async def test_default_dashboard_services_symmetric_app(cfg: KiroCrewConfig) -> None:
     """stop_services takes the same app handle as start_services (symmetric)."""
-    from kiro_claw.platform.defaults import DefaultDashboardContributor
+    from kiro_crew.platform.defaults import DefaultDashboardContributor
 
     d = DefaultDashboardContributor()
     sentinel = object()
@@ -751,11 +751,11 @@ async def test_default_dashboard_services_symmetric_app(cfg: KiroClawConfig) -> 
 
 
 def test_default_jail_provider_noop() -> None:
-    from kiro_claw.platform.defaults import DefaultJailProvider
+    from kiro_crew.platform.defaults import DefaultJailProvider
 
     j = DefaultJailProvider()
     assert j.available() is False
-    assert j.maybe_reexec_into_jail(["kiroclaw", "chat"], "on") is None
+    assert j.maybe_reexec_into_jail(["kirocrew", "chat"], "on") is None
     assert isinstance(j.status_detail(), str)
 
 
@@ -785,9 +785,9 @@ class _RaisingKnowledge:
         raise self._exc
 
 
-def _merge_connectors(cfg: KiroClawConfig):
+def _merge_connectors(cfg: KiroCrewConfig):
     """Mirror of the production connector-merge (built-ins first, then the seam)."""
-    from kiro_claw.platform import current_context, safe_context_call
+    from kiro_crew.platform import current_context, safe_context_call
 
     connectors = {"local_folder": object(), "obsidian_vault": object()}
 
@@ -799,7 +799,7 @@ def _merge_connectors(cfg: KiroClawConfig):
     return connectors
 
 
-def test_knowledge_extra_connectors_merges_after_builtins(cfg: KiroClawConfig) -> None:
+def test_knowledge_extra_connectors_merges_after_builtins(cfg: KiroCrewConfig) -> None:
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     extra = {"quip": object()}
     set_context(dataclasses.replace(base, knowledge=_ExtraConnectorsProvider(extra)))
@@ -807,14 +807,14 @@ def test_knowledge_extra_connectors_merges_after_builtins(cfg: KiroClawConfig) -
     assert set(merged) == {"local_folder", "obsidian_vault", "quip"}
 
 
-def test_knowledge_extra_connectors_degrades_to_builtins(cfg: KiroClawConfig) -> None:
+def test_knowledge_extra_connectors_degrades_to_builtins(cfg: KiroCrewConfig) -> None:
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     set_context(dataclasses.replace(base, knowledge=_RaisingKnowledge(RuntimeError("boom"))))
     merged = _merge_connectors(cfg)
     assert set(merged) == {"local_folder", "obsidian_vault"}  # built-ins only
 
 
-def test_knowledge_extra_connectors_reraises_composition_error(cfg: KiroClawConfig) -> None:
+def test_knowledge_extra_connectors_reraises_composition_error(cfg: KiroCrewConfig) -> None:
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     set_context(
         dataclasses.replace(base, knowledge=_RaisingKnowledge(PlatformCompositionError("x")))
@@ -823,8 +823,8 @@ def test_knowledge_extra_connectors_reraises_composition_error(cfg: KiroClawConf
         _merge_connectors(cfg)
 
 
-def test_default_knowledge_provider_empty(cfg: KiroClawConfig) -> None:
-    from kiro_claw.platform.defaults import DefaultKnowledgeProvider
+def test_default_knowledge_provider_empty(cfg: KiroCrewConfig) -> None:
+    from kiro_crew.platform.defaults import DefaultKnowledgeProvider
 
     assert DefaultKnowledgeProvider().extra_connectors(cfg) == {}
 
@@ -854,8 +854,8 @@ class _RaisingDashboard:
         raise self._exc
 
 
-def test_dashboard_mwinit_handler_degrades_to_stub(cfg: KiroClawConfig) -> None:
-    from kiro_claw.platform import current_context, safe_context_call
+def test_dashboard_mwinit_handler_degrades_to_stub(cfg: KiroCrewConfig) -> None:
+    from kiro_crew.platform import current_context, safe_context_call
 
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     set_context(dataclasses.replace(base, dashboard=_RaisingDashboard(RuntimeError("boom"))))
@@ -871,8 +871,8 @@ def test_dashboard_mwinit_handler_degrades_to_stub(cfg: KiroClawConfig) -> None:
     assert handler is stub  # transient error → keep the built-in stub
 
 
-def test_dashboard_contribute_routes_reraises_composition_error(cfg: KiroClawConfig) -> None:
-    from kiro_claw.platform import current_context, safe_context_call
+def test_dashboard_contribute_routes_reraises_composition_error(cfg: KiroCrewConfig) -> None:
+    from kiro_crew.platform import current_context, safe_context_call
 
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     set_context(
@@ -887,8 +887,8 @@ def test_dashboard_contribute_routes_reraises_composition_error(cfg: KiroClawCon
 
 
 @pytest.mark.asyncio
-async def test_dashboard_start_services_degrades(cfg: KiroClawConfig) -> None:
-    from kiro_claw.platform import async_safe_context_call, current_context
+async def test_dashboard_start_services_degrades(cfg: KiroCrewConfig) -> None:
+    from kiro_crew.platform import async_safe_context_call, current_context
 
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     set_context(dataclasses.replace(base, dashboard=_RaisingDashboard(RuntimeError("boom"))))
@@ -902,8 +902,8 @@ async def test_dashboard_start_services_degrades(cfg: KiroClawConfig) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dashboard_start_services_reraises_composition_error(cfg: KiroClawConfig) -> None:
-    from kiro_claw.platform import async_safe_context_call, current_context
+async def test_dashboard_start_services_reraises_composition_error(cfg: KiroCrewConfig) -> None:
+    from kiro_crew.platform import async_safe_context_call, current_context
 
     base = build_default_context(cfg, profile=PROFILE_AMAZON)
     set_context(
@@ -934,7 +934,7 @@ def _read_source(modpath: str) -> str:
 def test_knowledge_extra_connectors_site_uses_safe_context_call() -> None:
     """dashboard/handlers/knowledge.py must route extra_connectors through the
     fail-closed shim (not a bare except that would swallow composition errors)."""
-    src = _read_source("kiro_claw.dashboard.handlers.knowledge")
+    src = _read_source("kiro_crew.dashboard.handlers.knowledge")
     assert "extra_connectors" in src
     assert "safe_context_call" in src
     # The merge must NOT have regressed to swallowing everything.
@@ -945,7 +945,7 @@ def test_dashboard_contributor_sites_use_safe_context_call() -> None:
     """dashboard/server.py must wrap the DashboardContributor seam calls in the
     fail-closed shims: sync ``safe_context_call`` for mwinit_handler /
     contribute_routes, async ``async_safe_context_call`` for start/stop_services."""
-    src = _read_source("kiro_claw.dashboard.server")
+    src = _read_source("kiro_crew.dashboard.server")
     for sym in ("mwinit_handler", "contribute_routes", "start_services", "stop_services"):
         assert sym in src, f"production site for {sym} disappeared"
     assert "safe_context_call(" in src

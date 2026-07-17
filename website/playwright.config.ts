@@ -47,7 +47,7 @@ export default defineConfig({
     },
   ],
 
-  // Note: Make sure kiroclaw gateway is running on port 5476 before running tests
-  // Run: kiroclaw gateway
+  // Note: Make sure kirocrew gateway is running on port 5476 before running tests
+  // Run: kirocrew gateway
   webServer: undefined,
 })

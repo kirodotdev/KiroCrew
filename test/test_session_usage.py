@@ -1,5 +1,5 @@
 """Tests for the credit-usage helpers in
-kiro_claw.dashboard.handlers.sessions: _parse_usage, _redact_strings, and the
+kiro_crew.dashboard.handlers.sessions: _parse_usage, _redact_strings, and the
 _fetch_usage_bg gating/redaction logic.
 """
 from __future__ import annotations
@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import kiro_claw.dashboard.handlers.sessions as sessions_mod
-from kiro_claw.dashboard.handlers.sessions import (
+import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.dashboard.handlers.sessions import (
     _normalize_text_usage,
     _parse_usage,
     _redact_strings,
@@ -102,7 +102,7 @@ class TestFetchUsageBg:
         # raises before the subprocess is spawned, making proc=None and skipping
         # the reap path that several tests assert on.
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.sessions.wrap_argv",
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
             lambda argv, **k: (list(argv), None),
         )
         yield

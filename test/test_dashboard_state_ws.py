@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ def sync_event_loop():
 
 @pytest.fixture
 def state(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_claw.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     return DashboardState(
         sessions=MagicMock(count=0),
         crons=MagicMock(),
@@ -114,14 +114,14 @@ class TestChatSlotStopState:
     """Tests for _ChatSlot._stop_state and _stopping property."""
 
     def test_stop_state_default_idle(self) -> None:
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot("s1")
         assert slot._stop_state == "idle"
         assert slot._stopping is False
 
     def test_stopping_property_reflects_stop_state(self) -> None:
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot("s1")
         slot._stop_state = "soft_pending"
@@ -132,7 +132,7 @@ class TestChatSlotStopState:
         assert slot._stopping is False
 
     def test_stopping_setter_compat(self) -> None:
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot("s1")
         slot._stopping = True
@@ -141,7 +141,7 @@ class TestChatSlotStopState:
         assert slot._stop_state == "idle"
 
     def test_to_dict_includes_stop_state(self) -> None:
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot("s1")
         d = slot.to_dict()
@@ -240,7 +240,7 @@ class TestCompactCallbackWiring:
     async def test_callback_broadcast_runs_even_if_append_fails(
         self, state: DashboardState, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         ws = MagicMock(closed=False)
         ws.send_str = AsyncMock()
@@ -277,20 +277,20 @@ class TestCompactCallbackWiring:
 
 def test_folder_breadcrumb_walks_full_ancestry(state):
     state._folders = [
-        {"id": "a", "name": "KiroClaw", "parent_id": ""},
+        {"id": "a", "name": "KiroCrew", "parent_id": ""},
         {"id": "b", "name": "Backend", "parent_id": "a"},
         {"id": "c", "name": "auth-refactor", "parent_id": "b"},
     ]
-    assert state.folder_breadcrumb("c") == "KiroClaw › Backend › auth-refactor"
+    assert state.folder_breadcrumb("c") == "KiroCrew › Backend › auth-refactor"
 
 
 def test_folder_breadcrumb_single_root(state):
-    state._folders = [{"id": "a", "name": "KiroClaw", "parent_id": ""}]
-    assert state.folder_breadcrumb("a") == "KiroClaw"
+    state._folders = [{"id": "a", "name": "KiroCrew", "parent_id": ""}]
+    assert state.folder_breadcrumb("a") == "KiroCrew"
 
 
 def test_folder_breadcrumb_empty_or_unknown_id(state):
-    state._folders = [{"id": "a", "name": "KiroClaw", "parent_id": ""}]
+    state._folders = [{"id": "a", "name": "KiroCrew", "parent_id": ""}]
     assert state.folder_breadcrumb("") == ""
     assert state.folder_breadcrumb("missing") == ""
 

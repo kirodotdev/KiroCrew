@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-import kiro_claw.dashboard.handlers._shared as _shared
+import kiro_crew.dashboard.handlers._shared as _shared
 
 
 class _FakeState:
@@ -19,7 +19,7 @@ def _no_extra_paths():
 
 @pytest.fixture(autouse=True)
 def _isolate_config():
-    with patch.object(_shared.KiroClawConfig, "load", side_effect=_no_extra_paths):
+    with patch.object(_shared.KiroCrewConfig, "load", side_effect=_no_extra_paths):
         yield
 
 
@@ -29,17 +29,17 @@ def test_resolve_skill_root_resolves_aim_nested_key(tmp_path, monkeypatch):
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("# hi", encoding="utf-8")
 
-    empty_kiroclaw = tmp_path / "kiroclaw_skills"
-    empty_kiroclaw.mkdir()
-    monkeypatch.setattr(_shared, "skills_dir", lambda: empty_kiroclaw)
+    empty_kirocrew = tmp_path / "kirocrew_skills"
+    empty_kirocrew.mkdir()
+    monkeypatch.setattr(_shared, "skills_dir", lambda: empty_kirocrew)
     monkeypatch.setattr(_shared, "aim_skills_dir", lambda: aim_root)
 
     resolved = _shared._resolve_skill_root("Pkg/my-skill", _FakeState())
     assert resolved == skill_dir.resolve()
 
 
-def test_resolve_skill_root_still_prefers_kiroclaw_root(tmp_path, monkeypatch):
-    mc_root = tmp_path / "kiroclaw_skills"
+def test_resolve_skill_root_still_prefers_kirocrew_root(tmp_path, monkeypatch):
+    mc_root = tmp_path / "kirocrew_skills"
     (mc_root / "local-skill").mkdir(parents=True)
     (mc_root / "local-skill" / "SKILL.md").write_text("# local", encoding="utf-8")
     aim_root = tmp_path / "aim_skills"
@@ -67,7 +67,7 @@ def test_resolve_skill_root_finds_skill_in_extra_paths(tmp_path, monkeypatch):
     (extra_root / "custom-skill").mkdir(parents=True)
     (extra_root / "custom-skill" / "SKILL.md").write_text("# custom", encoding="utf-8")
 
-    empty_mc = tmp_path / "kiroclaw_skills"
+    empty_mc = tmp_path / "kirocrew_skills"
     empty_mc.mkdir()
     empty_aim = tmp_path / "aim_skills"
     empty_aim.mkdir()
@@ -78,7 +78,7 @@ def test_resolve_skill_root_finds_skill_in_extra_paths(tmp_path, monkeypatch):
         class skills:  # noqa: N801
             extra_paths = [str(extra_root)]
 
-    with patch.object(_shared.KiroClawConfig, "load", return_value=_FakeConfig()):
+    with patch.object(_shared.KiroCrewConfig, "load", return_value=_FakeConfig()):
         resolved = _shared._resolve_skill_root("custom-skill", _FakeState())
     assert resolved == (extra_root / "custom-skill").resolve()
 
@@ -96,7 +96,7 @@ def test_resolve_skill_root_rejects_tilde_prefix(tmp_path, monkeypatch):
 def test_resolve_skill_root_extra_paths_take_precedence_over_aim(tmp_path, monkeypatch):
     # Same skill name in BOTH an extra path and the AIM root must resolve to
     # the extra path, matching SkillsLoader.load_skill() precedence
-    # (kiroclaw -> extra_paths -> aim).
+    # (kirocrew -> extra_paths -> aim).
     extra_root = tmp_path / "extra_skills"
     (extra_root / "dup-skill").mkdir(parents=True)
     (extra_root / "dup-skill" / "SKILL.md").write_text("# extra", encoding="utf-8")
@@ -105,7 +105,7 @@ def test_resolve_skill_root_extra_paths_take_precedence_over_aim(tmp_path, monke
     (aim_root / "dup-skill").mkdir(parents=True)
     (aim_root / "dup-skill" / "SKILL.md").write_text("# aim", encoding="utf-8")
 
-    empty_mc = tmp_path / "kiroclaw_skills"
+    empty_mc = tmp_path / "kirocrew_skills"
     empty_mc.mkdir()
     monkeypatch.setattr(_shared, "skills_dir", lambda: empty_mc)
     monkeypatch.setattr(_shared, "aim_skills_dir", lambda: aim_root)
@@ -114,6 +114,6 @@ def test_resolve_skill_root_extra_paths_take_precedence_over_aim(tmp_path, monke
         class skills:  # noqa: N801
             extra_paths = [str(extra_root)]
 
-    with patch.object(_shared.KiroClawConfig, "load", return_value=_FakeConfig()):
+    with patch.object(_shared.KiroCrewConfig, "load", return_value=_FakeConfig()):
         resolved = _shared._resolve_skill_root("dup-skill", _FakeState())
     assert resolved == (extra_root / "dup-skill").resolve()

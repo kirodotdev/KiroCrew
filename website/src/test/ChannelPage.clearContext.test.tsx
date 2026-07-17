@@ -16,7 +16,7 @@ const mockChannel = {
   id: 'ch1',
   topic: 'Test Channel',
   members: {
-    a1: { id: 'a1', role: 'Researcher', agent_name: 'kiroclaw', state: 'listening', listen_mode: 'mention', approval_policy: 'writes', session_key: 'k1' },
+    a1: { id: 'a1', role: 'Researcher', agent_name: 'kirocrew', state: 'listening', listen_mode: 'mention', approval_policy: 'writes', session_key: 'k1' },
   },
   messages: [],
 }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kiro_claw.slack.format import (
+from kiro_crew.slack.format import (
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
     build_options_blocks,

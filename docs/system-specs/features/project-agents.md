@@ -10,7 +10,7 @@
 
 kiro-cli supports per-project agent configs in `.kiro/agents/`. A developer can write a `dev.json` agent tailored to their codebase — with the right steering files, MCP tools, and system prompt — and kiro-cli picks it up automatically when the project directory is the working directory.
 
-KiroClaw's dashboard only shows global agents (`~/.kiro/agents/`). Users with project-specific agents must manually copy configs globally or context-switch manually. This is friction.
+KiroCrew's dashboard only shows global agents (`~/.kiro/agents/`). Users with project-specific agents must manually copy configs globally or context-switch manually. This is friction.
 
 ---
 
@@ -34,10 +34,10 @@ KiroClaw's dashboard only shows global agents (`~/.kiro/agents/`). Users with pr
 
 Project agents are discovered via two mechanisms:
 
-1. **User-initiated scan** — user clicks "Scan Projects" and provides a root directory. KiroClaw walks the tree looking for `.kiro/agents/*.json` files and registers found projects.
-2. **Project switch** — when a user sets a session's project path (chat, CLI `--cwd`, or folder `project_dir`), KiroClaw immediately reads that project's `.kiro/agents/` and registers it.
+1. **User-initiated scan** — user clicks "Scan Projects" and provides a root directory. KiroCrew walks the tree looking for `.kiro/agents/*.json` files and registers found projects.
+2. **Project switch** — when a user sets a session's project path (chat, CLI `--cwd`, or folder `project_dir`), KiroCrew immediately reads that project's `.kiro/agents/` and registers it.
 
-Discovered project agents are stored in a persistent registry (`~/.kiroclaw/project_agents.json`) and shown in the agent picker alongside global agents. The picker always shows the complete arsenal — current project's agents are selectable, other projects' agents are visible but grayed out.
+Discovered project agents are stored in a persistent registry (`~/.kirocrew/project_agents.json`) and shown in the agent picker alongside global agents. The picker always shows the complete arsenal — current project's agents are selectable, other projects' agents are visible but grayed out.
 
 **Why a persistent registry?** The picker must show your complete agent arsenal at all times, regardless of which session is currently active. Lazy discovery (reading only the active session's project dir) would mean agents from other projects disappear when you switch sessions — an inconsistent picker that breaks the "complete arsenal" mental model. The registry is the display cache that makes all registered project agents always visible.
 
@@ -50,17 +50,17 @@ Discovered project agents are stored in a persistent registry (`~/.kiroclaw/proj
 ### Flow 1: First-time setup
 
 1. User has `/projects/myrepo/.kiro/agents/dev.json`
-2. User opens the KiroClaw dashboard
+2. User opens the KiroCrew dashboard
 3. User clicks "Scan Projects" on the /agents or /capabilities page
 4. User enters `~/projects` (or browses to it)
-5. KiroClaw finds `dev.json`, registers it
+5. KiroCrew finds `dev.json`, registers it
 6. `dev` appears in the agent dropdown
 
 ### Flow 2: Natural discovery on project switch
 
 1. User opens a chat session
 2. User sets project path to `/projects/myrepo`
-3. KiroClaw immediately discovers agents in that project
+3. KiroCrew immediately discovers agents in that project
 4. `dev` appears in the agent dropdown for that session
 
 ### Flow 3: Switching to an agent from a different project
@@ -89,7 +89,7 @@ Discovered project agents are stored in a persistent registry (`~/.kiroclaw/proj
 
 | Source | Location | Who creates | `source` value |
 |--------|----------|-------------|----------------|
-| `kiroclaw` | `~/.kiro/agents/kiroclaw*.json` | KiroClaw installer | `"kiroclaw"` |
+| `kirocrew` | `~/.kiro/agents/kirocrew*.json` | KiroCrew installer | `"kirocrew"` |
 | `aim` | `~/.kiro/agents/<Pkg>-<agent>.json` | AIM installer | `"aim"` |
 | `builtin` | `~/.kiro/agents/<agent>.json` | User | `"builtin"` |
 | **`project`** | `<project>/.kiro/agents/<agent>.json` | User / project repo | `"project"` |
@@ -100,7 +100,7 @@ Global sources live in `~/.kiro/agents/` and are synced into `config.json`. Proj
 
 ## 7. Data Model
 
-### Registry (`~/.kiroclaw/project_agents.json`)
+### Registry (`~/.kirocrew/project_agents.json`)
 
 ```json
 {
@@ -154,7 +154,7 @@ Every surface that stores an agent binding persists `(agent_name, project_path)`
 
 ### Scan
 
-`POST /api/agents/rescan` accepts a root path. KiroClaw walks the directory tree looking for `.kiro/agents/*.json` files:
+`POST /api/agents/rescan` accepts a root path. KiroCrew walks the directory tree looking for `.kiro/agents/*.json` files:
 
 - Writes each found project to the registry incrementally (not buffered — agents appear in the picker as they're found, and a cancelled/truncated scan still preserves all discovered agents)
 - Prunes: hidden dirs (except `.kiro`), `node_modules`, `build`, `vendor`, `.cargo`, `Library`, `Pods`, and other common large trees
@@ -267,13 +267,13 @@ On `JSONDecodeError` (corrupt registry): log `WARNING`, return `{}`, surface UI 
 | Channel settings | `/channels` | `AgentSelector` via `ChannelPage` |
 | Projects page | `/projects` | `AgentSelector` via `ProjectsPage` |
 | Schedule page | `/schedule` | `AgentSelector` via `SchedulePage` |
-| Settings default agent | Settings → Overview | `AgentSelector` via `KiroClawCfgTab` — project agents hidden; note shown; API rejects |
+| Settings default agent | Settings → Overview | `AgentSelector` via `KiroCrewCfgTab` — project agents hidden; note shown; API rejects |
 
 ### Discovery surfaces
 
 | Location | Route | Component |
 |----------|-------|-----------|
-| Platform → Agents | `/agents` | `KiroClawAgentsPage` |
+| Platform → Agents | `/agents` | `KiroCrewAgentsPage` |
 | Capabilities → Agents | `/capabilities?tab=agents` | `AgentsPage` |
 
 ### Display surfaces

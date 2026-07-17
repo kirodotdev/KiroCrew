@@ -1,8 +1,8 @@
-# Installing & Testing KiroClaw on Windows
+# Installing & Testing KiroCrew on Windows
 
-KiroClaw runs **natively on Windows** (Mesh-2329) as a Python **source install**.
+KiroCrew runs **natively on Windows** (Mesh-2329) as a Python **source install**.
 The cross-platform process / signal / file-lock / metrics behavior is routed
-through `kiro_claw.platform_compat`, so macOS + Linux behavior is unchanged and
+through `kiro_crew.platform_compat`, so macOS + Linux behavior is unchanged and
 the same code path also runs on Windows.
 
 ## Prerequisites
@@ -16,7 +16,7 @@ the same code path also runs on Windows.
 
 No admin is required — everything installs user-scoped under `%USERPROFILE%`.
 
-Avoid the Microsoft Store `python` alias stub: KiroClaw's interpreter finder
+Avoid the Microsoft Store `python` alias stub: KiroCrew's interpreter finder
 (`platform_compat.find_python_interpreter`) rejects it, but a Store-only `python`
 on `PATH` can still confuse other tooling. Prefer a real CPython install.
 
@@ -25,12 +25,12 @@ on `PATH` can still confuse other tooling. Prefer a real CPython install.
 From a clone, in PowerShell:
 
 ```powershell
-git clone https://github.com/kirodotdev-labs/kiroclaw.git
-cd kiroclaw
+git clone https://github.com/kirodotdev/KiroCrew.git
+cd kirocrew
 
 # Build the frontend first (optional but recommended) so the dashboard is bundled:
 #   cd website; npm install; npm run build; cd ..
-#   Copy-Item -Recurse website\dist src\kiro_claw\static\dist
+#   Copy-Item -Recurse website\dist src\kiro_crew\static\dist
 
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -44,15 +44,15 @@ pip install -e ".[voice]"
 Then:
 
 ```powershell
-kiroclaw setup
-kiroclaw gateway
+kirocrew setup
+kirocrew gateway
 ```
 
-`kiroclaw` / `kiroclaw-browse` land in `.venv\Scripts\`. If a launched (non-shell)
-gateway can't find the built-in `kiroclaw-cron` / `kiroclaw-core` MCP servers,
+`kirocrew` / `kirocrew-browse` land in `.venv\Scripts\`. If a launched (non-shell)
+gateway can't find the built-in `kirocrew-cron` / `kirocrew-core` MCP servers,
 that dir is appended to the MCP spawn `PATH` automatically
 (`env.augmented_path`), and the managed-server invocation falls back to
-`python -m kiro_claw <sub>` when the `kiroclaw.exe` wrapper isn't resolvable.
+`python -m kiro_crew <sub>` when the `kirocrew.exe` wrapper isn't resolvable.
 
 ## Per-feature status on Windows
 
@@ -63,14 +63,14 @@ that dir is appended to the MCP spawn `PATH` automatically
 | Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present |
-| SSH tunnel (`kiroclaw cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
+| SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP gateway (opt-in, OFF by default) | not yet — the AF_UNIX socket + `SO_PEERCRED` peer check are POSIX-only |
 
 The not-yet items are tracked as Windows feature-parity follow-ups (Mesh-2364).
 
 ## Secret-at-rest posture on Windows
 
-Files under `%USERPROFILE%\.kiroclaw` that hold auth material — the token
+Files under `%USERPROFILE%\.kirocrew` that hold auth material — the token
 signing key, refresh-token state, per-app secrets, snapshot tarballs, and the
 cron internal-secret temp file — are locked down to the current user via an
 owner-only NTFS DACL (inheritance stripped, `S-1-3-4:F` = Owner Rights full
@@ -92,7 +92,7 @@ under NTFS.
 - **"Python was not found" (Microsoft Store)** — a bare `python`/`python3` was
   resolving the Store alias stub; install a real CPython and ensure it precedes
   the stub on `PATH`.
-- **`kiroclaw stop` reports "No KiroClaw gateway currently running" on a
+- **`kirocrew stop` reports "No KiroCrew gateway currently running" on a
   non-English Windows** — `find_listening_pids` matches the `netstat` state
   against the wildcard foreign address and the literal English `LISTENING`;
   some localized Windows editions emit translated state names. Workaround:
@@ -105,4 +105,4 @@ under NTFS.
 
 - [README](../README.md) — quick-start Platforms note
 - [AGENTS.md](../AGENTS.md) — "Platform Support" + the `platform_compat` shim table
-- `src/kiro_claw/platform_compat.py` — the cross-platform shim
+- `src/kiro_crew/platform_compat.py` — the cross-platform shim

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.handlers import core as core_mod
+from kiro_crew.dashboard.handlers import core as core_mod
 
 
 @pytest.mark.asyncio

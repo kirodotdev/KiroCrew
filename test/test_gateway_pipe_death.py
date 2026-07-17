@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.acp.client import AcpProcessDied
+from kiro_crew.acp.client import AcpProcessDied
 
 
 async def _simulate_inject_with_retry(

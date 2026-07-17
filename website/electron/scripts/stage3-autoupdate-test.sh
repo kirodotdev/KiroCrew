@@ -14,14 +14,14 @@ set -euo pipefail
 #    same-identity check for a locally-built, locally-run app. Gatekeeper
 #    acceptance on a CLEAN machine still requires real notarization (Stage 4).
 #  - The app spawns the bundled/PATH gateway on launch and only reaches
-#    initAutoUpdate after it connects. Have `kiroclaw` installed (toolbox) so a
-#    gateway can start. We isolate with a temp KIROCLAW_HOME + the BETA flavor
+#    initAutoUpdate after it connects. Have `kirocrew` installed (toolbox) so a
+#    gateway can start. We isolate with a temp KIROCREW_HOME + the BETA flavor
 #    (port 7788) so this never touches your real :7777 gateway.
 #  - The feed is http://127.0.0.1 (loopback is exempt from App Transport
 #    Security). If Squirrel still refuses the http feed, add to package.json
 #    build.mac:  "extendInfo": { "NSAppTransportSecurity": { "NSAllowsLocalNetworking": true } }
 #
-# Env overrides: PORT (8799), OUT (/tmp/kiroclaw-stage3), NODE (node).
+# Env overrides: PORT (8799), OUT (/tmp/kirocrew-stage3), NODE (node).
 # ============================================================================
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -29,7 +29,7 @@ ELECTRON="$(cd "$HERE/.." && pwd)"
 cd "$ELECTRON"
 
 PORT="${PORT:-8799}"
-OUT="${OUT:-/tmp/kiroclaw-stage3}"
+OUT="${OUT:-/tmp/kirocrew-stage3}"
 NODE="${NODE:-node}"
 INSTALLED_VER="1.0.0"
 UPDATE_VER="1.0.1"
@@ -89,15 +89,15 @@ Installed: $INST_APP   (version $INSTALLED_VER)
 
 Run the installed app pointed at the local feed (new terminal, or here):
 
-  KIROCLAW_UPDATE_FEED="http://127.0.0.1:$PORT" \\
-  KIROCLAW_FLAVOR=beta \\
-  KIROCLAW_HOME="$OUT/home" \\
+  KIROCREW_UPDATE_FEED="http://127.0.0.1:$PORT" \\
+  KIROCREW_FLAVOR=beta \\
+  KIROCREW_HOME="$OUT/home" \\
   "$INST_BIN"
 
 What to observe (app stderr or Console.app, filter "[update]"):
   [update] feed: http://127.0.0.1:$PORT?platform=...&channel=insider&version=1.0.0
   [update] checking…  ->  update available — downloading…  ->  downloaded 1.0.1 — prompting
-  (dialog) "KiroClaw 1.0.1 is ready to install."  -> click "Restart & Update"
+  (dialog) "KiroCrew 1.0.1 is ready to install."  -> click "Restart & Update"
   "Stopping gateway gracefully..."  -> bundle swap -> app relaunches as 1.0.1
   Re-open: [update] up to date   (feed returns 204)
 

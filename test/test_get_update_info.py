@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kiro_claw.dashboard.handlers import get_update_info
+from kiro_crew.dashboard.handlers import get_update_info
 
 
 class TestGetUpdateInfo:

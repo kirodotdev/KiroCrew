@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.portability — export/import zip feature."""
+"""Tests for kiro_crew.portability — export/import zip feature."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.portability import (
+from kiro_crew.portability import (
     EXPORT_EXCLUDE,
     _is_excluded,
     apply_import_zip,
@@ -23,9 +23,9 @@ from kiro_claw.portability import (
 
 
 @pytest.fixture
-def fake_kiroclaw_home(tmp_path):
-    """Create a realistic ~/.kiroclaw directory structure for testing."""
-    mc = tmp_path / ".kiroclaw"
+def fake_kirocrew_home(tmp_path):
+    """Create a realistic ~/.kirocrew directory structure for testing."""
+    mc = tmp_path / ".kirocrew"
     mc.mkdir()
 
     # config.json
@@ -72,7 +72,7 @@ def fake_kiroclaw_home(tmp_path):
     mem_dir = mc / "workspace" / "memory"
     mem_dir.mkdir(parents=True)
     (mem_dir / "preferences.md").write_text("# User Preferences\n\n- Prefers dark mode\n- Uses vim\n")
-    (mem_dir / "projects.md").write_text("# Active Projects\n\n## KiroClaw\nWorking on portability feature\n")
+    (mem_dir / "projects.md").write_text("# Active Projects\n\n## KiroCrew\nWorking on portability feature\n")
     hist_dir = mem_dir / "history"
     hist_dir.mkdir()
     (hist_dir / "2026-05-17.md").write_text("# 2026-05-17\n\n#### 09:00 PDT\nDiscussed architecture\n")
@@ -107,11 +107,11 @@ def fake_kiroclaw_home(tmp_path):
 
 
 @pytest.fixture
-def patched_config_dir(fake_kiroclaw_home):
+def patched_config_dir(fake_kirocrew_home):
     """Patch config_dir() to return our fake directory."""
-    with patch("kiro_claw.portability.config_dir", return_value=fake_kiroclaw_home):
-        with patch.dict(os.environ, {"KIROCLAW_HOME": str(fake_kiroclaw_home)}):
-            yield fake_kiroclaw_home
+    with patch("kiro_crew.portability.config_dir", return_value=fake_kirocrew_home):
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(fake_kirocrew_home)}):
+            yield fake_kirocrew_home
 
 
 # ── Export Tests ──
@@ -238,11 +238,11 @@ class TestExport:
         assert not any("evil_link" in n for n in names)
         zf.close()
 
-    def test_export_empty_kiroclaw_dir(self, tmp_path):
+    def test_export_empty_kirocrew_dir(self, tmp_path):
         mc = tmp_path / "empty_mc"
         mc.mkdir()
-        with patch("kiro_claw.portability.config_dir", return_value=mc):
-            with patch.dict(os.environ, {"KIROCLAW_HOME": str(mc)}):
+        with patch("kiro_crew.portability.config_dir", return_value=mc):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(mc)}):
                 zip_bytes, manifest = create_export_zip()
         assert len(zip_bytes) > 0
         assert manifest["contents"].get("workspace_files", 0) == 0
@@ -332,8 +332,8 @@ class TestValidate:
 class TestImportMerge:
     def _make_export(self, source_dir):
         """Export from source_dir and return zip path."""
-        with patch("kiro_claw.portability.config_dir", return_value=source_dir):
-            with patch.dict(os.environ, {"KIROCLAW_HOME": str(source_dir)}):
+        with patch("kiro_crew.portability.config_dir", return_value=source_dir):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(source_dir)}):
                 zip_bytes, _ = create_export_zip()
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
         tmp.write(zip_bytes)
@@ -341,14 +341,14 @@ class TestImportMerge:
         return Path(tmp.name)
 
     def test_import_merge_into_empty(self, patched_config_dir, tmp_path):
-        """Import into a fresh (empty) KiroClaw instance."""
+        """Import into a fresh (empty) KiroCrew instance."""
         zip_path = self._make_export(patched_config_dir)
         try:
             # Target: empty directory
             target = tmp_path / "target_mc"
             target.mkdir()
-            with patch("kiro_claw.portability.config_dir", return_value=target):
-                with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                     summary = apply_import_zip(zip_path, mode="merge")
             assert len(summary["items"]) > 0
             # memory.db should be copied
@@ -364,8 +364,8 @@ class TestImportMerge:
         try:
             target = tmp_path / "target_mc"
             target.mkdir()
-            with patch("kiro_claw.portability.config_dir", return_value=target):
-                with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                     apply_import_zip(zip_path, mode="merge")
                     # Import again — should not duplicate
                     apply_import_zip(zip_path, mode="merge")
@@ -392,8 +392,8 @@ class TestImportMerge:
             conn.commit()
             conn.close()
 
-            with patch("kiro_claw.portability.config_dir", return_value=target):
-                with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                     apply_import_zip(zip_path, mode="merge")
 
             # Both keys should exist
@@ -417,8 +417,8 @@ class TestImportMerge:
             mem_dir.mkdir(parents=True)
             (mem_dir / "preferences.md").write_text("# Existing prefs\n- Keep this\n")
 
-            with patch("kiro_claw.portability.config_dir", return_value=target):
-                with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                     apply_import_zip(zip_path, mode="merge")
 
             # Pre-existing file should NOT be overwritten
@@ -439,8 +439,8 @@ class TestImportMerge:
                 json.dumps({"ts": "1700000000", "title": "existing"}) + "\n"
             )
 
-            with patch("kiro_claw.portability.config_dir", return_value=target):
-                with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                     apply_import_zip(zip_path, mode="merge")
 
             # Should still have only 1 entry (same ts)
@@ -459,8 +459,8 @@ class TestImportMerge:
             sk_dir.mkdir(parents=True)
             (sk_dir / "SKILL.md").write_text("# Existing skill content\n")
 
-            with patch("kiro_claw.portability.config_dir", return_value=target):
-                with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                     apply_import_zip(zip_path, mode="merge")
 
             # Existing skill should NOT be overwritten
@@ -472,8 +472,8 @@ class TestImportMerge:
 
 class TestImportReplace:
     def _make_export(self, source_dir):
-        with patch("kiro_claw.portability.config_dir", return_value=source_dir):
-            with patch.dict(os.environ, {"KIROCLAW_HOME": str(source_dir)}):
+        with patch("kiro_crew.portability.config_dir", return_value=source_dir):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(source_dir)}):
                 zip_bytes, _ = create_export_zip()
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
         tmp.write(zip_bytes)
@@ -489,8 +489,8 @@ class TestImportReplace:
             # Pre-existing config with different content
             (target / "config.json").write_text(json.dumps({"agent": {"provider": "bedrock"}}))
 
-            with patch("kiro_claw.portability.config_dir", return_value=target):
-                with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                     apply_import_zip(zip_path, mode="replace")
 
             # Config should be replaced
@@ -555,13 +555,13 @@ class TestRoundTrip:
         zip_path = tmp_path / "export_a.zip"
         zip_path.write_bytes(zip_bytes_a)
 
-        with patch("kiro_claw.portability.config_dir", return_value=target):
-            with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                 apply_import_zip(zip_path, mode="replace")
 
         # Export from B
-        with patch("kiro_claw.portability.config_dir", return_value=target):
-            with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                 _, manifest_b = create_export_zip()
 
         # Content counts should match
@@ -577,8 +577,8 @@ class TestRoundTrip:
         zip_path = tmp_path / "export.zip"
         zip_path.write_bytes(zip_bytes)
 
-        with patch("kiro_claw.portability.config_dir", return_value=target):
-            with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                 apply_import_zip(zip_path, mode="replace")
 
         # Verify semantic memory
@@ -598,8 +598,8 @@ class TestRoundTrip:
         zip_path = tmp_path / "export.zip"
         zip_path.write_bytes(zip_bytes)
 
-        with patch("kiro_claw.portability.config_dir", return_value=target):
-            with patch.dict(os.environ, {"KIROCLAW_HOME": str(target)}):
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
                 apply_import_zip(zip_path, mode="replace")
 
         conn = sqlite3.connect(str(target / "memory.db"))

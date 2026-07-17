@@ -13,14 +13,14 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.messaging.link import ChannelLink
-from kiro_claw.session_map import SessionMap
+from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.session_map import SessionMap
 
 
 @pytest.fixture()
 def session_map(tmp_path):
     """A SessionMap backed by a temp directory."""
-    with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+    with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
         yield SessionMap()
 
 
@@ -146,7 +146,7 @@ class TestClearMirrorLink:
 
 class TestPrunePreservesMirror:
     def test_mirror_only_entry_survives_prune(self, tmp_path):
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm = SessionMap()
             # No sid yet, no Slack thread — only a non-Slack mirror binding.
             sm.set_mirror_link(
@@ -159,13 +159,13 @@ class TestPrunePreservesMirror:
 
 class TestPersistence:
     def test_mirror_round_trips_to_disk(self, tmp_path):
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm = SessionMap()
             sm.set_mirror_link(
                 "dashboard:chat-1",
                 ChannelLink(channel_type="telegram", channel_id="777", thread_id=None),
             )
-        with patch("kiro_claw.session_map.config_dir", return_value=tmp_path):
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm2 = SessionMap()
             got = sm2.get_mirror_link("dashboard:chat-1")
             assert got == ChannelLink(channel_type="telegram", channel_id="777", thread_id=None)

@@ -1,6 +1,6 @@
 """Property-based tests for config/loader.py.
 
-Tests the KiroClawConfig loader validation logic using hypothesis
+Tests the KiroCrewConfig loader validation logic using hypothesis
 for property-based testing.
 """
 
@@ -17,13 +17,13 @@ import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-import kiro_claw.config.loader as loader_module
-from kiro_claw.config.loader import (
+import kiro_crew.config.loader as loader_module
+from kiro_crew.config.loader import (
     _HAS_JSONSCHEMA,
     AgentConfig,
     DashboardConfig,
-    KiroClawAgentConfig,
-    KiroClawConfig,
+    KiroCrewAgentConfig,
+    KiroCrewConfig,
     MemoryConfig,
     MemoryStoreConfig,
     ResolvedBindings,
@@ -40,7 +40,7 @@ from kiro_claw.config.loader import (
 )
 
 # Logger used by the loader module — needed for capturing warnings in tests
-logger = logging.getLogger("kiro_claw.config.loader")
+logger = logging.getLogger("kiro_crew.config.loader")
 
 # ---------------------------------------------------------------------------
 # Helpers / Strategies
@@ -79,8 +79,8 @@ _requires_jsonschema = pytest.mark.skipif(
 )
 
 
-def _load_from_dict(data: object) -> KiroClawConfig:
-    """Write *data* to a temp config file and load via KiroClawConfig.load()."""
+def _load_from_dict(data: object) -> KiroCrewConfig:
+    """Write *data* to a temp config file and load via KiroCrewConfig.load()."""
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".json",
@@ -94,15 +94,15 @@ def _load_from_dict(data: object) -> KiroClawConfig:
 
     try:
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_path",
+            "kiro_crew.config.loader.config_path",
             return_value=tmp,
         ):
-            return KiroClawConfig.load()
+            return KiroCrewConfig.load()
     finally:
         tmp.unlink(missing_ok=True)
 
 
-def _load_from_raw_string(content: str) -> KiroClawConfig:
+def _load_from_raw_string(content: str) -> KiroCrewConfig:
     """Write raw string content to a temp file and load."""
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -115,15 +115,15 @@ def _load_from_raw_string(content: str) -> KiroClawConfig:
 
     try:
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_path",
+            "kiro_crew.config.loader.config_path",
             return_value=tmp,
         ):
-            return KiroClawConfig.load()
+            return KiroCrewConfig.load()
     finally:
         tmp.unlink(missing_ok=True)
 
 
-def _load_from_dict_with_logs(data: object) -> tuple[KiroClawConfig, list[str]]:
+def _load_from_dict_with_logs(data: object) -> tuple[KiroCrewConfig, list[str]]:
     """Load config and capture warning log messages."""
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -138,10 +138,10 @@ def _load_from_dict_with_logs(data: object) -> tuple[KiroClawConfig, list[str]]:
 
     try:
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_path",
+            "kiro_crew.config.loader.config_path",
             return_value=tmp,
         ):
-            logger = logging.getLogger("kiro_claw.config.loader")
+            logger = logging.getLogger("kiro_crew.config.loader")
             messages: list[str] = []
             original_warning = logger.warning
 
@@ -153,15 +153,15 @@ def _load_from_dict_with_logs(data: object) -> tuple[KiroClawConfig, list[str]]:
                 original_warning(msg, *args)
 
             with unittest.mock.patch.object(logger, "warning", capture_warning):
-                result = KiroClawConfig.load()
+                result = KiroCrewConfig.load()
             return result, messages
     finally:
         tmp.unlink(missing_ok=True)
 
 
-def _default_config() -> KiroClawConfig:
-    """Return a default KiroClawConfig for comparison."""
-    return KiroClawConfig()
+def _default_config() -> KiroCrewConfig:
+    """Return a default KiroCrewConfig for comparison."""
+    return KiroCrewConfig()
 
 
 def test_max_subagents_defaults_to_auto_sentinel() -> None:
@@ -170,10 +170,10 @@ def test_max_subagents_defaults_to_auto_sentinel() -> None:
     computed cap that never regresses below the legacy floor of 3. An explicit
     positive value is preserved verbatim.
     """
-    from kiro_claw.subagent import resolve_max_subagents
+    from kiro_crew.subagent import resolve_max_subagents
 
     # Bare dataclass default.
-    assert KiroClawConfig().agent.max_subagents == 0
+    assert KiroCrewConfig().agent.max_subagents == 0
     # Hydrated-from-empty default (loader .get path).
     loaded = _load_from_dict({})
     assert loaded.agent.max_subagents == 0
@@ -192,9 +192,9 @@ _safe_name_st = st.text(
     max_size=15,
 )
 
-# Strategy for KiroClawAgentConfig instances
-_kiroclaw_agent_config_st = st.builds(
-    KiroClawAgentConfig,
+# Strategy for KiroCrewAgentConfig instances
+_kirocrew_agent_config_st = st.builds(
+    KiroCrewAgentConfig,
     kiro_agent=st.text(min_size=0, max_size=20),
     workspace=_safe_name_st,
     memory_store=_safe_name_st,
@@ -213,7 +213,7 @@ _memory_store_config_st = st.builds(
     embedding_provider=st.sampled_from(["", "none", "ollama"]),
 )
 
-# Hypothesis strategy for generating valid KiroClawConfig instances
+# Hypothesis strategy for generating valid KiroCrewConfig instances
 _agent_config_st = st.builds(
     AgentConfig,
     approval_mode=st.sampled_from(["auto", "interactive"]),
@@ -262,8 +262,8 @@ _dashboard_config_st = st.builds(
     url=st.text(min_size=0, max_size=50),
 )
 
-_kiroclaw_config_st = st.builds(
-    KiroClawConfig,
+_kirocrew_config_st = st.builds(
+    KiroCrewConfig,
     agent=_agent_config_st,
     session=_session_config_st,
     memory=_memory_config_st,
@@ -272,7 +272,7 @@ _kiroclaw_config_st = st.builds(
     hooks=st.just({}),
     agents=st.dictionaries(
         keys=_safe_name_st,
-        values=_kiroclaw_agent_config_st,
+        values=_kirocrew_agent_config_st,
         min_size=0,
         max_size=3,
     ),
@@ -303,15 +303,15 @@ _kiroclaw_config_st = st.builds(
 class TestConfigLoaderProperties:
     """Property-based tests for the config loader validation logic."""
 
-    # Feature: config-schema, Property 6: KiroClawConfig load/to_dict round-trip
-    @given(config=_kiroclaw_config_st)
+    # Feature: config-schema, Property 6: KiroCrewConfig load/to_dict round-trip
+    @given(config=_kirocrew_config_st)
     @settings(deadline=None)
     def test_load_to_dict_round_trip(
         self,
-        config: KiroClawConfig,
+        config: KiroCrewConfig,
     ) -> None:
         """Calling to_dict() then load() from that dict must yield an
-        equivalent KiroClawConfig instance.
+        equivalent KiroCrewConfig instance.
 
         **Validates: Requirements 2.4, 2.5, 9.4, 9.6**
         """
@@ -486,7 +486,7 @@ class TestConfigLoaderProperties:
         for k in extra_keys:
             assert k in warning_text, f"Key '{k}' not mentioned in warning: {warning_text}"
 
-    # Feature: config-schema, Property 12: load() always returns valid KiroClawConfig
+    # Feature: config-schema, Property 12: load() always returns valid KiroCrewConfig
     @given(
         content=st.one_of(
             st.text(min_size=0, max_size=200),
@@ -503,14 +503,14 @@ class TestConfigLoaderProperties:
         self,
         content: str,
     ) -> None:
-        """For any input content, load() must return a KiroClawConfig
+        """For any input content, load() must return a KiroCrewConfig
         instance without raising an exception.
 
         **Validates: Requirements 6.6**
         """
         result = _load_from_raw_string(content)
 
-        assert isinstance(result, KiroClawConfig)
+        assert isinstance(result, KiroCrewConfig)
         assert isinstance(result.agent, AgentConfig)
         assert isinstance(result.session, SessionConfig)
         assert isinstance(result.memory, MemoryConfig)
@@ -540,7 +540,7 @@ class TestConfigLoaderProperties:
 
         **Validates: Requirements 8.2**
         """
-        from kiro_claw.config import schema as schema_mod
+        from kiro_crew.config import schema as schema_mod
 
         # Find and temporarily mark slack.command as deprecated
         target_entry = None
@@ -595,14 +595,14 @@ class TestAgentWorkspaceBindingsProperties:
         self,
         cls_idx: int,
     ) -> None:
-        """All fields of KiroClawAgentConfig, WorkspaceConfig, and
+        """All fields of KiroCrewAgentConfig, WorkspaceConfig, and
         MemoryStoreConfig carry required metadata (label, help).
 
         **Validates: Requirements 1.1, 3.1, 5.1**
         """
         import dataclasses
 
-        classes = [KiroClawAgentConfig, WorkspaceConfig, MemoryStoreConfig]
+        classes = [KiroCrewAgentConfig, WorkspaceConfig, MemoryStoreConfig]
         cls = classes[cls_idx]
 
         fields = dataclasses.fields(cls)
@@ -661,13 +661,13 @@ class TestAgentWorkspaceBindingsProperties:
                     assert result[name].dir == value.get("dir", "workspace")
 
     # Feature: agent-workspace-bindings, Property 10: Config serialization round-trip
-    @given(config=_kiroclaw_config_st)
+    @given(config=_kirocrew_config_st)
     @settings(deadline=None)
     def test_config_serialization_round_trip(
         self,
-        config: KiroClawConfig,
+        config: KiroCrewConfig,
     ) -> None:
-        """For any valid KiroClawConfig with agents/workspaces/stores,
+        """For any valid KiroCrewConfig with agents/workspaces/stores,
         to_dict() → load() produces an equivalent instance.
 
         **Validates: Requirements 9.4, 11.5**
@@ -733,11 +733,11 @@ class TestAgentWorkspaceBindingsProperties:
 
     # Feature: agent-workspace-bindings, Property 11: Serialization format correctness
     @pytest.mark.skipif(platform.system() == "Darwin", reason="Hypothesis flaky on macOS CI")
-    @given(config=_kiroclaw_config_st)
+    @given(config=_kirocrew_config_st)
     @settings(deadline=None)
     def test_serialization_format_correctness(
         self,
-        config: KiroClawConfig,
+        config: KiroCrewConfig,
     ) -> None:
         """For any config, to_dict() output has agents as dict-of-dicts,
         workspaces values as dicts with dir key, memory_stores as
@@ -880,9 +880,9 @@ class TestAgentWorkspaceBindingsProperties:
 
         **Validates: Requirements 7.1, 7.2, 7.5**
         """
-        config = KiroClawConfig(
+        config = KiroCrewConfig(
             agents={
-                agent_name: KiroClawAgentConfig(
+                agent_name: KiroCrewAgentConfig(
                     kiro_agent=kiro_agent_name,
                     workspace=ws_name,
                     memory_store=store_name,
@@ -941,9 +941,9 @@ class TestAgentWorkspaceBindingsProperties:
         assume(missing_ws != fallback_ws_name)
         assume(missing_store != fallback_store_name)
 
-        config = KiroClawConfig(
+        config = KiroCrewConfig(
             agents={
-                agent_name: KiroClawAgentConfig(
+                agent_name: KiroCrewAgentConfig(
                     kiro_agent="some-agent",
                     workspace=missing_ws,
                     memory_store=missing_store,
@@ -968,7 +968,7 @@ class TestAgentWorkspaceBindingsProperties:
         agents_data=st.dictionaries(
             keys=_safe_name_st,
             values=st.builds(
-                KiroClawAgentConfig,
+                KiroCrewAgentConfig,
                 kiro_agent=st.text(min_size=0, max_size=20),
                 workspace=st.just("default"),
                 memory_store=st.just("default"),
@@ -985,7 +985,7 @@ class TestAgentWorkspaceBindingsProperties:
     @settings(deadline=None)
     def test_kiro_agent_validation_warnings(
         self,
-        agents_data: dict[str, KiroClawAgentConfig],
+        agents_data: dict[str, KiroCrewAgentConfig],
         installed: list[str],
     ) -> None:
         """For configs with kiro_agent values and mock installed agent
@@ -994,7 +994,7 @@ class TestAgentWorkspaceBindingsProperties:
 
         **Validates: Requirements 8.1, 8.2, 8.3**
         """
-        config = KiroClawConfig(agents=agents_data)
+        config = KiroCrewConfig(agents=agents_data)
         installed_set = set(installed)
 
         # Capture warnings
@@ -1024,7 +1024,7 @@ class TestAgentWorkspaceBindingsProperties:
         for mc_name, mc_agent in agents_data.items():
             if not mc_agent.kiro_agent or mc_agent.kiro_agent in installed_set:
                 # Use precise prefix to avoid substring false positives
-                prefix = f"KiroClaw agent '{mc_name}' references"
+                prefix = f"KiroCrew agent '{mc_name}' references"
                 matching = [m for m in log_messages if prefix in m]
                 assert len(matching) == 0, (
                     f"Unexpected warning for agent '{mc_name}' with "
@@ -1077,7 +1077,7 @@ class TestAgentWorkspaceBindingsProperties:
 
         try:
             with unittest.mock.patch(
-                "kiro_claw.config.loader.config_path",
+                "kiro_crew.config.loader.config_path",
                 return_value=tmp,
             ):
                 result = workspace_dir_for(ws_name)
@@ -1108,7 +1108,7 @@ class TestAgentWorkspaceBindingsProperties:
             keys=_safe_name_st,
             values=st.fixed_dictionaries(
                 {
-                    "kiro_agent": st.sampled_from(["kiroclaw", "oncall-agent", "custom", ""]),
+                    "kiro_agent": st.sampled_from(["kirocrew", "oncall-agent", "custom", ""]),
                     "workspace": _safe_name_st,
                     "memory_store": _safe_name_st,
                 },
@@ -1135,7 +1135,7 @@ class TestAgentWorkspaceBindingsProperties:
 
         for name, raw_entry in agents_data.items():
             parsed = cfg.agents[name]
-            assert isinstance(parsed, KiroClawAgentConfig)
+            assert isinstance(parsed, KiroCrewAgentConfig)
             assert parsed.kiro_agent == raw_entry["kiro_agent"]
             assert parsed.workspace == raw_entry["workspace"]
             assert parsed.memory_store == raw_entry["memory_store"]
@@ -1187,7 +1187,7 @@ class TestAgentWorkspaceBindingsProperties:
 
         # Req 9.5: agent.default_agent is preserved as kiro agent name
         # in the migrated default agent
-        expected_kiro = legacy_default_agent if legacy_default_agent else "kiroclaw"
+        expected_kiro = legacy_default_agent if legacy_default_agent else "kirocrew"
         assert cfg.agents["default"].kiro_agent == expected_kiro
 
         # Req 9.2: Flat workspaces auto-migrated to structured format
@@ -1291,8 +1291,8 @@ class TestEdgeCases:
         assert result.workspace_dir == Path("my-workspace")
         # Resolves via migrated default agent → memory_store "default"
         assert result.memory_store_name == "default"
-        # Migrated default agent uses "kiroclaw" as kiro_agent (no legacy value)
-        assert result.kiro_agent == "kiroclaw"
+        # Migrated default agent uses "kirocrew" as kiro_agent (no legacy value)
+        assert result.kiro_agent == "kirocrew"
 
     def test_missing_workspaces_creates_default_entry(self) -> None:
         """Missing workspaces section creates default entry.
@@ -1433,7 +1433,7 @@ class TestMultiAgentOrchestrationProperties:
     ) -> None:
         """For any valid JSON config (including empty objects, configs with no
         agents key, configs with empty agents dict, and configs with missing
-        default_agent), loading via KiroClawConfig.load() shall produce a config
+        default_agent), loading via KiroCrewConfig.load() shall produce a config
         where len(config.agents) >= 1 and config.default_agent names a key in
         config.agents.
 
@@ -1449,7 +1449,7 @@ class TestMultiAgentOrchestrationProperties:
             data = {
                 "agents": {
                     "myagent": {
-                        "kiro_agent": "kiroclaw",
+                        "kiro_agent": "kirocrew",
                         "workspace": "default",
                         "memory_store": "default",
                     }
@@ -1459,7 +1459,7 @@ class TestMultiAgentOrchestrationProperties:
             data = {
                 "agents": {
                     "coding": {
-                        "kiro_agent": "kiroclaw",
+                        "kiro_agent": "kirocrew",
                         "workspace": "default",
                         "memory_store": "default",
                     }
@@ -1588,10 +1588,10 @@ class TestMultiAgentOrchestrationProperties:
         cfg = _load_from_dict(data)
 
         # The legacy fallback would have used:
-        # - kiro_agent = agent.default_agent or "kiroclaw"
+        # - kiro_agent = agent.default_agent or "kirocrew"
         # - workspace = default_workspace → workspaces["default"].dir
         # - memory_store = default_memory_store
-        expected_kiro = legacy_kiro if legacy_kiro else "kiroclaw"
+        expected_kiro = legacy_kiro if legacy_kiro else "kirocrew"
 
         result = resolve_agent_bindings(cfg)
 
@@ -1625,15 +1625,15 @@ class TestMultiAgentOrchestrationProperties:
         kiro_agent_name: str,
         ws_dir: str,
     ) -> None:
-        """For any KiroClawConfig with agents and a valid agent name, calling
+        """For any KiroCrewConfig with agents and a valid agent name, calling
         resolve_agent_bindings(config, agent_name) shall return correct
         workspace_dir and memory_store_name.
 
         **Validates: Requirements 1.1, 1.3, 2.1, 2.4**
         """
-        config = KiroClawConfig(
+        config = KiroCrewConfig(
             agents={
-                agent_name: KiroClawAgentConfig(
+                agent_name: KiroCrewAgentConfig(
                     kiro_agent=kiro_agent_name,
                     workspace=ws_name,
                     memory_store=store_name,
@@ -1652,7 +1652,7 @@ class TestMultiAgentOrchestrationProperties:
         assert result.memory_store_name == store_name
         assert result.kiro_agent == kiro_agent_name
 
-    # Feature: multi-agent-orchestration, Property 6: Non-KiroClaw agent names resolve via default agent
+    # Feature: multi-agent-orchestration, Property 6: Non-KiroCrew agent names resolve via default agent
     @given(
         default_name=_safe_name_st,
         unknown_name=_safe_name_st,
@@ -1661,7 +1661,7 @@ class TestMultiAgentOrchestrationProperties:
         store_name=_safe_name_st,
     )
     @settings(deadline=None)
-    def test_non_kiroclaw_agent_names_resolve_via_default(
+    def test_non_kirocrew_agent_names_resolve_via_default(
         self,
         default_name: str,
         unknown_name: str,
@@ -1677,9 +1677,9 @@ class TestMultiAgentOrchestrationProperties:
         """
         assume(unknown_name != default_name)
 
-        config = KiroClawConfig(
+        config = KiroCrewConfig(
             agents={
-                default_name: KiroClawAgentConfig(
+                default_name: KiroCrewAgentConfig(
                     kiro_agent=kiro_agent_name,
                     workspace="default",
                     memory_store=store_name,
@@ -1738,15 +1738,15 @@ class TestMultiAgentMigrationEdgeCases:
 
         try:
             with unittest.mock.patch(
-                "kiro_claw.config.loader.config_path",
+                "kiro_crew.config.loader.config_path",
                 return_value=tmp,
             ):
-                cfg = KiroClawConfig.load()
+                cfg = KiroCrewConfig.load()
 
                 # In-memory: default agent exists
                 assert "default" in cfg.agents
                 assert cfg.default_agent == "default"
-                assert cfg.agents["default"].kiro_agent == "kiroclaw"
+                assert cfg.agents["default"].kiro_agent == "kirocrew"
                 assert cfg.agents["default"].workspace == "default"
                 assert cfg.agents["default"].memory_store == "default"
 
@@ -1755,7 +1755,7 @@ class TestMultiAgentMigrationEdgeCases:
                 assert "agents" in on_disk
                 assert "default" in on_disk["agents"]
                 assert on_disk["default_agent"] == "default"
-                assert on_disk["agents"]["default"]["kiro_agent"] == "kiroclaw"
+                assert on_disk["agents"]["default"]["kiro_agent"] == "kirocrew"
         finally:
             tmp.unlink(missing_ok=True)
             # Clean up backup file
@@ -1773,7 +1773,7 @@ class TestMultiAgentMigrationEdgeCases:
         assert "default" in cfg.agents
         assert cfg.default_agent == "default"
         assert len(cfg.agents) == 1
-        assert cfg.agents["default"].kiro_agent == "kiroclaw"
+        assert cfg.agents["default"].kiro_agent == "kirocrew"
 
     def test_legacy_agent_default_agent_used_as_kiro_agent(self) -> None:
         """Legacy agent.default_agent value used as kiro_agent in migrated default.
@@ -1789,14 +1789,14 @@ class TestMultiAgentMigrationEdgeCases:
         assert cfg.agents["default"].kiro_agent == "oncall-agent"
 
     def test_setup_writes_default_agent(self) -> None:
-        """kiroclaw setup creates config with default agent via
+        """kirocrew setup creates config with default agent via
         _ensure_default_agent_in_config.
 
         **Validates: Requirement 6.7**
         """
         import tempfile
 
-        from kiro_claw.cli_chat import _ensure_default_agent_in_config
+        from kiro_crew.cli_chat import _ensure_default_agent_in_config
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_config = Path(tmpdir) / "config.json"
@@ -1804,10 +1804,10 @@ class TestMultiAgentMigrationEdgeCases:
             tmp_config.write_text("{}", encoding="utf-8")
 
             with unittest.mock.patch(
-                "kiro_claw.config.loader.config_path",
+                "kiro_crew.config.loader.config_path",
                 return_value=tmp_config,
             ), unittest.mock.patch(
-                "kiro_claw.cli_chat.config_path",
+                "kiro_crew.cli_chat.config_path",
                 return_value=tmp_config,
             ):
                 _ensure_default_agent_in_config()
@@ -1816,7 +1816,7 @@ class TestMultiAgentMigrationEdgeCases:
                 assert "agents" in on_disk
                 assert "default" in on_disk["agents"]
                 assert on_disk["default_agent"] == "default"
-                assert on_disk["agents"]["default"]["kiro_agent"] == "kiroclaw"
+                assert on_disk["agents"]["default"]["kiro_agent"] == "kirocrew"
                 assert on_disk["agents"]["default"]["workspace"] == "default"
                 assert on_disk["agents"]["default"]["memory_store"] == "default"
 
@@ -1825,10 +1825,10 @@ class TestMultiAgentMigrationEdgeCases:
 
         **Validates: Requirement 1.4**
         """
-        config = KiroClawConfig(
+        config = KiroCrewConfig(
             agents={
-                "test": KiroClawAgentConfig(
-                    kiro_agent="kiroclaw",
+                "test": KiroCrewAgentConfig(
+                    kiro_agent="kirocrew",
                     workspace="nonexistent",
                     memory_store="default",
                 ),
@@ -1850,10 +1850,10 @@ class TestMultiAgentMigrationEdgeCases:
 
         **Validates: Requirement 3.4**
         """
-        config = KiroClawConfig(
+        config = KiroCrewConfig(
             agents={
-                "mydefault": KiroClawAgentConfig(
-                    kiro_agent="kiroclaw",
+                "mydefault": KiroCrewAgentConfig(
+                    kiro_agent="kirocrew",
                     workspace="default",
                     memory_store="default",
                 ),
@@ -1867,12 +1867,12 @@ class TestMultiAgentMigrationEdgeCases:
 
         # Empty string agent_name → uses default_agent
         result = resolve_agent_bindings(config, agent_name="")
-        assert result.kiro_agent == "kiroclaw"
+        assert result.kiro_agent == "kirocrew"
         assert result.workspace_dir == Path("ws-dir")
 
         # None agent_name → uses default_agent
         result2 = resolve_agent_bindings(config, agent_name=None)
-        assert result2.kiro_agent == "kiroclaw"
+        assert result2.kiro_agent == "kirocrew"
         assert result2.workspace_dir == Path("ws-dir")
 
 
@@ -1885,9 +1885,9 @@ class TestReactionsEmptyStringFiltering:
             json.dumps({"slack": {"reactions": {"done": "", "error": "boom"}}})
         )
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_dir", return_value=tmp_path
+            "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            cfg = KiroClawConfig.load()
+            cfg = KiroCrewConfig.load()
         # Empty string should be dropped
         assert "done" not in cfg.slack.reactions
         # Non-empty value preserved
@@ -1903,9 +1903,9 @@ class TestReactionsNullSuppression:
             json.dumps({"slack": {"reactions": {"done": None, "error": "boom"}}})
         )
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_dir", return_value=tmp_path
+            "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            cfg = KiroClawConfig.load()
+            cfg = KiroCrewConfig.load()
         # null should be preserved (distinct from absent key)
         assert "done" in cfg.slack.reactions
         assert cfg.slack.reactions["done"] is None
@@ -1921,9 +1921,9 @@ class TestReactionsNullSuppression:
             )
         )
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_dir", return_value=tmp_path
+            "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            cfg = KiroClawConfig.load()
+            cfg = KiroCrewConfig.load()
         assert "done" not in cfg.slack.reactions
         assert "error" not in cfg.slack.reactions
         assert cfg.slack.reactions["tool"] == "ok"
@@ -1939,9 +1939,9 @@ class TestSttStreamingDefault:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({}))
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_dir", return_value=tmp_path
+            "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            cfg = KiroClawConfig.load()
+            cfg = KiroCrewConfig.load()
         assert cfg.stt.streaming is False
 
     def test_partial_stt_block_without_streaming_key_loads_false(
@@ -1952,9 +1952,9 @@ class TestSttStreamingDefault:
             json.dumps({"stt": {"provider": "transcribe", "language_code": "en-US"}})
         )
         with unittest.mock.patch(
-            "kiro_claw.config.loader.config_dir", return_value=tmp_path
+            "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            cfg = KiroClawConfig.load()
+            cfg = KiroCrewConfig.load()
         assert cfg.stt.streaming is False
 
 
@@ -1978,21 +1978,21 @@ class TestSoftStopBudget:
 
     def test_soft_stop_budget_too_low(self, caplog) -> None:
         """AgentConfig clamps soft_stop_budget_secs below 0.5 to 0.5 with a warning."""
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.config.loader"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             cfg = AgentConfig(soft_stop_budget_secs=0.1)
         assert cfg.soft_stop_budget_secs == 0.5
         assert "out of range" in caplog.text
 
     def test_soft_stop_budget_too_high(self, caplog) -> None:
         """AgentConfig clamps soft_stop_budget_secs above 60.0 to 60.0 with a warning."""
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.config.loader"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             cfg = AgentConfig(soft_stop_budget_secs=120.0)
         assert cfg.soft_stop_budget_secs == 60.0
         assert "out of range" in caplog.text
 
     def test_soft_stop_budget_appears_in_schema(self) -> None:
         """Generated config baseline includes soft_stop_budget_secs."""
-        from kiro_claw.config.schema import SCHEMA_REGISTRY
+        from kiro_crew.config.schema import SCHEMA_REGISTRY
 
         paths = [e.path for e in SCHEMA_REGISTRY]
         assert "agent.soft_stop_budget_secs" in paths
@@ -2144,9 +2144,9 @@ class TestWidgetDensityRoundTrip:
 
         cfg = _load_from_dict({"dashboard": {"widget_density": "less"}})
         cfg_file = tmp_path / "config.json"
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file):
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
             cfg.save()
-            loaded = KiroClawConfig.load()
+            loaded = KiroCrewConfig.load()
         assert loaded.dashboard.widget_density == "less"
 
 
@@ -2178,9 +2178,9 @@ class TestArchiveRetentionDays:
 
         cfg = _load_from_dict({"session": {"archive_retention_days": 60}})
         cfg_file = tmp_path / "config.json"
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file):
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
             cfg.save()
-            loaded = KiroClawConfig.load()
+            loaded = KiroCrewConfig.load()
         assert loaded.session.archive_retention_days == 60
 
     def test_schema_permits_null_sentinel(self) -> None:
@@ -2194,7 +2194,7 @@ class TestArchiveRetentionDays:
         checks the schema shape directly, so it fails everywhere if the
         ``nullable`` marker regresses, not only where jsonschema is installed.
         """
-        from kiro_claw.config.schema import JSON_SCHEMA
+        from kiro_crew.config.schema import JSON_SCHEMA
 
         node = JSON_SCHEMA["properties"]["session"]["properties"]["archive_retention_days"]
         assert "null" in node["type"], (
@@ -2203,7 +2203,7 @@ class TestArchiveRetentionDays:
 
     def test_validation_preserves_null(self) -> None:
         """When jsonschema runs, ``null`` must survive validation (not be stripped)."""
-        from kiro_claw.config import validation
+        from kiro_crew.config import validation
 
         if not validation._HAS_JSONSCHEMA:
             pytest.skip("jsonschema not installed on this interpreter")
@@ -2218,7 +2218,7 @@ class TestConfigCache:
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
         # Each test starts with a clean module-level cache and leaves one behind.
-        from kiro_claw.config.loader import _invalidate_config_cache
+        from kiro_crew.config.loader import _invalidate_config_cache
 
         _invalidate_config_cache()
         yield
@@ -2227,7 +2227,7 @@ class TestConfigCache:
     # Canonical scaffold so the one-shot write-back migration (which calls
     # save() and would invalidate the cache mid-test) does not fire.
     _CANON = {
-        "agents": {"default": {"kiro_agent": "kiroclaw"}},
+        "agents": {"default": {"kiro_agent": "kirocrew"}},
         "default_agent": "default",
         "workspaces": {"default": {"dir": "~/workspace"}},
     }
@@ -2251,12 +2251,12 @@ class TestConfigCache:
             calls["n"] += 1
             return real_validate(data)
 
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_claw.config.loader.config_local_path", return_value=tmp_path / "config.local.json"
-        ), patch("kiro_claw.config.loader._validate_config_data", _counting):
-            KiroClawConfig.load()
-            KiroClawConfig.load()
-            KiroClawConfig.load()
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
+            "kiro_crew.config.loader.config_local_path", return_value=tmp_path / "config.local.json"
+        ), patch("kiro_crew.config.loader._validate_config_data", _counting):
+            KiroCrewConfig.load()
+            KiroCrewConfig.load()
+            KiroCrewConfig.load()
         # Validated once; subsequent loads served from cache.
         assert calls["n"] == 1
 
@@ -2267,11 +2267,11 @@ class TestConfigCache:
 
         cfg_file = tmp_path / "config.json"
         local = tmp_path / "config.local.json"
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_claw.config.loader.config_local_path", return_value=local
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
+            "kiro_crew.config.loader.config_local_path", return_value=local
         ):
             self._write(cfg_file, {"agent": {"model": "model-a"}})
-            first = KiroClawConfig.load()
+            first = KiroCrewConfig.load()
             assert first.agent.model == "model-a"
             # Rewrite with different content (model value differs in length, so
             # the size component of the fingerprint changes); also force a distinct
@@ -2279,7 +2279,7 @@ class TestConfigCache:
             self._write(cfg_file, {"agent": {"model": "model-bbbb"}})
             st = cfg_file.stat()
             _os.utime(cfg_file, ns=(st.st_atime_ns + 1_000_000_000, st.st_mtime_ns + 1_000_000_000))
-            second = KiroClawConfig.load()
+            second = KiroCrewConfig.load()
         assert second.agent.model == "model-bbbb"
 
     def test_save_invalidates_cache(self, tmp_path: Path) -> None:
@@ -2288,15 +2288,15 @@ class TestConfigCache:
 
         cfg_file = tmp_path / "config.json"
         local = tmp_path / "config.local.json"
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_claw.config.loader.config_local_path", return_value=local
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
+            "kiro_crew.config.loader.config_local_path", return_value=local
         ):
             self._write(cfg_file, {"agent": {"yolo": False}})
-            cfg = KiroClawConfig.load()
+            cfg = KiroCrewConfig.load()
             assert cfg.agent.yolo is False
             cfg.agent.yolo = True
             cfg.save()
-            reloaded = KiroClawConfig.load()
+            reloaded = KiroCrewConfig.load()
         assert reloaded.agent.yolo is True
 
     def test_returned_config_is_independent(self, tmp_path: Path) -> None:
@@ -2306,16 +2306,16 @@ class TestConfigCache:
 
         cfg_file = tmp_path / "config.json"
         local = tmp_path / "config.local.json"
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_claw.config.loader.config_local_path", return_value=local
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
+            "kiro_crew.config.loader.config_local_path", return_value=local
         ):
             self._write(cfg_file, {"agent": {"model": "orig-model"}})
-            first = KiroClawConfig.load()
+            first = KiroCrewConfig.load()
             assert first.agent.model == "orig-model"
             # In-place mutation, as settings handlers do.
-            first.agents["injected"] = KiroClawAgentConfig(kiro_agent="x")
+            first.agents["injected"] = KiroCrewAgentConfig(kiro_agent="x")
             first.agent.model = "MUTATED"
-            second = KiroClawConfig.load()
+            second = KiroCrewConfig.load()
         assert "injected" not in second.agents
         assert second.agent.model == "orig-model"
 
@@ -2347,17 +2347,17 @@ class TestConfigCache:
                 )
             return content
 
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_claw.config.loader.config_local_path", return_value=local
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
+            "kiro_crew.config.loader.config_local_path", return_value=local
         ), patch.object(Path, "read_text", _read_then_write):
-            first = KiroClawConfig.load()  # reads v0, writer swaps to v1 mid-read
+            first = KiroCrewConfig.load()  # reads v0, writer swaps to v1 mid-read
             # First load returns the v0 it actually read (acceptable).
             assert first.agent.model == "v0"
         # Next load must re-read and see v1 — NOT serve stale v0 from a poisoned cache.
-        with patch("kiro_claw.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_claw.config.loader.config_local_path", return_value=local
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
+            "kiro_crew.config.loader.config_local_path", return_value=local
         ):
-            second = KiroClawConfig.load()
+            second = KiroCrewConfig.load()
         assert second.agent.model == "v1", "stale config served from poisoned cache"
 
 
@@ -2445,37 +2445,37 @@ class TestSecurityBoundClamping:
     """The loader clamps out-of-range resource-limit knobs read from disk."""
 
     def test_subagent_auto_max_clamped_to_ceiling(self) -> None:
-        from kiro_claw.config.loader import SUBAGENT_AUTO_MAX_CEILING
+        from kiro_crew.config.loader import SUBAGENT_AUTO_MAX_CEILING
 
-        with unittest.mock.patch("kiro_claw.config.loader._log_config_clamp_event"):
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
             cfg = _load_from_dict({"agent": {"subagent_auto_max": 200}})
         assert cfg.agent.subagent_auto_max == SUBAGENT_AUTO_MAX_CEILING == 64
 
     def test_max_subagents_clamped_to_ceiling(self) -> None:
-        from kiro_claw.config.loader import SUBAGENT_AUTO_MAX_CEILING
+        from kiro_crew.config.loader import SUBAGENT_AUTO_MAX_CEILING
 
-        with unittest.mock.patch("kiro_claw.config.loader._log_config_clamp_event"):
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
             cfg = _load_from_dict({"agent": {"max_subagents": 200}})
         assert cfg.agent.max_subagents == SUBAGENT_AUTO_MAX_CEILING == 64
 
     def test_subagent_max_turns_clamped_to_ceiling(self) -> None:
-        from kiro_claw.config.loader import SUBAGENT_MAX_TURNS_CEILING
+        from kiro_crew.config.loader import SUBAGENT_MAX_TURNS_CEILING
 
-        with unittest.mock.patch("kiro_claw.config.loader._log_config_clamp_event"):
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
             cfg = _load_from_dict({"agent": {"subagent_max_turns": 99999}})
         assert cfg.agent.subagent_max_turns == SUBAGENT_MAX_TURNS_CEILING == 200
 
     def test_pool_size_clamped_to_max(self) -> None:
-        from kiro_claw.config.loader import POOL_SIZE_MAX
+        from kiro_crew.config.loader import POOL_SIZE_MAX
 
-        with unittest.mock.patch("kiro_claw.config.loader._log_config_clamp_event"):
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
             cfg = _load_from_dict({"session": {"pool_size": 1000}})
         assert cfg.session.pool_size == POOL_SIZE_MAX == 10
 
     def test_full_pentest_reproduction_clamped(self) -> None:
         """The exact tester payload is clamped, and to_dict() (what the GET API
         serializes) reports the clamped values, not the inflated ones."""
-        with unittest.mock.patch("kiro_claw.config.loader._log_config_clamp_event"):
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
             cfg = _load_from_dict(
                 {
                     "agent": {
@@ -2499,7 +2499,7 @@ class TestSecurityBoundClamping:
 
     def test_in_range_values_unchanged(self) -> None:
         with unittest.mock.patch(
-            "kiro_claw.config.loader._log_config_clamp_event"
+            "kiro_crew.config.loader._log_config_clamp_event"
         ) as mock_event:
             cfg = _load_from_dict(
                 {
@@ -2519,7 +2519,7 @@ class TestSecurityBoundClamping:
 
     def test_boundary_values_not_clamped(self) -> None:
         with unittest.mock.patch(
-            "kiro_claw.config.loader._log_config_clamp_event"
+            "kiro_crew.config.loader._log_config_clamp_event"
         ) as mock_event:
             cfg = _load_from_dict(
                 {
@@ -2533,7 +2533,7 @@ class TestSecurityBoundClamping:
         mock_event.assert_not_called()
 
     def test_clamp_logs_warning(self) -> None:
-        with unittest.mock.patch("kiro_claw.config.loader._log_config_clamp_event"):
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
             _, logs = _load_from_dict_with_logs({"agent": {"subagent_auto_max": 200}})
         assert any(
             "subagent_auto_max" in m and "out of range" in m for m in logs
@@ -2541,7 +2541,7 @@ class TestSecurityBoundClamping:
 
     def test_clamp_emits_security_event(self) -> None:
         with unittest.mock.patch(
-            "kiro_claw.config.loader._log_config_clamp_event"
+            "kiro_crew.config.loader._log_config_clamp_event"
         ) as mock_event:
             _load_from_dict({"agent": {"subagent_auto_max": 200}})
         mock_event.assert_called_once()
@@ -2554,11 +2554,11 @@ class TestSecurityBoundClamping:
         """The clamp skips non-int values, leaving them exactly as-is. Asserted
         against ``_clamp_security_bounds`` directly so the outcome is
         deterministic regardless of jsonschema availability."""
-        from kiro_claw.config.loader import _clamp_security_bounds
+        from kiro_crew.config.loader import _clamp_security_bounds
 
         data = {"agent": {"subagent_max_turns": "lots"}}
         with unittest.mock.patch(
-            "kiro_claw.config.loader._log_config_clamp_event"
+            "kiro_crew.config.loader._log_config_clamp_event"
         ) as mock_event:
             _clamp_security_bounds(data)
         assert data["agent"]["subagent_max_turns"] == "lots"
@@ -2567,20 +2567,20 @@ class TestSecurityBoundClamping:
     def test_bool_value_not_clamped(self) -> None:
         """A JSON true/false (bool is an int subclass) is not a numeric bound
         value: the clamp leaves it untouched and fires no event."""
-        from kiro_claw.config.loader import _clamp_security_bounds
+        from kiro_crew.config.loader import _clamp_security_bounds
 
         data = {"agent": {"max_subagents": True}}
         with unittest.mock.patch(
-            "kiro_claw.config.loader._log_config_clamp_event"
+            "kiro_crew.config.loader._log_config_clamp_event"
         ) as mock_event:
             _clamp_security_bounds(data)
         assert data["agent"]["max_subagents"] is True
         mock_event.assert_not_called()
 
     def test_log_config_clamp_event_is_best_effort(self) -> None:
-        from kiro_claw.config.loader import _log_config_clamp_event
+        from kiro_crew.config.loader import _log_config_clamp_event
 
-        with unittest.mock.patch("kiro_claw.sel.sel", side_effect=RuntimeError("SEL down")):
+        with unittest.mock.patch("kiro_crew.sel.sel", side_effect=RuntimeError("SEL down")):
             _log_config_clamp_event("agent.subagent_auto_max", 200, 64, 1, 64)
 
 
@@ -2588,42 +2588,42 @@ class TestConfigWriteProtection:
     """config.json / config.local.json are WRITE-protected (reads allowed)."""
 
     def test_config_json_is_write_protected(self) -> None:
-        from kiro_claw.security import is_sensitive_write_path
+        from kiro_crew.security import is_sensitive_write_path
 
-        assert is_sensitive_write_path("~/.kiroclaw/config.json")
-        assert is_sensitive_write_path(str(Path.home() / ".kiroclaw" / "config.json"))
+        assert is_sensitive_write_path("~/.kirocrew/config.json")
+        assert is_sensitive_write_path(str(Path.home() / ".kirocrew" / "config.json"))
 
     def test_config_local_json_is_write_protected(self) -> None:
-        from kiro_claw.security import is_sensitive_write_path
+        from kiro_crew.security import is_sensitive_write_path
 
-        assert is_sensitive_write_path("~/.kiroclaw/config.local.json")
+        assert is_sensitive_write_path("~/.kirocrew/config.local.json")
         assert is_sensitive_write_path(
-            str(Path.home() / ".kiroclaw" / "config.local.json")
+            str(Path.home() / ".kirocrew" / "config.local.json")
         )
 
     def test_config_json_reads_still_allowed(self) -> None:
-        from kiro_claw.security import is_sensitive_bash_command, is_sensitive_path
+        from kiro_crew.security import is_sensitive_bash_command, is_sensitive_path
 
-        assert is_sensitive_path("~/.kiroclaw/config.json") is False
-        assert is_sensitive_bash_command("cat ~/.kiroclaw/config.json") is None
+        assert is_sensitive_path("~/.kirocrew/config.json") is False
+        assert is_sensitive_bash_command("cat ~/.kirocrew/config.json") is None
 
     def test_write_protection_superset_of_sensitive(self) -> None:
-        from kiro_claw.security import is_sensitive_write_path
+        from kiro_crew.security import is_sensitive_write_path
 
         assert is_sensitive_write_path("~/.aws/credentials")
-        assert is_sensitive_write_path("~/.kiroclaw/security_policy.json")
+        assert is_sensitive_write_path("~/.kirocrew/security_policy.json")
 
-    def test_non_config_kiroclaw_file_not_write_protected(self) -> None:
-        from kiro_claw.security import is_sensitive_write_path
+    def test_non_config_kirocrew_file_not_write_protected(self) -> None:
+        from kiro_crew.security import is_sensitive_write_path
 
-        assert is_sensitive_write_path("~/.kiroclaw/sessions.db") is False
+        assert is_sensitive_write_path("~/.kirocrew/sessions.db") is False
 
 
 class TestConfigEditToolBlocked:
     """The file-edit tool gate (HookManager.on_tool_call) denies edits to config."""
 
     def _hooks(self):
-        from kiro_claw.hooks import HookManager, HooksConfig
+        from kiro_crew.hooks import HookManager, HooksConfig
 
         return HookManager(HooksConfig())
 
@@ -2631,7 +2631,7 @@ class TestConfigEditToolBlocked:
         result = self._hooks().on_tool_call(
             "Editing config.json",
             tool_kind="edit",
-            raw_params={"path": "~/.kiroclaw/config.json"},
+            raw_params={"path": "~/.kirocrew/config.json"},
         )
         assert result.action == "deny"
         assert "write-protected config" in (result.reason or "")
@@ -2640,7 +2640,7 @@ class TestConfigEditToolBlocked:
         result = self._hooks().on_tool_call(
             "config.json",
             tool_kind="read",
-            raw_params={"path": "~/.kiroclaw/config.json"},
+            raw_params={"path": "~/.kirocrew/config.json"},
         )
         assert result.action != "deny"
 
@@ -2648,7 +2648,7 @@ class TestConfigEditToolBlocked:
         result = self._hooks().on_tool_call(
             "Editing notes.md",
             tool_kind="edit",
-            raw_params={"path": "~/.kiroclaw/workspace/notes.md"},
+            raw_params={"path": "~/.kirocrew/workspace/notes.md"},
         )
         assert result.action != "deny"
 
@@ -2694,7 +2694,7 @@ class TestTelegramAllowedUserIdsGuard:
 
 class TestMessagingConfigValidation:
     def test_normalizes_bad_scope_mode_and_clamps_resets(self) -> None:
-        from kiro_claw.config.loader import MessagingConfig
+        from kiro_crew.config.loader import MessagingConfig
 
         c = MessagingConfig(
             dm_scope="bogus",
@@ -2708,7 +2708,7 @@ class TestMessagingConfigValidation:
         assert c.daily_reset_hour == -1
 
     def test_keeps_valid_values(self) -> None:
-        from kiro_claw.config.loader import MessagingConfig
+        from kiro_crew.config.loader import MessagingConfig
 
         c = MessagingConfig(
             dm_scope="unified",

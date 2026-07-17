@@ -8,7 +8,7 @@ The overall shape the request implies:
 
 ```
 ┌─ user's machine (mac / Windows / Linux) ──────────┐        ┌─ EC2 (Amazon Linux / Ubuntu) ─┐
-│  KiroClaw launcher / client                       │        │  KiroClaw gateway (loopback)   │
+│  KiroCrew launcher / client                       │        │  KiroCrew gateway (loopback)   │
 │   • kiro-cli login  (backend auth, device-code)   │        │  kiro-cli (backend, logged in) │
 │   • aws CLI  (their creds, we store nothing)      │  ssh   │  systemd service, auto-restart │
 │   • provision + connect  ───────────────────────────────► │  dashboard on 127.0.0.1:5476   │
@@ -18,16 +18,16 @@ The overall shape the request implies:
 
 ---
 
-## Decision 0 — Where does KiroClaw actually *run*? (frames everything else)
+## Decision 0 — Where does KiroCrew actually *run*? (frames everything else)
 
 The request bundles two things that pull in different directions: "run on
-mac/Windows/Linux" **and** "launch an EC2 box and run KiroClaw there." The
+mac/Windows/Linux" **and** "launch an EC2 box and run KiroCrew there." The
 backend (`kiro-cli`) is **macOS/Linux only** — it does not run on Windows. So:
 
 | Option | What it means | Windows story |
 |---|---|---|
-| **A. Local-first** | KiroClaw runs on the user's own machine; EC2 is an optional "run it 24/7 elsewhere" add-on | Windows users **can't** run it locally (no kiro-cli) |
-| **B. Cloud-first** | KiroClaw always runs on EC2; the user's machine is a thin launcher+client | Windows works — client only needs `aws` + `ssh` |
+| **A. Local-first** | KiroCrew runs on the user's own machine; EC2 is an optional "run it 24/7 elsewhere" add-on | Windows users **can't** run it locally (no kiro-cli) |
+| **B. Cloud-first** | KiroCrew always runs on EC2; the user's machine is a thin launcher+client | Windows works — client only needs `aws` + `ssh` |
 | **C. Both, user picks** (Recommended) | Installer offers "run here" (mac/Linux) or "run on EC2" (all OSes, incl. Windows). Windows is auto-routed to the EC2 path | Windows works via the cloud path |
 
 **Recommendation: C.** It's the only way to honor *both* "runs on Windows" and
@@ -46,8 +46,8 @@ gateway vs. "Remote over SSH" mode).
 | Option | Pros | Cons |
 |---|---|---|
 | **A. Keep shell/PowerShell scripts** (extend `install.sh`, add `install.ps1`) | Matches openclaw+hermes exactly; no runtime to bootstrap the bootstrapper; `curl\|bash` + `irm\|iex` are the expected UX | Two codebases (sh + ps1) to keep in sync; shell is awkward for the EC2 wizard |
-| **B. Python-based installer** (a `kiroclaw-installer` that only needs stdlib Python) | One codebase, cross-platform, and *we already ship a Python CLI*; the EC2 orchestration is Python calling `aws` (same as `deploy_web`) | Windows may lack Python; need a tiny bootstrap to get Python first |
-| **C. Hybrid (Recommended)** | Thin per-OS bootstrapper (`install.sh` / `install.ps1`) whose only job is: ensure Python + `aws` CLI + `ssh`, then hand off to a **Python `kiroclaw setup`/`kiroclaw cloud` wizard** that does everything interesting (auth, provisioning, connect) | Slightly more moving parts | 
+| **B. Python-based installer** (a `kirocrew-installer` that only needs stdlib Python) | One codebase, cross-platform, and *we already ship a Python CLI*; the EC2 orchestration is Python calling `aws` (same as `deploy_web`) | Windows may lack Python; need a tiny bootstrap to get Python first |
+| **C. Hybrid (Recommended)** | Thin per-OS bootstrapper (`install.sh` / `install.ps1`) whose only job is: ensure Python + `aws` CLI + `ssh`, then hand off to a **Python `kirocrew setup`/`kirocrew cloud` wizard** that does everything interesting (auth, provisioning, connect) | Slightly more moving parts | 
 
 **Recommendation: C**, mirroring the proven openclaw/hermes shape (*thin
 bootstrapper → in-CLI wizard*). The EC2 launcher and the "connect" flow live in
@@ -82,9 +82,9 @@ and boring.
 - **Do not store any Kiro credentials** — they live in kiro-cli's own store on
   whichever host runs the backend. (Consistent with the current design.)
 
-Open question to confirm: **should the KiroClaw *dashboard* have its own login
+Open question to confirm: **should the KiroCrew *dashboard* have its own login
 tied to the Kiro account, or stay on the existing per-session token model?**
-Recommendation: keep the existing token model (`kiroclaw token`) — it already
+Recommendation: keep the existing token model (`kirocrew token`) — it already
 works through SSH tunnels and the `Instances` iframe.
 
 ---
@@ -104,7 +104,7 @@ works through SSH tunnels and the `Instances` iframe.
      reachability, like `iam.reachability_check`). If it fails →
      "run `aws configure sso` / `aws configure --profile <name>` and retry."
   3. **Generate a least-privilege IAM policy for EC2 launch** for the user to
-     apply themselves (KiroClaw never writes IAM), exactly like
+     apply themselves (KiroCrew never writes IAM), exactly like
      `deploy_web/iam.py`. Map `AccessDenied` stderr → the exact missing statement.
 - **"Create or register an AWS account":** we cannot create an AWS account
   programmatically (AWS has no API for signup). The wizard **links to the AWS
@@ -143,17 +143,17 @@ also composes with the existing `Instances` feature, which already documents an
 SSM `ProxyCommand`. Downside: requires the SSM permissions in the generated IAM
 policy and the AMI's SSM agent (default on modern AMIs).
 
-**4b. What runs KiroClaw on the box** — pass **EC2 user-data** that installs
-prerequisites + KiroClaw + `kiro-cli`, then `kiroclaw service install` (systemd).
+**4b. What runs KiroCrew on the box** — pass **EC2 user-data** that installs
+prerequisites + KiroCrew + `kiro-cli`, then `kirocrew service install` (systemd).
 Options for *how* it installs: (i) `git clone + install.sh` (today's path);
 (ii) a published pip wheel (needs Decision 7); (iii) a prebuilt Docker image
 (needs Decision 7). Recommend **(i) for the first cut**, migrate to (ii)/(iii)
 once we publish artifacts.
 
 **4c. Instance defaults** — recommend a small-but-headroomed default
-(`REMOTE_DESKTOP_SETUP.md` says KiroClaw uses ~10 GB RAM; suggest e.g.
+(`REMOTE_DESKTOP_SETUP.md` says KiroCrew uses ~10 GB RAM; suggest e.g.
 `t3.xlarge`/`m7g.xlarge` arm64, 16 GB) in a user-chosen region; tag every
-resource `kiroclaw:managed=true` + a `kiroclaw:instance=<id>` for **stateless
+resource `kirocrew:managed=true` + a `kirocrew:instance=<id>` for **stateless
 discovery by tag** (copy `deploy_web`'s tag model — no local state file to drift).
 
 **4d. Lifecycle & cost** — provide `launch`, `list`, `stop`, `start`,
@@ -165,7 +165,7 @@ discovery by tag** (copy `deploy_web`'s tag model — no local state file to dri
   forgotten instance stops itself. Nice-to-have, not v1.
 
 **4e. Should EC2 launch be exposed to the LLM at all?** Recommend **no for
-writes** (launch/terminate stay human-only, mirroring `deploy_web`'s "KiroClaw
+writes** (launch/terminate stay human-only, mirroring `deploy_web`'s "KiroCrew
 never does an IAM write"); read-only `list/status` could later be an MCP tool.
 
 ---
@@ -193,11 +193,11 @@ Desktop app: the Electron shell can host the same launcher/connect flow so the
 
 ## Decision 6 — Onboarding UX polish (cheap wins)
 
-- Add a `--json` / structured mode and a `--fix` posture to `kiroclaw doctor`
+- Add a `--json` / structured mode and a `--fix` posture to `kirocrew doctor`
   (openclaw/hermes both have this; enables GUI + CI + self-repair).
-- End `kiroclaw setup` with a **"start gateway + verify reachable"** health gate
+- End `kirocrew setup` with a **"start gateway + verify reachable"** health gate
   (openclaw does this; catches "installed but broken" immediately).
-- Add a `kiroclaw cloud` command group (`launch/list/stop/start/terminate/connect`)
+- Add a `kirocrew cloud` command group (`launch/list/stop/start/terminate/connect`)
   as the human entry point; the wizard calls into it.
 
 ---
@@ -208,7 +208,7 @@ Not required for a first cut (EC2 can `git clone + install.sh`), but each of
 these makes provisioning simpler and is a peer-parity gap:
 
 - **Publish a pip wheel** (`make wheel` exists) → EC2 user-data becomes
-  `pip install kiroclaw`.
+  `pip install kirocrew`.
 - **Publish a Docker image** → EC2 user-data becomes `docker run …` (both peers
   do this; simplest reproducible box).
 - **Homebrew formula** for the mac client; **Sparkle-style auto-update** for the
@@ -221,12 +221,12 @@ the core launcher works with `git clone + install.sh`.
 
 ## Suggested phasing (for when we move past planning)
 
-1. **Client bootstrap + `kiroclaw cloud` skeleton** — `install.ps1` (Windows
+1. **Client bootstrap + `kirocrew cloud` skeleton** — `install.ps1` (Windows
    client: ensure `aws` + ssh), Python `cloud/ec2.py` with the `run_aws`
    chokepoint + IAM-policy generator + reachability check (all copied from
    `deploy_web`). Read-only `list/status` first.
 2. **Launch + user-data + wait-for-ready** — `run-instances` (SSM default),
-   tag-based discovery, user-data that installs KiroClaw + `kiro-cli` + service.
+   tag-based discovery, user-data that installs KiroCrew + `kiro-cli` + service.
 3. **Backend login on the box** — surface `kiro-cli login` device-code/`-L` flow.
 4. **Connect** — auto-register as an Instance (Decision 5A) + a one-click
    "open dashboard" (5B).

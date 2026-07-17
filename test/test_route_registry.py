@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.route_registry import (
+from kiro_crew.apps.route_registry import (
     RouteRegistry,
     _compile_pattern,
     _has_params,
@@ -58,7 +58,7 @@ class TestRoutePrefixEnforcement:
         registry = RouteRegistry(mock_app)
 
         # Manually populate internal table (simulates register_app_routes)
-        from kiro_claw.apps.route_registry import _RegisteredRoute
+        from kiro_crew.apps.route_registry import _RegisteredRoute
 
         routes = []
         for p in paths:

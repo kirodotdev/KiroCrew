@@ -29,13 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: src/kiro_claw/__init__.py
+          sparse-checkout: src/kiro_crew/__init__.py
 
       - name: Compute version
         id: stamp
         run: |
           DATE=$(date -u +%Y%m%d)
-          BASE=$(grep -m1 '__version__' src/kiro_claw/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
+          BASE=$(grep -m1 '__version__' src/kiro_crew/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
           echo "version=${BASE}-nightly.${DATE}" >> "$GITHUB_OUTPUT"
           echo "Nightly version: ${BASE}-nightly.${DATE}"
 
@@ -59,7 +59,7 @@ jobs:
 
       - name: Stamp nightly version
         run: |
-          sed -i "s/__version__ = \".*\"/__version__ = \"${{ needs.version.outputs.nightly_version }}\"/" src/kiro_claw/__init__.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ needs.version.outputs.nightly_version }}\"/" src/kiro_crew/__init__.py
 
       - name: Build frontend
         working-directory: website
@@ -69,9 +69,9 @@ jobs:
 
       - name: Stage frontend into package
         run: |
-          rm -rf src/kiro_claw/static/dist
-          mkdir -p src/kiro_claw/static
-          cp -R website/dist src/kiro_claw/static/dist
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
 
       - name: Build wheel
         run: |
@@ -119,8 +119,8 @@ jobs:
         run: |
           NIGHTLY="${{ needs.version.outputs.nightly_version }}"
           echo "NIGHTLY_VERSION=${NIGHTLY}" >> "$GITHUB_ENV"
-          sed -i.bak "s/__version__ = \".*\"/__version__ = \"${NIGHTLY}\"/" src/kiro_claw/__init__.py
-          rm -f src/kiro_claw/__init__.py.bak
+          sed -i.bak "s/__version__ = \".*\"/__version__ = \"${NIGHTLY}\"/" src/kiro_crew/__init__.py
+          rm -f src/kiro_crew/__init__.py.bak
           echo "Building nightly: ${NIGHTLY}"
 
       - name: Build desktop app

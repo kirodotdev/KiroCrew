@@ -17,8 +17,8 @@ import asyncio
 
 import pytest
 
-import kiro_claw.llm_helpers as llm_helpers
-from kiro_claw.workflows.service import WorkflowService
+import kiro_crew.llm_helpers as llm_helpers
+from kiro_crew.workflows.service import WorkflowService
 
 pytestmark = pytest.mark.asyncio
 
@@ -65,7 +65,7 @@ def _patch_stream(monkeypatch, replies: list[str]) -> dict:
     monkeypatch.setattr(llm_helpers, "stream_and_collect", fake_stream)
     # service.py binds stream_and_collect at module top (top-level-imports rule),
     # so patch the name in the service module's namespace too.
-    import kiro_claw.workflows.service as svc_mod
+    import kiro_crew.workflows.service as svc_mod
 
     monkeypatch.setattr(svc_mod, "stream_and_collect", fake_stream)
     return state
@@ -338,7 +338,7 @@ class _IntgState:
 
 
 async def test_finished_run_injects_result_and_autoruns_agent_turn(monkeypatch) -> None:
-    from kiro_claw.dashboard.workflow_inject import inject_workflow_result
+    from kiro_crew.dashboard.workflow_inject import inject_workflow_result
 
     _patch_stream(monkeypatch, ["stub"])
     origin = _IntgSlot("chat-1")
@@ -370,7 +370,7 @@ async def test_finished_run_injects_result_and_autoruns_agent_turn(monkeypatch) 
 async def test_finished_run_busy_slot_queues_turn(monkeypatch) -> None:
     """If the originating slot is mid-turn, the auto-turn queues (does not start),
     so we never stack a concurrent turn — mirrors enqueue_or_run_prompt semantics."""
-    from kiro_claw.dashboard.workflow_inject import inject_workflow_result
+    from kiro_crew.dashboard.workflow_inject import inject_workflow_result
 
     _patch_stream(monkeypatch, ["stub"])
     origin = _IntgSlot("chat-1")

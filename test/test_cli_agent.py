@@ -1,4 +1,4 @@
-"""Unit tests for the ``kiroclaw agent`` CLI subcommand group.
+"""Unit tests for the ``kirocrew agent`` CLI subcommand group.
 
 Tests cover list output format, create with defaults, create duplicate,
 update non-existent, and delete default agent.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.cli import main
+from kiro_crew.cli import main
 
 
 def _write_config(tmp_path: Path, data: dict) -> Path:
@@ -27,7 +27,7 @@ def _base_config() -> dict:
     return {
         "agents": {
             "default": {
-                "kiro_agent": "kiroclaw",
+                "kiro_agent": "kirocrew",
                 "workspace": "default",
                 "memory_store": "default",
             },
@@ -39,14 +39,14 @@ def _base_config() -> dict:
 
 
 class TestAgentList:
-    """Test ``kiroclaw agent list`` output format."""
+    """Test ``kirocrew agent list`` output format."""
 
     def test_list_output_format(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         cfg_path = _write_config(tmp_path, _base_config())
 
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", ["kiroclaw", "agent", "list"]),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "list"]),
         ):
             main()
 
@@ -69,8 +69,8 @@ class TestAgentList:
         cfg_path = _write_config(tmp_path, data)
 
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", ["kiroclaw", "agent", "list"]),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "list"]),
         ):
             main()
 
@@ -80,16 +80,16 @@ class TestAgentList:
 
 
 class TestAgentCreate:
-    """Test ``kiroclaw agent create``."""
+    """Test ``kirocrew agent create``."""
 
     def test_create_with_defaults(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         cfg_path = _write_config(tmp_path, _base_config())
 
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "agent", "create", "--name", "research"],
+                ["kirocrew", "agent", "create", "--name", "research"],
             ),
         ):
             main()
@@ -100,7 +100,7 @@ class TestAgentCreate:
         # Verify persisted to disk
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert "research" in saved["agents"]
-        assert saved["agents"]["research"]["kiro_agent"] == "kiroclaw"
+        assert saved["agents"]["research"]["kiro_agent"] == "kirocrew"
         assert saved["agents"]["research"]["workspace"] == "default"
         assert saved["agents"]["research"]["memory_store"] == "default"
 
@@ -110,10 +110,10 @@ class TestAgentCreate:
         cfg_path = _write_config(tmp_path, _base_config())
 
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "agent", "create", "--name", "default"],
+                ["kirocrew", "agent", "create", "--name", "default"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -125,7 +125,7 @@ class TestAgentCreate:
 
 
 class TestAgentUpdate:
-    """Test ``kiroclaw agent update``."""
+    """Test ``kirocrew agent update``."""
 
     def test_update_nonexistent_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -133,10 +133,10 @@ class TestAgentUpdate:
         cfg_path = _write_config(tmp_path, _base_config())
 
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "agent", "update", "nonexistent", "--kiro-agent", "x"],
+                ["kirocrew", "agent", "update", "nonexistent", "--kiro-agent", "x"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -148,7 +148,7 @@ class TestAgentUpdate:
 
 
 class TestAgentDelete:
-    """Test ``kiroclaw agent delete``."""
+    """Test ``kirocrew agent delete``."""
 
     def test_delete_default_agent_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -156,10 +156,10 @@ class TestAgentDelete:
         cfg_path = _write_config(tmp_path, _base_config())
 
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "agent", "delete", "default"],
+                ["kirocrew", "agent", "delete", "default"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):

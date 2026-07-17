@@ -21,7 +21,7 @@ function sourceLabel(source: Skill['source']): string | null {
     case 'aim': return 'AIM'
     case 'kiro-user': return '~/.kiro/skills'
     case 'kiro-workspace': return 'workspace'
-    default: return null  // kiroclaw — the default home, no badge needed
+    default: return null  // kirocrew — the default home, no badge needed
   }
 }
 
@@ -87,7 +87,7 @@ export default function SkillsTab() {
     },
   })
 
-  // Two groups: skills KiroClaw can edit (kiroclaw + kiro-cli's own dirs) and
+  // Two groups: skills KiroCrew can edit (kirocrew + kiro-cli's own dirs) and
   // read-only AIM-package skills.  The text filter is applied to both.
   const { localSkills, aimSkills } = useMemo(() => {
     const q = skillFilter.toLowerCase()
@@ -172,7 +172,7 @@ export default function SkillsTab() {
       <SkillForm data={formData} onChange={setFormData} />
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">Skills ({skills.length}) <InfoTip text="On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroClaw, kiro-cli (~/.kiro/skills), and AIM packages." /> <Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>Create New Skill</Btn></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">Skills ({skills.length}) <InfoTip text="On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages." /> <Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>Create New Skill</Btn></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
@@ -223,7 +223,7 @@ export default function SkillsTab() {
               </div>
             ) : (
               <div className="flex flex-col h-full min-h-0">
-                {/* Detail header: name, source badge, Edit/Delete (kiroclaw only) */}
+                {/* Detail header: name, source badge, Edit/Delete (kirocrew only) */}
                 <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-border shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-bold text-text-strong truncate">{displayName(selectedSkill)}</span>
@@ -231,7 +231,7 @@ export default function SkillsTab() {
                       <span className={`text-[11px] px-1.5 py-[1px] rounded-full font-bold shrink-0 ${selectedSkill.source === 'aim' ? 'bg-aim-subtle text-aim border border-aim/30' : 'bg-bg-elevated text-muted border border-border'}`}>{sourceLabel(selectedSkill.source)}</span>
                     )}
                   </div>
-                  {selectedSkill.source === 'kiroclaw' && (
+                  {selectedSkill.source === 'kirocrew' && (
                     <div className="flex gap-2 shrink-0">
                       <Btn disabled={!detailReady} onClick={() => { setDetailEditing(true); setFormData(parseSkillContent(detailContent, selectedSkill.key)) }}>Edit</Btn>
                       <Btn danger onClick={() => { if (confirm(`Delete "${selectedSkill.key}"?`)) deleteSkill.mutate(selectedSkill.key) }}>Delete</Btn>

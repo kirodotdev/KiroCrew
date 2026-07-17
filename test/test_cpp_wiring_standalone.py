@@ -1,6 +1,6 @@
 """Defaults-preserving checks for the CPP consumption-site wiring.
 
-With NO companion installed and NO ``KIROCLAW_PROFILE`` override, the active
+With NO companion installed and NO ``KIROCREW_PROFILE`` override, the active
 PlatformContext MUST be the all-defaults standalone context, and every wired
 consumption site MUST read the SAME value it did before the wiring (the value
 held in the module-global the Default adapter delegates to).
@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw import sandbox, security
-from kiro_claw.config.loader import KiroClawConfig
-from kiro_claw.platform import (
+from kiro_crew import sandbox, security
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.platform import (
     BASELINE_DENY,
     PROFILE_STANDALONE,
     boot_platform,
@@ -21,17 +21,17 @@ from kiro_claw.platform import (
 
 
 @pytest.fixture
-def cfg() -> KiroClawConfig:
-    return KiroClawConfig()
+def cfg() -> KiroCrewConfig:
+    return KiroCrewConfig()
 
 
-def test_boot_standalone_no_signals(cfg: KiroClawConfig, monkeypatch) -> None:
+def test_boot_standalone_no_signals(cfg: KiroCrewConfig, monkeypatch) -> None:
     """No env + no companion → standalone context installed."""
-    monkeypatch.delenv("KIROCLAW_PROFILE", raising=False)
-    monkeypatch.setattr("kiro_claw.platform.bootstrap.plugin_entry_points", lambda: [])
+    monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
+    monkeypatch.setattr("kiro_crew.platform.bootstrap.plugin_entry_points", lambda: [])
     # Avoid a real ~/.midway on the dev box flipping the profile.
     monkeypatch.setattr(
-        "kiro_claw.platform.profile.Path.home",
+        "kiro_crew.platform.profile.Path.home",
         lambda: _NoMidwayHome(),
     )
     ctx = boot_platform(cfg)
@@ -39,12 +39,12 @@ def test_boot_standalone_no_signals(cfg: KiroClawConfig, monkeypatch) -> None:
     assert current_context() is ctx
 
 
-def test_boot_platform_is_idempotent(cfg: KiroClawConfig, monkeypatch) -> None:
+def test_boot_platform_is_idempotent(cfg: KiroCrewConfig, monkeypatch) -> None:
     """A second boot call returns the already-installed context, no re-resolve."""
-    monkeypatch.setenv("KIROCLAW_PROFILE", "standalone")
+    monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
     first = boot_platform(cfg)
     # A second call must NOT re-resolve (would raise if it tried amazon w/o companion).
-    monkeypatch.setenv("KIROCLAW_PROFILE", "amazon")
+    monkeypatch.setenv("KIROCREW_PROFILE", "amazon")
     second = boot_platform(cfg)
     assert second is first
 

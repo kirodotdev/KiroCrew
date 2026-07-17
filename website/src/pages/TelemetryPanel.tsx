@@ -123,15 +123,15 @@ export default function TelemetryPanel() {
 
   const oh = (name: string) => other.find(o => o.name === name && o.kind === 'histogram')
   const oc = (name: string) => other.find(o => o.name === name && o.kind === 'counter')
-  const warm = oc('kiroclaw.mcp.warm_pool.acquire')
+  const warm = oc('kirocrew.mcp.warm_pool.acquire')
   const warmHit = warm?.by_attr?.['result=hit'] ?? 0
   const warmMiss = warm?.by_attr?.['result=miss'] ?? 0
   const warmRate = pct(warmHit, warmHit + warmMiss)
-  const acquire = oh('kiroclaw.mcp.backend.acquire.duration')
-  const mcpLazy = oh('kiroclaw.mcp.lazy_load.duration')
-  const mcpLazyN = oc('kiroclaw.mcp.lazy_load.count')?.total ?? 0
-  const skillLazy = oh('kiroclaw.skill.lazy_load.duration')
-  const skillLazyN = oc('kiroclaw.skill.lazy_load.count')?.total ?? 0
+  const acquire = oh('kirocrew.mcp.backend.acquire.duration')
+  const mcpLazy = oh('kirocrew.mcp.lazy_load.duration')
+  const mcpLazyN = oc('kirocrew.mcp.lazy_load.count')?.total ?? 0
+  const skillLazy = oh('kirocrew.skill.lazy_load.duration')
+  const skillLazyN = oc('kirocrew.skill.lazy_load.count')?.total ?? 0
 
   const readyRate = s ? pct(s.outcome.ready ?? 0, Object.values(s.outcome).reduce((a, b) => a + b, 0)) : 0
   const faultPct = t ? Math.round(t.fault_rate * 100) : null

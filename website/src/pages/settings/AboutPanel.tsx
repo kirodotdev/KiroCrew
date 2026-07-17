@@ -141,7 +141,7 @@ export function AboutPanel() {
   })
   // Memoize the DOMPurify pass so it doesn't re-run on every render.
   const safeChangelog = useMemo(() => (fullChangelog ? sanitize(fullChangelog) : ''), [fullChangelog])
-  const { data: mcCfg } = useQuery({ queryKey: ['mc-config-autoupdate'], queryFn: () => api.kiroclawConfig() })
+  const { data: mcCfg } = useQuery({ queryKey: ['mc-config-autoupdate'], queryFn: () => api.kirocrewConfig() })
   useEffect(() => {
     const v = (mcCfg as any)?.auto_update
     if (typeof v === 'boolean') setAutoUpdate(v)
@@ -200,7 +200,7 @@ export function AboutPanel() {
           />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
-              <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'KiroClaw'}</span>
+              <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'KiroCrew'}</span>
               <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}>v{version}</span>
               {!isDesktop && (updateAvailable
                 ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
@@ -252,7 +252,7 @@ export function AboutPanel() {
           ) : (
             <div className="flex flex-col gap-2.5">
               <p className="text-sm text-muted">
-                {botName || 'KiroClaw'} checks for updates automatically. You can also check now.
+                {botName || 'KiroCrew'} checks for updates automatically. You can also check now.
               </p>
               <div>
                 <Btn primary onClick={() => checkMutation.mutate()} disabled={checking}>
@@ -278,7 +278,7 @@ export function AboutPanel() {
             ) : (
               <>
                 <p className="text-sm text-muted">
-                  {botName || 'KiroClaw'} checks for updates automatically. You can also check now.
+                  {botName || 'KiroCrew'} checks for updates automatically. You can also check now.
                 </p>
                 <div>
                   <Btn onClick={() => gwCheck.mutate()} disabled={gwCheck.isPending}>

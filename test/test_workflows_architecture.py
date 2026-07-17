@@ -12,7 +12,7 @@ Enforces the layering declared in the module spec + dir-scoped AGENTS.md:
 
 Rules, as a FAILING build instead of prose nobody enforces (research/06 Artifact 1):
   * No backward imports (a lower layer importing a higher one).
-  * The engine must NOT import ``kiro_claw.dashboard.state`` internals directly —
+  * The engine must NOT import ``kiro_crew.dashboard.state`` internals directly —
     progress goes through ``EventBus`` / a thin port (keeps F1 honest so the UI
     can't reach into dashboard guts).
 
@@ -26,7 +26,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / "src" / "kiro_claw" / "workflows"
+WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "workflows"
 
 # Allowed intra-package imports per module (the layering contract). A module may
 # import ONLY the siblings listed here (plus the package root ``.`` == __init__).
@@ -50,8 +50,8 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
 
 # Modules outside the package the engine must never import directly (F1).
 FORBIDDEN_EXTERNAL_PREFIXES = (
-    "kiro_claw.dashboard.state",
-    "kiro_claw.dashboard.ws",
+    "kiro_crew.dashboard.state",
+    "kiro_crew.dashboard.ws",
 )
 
 

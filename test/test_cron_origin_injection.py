@@ -20,15 +20,15 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-if "kiro_claw.slack.handler" not in sys.modules:
-    _stub = types.ModuleType("kiro_claw.slack.handler")
+if "kiro_crew.slack.handler" not in sys.modules:
+    _stub = types.ModuleType("kiro_crew.slack.handler")
     _stub.is_allowed_user = lambda uid: False  # type: ignore[attr-defined]
     _stub.is_tracked_channel = lambda cid: False  # type: ignore[attr-defined]
-    sys.modules["kiro_claw.slack.handler"] = _stub
+    sys.modules["kiro_crew.slack.handler"] = _stub
 
-from kiro_claw.cron import CronJob  # noqa: E402
-from kiro_claw.cron_script import ScriptContext  # noqa: E402
-from kiro_claw.dashboard.handlers import api_send_message  # noqa: E402
+from kiro_crew.cron import CronJob  # noqa: E402
+from kiro_crew.cron_script import ScriptContext  # noqa: E402
+from kiro_crew.dashboard.handlers import api_send_message  # noqa: E402
 
 JOB_ID = "job12345"
 
@@ -60,7 +60,7 @@ def _live_running_slot():
 
 @pytest.fixture
 def mock_sel():
-    with patch("kiro_claw.sel.sel") as m:
+    with patch("kiro_crew.sel.sel") as m:
         m.return_value = MagicMock()
         yield m.return_value
 
@@ -107,7 +107,7 @@ async def test_resolved_key_with_no_live_slot_falls_back_to_bell(mock_sel):
     it posts a notification."""
     state = _state_with_job(slot=None)
     with patch(
-        "kiro_claw.dashboard.handlers.messaging._rehydrate_slot_from_history", return_value=None
+        "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history", return_value=None
     ):
         async with TestClient(TestServer(_make_app(state))) as c:
             resp = await c.post(

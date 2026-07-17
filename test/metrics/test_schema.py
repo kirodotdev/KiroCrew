@@ -1,10 +1,10 @@
-"""Tests for kiro_claw.metrics.schema — tel-01 foundation contracts."""
+"""Tests for kiro_crew.metrics.schema — tel-01 foundation contracts."""
 
 import base64
 
 import pytest
 
-from kiro_claw.metrics.schema import (
+from kiro_crew.metrics.schema import (
     MAX_ATTR_COUNT,
     MAX_ATTR_VALUE_LEN,
     redact,
@@ -13,17 +13,17 @@ from kiro_claw.metrics.schema import (
 )
 
 # ---------------------------------------------------------------------------
-# C4 — Namespace validation: app cannot spoof kiroclaw.*
+# C4 — Namespace validation: app cannot spoof kirocrew.*
 # ---------------------------------------------------------------------------
 
 
 class TestValidateName:
     """C4: app.<id>.* namespace enforcement."""
 
-    def test_app_cannot_spoof_kiroclaw_namespace(self):
-        """Apps MUST NOT be able to emit metrics under kiroclaw.*"""
-        with pytest.raises(ValueError, match="cannot emit.*kiroclaw"):
-            validate_name("kiroclaw.session.count", app_id="my_app")
+    def test_app_cannot_spoof_kirocrew_namespace(self):
+        """Apps MUST NOT be able to emit metrics under kirocrew.*"""
+        with pytest.raises(ValueError, match="cannot emit.*kirocrew"):
+            validate_name("kirocrew.session.count", app_id="my_app")
 
     def test_app_cannot_spoof_gen_ai_namespace(self):
         """Apps MUST NOT be able to emit metrics under gen_ai.*"""
@@ -40,10 +40,10 @@ class TestValidateName:
         result = validate_name("app.my_app.requests", app_id="my_app")
         assert result == "app.my_app.requests"
 
-    def test_core_valid_kiroclaw_name(self):
-        """Core caller can use kiroclaw.* namespace."""
-        result = validate_name("kiroclaw.session.duration")
-        assert result == "kiroclaw.session.duration"
+    def test_core_valid_kirocrew_name(self):
+        """Core caller can use kirocrew.* namespace."""
+        result = validate_name("kirocrew.session.duration")
+        assert result == "kirocrew.session.duration"
 
     def test_core_valid_gen_ai_name(self):
         """Core caller can use gen_ai.* namespace."""

@@ -50,7 +50,7 @@ describe('RegistryManager', () => {
     render(<RegistryManager />, { wrapper: Wrapper })
     await waitFor(() => screen.getByText('Add Registry'))
     fireEvent.click(screen.getByText('Add Registry'))
-    expect(screen.getByPlaceholderText(/kiroclaw-app-registry/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/kirocrew-app-registry/)).toBeInTheDocument()
   })
 
   it('validates empty repo on add', async () => {
@@ -70,7 +70,7 @@ describe('RegistryManager', () => {
     render(<RegistryManager />, { wrapper: Wrapper })
     await waitFor(() => screen.getByText('Add Registry'))
     fireEvent.click(screen.getByText('Add Registry'))
-    const repoInput = screen.getByPlaceholderText(/kiroclaw-app-registry/)
+    const repoInput = screen.getByPlaceholderText(/kirocrew-app-registry/)
     fireEvent.change(repoInput, { target: { value: '../evil' } })
     fireEvent.click(screen.getByText('Add Registry'))
     await waitFor(() => {
@@ -84,7 +84,7 @@ describe('RegistryManager', () => {
     render(<RegistryManager />, { wrapper: Wrapper })
     await waitFor(() => screen.getByText('Add Registry'))
     fireEvent.click(screen.getByText('Add Registry'))
-    const repoInput = screen.getByPlaceholderText(/kiroclaw-app-registry/)
+    const repoInput = screen.getByPlaceholderText(/kirocrew-app-registry/)
     fireEvent.change(repoInput, { target: { value: 'MyOrgApps' } })
     // Find the submit button (second "Add Registry" text)
     const buttons = screen.getAllByText('Add Registry')

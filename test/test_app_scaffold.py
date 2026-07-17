@@ -1,10 +1,10 @@
-"""Tests for kiro_claw.apps.scaffold — app scaffolding."""
+"""Tests for kiro_crew.apps.scaffold — app scaffolding."""
 from __future__ import annotations
 
 import json
 
-from kiro_claw.apps.manifest import AppManifest
-from kiro_claw.apps.scaffold import scaffold_app
+from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.scaffold import scaffold_app
 
 
 class TestScaffold:
@@ -59,28 +59,28 @@ class TestScaffold:
         app_dir = scaffold_app(tmp_path, "readme-check")
         readme = (app_dir / "README.md").read_text()
         assert "readme-check" in readme
-        assert "kiroclaw app install" in readme
+        assert "kirocrew app install" in readme
 
     def test_scaffold_installable(self, tmp_path, monkeypatch):
         """Scaffolded app can be installed by the app manager."""
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
 
         app_dir = scaffold_app(tmp_path / "output", "installable-app")
-        from kiro_claw.apps.manager import install_app
+        from kiro_crew.apps.manager import install_app
         result = install_app(app_dir)
         assert result.ok, result.error
 
     def test_scaffold_cli_integration(self, tmp_path, monkeypatch, capsys):
         """Test the CLI init command via _handle_app."""
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
 
         import argparse
 
-        from kiro_claw.cli import _handle_app
+        from kiro_crew.cli import _handle_app
         ns = argparse.Namespace(app_action="init", name="cli-scaffolded", dir=str(tmp_path), backend=False)
         _handle_app(ns)
         captured = capsys.readouterr()
@@ -103,8 +103,8 @@ class TestScaffold:
 
         # vite config should externalize shared modules
         vite_cfg = (app_dir / "ui" / "vite.config.ts").read_text()
-        assert "@kiroclaw/app-sdk" in vite_cfg
-        assert "@kiroclaw/app-sdk/ui" in vite_cfg
+        assert "@kirocrew/app-sdk" in vite_cfg
+        assert "@kirocrew/app-sdk/ui" in vite_cfg
 
         # App.tsx should have a valid component
         app_tsx = (app_dir / "ui" / "src" / "App.tsx").read_text()

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.config.loader import workspace_root
+from kiro_crew.config.loader import workspace_root
 
 
 def _make_symlinked_workspace(tmp_path: Path) -> tuple[Path, Path]:
@@ -43,7 +43,7 @@ class TestWorkspaceRootRealpath:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         symlink_form, real_form = _make_symlinked_workspace(tmp_path)
-        monkeypatch.setenv("KIROCLAW_WORKSPACE", str(symlink_form))
+        monkeypatch.setenv("KIROCREW_WORKSPACE", str(symlink_form))
 
         root = workspace_root()
 
@@ -57,7 +57,7 @@ class TestWorkspaceRootRealpath:
         """When the workspace path has no symlink component, normalization is a
         no-op and the root is returned unchanged (apart from existing)."""
         plain = tmp_path / "plain-ws"
-        monkeypatch.setenv("KIROCLAW_WORKSPACE", str(plain))
+        monkeypatch.setenv("KIROCREW_WORKSPACE", str(plain))
 
         root = workspace_root()
 

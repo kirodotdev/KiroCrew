@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from kiro_claw.messaging.link import (
+from kiro_crew.messaging.link import (
     DEFAULT_DM_SCOPE,
     DM_SCOPE_PER_CHANNEL_PEER,
     DM_SCOPE_UNIFIED,
@@ -21,16 +21,16 @@ from kiro_claw.messaging.link import (
 class TestBuildDmSessionKey:
     def test_per_channel_peer_is_channel_first(self) -> None:
         assert (
-            build_dm_session_key("telegram", "kiroclaw", "123")
-            == "telegram:kiroclaw:direct:123"
+            build_dm_session_key("telegram", "kirocrew", "123")
+            == "telegram:kirocrew:direct:123"
         )
 
     def test_default_scope_is_per_channel_peer(self) -> None:
         assert DEFAULT_DM_SCOPE == DM_SCOPE_PER_CHANNEL_PEER
         assert build_dm_session_key(
-            "telegram", "kiroclaw", "123"
+            "telegram", "kirocrew", "123"
         ) == build_dm_session_key(
-            "telegram", "kiroclaw", "123", dm_scope=DM_SCOPE_PER_CHANNEL_PEER
+            "telegram", "kirocrew", "123", dm_scope=DM_SCOPE_PER_CHANNEL_PEER
         )
 
     def test_generation_zero_is_bare_bucket(self) -> None:
@@ -48,9 +48,9 @@ class TestBuildDmSessionKey:
         )
 
     def test_unified_collapses_channel_and_user(self) -> None:
-        a = build_dm_session_key("telegram", "kiroclaw", "1", dm_scope=DM_SCOPE_UNIFIED)
-        b = build_dm_session_key("wecom", "kiroclaw", "999", dm_scope=DM_SCOPE_UNIFIED)
-        assert a == b == "unified:kiroclaw"
+        a = build_dm_session_key("telegram", "kirocrew", "1", dm_scope=DM_SCOPE_UNIFIED)
+        b = build_dm_session_key("wecom", "kirocrew", "999", dm_scope=DM_SCOPE_UNIFIED)
+        assert a == b == "unified:kirocrew"
 
     def test_unified_with_generation(self) -> None:
         assert (

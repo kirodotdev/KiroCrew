@@ -1,13 +1,13 @@
 ---
 name: feature-request
-description: Conversational workflow for gathering user feedback and filing GitHub Issues on the KiroClaw repository. Load when the user clicks "Request a Feature", wants to report a bug, or suggest an improvement.
+description: Conversational workflow for gathering user feedback and filing GitHub Issues on the KiroCrew repository. Load when the user clicks "Request a Feature", wants to report a bug, or suggest an improvement.
 triggers: request a feature, request feature, feature request, report a bug, bug report, file an issue, github issue, I have an idea, something's broken, suggestion
 ---
 
 # Feature Request / Issue Report
 
 Conversational workflow for gathering user feedback and creating GitHub Issues
-on the KiroClaw repository.
+on the KiroCrew repository.
 
 **Trigger:** User clicks "Request a Feature" button, or says "report a bug",
 "feature request", "I have an idea", "something's broken".
@@ -15,7 +15,7 @@ on the KiroClaw repository.
 ## Repository
 
 ```
-https://github.com/kirodotdev-labs/kiroclaw
+https://github.com/kirodotdev/KiroCrew
 ```
 
 ## Shell safety (READ FIRST)
@@ -66,7 +66,7 @@ Search existing issues to avoid duplicates. Derive plain keywords yourself (a
 few alphanumeric words) — do not paste raw user text:
 
 ```bash
-gh issue list --repo kirodotdev-labs/kiroclaw \
+gh issue list --repo kirodotdev/KiroCrew \
   --search "your derived keywords" --state open --limit 10
 ```
 
@@ -102,7 +102,7 @@ Present all three and let the user choose:
 Build a GitHub new-issue URL with query params:
 
 ```
-https://github.com/kirodotdev-labs/kiroclaw/issues/new?title=URL_ENCODED_TITLE&body=URL_ENCODED_BODY&labels=enhancement
+https://github.com/kirodotdev/KiroCrew/issues/new?title=URL_ENCODED_TITLE&body=URL_ENCODED_BODY&labels=enhancement
 ```
 
 Use `enhancement` label for features, `bug` label for bugs.
@@ -114,7 +114,7 @@ warn the user it may be truncated and recommend Option 2.
 
 Show the formatted title and body in a code block the user can copy into
 the GitHub new issue form at:
-`https://github.com/kirodotdev-labs/kiroclaw/issues/new`
+`https://github.com/kirodotdev/KiroCrew/issues/new`
 
 **Option 3: Direct creation via `gh` CLI**
 
@@ -131,7 +131,7 @@ then reference those files (see **Shell safety** above):
 
 ```bash
 TITLE="$(cat "$TITLE_FILE")"
-gh issue create --repo kirodotdev-labs/kiroclaw \
+gh issue create --repo kirodotdev/KiroCrew \
   --title "$TITLE" \
   --body-file "$BODY_FILE" \
   --label enhancement

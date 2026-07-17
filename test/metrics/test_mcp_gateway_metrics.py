@@ -3,9 +3,9 @@
 Every test drives the REAL production emit path with a patched recorder and
 asserts the captured metric name + attributes:
 
-* ``kiroclaw.mcp.warm_pool.acquire`` — via ``HotKeyStore.record_outcome``
-* ``kiroclaw.mcp.backend.acquire.duration`` — via ``gatewayd._emit_backend_acquire_metric``
-* ``kiroclaw.mcp.lazy_load.{count,duration}`` — via ``gatewayd._emit_lazy_load_metrics``
+* ``kirocrew.mcp.warm_pool.acquire`` — via ``HotKeyStore.record_outcome``
+* ``kirocrew.mcp.backend.acquire.duration`` — via ``gatewayd._emit_backend_acquire_metric``
+* ``kirocrew.mcp.lazy_load.{count,duration}`` — via ``gatewayd._emit_lazy_load_metrics``
 
 The metric names/attrs live in production (prewarm.py / gatewayd.py), so a
 rename, attribute change, or removed emit fails these tests rather than passing
@@ -32,7 +32,7 @@ class _CapturingRecorder:
 
 
 # ---------------------------------------------------------------------------
-# kiroclaw.mcp.warm_pool.acquire — prewarm.HotKeyStore.record_outcome
+# kirocrew.mcp.warm_pool.acquire — prewarm.HotKeyStore.record_outcome
 # ---------------------------------------------------------------------------
 
 
@@ -40,7 +40,7 @@ class TestWarmPoolAcquireCounter:
     """record_outcome emits a hit/miss counter (drives production)."""
 
     def _make_store(self, tmp_path):
-        from kiro_claw.mcp_gateway.prewarm import HotKeyStore
+        from kiro_crew.mcp_gateway.prewarm import HotKeyStore
 
         return HotKeyStore(tmp_path / "hot-keys.json")
 
@@ -49,21 +49,21 @@ class TestWarmPoolAcquireCounter:
         rec = _CapturingRecorder()
         # prewarm imports get_recorder at module top-level, so patch the
         # consumer binding, not the definition module.
-        with patch("kiro_claw.mcp_gateway.prewarm.get_recorder", return_value=rec):
+        with patch("kiro_crew.mcp_gateway.prewarm.get_recorder", return_value=rec):
             store.record_outcome(hit=True)
-        assert rec.counters == [("kiroclaw.mcp.warm_pool.acquire", {"result": "hit"})]
+        assert rec.counters == [("kirocrew.mcp.warm_pool.acquire", {"result": "hit"})]
 
     def test_miss_emits_counter(self, tmp_path):
         store = self._make_store(tmp_path)
         rec = _CapturingRecorder()
-        with patch("kiro_claw.mcp_gateway.prewarm.get_recorder", return_value=rec):
+        with patch("kiro_crew.mcp_gateway.prewarm.get_recorder", return_value=rec):
             store.record_outcome(hit=False)
-        assert rec.counters == [("kiroclaw.mcp.warm_pool.acquire", {"result": "miss"})]
+        assert rec.counters == [("kirocrew.mcp.warm_pool.acquire", {"result": "miss"})]
 
     def test_multiple_calls_accumulate(self, tmp_path):
         store = self._make_store(tmp_path)
         rec = _CapturingRecorder()
-        with patch("kiro_claw.mcp_gateway.prewarm.get_recorder", return_value=rec):
+        with patch("kiro_crew.mcp_gateway.prewarm.get_recorder", return_value=rec):
             store.record_outcome(hit=True)
             store.record_outcome(hit=False)
             store.record_outcome(hit=True)
@@ -71,7 +71,7 @@ class TestWarmPoolAcquireCounter:
 
 
 # ---------------------------------------------------------------------------
-# kiroclaw.mcp.backend.acquire.duration — gatewayd._emit_backend_acquire_metric
+# kirocrew.mcp.backend.acquire.duration — gatewayd._emit_backend_acquire_metric
 # ---------------------------------------------------------------------------
 
 
@@ -79,28 +79,28 @@ class TestBackendAcquireMetric:
     """The ensure_backend path emits acquire duration via this helper."""
 
     def test_warm_hit(self):
-        from kiro_claw.mcp_gateway.gatewayd import _emit_backend_acquire_metric
+        from kiro_crew.mcp_gateway.gatewayd import _emit_backend_acquire_metric
 
         rec = _CapturingRecorder()
-        with patch("kiro_claw.mcp_gateway.gatewayd.get_recorder", return_value=rec):
+        with patch("kiro_crew.mcp_gateway.gatewayd.get_recorder", return_value=rec):
             _emit_backend_acquire_metric(12.5, warm=True)
         assert rec.histograms == [
-            ("kiroclaw.mcp.backend.acquire.duration", 12.5, "ms", {"warm": True})
+            ("kirocrew.mcp.backend.acquire.duration", 12.5, "ms", {"warm": True})
         ]
 
     def test_cold_spawn(self):
-        from kiro_claw.mcp_gateway.gatewayd import _emit_backend_acquire_metric
+        from kiro_crew.mcp_gateway.gatewayd import _emit_backend_acquire_metric
 
         rec = _CapturingRecorder()
-        with patch("kiro_claw.mcp_gateway.gatewayd.get_recorder", return_value=rec):
+        with patch("kiro_crew.mcp_gateway.gatewayd.get_recorder", return_value=rec):
             _emit_backend_acquire_metric(340.0, warm=False)
         assert rec.histograms == [
-            ("kiroclaw.mcp.backend.acquire.duration", 340.0, "ms", {"warm": False})
+            ("kirocrew.mcp.backend.acquire.duration", 340.0, "ms", {"warm": False})
         ]
 
 
 # ---------------------------------------------------------------------------
-# kiroclaw.mcp.lazy_load.{count,duration} — gatewayd._emit_lazy_load_metrics
+# kirocrew.mcp.lazy_load.{count,duration} — gatewayd._emit_lazy_load_metrics
 # ---------------------------------------------------------------------------
 
 
@@ -108,24 +108,24 @@ class TestLazyLoadMetrics:
     """The lazy-spawn path emits count + duration + acquire via this helper."""
 
     def test_emits_count_duration_and_acquire(self):
-        from kiro_claw.mcp_gateway.gatewayd import _emit_lazy_load_metrics
+        from kiro_crew.mcp_gateway.gatewayd import _emit_lazy_load_metrics
 
         rec = _CapturingRecorder()
-        with patch("kiro_claw.mcp_gateway.gatewayd.get_recorder", return_value=rec):
+        with patch("kiro_crew.mcp_gateway.gatewayd.get_recorder", return_value=rec):
             _emit_lazy_load_metrics(250.0, warm=False)
 
         # Counter: lazy_load.count
-        assert rec.counters == [("kiroclaw.mcp.lazy_load.count", {"transport": "stdio"})]
+        assert rec.counters == [("kirocrew.mcp.lazy_load.count", {"transport": "stdio"})]
 
         # Histograms: lazy_load.duration + backend.acquire.duration
         by_name = {h[0]: h for h in rec.histograms}
         assert set(by_name) == {
-            "kiroclaw.mcp.lazy_load.duration",
-            "kiroclaw.mcp.backend.acquire.duration",
+            "kirocrew.mcp.lazy_load.duration",
+            "kirocrew.mcp.backend.acquire.duration",
         }
-        assert by_name["kiroclaw.mcp.lazy_load.duration"] == (
-            "kiroclaw.mcp.lazy_load.duration", 250.0, "ms", {"transport": "stdio"},
+        assert by_name["kirocrew.mcp.lazy_load.duration"] == (
+            "kirocrew.mcp.lazy_load.duration", 250.0, "ms", {"transport": "stdio"},
         )
-        assert by_name["kiroclaw.mcp.backend.acquire.duration"] == (
-            "kiroclaw.mcp.backend.acquire.duration", 250.0, "ms", {"warm": False},
+        assert by_name["kirocrew.mcp.backend.acquire.duration"] == (
+            "kirocrew.mcp.backend.acquire.duration", 250.0, "ms", {"warm": False},
         )

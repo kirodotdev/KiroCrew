@@ -1,6 +1,6 @@
 # Voice Input & Output
 
-KiroClaw supports hands-free interaction through voice input (speech-to-text)
+KiroCrew supports hands-free interaction through voice input (speech-to-text)
 and voice output (text-to-speech). Both work in the dashboard and Slack.
 
 ## Voice Input (Speech-to-Text)
@@ -27,7 +27,7 @@ auto-detected (WebM/Opus preferred, MP4/OGG fallback).
 ### Slack Voice Memos
 
 When STT is enabled, voice memos sent in Slack threads are automatically
-transcribed. KiroClaw processes the audio and responds to the transcribed text
+transcribed. KiroCrew processes the audio and responds to the transcribed text
 as if you had typed it.
 
 ### Setup (Required for Both)
@@ -45,7 +45,7 @@ device.
    ```bash
    sudo dnf install -y python3.11 python3.11-pip python3.11-devel gcc gcc-c++
    sudo dnf install -y gcc make nasm diffutils
-   bash /path/to/KiroClaw/scripts/build-ffmpeg.sh
+   bash /path/to/KiroCrew/scripts/build-ffmpeg.sh
    ```
 
    **macOS:**
@@ -88,12 +88,12 @@ status badge stays "not installed".
    `~/.cache/huggingface/hub/`.
 
 `mlx-whisper` is installed out-of-band via `pipx` rather than as a package
-dependency because the `mlx` wheel is arm64-only; KiroClaw invokes the
+dependency because the `mlx` wheel is arm64-only; KiroCrew invokes the
 `mlx_whisper` CLI as a subprocess, exactly like the `whisper` provider.
 
 ## Voice Output (Text-to-Speech)
 
-KiroClaw can speak responses aloud using AWS Polly. Two modes are available:
+KiroCrew can speak responses aloud using AWS Polly. Two modes are available:
 
 ### Auto-Speak (Non-Interruptive Streaming)
 
@@ -125,7 +125,7 @@ to hear it read aloud. This works independently of auto-speak.
 
 ### Slack Voice Replies
 
-Use the `/kiroclaw voice` slash command to open a settings modal where you can
+Use the `/kirocrew voice` slash command to open a settings modal where you can
 configure voice, engine, speed, and pitch.
 
 The legacy `!voice` inline commands still work but are deprecated:
@@ -145,7 +145,7 @@ File format depends on the provider (MP3 for Polly, WAV for Piper).
 ### Configuration
 
 Settings are in **Settings → Chat → Voice (TTS)**, or directly in
-`~/.kiroclaw/config.json`. The `voice_reply` section is a loose dictionary
+`~/.kirocrew/config.json`. The `voice_reply` section is a loose dictionary
 (not part of the typed config schema), so you edit it by hand:
 
 ```json
@@ -172,7 +172,7 @@ Settings are in **Settings → Chat → Voice (TTS)**, or directly in
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `enabled` | `false` | Turn on voice replies for **every** Kiroclaw response (text-triggered). Also seeds the `auto_reply_to_voice` default — see below. |
+| `enabled` | `false` | Turn on voice replies for **every** Kirocrew response (text-triggered). Also seeds the `auto_reply_to_voice` default — see below. |
 | `provider` | `"polly"` | TTS backend: `"polly"` (AWS, cloud) or `"piper"` (local, offline). Invalid values fall back to `polly` with a warning logged. |
 | `auto_reply_to_voice` | _follows `enabled`_ | **Voice-triggered**: when the user sends a voice memo, auto-respond with voice. Defaults to whatever `enabled` is — set explicitly to override. |
 | **Polly-specific** | | ignored when `provider="piper"` |
@@ -203,7 +203,7 @@ You can also set `auto_reply_to_voice: true` explicitly while leaving
 i.e. text replies stay text, voice memos get a spoken reply.
 
 If TTS is **not configured** (missing `aws` CLI for Polly, missing binary or
-model for Piper), KiroClaw posts a one-shot **ephemeral** explaining why and
+model for Piper), KiroCrew posts a one-shot **ephemeral** explaining why and
 replies with text only. The ephemeral fires for every opt-in path —
 globally enabled, per-thread `!voice on`, or voice-memo auto-reply — so
 silent fallback never surprises the user.
@@ -230,7 +230,7 @@ Responses are cleaned for natural speech before synthesis:
 
 ### Prerequisites — AWS Polly (`provider: "polly"`)
 
-- **AWS credentials** with `polly:SynthesizeSpeech` permission. KiroClaw
+- **AWS credentials** with `polly:SynthesizeSpeech` permission. KiroCrew
   calls the AWS CLI (`aws polly synthesize-speech`) under the hood, so any
   credential method the CLI supports will work:
 
@@ -264,7 +264,7 @@ you can't or don't want to use AWS Polly.
    curl -fsSL "$BASE/en_US-lessac-medium.onnx.json" -o ~/piper/en_US-lessac-medium.onnx.json
    ```
 
-3. **Set the config** in `~/.kiroclaw/config.json`:
+3. **Set the config** in `~/.kirocrew/config.json`:
    ```json
    "voice_reply": {
      "enabled": true,

@@ -1,7 +1,7 @@
 """Smoke tests for memory system across all agent types and sessions.
 
 Verifies that memory (semantic, episodic, lessons) is truly useful:
-- Injected for ALL agents (kiroclaw, custom, cron, taskrunner)
+- Injected for ALL agents (kirocrew, custom, cron, taskrunner)
 - Complex values render as JSON, not [Object] or Python repr
 - Episodic text-hash dedup prevents near-identical entries
 - Consolidation prompt instructs LLM to merge existing keys
@@ -12,12 +12,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiro_claw.context import ContextBuilder
-from kiro_claw.hooks import ContextRule, HookManager, HooksConfig, TransformHook
-from kiro_claw.learn import LessonStore
-from kiro_claw.memory import MemoryStore
-from kiro_claw.skills import SkillsLoader
-from kiro_claw.vector_memory import VectorMemoryStore
+from kiro_crew.context import ContextBuilder
+from kiro_crew.hooks import ContextRule, HookManager, HooksConfig, TransformHook
+from kiro_crew.learn import LessonStore
+from kiro_crew.memory import MemoryStore
+from kiro_crew.skills import SkillsLoader
+from kiro_crew.vector_memory import VectorMemoryStore
 
 
 def _builder(tmp_path: Path, **kw: object) -> ContextBuilder:
@@ -99,12 +99,12 @@ class TestEpisodicTextHashDedup:
 class TestMemoryInjectionAllAgents:
     """Memory, lessons, critical rules, and hooks must be injected for ALL agents."""
 
-    def test_kiroclaw_agent_gets_everything(self, tmp_path: Path) -> None:
+    def test_kirocrew_agent_gets_everything(self, tmp_path: Path) -> None:
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
         store.write("# Memory\n\nUser likes Python.")
         builder = _builder(tmp_path, memory=store)
-        ctx = builder.build_session_context(agent="kiroclaw")
+        ctx = builder.build_session_context(agent="kirocrew")
         assert "Python" in ctx
         assert "[CRITICAL RULES" in ctx
 
@@ -142,7 +142,7 @@ class TestMemoryInjectionAllAgents:
         assert "WORKSPACE IDENTITY" not in ctx
 
     def test_custom_agent_gets_lessons(self, tmp_path: Path) -> None:
-        from kiro_claw.learn import Lesson
+        from kiro_crew.learn import Lesson
 
         lessons = LessonStore(base_dir=tmp_path)
         lessons.save(
@@ -197,7 +197,7 @@ class TestEpisodicInjectionAllAgents:
         )
         assert "PostgreSQL" in msg
 
-    def test_kiroclaw_agent_gets_episodic_on_new_session(self, tmp_path: Path) -> None:
+    def test_kirocrew_agent_gets_episodic_on_new_session(self, tmp_path: Path) -> None:
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
         vs = VectorMemoryStore(db_path=tmp_path / "mem.db")
@@ -208,7 +208,7 @@ class TestEpisodicInjectionAllAgents:
         msg, _ = builder.build_message(
             "what database should I use?",
             is_new_session=True,
-            agent="kiroclaw",
+            agent="kirocrew",
         )
         assert "PostgreSQL" in msg
 
@@ -308,7 +308,7 @@ class TestMMRReranking:
     """MMR reranking balances relevance with diversity in episodic results."""
 
     def test_mmr_rerank_promotes_diversity(self) -> None:
-        from kiro_claw.vector_memory import _mmr_rerank
+        from kiro_crew.vector_memory import _mmr_rerank
 
         candidates = [
             {"text": "deployed H2C to prod fixed IAM role", "score": 0.92},
@@ -328,18 +328,18 @@ class TestMMRReranking:
         assert not any("wrong scope" in t for t in texts)
 
     def test_mmr_rerank_single_item(self) -> None:
-        from kiro_claw.vector_memory import _mmr_rerank
+        from kiro_crew.vector_memory import _mmr_rerank
 
         result = _mmr_rerank([{"text": "only one", "score": 0.5}], limit=3)
         assert len(result) == 1
 
     def test_mmr_rerank_empty(self) -> None:
-        from kiro_claw.vector_memory import _mmr_rerank
+        from kiro_crew.vector_memory import _mmr_rerank
 
         assert _mmr_rerank([], limit=3) == []
 
     def test_mmr_rerank_respects_limit(self) -> None:
-        from kiro_claw.vector_memory import _mmr_rerank
+        from kiro_crew.vector_memory import _mmr_rerank
 
         candidates = [{"text": f"item {i}", "score": 1.0 - i * 0.1} for i in range(10)]
         result = _mmr_rerank(candidates, limit=4)
@@ -378,7 +378,7 @@ class TestHybridSemanticRetrieval:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
         store.init()
         store.set_semantic("pref.language", "Python", 1.0, "user_explicit")
-        store.set_semantic("project.name", "KiroClaw", 1.0, "user_explicit")
+        store.set_semantic("project.name", "KiroCrew", 1.0, "user_explicit")
         ctx = store.get_semantic_context(query_text="Python language")
         assert "pref.language: Python" in ctx
 
@@ -397,7 +397,7 @@ class TestHybridSemanticRetrieval:
         store.init()
         store.embed_fn = mock_embed
         store.set_semantic("pref.language", "Python", 1.0, "user_explicit")
-        store.set_semantic("project.name", "KiroClaw", 1.0, "user_explicit")
+        store.set_semantic("project.name", "KiroCrew", 1.0, "user_explicit")
         store.set_semantic("user.timezone", "PST", 1.0, "user_explicit")
         ctx = store.get_semantic_context(query_text="what language do you prefer")
         # Should return results — hybrid scoring should find relevant entries
@@ -419,20 +419,20 @@ class TestHybridSemanticRetrieval:
 
 class TestJaccardSimilarity:
     def test_identical_texts(self) -> None:
-        from kiro_claw.vector_memory import _jaccard, _tokenize
+        from kiro_crew.vector_memory import _jaccard, _tokenize
 
         a = _tokenize("deployed the app to production")
         assert _jaccard(a, a) == 1.0
 
     def test_disjoint_texts(self) -> None:
-        from kiro_claw.vector_memory import _jaccard, _tokenize
+        from kiro_crew.vector_memory import _jaccard, _tokenize
 
         a = _tokenize("deployed the app")
         b = _tokenize("migration database schema")
         assert _jaccard(a, b) == 0.0
 
     def test_partial_overlap(self) -> None:
-        from kiro_claw.vector_memory import _jaccard, _tokenize
+        from kiro_crew.vector_memory import _jaccard, _tokenize
 
         a = _tokenize("deployed app to production")
         b = _tokenize("deployed service to staging")
@@ -440,7 +440,7 @@ class TestJaccardSimilarity:
         assert 0.0 < sim < 1.0
 
     def test_empty_sets(self) -> None:
-        from kiro_claw.vector_memory import _jaccard
+        from kiro_crew.vector_memory import _jaccard
 
         assert _jaccard(set(), set()) == 0.0
         assert _jaccard({"a"}, set()) == 0.0
@@ -576,7 +576,7 @@ class TestLessonEmbeddingStorage:
     def test_backfill_cap(self, tmp_path: Path) -> None:
         """Lazy backfill stops after _MAX_BACKFILLS_PER_CALL legacy lessons."""
 
-        from kiro_claw.vector_memory import _MAX_BACKFILLS_PER_CALL
+        from kiro_crew.vector_memory import _MAX_BACKFILLS_PER_CALL
 
         db = tmp_path / "mem.db"
         s = VectorMemoryStore(db_path=db)

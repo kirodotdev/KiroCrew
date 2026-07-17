@@ -10,15 +10,15 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-# Ensure kiro_claw.slack.handler is importable for patching even when
+# Ensure kiro_crew.slack.handler is importable for patching even when
 # heavy transitive deps (cron_descriptor, etc.) aren't installed.
-if "kiro_claw.slack.handler" not in sys.modules:
-    _stub = types.ModuleType("kiro_claw.slack.handler")
+if "kiro_crew.slack.handler" not in sys.modules:
+    _stub = types.ModuleType("kiro_crew.slack.handler")
     _stub.is_allowed_user = lambda uid: False  # type: ignore[attr-defined]
     _stub.is_tracked_channel = lambda cid: False  # type: ignore[attr-defined]
-    sys.modules["kiro_claw.slack.handler"] = _stub
+    sys.modules["kiro_crew.slack.handler"] = _stub
 
-from kiro_claw.dashboard.handlers import api_send_message, api_slack_profile  # noqa: E402
+from kiro_crew.dashboard.handlers import api_send_message, api_slack_profile  # noqa: E402
 
 
 def _make_app(state) -> web.Application:
@@ -38,7 +38,7 @@ def _mock_state(slack_client=None, owner_id=""):
 
 @pytest.fixture
 def mock_sel():
-    with patch("kiro_claw.sel.sel") as m:
+    with patch("kiro_crew.sel.sel") as m:
         instance = MagicMock()
         m.return_value = instance
         yield instance
@@ -56,7 +56,7 @@ class TestTargetedChannel:
         state = _mock_state(slack_client=slack, owner_id="U_OWNER")
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_tracked_channel", return_value=True):
+        with patch("kiro_crew.slack.handler.is_tracked_channel", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -87,7 +87,7 @@ class TestTargetedChannel:
         state = _mock_state(slack_client=MagicMock(), owner_id="U_OWNER")
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_tracked_channel", return_value=False):
+        with patch("kiro_crew.slack.handler.is_tracked_channel", return_value=False):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -109,7 +109,7 @@ class TestTargetedUser:
         state = _mock_state(slack_client=slack, owner_id="U_OWNER")
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=True):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -141,7 +141,7 @@ class TestTargetedUser:
         state = _mock_state(slack_client=slack, owner_id="U_OWNER")
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=False):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=False):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -354,7 +354,7 @@ class TestSlackProfile:
         state = _mock_state(slack_client=slack)
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=True):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/slack-profile", json={"user": "U0123ABC456"})
                 assert resp.status == 200
@@ -399,7 +399,7 @@ class TestSlackProfile:
         state = _mock_state(slack_client=slack)
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=True):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/slack-profile", json={"user": "U0123ABC456"})
                 assert resp.status == 502
@@ -417,7 +417,7 @@ class TestSlackProfile:
         state = _mock_state(slack_client=None)
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=True):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/slack-profile", json={"user": "U0123ABC456"})
                 assert resp.status == 503
@@ -428,7 +428,7 @@ class TestSlackProfile:
         state = _mock_state(slack_client=MagicMock())
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=False):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=False):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/slack-profile", json={"user": "U0123ABC456"})
                 assert resp.status == 403
@@ -453,7 +453,7 @@ class TestSlackProfile:
         state._profile_lookup_times = [time.monotonic()] * 5
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=True):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/slack-profile", json={"user": "U0123ABC456"})
                 assert resp.status == 429
@@ -481,7 +481,7 @@ class TestSlackProfile:
         state = _mock_state(slack_client=slack)
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_allowed_user", return_value=True):
+        with patch("kiro_crew.slack.handler.is_allowed_user", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/slack-profile", json={"user": "U0123ABC456"})
                 assert resp.status == 200
@@ -597,7 +597,7 @@ class TestThreadTsAndBroadcast:
         state = _mock_state(slack_client=slack, owner_id="U_OWNER")
         app = _make_app(state)
 
-        with patch("kiro_claw.slack.handler.is_tracked_channel", return_value=True):
+        with patch("kiro_crew.slack.handler.is_tracked_channel", return_value=True):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",

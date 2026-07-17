@@ -1,6 +1,6 @@
 """Tests for the git-publish branch gate (feature-branch allow, protected deny).
 
-Covers the always-on Python gate in ``kiro_claw.security`` and its kiro-cli
+Covers the always-on Python gate in ``kiro_crew.security`` and its kiro-cli
 ``defaults.json`` mirror:
 
 * ``_is_git_publish`` — a PURE detector ("is this a git publish?"), incl.
@@ -12,9 +12,9 @@ Covers the always-on Python gate in ``kiro_claw.security`` and its kiro-cli
 * ``is_denied`` — the enforcement point: denial reason for a blocked publish,
   ``push_allowed`` SEL audit for an allowed one (final-outcome only).
 
-KiroClaw protects the git defaults only (main, mainline, master); it has no
-``beta-braveheart``/``develop``/``prod`` integration branch nor a ``release/*``
-namespace, so those names are ordinary feature branches here.
+KiroCrew protects the git default branch names only (enumerated at line 9
+above); it has no ``beta-braveheart``/``develop``/``prod`` integration branch
+nor a ``release/*`` namespace, so those names are ordinary feature branches here.
 """
 
 import json
@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw import security
-from kiro_claw.security import (
+from kiro_crew import security
+from kiro_crew.security import (
     _is_git_publish,
     _is_push_to_protected_branch,
     _schedule_push_allow_audit,
@@ -56,7 +56,7 @@ class TestIsPushToProtectedBranch:
         assert _is_push_to_protected_branch(f"{PUSH} origin master") is True
 
     def test_meshclaw_only_branches_not_protected(self) -> None:
-        """KiroClaw protects only git defaults; MeshClaw integration branch names
+        """KiroCrew protects only git defaults; MeshClaw integration branch names
         are ordinary feature branches here and stay pushable."""
         assert _is_push_to_protected_branch(f"{PUSH} origin beta-braveheart") is False
         assert _is_push_to_protected_branch(f"{PUSH} origin develop") is False
@@ -144,9 +144,12 @@ class TestCompoundAndGlueGate:
 
     def test_glue_evasion_verb_and_target_blocked(self) -> None:
         """git$(echo ' ')push and ma$(echo)in both resolve to a protected push."""
-        assert _is_push_to_protected_branch(
-            f"{PUSH} origin feature; git$(echo x)pus{'h'} origin ma$(echo)in"
-        ) is True
+        assert (
+            _is_push_to_protected_branch(
+                f"{PUSH} origin feature; git$(echo x)pus{'h'} origin ma$(echo)in"
+            )
+            is True
+        )
         assert _is_push_to_protected_branch(f"git`echo`pus{'h'} origin main") is True
 
     def test_substitution_in_target_blocked(self) -> None:
@@ -165,7 +168,9 @@ class TestCompoundAndGlueGate:
         assert _is_push_to_protected_branch(f"{PUSH} origin feat && echo {{a,b}}") is False
 
     def test_word_push_in_other_segment_allowed(self) -> None:
-        assert _is_push_to_protected_branch(f"{PUSH} origin feat; echo remember-to-pus{'h'}") is False
+        assert (
+            _is_push_to_protected_branch(f"{PUSH} origin feat; echo remember-to-pus{'h'}") is False
+        )
 
 
 class TestIsGitPublishDetection:
@@ -271,6 +276,7 @@ class TestGitPushEnforcement:
 
     def test_redos_safe_on_pathological_input(self) -> None:
         """is_denied must not backtrack exponentially on whitespace-laden flags."""
+
         def _timeout(*_):
             raise TimeoutError
 
@@ -291,9 +297,7 @@ class TestDefaultsJsonPushRegexes:
 
     @staticmethod
     def _push_regexes() -> "list[re.Pattern[str]]":
-        cfg = json.loads(
-            (Path(security.__file__).parent / "config" / "defaults.json").read_text()
-        )
+        cfg = json.loads((Path(security.__file__).parent / "config" / "defaults.json").read_text())
         pats = cfg["toolsSettings"]["execute_bash"]["deniedCommands"]
         return [re.compile(p) for p in pats if "push" in p and p.startswith(".*git")]
 

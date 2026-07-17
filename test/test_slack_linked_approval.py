@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import kiro_claw.slack.handler as handler
-from kiro_claw.slack.handler import (
+import kiro_crew.slack.handler as handler
+from kiro_crew.slack.handler import (
     _ACTION_APPROVE,
     _ACTION_REJECT,
     _linked_approvals,

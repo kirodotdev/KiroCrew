@@ -2,8 +2,8 @@
   "name": "demo-app",
   "version": "0.1.0",
   "displayName": "Demo App",
-  "description": "Minimal proof-of-concept for the KiroClaw federated app platform",
-  "author": "kiroclaw",
+  "description": "Minimal proof-of-concept for the KiroCrew federated app platform",
+  "author": "kirocrew",
   "tags": ["demo", "platform"],
   "ui": {
     "entry": "index.mjs",

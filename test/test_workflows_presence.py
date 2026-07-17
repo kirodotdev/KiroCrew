@@ -1,6 +1,6 @@
 """GATE F3 — test-presence gate for the workflows engine.
 
-Touching ``kiro_claw/workflows/**`` without a matching test must fail the build
+Touching ``kiro_crew/workflows/**`` without a matching test must fail the build
 (GATES.md F3). The fully *diff-aware* form keys off ``git diff`` to see which
 files changed — but git state is environment-fragile in this clone (see LOOP.md
 intervention log: a ``/tmp``-is-a-git-repo test already reddened the trunk), and
@@ -28,8 +28,8 @@ import ast
 from pathlib import Path
 
 TEST_DIR = Path(__file__).resolve().parent
-WORKFLOWS_DIR = TEST_DIR.parent / "src" / "kiro_claw" / "workflows"
-PKG = "kiro_claw.workflows"
+WORKFLOWS_DIR = TEST_DIR.parent / "src" / "kiro_crew" / "workflows"
+PKG = "kiro_crew.workflows"
 
 
 def _workflows_modules() -> list[str]:
@@ -45,7 +45,7 @@ def _referenced_paths(tree: ast.Module) -> set[str]:
     """Dotted module paths a test imports (``import X`` / ``from X import Y``).
 
     For ``from X import Y`` we record both ``X`` and ``X.Y`` so that
-    ``from kiro_claw.workflows.dsl import parallel`` registers ``...workflows.dsl``.
+    ``from kiro_crew.workflows.dsl import parallel`` registers ``...workflows.dsl``.
     """
     paths: set[str] = set()
     for node in ast.walk(tree):

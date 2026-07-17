@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from kiro_claw.config.schema import SCHEMA_REGISTRY
+from kiro_crew.config.schema import SCHEMA_REGISTRY
 
 # Each test spawns a real child interpreter (subprocess.run([sys.executable, ...]));
 # pin the module to a dedicated xdist worker so concurrent cold-starts under -n auto
@@ -32,7 +32,7 @@ def _run_generator(tmp_path: str) -> dict:
     """Run the baseline generator and return the parsed JSON output."""
     env = os.environ.copy()
     out_path = os.path.join(str(tmp_path), "config-baseline.json")
-    env["KIROCLAW_BASELINE_OUTPUT"] = out_path
+    env["KIROCREW_BASELINE_OUTPUT"] = out_path
     result = subprocess.run(
         [sys.executable, _SCRIPT_PATH],
         capture_output=True,

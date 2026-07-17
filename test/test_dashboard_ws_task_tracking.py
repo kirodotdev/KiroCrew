@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.dashboard.state import DashboardState
-from kiro_claw.history import ConversationLog
+from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import ConversationLog
 
 
 def _make_state(tmp_path) -> DashboardState:

@@ -1,4 +1,4 @@
-"""Tests for ``kiro_claw.testing.fixtures``.
+"""Tests for ``kiro_crew.testing.fixtures``.
 
 Covers the plain context manager and the pytest fixture, plus a
 byte-for-byte check that the helper produces exactly the shipped
@@ -13,15 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw import seed as seed_mod
-from kiro_claw.testing.fixtures import seeded_home
+from kiro_crew import seed as seed_mod
+from kiro_crew.testing.fixtures import seeded_home
 
 # Register ``seeded_home_fixture`` as a pytest plugin rather than importing
 # it directly. Importing the fixture would shadow the test-function parameter
 # of the same name (flake8 F811), and renaming the parameter would break
 # pytest's name-based fixture binding. ``pytest_plugins`` is the sanctioned
 # way to pull fixtures into a test module without a name collision.
-pytest_plugins = ["kiro_claw.testing.fixtures"]
+pytest_plugins = ["kiro_crew.testing.fixtures"]
 
 # Fixture root used by the helper — one lookup, not repeated in every
 # test, so a future move of the fixtures dir is a one-line change here.
@@ -73,28 +73,28 @@ def _assert_subtree_identical(cmp: filecmp.dircmp) -> None:
 
 
 def test_seeded_home_restores_previous_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exiting the context manager restores the prior KIROCLAW_HOME."""
-    monkeypatch.setenv("KIROCLAW_HOME", "/tmp/sentinel-previous")
+    """Exiting the context manager restores the prior KIROCREW_HOME."""
+    monkeypatch.setenv("KIROCREW_HOME", "/tmp/sentinel-previous")
     with seeded_home("empty") as home:
         # Inside: env points at the tempdir, not the sentinel.
-        assert os.environ["KIROCLAW_HOME"] == str(home)
+        assert os.environ["KIROCREW_HOME"] == str(home)
     # After: sentinel is back.
-    assert os.environ["KIROCLAW_HOME"] == "/tmp/sentinel-previous"
+    assert os.environ["KIROCREW_HOME"] == "/tmp/sentinel-previous"
 
 
 def test_seeded_home_unsets_env_when_not_previously_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exiting unsets KIROCLAW_HOME when it wasn't set on entry."""
-    monkeypatch.delenv("KIROCLAW_HOME", raising=False)
+    """Exiting unsets KIROCREW_HOME when it wasn't set on entry."""
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     with seeded_home("empty"):
-        assert "KIROCLAW_HOME" in os.environ
-    assert "KIROCLAW_HOME" not in os.environ
+        assert "KIROCREW_HOME" in os.environ
+    assert "KIROCREW_HOME" not in os.environ
 
 
 def test_seeded_home_cleans_up_tempdir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tempdir is removed on context-manager exit."""
-    monkeypatch.delenv("KIROCLAW_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     with seeded_home("empty") as home:
         captured = home
         assert captured.is_dir()
@@ -105,7 +105,7 @@ def test_seeded_home_propagates_unknown_fixture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unknown fixture name raises ``SeedError`` (guardrails still apply)."""
-    monkeypatch.delenv("KIROCLAW_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     with pytest.raises(seed_mod.SeedError) as excinfo:
         with seeded_home("not-a-real-fixture"):
             pytest.fail("context manager must not yield on bad fixture")
@@ -120,7 +120,7 @@ def test_seeded_home_propagates_path_traversal(
     Prevents callers from using the helper to bypass ``_resolve_fixture``
     and land outside ``tests_fixtures/``.
     """
-    monkeypatch.delenv("KIROCLAW_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     with pytest.raises(seed_mod.SeedError) as excinfo:
         with seeded_home("../../.ssh"):
             pytest.fail("context manager must not yield on traversal")
@@ -133,13 +133,13 @@ def test_seeded_home_restores_env_on_seed_failure(
     """Env var is still restored when seed() raises inside the CM.
 
     Guards the ``finally`` branch — a bare ``try:`` with ``yield`` would
-    leave ``KIROCLAW_HOME`` dangling if seed() raised after we set it.
+    leave ``KIROCREW_HOME`` dangling if seed() raised after we set it.
     """
-    monkeypatch.setenv("KIROCLAW_HOME", "/tmp/sentinel-restore-on-fail")
+    monkeypatch.setenv("KIROCREW_HOME", "/tmp/sentinel-restore-on-fail")
     with pytest.raises(seed_mod.SeedError):
         with seeded_home("not-a-real-fixture"):
             pytest.fail("unreachable")
-    assert os.environ["KIROCLAW_HOME"] == "/tmp/sentinel-restore-on-fail"
+    assert os.environ["KIROCREW_HOME"] == "/tmp/sentinel-restore-on-fail"
 
 
 # ── Pytest fixture ──────────────────────────────────────────────────
@@ -194,9 +194,9 @@ def test_seeded_home_populated_fixture_has_starter_session(
     """minimal and rich both ship a pinned starter chat session.
 
     The dashboard lists sessions by ``glob("*.jsonl")`` on
-    ``$KIROCLAW_HOME/sessions/``, so shipping a well-formed JSONL file
+    ``$KIROCREW_HOME/sessions/``, so shipping a well-formed JSONL file
     there makes the sessions tab non-empty on first boot — the headline
-    value of ``kiroclaw gateway --seed <fixture>`` for e2e dashboard
+    value of ``kirocrew gateway --seed <fixture>`` for e2e dashboard
     testing.
 
     Asserts the starter file exists (by name, since rich ships several
@@ -230,7 +230,7 @@ def test_seeded_home_populated_fixture_has_starter_session(
         assert "created_at" in meta, "metadata must carry created_at"
 
         # Restoration contract — keep in sync with
-        # ``kiro_claw.dashboard.chat_persistence.restore_recent_sessions``:
+        # ``kiro_crew.dashboard.chat_persistence.restore_recent_sessions``:
         #  - ``closed=True`` short-circuits the restore loop (line ~85)
         #  - absent ``pinned``/``folder_id`` falls through to the 30-min
         #    ``modified`` cutoff; ``shutil.copy2`` preserves mtime from the
@@ -316,9 +316,9 @@ def test_seeded_home_importable_without_pytest(
     """``seeded_home`` must be importable when pytest is unavailable.
 
     Regression guard (CR-271908858 rev-1 AutoSDE finding #1): the runtime
-    wheel ships ``kiro_claw.testing`` without pytest in its dependencies,
+    wheel ships ``kiro_crew.testing`` without pytest in its dependencies,
     so any hard ``import pytest`` at module top breaks the contract that
-    ``from kiro_claw.testing import seeded_home`` works from any test
+    ``from kiro_crew.testing import seeded_home`` works from any test
     harness.
 
     Simulates pytest-absent by hiding ``pytest`` from ``sys.modules`` and
@@ -336,10 +336,10 @@ def test_seeded_home_importable_without_pytest(
     # incantation for this.
     monkeypatch.setitem(sys.modules, "pytest", None)  # type: ignore[arg-type]
     # Force a fresh load by removing any cached copy of the target module.
-    monkeypatch.delitem(sys.modules, "kiro_claw.testing.fixtures", raising=False)
-    monkeypatch.delitem(sys.modules, "kiro_claw.testing", raising=False)
+    monkeypatch.delitem(sys.modules, "kiro_crew.testing.fixtures", raising=False)
+    monkeypatch.delitem(sys.modules, "kiro_crew.testing", raising=False)
 
-    fresh = importlib.import_module("kiro_claw.testing.fixtures")
+    fresh = importlib.import_module("kiro_crew.testing.fixtures")
 
     # Context-manager entry point still exposed.
     assert hasattr(fresh, "seeded_home")

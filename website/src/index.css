@@ -185,7 +185,7 @@
   color-scheme:light;
 }
 
-/* ── Amber (original KiroClaw) ── */
+/* ── Amber (original KiroCrew) ── */
 /* amber-dark inherits from :root (default dark) — only accent overrides */
 [data-theme="amber-dark"]{
   --accent:#ffd230;--accent-fg:#000;--accent-hover:#fbb860;--accent-subtle:rgba(245,158,50,.15);

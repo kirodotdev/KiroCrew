@@ -11,12 +11,12 @@ You are browsing Amazon internal websites using Playwright MCP. Authentication i
 ## Step 1: Refresh Auth Credentials
 
 ```bash
-kiroclaw browse auth health
+kirocrew browse auth health
 ```
 
 **If healthy**, refresh storage state to ensure Playwright has fresh cookies:
 ```bash
-kiroclaw browse auth refresh
+kirocrew browse auth refresh
 ```
 
 **If unhealthy**, tell user what to run:
@@ -25,7 +25,7 @@ kiroclaw browse auth refresh
 - "no AEA posture" → `mwinit --refresh-aea`
 - "no Sentry cookie" → `mwinit -s`
 
-Then run `kiroclaw browse auth refresh` after they fix it.
+Then run `kirocrew browse auth refresh` after they fix it.
 
 ## Step 2: Navigate
 
@@ -53,7 +53,7 @@ If `browser_take_screenshot` times out, use `browser_snapshot` instead — it re
 
 ### Context Window — Auto-Compressed
 
-Playwright responses are automatically compressed by the KiroClaw proxy before reaching you. Full accessibility trees (~50-100K tokens) are reduced to compact outlines (~2-5K tokens) showing only interactive elements with refs. You do NOT need to do anything special — just use Playwright tools normally.
+Playwright responses are automatically compressed by the KiroCrew proxy before reaching you. Full accessibility trees (~50-100K tokens) are reduced to compact outlines (~2-5K tokens) showing only interactive elements with refs. You do NOT need to do anything special — just use Playwright tools normally.
 
 **What you see:** `[Compressed: 2030 elements → 151 interactive]` followed by a compact list of links, buttons, inputs, headings with refs like `[ref=e7]`.
 
@@ -62,7 +62,7 @@ Playwright responses are automatically compressed by the KiroClaw proxy before r
 - No need to re-snapshot after clicking — the response to `browser_click` also includes a compressed snapshot of the new state
 
 **Screenshots are auto-saved to files by the proxy:**
-- `browser_take_screenshot` returns a file path (e.g., `Screenshot saved: /tmp/kiroclaw-screenshots/screenshot-123.jpeg`) — NOT raw base64 image data
+- `browser_take_screenshot` returns a file path (e.g., `Screenshot saved: /tmp/kirocrew-screenshots/screenshot-123.jpeg`) — NOT raw base64 image data
 - The proxy saves, compresses (resized to 1200px, JPEG quality 70), and returns only the path (~20 tokens)
 - The dashboard renders the image from the file path automatically
 - If you need to analyze the screenshot content, use the Read tool on the file path
@@ -81,7 +81,7 @@ Playwright responses are automatically compressed by the KiroClaw proxy before r
 
 ### Midway login redirect or expired cookies
 ```bash
-kiroclaw browse auth refresh
+kirocrew browse auth refresh
 ```
 Then call `browser_set_storage_state` with:
 ```
@@ -91,12 +91,12 @@ This reloads cookies WITHOUT restarting the MCP server. Then retry navigation.
 
 ### Federate SSO (idp.federate.amazon.com or /server-login)
 ```bash
-kiroclaw browse auth federate "<original_url>"
+kirocrew browse auth federate "<original_url>"
 ```
 Navigate to the `final_url` from the output.
 
 ### Sentry redirect
-User needs `mwinit -s`. After they run it: `kiroclaw browse auth refresh` then `browser_set_storage_state`.
+User needs `mwinit -s`. After they run it: `kirocrew browse auth refresh` then `browser_set_storage_state`.
 
 ### 403 from CloudFront / "bot detected"
 Some sites block HeadlessChrome. Spoof User-Agent for that host:
@@ -111,7 +111,7 @@ Credentials are stale. Do NOT spoof UA. Tell the user:
 
 After user confirms, run:
 ```bash
-kiroclaw browse auth refresh
+kirocrew browse auth refresh
 ```
 Then `browser_set_storage_state` to reload.
 
@@ -127,7 +127,7 @@ Keeping Playwright's default UA (which includes `HeadlessChrome`) ensures the fa
 
 | Credential | Lifetime | Refresh | MCP Restart? |
 |---|---|---|---|
-| Midway session cookie | ~20 hours | `mwinit` + `kiroclaw browse auth refresh` + `browser_set_storage_state` | No |
+| Midway session cookie | ~20 hours | `mwinit` + `kirocrew browse auth refresh` + `browser_set_storage_state` | No |
 | Kerberos TGT | ~6 hours | `kinit -f` | Yes (reads at Chromium launch) |
 
 ## Debugging Auth Failures
@@ -159,9 +159,9 @@ Tell the user these steps:
 
 3. **Save the token** (choose one):
    - **Dashboard:** Settings → Browser → toggle "Chrome Extension Mode" ON → paste token → Save
-   - **CLI:** `kiroclaw browse extension on` → paste token when prompted
+   - **CLI:** `kirocrew browse extension on` → paste token when prompted
 
-4. **Restart the gateway:** `kiroclaw stop && kiroclaw gateway`
+4. **Restart the gateway:** `kirocrew stop && kirocrew gateway`
 
 5. **Keep Chrome open** — Playwright connects to your running Chrome via the extension.
    If Chrome is closed, browsing tools won't work until you reopen it.
@@ -174,13 +174,13 @@ Tell the user these steps:
 
 ### How Headless Mode Works on Linux
 
-No setup needed by the user — auto-configured during `kiroclaw setup`. The flow:
+No setup needed by the user — auto-configured during `kirocrew setup`. The flow:
 
 1. **Auth prerequisites:** user runs `kinit -f && mwinit -o -s` (one-time per ~6-20h)
 2. **On first browse:** gateway auto-installs Playwright MCP via AIM
-3. **Cookie injection:** `kiroclaw browse auth refresh` converts `~/.midway/cookie` to Playwright storage state
+3. **Cookie injection:** `kirocrew browse auth refresh` converts `~/.midway/cookie` to Playwright storage state
 4. **Kerberos:** `KRB5CCNAME=FILE:/tmp/krb5cc_{user}` is set automatically for subprocess calls
-5. **Federate SSO:** For Harmony/console sites, `kiroclaw browse auth federate <url>` completes the 4-hop chain via curl
+5. **Federate SSO:** For Harmony/console sites, `kirocrew browse auth federate <url>` completes the 4-hop chain via curl
 
 ### Linux-Specific Issues
 
@@ -189,7 +189,7 @@ No setup needed by the user — auto-configured during `kiroclaw setup`. The flo
 | "aim not found" | Toolbox not installed | `toolbox install aim` |
 | Playwright install fails on aarch64 AL2 | glibc 2.26 too old | Fall back to `ReadInternalWebsites` |
 | 401 on phonetool/wiki | Kerberos ticket expired | User runs `kinit -f`, then restart gateway |
-| Federate redirect loop | Missing Kerberos ticket | User runs `kinit -f && kiroclaw browse auth refresh` |
+| Federate redirect loop | Missing Kerberos ticket | User runs `kinit -f && kirocrew browse auth refresh` |
 | Screenshots are the only output | Headless — no visible browser | Always show screenshots to user |
 
 ## Security Notes
@@ -202,11 +202,11 @@ No setup needed by the user — auto-configured during `kiroclaw setup`. The flo
 
 **Playwright MCP tools not available** (browser_navigate not in tool list):
 1. Check if installed: `aim mcp list | grep playwright`
-2. If not installed: `kiroclaw browse setup` (runs `aim mcp install npm:@playwright/mcp`)
+2. If not installed: `kirocrew browse setup` (runs `aim mcp install npm:@playwright/mcp`)
 3. If installed but tools not in session: the MCP server needs to be in your agent config. Tell the user:
    > "Playwright MCP is installed but not loaded. Add it to your agent config by running:
    > `aim mcp install npm:@playwright/mcp`
-   > Then restart the gateway: `kiroclaw stop && kiroclaw gateway`"
+   > Then restart the gateway: `kirocrew stop && kirocrew gateway`"
 4. Fall back to `ReadInternalWebsites` if restart isn't possible
 
 **Kerberos ticket expired** (phonetool/wiki 401):
@@ -218,7 +218,7 @@ No setup needed by the user — auto-configured during `kiroclaw setup`. The flo
 
 ## How It Works (Technical)
 
-The config at `~/.kiroclaw/playwright-config.json` sets:
+The config at `~/.kirocrew/playwright-config.json` sets:
 - `isolated: true` — required for `storageState` to take effect (without it, Playwright uses persistent profile and ignores our cookies)
 - `--auth-server-allowlist=*.amazon.com,*.a2z.com,*.aws.dev` — enables Kerberos/SPNEGO for negotiate challenges
 - `contextOptions.storageState` — pre-loads midway cookies at context creation
@@ -228,5 +228,5 @@ The config at `~/.kiroclaw/playwright-config.json` sets:
 
 - `kinit -f` (Kerberos ticket — needed for phonetool, wiki, code.amazon.com)
 - `mwinit -o -s` (Midway + Sentry cookies)
-- Playwright MCP auto-installed during `kiroclaw setup`
-- Config auto-generated at `~/.kiroclaw/playwright-config.json`
+- Playwright MCP auto-installed during `kirocrew setup`
+- Config auto-generated at `~/.kirocrew/playwright-config.json`

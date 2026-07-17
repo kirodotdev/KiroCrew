@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.aim_agents import AimAgent
-from kiro_claw.config.loader import KiroClawAgentConfig, KiroClawConfig
+from kiro_crew.aim_agents import AimAgent
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 
 
 def _make_aim_agent(name: str) -> AimAgent:
@@ -22,18 +22,18 @@ def _make_aim_agent(name: str) -> AimAgent:
     )
 
 
-def _make_config(agents: dict[str, KiroClawAgentConfig]) -> KiroClawConfig:
-    """Create a MagicMock standing in for KiroClawConfig with the given agents dict."""
-    cfg = MagicMock(spec=KiroClawConfig)
+def _make_config(agents: dict[str, KiroCrewAgentConfig]) -> KiroCrewConfig:
+    """Create a MagicMock standing in for KiroCrewConfig with the given agents dict."""
+    cfg = MagicMock(spec=KiroCrewConfig)
     cfg.agents = agents
-    cfg.default_agent = "kiroclaw"
+    cfg.default_agent = "kirocrew"
     cfg.save = MagicMock()
     return cfg
 
 
-async def _run_sync(cfg: KiroClawConfig, aim_agents_list: list[AimAgent]) -> dict:
+async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AimAgent]) -> dict:
     """Invoke the production _do_agents_sync with mocked dependencies and return parsed body."""
-    from kiro_claw.dashboard.handlers.agents import _do_agents_sync
+    from kiro_crew.dashboard.handlers.agents import _do_agents_sync
 
     request = MagicMock()
     request.get.return_value = "dashboard"
@@ -41,9 +41,9 @@ async def _run_sync(cfg: KiroClawConfig, aim_agents_list: list[AimAgent]) -> dic
     sel_mock = MagicMock()
 
     with (
-        patch("kiro_claw.dashboard.handlers.agents.KiroClawConfig.load", return_value=cfg),
-        patch("kiro_claw.dashboard.handlers.agents.list_agents", return_value=aim_agents_list),
-        patch("kiro_claw.dashboard.handlers.agents._sel", return_value=sel_mock),
+        patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load", return_value=cfg),
+        patch("kiro_crew.dashboard.handlers.agents.list_agents", return_value=aim_agents_list),
+        patch("kiro_crew.dashboard.handlers.agents._sel", return_value=sel_mock),
     ):
         response = await _do_agents_sync(request)
 
@@ -58,9 +58,9 @@ class TestAgentSyncPrune:
     async def test_prune_removes_stale_aim_agents(self):
         """Agents with source='aim' not in scan results get pruned."""
         agents = {
-            "omni-reviewer": KiroClawAgentConfig(kiro_agent="omni-reviewer", source="aim"),
-            "omni-aws": KiroClawAgentConfig(kiro_agent="omni-aws", source="aim"),
-            "gpu-dev": KiroClawAgentConfig(kiro_agent="gpu-dev", source="aim"),
+            "omni-reviewer": KiroCrewAgentConfig(kiro_agent="omni-reviewer", source="aim"),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+            "gpu-dev": KiroCrewAgentConfig(kiro_agent="gpu-dev", source="aim"),
         }
         cfg = _make_config(agents)
         aim_list = [_make_aim_agent("omni-aws"), _make_aim_agent("gpu-dev")]
@@ -74,11 +74,11 @@ class TestAgentSyncPrune:
         cfg.save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_prune_skips_kiroclaw_owned_agents(self):
-        """Agents with source='kiroclaw' are never pruned."""
+    async def test_prune_skips_kirocrew_owned_agents(self):
+        """Agents with source='kirocrew' are never pruned."""
         agents = {
-            "kiroclaw": KiroClawAgentConfig(kiro_agent="kiroclaw", source="kiroclaw"),
-            "stale-aim": KiroClawAgentConfig(kiro_agent="stale-aim", source="aim"),
+            "kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew", source="kirocrew"),
+            "stale-aim": KiroCrewAgentConfig(kiro_agent="stale-aim", source="aim"),
         }
         cfg = _make_config(agents)
         aim_list = [_make_aim_agent("gpu-dev")]
@@ -86,15 +86,15 @@ class TestAgentSyncPrune:
         body = await _run_sync(cfg, aim_list)
 
         assert "stale-aim" in body["pruned"]
-        assert "kiroclaw" not in body["pruned"]
-        assert "kiroclaw" in cfg.agents
+        assert "kirocrew" not in body["pruned"]
+        assert "kirocrew" in cfg.agents
 
     @pytest.mark.asyncio
     async def test_prune_skips_user_created_agents(self):
         """Agents with source='builtin' (user-created) are never pruned."""
         agents = {
-            "my-custom": KiroClawAgentConfig(kiro_agent="my-custom", source="builtin"),
-            "stale-aim": KiroClawAgentConfig(kiro_agent="stale-aim", source="aim"),
+            "my-custom": KiroCrewAgentConfig(kiro_agent="my-custom", source="builtin"),
+            "stale-aim": KiroCrewAgentConfig(kiro_agent="stale-aim", source="aim"),
         }
         cfg = _make_config(agents)
         aim_list = [_make_aim_agent("gpu-dev")]
@@ -109,8 +109,8 @@ class TestAgentSyncPrune:
     async def test_no_prune_when_scan_returns_empty(self):
         """Empty scan result (likely transient failure) should not prune anything."""
         agents = {
-            "omni-aws": KiroClawAgentConfig(kiro_agent="omni-aws", source="aim"),
-            "gpu-dev": KiroClawAgentConfig(kiro_agent="gpu-dev", source="aim"),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+            "gpu-dev": KiroCrewAgentConfig(kiro_agent="gpu-dev", source="aim"),
         }
         cfg = _make_config(agents)
         aim_list: list[AimAgent] = []
@@ -127,7 +127,7 @@ class TestAgentSyncPrune:
     async def test_add_and_prune_in_same_sync(self):
         """A single sync both adds new agents and prunes stale ones."""
         agents = {
-            "old-agent": KiroClawAgentConfig(kiro_agent="old-agent", source="aim"),
+            "old-agent": KiroCrewAgentConfig(kiro_agent="old-agent", source="aim"),
         }
         cfg = _make_config(agents)
         aim_list = [_make_aim_agent("new-agent")]
@@ -144,7 +144,7 @@ class TestAgentSyncPrune:
     async def test_noop_when_nothing_changed(self):
         """No adds or prunes when config matches scan exactly."""
         agents = {
-            "omni-aws": KiroClawAgentConfig(kiro_agent="omni-aws", source="aim"),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
         }
         cfg = _make_config(agents)
         aim_list = [_make_aim_agent("omni-aws")]

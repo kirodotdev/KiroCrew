@@ -11,19 +11,19 @@ import notificationsReducer from '../store/notificationsSlice'
 
 /* ── Mock api client ── */
 const mockApi = vi.hoisted(() => ({
-  kiroclawAgents: vi.fn(),
+  kirocrewAgents: vi.fn(),
   agentsInstalled: vi.fn(),
   workspaces: vi.fn(),
-  kiroclawConfig: vi.fn(),
+  kirocrewConfig: vi.fn(),
   createWorkspace: vi.fn(),
-  createKiroclawAgent: vi.fn(),
-  updateKiroclawAgent: vi.fn(),
-  deleteKiroclawAgent: vi.fn(),
+  createKirocrewAgent: vi.fn(),
+  updateKirocrewAgent: vi.fn(),
+  deleteKirocrewAgent: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({ api: mockApi }))
 
-import KiroClawAgentsPage from '../pages/KiroClawAgentsPage'
+import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 
 function createTestStore() {
   return configureStore({
@@ -38,7 +38,7 @@ function renderPage() {
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <MemoryRouter>
-          <KiroClawAgentsPage />
+          <KiroCrewAgentsPage />
         </MemoryRouter>
       </Provider>
     </QueryClientProvider>,
@@ -46,19 +46,19 @@ function renderPage() {
 }
 
 const AGENTS_RESPONSE = {
-  agents: [{ name: 'kiroclaw', kiro_agent: 'kiroclaw', workspace: 'default', memory_store: 'default' }],
-  default_agent: 'kiroclaw',
+  agents: [{ name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }],
+  default_agent: 'kirocrew',
 }
 const WORKSPACES_RESPONSE = { workspaces: [{ name: 'default', dir: 'workspace' }, { name: 'oncall', dir: 'workspace-oncall' }] }
-const INSTALLED_RESPONSE = [{ name: 'kiroclaw' }]
+const INSTALLED_RESPONSE = [{ name: 'kirocrew' }]
 const CONFIG_RESPONSE = { memory_stores: { default: {} } }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockApi.kiroclawAgents.mockResolvedValue(AGENTS_RESPONSE)
+  mockApi.kirocrewAgents.mockResolvedValue(AGENTS_RESPONSE)
   mockApi.agentsInstalled.mockResolvedValue(INSTALLED_RESPONSE)
   mockApi.workspaces.mockResolvedValue(WORKSPACES_RESPONSE)
-  mockApi.kiroclawConfig.mockResolvedValue(CONFIG_RESPONSE)
+  mockApi.kirocrewConfig.mockResolvedValue(CONFIG_RESPONSE)
 })
 
 /** Open the workspace StyledSelect dropdown in the create form and click
@@ -89,7 +89,7 @@ async function openModalViaWorkspaceDropdown() {
 describe('WorkspaceModal — StyledSelect trigger and modal lifecycle', () => {
   it('workspace dropdown contains "+ New workspace…" action', async () => {
     renderPage()
-    await waitFor(() => expect(mockApi.kiroclawAgents).toHaveBeenCalled())
+    await waitFor(() => expect(mockApi.kirocrewAgents).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.workspaces).toHaveBeenCalled())
     // Open the workspace StyledSelect
     const wsTrigger = findWorkspaceTrigger()

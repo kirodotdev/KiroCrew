@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kiroclaw"
+name = "kirocrew"
 version = "0.1.0"
 description = "Personal AI agent that runs locally — chat via CLI, dashboard, Slack, or desktop app"
 readme = "README.md"
@@ -15,10 +15,10 @@ requires-python = ">=3.9"
 dynamic = ["dependencies"]
 
 [project.urls]
-Homepage = "https://github.com/kirodotdev-labs/kiroclaw"
+Homepage = "https://github.com/kirodotdev/KiroCrew"
 
 [project.scripts]
-kiroclaw = "kiro_claw.cli:main"
+kirocrew = "kiro_crew.cli:main"
 
 [dependency-groups]
 # Pinned dev tool versions for reproducible CI. Bump as needed.
@@ -40,7 +40,7 @@ dev = [
 line-length = 100
 
 [tool.isort]
-known_first_party = ["kiro_claw"]
+known_first_party = ["kiro_crew"]
 
 # required for compatibility with black:
 profile = "black"

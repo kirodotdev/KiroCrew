@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.workflows.registry import RunHandle
-from kiro_claw.workflows.service import WorkflowService
+from kiro_crew.workflows.registry import RunHandle
+from kiro_crew.workflows.service import WorkflowService
 
 
 class _FakeRunner:

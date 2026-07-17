@@ -15,7 +15,7 @@ from chat_test_helpers import _make_app, _make_state
 def _mock_run_chat(monkeypatch):
     """Replace _run_chat with a no-op so tests don't try to spawn kiro-cli."""
     run_chat_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr("kiro_claw.dashboard.chat_rewind._run_chat", run_chat_mock)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_rewind._run_chat", run_chat_mock)
     return run_chat_mock
 
 
@@ -264,7 +264,7 @@ class TestRewindSlot:
 
         app = _make_app(state)
         with patch(
-            "kiro_claw.dashboard.chat_rewind._delete_orphan_kiro_session",
+            "kiro_crew.dashboard.chat_rewind._delete_orphan_kiro_session",
             new=AsyncMock(),
         ) as mock_delete:
             async with TestClient(TestServer(app)) as client:
@@ -286,7 +286,7 @@ class TestRewindSlot:
 
         app = _make_app(state)
         with patch(
-            "kiro_claw.dashboard.chat_rewind._delete_orphan_kiro_session",
+            "kiro_crew.dashboard.chat_rewind._delete_orphan_kiro_session",
             new=AsyncMock(),
         ) as mock_delete:
             async with TestClient(TestServer(app)) as client:
@@ -342,7 +342,7 @@ class TestRewindSlot:
         from aiohttp import web as _web
         from aiohttp.test_utils import make_mocked_request
 
-        from kiro_claw.dashboard.chat_rewind import api_chat_slot_rewind
+        from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
 
         fake_request = make_mocked_request(
             "POST", "/api/chat/slots/src/rewind",

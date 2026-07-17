@@ -1,22 +1,35 @@
 # Changelog
 
-All notable changes to KiroClaw are documented in this file.
+All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
 ### Changes
 
-- **Slack challenge-and-redirect REMOVED** — Inbound Slack messages are now processed inline and reach the agent directly (gated by the user allowlist and Enterprise Grid origin check), instead of being intercepted and turned into a presigned dashboard-session link for every message. The challenge-and-redirect flow was an Amazon-internal-only security posture and is not needed for external/open-source usage. The `send_channel_challenge()` helper and the `_CHALLENGE_REDIRECT_ENABLED` gate were removed; the explicit `/kiroclaw dashboard` link command is unchanged.
-- **Default dashboard port is now 5476** (was 8765) — `5476` spells "KIRO" on a phone keypad (K=5, I=4, R=7, O=6) and is far less commonly grabbed than the `8765` descending-sequence port. The gateway, CLI, dashboard, Electron app, and frontend dev proxy now default to `5476`. If you relied on the old port, set `KIROCLAW_PORT=8765` (or pass `--port 8765`) to keep it, and update any bookmarks, SSH tunnels (`ssh -NL 5476:localhost:5476 <host>`), and `dashboard.url` config entries. The auth cookie name follows the port (`mc_token_5476`), so existing sessions on the old port are re-issued automatically on first load.
-- **Default dashboard port is now 8765** (was 7777) — The gateway, CLI, dashboard, and frontend dev proxy now default to port `8765`, avoiding clashes with other tools that commonly grab 7777. If you relied on the old port, set `KIROCLAW_PORT=7777` (or pass `--port 7777`) to keep it, and update any bookmarks, SSH tunnels (`ssh -NL 8765:localhost:8765 <host>`), and `dashboard.url` config entries. The auth cookie name follows the port, so existing sessions on the old port are re-issued automatically on first load.
+- **Project renamed KiroClaw → KiroCrew** — The project, Python package (`kiro_claw` → `kiro_crew`), CLI (`kiroclaw` → `kirocrew`), environment variables (`KIROCLAW_*` → `KIROCREW_*`), data directory (`~/.kiroclaw` → `~/.kirocrew`), managed MCP servers (`kiroclaw-cron`/`kiroclaw-core` → `kirocrew-cron`/`kirocrew-core`), and all docs/config/UI strings have been renamed to KiroCrew. The preserved MeshClaw sync source is unaffected.
+
+  > **⚠️ Breaking — existing KiroClaw users must migrate manually.** This rename has **no automatic data migration yet** (a first-run `~/.kiroclaw` → `~/.kirocrew` migration is a planned follow-up). Before upgrading, an existing user must:
+  > 1. `pip uninstall -y kiroclaw` before `pip install kirocrew` — the distribution was renamed, so pip won't replace the old package; without this the stale `kiroclaw` code and its `kiroclaw`/`kiroclaw-browse` console scripts stay on `PATH`.
+  > 2. `mv ~/.kiroclaw ~/.kirocrew` (config, sessions, memory, artifacts, cron jobs, signing keys).
+  > 3. In `~/.kirocrew/.env`, rename the `KIROCLAW_OWNER_ID` key to `KIROCREW_OWNER_ID` (otherwise Slack stays disabled).
+  > 4. Rename any exported `KIROCLAW_*` environment variables (e.g. `KIROCLAW_HOME`, `KIROCLAW_PORT`) to `KIROCREW_*`.
+  > 5. In `~/.kirocrew/config.json`, change any `agent.default_agent` / `agent.bot_name` value of `"kiroclaw"` to `"kirocrew"` (a stored `"kiroclaw"` launches `--agent kiroclaw`, which no longer has an agent file).
+  > 6. `mv ~/workplace/kiroclaw-workspace ~/workplace/kirocrew-workspace` if you used the default agent workspace.
+  > 7. Reinstall the service (`kirocrew service install`) and, on desktop, reconfigure remote-host settings (the Electron store moves with the new app name). Remove the old service first — the Linux unit is **system-level**, so on Linux: `sudo systemctl disable --now kiroclaw && sudo rm /etc/systemd/system/kiroclaw.service && sudo systemctl daemon-reload`; on macOS: `launchctl bootout gui/$(id -u)/dev.kiroclaw.gateway 2>/dev/null; rm ~/Library/LaunchAgents/dev.kiroclaw.gateway.plist`. Also delete the stale `~/.kiro/agents/kiroclaw.json` (and `kiroclaw-lite.json`) so they don't linger in the agent picker.
+  >
+  > **Handled automatically (no action needed):** the security gate still treats a leftover `~/.kiroclaw/.env` and governance trust-root files as sensitive; cloud discovery still finds and manages legacy `kiroclaw-` EC2 stacks / `kiroclaw:managed` instances (a re-launch refuses to duplicate a legacy stack and points you at `destroy`); `restore` accepts pre-rename `kiroclaw-snapshot-*` archives; the stale-MCP cleanup re-runs once to purge orphaned `kiroclaw-*` global MCP entries; and installed app bundles built against the old `@kiroclaw/app-sdk` still resolve.
+
+- **Slack challenge-and-redirect REMOVED** — Inbound Slack messages are now processed inline and reach the agent directly (gated by the user allowlist and Enterprise Grid origin check), instead of being intercepted and turned into a presigned dashboard-session link for every message. The challenge-and-redirect flow was an Amazon-internal-only security posture and is not needed for external/open-source usage. The `send_channel_challenge()` helper and the `_CHALLENGE_REDIRECT_ENABLED` gate were removed; the explicit `/kirocrew dashboard` link command is unchanged.
+- **Default dashboard port is now 5476** (was 8765) — `5476` spells "KIRO" on a phone keypad (K=5, I=4, R=7, O=6) and is far less commonly grabbed than the `8765` descending-sequence port. The gateway, CLI, dashboard, Electron app, and frontend dev proxy now default to `5476`. If you relied on the old port, set `KIROCREW_PORT=8765` (or pass `--port 8765`) to keep it, and update any bookmarks, SSH tunnels (`ssh -NL 5476:localhost:5476 <host>`), and `dashboard.url` config entries. The auth cookie name follows the port (`mc_token_5476`), so existing sessions on the old port are re-issued automatically on first load.
+- **Default dashboard port is now 8765** (was 7777) — The gateway, CLI, dashboard, and frontend dev proxy now default to port `8765`, avoiding clashes with other tools that commonly grab 7777. If you relied on the old port, set `KIROCREW_PORT=7777` (or pass `--port 7777`) to keep it, and update any bookmarks, SSH tunnels (`ssh -NL 8765:localhost:8765 <host>`), and `dashboard.url` config entries. The auth cookie name follows the port, so existing sessions on the old port are re-issued automatically on first load.
 
 ## [2.6.0] — 2026-05-31
 
-287 commits across 2 packages (182 KiroClaw + 105 KiroClawWebsite), 99 contributors since v2.5.0.
+287 commits across 2 packages (182 KiroCrew + 105 KiroCrewWebsite), 99 contributors since v2.5.0.
 
 ### Features
 
-- **Claude Code Provider — Full Parity + Interactive Permissions** — KiroClaw now runs Claude Code as a first-class provider through a unified ACP (Agent Client Protocol) adapter built on `claude-agent-acp`, replacing the old subprocess provider. Every tool decision routes through the same four-tier interactive permission protocol kiro-cli uses (approve / trust-reads / trust / yolo), and you get reasoning-effort control, a curated model picker defaulting to Opus 4.8, the 1M-context unlock, cross-provider session continuity, live context-usage tracking, and tooling to mirror your kiro agents/skills/MCP config into Claude Code. The dashboard ships a kiro→Claude-Code migration panel and a master-detail skill browser. (Bolin Chen)
+- **Claude Code Provider — Full Parity + Interactive Permissions** — KiroCrew now runs Claude Code as a first-class provider through a unified ACP (Agent Client Protocol) adapter built on `claude-agent-acp`, replacing the old subprocess provider. Every tool decision routes through the same four-tier interactive permission protocol kiro-cli uses (approve / trust-reads / trust / yolo), and you get reasoning-effort control, a curated model picker defaulting to Opus 4.8, the 1M-context unlock, cross-provider session continuity, live context-usage tracking, and tooling to mirror your kiro agents/skills/MCP config into Claude Code. The dashboard ships a kiro→Claude-Code migration panel and a master-detail skill browser. (Bolin Chen)
 - **Artifact Library + Unified File Viewer** — LLM-generated widgets (charts, dashboards, HTML tools) now persist as named, versioned artifacts with a browsable library instead of vanishing with chat scrollback. Bookmark any inline widget, reopen any past version full-screen, and ask the agent to iterate on it by name in a later session. The file side panel and the Artifacts library share one live-pointer model so file-backed artifacts read and write the same on-disk path, with deliberate versioning via an explicit Snapshot button, selection-to-comment popovers, and an activity timeline that deep-links to chat sessions. (Nick Bowers)
 - **Side Chat (`/side`)** — A non-blocking `/side` slash command opens a multi-turn side conversation against a frozen snapshot of the parent chat's context, surfaced as a tab in the Activity panel. The sidecar is fully isolated — its messages never enter the main conversation log, vector memory, or learn store, and tools are hard-rejected — so you can ask clarifying questions without polluting the primary agent's state. (Stan Tian)
 - **Native Browsing — Playwright MCP with Amazon Auth** — The custom browser module is replaced by Playwright MCP tools plus an auth shim that auto-injects Midway cookies, giving the agent full interactive browsing of Amazon internal sites. Toggle between Chrome Extension mode (attach to your real browser) and headless mode, with a token-saving proxy. (Bolin Chen)
@@ -38,14 +51,14 @@ All notable changes to KiroClaw are documented in this file.
 - **Plan from Here** — A toolbar button forks the current conversation into a new autopilot (orchestrator) session, carrying the full chat history. (Joe Guo)
 - **Channel Clear-Context** — A Clear Context button on the channel header (all agents) and a per-agent clear button, behind a confirm dialog, reset LLM sessions while preserving channel configuration. (Connor LoPresti)
 - **Cron Dashboard Chat Threading** — A scheduled job can thread its results into a persistent, bidirectional dashboard chat slot linked to the cron's session. (James Joseph)
-- **On-Demand Cron Triggering** — Fire a scheduled job immediately via `kiroclaw cron trigger` (CLI) and the `cron_trigger` MCP tool. (Imran Baig)
+- **On-Demand Cron Triggering** — Fire a scheduled job immediately via `kirocrew cron trigger` (CLI) and the `cron_trigger` MCP tool. (Imran Baig)
 - **Schedule Timezone Picker** — The Calendar view respects each job's stored timezone instead of misinterpreting cron times as UTC, with a timezone picker. (Ethan Levine)
 - **Jira Integration in Mimir** — Jira joins Asana, Taskei, and SIM as a task source, with onboarding cards, site-ID/project-key config, and status/assignee/tag filtering. (Reece Bailey, Chetan Chaku, Emmanuella Dasilva-Domingos)
 - **Secretary Keyword Hooks + Auto-Reply** — Keyword-triggered workflow hooks dispatch actions (notify, spawn-session, auto-reply, emoji reactions) when configured keywords appear in watched Slack messages, with a settings-panel editor and an enable/disable toggle. (Thomas Lane, Chetan Chaku, Uday Prakash, Vishal Sreekrishnan)
 - **Slack Home Tab Sessions View + Plan Usage** — A Sessions section lists recent dashboard chats and runs with one-click Resume, plus a plan-usage status line showing credits, spend, and reset date. (David Hickox, Ethan Levine)
-- **Inline MCP OAuth Banner + Multi-Provider MCP Dashboard** — MCP server auth surfaces inline in chat with an Authorize link, and the MCP Integrations page shows per-scope presence (KiroClaw, Kiro global, Claude global) for every server. (Zezhen Xu, Nick Bowers)
+- **Inline MCP OAuth Banner + Multi-Provider MCP Dashboard** — MCP server auth surfaces inline in chat with an Authorize link, and the MCP Integrations page shows per-scope presence (KiroCrew, Kiro global, Claude global) for every server. (Zezhen Xu, Nick Bowers)
 - **Skill Directory Browser** — A three-pane master-detail layout (skill list, file tree, content viewer) with path-traversal and symlink-escape defenses, reporting which installed agents load each skill. (Zezhen Xu)
-- **Federated External App Registries** — Point KiroClaw at org-owned GitFarm repositories of app definitions, managed from a Registry Manager card in the App Store. App-declared cron jobs auto-register into the scheduler on install. (Tyger Hugh, Ray Xu, Rohit Jose)
+- **Federated External App Registries** — Point KiroCrew at org-owned GitFarm repositories of app definitions, managed from a Registry Manager card in the App Store. App-declared cron jobs auto-register into the scheduler on install. (Tyger Hugh, Ray Xu, Rohit Jose)
 - **Start Chat from TaskKeeper / Mimir Tasks** — A Chat/Work button on task rows opens a new session pre-filled with the task's context (title, details, due date, links). (Takahiro Ishii, Vasanth Subramanian)
 - **TaskKeeper Duplicate Grouping & Merging** — TaskKeeper visually groups similar inbox mentions and lets you merge duplicates with an LLM-drafted merged title. (Joe Pontone)
 - **Quick Send** — A setting to send a suggested-reply option with a single click; Shift+Click switches to multi-select. (Maninder Singh)
@@ -62,15 +75,15 @@ All notable changes to KiroClaw are documented in this file.
 - **External IAM-Authenticated Embeddings (SigV4)** — The embedding endpoint can point at an IAM-authenticated API Gateway in front of Ollama, removing the SSH reverse-tunnel dependency. (Toby Wong)
 - **More Skill Auto-Extraction Triggers** — Auto-skill extraction fires on session idle expiry, explicit Slack session end, and via a new `consolidate` CLI for manual backfill. (Shayan Yaseen)
 - **Native arm64 Python for Apple Silicon** — The `osx_arm64` toolbox bundle uses system arm64 Python instead of the x86_64 Brazil overlay, running natively without Rosetta. (Apoorv Srivastava)
-- **Remote Desktop Sync Script** — A standalone `sync-to-remote.sh` copies a KiroClaw install to a remote/cloud desktop with custom SSH port and `--dry-run`. (Huan He)
-- **Service-Aware `kiroclaw restart`** — Restarts the installed systemd/launchd service when present, otherwise cleanly bounces the foreground gateway. (Nick Bowers)
+- **Remote Desktop Sync Script** — A standalone `sync-to-remote.sh` copies a KiroCrew install to a remote/cloud desktop with custom SSH port and `--dry-run`. (Huan He)
+- **Service-Aware `kirocrew restart`** — Restarts the installed systemd/launchd service when present, otherwise cleanly bounces the foreground gateway. (Nick Bowers)
 - **LLM-Powered Link Summaries** — Bare URLs in navigation are summarized by the model in a single batched request, removing an N+1 bottleneck. (Nansong Yi)
-- **Seeded Home Fixtures & Test Harness** — Two ready-to-use populated KiroClaw home fixtures (minimal + rich) plus a `spawn_feature_gateway` helper for integration tests and evals. (Simon Meyffret)
+- **Seeded Home Fixtures & Test Harness** — Two ready-to-use populated KiroCrew home fixtures (minimal + rich) plus a `spawn_feature_gateway` helper for integration tests and evals. (Simon Meyffret)
 
 ### Security
 
 - **Time-Limited Safety Override (Mesh-1648)** — replaces permanent YOLO with an expiring, audit-logged safety override so auto-approve can never be left on indefinitely. (Bolin Chen)
-- **Isolated Config Directory for Spawned Claude Code** — points the spawned `claude-agent-acp` subprocess at a KiroClaw-owned `CLAUDE_CONFIG_DIR` (settings file written `0600`), strips inherited `permissions.allow/ask` so every tool routes through the host deny gate, and guards against overwriting the operator's real `~/.claude`. (Bolin Chen)
+- **Isolated Config Directory for Spawned Claude Code** — points the spawned `claude-agent-acp` subprocess at a KiroCrew-owned `CLAUDE_CONFIG_DIR` (settings file written `0600`), strips inherited `permissions.allow/ask` so every tool routes through the host deny gate, and guards against overwriting the operator's real `~/.claude`. (Bolin Chen)
 - **Per-Segment Shell Deny Evaluation** — deny patterns are evaluated per shell segment, closing a command-chaining/substitution bypass. (Chetan Chaku)
 - **Slack Challenge-and-Redirect** — direct Slack requests must be verified against a dashboard session, denying by default on failure. (Gabe Sanchez)
 - **Token-Free Slack Pins/Reactions Proxy** — gateway routes let local callers pin and react without ever holding the Slack bot token. (Akim Akimov)
@@ -100,7 +113,7 @@ All notable changes to KiroClaw are documented in this file.
 - Mobile dropdown stays open while scrolling (Helena Stafford)
 - Markdown widget rendering inside inline code (Nick Bowers)
 - Session cleanup loop survives unexpected exceptions (Chris Paton)
-- `kiroclaw doctor` detects Docker-based Ollama (Shreyas Bhise)
+- `kirocrew doctor` detects Docker-based Ollama (Shreyas Bhise)
 
 ### Testing & Quality
 
@@ -114,7 +127,7 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 
 ## [2.5.0] — 2026-05-19
 
-111 commits across 2 packages (68 KiroClaw + 43 KiroClawWebsite), 57 contributors since v2.4.1.
+111 commits across 2 packages (68 KiroCrew + 43 KiroCrewWebsite), 57 contributors since v2.4.1.
 
 ### Features
 
@@ -125,8 +138,8 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - **Piper TTS** — local neural text-to-speech as offline alternative to AWS Polly. `auto_reply_to_voice` toggle for symmetric voice-in/voice-out. Provider abstraction with OS-level sandbox. (Matt McLeod)
 - **LLM Usage Tracking** — daily-sharded JSONL token persistence with stacked bar chart. Cascading provider/model filters, per-day cross-tab filtering. (Hoang Phan)
 - **Composable Gateway CLI** — `--port auto`, `--json-ready`, `--approval`, `--test-mode` flags for testing harness and CI. (Simon Meyffret)
-- **`kiroclaw service` Command** — `install/uninstall/status` for system-level systemd (Linux) and launchd (macOS). (Roberto Matarrita Arce)
-- **Chat Embedding for Apps** — `useChatSession` hook, `ChatPanel`, `ChatEmbed`, `ChatMessageList`. Apps embed KiroClaw chat in their UI. 63 tests. (Anirudh Narayanan)
+- **`kirocrew service` Command** — `install/uninstall/status` for system-level systemd (Linux) and launchd (macOS). (Roberto Matarrita Arce)
+- **Chat Embedding for Apps** — `useChatSession` hook, `ChatPanel`, `ChatEmbed`, `ChatMessageList`. Apps embed KiroCrew chat in their UI. 63 tests. (Anirudh Narayanan)
 - **Knowledge Library DOCX** — ingest Word documents with heading-aware chunking. Hybrid BM25+vector search via `/kb` endpoints. Frontend KnowledgePicker. (Joe Guo)
 - **Export/Import Config** — one-click zip export/import for settings and memory. Security exclusions for secrets/keys. 37 tests. (Bolin Chen)
 - **Reasoning Effort Selector** — per-slot dropdown (Default/Low/Medium/High/Max) plumbed to Claude Code `--effort` flag. (Hoang Phan)
@@ -137,14 +150,14 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - **Shareable Session URLs** — deep-link to specific messages within sessions. (Nikhil Menon)
 - **Sidebar Context Menu** — ⋮ more button with Pin, Close, Toggle Read/Unread. (Ezzat Qupty)
 - **Resizable Thread Panel** — drag-resize channel thread sidebar, width persisted. (Arpan Banerjee)
-- **One-Click Slack App** — `kiroclaw manifest --url` generates pre-filled Slack app creation URL. (Yifan Liu)
+- **One-Click Slack App** — `kirocrew manifest --url` generates pre-filled Slack app creation URL. (Yifan Liu)
 - **Cron Jitter** — random delay (0-20min hourly, 0-2h daily) to spread load. `strict_schedule` opt-out. Per-job `timeout_secs`. (Joe Guo, Axel Vidales)
 - **Subagent Timeout Config** — `subagent_timeout_secs` in agent config, default 1800s. (Luis Gabriel Lima)
 - **Session CWD** — `slot.project` wired as cwd to kiro-cli process. Pool reuse when cwd matches. (Hoang Phan)
 - **Auto-Compaction Notice** — visual notice in chat when context is auto-compacted. (Sean Iamartino)
 - **TaskKeeper Triage Quality** — split scan response, skip_reason field, better context fetching, link extraction. (Joe Pontone, Brent Naylor)
 - **Electron Multi-Tab** — connect to multiple gateways from single Electron window. WebContentsView refactor. (Saran Kota, Mihir Dhamankar)
-- **Electron Remote Tunnel** — auto-discover kiroclaw binary over SSH. (Leo Zhadanovsky)
+- **Electron Remote Tunnel** — auto-discover kirocrew binary over SSH. (Leo Zhadanovsky)
 - **Mobile Swipe Gesture** — swipe to open/close mobile chat sidebar. (Vishal Sreekrishnan)
 - **Token Auth Bypass for Apps** — `/apps/{name}/ui/*` GET/HEAD bypass auth. (Shubhranshu Kumar)
 - **Agent SOP Discovery** — `rglob` for nested `agent-sops/<agent>/*.sop.md` in AIM packages. (August Vilakia)
@@ -155,15 +168,15 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - **CC Sandbox Mode** — 108 deny patterns for credential exfiltration, destructive ops, reverse shells. (Joe Guo)
 - **Git Push Deny Unification** — scoped exception for stash, anchored regex. (Kan Zhu)
 - **Process Leak Fix** — reduce per-session MCP footprint, silence 404 retry storm, kill escaped child processes. (Akim Akimov, Bharath Janyavula)
-- **Kill-Regex Anchor** — prevent regex injection in kill-kiroclaw pattern. (Simon Meyffret)
+- **Kill-Regex Anchor** — prevent regex injection in kill-kirocrew pattern. (Simon Meyffret)
 - **CSP Widget Fix** — blob: URL rendering + CDN allowlist for widget iframe scripts. (Bolin Chen)
 
 ### Bug Fixes
 
 - sandbox cross-fs tmpfs bind + env propagation (Akim Akimov)
 - OPTIONS parent message edit-in-place (Ethan Levine)
-- .venv/bin/kiroclaw exec when present (Ahmed Hassanin)
-- prevent duplicate kiroclaw-lite config (Raghu Burukunte)
+- .venv/bin/kirocrew exec when present (Ahmed Hassanin)
+- prevent duplicate kirocrew-lite config (Raghu Burukunte)
 - secretary bot_id derivation from user.isBot (Ethan Levine)
 - dismissed messages resurfacing in dormant channels (Eric Muessel)
 - CC provider eager reconnect on process death (Patrick Gao)
@@ -181,7 +194,7 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - widget utf-8 charset + openInNewTab hardening (Shuolei Jin)
 - Toolbox bin path in Electron find-bin (Vitor Durante)
 - file attachment leak across chat sessions (Tony Hardie)
-- install.sh builds KiroClawWebsite (Warren Bui)
+- install.sh builds KiroCrewWebsite (Warren Bui)
 - aim CLI PATH augmentation (Filip Godina)
 - STT missing deps + pin openssl (Helena Stafford)
 - validate tracking_channels config format (Rohan Kumar)
@@ -211,7 +224,7 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 
 - README rewritten 770 → 158 lines, feature lists moved to docs/FEATURES.md (Bolin Chen)
 - AGENTS.md updated for both packages (Bolin Chen)
-- Deprecate !dashboard in favor of /kiroclaw dashboard (Sam Oldak)
+- Deprecate !dashboard in favor of /kirocrew dashboard (Sam Oldak)
 - Persistent SSH tunnel setup for macOS LaunchAgent (Sai Chaitanya Manchikatla)
 - opus-amazon-prod collaborator reminder in setup wizard (Yohanes Setiawan)
 
@@ -226,7 +239,7 @@ Hotfix release.
 ### Features
 
 - **Knowledge Library Lazy Pool** — knowledge LLM pool starts on first use instead of gateway boot. Grill skill adds confirmation gate before executing. (zejiangg)
-- **Knowledge Agent Config** — auto-generates kiroclaw-knowledge agent config for Knowledge Library queries. (zejiangg)
+- **Knowledge Agent Config** — auto-generates kirocrew-knowledge agent config for Knowledge Library queries. (zejiangg)
 - **Chat Input During Compaction** — input stays enabled during context compaction so messages queue instead of being lost. (meyffret)
 
 ### Bug Fixes
@@ -245,7 +258,7 @@ Hotfix release.
 
 ## [2.4.0] — 2026-05-12
 
-184 commits across 2 packages (102 KiroClaw + 82 KiroClawWebsite), 59 contributors since v2.3.3.
+184 commits across 2 packages (102 KiroCrew + 82 KiroCrewWebsite), 59 contributors since v2.3.3.
 
 ### Features
 
@@ -255,7 +268,7 @@ Hotfix release.
 
 - **Grill Skill** — built-in structured pre-task questioning protocol. Decision-tree interview walks each branch one question at a time, checks memory before asking (skips already-decided questions), saves every answer via `learn_add(scope="workspace")`, provides recommended answers, auto-stops when plan is clear. Triggers on "think this through", "poke holes", "grill me", etc. (zejiangg)
 
-- **Multi-Provider MCP Management** — unified MCP server management across kiro-cli, Claude Code, and KiroClaw. Per-scope dashboard badges showing provider membership, batched `POST /api/mcp/apply` endpoint with preservation rule, always-render CC agent artifacts, `_is_valid_mcp_name` security hardening (charset allowlist, 128-char cap, path traversal rejection). (nrb)
+- **Multi-Provider MCP Management** — unified MCP server management across kiro-cli, Claude Code, and KiroCrew. Per-scope dashboard badges showing provider membership, batched `POST /api/mcp/apply` endpoint with preservation rule, always-render CC agent artifacts, `_is_valid_mcp_name` security hardening (charset allowlist, 128-char cap, path traversal rejection). (nrb)
 
 - **Python-Controlled Autopilot Stage Loop** — replaces LLM-controlled stage advancement with deterministic `_stage_loop()`. Fixes 5 recurring regressions (stages in single turn, Go All stalling, non-deterministic boundaries). Per-stage result capture to disk, subagent wait polling (2s interval, 5min max), compacted prior results (30% head / 70% tail). (zejiangg)
 
@@ -285,11 +298,11 @@ Hotfix release.
 
 - **Jump to Previous User Message** — ArrowUp button at top-centre of chat scrolls to nearest user message above viewport with 72px offset. Repeated clicks chain through history. (meyffret)
 
-- **--no-open Flag** — `kiroclaw gateway --no-open` and `dashboard.auto_open_browser` config suppress automatic browser open. Used by Electron app to avoid redundant tab. (bobbyea)
+- **--no-open Flag** — `kirocrew gateway --no-open` and `dashboard.auto_open_browser` config suppress automatic browser open. Used by Electron app to avoid redundant tab. (bobbyea)
 
 - **Subagent CWD** — `cwd` parameter on `spawn_run` launches subagents in a caller-specified directory. Gated by `subagent_cwd_allowed_roots` config. (meyffret)
 
-- **Subagent Orphan Recovery** — folder-per-agent persistence at `~/.kiroclaw/subagents/{id}/` with state.json, result.txt, tombstone.json. On gateway restart: reconciles orphaned processes, delivers results, tombstones failures. Reaper prunes stale tombstones after 7 days. (hugocost)
+- **Subagent Orphan Recovery** — folder-per-agent persistence at `~/.kirocrew/subagents/{id}/` with state.json, result.txt, tombstone.json. On gateway restart: reconciles orphaned processes, delivers results, tombstones failures. Reaper prunes stale tombstones after 7 days. (hugocost)
 
 - **Task Runner Pause/Resume** — pause and resume running tasks without losing progress. Crash recovery transitions running→paused on restart. `force_approval` gates block even in YOLO mode. (pierrim)
 
@@ -313,7 +326,7 @@ Hotfix release.
 
 - **TaskKeeper /tk Command** — `/tk` slash command for quick-notes, writes to `~/.taskkeeper/quick-notes.json`. (jpontone)
 
-- **Seed Fixtures** — `kiroclaw gateway --seed <fixture> [--seed-replace]` for reproducible testing environments. (meyffret)
+- **Seed Fixtures** — `kirocrew gateway --seed <fixture> [--seed-replace]` for reproducible testing environments. (meyffret)
 
 - **File Search API** — per-project in-memory file index with fuzzy scoring for `@`-file references. (hoangvp)
 
@@ -321,7 +334,7 @@ Hotfix release.
 
 - **Document Parser** — stdlib-only .docx/.pdf/.pptx extraction for Slack file attachments. (bolichen)
 
-- **Auto Skill Creation (Hermes loop)** — KiroClaw can now synthesize reusable skills from your conversations. After a multi-step session (≥5 tool calls by default), the existing idle consolidator asks the background LLM whether the procedure was worth saving, and if so writes a `~/.kiroclaw/skills/auto/<slug>/SKILL.md` with triggers, step-by-step procedure, and provenance. On reuse, if the agent finds a better procedure, the skill updates itself. **Disabled by default** — opt in via `kiroclaw config set skills.auto_create_from_sessions true`. Auto-generated skills live under the `auto/` namespace so they never collide with hand-authored ones. All writes are gated by sensitive-session detection, output redaction (credentials + exfiltration URLs), similarity-based dedup, and SEL audit logging. (shayanys, Mesh-677)
+- **Auto Skill Creation (Hermes loop)** — KiroCrew can now synthesize reusable skills from your conversations. After a multi-step session (≥5 tool calls by default), the existing idle consolidator asks the background LLM whether the procedure was worth saving, and if so writes a `~/.kirocrew/skills/auto/<slug>/SKILL.md` with triggers, step-by-step procedure, and provenance. On reuse, if the agent finds a better procedure, the skill updates itself. **Disabled by default** — opt in via `kirocrew config set skills.auto_create_from_sessions true`. Auto-generated skills live under the `auto/` namespace so they never collide with hand-authored ones. All writes are gated by sensitive-session detection, output redaction (credentials + exfiltration URLs), similarity-based dedup, and SEL audit logging. (shayanys, Mesh-677)
 
 - **Inline Interactive Widgets** — `<mcwidget>` tags in assistant responses render as sandboxed iframes with Tailwind CSS, auto-resize (100-800px), expand/minimize, open-in-new-tab. Ocean-of-dots loading animation during streaming. Theme-aware via CSS variables. (zezhexu, meyffret)
 
@@ -344,9 +357,9 @@ Hotfix release.
 - fix(dashboard): persist cron agent on PATCH — UI sends agent field (spiamart)
 - fix(mimir): register mimir routes at startup to avoid frozen router error (bhachin)
 - fix(acp): add streaming staleness timeout + remove mode identity announcements (zejiangg)
-- fix: deduplicate agent config — make src/kiro_claw/config/ single source of truth (zejiangg)
+- fix: deduplicate agent config — make src/kiro_crew/config/ single source of truth (zejiangg)
 - fix(aim): uninstall skills too so sync does not reinstall package (nrb)
-- fix: stop syncing kiroclaw MCP servers to global mcp.json (zejiangg)
+- fix: stop syncing kirocrew MCP servers to global mcp.json (zejiangg)
 - fix(pool): reset pool state on provider switch so warm pool refills (hoangvp)
 - fix(pool): persist CWD in session_map for accurate resume (hoangvp)
 - fix(mcp): support Content-Length framing in MCP stdio transport (micvisc)
@@ -383,11 +396,11 @@ Alec Douglas (agdoug), Albert Huang (wenhuan), Akim Akimov (zedmor), Ariana Morg
 ## [2.3.0] — 2026-05-02
 
 324 commits across 2 packages, 91 contributors since v2.2.0.
-Frontend split into dedicated KiroClawWebsite package (NpmPrettyMuch).
+Frontend split into dedicated KiroCrewWebsite package (NpmPrettyMuch).
 
 ### Features
 
-- **Toolbox Install** — one-command install with native platform-specific bundles for AL2, AL2023, and macOS (x86_64 + aarch64). No repo clone needed: `toolbox install kiroclaw && ~/.toolbox/bin/kiroclaw setup`. Includes auto-prerequisite installation (kiro-cli, AIM, brazilcli), `kiroclaw doctor` stale-path checks, and migration from one-line install. (zejiangg, bolichen)
+- **Toolbox Install** — one-command install with native platform-specific bundles for AL2, AL2023, and macOS (x86_64 + aarch64). No repo clone needed: `toolbox install kirocrew && ~/.toolbox/bin/kirocrew setup`. Includes auto-prerequisite installation (kiro-cli, AIM, brazilcli), `kirocrew doctor` stale-path checks, and migration from one-line install. (zejiangg, bolichen)
 
 - **TaskKeeper** — personal task management app in the dashboard. Scan Slack mentions and Outlook emails for actionable items, triage with LLM-powered confidence scoring, accept/skip/merge candidates, and sync bidirectionally with Microsoft To-Do. Includes auto-scan polling, duplicate detection, and bulk operations. (jpontone)
 
@@ -411,9 +424,9 @@ Frontend split into dedicated KiroClawWebsite package (NpmPrettyMuch).
 
 - **Warm Session Pool** — pre-spawn kiro-cli processes at gateway startup so new sessions claim an already-initialized process. Eliminates 3-10s cold-start latency on first message. Configurable pool_size, pool_agent, pool_ttl. Liveness drain loop discards dead providers. (hoangvp)
 
-- **Portable Snapshot & Restore** — `kiroclaw snapshot` creates .tar.gz archives of all state (memory, crons, config, skills). `kiroclaw restore` with auto-detect replace vs merge mode, selective component restore, and dry-run preview. Symlink/path traversal rejection. (patrigao)
+- **Portable Snapshot & Restore** — `kirocrew snapshot` creates .tar.gz archives of all state (memory, crons, config, skills). `kirocrew restore` with auto-detect replace vs merge mode, selective component restore, and dry-run preview. Symlink/path traversal rejection. (patrigao)
 
-- **Multi-Session Eval Harness** — `kiroclaw eval` benchmarks cross-session memory with full memory loop (ConversationLog → Consolidator → MemoryStore → ContextBuilder). 5 built-in scenarios including a 54-turn Amazon SDE workflow. LLM judge scoring. (xizifeng)
+- **Multi-Session Eval Harness** — `kirocrew eval` benchmarks cross-session memory with full memory loop (ConversationLog → Consolidator → MemoryStore → ContextBuilder). 5 built-in scenarios including a 54-turn Amazon SDE workflow. LLM judge scoring. (xizifeng)
 
 - **Stateless Cron Sessions** — `persistent_session: false` flag on `cron_add` opens a fresh session per run instead of accumulating context indefinitely. Prevents polling crons from OOM-killing the gateway after days of use. Reaper correctly targets ephemeral session keys. (mingweic)
 
@@ -433,7 +446,7 @@ Frontend split into dedicated KiroClawWebsite package (NpmPrettyMuch).
 
 - **Memory Context Budget 3x** — hard cap increased from 18k to 55k tokens. Lessons cap 3.3k→12k (highest-signal data), semantic memory 0.5k→4k, disk retention 90→365 days. Fixes silent truncation for power users with 70+ corrections. (bolichen)
 
-- **User-Defined kiro_hooks** — `agent.kiro_hooks` in config.json lets users define kiro-cli hooks (preToolUse, postToolUse) that persist across `kiroclaw update`. Bundled hooks always run first. Validated with allowlist regex, path checks, and limits. (mikuzne)
+- **User-Defined kiro_hooks** — `agent.kiro_hooks` in config.json lets users define kiro-cli hooks (preToolUse, postToolUse) that persist across `kirocrew update`. Bundled hooks always run first. Validated with allowlist regex, path checks, and limits. (mikuzne)
 
 - **Sortable Column Headers** — all dashboard data tables now have clickable column headers for sorting. (nishrs)
 
@@ -479,13 +492,13 @@ Frontend split into dedicated KiroClawWebsite package (NpmPrettyMuch).
 
 ### Improvements
 
-- **Frontend Package Split** — React/TypeScript SPA extracted to dedicated KiroClawWebsite package (NpmPrettyMuch). KiroClaw resolves dist/ at build time. (zejiangg)
+- **Frontend Package Split** — React/TypeScript SPA extracted to dedicated KiroCrewWebsite package (NpmPrettyMuch). KiroCrew resolves dist/ at build time. (zejiangg)
 - **handlers.py Split** — 7,646-line monolith split into 14 focused modules. Surfaced 12 pre-existing deadlock bugs. 50+ AutoSDE fixes across subprocess safety, encoding, concurrency locks, and security validation. (zejiangg)
 - **Session Rebuild Fidelity** — role filtering excludes tool display titles (57% of budget), compression cap raised to 100 messages, per-message cap 1.5K→8K on fallback path. (nrb)
 - **Subagent Timeouts** — task 20→30min, delivery 5→20min, injection 2→5min. Turn limit 30→100 default, 200 max. (bolichen)
 - **Config Persistence** — `to_dict()` now includes all dataclass fields (secretary, taskrunner, orchestrator, skills, timezone were silently dropped). (bolichen)
 - **Cron Retry** — Slack notification delivery retries up to 3 times with linear backoff on transient API errors. (swga)
-- **MCP Priority** — `~/.kiroclaw/mcp.json` takes priority over `~/.kiro/settings/mcp.json`, fixing restrictive --include-tools leaking from kiro mcp.json. (bolichen)
+- **MCP Priority** — `~/.kirocrew/mcp.json` takes priority over `~/.kiro/settings/mcp.json`, fixing restrictive --include-tools leaking from kiro mcp.json. (bolichen)
 - **AIM Skill Dedup** — `_sync_aim_skill_paths_to_global()` replaces instead of union-merging, reducing --skill-paths from 50 to 8. MCP servers synced on Apply & Restart. (bolichen)
 - **Systemd Restart Limits** — `StartLimitBurst=5` + `StartLimitIntervalSec=300` prevents infinite crash loops (42,617 restarts in 5 days observed). (bolichen)
 
@@ -517,13 +530,13 @@ Frontend split into dedicated KiroClawWebsite package (NpmPrettyMuch).
 - Fix trust button click having no effect when pending approval already resolved — derive session_key from thread_ts (bolichen)
 - Fix cron timezone display showing UTC instead of job timezone in Slack Home tab (bolichen)
 - Fix channel agent dropdown storing filename stem instead of JSON name field — custom agents silently fell back to default (bolichen)
-- Fix `kiroclaw token/status/logout/stop` hitting wrong port when `dashboard.url` configured — resolve from config/env/flag (bolichen)
+- Fix `kirocrew token/status/logout/stop` hitting wrong port when `dashboard.url` configured — resolve from config/env/flag (bolichen)
 - Fix S3 presigned URLs blocked by exfiltration URL filtering (bolichen)
-- Fix non-image file uploads silently dropped after KiroClawWebsite package split — restored xddeng's fix from 224e5f2 (bolichen)
+- Fix non-image file uploads silently dropped after KiroCrewWebsite package split — restored xddeng's fix from 224e5f2 (bolichen)
 - Fix `sendOnEnter` setting not wired to ChatInput keydown handler (zezhexu)
 - Fix native notifications showing "N new notification(s)" instead of real content (vcd)
-- Fix `KiroClawConfig.to_dict()` silently dropping secretary, taskrunner, orchestrator, skills, and timezone sections on save (bolichen)
-- Fix `kiroclaw` launcher resolving to stale workspace binary after Toolbox migration (zejiangg)
+- Fix `KiroCrewConfig.to_dict()` silently dropping secretary, taskrunner, orchestrator, skills, and timezone sections on save (bolichen)
+- Fix `kirocrew` launcher resolving to stale workspace binary after Toolbox migration (zejiangg)
 - Fix MCP probe failure on dev-dsk from Apollo envroot binaries — check .envroot before accepting (zejiangg)
 - Fix `is_process_alive()` stale-activity threshold causing conversation continuity loss (bolichen)
 - Fix bare number-dot responses rendered as "1." by markdown ordered list parser (bolichen)
@@ -539,7 +552,7 @@ Frontend split into dedicated KiroClawWebsite package (NpmPrettyMuch).
 ### Refactors
 
 - Split `dashboard/handlers.py` (7,646 lines) into 14 focused modules with backward-compatible re-exports (zejiangg)
-- Extract KiroClawWebsite as dedicated NpmPrettyMuch package for frontend (zejiangg)
+- Extract KiroCrewWebsite as dedicated NpmPrettyMuch package for frontend (zejiangg)
 - Delete ~2.9MB tracked dead files (orphaned tests, screenshots, irrelevant skills) (bolichen)
 
 ### Docs
@@ -573,7 +586,7 @@ Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chow
 - **ARCC Governance Integration** — `arcc-governance` MCP server registered as managed server with `search_arcc` auto-approved. New `security-assistance` skill requires ARCC search before responding to security-sensitive requests. (zachhe)
 - **Incognito Mode** — ephemeral sessions that block `learn_add` and memory consolidation. No persistent traces. (xutianxi)
 - **Session Content Search** — search history by content (CR IDs, error messages, file paths) rather than title alone. Exposed via `/api/sessions/search`. (meyffret)
-- **`kiroclaw stop` Command** — stop a running gateway via SIGTERM with port-based PID lookup and process verification. (patrigao)
+- **`kirocrew stop` Command** — stop a running gateway via SIGTERM with port-based PID lookup and process verification. (patrigao)
 - **`!compact` Slack Command** — trigger in-place context compaction from Slack. Shows ♻️ reaction, streams `/compact`, reports result with timing. (nhsng)
 - **OPTIONS Multi-Select** — upgraded from single-choice buttons to checkboxes with Send button. Supports up to 10 options. (rkondis)
 - **Configurable Autocompact** — `session.autocompact_pct` (default 90%, valid 5–90) replaces hardcoded threshold. (hugocost)
@@ -596,7 +609,7 @@ Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chow
 - **Copy Feedback Animation** — CodeBlock component shows visual confirmation on copy. (hukc)
 - **Minimal Installer** — `minimal_install.sh` for environments with existing tooling (Python, Node, git already available). Skips platform tool installation. (adoussan)
 - **Agent Selector in Channels** — dropdown to pick which kiro agent to use when adding an agent to a channel. Reuses existing AgentSelector component. (nitans)
-- **Home Tab Version Badge** — Slack App Home Tab shows running KiroClaw version and update-available notice for Slack-primary users. (siddartb)
+- **Home Tab Version Badge** — Slack App Home Tab shows running KiroCrew version and update-available notice for Slack-primary users. (siddartb)
 - **Session-Targeted Cron** — `send_message` with `session="origin"` injects cron results directly into the dashboard session that created the job. (elyluk)
 - **Kiro & IntelliJ Themes** — two new built-in themes added to the color system. (dhasman)
 
@@ -615,7 +628,7 @@ Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chow
 - **Project Scope Refactor** — replaced per-session workspace binding with project-scoped directory. (hoangvp)
 - **MCP Server Sync** — merge env/command/args for existing local MCP servers in `sync_to_agent_config`. (nrb)
 - **spawn_status Disk Read** — reads full result from disk instead of truncated memory copy. (bgrubin)
-- **Frontend Rebuild on Update** — `kiroclaw update` and auto-update now rebuild frontend. Propagate build failures in setup.py. (lachlal, agdoug)
+- **Frontend Rebuild on Update** — `kirocrew update` and auto-update now rebuild frontend. Propagate build failures in setup.py. (lachlal, agdoug)
 - **set_mode for All Agents** — `session/set_mode` called for all agents, not just default. (zejiangg)
 - **Auto-Approve Subagent Spawn** — trusted dashboard sessions auto-approve `spawn_run` without interactive dialog. (jhguo, emmaok)
 - **Subagent Activity Panel** — `subagent_done` event includes result payload so Activity panel shows final output even if streaming chunks were missed. (agrawas, bolichen)
@@ -650,7 +663,7 @@ Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chow
 - Fix graceful `pysqlite3` fallback to stdlib `sqlite3` (fe03a4d) (msq)
 - Fix cancel parent prompt before releasing semaphore in subagent injection (e0fc51b) (patrigao)
 - Remove Docker dependency from Whisper STT and Ollama embeddings (d993f86) (hugocost)
-- Fix `embedding_model` not loaded from config.json in KiroClawConfig (19c201a) (patrigao)
+- Fix `embedding_model` not loaded from config.json in KiroCrewConfig (19c201a) (patrigao)
 - Fix thread parent context — block extraction, ch_ctx gate, compressed guard (943e68d) (josejam)
 - Fix auth token not included in gateway browser auto-open URL (943ae1c) (meyffret)
 - Fix session history sort by modified time (d4f86f3) (zejiangg)
@@ -663,8 +676,8 @@ Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chow
 - Fix input draft loss on tab switch — reorder sessionStorage rehydration (40c9c7b) (zejiangg)
 - Fix `arcc` and `uv` orphan processes escaping cleanup — add to kill allowlist (5aa9a2a) (psathees)
 - Fix `.venv/` blocking auto-update — add to gitignore (c38f415) (rohankap)
-- Fix `~/.kiroclaw/` not existing before log handler init (85ebec7) (zyh)
-- Fix Slack Home Tab hardcoded `/kiroclaw` — use configured command name (d85b047) (saheban)
+- Fix `~/.kirocrew/` not existing before log handler init (85ebec7) (zyh)
+- Fix Slack Home Tab hardcoded `/kirocrew` — use configured command name (d85b047) (saheban)
 - Fix lazy `_config_lock` init for Python 3.10 compat (c30b8e5) (zejiangg)
 
 ### Documentation
@@ -690,7 +703,7 @@ Adam Doussan (adoussan), Alec Douglas (agdoug), Alex Yelle (yellea), Artem Krivo
 - **Multi-Agent Orchestration** — conductor delegates tasks across named agents with isolated context and plan memory. Useful for complex workflows where a code agent and a review agent collaborate on the same task. (zejiangg)
 - **Persistent Agent Channels** — dedicated multi-agent collaboration spaces with their own history. Spin up a channel with 3 agents working on a design doc while you chat separately. (lanxib)
 - **Dashboard ↔ Slack Handoff** — link a dashboard session to a Slack thread for bidirectional sync. Start debugging in the dashboard, then hand off to Slack so your phone gets updates. `sessions` command lists recent sessions with resume buttons. (neklund)
-- **Slash Command System** — `/kiroclaw dashboard`, `/kiroclaw sessions`, `/kiroclaw channels`, `/kiroclaw users`. Manage allowlists, channels, and agents without memorizing bang commands. Old `!` commands still work with deprecation warnings. (eqqupty)
+- **Slash Command System** — `/kirocrew dashboard`, `/kirocrew sessions`, `/kirocrew channels`, `/kirocrew users`. Manage allowlists, channels, and agents without memorizing bang commands. Old `!` commands still work with deprecation warnings. (eqqupty)
 - **Dashboard UI Overhaul** — 6 new pages: Settings (General/Chat/Display), Developer (log viewer), Capabilities (MCP tools), Schedule (week grid), OrchestratedChat, Channels. Configure everything from the browser instead of editing JSON. (zezhexu, dagadans)
 - **Monaco Editor** — code blocks in chat render with Monaco syntax highlighting. Diff blocks show colored +/- lines. Review code changes without leaving the chat. (aydinmo, finnhad)
 - **AMOLED Theme** — pure-black theme for OLED screens. Saves battery on mobile and reduces eye strain in dark rooms. JSON syntax tokens added across all 11 themes. (iamishan)
@@ -700,12 +713,12 @@ Adam Doussan (adoussan), Alec Douglas (agdoug), Alex Yelle (yellea), Artem Krivo
 - **Inline Action Buttons** — Block Kit buttons and selects in Slack route back to the LLM session. Agent can present choices and act on your click without another message. (bgrubin)
 - **Configurable Reactions** — customize phase emojis (`slack.reactions`) or disable them entirely (`reactions_enabled: false`). Reduce noise in busy channels. (aquaman)
 - **Open Channels** — `slack.open_channels` bypasses allowlist for specified channels. Add your team channel so everyone can use the bot without individual approval. (aditsrid)
-- **Bot Identity** — `agent.bot_name` lets the bot introduce itself by a custom name. Useful when running multiple KiroClaw instances with different personas. (jtedward)
+- **Bot Identity** — `agent.bot_name` lets the bot introduce itself by a custom name. Useful when running multiple KiroCrew instances with different personas. (jtedward)
 - **Cron Enhancements** — `skip_dates` excludes holidays, `timezone` evaluates dates locally, `--no-crons` flag for multi-instance setups. Schedule page shows a week grid of upcoming jobs. (hugocost, zezhexu, meyffret)
 - **Inline Image Preview** — drag-drop images show a preview strip before sending. Verify you're sharing the right screenshot before the agent sees it. (elyluk)
 - **Fish Shell Support** — `install.sh` auto-detects fish and configures PATH. No more manual `set -gx` after install. (ramdavid)
 - **mise Runtime Management** — `install.sh --mise` uses mise for Python 3.12 and Node 16 instead of system package managers. Keeps your global environment clean. (kylehel)
-- **Builder Toolbox Bundling** — `toolbox install kiroclaw` distribution path. One command install for teammates who don't want to clone the repo. (zejiangg)
+- **Builder Toolbox Bundling** — `toolbox install kirocrew` distribution path. One command install for teammates who don't want to clone the repo. (zejiangg)
 - **CloudWatch RUM** — browser analytics for dashboard usage patterns. See which pages people actually use. 100% session sampling. (zezhexu)
 - **Agent Identity Injection** — `[CURRENT AGENT]` and `[RUNTIME]` tags in LLM context. Agent knows whether it's running in Slack, dashboard, or cron and adapts behavior. (cheqiu)
 - **Thread Parent Context** — cron reply sessions auto-inject parent thread context. Cron jobs that reply to existing threads understand what was discussed before. (josejam)
@@ -771,7 +784,7 @@ Joe Guo (zejiangg), Dan Dagayev (dagadans), Bolin Chen (bolichen), Ben Grubin (b
 - **Model selector** — switch LLM models mid-session from session bar, welcome screen, or agent config (matbarnu)
 - **Cron inline editing** — PATCH endpoint, Run Now, Open in Chat, human-readable schedules with timezone (huanhe, kejiawan)
 - **LLM-compressed thread history** — resumed sessions get head/tail sandwich compression of prior conversation (aswind)
-- **Concurrent dashboard tokens** — up to 5 valid tokens with `kiroclaw logout` for revocation (rakinaml)
+- **Concurrent dashboard tokens** — up to 5 valid tokens with `kirocrew logout` for revocation (rakinaml)
 - **Pin/favorite sessions** — pin sessions to top of sidebar with localStorage persistence (eqqupty)
 - **Subagent turn limit** — configurable `subagent_max_turns` with per-spawn override (txd)
 - **spawn_status MCP tool** — retrieve full untruncated subagent output (bgrubin)
@@ -781,7 +794,7 @@ Joe Guo (zejiangg), Dan Dagayev (dagadans), Bolin Chen (bolichen), Ben Grubin (b
 - **Trust/YOLO propagation** — subagent sessions inherit parent's approval policy (merth)
 - **DevSpaces auto-detection** — auto-configure CORS and proxy URL (tsukky)
 - **Workspace CRUD** — create/update/delete workspaces via HTTP API, CLI, and frontend (zezhexu)
-- **Enforce denied commands scope** — `"all"` or `"kiroclaw"` to skip non-kiroclaw agents (bolichen)
+- **Enforce denied commands scope** — `"all"` or `"kirocrew"` to skip non-kirocrew agents (bolichen)
 - **Editable Config Summary** — dashboard settings directly editable with inline feedback (bolichen)
 - **ARCC governance integration** — setup/update/auto-update flows for ARCC tools (bolichen)
 - **Log filter & tail** — dashboard Logs page with real-time filter and tail toggle (bhatiava)
@@ -790,7 +803,7 @@ Joe Guo (zejiangg), Dan Dagayev (dagadans), Bolin Chen (bolichen), Ben Grubin (b
 - **Phase-aware Slack reactions** — granular emoji status with debounce and stall watchdog (vamgan)
 - **Slack thread metadata injection** — mid-thread @mentions get full thread context (jiayizha)
 - **API server in --slack-only** — minimal API server for MCP tools when dashboard disabled (dparimal)
-- **Slack manifest auto-populate** — `kiroclaw manifest` CLI command (yueyanm)
+- **Slack manifest auto-populate** — `kirocrew manifest` CLI command (yueyanm)
 - **CLI usage examples** — practical examples in `--help` output (snitinka)
 - **Midway auth status** — certificate validity in Slack status and Home tab (pebarrio)
 - **~~Auto-dream all sessions~~** — removed in dream system cleanup
@@ -841,37 +854,37 @@ Adam Duncan, Anthony Orozco, Arturo Acuaviva, Aswin Damodar, Beau Taylor-Ladd, B
 ### ⚠️ Breaking Changes
 
 - **Loopback auth bypass removed** — `127.0.0.1` / `::1` requests now require a valid token. Port forwarders (`socat`, `ssh -R`) can no longer bypass authentication.
-  - **Dashboard users:** Run `kiroclaw token` to get a click-and-go URL. The startup banner also prints one automatically.
-  - **Electron app:** Authenticates automatically via `~/.kiroclaw/.local_secret`. No action needed.
-  - **Scripts/automation calling `/api/spawn`, `/api/lessons`, etc.:** Add `X-Internal-Secret` header with the contents of `~/.kiroclaw/.local_secret`. Loopback is still required.
-  - **SSH tunnel users:** Use the token URL from `kiroclaw token` or the startup banner. The 403 page also has a paste-and-go input field.
+  - **Dashboard users:** Run `kirocrew token` to get a click-and-go URL. The startup banner also prints one automatically.
+  - **Electron app:** Authenticates automatically via `~/.kirocrew/.local_secret`. No action needed.
+  - **Scripts/automation calling `/api/spawn`, `/api/lessons`, etc.:** Add `X-Internal-Secret` header with the contents of `~/.kirocrew/.local_secret`. Loopback is still required.
+  - **SSH tunnel users:** Use the token URL from `kirocrew token` or the startup banner. The 403 page also has a paste-and-go input field.
 
-- **Nonce-based token invalidation** — Only the most recently issued token is valid. If you generate a new token, all previous tokens (and their browser sessions) are invalidated. Re-run `kiroclaw token` to get a fresh one.
+- **Nonce-based token invalidation** — Only the most recently issued token is valid. If you generate a new token, all previous tokens (and their browser sessions) are invalidated. Re-run `kirocrew token` to get a fresh one.
 
 - **Single-use token consumption removed** — Tokens are now reusable across multiple browsers/tabs/apps until a new token is generated or TTL expires (20h default, up from 6h).
 
 ### Security
 
 - Removed blanket loopback bypass in `token_auth_middleware` — closes port-forward auth bypass (CorpSec finding: 14 exposed dashboards, 5 from this exemption)
-- File-based per-session IPC secret (`~/.kiroclaw/.local_secret`, `chmod 600`, atomic `os.open` + `fchmod`)
+- File-based per-session IPC secret (`~/.kirocrew/.local_secret`, `chmod 600`, atomic `os.open` + `fchmod`)
 - `X-Internal-Secret` header required for internal API paths (`/api/spawn`, `/api/lessons`, `/api/taskrunner`, `/api/send-message`, `/api/hooks/agent`)
 - `/api/token/local` endpoint for Electron/local apps (loopback + file-based secret + `hmac.compare_digest`)
 - Constant-time secret comparison throughout (`hmac.compare_digest`)
 - `X-Auth-Required: true` header on auth 403s (disambiguates from CSRF 403s)
 - `encodeURIComponent` on token values in redirects
 - Frontend uses DOM API instead of `innerHTML` (XSS prevention)
-- Guard empty `KIROCLAW_PROJECT_DIR` (prevents CWD script execution)
+- Guard empty `KIROCREW_PROJECT_DIR` (prevents CWD script execution)
 - SEL audit logging for all token issuance and auth decisions
 
 ### Features
 
-- `kiroclaw token` CLI command — prints a dashboard URL with auth token (default 20h TTL, configurable via `--ttl`)
+- `kirocrew token` CLI command — prints a dashboard URL with auth token (default 20h TTL, configurable via `--ttl`)
 - Startup banner includes click-and-go token URL
 - 403 page with token URL input field and dark mode support
 - Electron token-prompt with dynamic port from `main.js`
 - Session-expired banner with inline token input in dashboard frontend
 - `ensure-node.sh` — cross-platform Node 16+ install via mise/nvm (macOS, AL2, AL2023)
-- `kiroclaw doctor` now checks node version, not just existence
+- `kirocrew doctor` now checks node version, not just existence
 
 ### Fixes
 
@@ -888,9 +901,9 @@ Bolin Chen (bolichen)
 
 ### Features
 
-- **Multi-agent orchestration** — Configure multiple named agents with independent kiro-cli backends, workspaces, and memory stores. Switch agents per chat slot from the dashboard or Slack. CLI: `kiroclaw agent list|create|update|delete`. HTTP CRUD at `/api/agents`.
+- **Multi-agent orchestration** — Configure multiple named agents with independent kiro-cli backends, workspaces, and memory stores. Switch agents per chat slot from the dashboard or Slack. CLI: `kirocrew agent list|create|update|delete`. HTTP CRUD at `/api/agents`.
 - **Inline tool cards** — Tool call results now render inline between text segments, matching the agent's actual execution order. Previously all text merged into one block with tools appended below.
-- **AIM agent auto-sync** — AIM-installed agents are automatically discovered and persisted into `config.json` as first-class entries with customizable workspace, memory store, and description. Color-coded source badges (aim/kiroclaw/builtin) in the frontend.
+- **AIM agent auto-sync** — AIM-installed agents are automatically discovered and persisted into `config.json` as first-class entries with customizable workspace, memory store, and description. Color-coded source badges (aim/kirocrew/builtin) in the frontend.
 
 ### Fixes
 
@@ -906,7 +919,7 @@ Bolin Chen (bolichen)
 ### Refactors
 
 - Extract shared `useAgents` hook — eliminates duplicated agent fetch logic across ChatPage, CronTab, WelcomeView
-- Unified `KiroClawAgent` TypeScript interface across all pages
+- Unified `KiroCrewAgent` TypeScript interface across all pages
 - New `SourceBadge` component for consistent agent origin display
 - `_config_lock` (asyncio.Lock) around agent CRUD to prevent config.json races
 
@@ -932,13 +945,13 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuta Tsuji (yuta
 - `gc.collect()` after provider shutdown to prevent "Event loop is closed" RuntimeError on chat exit
 - ffmpeg built from source (LGPLv2.1) instead of binary download per Open Source guidance
 - `git stash --include-untracked` in CLI and auto-update so untracked files don't block git pull
-- Deny `kiroclaw restart/update/kill` in deniedCommands so LLM cannot restart the gateway
+- Deny `kirocrew restart/update/kill` in deniedCommands so LLM cannot restart the gateway
 - Auto-update saves chat slots before closing sessions
 - `--muted-fg` CSS variable added to fix DEBUG log badge contrast in solarized-light and other themes
 
 ### Refactors
 
-- Remove 245 lines dead code: `drain_all_kiroclaw_processes()`, `get_mcp_servers()`, `_is_valid_mcp_command()`, unused install.sh variables
+- Remove 245 lines dead code: `drain_all_kirocrew_processes()`, `get_mcp_servers()`, `_is_valid_mcp_command()`, unused install.sh variables
 - DOM construction instead of innerHTML for subagent progress cards (XSS safety)
 
 ### Contributors
@@ -949,17 +962,17 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
 
 ### Features
 
-- **🎙️ Voice memo transcription** — Send a voice memo in Slack and KiroClaw transcribes it via openai-whisper, then responds to the text. Supports native whisper or Docker fallback for AL2. Turbo model (~1.6 GB) runs 8× faster than large. Dashboard STT settings in Overview > Slack tab with one-click install.
+- **🎙️ Voice memo transcription** — Send a voice memo in Slack and KiroCrew transcribes it via openai-whisper, then responds to the text. Supports native whisper or Docker fallback for AL2. Turbo model (~1.6 GB) runs 8× faster than large. Dashboard STT settings in Overview > Slack tab with one-click install.
 
 - **~~🧠 Dream: memory consolidation~~** — removed (caused memory regressions)
 
 - **📎 File, image & voice handling in Slack** — Drop images (png/jpeg/gif/webp) and they're sent to ACP vision. Drop text/code files and they're injected inline (50KB cap). Voice memos are auto-transcribed. All with credential redaction and audit logging.
 
-- **🏠 Slack Home Tab** — Open KiroClaw's profile in Slack to see a live Block Kit dashboard: gateway status, active cron jobs, running sessions, recent lessons, and a quick link to the web dashboard.
+- **🏠 Slack Home Tab** — Open KiroCrew's profile in Slack to see a live Block Kit dashboard: gateway status, active cron jobs, running sessions, recent lessons, and a quick link to the web dashboard.
 
-- **🤖 Multi-node mesh communication** — Configure `slack.trusted_bot_ids` to let two KiroClaw instances (e.g. Mac laptop + Cloud Desktop) talk to each other via a shared Slack channel. Self-echo guard prevents loops; cross-bot loop prevention delegated to agent-layer envelope protocol.
+- **🤖 Multi-node mesh communication** — Configure `slack.trusted_bot_ids` to let two KiroCrew instances (e.g. Mac laptop + Cloud Desktop) talk to each other via a shared Slack channel. Self-echo guard prevents loops; cross-bot loop prevention delegated to agent-layer envelope protocol.
 
-- **📢 Per-channel activation & `!ta` command** — KiroClaw can now observe group channels. Use `!ta` in any thread to summon the agent for that thread only. Observe mode persists per-channel so the bot stays quiet unless explicitly invoked.
+- **📢 Per-channel activation & `!ta` command** — KiroCrew can now observe group channels. Use `!ta` in any thread to summon the agent for that thread only. Observe mode persists per-channel so the bot stays quiet unless explicitly invoked.
 
 - **🔇 Silent cron mode & `send_message` MCP tool** — Cron jobs can run silently (`silent: true`) — the agent executes but doesn't auto-post results. Instead, it decides when to notify you via the new `send_message` MCP tool. Perfect for monitoring jobs that only alert on anomalies.
 
@@ -979,9 +992,9 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
 
 - **🔄 Context usage ring** — Real-time token usage indicator in the chat header shows how much of the context window is consumed. Helps you know when compaction is coming.
 
-- **📦 One-line installer** — `mwinit -o && curl ... | bash` installs everything (kiro-cli, AIM, MCP servers, Node.js, KiroClaw) without a Brazil workspace. For non-contributors who just want to use KiroClaw.
+- **📦 One-line installer** — `mwinit -o && curl ... | bash` installs everything (kiro-cli, AIM, MCP servers, Node.js, KiroCrew) without a Brazil workspace. For non-contributors who just want to use KiroCrew.
 
-- **⚙️ `kiroclaw config` CLI** — `kiroclaw config get [key]`, `kiroclaw config set <key> <val>`, `kiroclaw config edit` for managing `~/.kiroclaw/config.json` without hand-editing JSON.
+- **⚙️ `kirocrew config` CLI** — `kirocrew config get [key]`, `kirocrew config set <key> <val>`, `kirocrew config edit` for managing `~/.kirocrew/config.json` without hand-editing JSON.
 
 - **🔧 Configurable display** — Zoom level, font family, and theme all configurable from Overview > Display tab. Settings persist across sessions.
 
@@ -1001,9 +1014,9 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
 - Fix macOS process counting: `ps` fallback for `/proc`-dependent code paths
 - Deduplicate AIM agents install to prevent inflated metrics (160K+ → ~500 real installs)
 - Use Slack display names instead of raw user IDs in LLM context
-- Route subagent completions via `KIROCLAW_SESSION_KEY` env var
+- Route subagent completions via `KIROCREW_SESSION_KEY` env var
 - Deny-by-default agent validation for `_SYSTEM_PREFIX` bypass
-- Replace `mesh.claw` with `kiroclaw.localhost` (RFC 6761 reserved)
+- Replace `mesh.claw` with `kirocrew.localhost` (RFC 6761 reserved)
 - Gate subagent spawns behind approval when YOLO mode is off
 - Throttle parallel step execution to prevent resource exhaustion
 - Support SSH agent-forwarded certs in Midway status check
@@ -1043,12 +1056,12 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuliang Qiao (yu
 - **Tiered sandbox modes with credential redaction** — Three sandbox levels (`auto`/`strict`/`off`) for kiro-cli process isolation. Standard mode enables git-over-SSH and AWS CLI via `credential_process` while hiding non-workflow credential stores. New `redact_credentials()` scans all LLM output for plaintext and base64-encoded credential patterns across all 5 output paths.
 - **Kiro CLI-compatible script hooks** — Config-driven hook system for pre/post tool execution, enabling custom validation and transformation without code changes.
 - **System theme auto-follow** — Dashboard theme toggle now supports a third "system" option that tracks macOS/OS dark mode preference via `prefers-color-scheme`.
-- **Configurable slash command name** — Slack slash command name is now configurable via `slack.command` in config.json (default: `kiroclaw`).
-- **`kiroclaw config` CLI** — New `config get/set/edit` subcommands for managing `config.json` from the command line with auto type detection and SEL audit logging.
+- **Configurable slash command name** — Slack slash command name is now configurable via `slack.command` in config.json (default: `kirocrew`).
+- **`kirocrew config` CLI** — New `config get/set/edit` subcommands for managing `config.json` from the command line with auto type detection and SEL audit logging.
 - **Session title inline rename** — Double-click session titles in the sidebar or header to rename them inline.
 - **Multi-select OPTIONS buttons** — LLM responses with `[OPTIONS: ...]` tags now render as interactive multi-select Block Kit buttons in Slack and the dashboard.
 - **Unread indicator and typing dots** — Chat sidebar shows unread badges per slot and animated typing dots during LLM streaming. Slack-style grouped message layout.
-- **KiroClawAICapabilities via AIM** — `kiroclaw-lite` agent and skills now distributed as an AIM package, auto-installed during setup and updates.
+- **KiroCrewAICapabilities via AIM** — `kirocrew-lite` agent and skills now distributed as an AIM package, auto-installed during setup and updates.
 - **Task naming for task runner** — Tasks get auto-generated names from spec content, resolvable by name or ID.
 - **Remote Streamable HTTP MCP servers** — MCP discovery now supports remote servers via Streamable HTTP transport in addition to local stdio servers.
 - **Configurable ChatPage settings** — Per-user chat preferences (history expansion, notification limit, timestamps, send-on-enter) with localStorage persistence.
@@ -1059,7 +1072,7 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuliang Qiao (yu
 
 - Show full cron job message in dashboard Jobs table
 - Propagate default agent setting to new chat slots
-- Preserve user customizations in `kiroclaw.json` across gateway restarts
+- Preserve user customizations in `kirocrew.json` across gateway restarts
 - Handle WebSocket not ready on early Slack events
 - Nested variant scan for AIM skill path discovery
 - Only load AIM skills from current event snapshot
@@ -1098,7 +1111,7 @@ Arturo Acuaviva (acuaviva), Bocheng Wu (bochengw), Bolin Chen (bolichen), Chaone
 ### Features
 
 - **Inline markdown viewer panel** — Click any file path in chat to open a resizable side panel. Supports edit/preview/save with syntax highlighting, dirty tracking, and Cmd+S. Useful for reviewing config files, reading logs, or editing code without leaving the chat. Shift+click opens in Finder instead.
-- **Slack allowlist & tracking channels** — Replace the single `KIROCLAW_OWNER_ID` gate with a configurable allowed-users list and per-channel tracking. Use `!allowlist @user` to grant/revoke access, `!allowlist #channel` to auto-allow users who join a channel, and `/kiroclaw` slash command for quick management. Unauthorized users get an ephemeral rejection. Gateway refactored into focused modules (events, interactions, allowlist).
+- **Slack allowlist & tracking channels** — Replace the single `KIROCREW_OWNER_ID` gate with a configurable allowed-users list and per-channel tracking. Use `!allowlist @user` to grant/revoke access, `!allowlist #channel` to auto-allow users who join a channel, and `/kirocrew` slash command for quick management. Unauthorized users get an ephemeral rejection. Gateway refactored into focused modules (events, interactions, allowlist).
 - **Owner-only `!yolo` command** — YOLO mode now requires an explicit `!yolo on/off/status` command from the owner instead of a button on every approval prompt. Prevents accidental global permission escalation.
 - **`!agent` command** — Switch kiro-cli agents on the fly via Slack with `!agent <name>`. Handy when you want a different personality or toolset mid-conversation.
 - **Current date in session context** — The LLM now knows "today's date" in every session (Slack, dashboard, subagent, cron). No more wrong-day answers.
@@ -1106,14 +1119,14 @@ Arturo Acuaviva (acuaviva), Bocheng Wu (bochengw), Bolin Chen (bolichen), Chaone
 
 ### Fixes
 
-- `kiroclaw learn` CLI now reads from vector store instead of only JSONL
+- `kirocrew learn` CLI now reads from vector store instead of only JSONL
 - MCP runtime rebuild skipped when dependencies unchanged — fixes tool load timeout
 - Subagent spawn now threads the agent name through the full pipeline
 - IME composition: CJK Enter no longer triggers message send
 - Sandbox exposes `~/.ssh/known_hosts` while hiding private keys
 - Skip browser auto-open on remote/Cloud Desktop sessions
-- `kiroclaw update` no longer times out on `brazil-build clean`
-- Preserve user-modified `kiroclaw.json` fields across gateway restarts
+- `kirocrew update` no longer times out on `brazil-build clean`
+- Preserve user-modified `kirocrew.json` fields across gateway restarts
 - macOS `/usr/bin/stat` full path for gnubin users
 - SEL audit events for subagent spawn and spawn field validation
 - Markdown panel: tilde paths, draggable resize, word-break on long paths
@@ -1139,7 +1152,7 @@ Alex Avance (aavance), Bocheng Wu (bochengw), Bolin Chen (bolichen), George Coll
 - **Midway credential TTL status card** — Overview page shows SSH cert expiry with color-coded status (green >4h, yellow <1h, red expired), polling every 30s (by Sungjin Yoo)
 - **Visible acceptance step in task runner** — acceptance check now appears as a visible step in plan mode, plus dev workflow overhaul and doc cleanup (by Joe Guo)
 - **Vercel React best-practices kiro skill** — comprehensive React performance rules covering rendering, rerenders, async patterns, and bundle optimization (by Zezhen Xu)
-- **KiroClaw dashboard design file** — Pencil design file covering all 5 pages with dark/light theme axis mapped 1:1 from CSS design tokens (by Zezhen Xu)
+- **KiroCrew dashboard design file** — Pencil design file covering all 5 pages with dark/light theme axis mapped 1:1 from CSS design tokens (by Zezhen Xu)
 
 ### Refactors
 
@@ -1150,7 +1163,7 @@ Alex Avance (aavance), Bocheng Wu (bochengw), Bolin Chen (bolichen), George Coll
 - **Linux sandbox rewrite with identity UID mapping** — replaced the two-stage `unshare -rm` → `unshare -U` approach (UID 0 / 65534 broke JVM ByteBuddy, brazil-build, Gradle) with the correct namespace pattern: fork → child `unshare(CLONE_NEWUSER)` → parent writes identity UID/GID map → child `unshare(CLONE_NEWNS)` → bind-mount → exec. Child retains real UID so all toolchains work without workarounds. Env var scrubbing (`AWS_SECRET*`, `SSH_AUTH_SOCK`, etc.) added. Tested on AL2 (kernel 5.10) and AL2023 (by bolichen)
 - **Restored v1.0.0 artifacts** — CR-261269645 inadvertently reverted v1.0 changes; restored version, changelog, security spec, AUTOSDE.yaml, CONTRIBUTING.md, and system specs (by bolichen)
 - **@builder-mcp missing from agent tools** — builder-mcp was configured in mcpServers but not in tools/allowedTools arrays, so its 35 tools were invisible to the LLM (by Tim Lee)
-- **@kiroclaw-core missing from agent tools** — agents/defaults.json was missing @kiroclaw-core in tools/allowedTools, blocking spawn_run, learn_add, task_run and other MCP tools (by bolichen)
+- **@kirocrew-core missing from agent tools** — agents/defaults.json was missing @kirocrew-core in tools/allowedTools, blocking spawn_run, learn_add, task_run and other MCP tools (by bolichen)
 - **Merge conflict resolution** — resolved OverviewPage.tsx and handlers.py conflicts for midway TTL feature branch (by bolichen)
 
 ### Contributors
@@ -1187,10 +1200,10 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Skills migrated to AIM packages** — 18 bundled skills (~5,900 lines) removed from repo; now installed via `aim mcp install` for independent versioning.
 
 #### Isolated Dev Environment
-- **Dev mode support** — `KIROCLAW_HOME` env var overrides config directory (default `~/.kiroclaw`), `KIROCLAW_PORT` overrides dashboard port (default 7777). `.kiroclaw-dev/` gitignored for local dev data, `dev-seed.sh` copies real data into dev directory for migration testing, Vite proxy reads `KIROCLAW_PORT` for frontend dev server.
+- **Dev mode support** — `KIROCREW_HOME` env var overrides config directory (default `~/.kirocrew`), `KIROCREW_PORT` overrides dashboard port (default 7777). `.kirocrew-dev/` gitignored for local dev data, `dev-seed.sh` copies real data into dev directory for migration testing, Vite proxy reads `KIROCREW_PORT` for frontend dev server.
 
 #### Multi-Workspace Support
-- **Workspace-scoped lessons** — KiroClaw remembers preferences per project so context doesn't bleed across repos. Workspace tracking on slots with workspace dropdown in frontend.
+- **Workspace-scoped lessons** — KiroCrew remembers preferences per project so context doesn't bleed across repos. Workspace tracking on slots with workspace dropdown in frontend.
 
 #### Vector Memory & Semantic Search
 - **New vector memory system** — SQLite-backed semantic + episodic stores with Ollama embeddings, similarity search, conflict resolution, and decaying retention.
@@ -1220,7 +1233,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 #### Platform & Compatibility
 - **AL2 / AL2023 support** — Node 16 via nvm for GLIBC 2.26 compatibility, Docker-based Ollama embeddings fallback, Peru/dnf setup support.
 - **kiro-cli 1.27 compatibility** — notification handling, MCP server init skip, session timeout fixes. Re-enabled kiro-cli auto-update (SQLite locking issue resolved).
-- **Robust launcher** — `bin/kiroclaw` with Brazil → pip → PYTHONPATH fallback chain.
+- **Robust launcher** — `bin/kirocrew` with Brazil → pip → PYTHONPATH fallback chain.
 - **macOS Gatekeeper quarantine** fix for zip distribution.
 
 ### Security
@@ -1228,10 +1241,10 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **OS-level sandbox** — new `sandbox.py` hides credential paths (~/.aws, ~/.ssh, etc.) from kiro-cli subprocesses using Linux unshare bind-mounts or macOS Seatbelt profiles. Zero new dependencies. Includes fix for AL2 aim-sandbox shim where `unshare -rm` caused UID 0 resolution failures.
 - **XPIA hardening** — hook-layer blocking of file reads to sensitive credential directories + output scanning for credential-like query params before posting to Slack/dashboard.
 - **Interactive owner check deny-by-default** — rewrote `_handle_interactive()` owner check to reject unless positively confirmed as owner (was fail-open when any value was falsy). Ephemeral message feedback for non-owners clicking buttons. Added `post_ephemeral()` to SlackClientOps ABC.
-- **WebSocket origin validation** — validates Origin header on `/api/ws` upgrades, only allowing localhost/kiroclaw.localhost origins.
+- **WebSocket origin validation** — validates Origin header on `/api/ws` upgrades, only allowing localhost/kirocrew.localhost origins.
 - **Midway authentication & CSRF protection** — dashboard requires valid Midway cookies and blocks cross-origin mutations.
 - **Loopback-only binding** — dashboard bound to `127.0.0.1` instead of `0.0.0.0`, preventing unauthenticated remote access.
-- **Deny-by-default owner lock** — Slack gateway now denies all messages when `KIROCLAW_OWNER_ID` is unset (was fail-open). Two defense layers: refuse connect + reject messages.
+- **Deny-by-default owner lock** — Slack gateway now denies all messages when `KIROCREW_OWNER_ID` is unset (was fail-open). Two defense layers: refuse connect + reject messages.
 - **Slack interactive button verification** — 5 defense-in-depth layers prevent non-owners from clicking YOLO/approve buttons (HIGH severity Shepherd fix).
 - **SEL audit logging** — integrated across all 8 tool invocation surfaces (Slack, dashboard, taskrunner, subagent, MCP, cron, API middleware) with CLI commands and dashboard endpoints.
 - **MCP tool input/output validation** (SDO-183) — centralized type-safe schemas, Unicode normalization, hidden character stripping, enum allow-lists, range checks, length limits, response truncation (DoS prevention) across all 12 MCP tool handlers.
@@ -1240,7 +1253,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 
 ### Fixes
 
-- **Java auto-detection** — setup.sh and `kiroclaw doctor` detect missing Java 8 (required by brazil-path) and auto-install Corretto 8 on macOS. Includes README troubleshooting section and updated doctor checks.
+- **Java auto-detection** — setup.sh and `kirocrew doctor` detect missing Java 8 (required by brazil-path) and auto-install Corretto 8 on macOS. Includes README troubleshooting section and updated doctor checks.
 - **brazil-runtime-exec bypass** — fixed macOS/AL2023 hang where it spawned runaway Ruby processes; launcher and setup now prefer runtime Python directly.
 - **MCP server sync** — direct JSON write instead of `kiro-cli mcp add` which corrupted comma-separated args and broke builder-mcp.
 - **Tool hook matching** — strip display prefixes ("Running: ", "Reading ") from tool titles before matching auto_approve/auto_deny patterns.
@@ -1279,23 +1292,23 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 ## [0.2.2] — 2026-02-24
 
 ### Added
-- **Auto-update kiro-cli** — `kiroclaw update` and gateway auto-update now run `toolbox install kiro-cli` alongside KiroClaw updates
+- **Auto-update kiro-cli** — `kirocrew update` and gateway auto-update now run `toolbox install kiro-cli` alongside KiroCrew updates
 - **Startup version check** — gateway warns if kiro-cli is older than 1.26 (required for `--agent` flag)
 
 ## [0.2.1] — 2026-02-24
 
 ### Added
 - **Security hardening: deniedCommands** — 54 denied command patterns enforced by kiro-cli agent config covering destructive AWS operations, git push, rm -rf, SQL drops, IaC destroy, and credential theft
-- **Audit logging** — preToolUse hook logs every bash command execution to `~/.kiroclaw/audit.log` with UTC timestamps
+- **Audit logging** — preToolUse hook logs every bash command execution to `~/.kirocrew/audit.log` with UTC timestamps
 - **security.py module** — built-in deny patterns for tool names, suspicious bash command detection, and conversation history scanner
-- **`kiroclaw security` CLI** — `kiroclaw security deny-list` shows active patterns; `kiroclaw security audit` scans history for suspicious tool usage
+- **`kirocrew security` CLI** — `kirocrew security deny-list` shows active patterns; `kirocrew security audit` scans history for suspicious tool usage
 - **Tamper-resistant config** — deniedCommands always sourced from bundled config, survives stale project copies, dashboard saves, and MCP discovery writes
 
 ## [0.2.0] — 2026-02-23
 
 ### Added
 - **PWA support** — dashboard is installable as a standalone app via Chrome/Safari; includes web manifest, service worker with network-first caching, and app icons (by aidanjm)
-- **PWA auto-open on macOS** — gateway startup opens the installed KiroClaw PWA app directly instead of a browser tab; falls back to `webbrowser.open()` if not installed
+- **PWA auto-open on macOS** — gateway startup opens the installed KiroCrew PWA app directly instead of a browser tab; falls back to `webbrowser.open()` if not installed
 
 ## [0.1.9.5] — 2026-02-23
 
@@ -1332,7 +1345,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Chat links not visually clickable** — links in assistant messages now always show an underline (was hover-only, invisible in light theme / Arc browser)
 
 ### Added
-- **Configurable workspace directory** — `kiroclaw setup` prompts for workspace path; saved to `~/.kiroclaw/workspace_dir`. Also supports `KIROCLAW_WORKSPACE` env var override
+- **Configurable workspace directory** — `kirocrew setup` prompts for workspace path; saved to `~/.kirocrew/workspace_dir`. Also supports `KIROCREW_WORKSPACE` env var override
 
 ## [0.1.9.1] — 2026-02-23
 
@@ -1343,11 +1356,11 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **kiro-cli auto-update** — `setup.sh` runs `kiro-cli update` during setup if kiro-cli is detected
 
 ### Added
-- **`kiroclaw setup --clean`** — fresh agent config install without merging stale MCP servers/tools from existing config
+- **`kirocrew setup --clean`** — fresh agent config install without merging stale MCP servers/tools from existing config
 - **Troubleshooting guide** — README section covering macOS build failures, ACP timeouts, Slack setup, and stale MCP servers
 
 ### Changed
-- **`kiroclaw doctor`** — Slack section now labeled "not supported right now" instead of showing confusing ⚠️ warnings
+- **`kirocrew doctor`** — Slack section now labeled "not supported right now" instead of showing confusing ⚠️ warnings
 
 ## [0.1.9] — 2026-02-22
 
@@ -1402,7 +1415,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 ## [0.1.8] — 2026-02-22
 
 ### Added
-- **kiroclaw-core MCP server** — `spawn_run`, `spawn_list`, `learn_add`, `learn_list`, `learn_remove`, `task_run` as native MCP tools (kiro-cli calls directly, no bash needed)
+- **kirocrew-core MCP server** — `spawn_run`, `spawn_list`, `learn_add`, `learn_list`, `learn_remove`, `task_run` as native MCP tools (kiro-cli calls directly, no bash needed)
 - **MCP auto-sync at startup** — gateway discovers new servers from mcp.json and registers them via parallel `kiro-cli mcp add` (~3s for 6 servers, was ~17s sequential)
 - **Chat tab tagging** — messages tagged with `[Chat tab: <name> | Feb 22, 2026, 04:32 PM]` so LLM distinguishes conversations across shared session
 - **Diff changelog** — auto-update popup shows only new entries since last seen version, not full history
@@ -1415,12 +1428,12 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **MCP discovery isolation** — inner try/except so `list_servers()` always runs even if discovery crashes
 - **Context retention** — renamed `REFERENCE CONTEXT` to `SESSION CONTEXT` so LLM uses memory/lessons/history instead of ignoring it
 - **Compact context preservation** — `/compact` now receives session context (memory, lessons, skills, truncated to 4K) so it survives compaction
-- **Test pollution** — mock `Path.home()` in sync test to prevent writing `new-srv` to real kiroclaw.json
+- **Test pollution** — mock `Path.home()` in sync test to prevent writing `new-srv` to real kirocrew.json
 - **Auto-update log** — prints old version before restart (`Auto-updated from 0.1.7.2`)
 
 ### Changed
 - **MCP-first architecture** — system prompt references MCP tools only, removed CLI command wrappers from skills
-- **Removed learn/subagent builtin skills** — replaced by kiroclaw-core MCP tools, stale skills auto-cleaned
+- **Removed learn/subagent builtin skills** — replaced by kirocrew-core MCP tools, stale skills auto-cleaned
 - **Agent config on startup** — `install_agent()` merges user-added MCP servers so dashboard additions survive restarts
 - **Prompt improvements** — describes memory/lessons/history as usable session context, chat tab priority rules
 
@@ -1471,7 +1484,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Dashboard freeze during restart** — session shutdown runs in parallel via `asyncio.gather` instead of sequential awaits
 - **Safe version comparison** — `_version_tuple()` parses versions numerically (`0.1.10 > 0.1.9`), supports patch versions like `0.1.5.1`
 - **Doctor test on build fleet** — mock `subprocess.run` and `urlopen` so tests don't spawn real `kiro-cli` processes
-- **Fresh config read for auto-update** — `KiroClawConfig.load()` reads disk on every check, respects runtime toggle
+- **Fresh config read for auto-update** — `KiroCrewConfig.load()` reads disk on every check, respects runtime toggle
 
 ### Added
 - **Context window usage tracker** — Agents page shows per-session progress bars with model name, token usage (e.g. `134K / 200K`), prompt count, and health indicator (🟢/🟡/🔴); auto-refreshes every 15s
@@ -1529,30 +1542,30 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 
 ### New Features
 
-- **Self-update** — `kiroclaw update` pulls latest and rebuilds; dashboard topbar shows version badge with click-to-check changelog preview and "Update Now" button; only triggers on version bumps
-- **`kiroclaw status`** — new CLI command queries the running gateway for runtime stats
-- **Enhanced `kiroclaw doctor`** — checks git, node, project dir, credentials, kiro-cli version, and gateway connectivity
+- **Self-update** — `kirocrew update` pulls latest and rebuilds; dashboard topbar shows version badge with click-to-check changelog preview and "Update Now" button; only triggers on version bumps
+- **`kirocrew status`** — new CLI command queries the running gateway for runtime stats
+- **Enhanced `kirocrew doctor`** — checks git, node, project dir, credentials, kiro-cli version, and gateway connectivity
 - **Remote dashboard access** — gateway startup prints hostname URL for remote desktop users
-- **Run from anywhere** — `bin/kiroclaw` now works outside the Brazil workspace
+- **Run from anywhere** — `bin/kirocrew` now works outside the Brazil workspace
 
 ### Improvements
 
 - **Periodic update check** — auto-rechecks git remote every 12 hours; only flags when `__version__` is higher
 - **Smart update** — skips rebuild when `git pull` reports "Already up to date"
-- **Gateway help text** — updated to "Start the KiroClaw server (dashboard + Slack)"
+- **Gateway help text** — updated to "Start the KiroCrew server (dashboard + Slack)"
 
 ## [0.1.2] — 2026-02-21
 
 ### New Features
 
-- **On-demand MCP discovery** — MCP servers are no longer auto-scanned at startup. Only `builder-mcp` and `kiroclaw-cron` load by default. Users trigger discovery from the dashboard via the new 3-step workflow: ① Probe All → ② Enable/Disable → ③ Apply & Restart Sessions
+- **On-demand MCP discovery** — MCP servers are no longer auto-scanned at startup. Only `builder-mcp` and `kirocrew-cron` load by default. Users trigger discovery from the dashboard via the new 3-step workflow: ① Probe All → ② Enable/Disable → ③ Apply & Restart Sessions
 - **Session reset after MCP sync** — Applying MCP config changes now automatically resets all active kiro-cli sessions and re-warms the session pool, so new servers take effect immediately (~30s restart)
-- **Config separation** — Dashboard MCP toggle/sync operations now write to `~/.kiro/agents/kiroclaw.json` (installed config) instead of `agents/defaults.json` (project source of truth in git)
-- **kiro-cli MCP registration** — `sync_to_agent_config()` uses `kiro-cli mcp add --agent kiroclaw --force` for proper server registration; falls back to direct JSON edit if kiro-cli is unavailable
+- **Config separation** — Dashboard MCP toggle/sync operations now write to `~/.kiro/agents/kirocrew.json` (installed config) instead of `agents/defaults.json` (project source of truth in git)
+- **kiro-cli MCP registration** — `sync_to_agent_config()` uses `kiro-cli mcp add --agent kirocrew --force` for proper server registration; falls back to direct JSON edit if kiro-cli is unavailable
 - **Probe result caching** — MCP probe results are cached for 30 minutes with TTL-based expiry; stale results show "Outdated" status badge
 - **Zero-to-running setup scripts** — Rewrote `setup.sh` to auto-install ALL dependencies from scratch (Midway → Builder Toolbox → brazilcli/kiro/aim/node → builder-mcp → build → agent config). No manual prerequisite steps required
 - **Windows setup script** — New `setup.ps1` (PowerShell) for Windows with the same zero-to-running flow using `pip install -e .` instead of brazil-build
-- **Windows launcher scripts** — New `bin/kiroclaw.bat` (CMD) and `bin/kiroclaw.ps1` (PowerShell) wrappers that set `KIROCLAW_PROJECT_DIR` and invoke `python -m kiro_claw`
+- **Windows launcher scripts** — New `bin/kirocrew.bat` (CMD) and `bin/kirocrew.ps1` (PowerShell) wrappers that set `KIROCREW_PROJECT_DIR` and invoke `python -m kiro_crew`
 - **DEPENDENCIES.md** — New document listing all dependencies with install order and platform-specific bootstrap commands
 
 ### Cross-Platform Support
@@ -1562,7 +1575,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **File locking** — Cron service uses `fcntl.flock()` on Unix and `msvcrt.locking()` on Windows
 - **System metrics** — macOS uses `sysctl`/`vm_stat`; Linux uses `/proc/*`; Windows uses `wmic`/`netstat -e`
 - **Disk metrics** — Uses `Path.home().anchor` on Windows (e.g. `C:\`) instead of hardcoded `/`
-- **Custom domain setup** — `kiroclaw setup` now supports macOS, Linux, and Windows hosts file paths with appropriate privilege escalation
+- **Custom domain setup** — `kirocrew setup` now supports macOS, Linux, and Windows hosts file paths with appropriate privilege escalation
 - **Frontend build** — `setup.py` tries Git Bash on Windows, falls back to `npm.cmd` directly
 
 ### Bug Fixes
@@ -1575,7 +1588,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Dashboard MCP tab** — Redesigned with numbered step buttons, arrow flow indicators, warning banner about ~30s session restart, and instant UI feedback on enable/disable toggle
 - **Gateway startup** — Only logs configured MCP servers at startup (no auto-scan/sync), reducing startup time and avoiding unexpected config mutations
 - **Spec docs updated** — `memory-skills-hooks.md`, `learn-cron-dashboard.md`, `cli.md`, `acp-client.md`, `AGENTS.md`, and `README.md` all updated to reflect cross-platform and MCP changes
-- **Archived old task specs** — Removed completed task specs (`phase-8-12`, `phase-12-1`, `kiroclaw-agent`, `kiroclaw-internal-agent`, `project-level-config`)
+- **Archived old task specs** — Removed completed task specs (`phase-8-12`, `phase-12-1`, `kirocrew-agent`, `kirocrew-internal-agent`, `project-level-config`)
 
 ## [0.1.1] — 2026-02-20
 
@@ -1597,13 +1610,13 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 
 ## [0.1.0] — 2026-02-20
 
-First release. KiroClaw is a personal AI agent for Amazon engineers — a thin orchestrator between user interfaces (CLI, Slack, Web Dashboard) and kiro-cli ACP (LLM calls, tool execution, MCP servers).
+First release. KiroCrew is a personal AI agent for Amazon engineers — a thin orchestrator between user interfaces (CLI, Slack, Web Dashboard) and kiro-cli ACP (LLM calls, tool execution, MCP servers).
 
 ### Core Architecture
 
 - **ACP Client** (`acp/`) — JSON-RPC 2.0 over stdio to kiro-cli, with streaming events (text chunks, tool permissions, completion), session lifecycle management, and graceful process cleanup
-- **CLI** (`cli.py`) — `kiroclaw` command with subcommands: `chat` (interactive REPL), `gateway` (long-running server), `setup` (credentials + agent config + custom domain), `cron` (list/add/remove), `learn` (add/list/remove), `mcp-cron` (MCP server mode)
-- **Config** (`config/`) — Dataclass-based config loaded from `~/.kiroclaw/config.json` with sensible defaults, credential management via `.env` file
+- **CLI** (`cli.py`) — `kirocrew` command with subcommands: `chat` (interactive REPL), `gateway` (long-running server), `setup` (credentials + agent config + custom domain), `cron` (list/add/remove), `learn` (add/list/remove), `mcp-cron` (MCP server mode)
+- **Config** (`config/`) — Dataclass-based config loaded from `~/.kirocrew/config.json` with sensible defaults, credential management via `.env` file
 
 ### LLM Providers
 
@@ -1616,14 +1629,14 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 - **Streaming Responses** — Real-time typing indicator + streamed text chunks to Slack
 - **Tool Approval UX** — Interactive Block Kit buttons (Approve / Trust Session / Reject) for tool permission requests
 - **Markdown Formatting** — `to_slack_mrkdwn()` converts LLM output to Slack-compatible markup
-- **Dashboard-Only Mode** — Full functionality without Slack credentials; skip during `kiroclaw setup`
+- **Dashboard-Only Mode** — Full functionality without Slack credentials; skip during `kirocrew setup`
 
 ### Web Dashboard
 
 - **React 18 SPA** — TypeScript + Vite + Redux Toolkit + React Router v7 + Tailwind CSS 3
 - **Multi-Session Chat** — Parallel chat tabs sharing a single kiro-cli session, background LLM streaming (survives browser disconnect), message queuing
 - **Full Markdown Rendering** — `react-markdown` + `remark-gfm` + `rehype-raw` with Mermaid diagram support, code blocks with language labels and Copy button
-- **Chat UX** — KiroClaw logo as assistant avatar, timestamps on all messages, auto-generated session titles via background LLM call
+- **Chat UX** — KiroCrew logo as assistant avatar, timestamps on all messages, auto-generated session titles via background LLM call
 - **Notification System** — Real-time SSE push notifications for cron results, subagent completions, task runner events; click to view full content in main pane
 - **Overview Page** — Tabbed management console: Memory (preferences/projects/history editor), Cron Jobs (CRUD), Lessons (CRUD), Skills (CRUD with SKILL.md editor), MCP Servers (probe/sync/toggle), Agent Config (JSON editor)
 - **System Page** — Live metrics (2s refresh): CPU %, memory, network speed, disk; process info with full CWD path display
@@ -1632,7 +1645,7 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 - **Agents Page** — Session and subagent management
 - **Design** — Dark/light theme with amber accent, collapsible nav sidebar, CSS grid layout, animations (rise, slide, scale, shimmer, dot-breathe)
 - **Security** — All `dangerouslySetInnerHTML` sanitized via DOMPurify; `sudo tee -a` for `/etc/hosts` (no shell injection)
-- **Custom Domain** — `kiroclaw setup` uses `kiroclaw.localhost` (RFC 6761, no /etc/hosts needed) for `http://kiroclaw.localhost:7777`
+- **Custom Domain** — `kirocrew setup` uses `kirocrew.localhost` (RFC 6761, no /etc/hosts needed) for `http://kirocrew.localhost:7777`
 
 ### Session Management
 
@@ -1646,7 +1659,7 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 
 ### Memory System
 
-- **Structured Memory** — `~/.kiroclaw/workspace/memory/` with `preferences.md`, `projects.md`, `history/{date}.md`
+- **Structured Memory** — `~/.kirocrew/workspace/memory/` with `preferences.md`, `projects.md`, `history/{date}.md`
 - **FTS5 Search** — SQLite full-text search index with porter stemming, self-healing on corruption
 - **LLM Consolidation** — After 10+ unconsolidated messages, background LLM extracts history entries, preference updates, and project context updates
 - **Context Injection** — Memory + skills + lessons + conversation history injected on session start (50K char cap)
@@ -1654,7 +1667,7 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 ### Skills System
 
 - **Two-Tier Loading** — Trigger keywords (fast path, zero LLM calls) + semantic fallback (LLM reads skill file via bash)
-- **Project-Level Config** — `skills/` directory editable without rebuilding; auto-copied to `~/.kiroclaw/skills/`
+- **Project-Level Config** — `skills/` directory editable without rebuilding; auto-copied to `~/.kirocrew/skills/`
 - **CRUD via Dashboard** — Create, read, update, delete skills with YAML frontmatter support
 - **Built-in Skills** — `learn/SKILL.md`, `subagent/SKILL.md`, `cron/SKILL.md`
 
@@ -1666,8 +1679,8 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 
 ### Self-Learning
 
-- **Lesson Store** — Append-only JSONL at `~/.kiroclaw/lessons.jsonl`
-- **CLI** — `kiroclaw learn add/list/remove` for managing corrections
+- **Lesson Store** — Append-only JSONL at `~/.kirocrew/lessons.jsonl`
+- **CLI** — `kirocrew learn add/list/remove` for managing corrections
 - **Categories** — `tool`, `preference`, `knowledge`
 - **Context Injection** — Last 50 lessons injected as `[Learned corrections:]` block
 
@@ -1675,9 +1688,9 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 
 - **Schedule Types** — `every` (interval), `at` (one-shot), `cron` (5-field expression)
 - **Natural Language** — `parse_wakeup()` for human-readable schedules
-- **Persistence** — `~/.kiroclaw/crons.json` with atomic writes and cross-process file locking
+- **Persistence** — `~/.kirocrew/crons.json` with atomic writes and cross-process file locking
 - **Mtime Sync** — Auto-reloads when file modified externally
-- **MCP Server** — `kiroclaw-cron` exposes `cron_list`, `cron_add`, `cron_remove`, `cron_pause`, `cron_resume` as MCP tools
+- **MCP Server** — `kirocrew-cron` exposes `cron_list`, `cron_add`, `cron_remove`, `cron_pause`, `cron_resume` as MCP tools
 
 ### Heartbeat Service
 
@@ -1686,7 +1699,7 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 
 ### Subagent Orchestration
 
-- **Parallel Execution** — `kiroclaw spawn run` spawns isolated background agents
+- **Parallel Execution** — `kirocrew spawn run` spawns isolated background agents
 - **Capacity Limits** — Configurable max concurrent subagents
 - **Result Routing** — Announces results to dashboard notifications or Slack DM
 
@@ -1699,14 +1712,14 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 
 ### MCP Integration
 
-- **Auto-Discovery** — Detects MCP servers from `~/.kiro/settings/mcp.json` and `~/.kiroclaw/mcp.json`
+- **Auto-Discovery** — Detects MCP servers from `~/.kiro/settings/mcp.json` and `~/.kirocrew/mcp.json`
 - **Live Probing** — Spawns each server, sends JSON-RPC `initialize` + `tools/list` handshake
 - **Auto-Sync** — Discovers new servers and adds to `agents/defaults.json`
 - **Dashboard Toggle** — Enable/disable individual MCP servers without editing config files
 
 ### Conversation History
 
-- **JSONL Per Session** — `~/.kiroclaw/sessions/{key}.jsonl` with metadata + provenance
+- **JSONL Per Session** — `~/.kirocrew/sessions/{key}.jsonl` with metadata + provenance
 - **Rotation** — Auto-rotates at 512KB, keeps last 200 messages
 - **Cross-Session Context** — Dashboard injects recent conversations from other tabs
 - **Session Titles** — Auto-generated via LLM, persisted in JSONL metadata, pushed via SSE
@@ -1716,7 +1729,7 @@ First release. KiroClaw is a personal AI agent for Amazon engineers — a thin o
 - **Frontend HMR** — `./dev-frontend.sh` runs Vite dev server on port 3000 with API proxy
 - **Brazil Build** — `brazil-build` compiles Python + builds React frontend
 - **Verbose Logging** — `-v` for INFO, `-vv` for DEBUG; runtime level control via dashboard
-- **Startup Banner** — Shows `kiroclaw.localhost:7777` URL after session pool is warmed (~30s)
+- **Startup Banner** — Shows `kirocrew.localhost:7777` URL after session pool is warmed (~30s)
 
 ### Runtime Stats
 

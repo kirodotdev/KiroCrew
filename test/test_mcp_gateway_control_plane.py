@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard.handlers import mcp as mcp_mod
-from kiro_claw.slack.gateway import GatewayOrchestrator
+from kiro_crew.dashboard.handlers import mcp as mcp_mod
+from kiro_crew.slack.gateway import GatewayOrchestrator
 
 
 def _make_request(state: object, body: dict) -> web.Request:
@@ -80,7 +80,7 @@ async def test_enable_invokes_wired_apply(monkeypatch: pytest.MonkeyPatch) -> No
     assert payload["ok"] is True
     assert payload["running"] is True
     apply_cb.assert_awaited_once_with(True)
-    from kiro_claw.config.loader import config_path
+    from kiro_crew.config.loader import config_path
 
     saved = json.loads(config_path().read_text(encoding="utf-8"))
     assert saved["mcp_gateway"]["enabled"] is True

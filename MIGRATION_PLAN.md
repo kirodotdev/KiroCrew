@@ -1,5 +1,12 @@
 # KiroClaw — Global De-Amazoning Execution Map
 
+> **Historical record — names as of commit `cbe157b` (pre-rename).** This plan
+> documents the de-Amazon pass, when the product was named **KiroClaw** (module
+> `kiro_claw`) and the fixed goal was to keep that name. The project was later
+> renamed to **KiroCrew** (module `kiro_crew`) in 2026-07; the KiroClaw /
+> `kiro_claw` names and paths below are preserved as accurate history of that
+> earlier state and are intentionally NOT rewritten.
+
 **Role:** Integration lead. The per-subsystem PLANS array arrived **empty**, so this map was
 derived directly from the codebase at `/Volumes/workplace/KiroClaw/src/KiroClaw`
 (commit `cbe157b`). It is the single authoritative edit plan for the de-Amazoning fork.

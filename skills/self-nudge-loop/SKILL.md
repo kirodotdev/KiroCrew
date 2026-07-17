@@ -1,13 +1,13 @@
 ---
 name: self-nudge-loop
-description: Build a reactive same-session autonomy loop using KiroClaw's AutoNudgeService. One long-lived dashboard session keeps working toward a goal — when its turn completes and no user input arrives within idle_secs, the service auto-injects a nudge message into the SAME session. Survives tab close, logout, and gateway restart. Use when user says "continuous improvement session", "keep going on its own", "same session loop", "self-nudge", "north star loop", or wants one persistent session that auto-resumes whenever idle. NOT for fresh-session crons, parallel work, or external-system callbacks.
-tags: [skill, kiroclaw, autonudge, autonomy, loop]
+description: Build a reactive same-session autonomy loop using KiroCrew's AutoNudgeService. One long-lived dashboard session keeps working toward a goal — when its turn completes and no user input arrives within idle_secs, the service auto-injects a nudge message into the SAME session. Survives tab close, logout, and gateway restart. Use when user says "continuous improvement session", "keep going on its own", "same session loop", "self-nudge", "north star loop", or wants one persistent session that auto-resumes whenever idle. NOT for fresh-session crons, parallel work, or external-system callbacks.
+tags: [skill, kirocrew, autonudge, autonomy, loop]
 ---
 
 # Self-Nudge Loop
 
 ## Overview
-`AutoNudgeService` (in `kiro_claw.autonudge`) keeps a single dashboard chat slot working toward a goal by re-feeding a nudge message every time the slot goes idle. Unlike `cron_add`, the nudge runs IN the same slot — warm memory, same tools, same conversation history. State persists across gateway restarts via `~/.kiroclaw/autonudge.json`.
+`AutoNudgeService` (in `kiro_crew.autonudge`) keeps a single dashboard chat slot working toward a goal by re-feeding a nudge message every time the slot goes idle. Unlike `cron_add`, the nudge runs IN the same slot — warm memory, same tools, same conversation history. State persists across gateway restarts via `~/.kirocrew/autonudge.json`.
 
 ## Usage
 Use when the user wants:
@@ -25,8 +25,8 @@ Do NOT use for:
 
 On by default. To disable:
 ```bash
-export KIROCLAW_AUTONUDGE=0   # add to systemd unit Environment= or ~/.kiroclaw/env
-kiroclaw restart
+export KIROCREW_AUTONUDGE=0   # add to systemd unit Environment= or ~/.kirocrew/env
+kirocrew restart
 ```
 
 When disabled, the REST API returns 503 and the UI popover surfaces the error.
@@ -43,7 +43,7 @@ When disabled, the REST API returns 503 and the UI popover surfaces the error.
 | `tasks.md` | Active checklist. Agent checks off / adds items each cycle. |
 
 **Kill switches (any of the below):**
-- The looping agent itself calls the `autonudge_stop` MCP tool — preferred, works from inside the loop with no ID lookup needed. The tool identifies the current slot from `KIROCLAW_SESSION_KEY` and deletes the bound loop.
+- The looping agent itself calls the `autonudge_stop` MCP tool — preferred, works from inside the loop with no ID lookup needed. The tool identifies the current slot from `KIROCREW_SESSION_KEY` and deletes the bound loop.
 - Click the **Stop loop** button in the UI popover.
 - Create the configured `STOP` sentinel file — next cycle halts.
 - `max_cycles` reached — loop deactivates (not removed, so you can resume).
@@ -51,7 +51,7 @@ When disabled, the REST API returns 503 and the UI popover surfaces the error.
 
 **Warning:** a STOP sentinel file is ONLY checked if the loop was created with a non-empty `stop_sentinel_path`. If the path is empty, the sentinel file is ignored and nudges keep firing. Prefer the `autonudge_stop` MCP tool for in-loop halting.
 
-**Restart survival** — on `AutoNudgeService.start()`, loops marked `active:true` in `~/.kiroclaw/autonudge.json` are reloaded and their idle timers re-armed. No catch-up fire — timer starts fresh from zero after restart.
+**Restart survival** — on `AutoNudgeService.start()`, loops marked `active:true` in `~/.kirocrew/autonudge.json` are reloaded and their idle timers re-armed. No catch-up fire — timer starts fresh from zero after restart.
 
 ## How to start a loop
 
@@ -66,7 +66,7 @@ When disabled, the REST API returns 503 and the UI popover surfaces the error.
 
 ```bash
 # 1. Exchange the local-machine secret for a user token (loopback only).
-SECRET=$(cat ~/.kiroclaw/.local_secret)
+SECRET=$(cat ~/.kirocrew/.local_secret)
 TOKEN=$(curl -sf -H "X-Local-Secret: $SECRET" \
   "http://127.0.0.1:5476/api/token/local?ttl=1h" \
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
@@ -88,7 +88,7 @@ Common 403 traps (all have the same error body `{"error":"Token required"}`):
 - Calling `/api/token/local` without `X-Local-Secret` — the endpoint is in `_BYPASS_EXACT` (no token needed) but still validates the machine secret via HMAC compare. Missing/wrong secret → `{"error":"invalid secret"}` 403.
 - Non-loopback source. Token issuance and most internal paths require `is_loopback(request.remote)` regardless of auth material.
 
-**Slot key** — the `slot_key` in the POST body is your dashboard session ID. Inside MCP subprocess code, read `KIROCLAW_SESSION_KEY` (format `dashboard:chat-<N>-<epoch>`) and strip the `dashboard:` prefix.
+**Slot key** — the `slot_key` in the POST body is your dashboard session ID. Inside MCP subprocess code, read `KIROCREW_SESSION_KEY` (format `dashboard:chat-<N>-<epoch>`) and strip the `dashboard:` prefix.
 
 Endpoints:
 | Method | Path | Auth | Purpose |
@@ -100,7 +100,7 @@ Endpoints:
 | PATCH | `/api/autonudge/{loop_id}` | `?token=…` | edit message / idle / active |
 | DELETE | `/api/autonudge/{loop_id}` | `?token=…` | stop and remove |
 
-**Preferred path for agents: use the `autonudge_stop` MCP tool** for self-halt (reads `KIROCLAW_SESSION_KEY`, looks up the bound loop, DELETEs it — no token handling needed on your side). The REST flow above is for external scripts, new-loop arming, and debugging.
+**Preferred path for agents: use the `autonudge_stop` MCP tool** for self-halt (reads `KIROCREW_SESSION_KEY`, looks up the bound loop, DELETEs it — no token handling needed on your side). The REST flow above is for external scripts, new-loop arming, and debugging.
 
 ## Per-cycle agent behaviour (to put in your nudge message)
 
@@ -115,7 +115,7 @@ Good nudges tell the agent to:
 
 ## Common Mistakes
 
-**Forgetting the feature flag** — service loads but does nothing. Check `kiroclaw logs | grep AutoNudge` for the "disabled" message.
+**Forgetting the feature flag** — service loads but does nothing. Check `kirocrew logs | grep AutoNudge` for the "disabled" message.
 
 **idle_secs too short** — sub-30s nudges thrash context. 60s is the sweet spot.
 

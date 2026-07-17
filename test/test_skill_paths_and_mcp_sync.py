@@ -38,16 +38,16 @@ class TestApiSessionsRestartMcpSync:
     @pytest.mark.asyncio
     async def test_syncs_new_servers_before_restart(self):
         """discover + sync should run and count should appear in response."""
-        from kiro_claw.dashboard.handlers.sessions import api_sessions_restart
+        from kiro_crew.dashboard.handlers.sessions import api_sessions_restart
 
         fake_server = MagicMock()
         request = _make_restart_request()
 
         with (
-            patch("kiro_claw.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=2),
-            patch("kiro_claw.dashboard.handlers.sessions.discover_servers_to_sync", return_value=[fake_server]),
-            patch("kiro_claw.dashboard.handlers.sessions.sync_to_agent_config", return_value=True),
-            patch("kiro_claw.dashboard.handlers.sessions.register_servers_for_cc", return_value=True),
+            patch("kiro_crew.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=2),
+            patch("kiro_crew.dashboard.handlers.sessions.discover_servers_to_sync", return_value=[fake_server]),
+            patch("kiro_crew.dashboard.handlers.sessions.sync_to_agent_config", return_value=True),
+            patch("kiro_crew.dashboard.handlers.sessions.register_servers_for_cc", return_value=True),
         ):
             resp = await api_sessions_restart(request)
 
@@ -58,13 +58,13 @@ class TestApiSessionsRestartMcpSync:
     @pytest.mark.asyncio
     async def test_sync_failure_does_not_block_restart(self):
         """If MCP sync raises, restart must still proceed."""
-        from kiro_claw.dashboard.handlers.sessions import api_sessions_restart
+        from kiro_crew.dashboard.handlers.sessions import api_sessions_restart
 
         request = _make_restart_request()
 
         with (
-            patch("kiro_claw.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=1),
-            patch("kiro_claw.dashboard.handlers.sessions.discover_servers_to_sync", side_effect=RuntimeError("boom")),
+            patch("kiro_crew.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=1),
+            patch("kiro_crew.dashboard.handlers.sessions.discover_servers_to_sync", side_effect=RuntimeError("boom")),
         ):
             resp = await api_sessions_restart(request)
 
@@ -75,14 +75,14 @@ class TestApiSessionsRestartMcpSync:
     @pytest.mark.asyncio
     async def test_no_servers_to_sync(self):
         """When discover returns empty list, synced count is 0."""
-        from kiro_claw.dashboard.handlers.sessions import api_sessions_restart
+        from kiro_crew.dashboard.handlers.sessions import api_sessions_restart
 
         request = _make_restart_request()
 
         with (
-            patch("kiro_claw.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=0),
-            patch("kiro_claw.dashboard.handlers.sessions.discover_servers_to_sync", return_value=[]),
-            patch("kiro_claw.dashboard.handlers.sessions.sync_to_agent_config") as mock_sync,
+            patch("kiro_crew.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=0),
+            patch("kiro_crew.dashboard.handlers.sessions.discover_servers_to_sync", return_value=[]),
+            patch("kiro_crew.dashboard.handlers.sessions.sync_to_agent_config") as mock_sync,
         ):
             resp = await api_sessions_restart(request)
 
@@ -93,14 +93,14 @@ class TestApiSessionsRestartMcpSync:
     @pytest.mark.asyncio
     async def test_sync_returns_false(self):
         """When sync_to_agent_config returns False, synced count stays 0."""
-        from kiro_claw.dashboard.handlers.sessions import api_sessions_restart
+        from kiro_crew.dashboard.handlers.sessions import api_sessions_restart
 
         request = _make_restart_request()
 
         with (
-            patch("kiro_claw.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=1),
-            patch("kiro_claw.dashboard.handlers.sessions.discover_servers_to_sync", return_value=[MagicMock()]),
-            patch("kiro_claw.dashboard.handlers.sessions.sync_to_agent_config", return_value=False),
+            patch("kiro_crew.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=1),
+            patch("kiro_crew.dashboard.handlers.sessions.discover_servers_to_sync", return_value=[MagicMock()]),
+            patch("kiro_crew.dashboard.handlers.sessions.sync_to_agent_config", return_value=False),
         ):
             resp = await api_sessions_restart(request)
 
@@ -111,16 +111,16 @@ class TestApiSessionsRestartMcpSync:
     @pytest.mark.asyncio
     async def test_multiple_servers_synced(self):
         """Multiple discovered servers should all be counted."""
-        from kiro_claw.dashboard.handlers.sessions import api_sessions_restart
+        from kiro_crew.dashboard.handlers.sessions import api_sessions_restart
 
         request = _make_restart_request()
         servers = [MagicMock(), MagicMock(), MagicMock()]
 
         with (
-            patch("kiro_claw.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=1),
-            patch("kiro_claw.dashboard.handlers.sessions.discover_servers_to_sync", return_value=servers),
-            patch("kiro_claw.dashboard.handlers.sessions.sync_to_agent_config", return_value=True),
-            patch("kiro_claw.dashboard.handlers.sessions.register_servers_for_cc", return_value=True),
+            patch("kiro_crew.dashboard.handlers.sessions._reset_all_sessions", new_callable=AsyncMock, return_value=1),
+            patch("kiro_crew.dashboard.handlers.sessions.discover_servers_to_sync", return_value=servers),
+            patch("kiro_crew.dashboard.handlers.sessions.sync_to_agent_config", return_value=True),
+            patch("kiro_crew.dashboard.handlers.sessions.register_servers_for_cc", return_value=True),
         ):
             resp = await api_sessions_restart(request)
 

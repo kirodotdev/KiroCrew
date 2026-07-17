@@ -2,13 +2,13 @@
 
 Locks the messaging-transport fix that makes ``spawn_run`` available: the
 transport session must be created under a kiro agent that carries the
-``kiroclaw-core`` MCP server (which provides ``spawn_run``), not under
+``kirocrew-core`` MCP server (which provides ``spawn_run``), not under
 kiro-cli's bare built-in default.
 
 Directly asserting "the ``spawn_run`` tool is loaded" would require spawning a
 real kiro-cli process, so we lock the deterministic invariant that guarantees
 it instead: the agent name passed to ``get_or_create`` is non-empty and
-resolves to the canonical ``"kiroclaw"`` agent when no thread override /
+resolves to the canonical ``"kirocrew"`` agent when no thread override /
 ``default_agent`` is configured, and a thread override still wins.
 """
 
@@ -19,14 +19,14 @@ import importlib
 import sys
 from pathlib import Path
 
-from kiro_claw.acp.types import (
+from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     STOP_REASON_END_TURN,
 )
-from kiro_claw.messaging.link import canonical_key
-from kiro_claw.slack import transport_dispatch
+from kiro_crew.messaging.link import canonical_key
+from kiro_crew.slack import transport_dispatch
 
 # Reuse the golden module's fakes without triggering the stdlib 'test' collision.
 _test_dir = Path(__file__).parent
@@ -97,16 +97,16 @@ def _run_transport(monkeypatch, thread_agent=None, agent_override=None):
 
 
 class TestTransportAgentResolution:
-    def test_falls_back_to_kiroclaw_agent(self, monkeypatch):
+    def test_falls_back_to_kirocrew_agent(self, monkeypatch):
         sessions = _run_transport(monkeypatch)
         # Empty default_agent must NOT pass None (kiro built-in, no
-        # kiroclaw-core -> no spawn_run); it resolves to canonical "kiroclaw".
-        assert sessions.agents == [transport_dispatch._DEFAULT_KIROCLAW_AGENT]
-        assert sessions.agents == ["kiroclaw"]
+        # kirocrew-core -> no spawn_run); it resolves to canonical "kirocrew".
+        assert sessions.agents == [transport_dispatch._DEFAULT_KIROCREW_AGENT]
+        assert sessions.agents == ["kirocrew"]
 
     def test_thread_override_wins(self, monkeypatch):
-        sessions = _run_transport(monkeypatch, thread_agent="kiroclaw-research")
-        assert sessions.agents == ["kiroclaw-research"]
+        sessions = _run_transport(monkeypatch, thread_agent="kirocrew-research")
+        assert sessions.agents == ["kirocrew-research"]
 
     def test_channel_override_used_when_no_thread_override(self, monkeypatch):
         # Per-channel agent (slack.channels.<id>.agent) is honored on transport.
@@ -115,9 +115,9 @@ class TestTransportAgentResolution:
 
     def test_thread_override_beats_channel_override(self, monkeypatch):
         sessions = _run_transport(
-            monkeypatch, thread_agent="kiroclaw-research", agent_override="ops-agent"
+            monkeypatch, thread_agent="kirocrew-research", agent_override="ops-agent"
         )
-        assert sessions.agents == ["kiroclaw-research"]
+        assert sessions.agents == ["kirocrew-research"]
 
 
 class TestTransportBookkeepingIsolation:
@@ -148,7 +148,7 @@ class TestTransportBookkeepingIsolation:
             return obj
 
         monkeypatch.setattr(transport_dispatch, "sel", _sel_factory)
-        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kiroclaw")
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
         monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
@@ -170,7 +170,7 @@ class TestTransportBookkeepingIsolation:
 
 
 # ── Keyword commands on the transport path (spawn/run/cron/sessions) ──
-from kiro_claw.slack import handler as _handler  # noqa: E402
+from kiro_crew.slack import handler as _handler  # noqa: E402
 
 
 class _FakeSubagentMgr:
@@ -211,7 +211,7 @@ def _run_transport_text(
     command and no LLM turn ran. A non-empty ``agents`` means the message fell
     through to the normal LLM turn.
     """
-    monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kiroclaw")
+    monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
     monkeypatch.setattr(
         transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None
     )
@@ -307,7 +307,7 @@ class TestTransportKeywordCommands:
             task_runner=_FakeTaskRunner(),
             cron_service=_FakeCronService(),
         )
-        assert sessions.agents == ["kiroclaw"]  # LLM session WAS acquired
+        assert sessions.agents == ["kirocrew"]  # LLM session WAS acquired
 
 
 # ── Privacy modifiers (!temporary / !incognito) on the transport path ──
@@ -353,14 +353,14 @@ class TestTransportPrivacyModifiers:
             class hooks:  # noqa: N801 - stub attribute, not a real class use
                 @staticmethod
                 def on_message(text):
-                    from kiro_claw.hooks import HookResult
+                    from kiro_crew.hooks import HookResult
                     return HookResult.passthrough()
 
             def build_message(self, text, is_new, session_key, **kw):
                 captured["text"] = text
                 return text, {}
 
-        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kiroclaw")
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
         monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
@@ -379,7 +379,7 @@ class TestTransportPrivacyModifiers:
         ))
         # Flag applied, LLM turn ran, and the token was stripped from the prompt.
         assert _handler.is_thread_incognito(self._KEY) is True
-        assert sessions.agents == ["kiroclaw"]
+        assert sessions.agents == ["kirocrew"]
         assert "!incognito" not in captured["text"]
         assert "summarize the logs" in captured["text"]
         self._clear_flags(self._KEY)
@@ -394,7 +394,7 @@ class TestTransportReactionsEnabled:
     so no add_reaction calls are emitted."""
 
     def _run(self, monkeypatch, reactions_enabled):
-        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kiroclaw")
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
         monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
@@ -440,7 +440,7 @@ class _CapturingCtxBuilder:
 
         class _Hooks:
             def on_message(self, text):
-                from kiro_claw.hooks import HookResult
+                from kiro_crew.hooks import HookResult
                 return hook_result or HookResult.passthrough()
 
         self.hooks = _Hooks()
@@ -452,7 +452,7 @@ class _CapturingCtxBuilder:
 
 class TestTransportNativeParity:
     def _prep(self, monkeypatch):
-        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kiroclaw")
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
         monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
@@ -464,7 +464,7 @@ class TestTransportNativeParity:
         ])
 
     def test_hook_reply_short_circuits_no_llm_turn(self, monkeypatch):
-        from kiro_claw.hooks import HookResult
+        from kiro_crew.hooks import HookResult
         self._prep(monkeypatch)
         cb = _CapturingCtxBuilder(hook_result=HookResult.reply("canned answer"))
         slack = RecordingSlackClient()
@@ -534,7 +534,7 @@ class TestTransportStatusIdentitySeam:
         assert sessions.agents == []
 
     def test_no_direct_midway_stub_import(self):
-        import kiro_claw.slack.transport_dispatch as td
+        import kiro_crew.slack.transport_dispatch as td
         assert not hasattr(td, "get_midway_status_line")
 
 
@@ -545,9 +545,9 @@ class TestTransportToolGateWiring:
     even though the default gate mode is interactive."""
 
     def test_hook_deny_rejects_tool_without_prompt(self, monkeypatch):
-        from kiro_claw.hooks import HookResult, ToolHookResult
+        from kiro_crew.hooks import HookResult, ToolHookResult
 
-        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kiroclaw")
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
         monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
@@ -626,7 +626,7 @@ class TestHydrationBeforeHook:
             class hooks:  # noqa: N801 - stub attribute, not a real class use
                 @staticmethod
                 def on_message(text):
-                    from kiro_claw.hooks import HookResult
+                    from kiro_crew.hooks import HookResult
 
                     return HookResult.reply("canned answer")
 

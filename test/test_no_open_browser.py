@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.config.loader import DashboardConfig, KiroClawConfig
+from kiro_crew.config.loader import DashboardConfig, KiroCrewConfig
 
 
-def _load_from_raw_string(content: str) -> KiroClawConfig:
+def _load_from_raw_string(content: str) -> KiroCrewConfig:
     """Write raw string content to a temp file and load."""
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -29,8 +29,8 @@ def _load_from_raw_string(content: str) -> KiroClawConfig:
         f.write(content)
         tmp = Path(f.name)
 
-    with patch("kiro_claw.config.loader.config_path", return_value=tmp):
-        return KiroClawConfig.load()
+    with patch("kiro_crew.config.loader.config_path", return_value=tmp):
+        return KiroCrewConfig.load()
 
 
 class TestAutoOpenBrowserConfig:
@@ -61,15 +61,15 @@ class TestAutoOpenBrowserConfig:
 
     def test_roundtrip_serialization(self) -> None:
         """auto_open_browser survives save/load roundtrip."""
-        cfg = KiroClawConfig()
+        cfg = KiroCrewConfig()
         cfg.dashboard.auto_open_browser = False
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8"
         ) as f:
             tmp = Path(f.name)
-        with patch("kiro_claw.config.loader.config_path", return_value=tmp):
+        with patch("kiro_crew.config.loader.config_path", return_value=tmp):
             cfg.save()
-            loaded = KiroClawConfig.load()
+            loaded = KiroCrewConfig.load()
         assert loaded.dashboard.auto_open_browser is False
 
 
@@ -78,18 +78,18 @@ class TestNoOpenCliFlag:
 
     def test_orchestrator_stores_no_open_true(self) -> None:
         """GatewayOrchestrator stores no_open=True."""
-        from kiro_claw.slack.gateway import GatewayOrchestrator
+        from kiro_crew.slack.gateway import GatewayOrchestrator
 
-        cfg = KiroClawConfig()
+        cfg = KiroCrewConfig()
         with patch.object(cfg, "load_credentials", return_value={}):
             orch = GatewayOrchestrator(cfg, no_open=True)
         assert orch._no_open is True
 
     def test_orchestrator_stores_no_open_false_by_default(self) -> None:
         """GatewayOrchestrator defaults no_open to False."""
-        from kiro_claw.slack.gateway import GatewayOrchestrator
+        from kiro_crew.slack.gateway import GatewayOrchestrator
 
-        cfg = KiroClawConfig()
+        cfg = KiroCrewConfig()
         with patch.object(cfg, "load_credentials", return_value={}):
             orch = GatewayOrchestrator(cfg)
         assert orch._no_open is False
@@ -97,10 +97,10 @@ class TestNoOpenCliFlag:
     @pytest.mark.asyncio
     async def test_run_gateway_passes_no_open(self) -> None:
         """run_gateway forwards no_open to GatewayOrchestrator."""
-        from kiro_claw.slack.gateway import run_gateway
+        from kiro_crew.slack.gateway import run_gateway
 
-        cfg = KiroClawConfig()
-        with patch("kiro_claw.slack.gateway.GatewayOrchestrator") as mock_orch_cls:
+        cfg = KiroCrewConfig()
+        with patch("kiro_crew.slack.gateway.GatewayOrchestrator") as mock_orch_cls:
             mock_orch = MagicMock()
             mock_orch.run = AsyncMock()
             mock_orch_cls.return_value = mock_orch

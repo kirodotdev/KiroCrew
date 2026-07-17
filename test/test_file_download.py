@@ -16,7 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers import api_file_download
+from kiro_crew.dashboard.handlers import api_file_download
 
 
 def _make_app() -> web.Application:
@@ -27,8 +27,8 @@ def _make_app() -> web.Application:
 
 @pytest.fixture
 def mock_sel():
-    with patch("kiro_claw.sel.sel") as m, \
-         patch("kiro_claw.dashboard.handlers.files.is_sensitive_path", return_value=False):
+    with patch("kiro_crew.sel.sel") as m, \
+         patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=False):
         instance = MagicMock()
         m.return_value = instance
         yield instance
@@ -51,7 +51,7 @@ async def test_binary_bytes_survive_round_trip(tmp_path, mock_sel):
     """The regression: docx-like bytes must come back identical."""
     f = tmp_path / "doc.docx"
     f.write_bytes(_DOCX_LIKE_BYTES)
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
             assert resp.status == 200
@@ -63,7 +63,7 @@ async def test_binary_bytes_survive_round_trip(tmp_path, mock_sel):
 async def test_sets_attachment_disposition_and_nosniff(tmp_path, mock_sel):
     f = tmp_path / "Stores Discovery.docx"
     f.write_bytes(_DOCX_LIKE_BYTES)
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
             assert resp.status == 200
@@ -85,7 +85,7 @@ async def test_content_type_for_known_extensions(tmp_path, mock_sel):
     for name, expected in cases.items():
         f = tmp_path / name
         f.write_bytes(_DOCX_LIKE_BYTES if not name.endswith(".csv") else b"a,b,c\n1,2,3\n")
-        with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get(f"/api/file-download?path={f}")
                 assert resp.status == 200, f"failed for {name}"
@@ -96,7 +96,7 @@ async def test_content_type_for_known_extensions(tmp_path, mock_sel):
 async def test_unknown_extension_falls_back_to_octet_stream(tmp_path, mock_sel):
     f = tmp_path / "blob.bin"
     f.write_bytes(b"\x00\x01\x02")
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
             assert resp.status == 200
@@ -110,7 +110,7 @@ async def test_unknown_extension_falls_back_to_octet_stream(tmp_path, mock_sel):
 async def test_text_file_served_when_clean(tmp_path, mock_sel):
     f = tmp_path / "notes.txt"
     f.write_text("hello world\nno secrets here")
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
             assert resp.status == 200
@@ -127,8 +127,8 @@ async def test_text_file_redacted_blocks_download(tmp_path, mock_sel):
     """
     f = tmp_path / "leaky.txt"
     f.write_text("ok body")
-    redact_path = "kiro_claw.dashboard.handlers.files.redact"
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
+    redact_path = "kiro_crew.dashboard.handlers.files.redact"
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
             patch(redact_path, return_value="ok body REDACTED"):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
@@ -142,7 +142,7 @@ async def test_text_file_redacted_blocks_download(tmp_path, mock_sel):
 
 @pytest.mark.asyncio
 async def test_invalid_path_rejected(mock_sel):
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=None):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=None):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/file-download?path=/etc/passwd")
             assert resp.status == 400
@@ -154,9 +154,9 @@ async def test_sensitive_path_rejected(tmp_path):
     f.write_text("x")
     # Patch is_sensitive_path on the importing module so the alias bound at
     # files.py import-time resolves to the True-returning mock.
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
-         patch("kiro_claw.dashboard.handlers.files.is_sensitive_path", return_value=True), \
-         patch("kiro_claw.sel.sel") as m:
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
+         patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True), \
+         patch("kiro_crew.sel.sel") as m:
         m.return_value = MagicMock()
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
@@ -166,7 +166,7 @@ async def test_sensitive_path_rejected(tmp_path):
 @pytest.mark.asyncio
 async def test_missing_file_404(tmp_path, mock_sel):
     missing = tmp_path / "nope.docx"
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(missing)):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(missing)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={missing}")
             assert resp.status == 404
@@ -179,7 +179,7 @@ async def test_symlink_rejected(tmp_path, mock_sel):
     target.write_bytes(_DOCX_LIKE_BYTES)
     link = tmp_path / "linked.docx"
     os.symlink(target, link)
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(link)):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(link)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={link}")
             assert resp.status == 403
@@ -199,13 +199,13 @@ async def test_oversize_file_rejected(tmp_path, mock_sel):
     def _fake_fstat(fd):
         st = real_fstat(fd)
         # Replace st_size with one byte over the cap
-        from kiro_claw.dashboard.handlers.files import _MAX_UPLOAD_BYTES
+        from kiro_crew.dashboard.handlers.files import _MAX_UPLOAD_BYTES
         return os.stat_result((
             st.st_mode, st.st_ino, st.st_dev, st.st_nlink, st.st_uid, st.st_gid,
             _MAX_UPLOAD_BYTES + 1, st.st_atime, st.st_mtime, st.st_ctime,
         ))
 
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
          patch("os.fstat", side_effect=_fake_fstat):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
@@ -222,9 +222,9 @@ async def test_resolve_relative_path_within_project(tmp_path, mock_sel, monkeypa
     f = proj / "sub" / "doc.docx"
     f.parent.mkdir()
     f.write_bytes(_DOCX_LIKE_BYTES)
-    monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(proj))
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
     # _validate_dashboard_path receives the resolved absolute path
-    with patch("kiro_claw.dashboard.handlers._validate_dashboard_path", return_value=str(f.resolve())):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f.resolve())):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/file-download?path=sub/doc.docx&resolve=1")
             assert resp.status == 200
@@ -235,7 +235,7 @@ async def test_resolve_relative_path_within_project(tmp_path, mock_sel, monkeypa
 async def test_resolve_relative_path_outside_project_rejected(tmp_path, mock_sel, monkeypatch):
     proj = tmp_path / "project"
     proj.mkdir()
-    monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(proj))
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
     async with TestClient(TestServer(_make_app())) as client:
         # ../../etc/passwd would resolve outside proj
         resp = await client.get("/api/file-download?path=../../etc/passwd&resolve=1")

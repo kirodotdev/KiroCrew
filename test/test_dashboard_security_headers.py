@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from aiohttp import web
 
-from kiro_claw.dashboard.server import _apply_security_headers
+from kiro_crew.dashboard.server import _apply_security_headers
 
 
 def _make_response() -> web.Response:

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import AgentSelector from '../components/AgentSelector'
-import type { KiroClawAgent } from '../components/AgentSelector'
+import type { KiroCrewAgent } from '../components/AgentSelector'
 
-const agents: KiroClawAgent[] = [
-  { name: 'coding', kiro_agent: 'kiroclaw', workspace: 'default', memory_store: 'default', description: 'Coding agent', source: 'kiroclaw' },
-  { name: 'oncall', kiro_agent: 'oncall-agent', workspace: 'oncall', memory_store: 'oncall-kb', description: 'Oncall agent', source: 'kiroclaw' },
-  { name: 'research', kiro_agent: 'kiroclaw', workspace: 'research', memory_store: 'research-mem', description: 'Research agent', source: 'kiroclaw' },
+const agents: KiroCrewAgent[] = [
+  { name: 'coding', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Coding agent', source: 'kirocrew' },
+  { name: 'oncall', kiro_agent: 'oncall-agent', workspace: 'oncall', memory_store: 'oncall-kb', description: 'Oncall agent', source: 'kirocrew' },
+  { name: 'research', kiro_agent: 'kirocrew', workspace: 'research', memory_store: 'research-mem', description: 'Research agent', source: 'kirocrew' },
 ]
 
 describe('AgentSelector — keyboard navigation', () => {

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
-from kiro_claw.dashboard.handlers import updates
+from kiro_crew.dashboard.handlers import updates
 
 
 class TestUpdateCheckGitGuard:
     def test_skips_when_no_dot_git(self, monkeypatch, tmp_path):
         # A tarball-shipped cloud install has no .git — the check must return
         # early without ever invoking git (no "not a git repository" spam).
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         def _boom(*a, **k):  # pragma: no cover - must not be called
             raise AssertionError("git must not run without a .git dir")
@@ -20,7 +20,7 @@ class TestUpdateCheckGitGuard:
         asyncio.run(updates._do_update_check())  # returns cleanly, no git call
 
     def test_skips_when_no_project_dir(self, monkeypatch):
-        monkeypatch.delenv("KIROCLAW_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
 
         def _boom(*a, **k):  # pragma: no cover
             raise AssertionError("git must not run without a project dir")
@@ -31,7 +31,7 @@ class TestUpdateCheckGitGuard:
     def test_apply_rejects_non_git_checkout(self, monkeypatch, tmp_path):
         # POST /api/update on a tarball install must 409 with a clear
         # "redeploy" message instead of running git status/pull and failing.
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
 
         def _boom(*a, **k):  # pragma: no cover - must not be called
             raise AssertionError("git must not run without a .git dir")
@@ -49,7 +49,7 @@ class TestUpdateCheckGitGuard:
         # Linked git worktrees and submodules have .git as a *file* pointing at
         # the real git dir — update checks must still run there.
         (tmp_path / ".git").write_text("gitdir: /somewhere/.git/worktrees/x\n")
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         called = {"n": 0}
 
         class _Proc:
@@ -68,7 +68,7 @@ class TestUpdateCheckGitGuard:
 
     def test_proceeds_when_dot_git_present(self, monkeypatch, tmp_path):
         (tmp_path / ".git").mkdir()
-        monkeypatch.setenv("KIROCLAW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         called = {"n": 0}
 
         class _Proc:

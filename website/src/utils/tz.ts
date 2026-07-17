@@ -38,7 +38,7 @@ function mondayInTz(tz: string, now: Date = new Date()): Date {
   // Anchor at 12:00 UTC so the calendar day is stable when read back in
   // any common IANA zone (offsets from UTC-12 to ~UTC+12 preserve the
   // calendar day at noon UTC; extreme +14 zones are not currently used
-  // by KiroClaw and fall outside scope of the Schedule UI).
+  // by KiroCrew and fall outside scope of the Schedule UI).
   const anchor = new Date(Date.UTC(year, month - 1, day, 12))
   anchor.setUTCDate(anchor.getUTCDate() + mondayOffset)
   return anchor
@@ -64,7 +64,7 @@ export function convertCronTime(
   // at UTC+14 (Pacific/Kiritimati, Pacific/Apia DST) may produce
   // off-by-one-day results because the noon-UTC week anchor in
   // `mondayInTz` can roll into the next calendar day at +14h offsets.
-  // Not currently in scope for the Schedule UI; revisit if KiroClaw
+  // Not currently in scope for the Schedule UI; revisit if KiroCrew
   // adds support for those zones.
 
   // Fast path: same zone (and both non-empty) → no arithmetic needed.

@@ -1,0 +1,478 @@
+"""Unified LLM worker pool for Knowledge Library.
+
+Provider-agnostic bounded pool of long-lived workers (CC or ACP).
+Both entity extraction and URL fetch acquire workers from this pool.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import shutil
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Optional
+
+from kiro_crew.sandbox import wrap_argv
+
+try:
+    from kiro_crew.acp.client import AcpClient
+except ImportError:
+    AcpClient = None  # type: ignore[assignment,misc]
+
+# Sweep-protection shield for AcpClient-backed workers. These are direct,
+# long-lived AcpClient sessions (not SessionMap sessions / warm-pool providers),
+# so the gateway's periodic orphan sweep can't see them via _collect_active_pids
+# and would SIGKILL a *busy* worker mid-task as a false orphan ("ACP process
+# exited (code=1)"). Registering the live PID here prevents that. Applied inline
+# because this pool does NOT ride the shared kiro_crew.acp.worker_pool engine
+# (which shields its workers by construction). Imported defensively so llm_pool
+# stays importable standalone / in hermetic tests.
+try:
+    from kiro_crew.session_pid import register_protected_pid, unregister_protected_pid
+except Exception:  # pragma: no cover - standalone / test fallback
+    def register_protected_pid(pid: int) -> None:  # type: ignore[misc]
+        return None
+
+    def unregister_protected_pid(pid: int) -> None:  # type: ignore[misc]
+        return None
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_POOL_SIZE = 3
+DEFAULT_TIMEOUT = 60.0
+FETCH_TIMEOUT = 120.0
+AGENT_NAME = "kirocrew-knowledge"
+
+
+# Sandbox modes accepted by ``kiro_crew.sandbox.wrap_argv`` (see its docstring).
+# An out-of-set value from config falls back to the safe default rather than
+# reaching the subprocess wrapper as an unrecognised string.
+_VALID_SANDBOX_MODES = frozenset({"auto", "standard", "strict", "cc", "off"})
+
+
+def _read_config() -> dict:
+    """Read ``~/.kirocrew/config.json`` once; ``{}`` on any error.
+
+    Synchronous disk read — call from a thread (e.g. ``asyncio.to_thread``) when
+    on the event loop, then thread the returned dict into the pure parsers below
+    so worker construction never blocks the loop.
+    """
+    try:
+        config_path = Path.home() / ".kirocrew" / "config.json"
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            if isinstance(data, dict):
+                # Coerce nested sections to dicts so the pure parsers' chained
+                # ``.get(...).get(...)`` never hits a hand-edited leaf value
+                # (e.g. ``{"agent": "acp"}``) and raises AttributeError.
+                for key in ("agent", "knowledge"):
+                    if not isinstance(data.get(key, {}), dict):
+                        data[key] = {}
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _section(data: dict, key: str) -> dict:
+    """Return ``data[key]`` if it is a dict, else ``{}``.
+
+    Parsers may be handed a raw dict (bypassing ``_read_config``'s coercion), so
+    they guard each nested section independently to stay AttributeError-safe on
+    hand-edited config like ``{"agent": "acp"}`` or ``{"knowledge": null}``.
+    """
+    section = data.get(key, {})
+    return section if isinstance(section, dict) else {}
+
+
+def _get_provider_type(config: Optional[dict] = None) -> str:
+    """Configured knowledge provider; defaults to ``"acp"``."""
+    data = _read_config() if config is None else config
+    provider = _section(data, "agent").get("provider", "acp")
+    return provider if isinstance(provider, str) and provider else "acp"
+
+
+def _get_sandbox_mode(config: Optional[dict] = None) -> str:
+    """OS-level sandbox mode for knowledge-worker subprocesses.
+
+    Knowledge workers are wrapped by the same ``wrap_argv`` OS-level sandbox the
+    chat/Slack providers use, honouring the operator's ``agent.sandbox`` setting
+    (default ``"auto"`` -> standard confinement). The earlier hardcoded ``"off"``
+    (from the initial Knowledge Library commit) was the only place that bypassed
+    this setting; reading it here restores least-privilege parity with chat. Set
+    ``agent.sandbox="off"`` to disable globally. An unrecognised value falls back
+    to ``"auto"`` rather than reaching ``wrap_argv`` as an unknown mode.
+    """
+    data = _read_config() if config is None else config
+    mode = _section(data, "agent").get("sandbox")
+    if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
+        return mode
+    return "auto"
+
+
+class Worker(ABC):
+    """Abstract base for a long-lived LLM worker."""
+
+    @abstractmethod
+    async def start(self) -> None:
+        """Initialize/spawn the worker process."""
+
+    @abstractmethod
+    async def send_message(self, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> str:
+        """Send a prompt and return the text response."""
+
+    @abstractmethod
+    async def shutdown(self) -> None:
+        """Gracefully destroy this worker."""
+
+    @abstractmethod
+    def is_alive(self) -> bool:
+        """True if this worker can still process messages."""
+
+
+class AcpWorker(Worker):
+    """Long-lived AcpClient session with kirocrew-knowledge agent."""
+
+    def __init__(self, *, sandbox_mode: Optional[str] = None) -> None:
+        self._client: Optional[AcpClient] = None
+        # Pre-resolved by the caller (off the event loop). ``None`` -> resolve
+        # lazily in ``start`` (direct construction outside the pool / tests).
+        self._sandbox_mode = sandbox_mode
+        # PID currently shielded from the gateway orphan sweep (see module note).
+        self._protected_pid: Optional[int] = None
+
+    async def start(self) -> None:
+        if AcpClient is None:
+            raise RuntimeError("AcpClient not available (kiro_crew.acp.client not installed)")
+        # Drop any prior client before respawning. send_message re-runs start()
+        # when the client is not ready (e.g. a stalled handshake left _session_id
+        # None); without this the previous subprocess would be orphaned.
+        if self._client is not None:
+            # Release the old PID's shield before the process goes away, so a
+            # respawn never leaves a dead PID registered.
+            if self._protected_pid is not None:
+                try:
+                    unregister_protected_pid(self._protected_pid)
+                except Exception:
+                    logger.debug("AcpWorker: unregister protected pid failed", exc_info=True)
+                self._protected_pid = None
+            try:
+                await self._client.shutdown()
+            except Exception:
+                logger.debug("AcpWorker: stale client shutdown failed", exc_info=True)
+            self._client = None
+        sandbox_mode = (
+            self._sandbox_mode
+            if self._sandbox_mode is not None
+            else await asyncio.to_thread(_get_sandbox_mode)
+        )
+        logger.info("AcpWorker: starting with agent=%s", AGENT_NAME)
+        self._client = AcpClient(
+            agent=AGENT_NAME, sandbox_mode=sandbox_mode, audit_source="subagent"
+        )
+        await self._client.ensure_ready()
+        # Shield the live worker PID from the periodic orphan sweep for as long
+        # as it runs. Paired with unregister in shutdown() and on respawn above.
+        pid = getattr(self._client, "_pid", None)
+        if isinstance(pid, int) and pid > 0:
+            self._protected_pid = pid
+            register_protected_pid(pid)
+        else:
+            self._protected_pid = None
+        logger.info("AcpWorker: ready (agent=%s, pid=%s)", AGENT_NAME, getattr(self._client, '_pid', 'unknown'))
+
+    async def send_message(self, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> str:
+        if self._client is None or not self._client.is_ready:
+            await self.start()
+        assert self._client is not None
+        return await self._client.send_message(prompt, timeout=timeout)
+
+    async def shutdown(self) -> None:
+        if self._protected_pid is not None:
+            try:
+                unregister_protected_pid(self._protected_pid)
+            except Exception:
+                logger.debug("AcpWorker: unregister protected pid failed", exc_info=True)
+            self._protected_pid = None
+        if self._client is not None:
+            try:
+                await self._client.shutdown()
+            except Exception:
+                logger.debug("AcpWorker shutdown error", exc_info=True)
+            self._client = None
+
+    def is_alive(self) -> bool:
+        return self._client is not None and self._client.is_process_alive()
+
+
+class CCWorker(Worker):
+    """Long-lived Claude Code subprocess using stream-json I/O."""
+
+    def __init__(self) -> None:
+        self._proc: Optional[asyncio.subprocess.Process] = None
+        self._reader_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._event_queue: asyncio.Queue[Optional[dict]] = asyncio.Queue()
+        self._claude_bin: Optional[str] = None
+
+    async def start(self) -> None:
+        self._claude_bin = shutil.which("claude")
+        if not self._claude_bin:
+            raise RuntimeError("claude CLI not found in PATH")
+        await self._spawn()
+
+    async def _spawn(self) -> None:
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass
+            self._reader_task = None
+        assert self._claude_bin is not None
+        cmd = [
+            self._claude_bin,
+            "-p",
+            "--verbose",
+            "--model", "haiku",
+            "--input-format", "stream-json",
+            "--output-format", "stream-json",
+            "--permission-mode", "bypassPermissions",
+        ]
+        # Optional URL-fetch tool. Empty by default (no built-in remote fetch on a
+        # vanilla machine). Users can opt in by setting KIROCREW_KNOWLEDGE_FETCH_TOOLS
+        # to a comma-separated list of MCP tool names their backend exposes.
+        fetch_tools = os.environ.get("KIROCREW_KNOWLEDGE_FETCH_TOOLS", "").strip()
+        if fetch_tools:
+            cmd += ["--allowedTools", fetch_tools]
+        self._proc = await asyncio.create_subprocess_exec(
+            *wrap_argv(cmd)[0],
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._event_queue = asyncio.Queue()
+        self._reader_task = asyncio.create_task(self._stdout_reader())
+
+    async def _stdout_reader(self) -> None:
+        """Background task: read NDJSON lines from stdout into event queue."""
+        assert self._proc is not None and self._proc.stdout is not None
+        try:
+            while True:
+                line = await self._proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode().strip()
+                if not text:
+                    continue
+                try:
+                    event = json.loads(text)
+                    await self._event_queue.put(event)
+                except json.JSONDecodeError:
+                    continue
+        except Exception:
+            pass
+        finally:
+            await self._event_queue.put(None)
+
+    async def send_message(self, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> str:
+        if self._proc is None or self._proc.returncode is not None:
+            await self._spawn()
+        assert self._proc is not None and self._proc.stdin is not None
+
+        msg = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": prompt}
+        })
+        self._proc.stdin.write((msg + "\n").encode())
+        await self._proc.stdin.drain()
+
+        try:
+            return await asyncio.wait_for(self._collect_response(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.shutdown()
+            raise
+
+    async def _collect_response(self) -> str:
+        """Collect text from events until a result event arrives."""
+        text_parts: list[str] = []
+        while True:
+            event = await self._event_queue.get()
+            if event is None:
+                raise RuntimeError("CCWorker process died during message")
+
+            event_type = event.get("type", "")
+
+            if event_type == "assistant":
+                for block in event.get("message", {}).get("content", []):
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+
+            elif event_type == "result":
+                for block in event.get("result", {}).get("content", []):
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                break
+
+        return "".join(text_parts)
+
+    async def shutdown(self) -> None:
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            self._reader_task = None
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+                await self._proc.wait()
+            except Exception:
+                logger.debug("CCWorker shutdown error", exc_info=True)
+            self._proc = None
+
+    def is_alive(self) -> bool:
+        return self._proc is not None and self._proc.returncode is None
+
+
+class LLMPool:
+    """Bounded pool of long-lived LLM workers.
+
+    Both extraction and URL fetch acquire workers from this pool.
+    If all workers are busy, callers wait on the semaphore.
+    Dead workers are replaced transparently on acquire.
+    """
+
+    def __init__(self, pool_size: int = DEFAULT_POOL_SIZE):
+        self._pool_size = pool_size
+        self._semaphore = asyncio.Semaphore(pool_size)
+        self._workers: list[Worker] = []
+        self._available: asyncio.Queue[int] = asyncio.Queue()
+        self._started = False
+        self._provider_type: str = ""
+        self._sandbox_mode: str = "auto"
+        self._config: dict = {}
+        self._start_lock = asyncio.Lock()
+
+    @property
+    def provider_type(self) -> str:
+        return self._provider_type
+
+    async def start(self) -> None:
+        """Spawn all workers based on configured provider."""
+        async with self._start_lock:
+            if self._started:
+                return
+            # Read config once, off the event loop, and reuse for every worker.
+            config = await asyncio.to_thread(_read_config)
+            self._provider_type = _get_provider_type(config)
+            self._sandbox_mode = _get_sandbox_mode(config)
+            self._config = config
+            try:
+                for i in range(self._pool_size):
+                    worker = await self._create_worker()
+                    self._workers.append(worker)
+                    await self._available.put(i)
+            except Exception:
+                for w in self._workers:
+                    try:
+                        await w.shutdown()
+                    except Exception:
+                        pass
+                self._workers.clear()
+                self._available = asyncio.Queue()
+                raise
+            self._started = True
+            logger.info(
+                "LLMPool started: %d workers, provider=%s",
+                self._pool_size, self._provider_type,
+            )
+
+    async def _create_worker(self) -> Worker:
+        """Create and start a new worker based on provider type."""
+        if self._provider_type == "claude_code":
+            worker: Worker = CCWorker()
+        else:
+            worker = AcpWorker(sandbox_mode=self._sandbox_mode)
+        await worker.start()
+        return worker
+
+    async def acquire(self) -> tuple[int, Worker]:
+        """Acquire a worker from the pool. Blocks if all busy.
+
+        Returns (worker_index, worker). Caller must release after use.
+        """
+        if not self._started:
+            await self.start()
+        await self._semaphore.acquire()
+        idx = await self._available.get()
+        worker = self._workers[idx]
+
+        if not worker.is_alive():
+            logger.warning("LLMPool: worker %d dead, replacing", idx)
+            try:
+                await worker.shutdown()
+            except Exception:
+                pass
+            try:
+                worker = await self._create_worker()
+                self._workers[idx] = worker
+            except Exception:
+                self._available.put_nowait(idx)
+                self._semaphore.release()
+                raise
+
+        return idx, worker
+
+    def release(self, idx: int) -> None:
+        """Return a worker to the pool."""
+        self._available.put_nowait(idx)
+        self._semaphore.release()
+
+    async def send(
+        self,
+        prompt: str,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> str:
+        """Convenience: acquire a worker, send prompt, release, return response."""
+        idx, worker = await self.acquire()
+        try:
+            return await worker.send_message(prompt, timeout=timeout)
+        finally:
+            self.release(idx)
+
+    async def send_batch(self, prompts: list[str], timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+        """Send multiple prompts concurrently, bounded by pool size.
+
+        Returns responses in same order as prompts.
+        """
+        if not prompts:
+            return []
+
+        results: list[str] = [""] * len(prompts)
+
+        async def _do_one(idx: int, prompt: str) -> None:
+            try:
+                results[idx] = await self.send(prompt, timeout=timeout)
+            except Exception as e:
+                logger.warning("LLMPool: batch item %d failed: %s", idx, e)
+                results[idx] = ""
+
+        await asyncio.gather(*[_do_one(i, p) for i, p in enumerate(prompts)])
+        return results
+
+    async def shutdown(self) -> None:
+        """Destroy all workers."""
+        for worker in self._workers:
+            try:
+                await worker.shutdown()
+            except Exception:
+                logger.debug("Worker shutdown error", exc_info=True)
+        self._workers.clear()
+        self._started = False
+        logger.info("LLMPool: all workers shut down")
+
+    async def __aenter__(self) -> "LLMPool":
+        await self.start()
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.shutdown()

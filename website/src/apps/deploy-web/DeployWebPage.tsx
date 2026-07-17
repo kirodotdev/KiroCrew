@@ -97,7 +97,7 @@ function SetupCard() {
     <div className="border border-border rounded-md p-4 bg-card mb-4">
       <div className="text-sm font-medium flex items-center gap-2 mb-1"><ShieldCheck size={15} /> Setup</div>
       <div className="text-xs text-muted mb-3">
-        Bring your own AWS account. KiroClaw never stores credentials — only the profile <em>name</em>, resolved by your local AWS CLI.
+        Bring your own AWS account. KiroCrew never stores credentials — only the profile <em>name</em>, resolved by your local AWS CLI.
       </div>
       <div className="flex flex-wrap items-end gap-3">
         <label htmlFor="deploy-web-profile" className="text-sm">

@@ -1,4 +1,4 @@
-"""Tests for PATCH /api/config/kiroclaw validators (enum, int, float, bool, str)."""
+"""Tests for PATCH /api/config/kirocrew validators (enum, int, float, bool, str)."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from aiohttp.test_utils import TestClient, TestServer
 
 
 def _make_app() -> web.Application:
-    from kiro_claw.dashboard.handlers import api_kiroclaw_config_patch
+    from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
 
     app = web.Application()
-    app.router.add_patch("/api/config/kiroclaw", api_kiroclaw_config_patch)
+    app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
     return app
 
 
@@ -46,8 +46,8 @@ def _make_app_with_state(
 
 def _seed_config() -> dict:
     return {
-        "agents": {"kiroclaw": {"kiro_agent": "kiroclaw", "workspace": "default", "memory_store": "default"}},
-        "default_agent": "kiroclaw",
+        "agents": {"kirocrew": {"kiro_agent": "kirocrew", "workspace": "default", "memory_store": "default"}},
+        "default_agent": "kirocrew",
         "session": {"pool_agent": "", "timeout_secs": 3600, "autocompact_pct": 50.0},
         "agent": {"approval_mode": "auto", "sandbox": "auto", "enforce_denied_commands": "all"},
         "auto_update": False,
@@ -58,12 +58,12 @@ def _seed_config() -> dict:
 def tmp_config(tmp_path):
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(json.dumps(_seed_config()), encoding="utf-8")
-    with patch("kiro_claw.config.loader.config_path", return_value=cfg_path):
+    with patch("kiro_crew.config.loader.config_path", return_value=cfg_path):
         yield cfg_path
 
 
 async def _patch(client, path, value):
-    return await client.patch("/api/config/kiroclaw", json={"path": path, "value": value})
+    return await client.patch("/api/config/kirocrew", json={"path": path, "value": value})
 
 
 # ── General ──────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_invalid_json_body_returns_400(self, tmp_config) -> None:
         async with TestClient(TestServer(_make_app())) as c:
-            resp = await c.patch("/api/config/kiroclaw", data=b"not json", headers={"Content-Type": "application/json"})
+            resp = await c.patch("/api/config/kirocrew", data=b"not json", headers={"Content-Type": "application/json"})
             assert resp.status == 400
 
 
@@ -200,7 +200,7 @@ class TestStrValidator:
     @pytest.mark.asyncio
     async def test_valid_agent_passes(self, tmp_config) -> None:
         async with TestClient(TestServer(_make_app())) as c:
-            resp = await _patch(c, "session.pool_agent", "kiroclaw")
+            resp = await _patch(c, "session.pool_agent", "kirocrew")
             assert resp.status == 200
 
     @pytest.mark.asyncio

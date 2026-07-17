@@ -8,8 +8,8 @@ from typing import Any, Generator
 
 import pytest
 
-from kiro_claw.slack import handler as handler_mod
-from kiro_claw.slack.handler import (
+from kiro_crew.slack import handler as handler_mod
+from kiro_crew.slack.handler import (
     StatusReactionController,
     _tool_to_phase,
 )

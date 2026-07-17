@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.dashboard.refresh_tokens import (
+from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
     REFRESH_GRACE_SECS,
     RefreshStateManager,
@@ -42,7 +42,7 @@ def isolated_state(tmp_path: Path):
 
     # Force the module-level singleton to point at our isolated manager
     with patch(
-        "kiro_claw.dashboard.refresh_tokens._state_singleton",
+        "kiro_crew.dashboard.refresh_tokens._state_singleton",
         mgr,
     ):
         yield mgr
@@ -137,7 +137,7 @@ def test_tr_u_07_validate_expired():
 def test_tr_u_08_validate_wrong_kind():
     """Access tokens (kind != 'refresh') are rejected."""
     # generate_token (the access token) doesn't set kind=refresh
-    from kiro_claw.dashboard.token_auth import generate_token
+    from kiro_crew.dashboard.token_auth import generate_token
 
     access = generate_token("alice")
     valid, _user, reason, _c, _j, _e = validate_refresh_token(access)
@@ -243,7 +243,7 @@ def test_tr_u_15c_handler_rate_limiter_caps_per_ip():
 
     Defense-in-depth against an attacker pumping rotations.
     """
-    from kiro_claw.dashboard.handlers import auth_refresh
+    from kiro_crew.dashboard.handlers import auth_refresh
 
     # Fresh bucket for this IP to avoid cross-test pollution
     auth_refresh._refresh_rate_buckets.pop("198.51.100.7", None)
@@ -261,7 +261,7 @@ def test_tr_u_15c_handler_rate_limiter_caps_per_ip():
 
 def test_tr_u_15d_handler_rate_limiter_per_ip_isolation():
     """Rate-limit buckets must not cross-contaminate between source IPs."""
-    from kiro_claw.dashboard.handlers import auth_refresh
+    from kiro_crew.dashboard.handlers import auth_refresh
 
     auth_refresh._refresh_rate_buckets.pop("203.0.113.1", None)
     auth_refresh._refresh_rate_buckets.pop("203.0.113.2", None)
@@ -282,7 +282,7 @@ def test_tr_u_15e_handler_rate_limiter_empty_ip_fails_closed():
     #2 on CR-281631553: bucketing under a shared sentinel still allowed
     60/min, which contradicted the docstring claim of fail-closed.
     """
-    from kiro_claw.dashboard.handlers import auth_refresh
+    from kiro_crew.dashboard.handlers import auth_refresh
 
     # First empty-IP call denied (no bucket lookup, immediate deny)
     assert auth_refresh._rate_limited("", now=1.0) is True
@@ -437,7 +437,7 @@ def test_tr_u_23_logout_revokes_chain_and_clears_cookies(
 
     from aiohttp import web
 
-    from kiro_claw.dashboard.handlers import auth_refresh as ar
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
 
     # Mint a real refresh token so validate_refresh_token accepts it
     token, chain_id, _jti, _exp = generate_refresh_token("alice")
@@ -452,7 +452,7 @@ def test_tr_u_23_logout_revokes_chain_and_clears_cookies(
     request.remote = "127.0.0.1"
 
     # check_origin must accept loopback — patch it tight to True
-    with patch("kiro_claw.dashboard.handlers.auth_refresh.check_origin", return_value=True):
+    with patch("kiro_crew.dashboard.handlers.auth_refresh.check_origin", return_value=True):
         import asyncio
         resp = asyncio.run(ar.api_auth_logout(request))
 
@@ -477,7 +477,7 @@ def test_tr_u_24_logout_without_cookie_still_clears(
 
     from aiohttp import web
 
-    from kiro_claw.dashboard.handlers import auth_refresh as ar
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
 
     request = MagicMock(spec=web.Request)
     request.app = {"port": 7777, "allowed_origins": set()}
@@ -487,7 +487,7 @@ def test_tr_u_24_logout_without_cookie_still_clears(
     request.host = "localhost:7777"
     request.remote = "127.0.0.1"
 
-    with patch("kiro_claw.dashboard.handlers.auth_refresh.check_origin", return_value=True):
+    with patch("kiro_crew.dashboard.handlers.auth_refresh.check_origin", return_value=True):
         import asyncio
         resp = asyncio.run(ar.api_auth_logout(request))
 
@@ -505,14 +505,14 @@ def test_tr_u_24_logout_without_cookie_still_clears(
 def test_tr_u_25_secure_flag_only_on_https():
     """Cookies must set Secure=True only when the request is HTTPS. Localhost
     HTTP must not set it (browser would refuse to send it back). Per Guardian
-    finding #5 on CR-281631553. Forward-compatible for KiroClaw OSS behind
+    finding #5 on CR-281631553. Forward-compatible for KiroCrew OSS behind
     a real HTTPS reverse proxy.
     """
     from unittest.mock import MagicMock
 
     from aiohttp import web
 
-    from kiro_claw.dashboard.handlers import auth_refresh as ar
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
 
     # HTTP request: Secure should NOT be set
     http_resp = web.Response()
@@ -533,7 +533,7 @@ def test_tr_u_25_secure_flag_only_on_https():
     https_req = MagicMock(spec=web.Request)
     https_req.app = {"port": 443}
     https_req.scheme = "https"
-    https_req.host = "kiroclaw.example.com"
+    https_req.host = "kirocrew.example.com"
     https_req.headers = {}
     https_req.remote = "127.0.0.1"
     ar._set_access_cookie(https_resp, https_req, "tok", time.time() + 3600)
@@ -553,14 +553,14 @@ def test_tr_u_25b_secure_flag_via_forwarded_proto_over_tunnel():
 
     from aiohttp import web
 
-    from kiro_claw.dashboard.handlers import auth_refresh as ar
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
 
     # Tunnel: scheme=http on loopback, XFP=https -> Secure MUST be set
     tun_resp = web.Response()
     tun_req = MagicMock(spec=web.Request)
     tun_req.app = {"port": 7777}
     tun_req.scheme = "http"
-    tun_req.host = "kiroclaw.example.com"
+    tun_req.host = "kirocrew.example.com"
     tun_req.headers = {"X-Forwarded-Proto": "https"}
     tun_req.remote = "127.0.0.1"
     ar._set_access_cookie(tun_resp, tun_req, "tok", time.time() + 3600)
@@ -599,8 +599,8 @@ def test_tr_u_26_refresh_cookie_path_covers_logout():
 
     from aiohttp import web
 
-    from kiro_claw.dashboard import refresh_tokens
-    from kiro_claw.dashboard.handlers import auth_refresh as ar
+    from kiro_crew.dashboard import refresh_tokens
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
 
     # The constant itself must scope to /api/auth (one segment broader than
     # /api/auth/refresh) so /api/auth/logout is included.
@@ -662,13 +662,13 @@ def test_tr_u_27_logout_revokes_access_cookie(tmp_path, monkeypatch):
 
     from aiohttp import web
 
-    import kiro_claw.dashboard.token_auth as ta
-    from kiro_claw.dashboard.handlers import auth_refresh as ar
-    from kiro_claw.dashboard.token_auth import generate_token, validate_token
+    import kiro_crew.dashboard.token_auth as ta
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+    from kiro_crew.dashboard.token_auth import generate_token, validate_token
 
     # Isolate BOTH the refresh store and the token_auth revoked-nonce store to
-    # tmp dirs so nothing touches the real ~/.kiroclaw.
-    monkeypatch.setattr("kiro_claw.config.loader.config_dir", lambda: tmp_path)
+    # tmp dirs so nothing touches the real ~/.kirocrew.
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr(ta, "_REVOCATION_GEN", 0)
     monkeypatch.setattr(ta, "_revoked_store_singleton", None)
     refresh_state = RefreshStateManager(state_path=tmp_path / "refresh_chains.json")
@@ -692,9 +692,9 @@ def test_tr_u_27_logout_revokes_access_cookie(tmp_path, monkeypatch):
     request.remote = "127.0.0.1"
 
     with patch(
-        "kiro_claw.dashboard.refresh_tokens._state_singleton", refresh_state
+        "kiro_crew.dashboard.refresh_tokens._state_singleton", refresh_state
     ), patch(
-        "kiro_claw.dashboard.handlers.auth_refresh.check_origin", return_value=True
+        "kiro_crew.dashboard.handlers.auth_refresh.check_origin", return_value=True
     ):
         resp = asyncio.run(ar.api_auth_logout(request))
 

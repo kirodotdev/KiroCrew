@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.wechat.transport_dispatch (WeComDispatcher) + commands."""
+"""Tests for kiro_crew.wechat.transport_dispatch (WeComDispatcher) + commands."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_claw.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
-from kiro_claw.wechat.client import WeComInbound
-from kiro_claw.wechat.commands import ConversationState, parse_command
-from kiro_claw.wechat.transport_dispatch import WeComDispatcher
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.wechat.client import WeComInbound
+from kiro_crew.wechat.commands import ConversationState, parse_command
+from kiro_crew.wechat.transport_dispatch import WeComDispatcher
 
 # ------------------------------------------------------------------
 # Fakes
@@ -196,12 +196,12 @@ class TestTurn:
         assert (key, "assistant", "hi there") in conv.appended
 
     @pytest.mark.asyncio
-    async def test_agent_resolves_to_kiroclaw_when_unset(self) -> None:
+    async def test_agent_resolves_to_kirocrew_when_unset(self) -> None:
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         sessions = FakeSessions(provider)
         d = _dispatcher(sessions, FakeCtx(), FakeClient(), cfg=_cfg(default_agent=""))
         await d.handle_message(_inbound("hi"))
-        assert sessions.last_agent == "kiroclaw"
+        assert sessions.last_agent == "kirocrew"
 
     @pytest.mark.asyncio
     async def test_cold_start_failure_finalizes_and_skips_release(self) -> None:

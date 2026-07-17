@@ -1,4 +1,4 @@
-"""GATES D1–D5 — KiroClaw-native ctx primitives wired through the runner.
+"""GATES D1–D5 — KiroCrew-native ctx primitives wired through the runner.
 
 D1 ctx.cron, D2 ctx.nudge, D3 ctx.memory/ctx.learn, D4 ctx.approve,
 D5 ctx.send_slack/ctx.send_message. Each delegates to an injected port (the real
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.workflows.runner import WorkflowRunner
+from kiro_crew.workflows.runner import WorkflowRunner
 
 pytestmark = pytest.mark.asyncio
 

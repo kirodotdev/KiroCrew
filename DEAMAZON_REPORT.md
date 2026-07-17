@@ -1,5 +1,11 @@
 # De-Amazoning Report — KiroClaw (public OSS fork)
 
+> **Historical record — names as of 2026-06-02.** This report documents the
+> de-Amazon pass, when the project was named **KiroClaw** (package `kiro_claw`).
+> The project was later renamed to **KiroCrew** (package `kiro_crew`) in
+> 2026-07; the KiroClaw / `kiro_claw` names below are preserved as accurate
+> history of that earlier state and are intentionally NOT rewritten.
+
 _Date: 2026-06-02. KiroClaw is the public, GitHub-distributable,
 pip+npm-installable OSS fork that strips all Amazon-internal couplings. The
 de-Amazoned fork now lives in this `KiroClaw` package._

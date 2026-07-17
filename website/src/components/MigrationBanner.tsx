@@ -26,7 +26,7 @@ export default function MigrationBanner({ appName, migratedTo }: MigrationBanner
           This feature is moving to a standalone app
         </div>
         <div className="text-[13px] text-muted mt-1">
-          Install "{appName}" from the App Store before the next KiroClaw update to keep using it.
+          Install "{appName}" from the App Store before the next KiroCrew update to keep using it.
         </div>
       </div>
       <Btn

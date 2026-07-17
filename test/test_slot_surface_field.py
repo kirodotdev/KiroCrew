@@ -9,7 +9,7 @@ mode that shares an existing surface) without another wire-format change.
 These tests pin the contract.
 """
 
-from kiro_claw.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.state import _ChatSlot
 
 
 def test_to_dict_emits_surface_field_for_default_chat():

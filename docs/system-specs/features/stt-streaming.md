@@ -24,8 +24,8 @@ mic → AudioWorklet (PCM 16 kHz Int16) → WebSocket /api/ws/stt
 
 | Component | File | Role |
 |-----------|------|------|
-| WS endpoint | `src/kiro_claw/dashboard/stt_stream.py` | One Transcribe stream per WS connection |
-| Config field | `src/kiro_claw/config/loader.py` | `stt.streaming: bool` (default `False`) |
+| WS endpoint | `src/kiro_crew/dashboard/stt_stream.py` | One Transcribe stream per WS connection |
+| Config field | `src/kiro_crew/config/loader.py` | `stt.streaming: bool` (default `False`) |
 | Worklet | `frontend/public/pcm-worklet.js` | Float32 → Int16 PCM downsampler (48 kHz → 16 kHz) |
 | Streaming hook | `frontend/src/hooks/useStreamingStt.ts` | Opens WS, wires worklet, emits partial/final |
 | Voice hook | `frontend/src/hooks/useVoiceInput.ts` | Delegates to streaming hook when enabled |

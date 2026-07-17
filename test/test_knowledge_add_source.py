@@ -10,14 +10,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.knowledge import (
+from kiro_crew.dashboard.handlers.knowledge import (
     _folder_picker_available,
     _run_folder_dialog,
     add_source,
     get_config,
     pick_folder,
 )
-from kiro_claw.knowledge.store import KnowledgeStore
+from kiro_crew.knowledge.store import KnowledgeStore
 
 
 @pytest.fixture()
@@ -207,19 +207,19 @@ def _fake_request(local_only=True):
 
 class TestFolderPickerAvailable:
     def test_available_on_mac_local(self, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         assert _folder_picker_available(_fake_request(local_only=True)) is True
 
     def test_unavailable_off_mac(self, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "linux")
         assert _folder_picker_available(_fake_request(local_only=True)) is False
 
     def test_unavailable_when_remote(self, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         assert _folder_picker_available(_fake_request(local_only=False)) is False
 
     def test_fail_closed_when_local_only_unset(self, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         assert _folder_picker_available(SimpleNamespace(app={})) is False
 
 
@@ -227,7 +227,7 @@ class TestRunFolderDialog:
     def test_picked_returns_path(self, monkeypatch):
         completed = MagicMock(returncode=0, stdout="/home/user/notes\n")
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.knowledge.subprocess.run",
+            "kiro_crew.dashboard.handlers.knowledge.subprocess.run",
             lambda *a, **k: completed,
         )
         assert _run_folder_dialog() == "/home/user/notes"
@@ -235,7 +235,7 @@ class TestRunFolderDialog:
     def test_cancel_returns_none(self, monkeypatch):
         completed = MagicMock(returncode=1, stdout="")
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.knowledge.subprocess.run",
+            "kiro_crew.dashboard.handlers.knowledge.subprocess.run",
             lambda *a, **k: completed,
         )
         assert _run_folder_dialog() is None
@@ -244,7 +244,7 @@ class TestRunFolderDialog:
         def boom(*a, **k):
             raise FileNotFoundError()
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.knowledge.subprocess.run", boom,
+            "kiro_crew.dashboard.handlers.knowledge.subprocess.run", boom,
         )
         assert _run_folder_dialog() is None
 
@@ -252,23 +252,23 @@ class TestRunFolderDialog:
 class TestPickFolderHandler:
     @pytest.mark.asyncio
     async def test_blocked_when_not_local_only(self, store, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         async with TestClient(TestServer(_make_pick_app(store, local_only=False))) as client:
             resp = await client.post("/api/knowledge/pick-folder")
             assert resp.status == 403
 
     @pytest.mark.asyncio
     async def test_blocked_when_not_mac(self, store, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "linux")
         async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
             resp = await client.post("/api/knowledge/pick-folder")
             assert resp.status == 403
 
     @pytest.mark.asyncio
     async def test_returns_picked_path(self, store, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.knowledge._run_folder_dialog",
+            "kiro_crew.dashboard.handlers.knowledge._run_folder_dialog",
             lambda: "/home/user/notes",
         )
         async with TestClient(TestServer(_make_pick_app(store))) as client:
@@ -278,9 +278,9 @@ class TestPickFolderHandler:
 
     @pytest.mark.asyncio
     async def test_returns_null_on_cancel(self, store, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.knowledge._run_folder_dialog",
+            "kiro_crew.dashboard.handlers.knowledge._run_folder_dialog",
             lambda: None,
         )
         async with TestClient(TestServer(_make_pick_app(store))) as client:
@@ -292,14 +292,14 @@ class TestPickFolderHandler:
 class TestConfigFolderPickerFlag:
     @pytest.mark.asyncio
     async def test_reports_true_on_mac_local(self, store, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
             resp = await client.get("/api/knowledge/config")
             assert (await resp.json())["folder_picker"] is True
 
     @pytest.mark.asyncio
     async def test_reports_false_off_mac(self, store, monkeypatch):
-        monkeypatch.setattr("kiro_claw.dashboard.handlers.knowledge.sys.platform", "win32")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "win32")
         async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
             resp = await client.get("/api/knowledge/config")
             assert (await resp.json())["folder_picker"] is False

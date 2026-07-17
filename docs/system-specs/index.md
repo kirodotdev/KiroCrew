@@ -48,7 +48,7 @@ Load relevant module specs before making changes to that component. Read common 
 
 | Feature | Description |
 |---------|-------------|
-| [claude-code-provider](features/claude-code-provider.md) | Removed — KiroClaw is KiroACP/kiro-cli only; documents the dormant ACP seam that remains |
+| [claude-code-provider](features/claude-code-provider.md) | Removed — KiroCrew is KiroACP/kiro-cli only; documents the dormant ACP seam that remains |
 | [code-approvers](features/code-approvers.md) | Tier-based CR reviewer routing with drift validator |
 | [dashboard-token-auth](features/dashboard-token-auth.md) | Slack-gated HMAC token authentication for dashboard |
 | [inline-action-buttons](features/inline-action-buttons.md) | Interactive buttons in chat messages |

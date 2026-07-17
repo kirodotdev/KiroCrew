@@ -14,7 +14,7 @@ A prompt optimizer triggered via **Cmd+Shift+Enter** keyboard shortcut or a **sp
 1. User types prompt in dashboard textarea
 2. User presses **Cmd+Shift+Enter** (Mac) / **Ctrl+Shift+Enter** (Linux), or clicks ✨
 3. Dark overlay appears: "✨ Optimizing prompt…" — textarea becomes readOnly + dimmed
-4. Backend calls kiroclaw-lite with optimizer system prompt
+4. Backend calls kirocrew-lite with optimizer system prompt
 5. Optimized text replaces textarea content — user reviews before sending
 6. On error or unchanged → original text restored silently
 7. User presses **Enter** to send (no auto-send)
@@ -22,14 +22,14 @@ A prompt optimizer triggered via **Cmd+Shift+Enter** keyboard shortcut or a **sp
 ## Architecture
 
 ```
-KiroClawWebsite (React)              KiroClaw Gateway (Python)
+KiroCrewWebsite (React)              KiroCrew Gateway (Python)
 ───────────────────────              ────────────────────────
 ChatInput.tsx                        POST /api/optimizer/optimize
   ├─ handleKeyDown                    ├─ Empty check only (no skip logic)
   │   └─ Cmd+Shift+Enter             ├─ Build prompt with <original_prompt> tags
   │       → fetch(/api/optimizer)     ├─ Include context (truncated to 2000 chars)
   │       → dark overlay + readOnly   ├─ asyncio.wait_for(30s) wraps ENTIRE operation:
-  │       → user reviews & sends      │   ├─ get_or_create("_optimizer", agent="kiroclaw-lite")
+  │       → user reviews & sends      │   ├─ get_or_create("_optimizer", agent="kirocrew-lite")
   │                                   │   ├─ Stream response, reject tool calls
   ├─ Sparkle button onClick           │   └─ release("_optimizer") in finally
   │   → same fetch logic              ├─ Detect "UNCHANGED" → return original
@@ -80,7 +80,7 @@ The system prompt follows these rules (earlier wins on conflict):
 Single endpoint `handle_optimize(request)`:
 - Only guard: empty prompt → return unchanged immediately (no LLM call)
 - **30s `asyncio.wait_for` wraps entire operation** (get_or_create + stream + release)
-- Uses **dedicated `_optimizer` session key** with `agent="kiroclaw-lite"` — own process, own semaphore
+- Uses **dedicated `_optimizer` session key** with `agent="kirocrew-lite"` — own process, own semaphore
 - Rejects any tool permission requests during streaming
 - `try/finally` ensures `state.sessions.release(OPTIMIZER_SESSION_KEY)` even on stream errors
 - Explicit `asyncio.TimeoutError` handling returns original prompt gracefully
@@ -94,15 +94,15 @@ Single endpoint `handle_optimize(request)`:
 
 The previous approach shared `BACKGROUND_KEY` (`_bg`) with title generation and folder categorization. All three used a single `Semaphore(1)`, causing the optimizer to queue behind title gen (3-8s) + folder gen (2-5s) on every message. With a dedicated `_optimizer` session, response time dropped from 8-30s to 2-5s consistently.
 
-**Cost:** One extra kiroclaw-lite process (~30MB RAM).  
+**Cost:** One extra kirocrew-lite process (~30MB RAM).  
 **Benefit:** Optimizer latency 2-5s instead of 8-30s (or timeout).
 
 ## Testing
 
 | Package | Tests | Coverage |
 |---------|-------|----------|
-| KiroClaw (backend) | 18 pytest tests | empty prompt, LLM unchanged/optimized, short prompts reach LLM, errors, quote stripping, context truncation |
-| KiroClawWebsite (frontend) | 6 vitest tests | API contract, auth header, error handling, integration |
+| KiroCrew (backend) | 18 pytest tests | empty prompt, LLM unchanged/optimized, short prompts reach LLM, errors, quote stripping, context truncation |
+| KiroCrewWebsite (frontend) | 6 vitest tests | API contract, auth header, error handling, integration |
 
 ### Local verification (9 scenarios)
 

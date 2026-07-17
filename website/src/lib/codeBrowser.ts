@@ -4,7 +4,7 @@
 // preserving '/' — GitHub wants '/' literal in branch refs (e.g. "feat/foo"),
 // and hex commit SHAs pass through unchanged.
 
-const CODE_BROWSER_PACKAGE_BASE = 'https://github.com/kirodotdev-labs/kiroclaw'
+const CODE_BROWSER_PACKAGE_BASE = 'https://github.com/kirodotdev/KiroCrew'
 
 /** Browse a branch's source tree at its HEAD. */
 export const codeBrowserBranchUrl = (branch: string): string =>

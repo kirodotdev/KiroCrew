@@ -27,14 +27,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.acp.runtime import (
+from kiro_crew.acp.runtime import (
     _TERMINATE_TIMEOUT,
     AcpRuntime,
     AcpRuntimeDead,
     AcpRuntimeError,
     AcpSessionHandle,
 )
-from kiro_claw.acp.types import (
+from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
     METHOD_COMMANDS_EXECUTE,
@@ -237,11 +237,11 @@ async def test_non_object_json_line_does_not_crash_reader():
 
 def test_runtime_uses_clients_augmented_kiro_bin_resolver():
     """spawn() must resolve kiro-cli via the SAME augmented-PATH resolver as
-    AcpClient (honours KIROCLAW_KIRO_BIN + augmented_path so a non-login gateway
+    AcpClient (honours KIROCREW_KIRO_BIN + augmented_path so a non-login gateway
     finds a ~/.local/bin install). A bare shutil.which(PATH) duplicate regressed
     the kiro/_bg path to 'kiro-cli not found in PATH'. Assert single-source."""
-    import kiro_claw.acp.client as client_mod
-    import kiro_claw.acp.runtime as runtime_mod
+    import kiro_crew.acp.client as client_mod
+    import kiro_crew.acp.runtime as runtime_mod
 
     assert runtime_mod._resolve_kiro_bin is client_mod._resolve_kiro_bin
 
@@ -422,7 +422,7 @@ async def test_is_stale_none_when_fresh_and_small(monkeypatch):
         called["n"] += 1
         return 999999.0  # would be "stale" if ever consulted
 
-    monkeypatch.setattr("kiro_claw.acp.runtime._get_rss_tree_mb", _boom)
+    monkeypatch.setattr("kiro_crew.acp.runtime._get_rss_tree_mb", _boom)
     assert await rt._is_stale() is None
     assert called["n"] == 0  # young runtime never probes RSS
 
@@ -435,7 +435,7 @@ async def test_is_stale_none_when_old_but_small_rss(monkeypatch):
     rt._max_age_secs = 6 * 3600
     rt._spawn_monotonic = time.monotonic() - 600.0  # older than the probe band
     rt._max_rss_mb = 500.0
-    monkeypatch.setattr("kiro_claw.acp.runtime._get_rss_tree_mb", lambda pid: 10.0)
+    monkeypatch.setattr("kiro_crew.acp.runtime._get_rss_tree_mb", lambda pid: 10.0)
     assert await rt._is_stale() is None
 
 
@@ -455,7 +455,7 @@ async def test_is_stale_rss_when_tree_over_threshold(monkeypatch):
     rt._max_age_secs = 6 * 3600
     rt._spawn_monotonic = time.monotonic() - 600.0  # old enough to probe
     rt._max_rss_mb = 100.0
-    monkeypatch.setattr("kiro_claw.acp.runtime._get_rss_tree_mb", lambda pid: 250.0)
+    monkeypatch.setattr("kiro_crew.acp.runtime._get_rss_tree_mb", lambda pid: 250.0)
     assert await rt._is_stale() == "rss"
 
 
@@ -482,7 +482,7 @@ def test_get_rss_mb_real_process():
     positive MiB value; a nonexistent PID returns None. Skips where the
     platform can't introspect RSS (no /proc AND ps blocked, e.g. a locked-down
     macOS sandbox) — _get_rss_mb returns None there by design."""
-    from kiro_claw.acp.runtime import _get_rss_mb
+    from kiro_crew.acp.runtime import _get_rss_mb
 
     rss = _get_rss_mb(os.getpid())
     if rss is None:
@@ -495,7 +495,7 @@ def test_get_rss_tree_mb_real_process():
     """_get_rss_tree_mb sums at least this process's RSS (>0); nonexistent
     PID returns None. Skips where RSS introspection is unavailable (see
     test_get_rss_mb_real_process)."""
-    from kiro_claw.acp.runtime import _get_rss_mb, _get_rss_tree_mb
+    from kiro_crew.acp.runtime import _get_rss_mb, _get_rss_tree_mb
 
     self_rss = _get_rss_mb(os.getpid())
     if self_rss is None:
@@ -698,10 +698,10 @@ async def test_handle_set_mode():
     rt, _, proc = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
-    await handle.set_mode("kiroclaw-lite")
+    await handle.set_mode("kirocrew-lite")
     sent = json.loads(proc.stdin.write.call_args.args[0].decode())
     assert sent["method"] == "session/set_mode"
-    assert sent["params"]["modeId"] == "kiroclaw-lite"
+    assert sent["params"]["modeId"] == "kirocrew-lite"
 
 
 @pytest.mark.asyncio
@@ -808,7 +808,7 @@ async def test_dispatch_permission_request():
     so the permission event resolves ``is_shell=True`` — the signal chat_runner's
     trust-mode gate needs to waive the tool-name length cap on shell commands.
     """
-    from kiro_claw.acp.types import (
+    from kiro_crew.acp.types import (
         EVENT_PERMISSION_REQUEST,
         METHOD_REQUEST_PERMISSION,
         METHOD_SESSION_UPDATE,
@@ -894,7 +894,7 @@ async def test_reject_tool_prefers_recorded_reject_option():
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_and_result():
     """Tool call + tool result notifications yield correct events."""
-    from kiro_claw.acp.types import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
+    from kiro_crew.acp.types import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -937,8 +937,8 @@ async def test_tool_stall_cancels_session_not_runtime(monkeypatch):
     """A dispatched tool that goes silent must be recovered by a session-scoped
     session/cancel (so co-tenant sessions on the shared runtime survive), NOT by
     killing the runtime process. The turn ends with stop_reason 'tool_stall'."""
-    from kiro_claw.acp.session_handle import WatchdogSettings
-    from kiro_claw.acp.types import EVENT_COMPLETE
+    from kiro_crew.acp.session_handle import WatchdogSettings
+    from kiro_crew.acp.types import EVENT_COMPLETE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -978,8 +978,8 @@ async def test_tool_stall_recovery_completes_even_if_cancel_fails(monkeypatch):
     """If session/cancel raises or times out (an unresponsive runtime is likely
     right after a stall), the watchdog must still complete the turn — the
     bounded wait_for + except must not let recovery hang or bubble."""
-    from kiro_claw.acp.session_handle import WatchdogSettings
-    from kiro_claw.acp.types import EVENT_COMPLETE
+    from kiro_crew.acp.session_handle import WatchdogSettings
+    from kiro_crew.acp.types import EVENT_COMPLETE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1012,7 +1012,7 @@ async def test_tool_stall_recovery_completes_even_if_cancel_fails(monkeypatch):
 @pytest.mark.asyncio
 async def test_dispatch_thinking_chunk():
     """agent_thought_chunk yields EVENT_THINKING_CHUNK."""
-    from kiro_claw.acp.types import EVENT_THINKING_CHUNK
+    from kiro_crew.acp.types import EVENT_THINKING_CHUNK
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1043,7 +1043,7 @@ async def test_dispatch_thinking_chunk():
 @pytest.mark.asyncio
 async def test_dispatch_compaction_and_clear():
     """Compaction and clear notifications yield appropriate events."""
-    from kiro_claw.acp.types import (
+    from kiro_crew.acp.types import (
         EVENT_CLEAR_STATUS,
         EVENT_COMPACTION_STATUS,
         METHOD_CLEAR_STATUS,
@@ -1081,7 +1081,7 @@ async def test_dispatch_compaction_and_clear():
 @pytest.mark.asyncio
 async def test_dispatch_agent_switched():
     """Agent switched notification yields EVENT_AGENT_SWITCHED."""
-    from kiro_claw.acp.types import EVENT_AGENT_SWITCHED, METHOD_AGENT_SWITCHED
+    from kiro_crew.acp.types import EVENT_AGENT_SWITCHED, METHOD_AGENT_SWITCHED
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1098,12 +1098,12 @@ async def test_dispatch_agent_switched():
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
         _feed(reader, {"method": METHOD_AGENT_SWITCHED, "params": {
-            "sessionId": "sA", "agentName": "kiroclaw-lite",
+            "sessionId": "sA", "agentName": "kirocrew-lite",
         }})
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         sw = [e for e in events if e.kind == EVENT_AGENT_SWITCHED]
-        assert len(sw) == 1 and sw[0].text == "kiroclaw-lite"
+        assert len(sw) == 1 and sw[0].text == "kirocrew-lite"
     finally:
         await _stop_reader(task)
 
@@ -1111,7 +1111,7 @@ async def test_dispatch_agent_switched():
 @pytest.mark.asyncio
 async def test_dispatch_mcp_oauth_request():
     """MCP OAuth request notification yields EVENT_MCP_OAUTH_REQUEST."""
-    from kiro_claw.acp.types import EVENT_MCP_OAUTH_REQUEST, METHOD_MCP_OAUTH_REQUEST
+    from kiro_crew.acp.types import EVENT_MCP_OAUTH_REQUEST, METHOD_MCP_OAUTH_REQUEST
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1143,7 +1143,7 @@ async def test_dispatch_mcp_oauth_request():
 @pytest.mark.asyncio
 async def test_dispatch_mcp_server_initialized():
     """MCP server initialized yields EVENT_MCP_SERVER_INITIALIZED."""
-    from kiro_claw.acp.types import EVENT_MCP_SERVER_INITIALIZED, METHOD_MCP_SERVER_INITIALIZED
+    from kiro_crew.acp.types import EVENT_MCP_SERVER_INITIALIZED, METHOD_MCP_SERVER_INITIALIZED
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1173,7 +1173,7 @@ async def test_dispatch_mcp_server_initialized():
 @pytest.mark.asyncio
 async def test_dispatch_mcp_server_init_failure():
     """MCP server init failure yields EVENT_MCP_SERVER_INIT_FAILURE."""
-    from kiro_claw.acp.types import EVENT_MCP_SERVER_INIT_FAILURE, METHOD_MCP_SERVER_INIT_FAILURE
+    from kiro_crew.acp.types import EVENT_MCP_SERVER_INIT_FAILURE, METHOD_MCP_SERVER_INIT_FAILURE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1237,7 +1237,7 @@ async def test_dispatch_unknown_server_request_gets_error_response():
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_update_raw_output():
     """tool_call_update with rawOutput yields EVENT_TOOL_RESULT."""
-    from kiro_claw.acp.types import EVENT_TOOL_RESULT
+    from kiro_crew.acp.types import EVENT_TOOL_RESULT
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1269,7 +1269,7 @@ async def test_dispatch_tool_call_update_raw_output():
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_update_refinement():
     """tool_call_update with title but no content yields EVENT_TOOL_CALL_UPDATE."""
-    from kiro_claw.acp.types import EVENT_TOOL_CALL_UPDATE
+    from kiro_crew.acp.types import EVENT_TOOL_CALL_UPDATE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1332,7 +1332,7 @@ async def test_dispatch_usage_update():
 async def test_dispatch_metadata_credits():
     """_kiro.dev/metadata meteringUsage(unit=credit) accumulates into last_prompt_stats
     and is propagated onto EVENT_COMPLETE; non-credit units are ignored."""
-    from kiro_claw.acp.types import EVENT_COMPLETE, METHOD_METADATA
+    from kiro_crew.acp.types import EVENT_COMPLETE, METHOD_METADATA
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1371,7 +1371,7 @@ async def test_dispatch_metadata_credits():
 async def test_dispatch_metadata_credits_robust():
     """Non-numeric / missing meteringUsage values and metadata with no meteringUsage
     are handled without raising; credits stays 0."""
-    from kiro_claw.acp.types import METHOD_METADATA
+    from kiro_crew.acp.types import METHOD_METADATA
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1402,7 +1402,7 @@ async def test_dispatch_metadata_credits_robust():
 async def test_metadata_credits_routed_per_session():
     """Concurrent sessions on one runtime each accrue only their own kiro credits —
     metadata notifications are demuxed by sessionId, no cross-talk."""
-    from kiro_claw.acp.types import METHOD_METADATA
+    from kiro_crew.acp.types import METHOD_METADATA
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA", "sB")
@@ -1443,7 +1443,7 @@ async def test_metadata_credits_routed_per_session():
 @pytest.mark.asyncio
 async def test_dispatch_subagent_list():
     """Subagent list notification yields EVENT_SUBAGENT_LIST."""
-    from kiro_claw.acp.types import EVENT_SUBAGENT_LIST, METHOD_SUBAGENT_LIST_UPDATE
+    from kiro_crew.acp.types import EVENT_SUBAGENT_LIST, METHOD_SUBAGENT_LIST_UPDATE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1478,7 +1478,7 @@ async def test_dispatch_subagent_activity_tool():
     registered session), so the reader would correctly drop it. We inject it
     straight into the parent's queue to exercise the dispatch branch.
     """
-    from kiro_claw.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
+    from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1511,7 +1511,7 @@ async def test_dispatch_subagent_activity_tool():
 @pytest.mark.asyncio
 async def test_dispatch_subagent_activity_text():
     """Subagent activity with agent_message_chunk yields text event."""
-    from kiro_claw.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
+    from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1545,7 +1545,7 @@ async def test_dispatch_subagent_activity_text():
 async def test_dispatch_subagent_activity_text_is_redacted():
     """Sub-agent streamed text is LLM output surfaced on the dashboard, so it
     MUST be scrubbed (credentials + exfil URLs) before being yielded."""
-    from kiro_claw.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
+    from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, METHOD_KIRO_SESSION_UPDATE
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1583,7 +1583,7 @@ async def test_dispatch_subagent_activity_text_is_redacted():
 @pytest.mark.asyncio
 async def test_prompt_error_response_raises():
     """An error response for the prompt request raises AcpError."""
-    from kiro_claw.acp.client import AcpError
+    from kiro_crew.acp.client import AcpError
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1668,7 +1668,7 @@ async def test_one_session_errors_others_unaffected():
     """When one session's turn errors, the other concurrent session still
     completes normally — failures are isolated per session.
     """
-    from kiro_claw.acp.client import AcpError
+    from kiro_crew.acp.client import AcpError
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sOk", "sErr")
@@ -1723,7 +1723,7 @@ async def test_interleaved_tool_calls_routed_per_session():
     """tool_call frames for two concurrent sessions are each delivered only to
     the originating session's stream.
     """
-    from kiro_claw.acp.types import EVENT_TOOL_CALL
+    from kiro_crew.acp.types import EVENT_TOOL_CALL
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA", "sB")
@@ -2031,9 +2031,9 @@ class TestAcpRuntimePidTracking:
         proc.wait = AsyncMock(return_value=0)
 
         calls: dict[str, list[int]] = {"pid": [], "session": []}
-        import kiro_claw.acp.runtime as rt_mod
+        import kiro_crew.acp.runtime as rt_mod
 
-        # runtime.py imports these at module top (from kiro_claw.session_pid
+        # runtime.py imports these at module top (from kiro_crew.session_pid
         # import _untrack_pid, _untrack_session_pid), so kill() resolves them in
         # the runtime namespace — patch WHERE USED, not the source module.
         monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: calls["pid"].append(p))
@@ -2064,7 +2064,7 @@ class TestAcpRuntimeLoadSession:
             sent.append((method, params))
             # session/load echoes "modes"; set_mode echoes nothing meaningful.
             if method == METHOD_SESSION_LOAD:
-                return {"modes": {"currentModeId": "kiroclaw"}, "models": []}
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -2073,7 +2073,7 @@ class TestAcpRuntimeLoadSession:
             "/home/u/.kiro/sessions/cli/sid-123.json",
             "sid-123",
             cwd="/work",
-            agent="kiroclaw",
+            agent="kirocrew",
         )
 
         # No session/new was issued — the first RPC is session/load itself.
@@ -2114,7 +2114,7 @@ class TestAcpRuntimeLoadSession:
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
 
         with pytest.raises(AcpRuntimeError):
-            await rt.load_session("/f.json", "sid-y", agent="kiroclaw")
+            await rt.load_session("/f.json", "sid-y", agent="kirocrew")
         # The queue registered before the send must be cleaned up on failure.
         assert "sid-y" not in rt._session_queues
 
@@ -2134,7 +2134,7 @@ class TestAcpRuntimeLoadSession:
             return {}
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
-        await rt.load_session("/k/sid.json", "sid", cwd="/w", agent="kiroclaw")
+        await rt.load_session("/k/sid.json", "sid", cwd="/w", agent="kirocrew")
 
         # Mirror of AcpClient's kiro-branch load_params (client.py step 2).
         expected = {
@@ -2167,7 +2167,7 @@ class TestAcpRuntimeLoadSession:
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
 
         with pytest.raises(AcpRuntimeError):
-            await rt.load_session("/k/sid.json", "sid-z", cwd="/w", agent="kiroclaw")
+            await rt.load_session("/k/sid.json", "sid-z", cwd="/w", agent="kirocrew")
         assert METHOD_SESSION_TERMINATE in methods
         assert "sid-z" not in rt._session_queues
 
@@ -2193,7 +2193,7 @@ async def test_create_session_terminates_session_when_set_mode_fails(monkeypatch
     monkeypatch.setattr(rt, "_send_and_await", _fake_send)
 
     with pytest.raises(AcpRuntimeError):
-        await rt.create_session(cwd="/w", agent="kiroclaw")
+        await rt.create_session(cwd="/w", agent="kirocrew")
     # kiro-cli was told to evict the just-created session, and the local queue
     # registered before set_mode is cleaned up on failure.
     assert METHOD_SESSION_TERMINATE in methods
@@ -2213,7 +2213,7 @@ async def test_create_session_registers_queue_on_success(monkeypatch):
 
     monkeypatch.setattr(rt, "_send_and_await", _fake_send)
 
-    handle = await rt.create_session(cwd="/w", agent="kiroclaw")
+    handle = await rt.create_session(cwd="/w", agent="kirocrew")
     assert handle.session_id == "sid-ok"
     assert "sid-ok" in rt._session_queues
 
@@ -2226,7 +2226,7 @@ async def test_steer_notifications_yield_steer_events():
     """#4: steering_* session/update frames classify as "steer" and yield the
     EVENT_STEER_* events (previously dropped — classify_notification had no steer
     branch, so the shared demux path never surfaced mid-turn steer)."""
-    from kiro_claw.acp.types import (
+    from kiro_crew.acp.types import (
         EVENT_STEER_CLEARED,
         EVENT_STEER_CONSUMED,
         EVENT_STEER_QUEUED,
@@ -2279,7 +2279,7 @@ async def test_tool_interrupted_marker_synthesizes_complete(monkeypatch):
     must synthesize EVENT_COMPLETE so the turn does not hang until the 2h prompt
     timeout, and must emit the SEL audit. No prompt response is fed here — the
     turn MUST still terminate."""
-    import kiro_claw.acp.session_handle as sh
+    import kiro_crew.acp.session_handle as sh
 
     sel_mock = MagicMock()
     monkeypatch.setattr(sh, "sel", lambda: sel_mock)
@@ -2389,7 +2389,7 @@ async def test_drain_init_repoisons_on_dead_runtime():
 def test_backfill_context_window_from_pct(monkeypatch):
     """#5b: pct-only metadata (kiro 2.10+) backfills window/used tokens from the
     model registry; no-op once a real usage_update set the window."""
-    import kiro_claw.acp.session_handle as sh
+    import kiro_crew.acp.session_handle as sh
 
     monkeypatch.setattr(sh.model_registry, "window", lambda mid: 200000)
     rt, _, _ = _make_runtime()
@@ -2432,7 +2432,7 @@ def test_backfill_uses_resolved_model_id_from_session_config(monkeypatch):
     """#5b (parity): store_session_config captures currentModelId into
     _resolved_model_id, so context-window backfill works even when the user
     never called set_model — and _model stays empty (no Mesh-2376 pinning)."""
-    import kiro_claw.acp.session_handle as sh
+    import kiro_crew.acp.session_handle as sh
 
     monkeypatch.setattr(sh.model_registry, "window", lambda mid: 300000)
     rt, _, _ = _make_runtime()
@@ -2454,7 +2454,7 @@ def test_backfill_uses_resolved_model_id_from_session_config(monkeypatch):
 async def test_send_command_redacts_output(monkeypatch):
     """#send_command (parity): the command response text is redacted before
     return, matching AcpClient.send_command."""
-    import kiro_claw.acp.session_handle as sh
+    import kiro_crew.acp.session_handle as sh
 
     # send_command now applies the explicit two-pass redactors (parity with
     # AcpClient.send_command), not the redact_text helper.
@@ -2495,8 +2495,8 @@ async def test_stream_translates_runtime_dead_to_process_died():
     """#2: AcpSessionProvider.stream translates AcpRuntimeDead (an
     AcpRuntimeError, which chat_runner does NOT catch) into AcpProcessDied so
     the caller's AcpProcessDied handler fires (parity with AcpClient)."""
-    from kiro_claw.acp.client import AcpProcessDied
-    from kiro_claw.acp.session_provider import AcpSessionProvider
+    from kiro_crew.acp.client import AcpProcessDied
+    from kiro_crew.acp.session_provider import AcpSessionProvider
 
     rt = MagicMock()
     rt.saw_not_logged_in = MagicMock(return_value=False)
@@ -2519,8 +2519,8 @@ async def test_stream_translates_runtime_dead_to_process_died():
 async def test_stream_translates_auth_failure_to_auth_required():
     """#1: when stderr shows 'not logged in', a runtime death surfaces as
     AcpAuthRequired (non-retryable login prompt) rather than AcpProcessDied."""
-    from kiro_claw.acp.client import AcpAuthRequired
-    from kiro_claw.acp.session_provider import AcpSessionProvider
+    from kiro_crew.acp.client import AcpAuthRequired
+    from kiro_crew.acp.session_provider import AcpSessionProvider
 
     rt = MagicMock()
     rt.saw_not_logged_in = MagicMock(return_value=True)
@@ -2569,7 +2569,7 @@ async def test_provider_cancel_session_accepts_and_forwards_grace():
     """Blocker #1: AcpSessionProvider.cancel_session must accept grace_secs
     (AcpProvider.cancel calls it with grace_secs=) and forward it to the
     handle — otherwise a kiro-path cancel raises TypeError."""
-    from kiro_claw.acp.session_provider import AcpSessionProvider
+    from kiro_crew.acp.session_provider import AcpSessionProvider
 
     rt, _, _ = _make_runtime()
     rt.send_notification = AsyncMock()  # type: ignore[method-assign]
@@ -2600,7 +2600,7 @@ async def test_dispatch_mcp_oauth_guard_and_dedup():
     """Shared-path mcp_oauth_request mirrors AcpClient (R5 fix): unsafe-scheme
     URLs and empty serverName are dropped; duplicates deduped; a matching
     server_initialized discards the dedupe entry so a later retry re-emits."""
-    from kiro_claw.acp.types import (
+    from kiro_crew.acp.types import (
         EVENT_MCP_OAUTH_REQUEST,
         METHOD_MCP_OAUTH_REQUEST,
         METHOD_MCP_SERVER_INITIALIZED,
@@ -2698,9 +2698,9 @@ def test_store_session_config_syncs_effort_levels(monkeypatch):
     import sys
     import types
     calls = []
-    fake = types.ModuleType("kiro_claw.dashboard.chat_persistence")
+    fake = types.ModuleType("kiro_crew.dashboard.chat_persistence")
     fake.update_reasoning_effort_values = lambda levels: calls.append(levels)
-    monkeypatch.setitem(sys.modules, "kiro_claw.dashboard.chat_persistence", fake)
+    monkeypatch.setitem(sys.modules, "kiro_crew.dashboard.chat_persistence", fake)
     rt = MagicMock()
     rt.is_alive.return_value = True
     h = AcpSessionHandle("sA", asyncio.Queue(), rt)
@@ -2719,7 +2719,7 @@ async def test_stale_turn_probes_then_signals_recovery():
     which orphaned the wedged turn until the user's next message collided with
     'prompt already in progress'. (Stale DETECTION → probe is covered by
     test_acp_stale_recovery.py::test_genuine_stale_probes_via_cancel.)"""
-    from kiro_claw.acp.types import EVENT_COMPLETE, STOP_REASON_STALE_RECOVER
+    from kiro_crew.acp.types import EVENT_COMPLETE, STOP_REASON_STALE_RECOVER
 
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -2758,8 +2758,8 @@ def test_build_permission_event_sets_raw_tool_params():
     the governance keystone (hooks.on_tool_call sensitive-path / write-protected
     checks) enforces on the shared-runtime path even when the display title
     hides the path."""
-    from kiro_claw.acp._dispatch import build_permission_event
-    from kiro_claw.acp.types import METHOD_REQUEST_PERMISSION
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
 
     raw_cache = {"tc-1": {"path": "/home/u/.ssh/id_rsa", "content": "x"}}
     msg = JsonRpcMessage.from_dict({
@@ -2777,8 +2777,8 @@ def test_build_permission_event_sets_raw_tool_params():
 
 def test_build_permission_event_raw_params_none_without_cache():
     """No cache entry + no inline dict → raw_tool_params stays None (no crash)."""
-    from kiro_claw.acp._dispatch import build_permission_event
-    from kiro_claw.acp.types import METHOD_REQUEST_PERMISSION
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
 
     msg = JsonRpcMessage.from_dict({
         "id": 6,
@@ -2793,7 +2793,7 @@ def test_mark_dead_unregisters_protected_pid():
     """Regression (PR #21 follow-up): _mark_dead must release the sweep-protection
     shield on ANY death path (not just kill()), else the dead PID lingers in
     _PROTECTED_PIDS forever and could shield a recycled-orphan from the sweep."""
-    from kiro_claw.session_pid import _protected_pids, register_protected_pid
+    from kiro_crew.session_pid import _protected_pids, register_protected_pid
 
     rt, _, _ = _make_runtime()
     rt._pid = 515151
@@ -2811,9 +2811,9 @@ def test_protected_runtime_pid_lands_in_sweep_active_set():
     their PID via ``register_protected_pid``, and ``_collect_active_pids`` seeds
     from ``_protected_pids()``. This asserts both a companion and a bg runtime
     PID land in the sweep's active set (so phase-2 never confirms them orphans) —
-    the KiroClaw analog of MeshClaw CR-288064441's end-to-end guard.
+    the KiroCrew analog of MeshClaw CR-288064441's end-to-end guard.
     """
-    from kiro_claw.session_pid import (
+    from kiro_crew.session_pid import (
         _collect_active_pids,
         register_protected_pid,
         unregister_protected_pid,
@@ -2849,7 +2849,7 @@ def test_periodic_sweep_skips_protected_runtime_pid():
     """
     from unittest.mock import patch
 
-    from kiro_claw.session_pid import (
+    from kiro_crew.session_pid import (
         _collect_active_pids,
         _sweep_pid_entries,
         register_protected_pid,

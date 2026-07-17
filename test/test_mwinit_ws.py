@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 
-from kiro_claw.dashboard import handlers
+from kiro_crew.dashboard import handlers
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ out and listed so the chat agent can open them directly.
 
 from __future__ import annotations
 
-from kiro_claw.dashboard.workflow_inject import (
+from kiro_crew.dashboard.workflow_inject import (
     _collect_artifact_paths,
     _slot_key_from_session,
     _summarize,

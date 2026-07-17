@@ -12,7 +12,7 @@ thread messages from other threads for clear LLM context.
 ## Problem
 
 In a DM, the agent sees every message. In a group channel like #team-oncall,
-multiple people are talking. When someone @mentions KiroClaw, the agent only
+multiple people are talking. When someone @mentions KiroCrew, the agent only
 sees that single message — zero context about the surrounding conversation.
 
 Additionally, when multiple threads are active in the same channel, messages

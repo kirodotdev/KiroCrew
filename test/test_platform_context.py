@@ -1,12 +1,12 @@
-"""Tests for the Composed Platform Providers contract (kiro_claw.platform)."""
+"""Tests for the Composed Platform Providers contract (kiro_crew.platform)."""
 
 from __future__ import annotations
 
 import pytest
 
-from kiro_claw import security
-from kiro_claw.config.loader import KiroClawConfig
-from kiro_claw.platform import (
+from kiro_crew import security
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.platform import (
     BASELINE_DENY,
     CONTRACT_VERSION,
     PROFILE_AMAZON,
@@ -18,29 +18,29 @@ from kiro_claw.platform import (
     build_default_context,
     resolve_profile,
 )
-from kiro_claw.platform.context import PlatformContext
+from kiro_crew.platform.context import PlatformContext
 
 
 @pytest.fixture
-def cfg() -> KiroClawConfig:
-    return KiroClawConfig()
+def cfg() -> KiroCrewConfig:
+    return KiroCrewConfig()
 
 
 class TestDefaultContext:
     """The standalone edition composes an all-defaults context unchanged."""
 
-    def test_build_default_context_is_standalone(self, cfg: KiroClawConfig) -> None:
+    def test_build_default_context_is_standalone(self, cfg: KiroCrewConfig) -> None:
         ctx = build_default_context(cfg)
         assert isinstance(ctx, PlatformContext)
         assert ctx.profile == PROFILE_STANDALONE
         assert ctx.contract_version == CONTRACT_VERSION
         assert ctx.cfg is cfg
 
-    def test_default_adapters_match_legacy_behavior(self, cfg: KiroClawConfig) -> None:
+    def test_default_adapters_match_legacy_behavior(self, cfg: KiroCrewConfig) -> None:
         ctx = build_default_context(cfg)
         # Each Default* adapter reproduces today's module-level value.
-        from kiro_claw import agent, embeddings, sandbox
-        from kiro_claw.apps import registry
+        from kiro_crew import agent, embeddings, sandbox
+        from kiro_crew.apps import registry
 
         assert ctx.embeddings.registry_model() == embeddings._OLLAMA_MODEL
         assert ctx.sandbox.strict_dirs() == list(sandbox._STRICT_DIRS)
@@ -51,12 +51,12 @@ class TestDefaultContext:
         assert ctx.telemetry.frontend_rum_config() is None
         assert ctx.feature_apps == ()
 
-    def test_default_security_is_baseline_only(self, cfg: KiroClawConfig) -> None:
+    def test_default_security_is_baseline_only(self, cfg: KiroCrewConfig) -> None:
         ctx = build_default_context(cfg)
         assert isinstance(ctx.security, PolicyAuthority)
         assert set(ctx.security.effective_patterns()) == set(BASELINE_DENY)
 
-    def test_default_credential_redaction_delegates(self, cfg: KiroClawConfig) -> None:
+    def test_default_credential_redaction_delegates(self, cfg: KiroCrewConfig) -> None:
         ctx = build_default_context(cfg)
         text = "key AKIAIOSFODNN7EXAMPLE here"
         assert ctx.credentials.redact(text) == security.redact(text)
@@ -118,54 +118,54 @@ class TestPolicyAuthorityAddOnly:
 
 
 class TestProfileResolution:
-    def test_env_override_standalone(self, cfg: KiroClawConfig, monkeypatch) -> None:
-        monkeypatch.setenv("KIROCLAW_PROFILE", "standalone")
+    def test_env_override_standalone(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
         assert resolve_profile(cfg, entry_points=[object()]) == PROFILE_STANDALONE
 
-    def test_env_override_amazon(self, cfg: KiroClawConfig, monkeypatch) -> None:
-        monkeypatch.setenv("KIROCLAW_PROFILE", "amazon")
+    def test_env_override_amazon(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_PROFILE", "amazon")
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_AMAZON
 
-    def test_unknown_env_falls_back_to_standalone(self, cfg: KiroClawConfig, monkeypatch) -> None:
-        # An unknown KIROCLAW_PROFILE value returns standalone immediately,
+    def test_unknown_env_falls_back_to_standalone(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        # An unknown KIROCREW_PROFILE value returns standalone immediately,
         # before any identity/entry-point signal is consulted.
-        monkeypatch.setenv("KIROCLAW_PROFILE", "bogus")
+        monkeypatch.setenv("KIROCREW_PROFILE", "bogus")
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_STANDALONE
 
     def test_entry_points_take_precedence_over_midway(
-        self, cfg: KiroClawConfig, monkeypatch
+        self, cfg: KiroCrewConfig, monkeypatch
     ) -> None:
         # A present companion (entry points) is the authoritative signal and is
         # checked BEFORE the ~/.midway stat — no subprocess is spawned.
-        monkeypatch.delenv("KIROCLAW_PROFILE", raising=False)
+        monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
         assert resolve_profile(cfg, entry_points=[object()]) == PROFILE_AMAZON
 
     def test_midway_stat_ignored_without_probe_optin(
-        self, cfg: KiroClawConfig, monkeypatch
+        self, cfg: KiroCrewConfig, monkeypatch
     ) -> None:
         # A stray ~/.midway must NOT force the amazon profile by default: the
         # public edition has no companion to compose, so forcing amazon would
         # brick every command at boot. The identity heuristic is opt-in only.
-        monkeypatch.delenv("KIROCLAW_PROFILE", raising=False)
-        monkeypatch.delenv("KIROCLAW_MIDWAY_PROFILE_PROBE", raising=False)
-        monkeypatch.setattr("kiro_claw.platform.profile.Path.home", lambda: _FakeHome(True))
+        monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
+        monkeypatch.delenv("KIROCREW_MIDWAY_PROFILE_PROBE", raising=False)
+        monkeypatch.setattr("kiro_crew.platform.profile.Path.home", lambda: _FakeHome(True))
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_STANDALONE
 
     def test_midway_stat_triggers_amazon_when_probe_opted_in(
-        self, cfg: KiroClawConfig, monkeypatch
+        self, cfg: KiroCrewConfig, monkeypatch
     ) -> None:
         # With the opt-in set (the companion's managed launcher), a ~/.midway
         # host with no companion resolves amazon so discovery fails closed
         # (rather than running open defaults).
-        monkeypatch.delenv("KIROCLAW_PROFILE", raising=False)
-        monkeypatch.setenv("KIROCLAW_MIDWAY_PROFILE_PROBE", "1")
-        monkeypatch.setattr("kiro_claw.platform.profile.Path.home", lambda: _FakeHome(True))
+        monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
+        monkeypatch.setenv("KIROCREW_MIDWAY_PROFILE_PROBE", "1")
+        monkeypatch.setattr("kiro_crew.platform.profile.Path.home", lambda: _FakeHome(True))
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_AMAZON
 
-    def test_no_signals_is_standalone(self, cfg: KiroClawConfig, monkeypatch) -> None:
-        monkeypatch.delenv("KIROCLAW_PROFILE", raising=False)
-        monkeypatch.setenv("KIROCLAW_MIDWAY_PROFILE_PROBE", "1")
-        monkeypatch.setattr("kiro_claw.platform.profile.Path.home", lambda: _FakeHome(False))
+    def test_no_signals_is_standalone(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
+        monkeypatch.setenv("KIROCREW_MIDWAY_PROFILE_PROBE", "1")
+        monkeypatch.setattr("kiro_crew.platform.profile.Path.home", lambda: _FakeHome(False))
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_STANDALONE
 
 
@@ -186,47 +186,47 @@ class _FakeHome:
 
 
 class TestBootstrapAndDiscovery:
-    def test_bootstrap_standalone(self, cfg: KiroClawConfig, monkeypatch) -> None:
-        monkeypatch.setenv("KIROCLAW_PROFILE", "standalone")
+    def test_bootstrap_standalone(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
         ctx = bootstrap_context(cfg)
         assert ctx.profile == PROFILE_STANDALONE
         # current_context() now returns this context.
-        from kiro_claw.platform import current_context
+        from kiro_crew.platform import current_context
 
         assert current_context() is ctx
 
     def test_bootstrap_amazon_without_companion_fails_closed(
-        self, cfg: KiroClawConfig, monkeypatch
+        self, cfg: KiroCrewConfig, monkeypatch
     ) -> None:
-        monkeypatch.setenv("KIROCLAW_PROFILE", "amazon")
+        monkeypatch.setenv("KIROCREW_PROFILE", "amazon")
         # No companion entry point installed → must raise (fail-closed).
-        monkeypatch.setattr("kiro_claw.platform.bootstrap.plugin_entry_points", lambda: [])
-        monkeypatch.setattr("kiro_claw.platform.discovery.plugin_entry_points", lambda: [])
+        monkeypatch.setattr("kiro_crew.platform.bootstrap.plugin_entry_points", lambda: [])
+        monkeypatch.setattr("kiro_crew.platform.discovery.plugin_entry_points", lambda: [])
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
-    def test_contract_version_mismatch_rejected(self, cfg: KiroClawConfig, monkeypatch) -> None:
+    def test_contract_version_mismatch_rejected(self, cfg: KiroCrewConfig, monkeypatch) -> None:
         import dataclasses
 
-        from kiro_claw.platform import bootstrap as bootstrap_mod
+        from kiro_crew.platform import bootstrap as bootstrap_mod
 
         bad = dataclasses.replace(
             build_default_context(cfg, profile=PROFILE_AMAZON),
             contract_version=CONTRACT_VERSION + 99,
         )
-        monkeypatch.setenv("KIROCLAW_PROFILE", "amazon")
+        monkeypatch.setenv("KIROCREW_PROFILE", "amazon")
         monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
         monkeypatch.setattr(bootstrap_mod, "discover_companion_context", lambda profile, cfg: bad)
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
-    def test_none_companion_on_amazon_fails_closed(self, cfg: KiroClawConfig, monkeypatch) -> None:
+    def test_none_companion_on_amazon_fails_closed(self, cfg: KiroCrewConfig, monkeypatch) -> None:
         # Defense in depth: if discovery ever returns None for a non-standalone
         # profile, bootstrap must STILL refuse to boot rather than install an
         # amazon-labeled context with open defaults.
-        from kiro_claw.platform import bootstrap as bootstrap_mod
+        from kiro_crew.platform import bootstrap as bootstrap_mod
 
-        monkeypatch.setenv("KIROCLAW_PROFILE", "amazon")
+        monkeypatch.setenv("KIROCREW_PROFILE", "amazon")
         monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
         monkeypatch.setattr(bootstrap_mod, "discover_companion_context", lambda profile, cfg: None)
         with pytest.raises(PlatformCompositionError):

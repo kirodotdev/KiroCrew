@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from kiro_claw.learn import _DEFAULT_DIR, Lesson, LessonStore
+from kiro_crew.learn import _DEFAULT_DIR, Lesson, LessonStore
 
 
 def _make_lesson(rule: str, category: str = "knowledge", negative: str | None = None) -> Lesson:
@@ -70,7 +70,7 @@ class TestLessonStoreSecurity:
     def test_sensitive_base_dir_falls_back_to_default(self, tmp_path: Path) -> None:
         sensitive = tmp_path / ".ssh"
         sensitive.mkdir()
-        with patch("kiro_claw.security.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
             store = LessonStore(base_dir=sensitive)
         assert store._dir == _DEFAULT_DIR
 
@@ -78,8 +78,8 @@ class TestLessonStoreSecurity:
         sensitive = tmp_path / ".aws"
         sensitive.mkdir()
         with (
-            patch("kiro_claw.security.is_sensitive_path", return_value=True),
-            patch("kiro_claw.sel.SecurityEventLog.log_tool_invocation") as mock_log,
+            patch("kiro_crew.security.is_sensitive_path", return_value=True),
+            patch("kiro_crew.sel.SecurityEventLog.log_tool_invocation") as mock_log,
         ):
             LessonStore(base_dir=sensitive)
         mock_log.assert_called_once()
@@ -91,9 +91,9 @@ class TestLessonStoreSecurity:
         sensitive = tmp_path / ".secret"
         sensitive.mkdir()
         with (
-            patch("kiro_claw.security.is_sensitive_path", return_value=True),
+            patch("kiro_crew.security.is_sensitive_path", return_value=True),
             patch(
-                "kiro_claw.sel.SecurityEventLog.log_tool_invocation",
+                "kiro_crew.sel.SecurityEventLog.log_tool_invocation",
                 side_effect=RuntimeError("SEL broken"),
             ),
         ):
@@ -101,26 +101,26 @@ class TestLessonStoreSecurity:
         assert store._dir == _DEFAULT_DIR
 
     def test_sensitive_config_dir_falls_back_to_default(self, tmp_path: Path) -> None:
-        sensitive = tmp_path / ".kiroclaw-sensitive"
+        sensitive = tmp_path / ".kirocrew-sensitive"
         sensitive.mkdir()
         with (
-            patch("kiro_claw.learn._config_dir", return_value=sensitive),
-            patch("kiro_claw.security.is_sensitive_path", return_value=True),
+            patch("kiro_crew.learn._config_dir", return_value=sensitive),
+            patch("kiro_crew.security.is_sensitive_path", return_value=True),
         ):
             store = LessonStore()
         assert store._dir == _DEFAULT_DIR
 
     def test_config_dir_exception_falls_back_to_default(self) -> None:
-        with patch("kiro_claw.learn._config_dir", side_effect=OSError("broken loader")):
+        with patch("kiro_crew.learn._config_dir", side_effect=OSError("broken loader")):
             store = LessonStore()
         assert store._dir == _DEFAULT_DIR
 
     def test_config_dir_none_falls_back_to_default(self) -> None:
-        with patch("kiro_claw.learn._config_dir", None):
+        with patch("kiro_crew.learn._config_dir", None):
             store = LessonStore()
         assert store._dir == _DEFAULT_DIR
 
     def test_non_sensitive_base_dir_used_directly(self, tmp_path: Path) -> None:
-        with patch("kiro_claw.security.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.security.is_sensitive_path", return_value=False):
             store = LessonStore(base_dir=tmp_path)
         assert store._dir == tmp_path

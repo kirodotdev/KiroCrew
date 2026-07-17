@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.apps.builtins.file_explorer import server
+from kiro_crew.apps.builtins.file_explorer import server
 
 
 @pytest.fixture
@@ -85,8 +85,8 @@ class TestIsSensitive:
     def test_aws_is_sensitive(self, tmp_tree):
         assert server._is_sensitive(Path("/home/otheruser/.aws/credentials")) is True
 
-    def test_kiroclaw_is_sensitive(self, tmp_tree):
-        assert server._is_sensitive(tmp_tree / ".kiroclaw" / ".env") is True
+    def test_kirocrew_is_sensitive(self, tmp_tree):
+        assert server._is_sensitive(tmp_tree / ".kirocrew" / ".env") is True
 
     def test_regular_file_not_sensitive(self, tmp_tree):
         assert server._is_sensitive(tmp_tree / "file.txt") is False

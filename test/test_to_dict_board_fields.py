@@ -2,7 +2,7 @@
 import asyncio
 import json
 
-from kiro_claw.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.state import _ChatSlot
 
 
 def _slot(*messages: dict) -> _ChatSlot:

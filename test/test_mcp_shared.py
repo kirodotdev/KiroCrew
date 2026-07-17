@@ -6,8 +6,8 @@ import io
 import json
 from unittest.mock import patch
 
-import kiro_claw.mcp_shared as mcp_shared
-from kiro_claw.mcp_shared import _read_message, respond
+import kiro_crew.mcp_shared as mcp_shared
+from kiro_crew.mcp_shared import _read_message, respond
 
 
 def _make_stdin(data: bytes):

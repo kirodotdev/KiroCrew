@@ -51,8 +51,8 @@ describe('SkillsTab', () => {
   it('renders a row per skill with its loaded_by_agents pill', async () => {
     mockApi.skills.mockResolvedValue([
       {
-        key: 'foo', name: 'foo', description: 'a foo skill', source: 'kiroclaw',
-        loaded_by_agents: ['kiroclaw', 'kiroclaw-lite'],
+        key: 'foo', name: 'foo', description: 'a foo skill', source: 'kirocrew',
+        loaded_by_agents: ['kirocrew', 'kirocrew-lite'],
       },
     ])
     renderWithQuery()
@@ -66,7 +66,7 @@ describe('SkillsTab', () => {
 
   it('shows singular form when exactly one agent loads the skill', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'solo', name: 'solo', description: 'lone', source: 'kiroclaw', loaded_by_agents: ['only-one'] },
+      { key: 'solo', name: 'solo', description: 'lone', source: 'kirocrew', loaded_by_agents: ['only-one'] },
     ])
     renderWithQuery()
     await waitFor(() => expect(screen.getByText(/Loaded by 1 agent$/)).toBeInTheDocument())
@@ -74,8 +74,8 @@ describe('SkillsTab', () => {
 
   it('selected row has no border (regression: selection should not draw a border)', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'a', name: 'a', description: 'first', source: 'kiroclaw', loaded_by_agents: [] },
-      { key: 'b', name: 'b', description: 'second', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'a', name: 'a', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'b', name: 'b', description: 'second', source: 'kirocrew', loaded_by_agents: [] },
     ])
     renderWithQuery()
 
@@ -95,7 +95,7 @@ describe('SkillsTab', () => {
 
   it('skill list uses the overlay (autohide, no-layout-shift) scrollbar', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'a', name: 'a', description: 'first', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'a', name: 'a', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
     ])
     renderWithQuery()
 
@@ -108,7 +108,7 @@ describe('SkillsTab', () => {
 
   it('omits the pill when loaded_by_agents is empty', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'unloaded', name: 'unloaded', description: 'no one', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'unloaded', name: 'unloaded', description: 'no one', source: 'kirocrew', loaded_by_agents: [] },
     ])
     renderWithQuery()
     await waitFor(() => expect(screen.getByText('Unloaded')).toBeInTheDocument())
@@ -129,7 +129,7 @@ describe('SkillsTab', () => {
 
   it('auto-selects the first skill and renders the directory browser (no modal)', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'demo', name: 'demo', description: 'demo skill', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'demo', name: 'demo', description: 'demo skill', source: 'kirocrew', loaded_by_agents: [] },
     ])
     renderWithQuery()
 
@@ -142,8 +142,8 @@ describe('SkillsTab', () => {
 
   it('switches the browser when another skill row is clicked', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'first', name: 'first', description: 'one', source: 'kiroclaw', loaded_by_agents: [] },
-      { key: 'second', name: 'second', description: 'two', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'first', name: 'first', description: 'one', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'second', name: 'second', description: 'two', source: 'kirocrew', loaded_by_agents: [] },
     ])
     renderWithQuery()
 
@@ -158,7 +158,7 @@ describe('SkillsTab', () => {
     mockApi.skills.mockResolvedValue([
       {
         key: 'agent-loaded', name: 'agent-loaded',
-        description: 'has agents', source: 'kiroclaw',
+        description: 'has agents', source: 'kirocrew',
         loaded_by_agents: ['alpha-agent', 'beta-agent'],
       },
     ])
@@ -172,7 +172,7 @@ describe('SkillsTab', () => {
 
   it('Delete button confirms and dispatches the deleteSkill mutation', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'doomed', name: 'doomed', description: 'will go', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'doomed', name: 'doomed', description: 'will go', source: 'kirocrew', loaded_by_agents: [] },
     ])
     mockApi.skill.mockResolvedValue({ name: 'doomed', content: '---\nname: doomed\n---\n' })
     mockApi.deleteSkill.mockResolvedValue({ ok: true })
@@ -187,9 +187,9 @@ describe('SkillsTab', () => {
     confirmSpy.mockRestore()
   })
 
-  it('Edit button enters edit mode for kiroclaw-sourced skills', async () => {
+  it('Edit button enters edit mode for kirocrew-sourced skills', async () => {
     mockApi.skills.mockResolvedValue([
-      { key: 'editable', name: 'editable', description: 'fixme', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'editable', name: 'editable', description: 'fixme', source: 'kirocrew', loaded_by_agents: [] },
     ])
     mockApi.skill.mockResolvedValue({
       name: 'editable',
@@ -212,8 +212,8 @@ describe('SkillsTab', () => {
     // Regression: entering edit mode then filtering the skill out of the list
     // must NOT auto-reselect another skill and discard unsaved form input.
     mockApi.skills.mockResolvedValue([
-      { key: 'editable', name: 'editable', description: 'fixme', source: 'kiroclaw', loaded_by_agents: [] },
-      { key: 'other', name: 'other', description: 'second', source: 'kiroclaw', loaded_by_agents: [] },
+      { key: 'editable', name: 'editable', description: 'fixme', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'other', name: 'other', description: 'second', source: 'kirocrew', loaded_by_agents: [] },
     ])
     mockApi.skill.mockResolvedValue({
       name: 'editable',

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_claw.dashboard.handlers.agents import api_aim_mcp_registry
+from kiro_crew.dashboard.handlers.agents import api_aim_mcp_registry
 
 
 def _req() -> make_mocked_request:
@@ -29,7 +29,7 @@ async def test_aim_not_found():
 async def test_aim_nonzero_exit():
     """Returns 500 when aim exits with non-zero code."""
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(1, "some error")):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(1, "some error")):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 500
     body = json.loads(resp.body)
@@ -40,7 +40,7 @@ async def test_aim_nonzero_exit():
 async def test_no_json_array():
     """Returns 500 when output has no JSON array."""
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, "no json here")):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, "no json here")):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 500
     body = json.loads(resp.body)
@@ -51,7 +51,7 @@ async def test_no_json_array():
 async def test_invalid_json():
     """Returns 500 when JSON is malformed."""
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, "[{broken")):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, "[{broken")):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 500
     body = json.loads(resp.body)
@@ -78,7 +78,7 @@ async def test_parses_servers():
         },
     ])
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 200
     body = json.loads(resp.body)
@@ -110,7 +110,7 @@ async def test_no_tier():
         },
     ])
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 200
     body = json.loads(resp.body)
@@ -125,7 +125,7 @@ async def test_json_with_leading_noise():
         {"bundleId": "test-mcp", "name": "Test [Recommended]", "description": "desc", "isInstalled": False},
     ])
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 200
     body = json.loads(resp.body)
@@ -140,7 +140,7 @@ async def test_json_with_trailing_noise():
         {"bundleId": "test-mcp", "name": "Test", "description": "desc", "isInstalled": False},
     ]) + "\n} extra stuff"
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 200
     body = json.loads(resp.body)
@@ -159,7 +159,7 @@ async def test_description_with_brackets():
         },
     ])
     with patch("shutil.which", return_value="/usr/bin/aim"), \
-         patch("kiro_claw.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
+         patch("kiro_crew.dashboard.handlers.agents._run_aim", new_callable=AsyncMock, return_value=(0, aim_output)):
         resp = await api_aim_mcp_registry(_req())
     assert resp.status == 200
     body = json.loads(resp.body)
@@ -174,7 +174,7 @@ async def test_description_with_brackets():
 @pytest.mark.asyncio
 async def test_mcp_list_aim_not_found():
     """`api_aim_mcp_list` returns 503 when `aim` is missing from PATH."""
-    from kiro_claw.dashboard.handlers.agents import api_aim_mcp_list
+    from kiro_crew.dashboard.handlers.agents import api_aim_mcp_list
 
     req = make_mocked_request("GET", "/api/aim/mcp")
     with patch("shutil.which", return_value=None):
@@ -187,7 +187,7 @@ async def test_mcp_list_aim_not_found():
 @pytest.mark.asyncio
 async def test_skills_list_aim_not_found():
     """`api_aim_skills_list` returns 503 when `aim` is missing from PATH."""
-    from kiro_claw.dashboard.handlers.agents import api_aim_skills_list
+    from kiro_crew.dashboard.handlers.agents import api_aim_skills_list
 
     req = make_mocked_request("GET", "/api/aim/skills")
     with patch("shutil.which", return_value=None):
@@ -200,7 +200,7 @@ async def test_skills_list_aim_not_found():
 @pytest.mark.asyncio
 async def test_agents_list_aim_not_found():
     """`api_aim_agents_list` returns 503 when `aim` is missing from PATH."""
-    from kiro_claw.dashboard.handlers.agents import api_aim_agents_list
+    from kiro_crew.dashboard.handlers.agents import api_aim_agents_list
 
     req = make_mocked_request("GET", "/api/aim/agents")
     with patch("shutil.which", return_value=None):

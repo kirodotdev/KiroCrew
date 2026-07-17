@@ -251,7 +251,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.highlight-recent-sessions",
     "label": "Highlight recent sessions",
-    "description": "Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your KiroClaw config.",
+    "description": "Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your KiroCrew config.",
     "tab": "display",
     "type": "stepper",
     "occurrence": 1
@@ -306,7 +306,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "slack.owner-slack-member-id",
     "label": "Owner Slack member ID",
-    "description": "The one member who can always interact with the bot (KIROCLAW_OWNER_ID). Starts with U or W.",
+    "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
     "tab": "slack",
     "type": "input",
     "occurrence": 1

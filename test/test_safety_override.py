@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.safety_override — time-limited safety override (YOLO replacement)."""
+"""Tests for kiro_crew.safety_override — time-limited safety override (YOLO replacement)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.safety_override import (
+from kiro_crew.safety_override import (
     ActivationResult,
     OverrideStatus,
     RenewResult,
@@ -47,7 +47,7 @@ def override() -> SafetyOverride:
 
 class TestActivation:
     def test_activate_from_slack(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("slack")
         assert isinstance(result, ActivationResult)
@@ -56,7 +56,7 @@ class TestActivation:
         assert result.active is True
 
     def test_activate_from_dashboard(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("dashboard")
         assert result.ttl == SafetyOverride._DASHBOARD_TTL
@@ -64,7 +64,7 @@ class TestActivation:
         assert result.active is True
 
     def test_activate_from_config(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("config")
         assert result.ttl == SafetyOverride._CONFIG_TTL
@@ -72,7 +72,7 @@ class TestActivation:
         assert result.active is True
 
     def test_activate_caps_at_max_ttl(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("slack", ttl=200000)
         assert result.ttl == SafetyOverride._MAX_TTL
@@ -81,13 +81,13 @@ class TestActivation:
     def test_activate_fires_callback(self, override: SafetyOverride) -> None:
         callback = MagicMock()
         override._on_activated = callback
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("slack")
         callback.assert_called_once_with("slack", result.ttl)
 
     def test_activation_count_increments(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             assert override._activation_count == 0
             override.activate("slack")
@@ -96,13 +96,13 @@ class TestActivation:
             assert override._activation_count == 2
 
     def test_activate_custom_ttl_within_max(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("slack", ttl=3600)
         assert result.ttl == 3600
 
     def test_activate_sets_active_true(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             assert not override.is_active()
             override.activate("slack")
@@ -114,7 +114,7 @@ class TestActivation:
 
 class TestExpiry:
     def test_is_active_returns_false_after_expiry(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack", ttl=1)
         # Manually expire it
@@ -124,12 +124,12 @@ class TestExpiry:
     def test_expiry_fires_callback(self, override: SafetyOverride) -> None:
         callback = MagicMock()
         override._on_expired = callback
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack", ttl=1)
         # Manually expire
         override._expires_at = time.monotonic() - 1
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.is_active()
         assert not result
@@ -137,12 +137,12 @@ class TestExpiry:
 
     def test_expiry_logs_sel_event(self, override: SafetyOverride) -> None:
         mock_sel_instance = MagicMock()
-        with patch("kiro_claw.safety_override.sel", return_value=mock_sel_instance):
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
             override.activate("slack", ttl=1)
         # Force expiry
         override._expires_at = time.monotonic() - 1
         mock_sel_instance2 = MagicMock()
-        with patch("kiro_claw.safety_override.sel", return_value=mock_sel_instance2):
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance2):
             override.is_active()
         mock_sel_instance2.log_api_access.assert_called_once()
         call_kwargs = mock_sel_instance2.log_api_access.call_args.kwargs
@@ -155,7 +155,7 @@ class TestExpiry:
 
 class TestDeactivation:
     def test_deactivate(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack")
             assert override.is_active()
@@ -164,7 +164,7 @@ class TestDeactivation:
 
     def test_deactivate_when_inactive_is_noop(self, override: SafetyOverride) -> None:
         # Should not raise, not log a SEL event
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel_instance = MagicMock()
             mock_sel.return_value = mock_sel_instance
             assert not override.is_active()
@@ -172,7 +172,7 @@ class TestDeactivation:
         mock_sel_instance.log_api_access.assert_not_called()
 
     def test_renew_after_explicit_deactivate_fails(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack")
             override.deactivate("slack")
@@ -186,7 +186,7 @@ class TestDeactivation:
 
 class TestRenewal:
     def test_renew_active_override(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack")
             result = override.renew("slack")
@@ -195,32 +195,32 @@ class TestRenewal:
         assert result.ttl > 0
 
     def test_renew_within_grace_period(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack", ttl=1)
         # Expire it but stay within grace window (_RENEW_GRACE_SECS = 300)
         override._expires_at = time.monotonic() - 60  # 60s past expiry, < 300s grace
         override._active = False  # mark expired
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.renew("slack")
         assert result.renewed is True
 
     def test_renew_outside_grace_period_fails(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack", ttl=1)
         # Expire it way beyond grace window
         override._expires_at = time.monotonic() - 400  # 400s past expiry > 300s grace
         override._active = False
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.renew("slack")
         assert result.renewed is False
 
     def test_renew_logs_sel(self, override: SafetyOverride) -> None:
         mock_sel_instance = MagicMock()
-        with patch("kiro_claw.safety_override.sel", return_value=mock_sel_instance):
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
             override.activate("slack")
             override.renew("slack")
         # Expect at least two log_api_access calls: activation + renewal
@@ -231,7 +231,7 @@ class TestRenewal:
     def test_renew_denied_logs_sel(self, override: SafetyOverride) -> None:
         # Renew on an override that was never activated (neither active nor in grace)
         mock_sel_instance = MagicMock()
-        with patch("kiro_claw.safety_override.sel", return_value=mock_sel_instance):
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
             result = override.renew("slack")
         assert result.renewed is False
         calls = mock_sel_instance.log_api_access.call_args_list
@@ -246,7 +246,7 @@ class TestRenewal:
 
 class TestStatus:
     def test_status_when_active(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack")
         status = override.status()
@@ -277,7 +277,7 @@ class TestRemainingSecs:
         assert override.remaining_secs() == 0
 
     def test_remaining_secs_when_active(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack", ttl=3600)
         secs = override.remaining_secs()
@@ -285,7 +285,7 @@ class TestRemainingSecs:
         assert secs <= 3600
 
     def test_remaining_secs_zero_after_expiry(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack", ttl=1)
         override._expires_at = time.monotonic() - 5
@@ -318,22 +318,22 @@ class TestSingleton:
 class TestSelFaultTolerance:
     def test_sel_crash_rolls_back_activate(self, override: SafetyOverride) -> None:
         """SEL audit failure during activate() must roll back — fail closed."""
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock(log_api_access=MagicMock(side_effect=RuntimeError("boom")))
             result = override.activate("slack")
         assert result.active is False
         assert not override.is_active()
         assert override._expires_at == 0.0
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             renew_result = override.renew("slack")
         assert renew_result.renewed is False
 
     def test_sel_crash_does_not_crash_deactivate(self, override: SafetyOverride) -> None:
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack")
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock(log_api_access=MagicMock(side_effect=RuntimeError("boom")))
             # Should not raise
             override.deactivate("slack")
@@ -341,7 +341,7 @@ class TestSelFaultTolerance:
 
     def test_sel_import_error_rolls_back_activate(self, override: SafetyOverride) -> None:
         """SEL import error during activate() must roll back — fail closed."""
-        with patch("kiro_claw.safety_override.sel", side_effect=ImportError("no sel")):
+        with patch("kiro_crew.safety_override.sel", side_effect=ImportError("no sel")):
             result = override.activate("slack")
         assert result.active is False
         assert not override.is_active()
@@ -359,12 +359,12 @@ class TestSelFaultTolerance:
         critical synchronous write, the error propagates and activate() rolls
         back.
         """
-        from kiro_claw.sel import SecurityEventLog
+        from kiro_crew.sel import SecurityEventLog
 
         SecurityEventLog._instance = None
         SecurityEventLog._initialized = False
         real_sel = SecurityEventLog(base_dir=tmp_path)
-        monkeypatch.setattr("kiro_claw.safety_override.sel", lambda: real_sel)
+        monkeypatch.setattr("kiro_crew.safety_override.sel", lambda: real_sel)
 
         real_os_open = os.open
 
@@ -399,7 +399,7 @@ class TestCallbacks:
     def test_on_activated_callback_receives_correct_args(self, override: SafetyOverride) -> None:
         received: list[tuple] = []
         override._on_activated = lambda source, ttl: received.append((source, ttl))
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("dashboard")
         assert len(received) == 1
@@ -408,11 +408,11 @@ class TestCallbacks:
     def test_on_expired_callback_receives_source(self, override: SafetyOverride) -> None:
         received: list[str] = []
         override._on_expired = lambda source: received.append(source)
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("config")
         override._expires_at = time.monotonic() - 1
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.is_active()
         assert received == ["config"]
@@ -421,11 +421,11 @@ class TestCallbacks:
         """Neither callback set — activation and expiry must not raise."""
         assert override._on_activated is None
         assert override._on_expired is None
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             override.activate("slack")
         override._expires_at = time.monotonic() - 1
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             assert not override.is_active()
 
@@ -445,7 +445,7 @@ class TestSourceTtls:
 
     def test_activate_unknown_source_uses_slack_ttl(self, override: SafetyOverride) -> None:
         """Unknown sources should fall back to a sensible default."""
-        with patch("kiro_claw.safety_override.sel") as mock_sel:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
             mock_sel.return_value = MagicMock()
             result = override.activate("unknown_source")
         # Should not crash; use slack TTL as fallback

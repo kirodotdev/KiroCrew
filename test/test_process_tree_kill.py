@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.config import KiroClawConfig
-from kiro_claw.session import SessionManager
-from kiro_claw.subagent import SubagentManager
+from kiro_crew.config import KiroCrewConfig
+from kiro_crew.session import SessionManager
+from kiro_crew.subagent import SubagentManager
 
 # ── Helpers ──
 
@@ -66,7 +66,7 @@ class TestResetProcessTreeKill:
 
     @pytest.fixture
     def cfg(self):
-        c = KiroClawConfig()
+        c = KiroCrewConfig()
         c.session.timeout_secs = 2
         return c
 
@@ -78,11 +78,11 @@ class TestResetProcessTreeKill:
         await mgr.get_or_create("t1")
 
         with (
-            patch("kiro_claw.session.os.kill") as mock_kill,
-            patch("kiro_claw.session.os.killpg") as mock_killpg,
-            patch("kiro_claw.session.os.getpgid", return_value=12345),
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_claw.acp.client._kill_escaped_children") as mock_sweep,
+            patch("kiro_crew.session.os.kill") as mock_kill,
+            patch("kiro_crew.session.os.killpg") as mock_killpg,
+            patch("kiro_crew.session.os.getpgid", return_value=12345),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
             # os.kill(pid, 0) succeeds → process survived shutdown
             mock_kill.return_value = None
@@ -101,11 +101,11 @@ class TestResetProcessTreeKill:
         await mgr.get_or_create("t1")
 
         with (
-            patch("kiro_claw.session.os.kill") as mock_kill,
-            patch("kiro_claw.session.os.killpg", side_effect=OSError),
-            patch("kiro_claw.session.os.getpgid", return_value=12345),
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_claw.acp.client._kill_escaped_children"),
+            patch("kiro_crew.session.os.kill") as mock_kill,
+            patch("kiro_crew.session.os.killpg", side_effect=OSError),
+            patch("kiro_crew.session.os.getpgid", return_value=12345),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
         ):
             mock_kill.return_value = None
             await mgr.reset("t1")
@@ -124,11 +124,11 @@ class TestResetProcessTreeKill:
         await mgr.get_or_create("t1")
 
         with (
-            patch("kiro_claw.session.os.kill", side_effect=ProcessLookupError),
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[12347, 12348]),
-            patch("kiro_claw.acp.client._get_start_time", return_value=999),
-            patch("kiro_claw.acp.client._read_basename", return_value=b"node"),
-            patch("kiro_claw.acp.client._kill_escaped_children") as mock_sweep,
+            patch("kiro_crew.session.os.kill", side_effect=ProcessLookupError),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[12347, 12348]),
+            patch("kiro_crew.acp.client._get_start_time", return_value=999),
+            patch("kiro_crew.acp.client._read_basename", return_value=b"node"),
+            patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
             await mgr.reset("t1")
 
@@ -153,7 +153,7 @@ class TestResetProcessTreeKill:
         mgr = SessionManager(cfg, provider_factory=_provider_factory(provider))
         await mgr.get_or_create("t1")
 
-        with patch("kiro_claw.session.os.kill") as mock_kill:
+        with patch("kiro_crew.session.os.kill") as mock_kill:
             await mgr.reset("t1")
 
         mock_kill.assert_not_called()
@@ -166,7 +166,7 @@ class TestResetProcessTreeKill:
         mgr = SessionManager(cfg, provider_factory=_provider_factory(provider))
         await mgr.get_or_create("t1")
 
-        with patch("kiro_claw.session.os.kill") as mock_kill:
+        with patch("kiro_crew.session.os.kill") as mock_kill:
             await mgr.reset("t1")
 
         mock_kill.assert_not_called()
@@ -202,12 +202,12 @@ class TestSigkillSessionProcessTree:
         mgr = self._make_manager(pid=54321, child_pids={54322: 100})
 
         with (
-            patch("kiro_claw.subagent.os.killpg") as mock_killpg,
-            patch("kiro_claw.subagent.os.getpgid", return_value=54321),
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_claw.acp.client._kill_escaped_children") as mock_sweep,
-            patch("kiro_claw.acp.client._get_start_time", return_value=100),
-            patch("kiro_claw.acp.client._is_our_child", return_value=True),
+            patch("kiro_crew.subagent.os.killpg") as mock_killpg,
+            patch("kiro_crew.subagent.os.getpgid", return_value=54321),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
+            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             mgr._sigkill_session("subagent:test1")
 
@@ -219,13 +219,13 @@ class TestSigkillSessionProcessTree:
         mgr = self._make_manager(pid=54321)
 
         with (
-            patch("kiro_claw.subagent.os.killpg", side_effect=ProcessLookupError),
-            patch("kiro_claw.subagent.os.kill") as mock_kill,
-            patch("kiro_claw.subagent.os.getpgid", return_value=54321),
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_claw.acp.client._kill_escaped_children"),
-            patch("kiro_claw.acp.client._get_start_time", return_value=100),
-            patch("kiro_claw.acp.client._is_our_child", return_value=True),
+            patch("kiro_crew.subagent.os.killpg", side_effect=ProcessLookupError),
+            patch("kiro_crew.subagent.os.kill") as mock_kill,
+            patch("kiro_crew.subagent.os.getpgid", return_value=54321),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             mgr._sigkill_session("subagent:test1")
 
@@ -236,12 +236,12 @@ class TestSigkillSessionProcessTree:
         mgr = self._make_manager(pid=54321, child_pids={54322: 100})
 
         with (
-            patch("kiro_claw.subagent.os.killpg"),
-            patch("kiro_claw.subagent.os.getpgid", return_value=54321),
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[54323]),
-            patch("kiro_claw.acp.client._get_start_time", return_value=200),
-            patch("kiro_claw.acp.client._is_our_child", return_value=True),
-            patch("kiro_claw.acp.client._kill_escaped_children") as mock_sweep,
+            patch("kiro_crew.subagent.os.killpg"),
+            patch("kiro_crew.subagent.os.getpgid", return_value=54321),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[54323]),
+            patch("kiro_crew.acp.client._get_start_time", return_value=200),
+            patch("kiro_crew.acp.client._is_our_child", return_value=True),
+            patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
             mgr._sigkill_session("subagent:test1")
 
@@ -255,11 +255,11 @@ class TestSigkillSessionProcessTree:
         mgr = self._make_manager(pid=54321, child_pids={54322: 100})
 
         with (
-            patch("kiro_claw.subagent.os.killpg") as mock_killpg,
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_claw.acp.client._get_start_time", return_value=100),
-            patch("kiro_claw.acp.client._is_our_child", return_value=False),
-            patch("kiro_claw.acp.client._kill_escaped_children") as mock_sweep,
+            patch("kiro_crew.subagent.os.killpg") as mock_killpg,
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.acp.client._is_our_child", return_value=False),
+            patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
             mgr._sigkill_session("subagent:test1")
 
@@ -272,10 +272,10 @@ class TestSigkillSessionProcessTree:
         mgr = self._make_manager(pid=54321, child_pids={54322: 100}, start_time=None)
 
         with (
-            patch("kiro_claw.subagent.os.killpg") as mock_killpg,
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_claw.acp.client._get_start_time", return_value=None),
-            patch("kiro_claw.acp.client._kill_escaped_children") as mock_sweep,
+            patch("kiro_crew.subagent.os.killpg") as mock_killpg,
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._get_start_time", return_value=None),
+            patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
             mgr._sigkill_session("subagent:test1")
 
@@ -294,7 +294,7 @@ class TestSigkillSessionProcessTree:
             is_yolo=lambda: True,
         )
 
-        with patch("kiro_claw.subagent.os.killpg") as mock_killpg:
+        with patch("kiro_crew.subagent.os.killpg") as mock_killpg:
             mgr._sigkill_session("subagent:nonexistent")
 
         mock_killpg.assert_not_called()
@@ -316,7 +316,7 @@ class TestSigkillSessionProcessTree:
             is_yolo=lambda: True,
         )
 
-        with patch("kiro_claw.subagent.os.killpg") as mock_killpg:
+        with patch("kiro_crew.subagent.os.killpg") as mock_killpg:
             mgr._sigkill_session("subagent:test1")
 
         mock_killpg.assert_not_called()

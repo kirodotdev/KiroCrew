@@ -23,15 +23,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_claw.acp.session_handle import AcpSessionHandle, WatchdogSettings
-from kiro_claw.acp.types import (
+from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
+from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     STOP_REASON_CANCELLED,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
     JsonRpcMessage,
 )
-from kiro_claw.dashboard.state import (
+from kiro_crew.dashboard.state import (
     STALE_RECOVERY_PREFIX,
     TOOL_STALL_RECOVERY_PREFIX,
     build_stale_recovery_prompt,
@@ -294,7 +294,7 @@ async def test_working_verdict_never_cancels_tool_at_any_idle():
     handle._queue = _SilentQueue()  # type: ignore[assignment]
     handle._oracle.check_tool = lambda pid, tool: ("working", "shell child 1234 alive")
     handle._inflight_tool = None  # _consult_tool_oracle guards; force via oracle
-    from kiro_claw.acp.liveness import ToolCallState
+    from kiro_crew.acp.liveness import ToolCallState
 
     handle._inflight_tool = ToolCallState(title="bash", command="long-build > build.log 2>&1")
 
@@ -308,7 +308,7 @@ async def test_working_verdict_never_cancels_tool_at_any_idle():
 async def test_dead_tool_verdict_cancels_within_one_tick():
     """A DEAD tool verdict (child exited, no result frame) acts immediately —
     no waiting for the 600s-equivalent suspect window."""
-    from kiro_claw.acp.liveness import ToolCallState
+    from kiro_crew.acp.liveness import ToolCallState
 
     # Huge UNKNOWN windows: only a DEAD verdict can trigger the cancel here.
     wd = WatchdogSettings(
@@ -344,7 +344,7 @@ async def test_dead_tool_verdict_cancels_within_one_tick():
 async def test_stuck_input_verdict_flagged_in_evidence():
     """A STUCK_INPUT verdict acts immediately and the evidence marker survives
     on the terminal event so the recovery nudge can name the cause."""
-    from kiro_claw.acp.liveness import ToolCallState
+    from kiro_crew.acp.liveness import ToolCallState
 
     wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
                           tool_stall_hard_cap_secs=999.0)
@@ -367,7 +367,7 @@ async def test_stuck_input_verdict_flagged_in_evidence():
 async def test_unknown_tool_verdict_waits_for_suspect_window():
     """UNKNOWN tool verdicts stay in the timeout-governed class: no cancel
     before tool_stall_suspect_secs, cancel after."""
-    from kiro_claw.acp.liveness import ToolCallState
+    from kiro_crew.acp.liveness import ToolCallState
 
     wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.2,
                           tool_stall_hard_cap_secs=999.0)
@@ -472,7 +472,7 @@ async def test_genuine_user_cancel_not_reclassified():
 async def test_wait_tool_declared_duration_reads_working():
     """A wait(1800) is WORKING by contract until its declared duration + slack
     elapses — the real oracle (not a stub) must defer the stall cancel."""
-    from kiro_claw.acp.liveness import ToolCallState
+    from kiro_crew.acp.liveness import ToolCallState
 
     wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05,
                           tool_stall_hard_cap_secs=999.0)

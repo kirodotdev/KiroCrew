@@ -12,12 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.config.loader import (
-    KiroClawAgentConfig,
-    KiroClawConfig,
+from kiro_crew.config.loader import (
+    KiroCrewAgentConfig,
+    KiroCrewConfig,
     WorkspaceConfig,
 )
-from kiro_claw.dashboard.handlers import (
+from kiro_crew.dashboard.handlers import (
     api_workspaces_create,
     api_workspaces_delete,
     api_workspaces_update,
@@ -38,19 +38,19 @@ def _req(body: dict | None = None, match_info: dict | None = None) -> MagicMock:
     return r
 
 
-def _cfg(**kw: object) -> KiroClawConfig:
+def _cfg(**kw: object) -> KiroCrewConfig:
     defaults: dict = {
         "workspaces": {"default": WorkspaceConfig(dir="workspace")},
         "default_workspace": "default",
         "agents": {},
     }
     defaults.update(kw)
-    return KiroClawConfig(**defaults)
+    return KiroCrewConfig(**defaults)
 
 
-_SEL = "kiro_claw.sel.sel"
-_LOAD = "kiro_claw.config.loader.KiroClawConfig.load"
-_CFGDIR = "kiro_claw.config.loader.config_dir"
+_SEL = "kiro_crew.sel.sel"
+_LOAD = "kiro_crew.config.loader.KiroCrewConfig.load"
+_CFGDIR = "kiro_crew.config.loader.config_dir"
 
 
 # ── Create handler ──
@@ -236,7 +236,7 @@ class TestDeleteHandler:
                 "default": WorkspaceConfig(dir="workspace"),
                 "staging": WorkspaceConfig(dir="workspace-staging"),
             },
-            agents={"bot": KiroClawAgentConfig(workspace="staging")},
+            agents={"bot": KiroCrewAgentConfig(workspace="staging")},
         )
         with patch(_LOAD, return_value=cfg):
             resp = await api_workspaces_delete(_req(match_info={"name": "staging"}))

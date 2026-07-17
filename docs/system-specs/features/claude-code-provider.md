@@ -1,8 +1,8 @@
 # Claude Code Provider — removed
 
-Last Updated: 2026-07-13 (Fable 5 registry entry + default-first available_models / bare-id alias dedup noted; KiroClaw collapsed to a single KiroACP / kiro-cli provider)
+Last Updated: 2026-07-13 (Fable 5 registry entry + default-first available_models / bare-id alias dedup noted; KiroCrew collapsed to a single KiroACP / kiro-cli provider)
 
-> **This provider no longer exists in KiroClaw.** The public fork drives a single
+> **This provider no longer exists in KiroCrew.** The public fork drives a single
 > backend — `kiro-cli` over the Agent Client Protocol (`agent.provider` is fixed
 > to `acp`). The standalone Claude Code provider (`providers/claude_code.py`),
 > the `BedrockProvider` (`providers/bedrock.py`), the `cc_agent`/`mirror`
@@ -17,7 +17,7 @@ Claude-Code-over-`claude-agent-acp` backend without forking the client. The
 public core never selects it: `_resolve_kiro_bin` is the only backend the
 provider factory wires, and the dashboard exposes no provider choice. **Do not
 re-add the registration glue or a provider selector** — see the repo-root
-`CLAUDE.md` ("KiroClaw is KiroACP-only") and `MIGRATION_PLAN.md`.
+`CLAUDE.md` ("KiroCrew is KiroACP-only") and `MIGRATION_PLAN.md`.
 
 The seam's binary-resolution details (`_resolve_claude_acp_bin`, the per-session
 `settings.local.json` permission routing, `CLAUDE_CONFIG_DIR` isolation) are

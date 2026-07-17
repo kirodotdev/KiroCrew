@@ -18,14 +18,14 @@ import math
 
 import pytest
 
-import kiro_claw.workflows as wf
-from kiro_claw.workflows.context import (
+import kiro_crew.workflows as wf
+from kiro_crew.workflows.context import (
     DEFAULT_MAX_AGENTS_PER_RUN,
     AgentCounter,
     Budget,
     build_safe_globals,
 )
-from kiro_claw.workflows.validate import SAFE_BUILTINS
+from kiro_crew.workflows.validate import SAFE_BUILTINS
 
 # --------------------------------------------------------------------------- #
 # A4 — Budget hard ceiling

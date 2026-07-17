@@ -1,4 +1,4 @@
-"""Tests for the artifact MCP tool handlers in :mod:`kiro_claw.mcp_core`.
+"""Tests for the artifact MCP tool handlers in :mod:`kiro_crew.mcp_core`.
 
 Covers the dispatch branches for ``artifact_save``, ``artifact_get``,
 ``artifact_update``, ``artifact_list``, ``artifact_versions`` and
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from kiro_claw.mcp_core import _call_tool_inner
+from kiro_crew.mcp_core import _call_tool_inner
 
 # Expected clickable-reference form the MCP layer emits for non-widget
 # artifacts so the frontend renderer can linkify it into an openable anchor.
@@ -30,7 +30,7 @@ class TestArtifactReferenceLink:
     def test_save_non_widget_emits_markdown_link(self) -> None:
         # given a saved markdown artifact
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={
                 "slug": "release-notes",
                 "version": 1,
@@ -49,7 +49,7 @@ class TestArtifactReferenceLink:
     def test_save_widget_omits_markdown_link(self) -> None:
         # given a saved widget artifact (round-trips via <mcwidget>)
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={
                 "slug": "dash",
                 "version": 1,
@@ -70,7 +70,7 @@ class TestArtifactReferenceLink:
     def test_get_non_widget_emits_markdown_link(self) -> None:
         # given a fetched markdown artifact
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "slug": "doc",
                 "name": "My Doc",
@@ -87,7 +87,7 @@ class TestArtifactReferenceLink:
     def test_get_widget_omits_markdown_link(self) -> None:
         # given a fetched widget artifact
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "slug": "w",
                 "name": "W",
@@ -104,7 +104,7 @@ class TestArtifactReferenceLink:
 
     def test_update_non_widget_emits_markdown_link(self) -> None:
         # given an updated text artifact
-        with patch("kiro_claw.mcp_core.urllib.request.urlopen") as urlopen_mock:
+        with patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock:
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "log", "version": 5, "name": "Run Log", "kind": "text"}'
             )
@@ -117,7 +117,7 @@ class TestArtifactReferenceLink:
 
     def test_link_falls_back_to_slug_when_name_missing(self) -> None:
         # given an updated non-widget artifact whose response omits 'name'
-        with patch("kiro_claw.mcp_core.urllib.request.urlopen") as urlopen_mock:
+        with patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock:
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "anon-doc", "version": 1, "kind": "markdown"}'
             )
@@ -133,7 +133,7 @@ class TestArtifactReferenceLink:
         # credential pattern (the name becomes the visible link text)
         leaked_credential = "AKIAIOSFODNN7EXAMPLE"
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={
                 "slug": "doc",
                 "name": f"My {leaked_credential} Doc",
@@ -164,7 +164,7 @@ class TestArtifactReferenceLink:
         # (the slug is reflected from the API response into the link URL)
         crafted_slug = "evil)[x](http://attacker.test"
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={
                 "slug": crafted_slug,
                 "name": "Doc",
@@ -185,7 +185,7 @@ class TestArtifactReferenceLink:
         # given a save whose server-returned slug carries a credential pattern
         leaked_credential = "AKIAIOSFODNN7EXAMPLE"
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={
                 "slug": leaked_credential,
                 "name": "Doc",
@@ -210,7 +210,7 @@ class TestArtifactReferenceLink:
         # an empty slug would otherwise produce a dangling /artifacts/ href
         all_filtered_slug = "???"
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "slug": all_filtered_slug,
                 "name": "Orphan Doc",
@@ -231,7 +231,7 @@ class TestArtifactReferenceLink:
         # break the clickable link)
         newline_name = "Quarterly\nReport"
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "slug": "q-report",
                 "name": newline_name,
@@ -255,7 +255,7 @@ class TestArtifactReferenceLink:
 class TestArtifactSave:
     def test_minimal_save(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "my-widget", "version": 1, "name": "My Widget"},
         ) as post:
             result = _call_tool_inner(
@@ -272,7 +272,7 @@ class TestArtifactSave:
         assert "my-widget" in result
 
     def test_optional_fields_passed(self) -> None:
-        with patch("kiro_claw.mcp_core._post", return_value={"slug": "x", "version": 1}) as post:
+        with patch("kiro_crew.mcp_core._post", return_value={"slug": "x", "version": 1}) as post:
             _call_tool_inner(
                 "artifact_save",
                 {
@@ -293,7 +293,7 @@ class TestArtifactSave:
         assert body["tags"] == ["a", "b"]
 
     def test_error_propagated(self) -> None:
-        with patch("kiro_claw.mcp_core._post", return_value={"error": "duplicate"}):
+        with patch("kiro_crew.mcp_core._post", return_value={"error": "duplicate"}):
             result = _call_tool_inner(
                 "artifact_save", {"name": "x", "content": "a"}
             )
@@ -305,7 +305,7 @@ class TestArtifactSave:
         # a duplicate-warning hint pointing at the existing slug. The
         # save still proceeds — we only WARN; we don't block.
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "artifacts": [
                     {
@@ -316,7 +316,7 @@ class TestArtifactSave:
                 ],
             },
         ), patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "rules-of-fight-club-2", "version": 1},
         ):
             result = _call_tool_inner(
@@ -335,14 +335,14 @@ class TestArtifactSave:
         nfc = "Caf\u00e9"  # composed (= "Café")
         assert nfd != nfc  # sanity
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "artifacts": [
                     {"slug": "cafe", "name": nfc, "updated_at": "2026-05-29T03:00:00Z"},
                 ],
             },
         ), patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "cafe-2", "version": 1},
         ):
             result = _call_tool_inner(
@@ -356,8 +356,8 @@ class TestArtifactSave:
         # Agent passing explicit slug=foo means it knows what it's
         # doing — typically re-saving a known artifact. Don't surface
         # a hint that would just be noise. Probe shouldn't even fire.
-        with patch("kiro_claw.mcp_core._get") as get, patch(
-            "kiro_claw.mcp_core._post",
+        with patch("kiro_crew.mcp_core._get") as get, patch(
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "foo", "version": 1},
         ):
             result = _call_tool_inner(
@@ -372,8 +372,8 @@ class TestArtifactSave:
         # agent doesn't set a title — too collision-prone to dedup
         # against (every title-less widget would bind to the first
         # such artifact in the library).
-        with patch("kiro_claw.mcp_core._get") as get, patch(
-            "kiro_claw.mcp_core._post",
+        with patch("kiro_crew.mcp_core._get") as get, patch(
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "x", "version": 1},
         ):
             result = _call_tool_inner(
@@ -387,8 +387,8 @@ class TestArtifactSave:
         # Same-named markdown / html / json artifacts are a different
         # use case — they're often per-source-file or per-document
         # snapshots where collision is normal, not a sign of a mistake.
-        with patch("kiro_claw.mcp_core._get") as get, patch(
-            "kiro_claw.mcp_core._post",
+        with patch("kiro_crew.mcp_core._get") as get, patch(
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "x", "version": 1},
         ):
             _call_tool_inner(
@@ -402,10 +402,10 @@ class TestArtifactSave:
         # we proceed with the save without the hint rather than letting
         # a transient observability concern block legitimate saves.
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             side_effect=RuntimeError("probe boom"),
         ), patch(
-            "kiro_claw.mcp_core._post",
+            "kiro_crew.mcp_core._post",
             return_value={"slug": "x", "version": 1},
         ):
             result = _call_tool_inner(
@@ -419,7 +419,7 @@ class TestArtifactSave:
 class TestArtifactGet:
     def test_get_current(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "slug": "x",
                 "name": "X",
@@ -439,7 +439,7 @@ class TestArtifactGet:
 
     def test_get_specific_version(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={"slug": "x", "name": "X", "version": 1, "content": "v1"},
         ) as get:
             _call_tool_inner("artifact_get", {"slug": "x", "version": 1})
@@ -447,7 +447,7 @@ class TestArtifactGet:
 
     def test_redacts_credentials_in_content(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "slug": "x",
                 "name": "X",
@@ -463,7 +463,7 @@ class TestArtifactGet:
 class TestArtifactList:
     def test_no_filter(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={
                 "artifacts": [
                     {
@@ -490,7 +490,7 @@ class TestArtifactList:
 
     def test_with_filter(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={"artifacts": []},
         ) as get:
             _call_tool_inner("artifact_list", {"tag": "ops", "kind": "widget"})
@@ -500,7 +500,7 @@ class TestArtifactList:
 
     def test_empty(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get", return_value={"artifacts": []}
+            "kiro_crew.mcp_core._get", return_value={"artifacts": []}
         ):
             result = _call_tool_inner("artifact_list", {})
         assert result == "No artifacts saved."
@@ -509,7 +509,7 @@ class TestArtifactList:
 class TestArtifactVersions:
     def test_versions(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={"slug": "x", "versions": [1, 2, 5]},
         ):
             result = _call_tool_inner("artifact_versions", {"slug": "x"})
@@ -519,7 +519,7 @@ class TestArtifactVersions:
 
     def test_no_versions(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={"slug": "x", "versions": []},
         ):
             result = _call_tool_inner("artifact_versions", {"slug": "x"})
@@ -529,7 +529,7 @@ class TestArtifactVersions:
 class TestArtifactDelete:
     def test_delete(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._delete", return_value={"ok": True}
+            "kiro_crew.mcp_core._delete", return_value={"ok": True}
         ) as delete:
             result = _call_tool_inner("artifact_delete", {"slug": "x"})
         assert delete.call_args.args[0] == "/api/artifacts/x"
@@ -537,7 +537,7 @@ class TestArtifactDelete:
 
     def test_delete_error(self) -> None:
         with patch(
-            "kiro_claw.mcp_core._delete", return_value={"error": "not found"}
+            "kiro_crew.mcp_core._delete", return_value={"error": "not found"}
         ):
             result = _call_tool_inner("artifact_delete", {"slug": "x"})
         assert "Error: not found" in result
@@ -559,10 +559,10 @@ class TestArtifactRevert:
         # a new version on the timeline.
         target_content = "# v2 content"
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={"slug": "doc", "version": 2, "content": target_content},
         ) as get_mock, patch(
-            "kiro_claw.mcp_core.urllib.request.urlopen"
+            "kiro_crew.mcp_core.urllib.request.urlopen"
         ) as urlopen_mock:
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4}'
@@ -587,7 +587,7 @@ class TestArtifactRevert:
     def test_revert_propagates_get_error(self) -> None:
         # If the target version doesn't exist, the GET fails and we report it.
         with patch(
-            "kiro_claw.mcp_core._get", return_value={"error": "version not found"}
+            "kiro_crew.mcp_core._get", return_value={"error": "version not found"}
         ):
             result = _call_tool_inner(
                 "artifact_revert", {"slug": "doc", "target_version": 99}
@@ -596,7 +596,7 @@ class TestArtifactRevert:
 
     def test_revert_validates_target_version(self) -> None:
         # Schema enforces target_version is a positive integer.
-        from kiro_claw.mcp_core import _call_tool
+        from kiro_crew.mcp_core import _call_tool
 
         result = _call_tool(
             "artifact_revert", {"slug": "doc", "target_version": 0}
@@ -608,10 +608,10 @@ class TestArtifactRevert:
         # source_path so the calling agent can build a unified-diff header
         # that activates the dashboard's Open file affordance.
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={"slug": "doc", "version": 2, "content": "v2"},
         ), patch(
-            "kiro_claw.mcp_core.urllib.request.urlopen"
+            "kiro_crew.mcp_core.urllib.request.urlopen"
         ) as urlopen_mock:
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4, "source_path": "/home/u/notes/doc.md"}'
@@ -631,10 +631,10 @@ class TestArtifactRevert:
         # Chat-backed artifacts (no source_path) shouldn't get the diff
         # guidance — there's no file to open in the side panel.
         with patch(
-            "kiro_claw.mcp_core._get",
+            "kiro_crew.mcp_core._get",
             return_value={"slug": "doc", "version": 2, "content": "v2"},
         ), patch(
-            "kiro_claw.mcp_core.urllib.request.urlopen"
+            "kiro_crew.mcp_core.urllib.request.urlopen"
         ) as urlopen_mock:
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4}'  # no source_path
@@ -650,14 +650,14 @@ class TestSchemas:
     """Confirm validation rejects bad inputs at the dispatcher."""
 
     def test_save_rejects_missing_required(self) -> None:
-        from kiro_claw.mcp_core import _call_tool
+        from kiro_crew.mcp_core import _call_tool
 
         # Missing 'content' → validation error
         result = _call_tool("artifact_save", {"name": "x"})
         assert "content" in result.lower() or "error" in result.lower()
 
     def test_save_rejects_invalid_slug(self) -> None:
-        from kiro_claw.mcp_core import _call_tool
+        from kiro_crew.mcp_core import _call_tool
 
         result = _call_tool(
             "artifact_save", {"name": "x", "content": "a", "slug": "Has Spaces"}
@@ -665,7 +665,7 @@ class TestSchemas:
         assert "error" in result.lower() or "invalid" in result.lower()
 
     def test_get_rejects_invalid_slug(self) -> None:
-        from kiro_claw.mcp_core import _call_tool
+        from kiro_crew.mcp_core import _call_tool
 
         result = _call_tool("artifact_get", {"slug": "BAD/PATH"})
         assert "error" in result.lower() or "invalid" in result.lower()

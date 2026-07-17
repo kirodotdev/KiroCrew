@@ -1,11 +1,11 @@
 # Platform Context (Composed Platform Providers)
 
-The `kiro_claw.platform` package defines the **Composed Platform Providers
+The `kiro_crew.platform` package defines the **Composed Platform Providers
 (CPP)** contract: the seam that lets one core serve both the open-source
 edition and an Amazon-internal companion without the core ever importing
 Amazon-specific code.
 
-> Authoring note: KiroClaw is the public edition of this seam. The daily
+> Authoring note: KiroCrew is the public edition of this seam. The daily
 > de-amazon content sync from the upstream authoring home strips the
 > Amazon-tinted Defaults (e.g. the internal git host, `.midway` sandbox dirs)
 > down to the public baseline; the Amazon companion re-adds them via overrides.
@@ -16,8 +16,8 @@ Amazon-specific code.
 
 The core defines a set of **extension points** — interfaces where behavior
 differs between editions — and ships a `Default*` adapter for each that
-reproduces today's KiroClaw behavior. An internal companion package (module
-separate from `kiro_claw`) depends on the public wheel and supplies Amazon
+reproduces today's KiroCrew behavior. An internal companion package (module
+separate from `kiro_crew`) depends on the public wheel and supplies Amazon
 adapters for the same interfaces.
 
 The dependency runs one way: **the companion depends on the core; the core never
@@ -26,14 +26,14 @@ interface, the public edition is complete standalone.
 
 ## PlatformContext
 
-`kiro_claw.platform.context.PlatformContext` is a frozen dataclass built once at
+`kiro_crew.platform.context.PlatformContext` is a frozen dataclass built once at
 boot holding the chosen adapter for every extension point, plus three carriers:
 
 | Field | Kind | Default adapter | Companion supplies |
 |-------|------|-----------------|--------------------|
 | `contract_version` | carrier (int) | `CONTRACT_VERSION` | must match core |
 | `profile` | carrier (str) | `"standalone"` | `"amazon"` |
-| `cfg` | carrier (`KiroClawConfig`) | loaded config | same |
+| `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
 | `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers Claude Code |
 | `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + Bedrock env |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | `.midway`/`.ada`/`.krb5` dirs |
@@ -65,7 +65,7 @@ Core code reads adapters directly when it has the context, or via
 ## Boot sequence
 
 ```python
-cfg = KiroClawConfig.load()
+cfg = KiroCrewConfig.load()
 ctx = boot_platform(cfg)      # platform/bootstrap.py (idempotent)
 ```
 
@@ -80,14 +80,14 @@ installs the context. `bootstrap_context`:
 ## Profile resolution
 
 `resolve_profile(cfg, *, entry_points)` precedence (first match wins):
-1. `KIROCLAW_PROFILE` env (`standalone` | `amazon`; unknown → standalone).
-2. Non-empty `kiroclaw.plugins` entry-point group (companion installed).
+1. `KIROCREW_PROFILE` env (`standalone` | `amazon`; unknown → standalone).
+2. Non-empty `kirocrew.plugins` entry-point group (companion installed).
 3. Identity signal: a present `~/.midway` directory (a cheap stat, no
-   subprocess) — **only when the opt-in `KIROCLAW_MIDWAY_PROFILE_PROBE` env var
+   subprocess) — **only when the opt-in `KIROCREW_MIDWAY_PROFILE_PROBE` env var
    is truthy**. OFF by default so a stray `~/.midway` left by some other tool
    cannot force the public edition into the `amazon` profile (which has no
    companion to compose and would fail-closed at boot, bricking every command).
-   The companion's managed launcher sets `KIROCLAW_MIDWAY_PROFILE_PROBE=1`.
+   The companion's managed launcher sets `KIROCREW_MIDWAY_PROFILE_PROBE=1`.
 4. Otherwise `standalone`.
 
 The profile is a **load trigger, not a security decision**: capability comes
@@ -100,7 +100,7 @@ once loaded.
 ## Fail-closed discovery
 
 `discover_companion_context` (only for non-standalone profiles) looks up the
-`kiroclaw.plugins` entry-point group via `importlib.metadata`:
+`kirocrew.plugins` entry-point group via `importlib.metadata`:
 - Empty → **raise** `PlatformCompositionError` (refuse to boot with OSS defaults).
 - More than one → raise (ambiguous).
 - Loads the single entry point (`build_amazon_context`) and returns its context.
@@ -149,7 +149,7 @@ Defense in depth, evaluated by `evaluate_admission(ep, policy)`:
 2. **Marketplace allowlist** (`approved`) — when present, only listed plugins
    are admitted. Adding a plugin to the list *is* the marketplace review gate.
 3. **Verify-before-run signature** (`require_signature`) — the plugin ships a
-   signed `kiroclaw_plugin.json` manifest; admission verifies the signature
+   signed `kirocrew_plugin.json` manifest; admission verifies the signature
    against a trust key the **policy** carries (R-11 / M-12 supply chain). POC
    uses HMAC; production uses an asymmetric publisher key. The signature covers
    a canonical payload (name/publisher/version/capabilities), so tampering with
@@ -160,7 +160,7 @@ Defense in depth, evaluated by `evaluate_admission(ep, policy)`:
    a capability category the fleet doesn't grant at all.
 
 **Trust-root invariant:** the policy loads from a fleet-controlled source
-(`KIROCLAW_ADMISSION_POLICY` env path, else `~/.kiroclaw/admission_policy.json`),
+(`KIROCREW_ADMISSION_POLICY` env path, else `~/.kirocrew/admission_policy.json`),
 **never from the plugin** — a plugin cannot approve, sign, or un-ban itself. The
 manifest is read **import-free** from the plugin's installed distribution files,
 so plugin code never runs before the decision.
@@ -215,13 +215,13 @@ companion can pin against a frozen contract.
 
 The companion declares (in its `pyproject.toml`):
 ```toml
-[project.entry-points."kiroclaw.plugins"]
-amazon = "kiroclaw_amazon.compose:build_amazon_context"
+[project.entry-points."kirocrew.plugins"]
+amazon = "kirocrew_amazon.compose:build_amazon_context"
 [project.scripts]
-kiroclaw-amazon = "kiroclaw_amazon.cli:main"
-dependencies = ["kiroclaw"]
+kirocrew-amazon = "kirocrew_amazon.cli:main"
+dependencies = ["kirocrew"]
 ```
-The `kiroclaw-amazon` binary sets `KIROCLAW_PROFILE=amazon` and delegates to the
+The `kirocrew-amazon` binary sets `KIROCREW_PROFILE=amazon` and delegates to the
 core `main` — the explicit composition-root path that a security review reads.
 
 ## Consumption-site wiring
@@ -239,7 +239,7 @@ delegates to that same global. Wired sites:
   the kiro-hooks egress (`dashboard/handlers/hooks.py`) scrubs command/matcher
   through the shared `redact_via_context` shim.
 - Credential redaction — all egress scrubs route through the single
-  `kiro_claw.platform.redact_via_context` shim (the one canonical
+  `kiro_crew.platform.redact_via_context` shim (the one canonical
   fail-closed-aware shim; modules import it as `redact`). Covers: `agent.py`
   SEL-audit callers, `mcp_core.py` chat-history/spawn output, `mcp_cron.py`
   deny-reason + script-vet + timezone messages, and `dashboard/handlers/files.py`
@@ -293,7 +293,7 @@ delegates to that same global. Wired sites:
   (`chat`/`tui`/`run`/`consolidate`/`eval` — the rule is "every command that
   builds a provider factory / runs in-process agent work"; `gateway` is excluded
   so its execv self-update path is never nested in a jail). Order: (0) **re-entry
-  guard** — if the `KIROCLAW_JAILED` marker is PRESENT (any non-empty value) we
+  guard** — if the `KIROCREW_JAILED` marker is PRESENT (any non-empty value) we
   are already the jailed child, so return immediately (no re-probe / re-jail).
   The gate sets this marker right before invoking the backend so the re-exec'd
   child inherits it; a `try/finally` restores the prior value on the no-re-exec
@@ -301,7 +301,7 @@ delegates to that same global. Wired sites:
   a fresh environment MUST set the marker to any non-empty value (detection is by
   presence, not truthiness) or the on-mode child would re-probe, get an "already
   jailed" `None`, and deadlock on the fail-closed floor. (1) if `off` this
-  invocation (`--no-jail` OR `KIROCLAW_NO_JAIL` truthy — `1`/`true`/`yes`/`on`
+  invocation (`--no-jail` OR `KIROCREW_NO_JAIL` truthy — `1`/`true`/`yes`/`on`
   via the shared `env_flag_enabled`, so a `=0`/`=false` typo does NOT bypass
   isolation), or the re-normalized `agent.jail` mode is `off`, return and run
   in-process (no probe). (2) Probe `current_context().jail.available()`: a clean

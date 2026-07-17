@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import mock_open, patch
 
-from kiro_claw.dashboard import handlers_system as hs
+from kiro_crew.dashboard import handlers_system as hs
 
 
 def _reset() -> None:

@@ -40,11 +40,11 @@ export default function McpRegistryCard() {
   })
 
   // Cross-reference AIM's isInstalled flag against servers actually in
-  // KiroClaw's scope.  AIM reports isInstalled=true if a server is installed
+  // KiroCrew's scope.  AIM reports isInstalled=true if a server is installed
   // on the machine for *any* agent (e.g. sage-plus-service-mcp is scoped
-  // to the `atlas` agent), which doesn't mean it's in KiroClaw's config.
+  // to the `atlas` agent), which doesn't mean it's in KiroCrew's config.
   // The Installed Integrations table reads list_servers() which only sees
-  // servers in KiroClaw's scopes; mirror that semantics here so the two
+  // servers in KiroCrew's scopes; mirror that semantics here so the two
   // views agree on what "installed" means.
   const { data: mcpServers = [] } = useQuery<McpServer[]>({
     queryKey: ['mcp-servers'],
@@ -80,7 +80,7 @@ export default function McpRegistryCard() {
       return r
     },
     onSuccess: (_data, serverId) => {
-      // Optimistically drop the server from KiroClaw scope so the badge
+      // Optimistically drop the server from KiroCrew scope so the badge
       // flips instantly.  The subsequent invalidate refetches truth.
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
         prev?.filter(s => s.name !== serverId) ?? []
@@ -95,7 +95,7 @@ export default function McpRegistryCard() {
   const filtered = servers.filter(s => !filter || (s.id + ' ' + (s.title || '') + ' ' + (s.description || '') + ' ' + s.tier).toLowerCase().includes(filter.toLowerCase()))
 
   const renderActions = (s: RegistryServer) => {
-    // "Installed" = present in KiroClaw's scope, not AIM's machine-wide view.
+    // "Installed" = present in KiroCrew's scope, not AIM's machine-wide view.
     const installed = inScope.has(s.id)
     return (
     <div>

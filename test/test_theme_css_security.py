@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.dashboard.handlers import (
+from kiro_crew.dashboard.handlers import (
     _CSS_VALUE_ALLOWED_RE,
     _THEME_CSS_VARS_SET,
     _sanitize_css_value,

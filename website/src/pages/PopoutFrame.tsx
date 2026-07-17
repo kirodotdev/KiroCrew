@@ -30,7 +30,7 @@ export default function PopoutFrame() {
   // distinguishable at the OS level.
   useEffect(() => {
     const label = title && title !== sid ? title : 'Session'
-    document.title = `${label} — KiroClaw`
+    document.title = `${label} — KiroCrew`
   }, [sid, title])
 
   return (

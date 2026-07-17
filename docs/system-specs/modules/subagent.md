@@ -4,7 +4,7 @@ Last Updated: 2026-07-13 (removed stale duplicated spawn_status param block; Pos
 
 ## Overview
 
-The subagent module (`kiro_claw/subagent.py`) spawns isolated background agents for parallel task execution. Each subagent gets its own LLM session via `SessionManager`, runs a focused task, and announces the result via callback.
+The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents for parallel task execution. Each subagent gets its own LLM session via `SessionManager`, runs a focused task, and announces the result via callback.
 
 Supports `on_tool_approval` callback for interactive tool approval (routed through gateway's approval system in Normal/Trust modes).
 
@@ -61,7 +61,7 @@ is decided in strict priority order:
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
 1. Read from parent session via `get_approval_policy(parent_session_key)`
 2. If empty and YOLO mode active → `"auto"`
-3. If still empty **and subagent has no parent session key** → use the cached `KiroClawConfig.agent.approval_mode` (snapshotted at `SubagentManager` init); if `"auto"` → `"auto"`
+3. If still empty **and subagent has no parent session key** → use the cached `KiroCrewConfig.agent.approval_mode` (snapshotted at `SubagentManager` init); if `"auto"` → `"auto"`
 
 Step 3 ensures parentless subagents (e.g. cron jobs) respect the user's
 global approval mode instead of falling through to interactive approval.
@@ -87,7 +87,7 @@ class SubagentInfo:
     started: float        # time.time() at spawn
     done: bool            # True when finished (success or error)
     result: str           # LLM response text (trimmed to completion_keep for the event)
-    result_path: str      # ~/.kiroclaw/subagents/<id>/result.txt (full transcript)
+    result_path: str      # ~/.kirocrew/subagents/<id>/result.txt (full transcript)
     result_truncated: bool  # completion copy dropped content → event carries summary+path
     error: str            # error message if failed
     elapsed: float        # seconds from start to completion (set in _run finally)
@@ -151,10 +151,10 @@ On timeout (inner or outer):
 
 ### Parent Session Discovery
 
-The gateway sets the `KIROCLAW_SESSION_KEY` env var when spawning kiro-cli,
+The gateway sets the `KIROCREW_SESSION_KEY` env var when spawning kiro-cli,
 and `mcp_core.py` reads it via `os.environ.get()`. If the env var is missing
 (e.g. older gateway), it falls back to reading
-`~/.kiroclaw/session_pid_{getppid()}.txt` for backward compatibility. The
+`~/.kirocrew/session_pid_{getppid()}.txt` for backward compatibility. The
 session key flows through the `/api/spawn` endpoint as `parent_session`.
 
 ## Hook Integration
@@ -191,15 +191,15 @@ Caller sites:
 
 ## Skill Integration
 
-`skills/subagent/SKILL.md` (project-level) triggers on keywords: `background`, `spawn`, `bg`, `subtask`, `parallel`, `separately`, `concurrently`. Instructs the LLM to use `kiroclaw spawn "task"` via bash to spawn subagents.
+`skills/subagent/SKILL.md` (project-level) triggers on keywords: `background`, `spawn`, `bg`, `subtask`, `parallel`, `separately`, `concurrently`. Instructs the LLM to use `kirocrew spawn "task"` via bash to spawn subagents.
 
-### CLI: `kiroclaw spawn "task"`
+### CLI: `kirocrew spawn "task"`
 
 POSTs to `http://localhost:5476/api/spawn` (dashboard API). Returns immediately with subagent ID. Gateway runs the task async and posts result to Slack when done.
 
 ### MCP Tool: `spawn_run`
 
-Exposed via `kiroclaw-core` MCP server. Always fire-and-forget — results
+Exposed via `kirocrew-core` MCP server. Always fire-and-forget — results
 are delivered back to the calling session via completion event injection.
 
 **Single task:**
@@ -225,18 +225,18 @@ Parameters:
 
 ### MCP Tool: `spawn_sub_agents`
 
-Exposed via `kiroclaw-core` MCP server. Unlike fire-and-forget `spawn_run`,
+Exposed via `kirocrew-core` MCP server. Unlike fire-and-forget `spawn_run`,
 `spawn_sub_agents` is **blocking**: it spawns one or more sub-agents in
 parallel, waits until all of them finish, then returns their collected
 results inline to the calling tool invocation.
 
-Each sub-agent runs as its own KiroClaw-owned ACP session (via
+Each sub-agent runs as its own KiroCrew-owned ACP session (via
 `SubagentManager`), so its text and tool calls stream live to the Activity
 tab (`subagent_spawn` / `subagent_chunk` / `subagent_tool` / `subagent_done`
 WS events) while the parent blocks.
 
 Native kiro-cli `subagent`/`use_subagent` crews run inside the parent's
-kiro-cli process rather than as KiroClaw-owned sessions. KiroClaw surfaces
+kiro-cli process rather than as KiroCrew-owned sessions. KiroCrew surfaces
 those in the Activity tab too, by observing kiro-cli's sub-agent
 notifications — one card per sub-agent, with each inner tool call and its
 output attributed to the right card.
@@ -256,7 +256,7 @@ Blocking poll semantics:
 - Each sub-agent is spawned via `POST /api/spawn` (with `parent_session`), then the handler polls `GET /api/spawn/{id}` every 2s until every sub-agent reports `done` (or `error`).
 - An errored/crashed sub-agent is treated as settled so one bad agent cannot keep the loop spinning until the deadline.
 - The loop pings `POST /api/session-keepalive` every 60s so the gateway's `is_responsive()` does not flag the (legitimately long-blocked) session as stale and SIGTERM the ACP subprocess mid-poll — same mechanism as the `wait` tool.
-- `max_wait` defaults to 7200s (2 hours), clamped to `[60, 7200]`, and is configurable via the `KIROCLAW_SPAWN_SUB_AGENTS_MAX_WAIT` environment variable. The deadline uses `time.monotonic()`.
+- `max_wait` defaults to 7200s (2 hours), clamped to `[60, 7200]`, and is configurable via the `KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT` environment variable. The deadline uses `time.monotonic()`.
 - Returns a newline-separated list of per-agent JSON results (`status`: `completed` / `error` / `timed_out`), all redacted for credentials and exfiltration URLs.
 
 Difference from `spawn_run`: `spawn_run` returns immediately and delivers
@@ -266,10 +266,10 @@ them in the same turn.
 
 ## Orphan Recovery & Tombstoning
 
-Folder-per-agent persistence at `~/.kiroclaw/subagents/{id}/`:
+Folder-per-agent persistence at `~/.kirocrew/subagents/{id}/`:
 
 ```
-~/.kiroclaw/subagents/{id}/
+~/.kirocrew/subagents/{id}/
   state.json      # {task, parent_session_key, started, pid}
   result.txt      # full result text (written on completion)
   tombstone.json  # {error, elapsed, timestamp} (written on failure/orphan)
@@ -277,7 +277,7 @@ Folder-per-agent persistence at `~/.kiroclaw/subagents/{id}/`:
 
 ### Gateway Restart Reconciliation
 
-On startup, `SubagentManager` scans `~/.kiroclaw/subagents/` and reconciles:
+On startup, `SubagentManager` scans `~/.kirocrew/subagents/` and reconciles:
 
 1. **PID alive** → kill process group, deliver result if available, tombstone if not
 2. **PID dead + result.txt exists** → deliver result to parent session
@@ -302,7 +302,7 @@ carries a **summary + the `result_path`** whenever the completion copy was
 truncated (`result_truncated`) or in orchestrator mode, so the parent reads the
 full transcript on demand instead of re-running the subagent.
 
-The full transcript stays in `~/.kiroclaw/subagents/<id>/result.txt` for a
+The full transcript stays in `~/.kirocrew/subagents/<id>/result.txt` for a
 **retention grace window** after delivery — on success the folder is *not*
 deleted immediately; `mark_delivered` writes a `cause="delivered"` tombstone and
 the reaper prunes it after `agent.subagent_result_ttl_secs` (default 3600s / 1h).
@@ -349,7 +349,7 @@ behavior. `tail` is appropriate for agents that summarize at the end
 (developer/reviewer/on-call). `both` keeps roughly half the budget at
 each end with a middle elision marker.
 
-Unknown `agent.completion_keep` values cause `kiroclaw gateway` to fail
+Unknown `agent.completion_keep` values cause `kirocrew gateway` to fail
 at startup via `_validated_completion_keep` in `config/loader.py`. The
 dashboard PATCH endpoint enforces the same enum via
 `_EDITABLE_CONFIG["agent.completion_keep"]`.
@@ -357,9 +357,9 @@ dashboard PATCH endpoint enforces the same enum via
 The values are threaded into `SubagentManager.__init__` from
 `gateway.py` (`completion_keep=`, `completion_keep_chars=` constructor
 kwargs sourced from `cfg.agent.*`). User-facing docs:
-[`docs/configuration.md`](../../../src/kiro_claw/docs/configuration.md),
-[`docs/subagents.md`](../../../src/kiro_claw/docs/subagents.md),
-[`docs/troubleshooting.md`](../../../src/kiro_claw/docs/troubleshooting.md).
+[`docs/configuration.md`](../../../src/kiro_crew/docs/configuration.md),
+[`docs/subagents.md`](../../../src/kiro_crew/docs/subagents.md),
+[`docs/troubleshooting.md`](../../../src/kiro_crew/docs/troubleshooting.md).
 
 ### Dashboard API: `POST /api/spawn`
 

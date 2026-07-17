@@ -13,8 +13,8 @@ interface TerminalState {
   activeSessionId: string | null
 }
 
-const STORAGE_KEY = 'kiroclaw-terminal'
-const LABELS_KEY = 'kiroclaw-terminal-labels'
+const STORAGE_KEY = 'kirocrew-terminal'
+const LABELS_KEY = 'kirocrew-terminal-labels'
 
 function loadPersistedState(): Partial<TerminalState> {
   try {

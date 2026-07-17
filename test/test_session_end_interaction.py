@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.slack.interactions import _handle_session_end
+from kiro_crew.slack.interactions import _handle_session_end
 
 
 def _make_orch(*, find_key: str | None = None, remove_side_effect=None):
@@ -17,11 +17,11 @@ def _make_orch(*, find_key: str | None = None, remove_side_effect=None):
 
 
 @pytest.mark.asyncio
-@patch("kiro_claw.slack.interactions.is_owner", return_value=True)
+@patch("kiro_crew.slack.interactions.is_owner", return_value=True)
 async def test_session_end_calls_remove(_mock_owner):
     """End Session button calls remove() (soft) not destroy()."""
     orch = _make_orch(find_key="dashboard:chat-1-100")
-    with patch("kiro_claw.slack.interactions._orch", orch):
+    with patch("kiro_crew.slack.interactions._orch", orch):
         await _handle_session_end(
             payload={},
             action={"value": "abc-123-sid"},
@@ -34,11 +34,11 @@ async def test_session_end_calls_remove(_mock_owner):
 
 
 @pytest.mark.asyncio
-@patch("kiro_claw.slack.interactions.is_owner", return_value=True)
+@patch("kiro_crew.slack.interactions.is_owner", return_value=True)
 async def test_session_end_remove_exception_swallowed(_mock_owner):
     """If remove() raises, the handler doesn't propagate."""
     orch = _make_orch(find_key="dashboard:chat-1-100", remove_side_effect=RuntimeError("gone"))
-    with patch("kiro_claw.slack.interactions._orch", orch):
+    with patch("kiro_crew.slack.interactions._orch", orch):
         await _handle_session_end(
             payload={},
             action={"value": "abc-123-sid"},

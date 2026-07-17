@@ -11,7 +11,7 @@ import { safeSetSessionItem } from './safeStorage'
  * write it without importing a page component. ChatPage re-exports it for its
  * existing importers.
  */
-export const PREFILL_STORAGE_KEY = 'kiroclaw_prefill'
+export const PREFILL_STORAGE_KEY = 'kirocrew_prefill'
 
 /** Seed the composer prefill for a slot (consumed by ChatPage when that slot activates). */
 export function writePrefill(slotKey: string, prompt: string): void {

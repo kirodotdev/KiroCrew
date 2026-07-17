@@ -158,7 +158,7 @@ export default function MemoryGraphTab() {
 
   return (<>
     <Card>
-      <CardTitle><NetworkIcon className="lucide-inline" /> Memory Graph <InfoTip text="GPU-rendered visualization of all KiroClaw memory. Nodes are color-coded by type. Zoom in to reveal labels, click a node to inspect, use filters to focus." />
+      <CardTitle><NetworkIcon className="lucide-inline" /> Memory Graph <InfoTip text="GPU-rendered visualization of all KiroCrew memory. Nodes are color-coded by type. Zoom in to reveal labels, click a node to inspect, use filters to focus." />
         <Btn onClick={() => load()} className="ml-2"><RefreshCw className="lucide-inline" /> Refresh</Btn>
       </CardTitle>
       <div className="flex gap-2 flex-wrap mb-3 items-center">

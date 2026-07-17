@@ -3,7 +3,7 @@
  *
  * Squirrel.framework + ShipIt are already in the signed app bundle, so this
  * only wires the updater to a feed and drives the install. The ONE
- * KiroClaw-specific concern vs. a plain Electron app: the bundled Python
+ * KiroCrew-specific concern vs. a plain Electron app: the bundled Python
  * gateway is a long-running child process, so it MUST be stopped gracefully
  * BEFORE Squirrel swaps the .app bundle — otherwise ShipIt can race the swap
  * and leave a half-replaced app. The graceful stopper is injected from main.js
@@ -16,15 +16,15 @@
 
 // Default update feed host. The feed compares the client's current version
 // against latest.json for this channel+platform and returns 200 (Squirrel JSON)
-// or 204 (no update). See kiroclaw-publish-lambda-spec.md for the contract.
-const DEFAULT_FEED_BASE = "https://updates.kiroclaw.dev/feed"; // placeholder host
+// or 204 (no update). See kirocrew-publish-lambda-spec.md for the contract.
+const DEFAULT_FEED_BASE = "https://updates.kirocrew.dev/feed"; // placeholder host
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
 
 /**
  * Map the build flavor ("beta" | "stable") to an update channel.
  * Beta builds track the fast "insider" channel (nightlies + internal testers);
- * stable builds track "stable". The public KiroClaw ships a single "stable"
+ * stable builds track "stable". The public KiroCrew ships a single "stable"
  * flavor, so getFlavor is wired to a constant "stable" at the call site.
  * @param {"beta"|"stable"} flavor
  * @returns {"insider"|"stable"}
@@ -72,7 +72,7 @@ function initAutoUpdate(deps) {
     getFlavor,
     stopGateway,
     platform = "darwin-arm64",
-    feedBase = process.env.KIROCLAW_UPDATE_FEED || DEFAULT_FEED_BASE,
+    feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
     onUpdateState = null,
     log = console,
   } = deps;
@@ -163,11 +163,11 @@ function initAutoUpdate(deps) {
       buttons: ["Restart & Update", "Later"],
       defaultId: 0,
       cancelId: 1,
-      title: "KiroClaw update ready",
-      message: `KiroClaw ${versionName || ""} is ready to install.`.trim(),
+      title: "KiroCrew update ready",
+      message: `KiroCrew ${versionName || ""} is ready to install.`.trim(),
       detail:
         (notes || "").slice(0, 500) +
-        "\n\nKiroClaw will stop the local gateway, install the update, and relaunch.",
+        "\n\nKiroCrew will stop the local gateway, install the update, and relaunch.",
     });
     if (response === 0) {
       await applyUpdateAndRestart();
@@ -176,7 +176,7 @@ function initAutoUpdate(deps) {
       try {
         new Notification({
           title: "Update deferred",
-          body: "KiroClaw will finish updating the next time you quit.",
+          body: "KiroCrew will finish updating the next time you quit.",
         }).show();
       } catch { /* notifications optional */ }
     }

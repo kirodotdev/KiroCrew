@@ -68,13 +68,13 @@ describe('useTouchedFiles', () => {
   it('persists to localStorage', () => {
     const { result } = renderHook(() => useTouchedFiles('test-session'))
     act(() => result.current.addFile('/tmp/a.ts', 'tool'))
-    const stored = JSON.parse(localStorage.getItem('kiroclaw:touched-files:test-session')!)
+    const stored = JSON.parse(localStorage.getItem('kirocrew:touched-files:test-session')!)
     expect(stored).toHaveLength(1)
     expect(stored[0].path).toBe('/tmp/a.ts')
   })
 
   it('loads from localStorage on mount', () => {
-    localStorage.setItem('kiroclaw:touched-files:s1', JSON.stringify([{ path: '/x.ts', ts: 1, source: 'tool' }]))
+    localStorage.setItem('kirocrew:touched-files:s1', JSON.stringify([{ path: '/x.ts', ts: 1, source: 'tool' }]))
     const { result } = renderHook(() => useTouchedFiles('s1'))
     expect(result.current.files).toHaveLength(1)
     expect(result.current.files[0].path).toBe('/x.ts')

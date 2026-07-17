@@ -8,11 +8,11 @@ Agents can send Block Kit messages with arbitrary buttons via `send_message`, bu
 2. Posts the button's `value` as a **visible user message** in the thread
 3. Starts a **new session** with that text
 
-This means structured payloads (JSON, metadata) pollute the chat, and the originating session loses context. Adding new button behaviors requires KiroClaw code changes.
+This means structured payloads (JSON, metadata) pollute the chat, and the originating session loses context. Adding new button behaviors requires KiroCrew code changes.
 
 ## Goal
 
-Allow agents to define arbitrary Block Kit buttons whose clicks route back to the **originating session** as invisible context, with no KiroClaw code changes per button type.
+Allow agents to define arbitrary Block Kit buttons whose clicks route back to the **originating session** as invisible context, with no KiroCrew code changes per button type.
 
 ## Design
 
@@ -74,7 +74,7 @@ A normal message turn with:
 - **Visible text:** The button's display text (e.g., "📝 Draft reply")
 - **Context entry:** The full structured payload
 
-The agent parses the JSON from the context entry and dispatches on `intent` or any other field. No KiroClaw code changes needed per button type — the agent's prompt defines the behavior.
+The agent parses the JSON from the context entry and dispatches on `intent` or any other field. No KiroCrew code changes needed per button type — the agent's prompt defines the behavior.
 
 ### What the user sees
 
@@ -87,7 +87,7 @@ No JSON or structured payload visible in chat.
 
 ## Files changed
 
-### `src/kiro_claw/slack/interactions.py`
+### `src/kiro_crew/slack/interactions.py`
 
 Modify `_handle_options`:
 - Check `value` for `action::` prefix (buttons), then `action_id` (extended elements)
@@ -111,12 +111,12 @@ Add helper `_mark_button_clicked(blocks, clicked_action_id, label) -> list`:
   - If no elements remain, drop the now-empty actions block
 - Return the updated block list (works for any element type, not just buttons)
 
-### `src/kiro_claw/slack/handler.py`
+### `src/kiro_crew/slack/handler.py`
 
 Add optional `action_context` parameter to `handle_message`:
 - When provided, prepend as a context entry in the message sent to the agent
 
-### `src/kiro_claw/context.py`
+### `src/kiro_crew/context.py`
 
 Add `action_context` parameter to `ContextBuilder.build_message`:
 - When provided, append as a `--- CONTEXT ENTRY ---` block

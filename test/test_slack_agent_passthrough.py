@@ -6,17 +6,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.slack.handler import handle_message
+from kiro_crew.slack.handler import handle_message
 
 
 @pytest.fixture()
 def _clear_agent_cache():
     """Reset module-level agent caches between tests."""
-    from kiro_claw.slack import handler
+    from kiro_crew.slack import handler
 
     old_cached = handler._cached_default_agent
     old_thread = dict(handler._thread_agents)
-    handler._cached_default_agent = "kiroclaw"
+    handler._cached_default_agent = "kirocrew"
     handler._thread_agents.clear()
     yield
     handler._cached_default_agent = old_cached
@@ -63,7 +63,7 @@ class TestAgentPassthrough:
     async def test_channel_agent_passed(self):
         slack, sessions, ctx = _make_mocks()
 
-        with patch("kiro_claw.slack.handler.config_dir", return_value=MagicMock()):
+        with patch("kiro_crew.slack.handler.config_dir", return_value=MagicMock()):
             await handle_message(
                 slack=slack,
                 sessions=sessions,
@@ -86,10 +86,10 @@ class TestAgentPassthrough:
     async def test_no_agent_passes_none(self):
         slack, sessions, ctx = _make_mocks()
 
-        from kiro_claw.slack import handler
+        from kiro_crew.slack import handler
         handler._cached_default_agent = ""
 
-        with patch("kiro_claw.slack.handler.config_dir", return_value=MagicMock()):
+        with patch("kiro_crew.slack.handler.config_dir", return_value=MagicMock()):
             await handle_message(
                 slack=slack,
                 sessions=sessions,

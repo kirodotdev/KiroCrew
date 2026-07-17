@@ -138,7 +138,7 @@
 /* ── Streaming indicator (existing .streaming-glow shimmer is preserved) ── */
 
 /* The existing shimmer animation on .streaming-glow conveys streaming state.
-   Per KiroClaw AGENTS.md "Do NOT add new CSS @keyframes — use Framer
+   Per KiroCrew AGENTS.md "Do NOT add new CSS @keyframes — use Framer
    Motion instead", and Framer Motion can't animate a CSS pseudo-element. */
 
 

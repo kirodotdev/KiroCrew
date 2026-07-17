@@ -15,7 +15,7 @@ async function fetchServers(): Promise<McpServer[]> {
   return await api.mcpServers()
 }
 
-type ScopeKey = 'kiroclaw' | 'kiroGlobal' | 'ccGlobal'
+type ScopeKey = 'kirocrew' | 'kiroGlobal' | 'ccGlobal'
 
 // Per-server pending overrides keyed by server name.
 type PendingChange = {
@@ -23,13 +23,13 @@ type PendingChange = {
   uninstall?: boolean
 }
 
-const DEFAULT_PRESENCE: McpScopePresence = { kiroclaw: true, kiroGlobal: false, ccGlobal: false }
+const DEFAULT_PRESENCE: McpScopePresence = { kirocrew: true, kiroGlobal: false, ccGlobal: false }
 
 function effectivePresence(s: McpServer, pending: PendingChange | undefined): McpScopePresence {
   const base = s.presence || DEFAULT_PRESENCE
   const override = pending?.scopes || {}
   return {
-    kiroclaw: override.kiroclaw ?? base.kiroclaw,
+    kirocrew: override.kirocrew ?? base.kirocrew,
     kiroGlobal: override.kiroGlobal ?? base.kiroGlobal,
     ccGlobal: override.ccGlobal ?? base.ccGlobal,
   }
@@ -207,7 +207,7 @@ export default function McpTab() {
         // effectivePresence(s, undefined) correctly returns the server's
         // current on-disk presence.
         const eff = effectivePresence(s, p)
-        change.kiroclaw = eff.kiroclaw
+        change.kirocrew = eff.kirocrew
         change.kiroGlobal = eff.kiroGlobal
         change.ccGlobal = eff.ccGlobal
         const tools = pendingTools[s.name]
@@ -278,7 +278,7 @@ export default function McpTab() {
     <McpRegistryCard />
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
       Installed Integrations
-      <InfoTip text={`MCP servers across KiroClaw and your interactive ${provider.displayName}/Kiro/Claude globals. The KiroClaw badge shows if it'll load in KiroClaw sessions; the Globals badges show if it's shared to your interactive provider globals. Click to toggle, then Apply.`} />
+      <InfoTip text={`MCP servers across KiroCrew and your interactive ${provider.displayName}/Kiro/Claude globals. The KiroCrew badge shows if it'll load in KiroCrew sessions; the Globals badges show if it's shared to your interactive provider globals. Click to toggle, then Apply.`} />
     </h4>
     <Card>
       {updateAll.error && <div className="mb-3 text-[13px] text-danger">{(updateAll.error as Error).message}</div>}
@@ -291,7 +291,7 @@ export default function McpTab() {
         <div className="mb-3 p-3 rounded border border-[var(--warn)] bg-[var(--warn)]/20 flex items-center justify-between">
           <div className="text-[13px] text-[var(--warn)]">
             <AlertTriangle className="lucide-inline" /> {pendingCount} pending change{pendingCount === 1 ? '' : 's'}
-            <span className="ml-2 text-muted">— Apply commits to ~/.kiroclaw/mcp.json + provider globals as opted-in.</span>
+            <span className="ml-2 text-muted">— Apply commits to ~/.kirocrew/mcp.json + provider globals as opted-in.</span>
           </div>
           <div className="flex gap-2">
             <Btn onClick={() => apply.mutate()} disabled={apply.isPending}>
@@ -319,7 +319,7 @@ export default function McpTab() {
         <div className="overflow-x-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
           <SortableHeader label="Name" sortKey="name" sort={mcpSort} onToggle={toggleMcpSort} />
-          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">KiroClaw</th>
+          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">KiroCrew</th>
           <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Globals</th>
           <SortableHeader label="Status" sortKey="status" sort={mcpSort} onToggle={toggleMcpSort} />
           <SortableHeader label="Tools" sortKey="tools" sort={mcpSort} onToggle={toggleMcpSort} />
@@ -344,12 +344,12 @@ export default function McpTab() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
                   <ScopeBadge
-                    label="KiroClaw"
-                    scope="kiroclaw"
-                    active={eff.kiroclaw}
-                    pendingChange={!pendingUninstall && !!p?.scopes && 'kiroclaw' in p.scopes}
+                    label="KiroCrew"
+                    scope="kirocrew"
+                    active={eff.kirocrew}
+                    pendingChange={!pendingUninstall && !!p?.scopes && 'kirocrew' in p.scopes}
                     disabled={pendingUninstall}
-                    onClick={() => toggleScope(s.name, 'kiroclaw', !eff.kiroclaw, base)}
+                    onClick={() => toggleScope(s.name, 'kirocrew', !eff.kirocrew, base)}
                   />
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">

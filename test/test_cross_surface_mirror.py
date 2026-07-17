@@ -16,13 +16,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from chat_test_helpers import _make_state
 
-from kiro_claw.dashboard.chat_runner import (
+from kiro_crew.dashboard.chat_runner import (
     _deliver_cross_surface_reply,
     _deliver_cross_surface_user_message,
 )
-from kiro_claw.messaging.link import ChannelLink
-from kiro_claw.platform import redact_via_context
-from kiro_claw.security import (
+from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.platform import redact_via_context
+from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )

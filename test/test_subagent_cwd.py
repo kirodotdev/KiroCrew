@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.subagent import SubagentManager, validate_cwd
+from kiro_crew.subagent import SubagentManager, validate_cwd
 
 # ---------------------------------------------------------------------------
 # validate_cwd helper
@@ -173,7 +173,7 @@ class TestSpawnCwd:
         manager = SubagentManager(
             sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
-        with patch("kiro_claw.subagent.Stats"), patch("kiro_claw.subagent.sel"):
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             info = manager.spawn("t")
         assert info is not None
         assert info.cwd == ""
@@ -192,8 +192,8 @@ class TestSpawnCwd:
         mock_cfg = MagicMock()
         mock_cfg.agent.spawn_min_memory_gb = 0
         mock_cfg.agent.subagent_cwd_allowed_roots = [str(tmp_path)]
-        with patch("kiro_claw.subagent.Stats"), patch("kiro_claw.subagent.sel"), \
-             patch("kiro_claw.subagent.KiroClawConfig.load", return_value=mock_cfg):
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), \
+             patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=mock_cfg):
             info = manager.spawn("t", cwd=str(project))
 
         assert info is not None
@@ -219,9 +219,9 @@ class TestSpawnCwd:
         (tmp_path / "allowed").mkdir()
 
         sel_mock = MagicMock()
-        with patch("kiro_claw.subagent.Stats"), \
-             patch("kiro_claw.subagent.sel", return_value=sel_mock), \
-             patch("kiro_claw.subagent.KiroClawConfig.load", return_value=mock_cfg):
+        with patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel", return_value=sel_mock), \
+             patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=mock_cfg):
             info = manager.spawn("t", cwd="/etc")
 
         assert info is not None
@@ -247,8 +247,8 @@ class TestSpawnCwd:
         mock_cfg = MagicMock()
         mock_cfg.agent.spawn_min_memory_gb = 0
         mock_cfg.agent.subagent_cwd_allowed_roots = []
-        with patch("kiro_claw.subagent.Stats"), patch("kiro_claw.subagent.sel"), \
-             patch("kiro_claw.subagent.KiroClawConfig.load", return_value=mock_cfg):
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), \
+             patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=mock_cfg):
             info = manager.spawn("t", cwd=str(project))
         assert info is not None
         assert info.done is True
@@ -274,8 +274,8 @@ class TestSpawnCwd:
         mock_cfg = MagicMock()
         mock_cfg.agent.spawn_min_memory_gb = 0
         mock_cfg.agent.subagent_cwd_allowed_roots = [str(tmp_path)]
-        with patch("kiro_claw.subagent.Stats"), patch("kiro_claw.subagent.sel"), \
-             patch("kiro_claw.subagent.KiroClawConfig.load", return_value=mock_cfg):
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), \
+             patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=mock_cfg):
             info = manager.spawn("t", cwd=str(project))
 
         assert info is not None
@@ -290,7 +290,7 @@ class TestSpawnCwd:
     async def test_spawn_fails_closed_when_config_load_raises(
         self, tmp_path: Path,
     ) -> None:
-        """If KiroClawConfig.load raises, reject cwd (fail-closed).
+        """If KiroCrewConfig.load raises, reject cwd (fail-closed).
 
         Defaulting to the permissive ``["~/workspace"]`` would silently
         re-enable the feature for admins who explicitly disabled it with
@@ -302,10 +302,10 @@ class TestSpawnCwd:
             sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
         load_mock = patch(
-            "kiro_claw.subagent.KiroClawConfig.load",
+            "kiro_crew.subagent.KiroCrewConfig.load",
             side_effect=OSError("config unreadable"),
         )
-        with patch("kiro_claw.subagent.Stats"), patch("kiro_claw.subagent.sel"), load_mock:
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), load_mock:
             info = manager.spawn("t", cwd=str(project))
 
         assert info is not None

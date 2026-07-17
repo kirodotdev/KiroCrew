@@ -567,7 +567,7 @@ describe('subagent reducers', () => {
 
   it('sseSubagentSpawn preserves existing streaming text from pending', () => {
     let state = reducer(withSlot, sseSubagentPending({ slot: 'slot-1', id: 'a1', task: 'task', approval_id: 'spawn:a1' }))
-    state = reducer(state, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'task', agent: 'kiroclaw' }))
+    state = reducer(state, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'task', agent: 'kirocrew' }))
     expect(state.subagents['a1'].status).toBe('running')
     expect(state.subagents['a1'].startedAt).toBeDefined()
   })
@@ -719,9 +719,9 @@ describe('approval_resolved and toolLog mutations', () => {
     // then a tool_call_update with the refined title/input.
     let state = reducer(withSlot, sseToolActivity({ slot: 'slot-1', tool: 'Terminal', kind: 'execute', purpose: '', input_preview: '', tool_call_id: 'tc-bash-1' }))
     expect(state.toolLog).toHaveLength(1)
-    state = reducer(state, sseToolActivity({ slot: 'slot-1', tool: 'List KiroClaw modules', kind: 'execute', purpose: '', input_preview: '{"command":"ls"}', tool_call_id: 'tc-bash-1', is_update: true }))
+    state = reducer(state, sseToolActivity({ slot: 'slot-1', tool: 'List KiroCrew modules', kind: 'execute', purpose: '', input_preview: '{"command":"ls"}', tool_call_id: 'tc-bash-1', is_update: true }))
     expect(state.toolLog).toHaveLength(1)
-    expect(state.toolLog[0].text).toBe('List KiroClaw modules')
+    expect(state.toolLog[0].text).toBe('List KiroCrew modules')
     expect(state.toolLog[0].input).toBe('{"command":"ls"}')
   })
 

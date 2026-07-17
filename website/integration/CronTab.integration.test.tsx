@@ -26,7 +26,7 @@ describe('CronTab Integration Tests', () => {
       http.get('/api/agents/installed', () => {
         return HttpResponse.json([
           { name: 'default', source: 'builtin' },
-          { name: 'kiroclaw', source: 'builtin' },
+          { name: 'kirocrew', source: 'builtin' },
         ])
       })
     )

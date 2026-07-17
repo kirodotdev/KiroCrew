@@ -22,13 +22,13 @@ When creating task specifications:
 
 ### Dev Mode
 
-Set `KIROCLAW_HOME=.kiroclaw-dev` to use an isolated data directory in the repo root (gitignored). This keeps dev data (contacts, lessons, config) separate from your real `~/.kiroclaw`. Data files are visible in the IDE for easy inspection.
+Set `KIROCREW_HOME=.kirocrew-dev` to use an isolated data directory in the repo root (gitignored). This keeps dev data (contacts, lessons, config) separate from your real `~/.kirocrew`. Data files are visible in the IDE for easy inspection.
 
-Set `KIROCLAW_PORT=6777` so dev and production gateways can run side by side. Pass the same env var to `./dev-frontend.sh` so the Vite proxy points at the dev backend.
+Set `KIROCREW_PORT=6777` so dev and production gateways can run side by side. Pass the same env var to `./dev-frontend.sh` so the Vite proxy points at the dev backend.
 
 To authenticate the Vite dev server (port 3000) against the dev gateway (port 6777):
 
-1. Generate a token for the dev instance: `kiroclaw token --port 6777`
+1. Generate a token for the dev instance: `kirocrew token --port 6777`
 2. Take the URL, replace `:6777` with `:3000` → `http://localhost:3000?token=xxx`
 3. The Vite dev server proxies the token to the backend, sets the auth cookie, and redirects to `/`
 
@@ -38,12 +38,12 @@ The backend is a standard Python package (pip/setuptools). Run the full quality 
 
 ```bash
 # 1. Auto-format
-black src/kiro_claw test
-isort src/kiro_claw test
+black src/kiro_crew test
+isort src/kiro_crew test
 
 # 2. Lint + type-check
-flake8 src/kiro_claw test
-mypy src/kiro_claw
+flake8 src/kiro_crew test
+mypy src/kiro_crew
 
 # 3. Test
 python -m pytest
@@ -54,7 +54,7 @@ If all four pass cleanly, you're done. Fix any reported errors (flake8, mypy, py
 For the frontend (in `website/`):
 
 ```bash
-npm run build    # production bundle into src/kiro_claw/static/dist/
+npm run build    # production bundle into src/kiro_crew/static/dist/
 npm run test     # vitest unit/integration tests
 ```
 
@@ -103,9 +103,9 @@ All integration tests MUST pass before committing frontend changes.
 
 ### Browser E2E gate — `python setup.py test_e2e`
 
-`python setup.py test_e2e` (defined in `setup.py::E2eTestCommand`, folds `test/test_playwright_e2e.py`) is the offline browser-E2E gate. It boots a real gateway wired to the packaged fake ACP backend (`kiro_claw.testing.fake_acp_backend`, `KIROCLAW_KIRO_BIN`) and shells the in-tree `website/playwright` suite against it — no model, no network. It uses Playwright's own bundled Chromium and runs serially with a long per-test timeout, so it is **not** part of the default `pytest` unit run (too slow for the per-commit gate).
+`python setup.py test_e2e` (defined in `setup.py::E2eTestCommand`, folds `test/test_playwright_e2e.py`) is the offline browser-E2E gate. It boots a real gateway wired to the packaged fake ACP backend (`kiro_crew.testing.fake_acp_backend`, `KIROCREW_KIRO_BIN`) and shells the in-tree `website/playwright` suite against it — no model, no network. It uses Playwright's own bundled Chromium and runs serially with a long per-test timeout, so it is **not** part of the default `pytest` unit run (too slow for the per-commit gate).
 
-- The test skips gracefully when the `website` dir or its Playwright CLI can't be resolved (a python-only checkout). Set `KIROCLAW_E2E_REQUIRE=1` on a CI job to turn an environment-resolution miss into a hard failure so drift is caught at PR time rather than going green on zero specs.
+- The test skips gracefully when the `website` dir or its Playwright CLI can't be resolved (a python-only checkout). Set `KIROCREW_E2E_REQUIRE=1` on a CI job to turn an environment-resolution miss into a hard failure so drift is caught at PR time rather than going green on zero specs.
 
 ## Git Conventions
 
@@ -158,7 +158,7 @@ Example:
 
 ### Fixes
 
-- `kiroclaw learn` CLI now reads from vector store instead of only JSONL
+- `kirocrew learn` CLI now reads from vector store instead of only JSONL
 - IME composition: CJK Enter no longer triggers message send
 
 ### Contributors
@@ -196,7 +196,7 @@ Jane Doe (janedoe), John Smith (jsmith)
   - `"acp"` (required): spawns `kiro-cli acp --agent <name>`
 - Config-driven provider selection: `"provider": "acp"` (kiro-cli) is fixed/required
 - Tool permissions auto-approved in phase 1; interactive approval in phase 3
-- Config loaded from `~/.kiroclaw/config.json` with dataclass defaults
+- Config loaded from `~/.kirocrew/config.json` with dataclass defaults
 - CLI uses `argparse` (stdlib only, no external deps)
 - Minimal dependencies — prefer stdlib over third-party packages
 
@@ -205,7 +205,7 @@ Jane Doe (janedoe), John Smith (jsmith)
 | Module | Purpose |
 |--------|---------|
 | `autonudge.py` | Reactive same-session self-nudge service |
-| `snapshot.py` | Portable snapshot and restore for KiroClaw state |
+| `snapshot.py` | Portable snapshot and restore for KiroCrew state |
 | `vector_memory.py` | Vector-based semantic memory with FAISS |
 | `voice_reply.py` | Voice reply synthesis |
 | `atomic_write.py` | Atomic file write utilities |
@@ -257,7 +257,7 @@ Jane Doe (janedoe), John Smith (jsmith)
 
 ### Platform layer: Composed Platform Providers (CPP) + Governance
 
-`src/kiro_claw/platform/` is the **edition seam** and the **two-level security
+`src/kiro_crew/platform/` is the **edition seam** and the **two-level security
 governance model**. Touch it carefully — it is load-bearing for both the
 public/standalone edition and the (out-of-repo) Amazon companion, and it is the
 trust root for the security ceiling. Full spec:
@@ -283,11 +283,11 @@ trust root for the security ceiling. Full spec:
 **Governance model** (`governance.py` + `governance_profiles.py`): two levels,
 `effective = POLICY ∩ PROFILE`, tightest-wins. Level 1 POLICY is the
 enterprise security ceiling (`GovernanceCeiling`, loaded at boot from the
-trust-root path — `KIROCLAW_SECURITY_POLICY` env, else
-`~/.kiroclaw/security_policy.json`; **never** merged from `config.json`); once
+trust-root path — `KIROCREW_SECURITY_POLICY` env, else
+`~/.kirocrew/security_policy.json`; **never** merged from `config.json`); once
 present the app + agent cannot weaken it. Level 2 PROFILE
-(`~/.kiroclaw/profiles/<name>.json`) is a per-surface/app/task narrow-only
-ceiling KiroClaw enforces at its OWN PreToolUse gate — it denies a tool/MCP call
+(`~/.kirocrew/profiles/<name>.json`) is a per-surface/app/task narrow-only
+ceiling KiroCrew enforces at its OWN PreToolUse gate — it denies a tool/MCP call
 even if the kiro agent config granted it. Every control is one of four
 archetypes (ScopedRuleset / OrdinalControl / CapabilityGate / ScopedMap), each
 with one composition algebra; the evaluator is **scope-name-agnostic** (dispatch
@@ -307,16 +307,16 @@ files on the sensitive-path floor.
 
 ### Frontend Architecture
 
-React + TypeScript SPA in the `website/` directory. Built assets are bundled into `src/kiro_claw/static/dist/`.
+React + TypeScript SPA in the `website/` directory. Built assets are bundled into `src/kiro_crew/static/dist/`.
 
 **All frontend conventions (icons, components, layout, styling, data fetching) are documented in `website/AGENTS.md`.** Refer to that file when making frontend changes.
 
 ### Platform Support
 
-KiroClaw runs on macOS, Linux (x86_64 and ARM/Graviton), and **Windows** (native, Mesh-2329).
-macOS/Linux install via the `bin/kiroclaw` launcher; **Windows runs natively from a Python
+KiroCrew runs on macOS, Linux (x86_64 and ARM/Graviton), and **Windows** (native, Mesh-2329).
+macOS/Linux install via the `bin/kirocrew` launcher; **Windows runs natively from a Python
 source install** — CPython 3.12 + a venv + `pip install -e .`, launched as `python -m
-kiro_claw gateway`. See `docs/WINDOWS_INSTALL.md`.
+kiro_crew gateway`. See `docs/WINDOWS_INSTALL.md`.
 
 **All code changes MUST be verified for macOS + Linux + Windows compatibility:**
 - **Backend**: macOS, Linux, Windows — route POSIX-only calls through `platform_compat`
@@ -358,19 +358,19 @@ Other Windows specifics:
 - **System metrics** (`handlers_system.py`): macOS `sysctl`/`vm_stat`; Linux `/proc/*`;
   Windows via `platform_compat` ctypes helpers.
 - **Frontend build** (`setup.py`): uses `/bin/bash build-frontend.sh`.
-- **Launcher scripts**: `bin/kiroclaw` (POSIX sh); Windows uses the pip console script.
+- **Launcher scripts**: `bin/kirocrew` (POSIX sh); Windows uses the pip console script.
 
 ### Skills & MCP Tools for the LLM
 
-KiroClaw exposes capabilities to the LLM via two mechanisms:
+KiroCrew exposes capabilities to the LLM via two mechanisms:
 
 1. **MCP tools** (native): kiro-cli calls them directly with structured JSON params — **preferred for all LLM-facing operations**
-   - `kiroclaw-cron` MCP server: `cron_list`, `cron_add`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`
-   - `kiroclaw-core` MCP server: `spawn_run`, `spawn_list`, `spawn_status`, `learn_add`, `learn_list`, `learn_remove`, `task_run`, `wait`, `register_hook`, `send_message`, `local_knowledge_search`
+   - `kirocrew-cron` MCP server: `cron_list`, `cron_add`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`
+   - `kirocrew-core` MCP server: `spawn_run`, `spawn_list`, `spawn_status`, `learn_add`, `learn_list`, `learn_remove`, `task_run`, `wait`, `register_hook`, `send_message`, `local_knowledge_search`
    - `playwright` MCP server (`@playwright/mcp`): `browser_navigate`, `browser_click`, `browser_snapshot`, `browser_take_screenshot`, `browser_fill_form`, `browser_type`, `browser_press_key`, `browser_evaluate`, `browser_hover`, `browser_drag`, `browser_select_option`, `browser_tabs`, `browser_close`, `browser_wait_for`, `browser_resize`
    - `slack-mcp` (mcpServers): Slack integration
-   - Configured in `agents/defaults.json` → `mcpServers` → installed to `kiroclaw.json`
-   - `kiroclaw-cron` and `kiroclaw-core` are managed MCP servers in `agent.py:_MANAGED_MCP_SERVERS` — auto-registered, refreshed preserving user customizations
+   - Configured in `agents/defaults.json` → `mcpServers` → installed to `kirocrew.json`
+   - `kirocrew-cron` and `kirocrew-core` are managed MCP servers in `agent.py:_MANAGED_MCP_SERVERS` — auto-registered, refreshed preserving user customizations
    - MCP discovery (`mcp_discovery.py`): on-demand only — users trigger from dashboard "Discover & Sync" button
 
 2. **Skills** (`skills/*/SKILL.md`): on-demand knowledge files for specialized workflows
@@ -390,38 +390,38 @@ MCP tools are defined in:
 - `mcp_core.py` — spawn, learn, task tools
 - External MCP servers — configured in `agents/defaults.json` → `mcpServers`
 
-The CLI commands (`kiroclaw spawn/learn/cron/run`) remain for human use but the LLM
+The CLI commands (`kirocrew spawn/learn/cron/run`) remain for human use but the LLM
 should always use the MCP tool equivalents.
 
 | CLI Command | MCP Tool | MCP Server |
 |-------------|----------|------------|
-| `kiroclaw cron add` | `cron_add` | kiroclaw-cron |
-| `kiroclaw cron list` | `cron_list` | kiroclaw-cron |
-| `kiroclaw cron remove` | `cron_remove` | kiroclaw-cron |
-| `kiroclaw cron remove-all` | `cron_remove_all` | kiroclaw-cron |
-| `kiroclaw cron pause` | `cron_pause` | kiroclaw-cron |
-| `kiroclaw cron resume` | `cron_resume` | kiroclaw-cron |
-| `kiroclaw cron trigger` | `cron_trigger` | kiroclaw-cron |
-| `kiroclaw cron update` | `cron_update` | kiroclaw-cron |
-| `kiroclaw spawn run` | `spawn_run` | kiroclaw-core |
-| `kiroclaw spawn list` | `spawn_list` | kiroclaw-core |
-| — | `spawn_status` | kiroclaw-core |
-| `kiroclaw learn add` | `learn_add` | kiroclaw-core |
-| `kiroclaw learn list` | `learn_list` | kiroclaw-core |
-| `kiroclaw learn remove` | `learn_remove` | kiroclaw-core |
-| `kiroclaw run TASK.md` | `task_run` | kiroclaw-core |
-| — | `wait` | kiroclaw-core |
-| — | `register_hook` | kiroclaw-core |
-| — | `send_message` | kiroclaw-core |
-| — | `local_knowledge_search` | kiroclaw-core |
-| — | `file_send` | kiroclaw-core |
-| — | `autonudge_stop` | kiroclaw-core |
-| — | `artifact_folder_list` | kiroclaw-core |
-| — | `artifact_folder_create` | kiroclaw-core |
-| — | `artifact_folder_rename` | kiroclaw-core |
-| — | `artifact_folder_move` | kiroclaw-core |
-| — | `artifact_folder_delete` | kiroclaw-core |
-| — | `artifact_move` | kiroclaw-core |
+| `kirocrew cron add` | `cron_add` | kirocrew-cron |
+| `kirocrew cron list` | `cron_list` | kirocrew-cron |
+| `kirocrew cron remove` | `cron_remove` | kirocrew-cron |
+| `kirocrew cron remove-all` | `cron_remove_all` | kirocrew-cron |
+| `kirocrew cron pause` | `cron_pause` | kirocrew-cron |
+| `kirocrew cron resume` | `cron_resume` | kirocrew-cron |
+| `kirocrew cron trigger` | `cron_trigger` | kirocrew-cron |
+| `kirocrew cron update` | `cron_update` | kirocrew-cron |
+| `kirocrew spawn run` | `spawn_run` | kirocrew-core |
+| `kirocrew spawn list` | `spawn_list` | kirocrew-core |
+| — | `spawn_status` | kirocrew-core |
+| `kirocrew learn add` | `learn_add` | kirocrew-core |
+| `kirocrew learn list` | `learn_list` | kirocrew-core |
+| `kirocrew learn remove` | `learn_remove` | kirocrew-core |
+| `kirocrew run TASK.md` | `task_run` | kirocrew-core |
+| — | `wait` | kirocrew-core |
+| — | `register_hook` | kirocrew-core |
+| — | `send_message` | kirocrew-core |
+| — | `local_knowledge_search` | kirocrew-core |
+| — | `file_send` | kirocrew-core |
+| — | `autonudge_stop` | kirocrew-core |
+| — | `artifact_folder_list` | kirocrew-core |
+| — | `artifact_folder_create` | kirocrew-core |
+| — | `artifact_folder_rename` | kirocrew-core |
+| — | `artifact_folder_move` | kirocrew-core |
+| — | `artifact_folder_delete` | kirocrew-core |
+| — | `artifact_move` | kirocrew-core |
 | — | `browser_navigate` | playwright |
 | — | `browser_click` | playwright |
 | — | `browser_snapshot` | playwright |
@@ -449,9 +449,9 @@ skills/                  ← on-demand skill definitions (edit without rebuildin
 └── README.md
 ```
 
-- `KIROCLAW_PROJECT_DIR` env var points to the project root
+- `KIROCREW_PROJECT_DIR` env var points to the project root
 - Auto-detected from CWD at CLI startup (walks up looking for `agents/` + `skills/`)
-- Saved to `~/.kiroclaw/project_dir` during `kiroclaw setup` so it works from any directory
+- Saved to `~/.kirocrew/project_dir` during `kirocrew setup` so it works from any directory
 - Falls back to bundled copies in the Python package if project dir not found
 
 #### Skill Loading
@@ -512,18 +512,18 @@ Users attach files via `@filename` syntax in chat input. The file picker searche
 Widgets rendered via `<mcwidget title="Title">HTML</mcwidget>` now support bidirectional communication:
 
 - Widgets can emit `data-action` events back to the agent session
-- Use `window.parent.postMessage({type: 'kiroclaw:action', action: 'name', payload: {...}}, '*')` from widget JS
+- Use `window.parent.postMessage({type: 'kirocrew:action', action: 'name', payload: {...}}, '*')` from widget JS
 - The agent receives these as `[Widget action event]` messages in the conversation
 - Tailwind CSS and theme variables (`var(--bg)`, `var(--text)`, etc.) are available in all widgets
 
 ## Service Management
 
-KiroClaw can run as a system service:
+KiroCrew can run as a system service:
 
 ```bash
-kiroclaw service install    # systemd (Linux) or launchd (macOS)
-kiroclaw service status
-kiroclaw service uninstall
+kirocrew service install    # systemd (Linux) or launchd (macOS)
+kirocrew service status
+kirocrew service uninstall
 ```
 
 ## Steering Files
@@ -549,10 +549,10 @@ Apps can register gateway-level hooks via the App SDK:
 For integration tests and eval harnesses, use composable CLI flags:
 
 ```bash
-kiroclaw gateway --test-mode                    # bundle: ephemeral port + json-ready + reads approval
-kiroclaw gateway --port auto --json-ready       # OS-assigned port, prints KIROCLAW_READY:{port,token,pid,home}
-kiroclaw gateway --approval reads               # auto-approve read-only tools
-kiroclaw gateway --approval yolo                # auto-approve ALL tools (requires KIROCLAW_HOME != ~/.kiroclaw)
+kirocrew gateway --test-mode                    # bundle: ephemeral port + json-ready + reads approval
+kirocrew gateway --port auto --json-ready       # OS-assigned port, prints KIROCREW_READY:{port,token,pid,home}
+kirocrew gateway --approval reads               # auto-approve read-only tools
+kirocrew gateway --approval yolo                # auto-approve ALL tools (requires KIROCREW_HOME != ~/.kirocrew)
 ```
 
-Safety: `--approval yolo` refuses to start unless `KIROCLAW_HOME` is explicitly set to a non-default path.
+Safety: `--approval yolo` refuses to start unless `KIROCREW_HOME` is explicitly set to a non-default path.

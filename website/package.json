@@ -1,10 +1,10 @@
 {
-  "name": "kiroclaw-website",
+  "name": "kirocrew-website",
   "version": "1.0.0",
   "private": true,
   "license": "Apache-2.0",
-  "repository": "https://github.com/kirodotdev-labs/kiroclaw",
-  "homepage": "https://github.com/kirodotdev-labs/kiroclaw",
+  "repository": "https://github.com/kirodotdev/KiroCrew",
+  "homepage": "https://github.com/kirodotdev/KiroCrew",
   "type": "module",
   "scripts": {
     "clean": "rm -rf dist && rm -rf node_modules",

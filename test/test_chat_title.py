@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kiro_claw.dashboard.chat_title import (
+from kiro_crew.dashboard.chat_title import (
     _TITLE_MAX_ATTACHMENT_FILES,
     _TITLE_MAX_ATTACHMENT_PATH_LENGTH,
     _TITLE_SOURCE_SCAN_LIMIT,
@@ -46,7 +46,7 @@ def test_prompt_none_when_no_usable_messages():
 
 def test_prompt_strips_image_attachment_before_truncation():
     """A long upload path must not crowd the user's request out of the prompt."""
-    attachment = f"![image](/Users/example/.kiroclaw/uploads/{'a' * 240}.jpg)"
+    attachment = f"![image](/Users/example/.kirocrew/uploads/{'a' * 240}.jpg)"
     prompt = _build_title_prompt(
         [{"role": "user", "content": f"{attachment}\n\ncreating titles is failing"}]
     )

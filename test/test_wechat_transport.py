@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.wechat.transport (WeComTransport, Layer 1)."""
+"""Tests for kiro_crew.wechat.transport (WeComTransport, Layer 1)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_claw.messaging.transport import InboundMessage
-from kiro_claw.wechat.client import WeComInbound
-from kiro_claw.wechat.transport import WECOM_CAPABILITIES, WeComTransport
+from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.wechat.client import WeComInbound
+from kiro_crew.wechat.transport import WECOM_CAPABILITIES, WeComTransport
 
 
 class FakeClient:
@@ -56,18 +56,18 @@ class TestAuthorize:
 
     def test_unknown_denied(self) -> None:
         t = WeComTransport(FakeClient(), owner_id="Wei", allowed_users=["LiHaoYi"])
-        with patch("kiro_claw.wechat.transport.sel") as mock_sel:
+        with patch("kiro_crew.wechat.transport.sel") as mock_sel:
             assert t.authorize(_msg("stranger")) is False
         mock_sel().log_api_access.assert_called_once()
 
     def test_empty_userid_denied(self) -> None:
         t = WeComTransport(FakeClient(), owner_id="Wei")
-        with patch("kiro_claw.wechat.transport.sel"):
+        with patch("kiro_crew.wechat.transport.sel"):
             assert t.authorize(_msg("")) is False
 
     def test_empty_allowlist_and_no_owner_denies_everyone(self) -> None:
         t = WeComTransport(FakeClient())  # fail closed
-        with patch("kiro_claw.wechat.transport.sel"):
+        with patch("kiro_crew.wechat.transport.sel"):
             assert t.authorize(_msg("anyone")) is False
 
 
@@ -93,7 +93,7 @@ class TestReceive:
             dispatched.append(inbound)
 
         t = WeComTransport(FakeClient(), owner_id="Wei", dispatch=dispatch)
-        with patch("kiro_claw.wechat.transport.sel"):
+        with patch("kiro_crew.wechat.transport.sel"):
             await t.receive(_inbound("stranger", "hello"))
         assert dispatched == []
 

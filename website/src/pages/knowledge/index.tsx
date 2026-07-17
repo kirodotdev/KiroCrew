@@ -629,7 +629,7 @@ export default function KnowledgePage() {
               ● {stats.embeddings.available ? `embeddings (${stats.embeddings.embedded_items})` : 'embeddings offline'}
             </span>
           ) : (
-            <span className="text-muted" title="Add knowledge.embeddings.enabled: true to ~/.kiroclaw/config.json">○ embeddings off</span>
+            <span className="text-muted" title="Add knowledge.embeddings.enabled: true to ~/.kirocrew/config.json">○ embeddings off</span>
           )}
           {tab === 'list' && <span className="ml-auto text-[10px]">/ to search, Esc to back, &larr;&rarr; to page</span>}
         </div>

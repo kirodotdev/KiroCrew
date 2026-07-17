@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from kiro_claw.platform import governance_profiles as gp
-from kiro_claw.platform.governance import resolve
+from kiro_crew.platform import governance_profiles as gp
+from kiro_crew.platform.governance import resolve
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 """Example dynamic workflow: review a diff across dimensions, verify each finding.
 
 This is the canonical pipeline pattern, ported from Claude Code's `Workflow`
-tool into the proposed KiroClaw Python DSL. Illustrative only — the DSL is not
+tool into the proposed KiroCrew Python DSL. Illustrative only — the DSL is not
 implemented yet.
 
 Run:  workflow run review-changes --args '{"cr": "CR-1234567"}'

@@ -18,11 +18,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.apps.manager import APP_MANIFEST_FILENAME
-from kiro_claw.apps.routes import register_app_routes
-from kiro_claw.dashboard.chat import api_chat_slot_context
-from kiro_claw.dashboard.handlers import api_mcp_server_detail
-from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
+from kiro_crew.apps.routes import register_app_routes
+from kiro_crew.dashboard.chat import api_chat_slot_context
+from kiro_crew.dashboard.handlers import api_mcp_server_detail
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -36,15 +36,15 @@ def mcp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     mcp_json.parent.mkdir(parents=True)
     mcp_json.write_text('{"mcpServers": {}}')
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.mcp._GLOBAL_MCP_JSON", mcp_json
+        "kiro_crew.dashboard.handlers.mcp._GLOBAL_MCP_JSON", mcp_json
     )
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.mcp._MCP_LOCK_PATH",
+        "kiro_crew.dashboard.handlers.mcp._MCP_LOCK_PATH",
         mcp_json.with_suffix(".lock"),
     )
     # Stub _sync_mcp_to_agent to avoid touching real agent config
     monkeypatch.setattr(
-        "kiro_claw.dashboard.handlers.mcp._sync_mcp_to_agent",
+        "kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent",
         lambda *a, **kw: None,
     )
     return mcp_json
@@ -53,9 +53,9 @@ def mcp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def app_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Set up a temp app environment with a test app installed."""
-    home = tmp_path / "kiroclaw-home"
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
     # Create a test app
     app_dir = home / "apps" / "test-app"
     app_dir.mkdir(parents=True)
@@ -73,15 +73,15 @@ def app_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "version": "1.0.0",
         "displayName": "Test App",
         "enabled": True,
-        "managed": "kiroclaw",
+        "managed": "kirocrew",
     }
     (app_dir / "installed.json").write_text(json.dumps(installed))
     # Stub bridges to avoid touching real kiro agents dir
-    import kiro_claw.apps.bridges as bridges_mod
+    import kiro_crew.apps.bridges as bridges_mod
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    import kiro_claw.apps.backend as bmod
+    import kiro_crew.apps.backend as bmod
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return home
@@ -558,9 +558,9 @@ class TestReverseProxy:
     @pytest.fixture(autouse=True)
     def _proxy_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Set up a temp environment for proxy tests."""
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
         # Create a test app with a secret
         app_dir = home / "apps" / "proxy-app"
         app_dir.mkdir(parents=True)
@@ -586,15 +586,15 @@ class TestReverseProxy:
         }
         (app_dir / "installed.json").write_text(json.dumps(installed))
         # Stub bridges
-        import kiro_claw.apps.bridges as bridges_mod
+        import kiro_crew.apps.bridges as bridges_mod
         kiro_agents = tmp_path / "kiro-agents"
         kiro_agents.mkdir()
         monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
         bmod._processes.clear()
         bmod._allocated_ports.clear()
         # Clear secret cache
-        from kiro_claw.apps.routes import _app_secret_cache
+        from kiro_crew.apps.routes import _app_secret_cache
         _app_secret_cache.clear()
         self._home = home
 
@@ -615,7 +615,7 @@ class TestReverseProxy:
         """
         from unittest.mock import MagicMock
 
-        from kiro_claw.apps.routes import handle_app_api_proxy
+        from kiro_crew.apps.routes import handle_app_api_proxy
 
         request = MagicMock()
         request.match_info = {"name": "proxy-app", "path": "foo/../etc/passwd"}
@@ -631,7 +631,7 @@ class TestReverseProxy:
         (CWE-269 cross-app guard). Called directly with a crafted request."""
         from unittest.mock import MagicMock
 
-        from kiro_claw.apps.routes import handle_app_api_proxy
+        from kiro_crew.apps.routes import handle_app_api_proxy
 
         request = MagicMock()
         request.match_info = {"name": "proxy-app", "path": "health"}
@@ -649,8 +649,8 @@ class TestReverseProxy:
         PAST the 403 guard without exercising the header-forwarding path."""
         from unittest.mock import MagicMock
 
-        import kiro_claw.apps.routes as rmod
-        from kiro_claw.apps.routes import handle_app_api_proxy
+        import kiro_crew.apps.routes as rmod
+        from kiro_crew.apps.routes import handle_app_api_proxy
 
         monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: "")
         request = MagicMock()
@@ -678,7 +678,7 @@ class TestReverseProxy:
             "schemaVersion": 2,
         }
         (app_dir / "installed.json").write_text(json.dumps(installed))
-        import kiro_claw.apps.routes as rmod
+        import kiro_crew.apps.routes as rmod
         monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: "http://127.0.0.1:19999")
         # Clear cache so the missing secret is detected
         rmod._app_secret_cache.clear()
@@ -692,7 +692,7 @@ class TestReverseProxy:
     @pytest.mark.asyncio
     async def test_backend_unreachable_returns_502(self, monkeypatch):
         """Proxy to unreachable backend returns 502."""
-        import kiro_claw.apps.routes as rmod
+        import kiro_crew.apps.routes as rmod
 
         # Point to a port that's definitely not listening
         monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: "http://127.0.0.1:19999")
@@ -705,7 +705,7 @@ class TestReverseProxy:
 
     @pytest.mark.asyncio
     async def test_hmac_header_present_and_valid(self, monkeypatch):
-        """Proxy request includes X-KiroClaw-Proxy with valid HMAC."""
+        """Proxy request includes X-KiroCrew-Proxy with valid HMAC."""
         import hashlib
         import hmac as _hmac
 
@@ -725,7 +725,7 @@ class TestReverseProxy:
         await site.start()
         port = runner.addresses[0][1]
 
-        import kiro_claw.apps.routes as rmod
+        import kiro_crew.apps.routes as rmod
         monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
 
         try:
@@ -734,8 +734,8 @@ class TestReverseProxy:
                 assert resp.status == 200
 
             # Verify HMAC header was forwarded
-            proxy_header = received_headers.get("x-kiroclaw-proxy", "")
-            assert proxy_header, "X-KiroClaw-Proxy header missing"
+            proxy_header = received_headers.get("x-kirocrew-proxy", "")
+            assert proxy_header, "X-KiroCrew-Proxy header missing"
             assert ":" in proxy_header
 
             ts, sig = proxy_header.split(":", 1)
@@ -774,7 +774,7 @@ class TestReverseProxy:
         await site.start()
         port = runner.addresses[0][1]
 
-        import kiro_claw.apps.routes as rmod
+        import kiro_crew.apps.routes as rmod
         monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
 
         try:
@@ -788,7 +788,7 @@ class TestReverseProxy:
 
             # Verify HMAC includes query string — proxy preserves /api/
             # prefix in forwarded path, so msg includes it.
-            proxy_header = received_headers.get("x-kiroclaw-proxy", "")
+            proxy_header = received_headers.get("x-kirocrew-proxy", "")
             ts, sig = proxy_header.split(":", 1)
             empty_body_hash = hashlib.sha256(b"").hexdigest()
             msg = f"{ts}:GET:/api/data?user=alice&limit=10:" + empty_body_hash
@@ -829,7 +829,7 @@ class TestReverseProxy:
         await site.start()
         port = runner.addresses[0][1]
 
-        import kiro_claw.apps.routes as rmod
+        import kiro_crew.apps.routes as rmod
         monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
 
         body_bytes = b'{"hello": "world", "n": 42}'
@@ -838,8 +838,8 @@ class TestReverseProxy:
                 resp = await client.post("/apps/proxy-app/api/echo", data=body_bytes)
                 assert resp.status == 200
 
-            proxy_header = received_headers.get("x-kiroclaw-proxy", "")
-            assert proxy_header, "X-KiroClaw-Proxy header missing"
+            proxy_header = received_headers.get("x-kirocrew-proxy", "")
+            assert proxy_header, "X-KiroCrew-Proxy header missing"
             ts, sig = proxy_header.split(":", 1)
 
             # Signature binds sha256 of the actual (non-empty) body.
@@ -875,10 +875,10 @@ class TestSSRFGuard:
 
     def test_rejects_gateway_own_port(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Backend URL pointing to gateway's own port is rejected."""
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
-        monkeypatch.setenv("KIROCLAW_PORT", "5476")
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_PORT", "5476")
 
         app_dir = home / "apps" / "evil-app"
         app_dir.mkdir(parents=True)
@@ -898,20 +898,20 @@ class TestSSRFGuard:
         }
         (app_dir / "installed.json").write_text(json.dumps(installed))
 
-        import kiro_claw.apps.bridges as bridges_mod
+        import kiro_crew.apps.bridges as bridges_mod
         kiro_agents = tmp_path / "kiro-agents"
         kiro_agents.mkdir(exist_ok=True)
         monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
 
-        from kiro_claw.apps.routes import _resolve_app_backend_url
+        from kiro_crew.apps.routes import _resolve_app_backend_url
         result = _resolve_app_backend_url("evil-app")
         assert result is None, f"Expected None for self-referential URL, got {result}"
 
     def test_rejects_non_loopback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Backend URL pointing to external host is rejected."""
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
 
         app_dir = home / "apps" / "ext-app"
         app_dir.mkdir(parents=True)
@@ -931,21 +931,21 @@ class TestSSRFGuard:
         }
         (app_dir / "installed.json").write_text(json.dumps(installed))
 
-        import kiro_claw.apps.bridges as bridges_mod
+        import kiro_crew.apps.bridges as bridges_mod
         kiro_agents = tmp_path / "kiro-agents"
         kiro_agents.mkdir(exist_ok=True)
         monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
 
-        from kiro_claw.apps.routes import _resolve_app_backend_url
+        from kiro_crew.apps.routes import _resolve_app_backend_url
         result = _resolve_app_backend_url("ext-app")
         assert result is None, f"Expected None for non-loopback URL, got {result}"
 
     def test_allows_valid_loopback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Backend URL on loopback with non-gateway port is allowed."""
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
-        monkeypatch.setenv("KIROCLAW_PORT", "5476")
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_PORT", "5476")
 
         app_dir = home / "apps" / "good-app"
         app_dir.mkdir(parents=True)
@@ -965,12 +965,12 @@ class TestSSRFGuard:
         }
         (app_dir / "installed.json").write_text(json.dumps(installed))
 
-        import kiro_claw.apps.bridges as bridges_mod
+        import kiro_crew.apps.bridges as bridges_mod
         kiro_agents = tmp_path / "kiro-agents"
         kiro_agents.mkdir(exist_ok=True)
         monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
 
-        from kiro_claw.apps.routes import _resolve_app_backend_url
+        from kiro_crew.apps.routes import _resolve_app_backend_url
         result = _resolve_app_backend_url("good-app")
         assert result == "http://127.0.0.1:8080"
 
@@ -1067,19 +1067,19 @@ class TestUninstallAppSourcesCleanup:
 
     @pytest.fixture(autouse=True)
     def _uninstall_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        home = tmp_path / "kiroclaw-home"
+        home = tmp_path / "kirocrew-home"
         home.mkdir()
-        monkeypatch.setenv("KIROCLAW_HOME", str(home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
         # Stub bridges
-        import kiro_claw.apps.bridges as bridges_mod
+        import kiro_crew.apps.bridges as bridges_mod
         kiro_agents = tmp_path / "kiro-agents"
         kiro_agents.mkdir()
         monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-        import kiro_claw.apps.backend as bmod
+        import kiro_crew.apps.backend as bmod
         bmod._processes.clear()
         bmod._allocated_ports.clear()
         # Clear secret cache
-        from kiro_claw.apps.routes import _app_secret_cache
+        from kiro_crew.apps.routes import _app_secret_cache
         _app_secret_cache.clear()
         self._home = home
 
@@ -1113,7 +1113,7 @@ class TestUninstallAppSourcesCleanup:
         """Uninstalling a registry app removes its workspace."""
         self._create_app("reg-app", origin="registry", source="registry:reg-app")
         # Simulate the per-app source clone directory (generic git clone layout:
-        # ~/.kiroclaw/app-sources/{name}/ holding a checked-out repo).
+        # ~/.kirocrew/app-sources/{name}/ holding a checked-out repo).
         ws_dir = self._home / "app-sources" / "reg-app"
         (ws_dir / ".git").mkdir(parents=True)
         (ws_dir / "package.json").write_text('{"name": "reg-app"}')
@@ -1167,7 +1167,7 @@ class TestStreamingLogLines:
     the streaming install endpoint."""
 
     def test_append_pushes_to_queue(self) -> None:
-        from kiro_claw.apps.registry import StreamingLogLines
+        from kiro_crew.apps.registry import StreamingLogLines
         q: asyncio.Queue[str | None] = asyncio.Queue()
         sl = StreamingLogLines(q)
         sl.append("line 1")
@@ -1178,7 +1178,7 @@ class TestStreamingLogLines:
         assert q.get_nowait() == "line 2"
 
     def test_extend_pushes_each_line(self) -> None:
-        from kiro_claw.apps.registry import StreamingLogLines
+        from kiro_crew.apps.registry import StreamingLogLines
         q: asyncio.Queue[str | None] = asyncio.Queue()
         sl = StreamingLogLines(q)
         sl.extend(["a", "b", "c"])
@@ -1186,7 +1186,7 @@ class TestStreamingLogLines:
         assert q.qsize() == 3
 
     def test_join_works_like_plain_list(self) -> None:
-        from kiro_claw.apps.registry import StreamingLogLines
+        from kiro_crew.apps.registry import StreamingLogLines
         q: asyncio.Queue[str | None] = asyncio.Queue()
         sl = StreamingLogLines(q)
         sl.append("hello")
@@ -1195,7 +1195,7 @@ class TestStreamingLogLines:
 
     def test_full_queue_does_not_raise(self) -> None:
         """When the queue is full, append should silently drop (not block)."""
-        from kiro_claw.apps.registry import StreamingLogLines
+        from kiro_crew.apps.registry import StreamingLogLines
         q: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1)
         sl = StreamingLogLines(q)
         sl.append("first")   # fills the queue
@@ -1204,7 +1204,7 @@ class TestStreamingLogLines:
         assert q.qsize() == 1  # only first made it
 
     def test_empty_list_join(self) -> None:
-        from kiro_claw.apps.registry import StreamingLogLines
+        from kiro_crew.apps.registry import StreamingLogLines
         q: asyncio.Queue[str | None] = asyncio.Queue()
         sl = StreamingLogLines(q)
         assert "\n".join(sl) == ""
@@ -1281,11 +1281,11 @@ class TestRegistryInstallStream:
             }
 
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.install_from_registry", _fake_install,
+            "kiro_crew.apps.routes.install_from_registry", _fake_install,
         )
         # Stub register_app to avoid touching real bridges
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.register_app",
+            "kiro_crew.apps.routes.register_app",
             lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}})(),
         )
 
@@ -1319,7 +1319,7 @@ class TestRegistryInstallStream:
             return {"ok": False, "name": name, "error": "build failed", "log": "\n".join(log_lines or [])}
 
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.install_from_registry", _fake_install,
+            "kiro_crew.apps.routes.install_from_registry", _fake_install,
         )
 
         async with self._make_client() as client:
@@ -1349,7 +1349,7 @@ class TestRegistryInstallStream:
             }
 
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.install_from_registry", _fake_install,
+            "kiro_crew.apps.routes.install_from_registry", _fake_install,
         )
 
         async with self._make_client() as client:
@@ -1373,7 +1373,7 @@ class TestRegistryInstallStream:
             raise RuntimeError("unexpected crash")
 
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.install_from_registry", _fake_install,
+            "kiro_crew.apps.routes.install_from_registry", _fake_install,
         )
 
         async with self._make_client() as client:
@@ -1398,7 +1398,7 @@ class TestInstallFromRegistryLogLines:
     async def test_custom_log_lines_receives_entries(self) -> None:
         """When a custom log_lines is passed, it should receive entries
         (even if the install fails early due to missing registry entry)."""
-        from kiro_claw.apps.registry import install_from_registry
+        from kiro_crew.apps.registry import install_from_registry
         custom: list[str] = []
         result = await install_from_registry("nonexistent", log_lines=custom)
         assert result["ok"] is False
@@ -1409,7 +1409,7 @@ class TestInstallFromRegistryLogLines:
     @pytest.mark.asyncio
     async def test_default_log_lines_is_plain_list(self) -> None:
         """When log_lines is not passed, a plain list is used internally."""
-        from kiro_claw.apps.registry import install_from_registry
+        from kiro_crew.apps.registry import install_from_registry
         result = await install_from_registry("nonexistent")
         assert result["ok"] is False
         assert "not found" in result.get("error", "")
@@ -1448,10 +1448,10 @@ class TestRegistryInstallStreamSecurity:
             return {"ok": True, "name": name, "message": "ok", "log": "\n".join(log_lines or [])}
 
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.install_from_registry", _fake_install,
+            "kiro_crew.apps.routes.install_from_registry", _fake_install,
         )
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.register_app",
+            "kiro_crew.apps.routes.register_app",
             lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}})(),
         )
 
@@ -1487,10 +1487,10 @@ class TestRegistryInstallStreamSecurity:
             return {"ok": True, "name": name, "message": "ok", "log": "\n".join(log_lines or [])}
 
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.install_from_registry", _fake_install,
+            "kiro_crew.apps.routes.install_from_registry", _fake_install,
         )
         monkeypatch.setattr(
-            "kiro_claw.apps.routes.register_app",
+            "kiro_crew.apps.routes.register_app",
             lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}})(),
         )
 

@@ -9,13 +9,13 @@ import json
 
 import pytest
 
-from kiro_claw.cloud import aws, ec2, sizes
-from kiro_claw.validation import ValidationError
+from kiro_crew.cloud import aws, ec2, sizes
+from kiro_crew.validation import ValidationError
 
 
 class TestValidation:
     def test_valid_tag(self):
-        assert ec2.validate_tag("kiroclaw-7f3a") == "kiroclaw-7f3a"
+        assert ec2.validate_tag("kirocrew-7f3a") == "kirocrew-7f3a"
 
     def test_empty_tag_rejected(self):
         with pytest.raises(ValidationError):
@@ -26,9 +26,9 @@ class TestValidation:
             ec2.validate_tag("bad;rm -rf")
 
     def test_tag_length_capped_for_iam_role_name(self):
-        # kiroclaw-ec2-<tag> must fit IAM's 64-char role-name limit; 13-char
+        # kirocrew-ec2-<tag> must fit IAM's 64-char role-name limit; 13-char
         # prefix + tag <= 64 => tag <= 51.
-        assert len("kiroclaw-ec2-") + 51 == 64
+        assert len("kirocrew-ec2-") + 51 == 64
         ec2.validate_tag("a" * 51)  # ok
         with pytest.raises(ValidationError):
             ec2.validate_tag("a" * 52)
@@ -39,7 +39,7 @@ class TestValidation:
             ec2.validate_region("not a region")
 
     def test_stack_name(self):
-        assert ec2.stack_name("abc") == "kiroclaw-abc"
+        assert ec2.stack_name("abc") == "kirocrew-abc"
 
     def test_cidr_valid(self):
         assert ec2._validate_cidr("1.2.3.4/32") == "1.2.3.4/32"
@@ -73,20 +73,20 @@ class TestValidation:
     def test_cidr_wide_range_warns(self, caplog):
         import logging
 
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.cloud.ec2"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.cloud.ec2"):
             assert ec2._validate_cidr("10.1.0.0/16") == "10.1.0.0/16"  # accepted, warned
             # Host bits are normalized away: 10.1.2.0/20 -> 10.1.0.0/20 (the
             # canonical network for that range), so the SG rule is unambiguous.
             assert ec2._validate_cidr("10.1.2.0/20") == "10.1.0.0/20"
         assert sum("wide range" in r.message for r in caplog.records) == 2
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="kiro_claw.cloud.ec2"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.cloud.ec2"):
             ec2._validate_cidr("192.168.1.0/24")  # /24+ is fine, no warning
             ec2._validate_cidr("1.2.3.4/32")
         assert not caplog.records
 
     def test_repo_ref_charset(self):
-        from kiro_claw.validation import validate_field
+        from kiro_crew.validation import validate_field
 
         assert validate_field("https://github.com/x/y.git", ec2._REPO_SPEC)
         assert validate_field("main", ec2._REF_SPEC)
@@ -120,8 +120,8 @@ class TestTemplate:
         # policy below is the one that actually pins the single object.)
         text = ec2.load_template()
         derived = (
-            "arn:aws:s3:::kiroclaw-src-${AWS::AccountId}-${AWS::Region}"
-            "/${StackTag}/kiroclaw-src.tar.gz"
+            "arn:aws:s3:::kirocrew-src-${AWS::AccountId}-${AWS::Region}"
+            "/${StackTag}/kirocrew-src.tar.gz"
         )
         # Only the inline SourceObjectRead policy uses the derived ARN now.
         assert text.count(derived) == 1
@@ -136,7 +136,7 @@ class TestTemplate:
         text = ec2.load_template()
         # No per-launch managed-policy boundary resource remains.
         assert "InstanceBoundary:" not in text
-        assert "kiroclaw-ec2-boundary-${StackTag}" not in text
+        assert "kirocrew-ec2-boundary-${StackTag}" not in text
         # The role references the boundary by the new parameter.
         assert "PermissionsBoundaryArn:" in text
         assert "PermissionsBoundary: !Ref PermissionsBoundaryArn" in text
@@ -152,7 +152,7 @@ class TestTemplate:
         block = _re.search(r"  PermissionsBoundaryArn:\n(?:    .+\n|    #.+\n)+", text)
         assert block, "PermissionsBoundaryArn param missing"
         assert "AllowedPattern" in block.group(0)
-        assert "kiroclaw-ec2-boundary" in block.group(0)
+        assert "kirocrew-ec2-boundary" in block.group(0)
 
     def test_userdata_params_have_allowed_patterns(self):
         # Every string parameter that flows into the root user-data script must
@@ -162,14 +162,14 @@ class TestTemplate:
         import re as _re
 
         text = ec2.load_template()
-        for param in ("SourceBucket", "SourceKey", "KiroclawRepo", "KiroclawRef", "AllowSshCidr"):
+        for param in ("SourceBucket", "SourceKey", "KirocrewRepo", "KirocrewRef", "AllowSshCidr"):
             block = _re.search(rf"  {param}:\n(?:    .+\n)+", text)
             assert block, f"parameter {param} missing"
             assert "AllowedPattern" in block.group(0), f"{param} lacks AllowedPattern"
 
     def test_stacktag_pattern_matches_cli_length_cap(self):
         # The template's StackTag AllowedPattern must cap at 51 (not 63) to mirror
-        # the CLI _TAG_RE: the role name "kiroclaw-ec2-${StackTag}" + IAM's 64-char
+        # the CLI _TAG_RE: the role name "kirocrew-ec2-${StackTag}" + IAM's 64-char
         # role-name limit => 13 + 51 = 64. A 52-63 char tag would otherwise pass
         # template validation on a direct deploy, then fail opaquely at role
         # creation. Keep this in lockstep with ec2._TAG_RE.
@@ -215,7 +215,7 @@ class TestTemplate:
             assert line.isascii(), f"non-ASCII in template line {i}: {line!r}"
 
 
-_BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/kiroclaw-ec2-boundary"
+_BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary"
 
 
 class TestBuildDeployArgv:
@@ -229,7 +229,7 @@ class TestBuildDeployArgv:
             permissions_boundary_arn=_BOUNDARY_ARN,
         )
         assert argv[:2] == ["cloudformation", "deploy"]
-        assert "--stack-name" in argv and "kiroclaw-t1" in argv
+        assert "--stack-name" in argv and "kirocrew-t1" in argv
         assert "CAPABILITY_NAMED_IAM" in argv
         assert f"InstanceType={tier.instance_type}" in argv
         assert "Architecture=arm64" in argv
@@ -239,8 +239,8 @@ class TestBuildDeployArgv:
         # the pre-created shared boundary ARN is passed to the template param
         assert f"PermissionsBoundaryArn={_BOUNDARY_ARN}" in argv
         # discovery tags applied to the stack
-        assert "kiroclaw:managed=true" in argv
-        assert "kiroclaw:instance=t1" in argv
+        assert "kirocrew:managed=true" in argv
+        assert "kirocrew:instance=t1" in argv
 
     def test_source_params_included_when_set(self):
         tier = sizes.get_tier("balanced")
@@ -250,11 +250,11 @@ class TestBuildDeployArgv:
             vpc_id="v",
             subnet_id="s",
             permissions_boundary_arn=_BOUNDARY_ARN,
-            source_bucket="kiroclaw-src-123-us-east-1",
-            source_key="t1/kiroclaw-src.tar.gz",
+            source_bucket="kirocrew-src-123-us-east-1",
+            source_key="t1/kirocrew-src.tar.gz",
         )
-        assert "SourceBucket=kiroclaw-src-123-us-east-1" in argv
-        assert "SourceKey=t1/kiroclaw-src.tar.gz" in argv
+        assert "SourceBucket=kirocrew-src-123-us-east-1" in argv
+        assert "SourceKey=t1/kirocrew-src.tar.gz" in argv
 
     def test_ssh_cidr_and_repo_included_when_set(self):
         tier = sizes.get_tier("balanced")
@@ -268,8 +268,8 @@ class TestBuildDeployArgv:
             ref="dev",
             allow_ssh_cidr="1.2.3.4/32",
         )
-        assert "KiroclawRepo=https://example.com/x.git" in argv
-        assert "KiroclawRef=dev" in argv
+        assert "KirocrewRepo=https://example.com/x.git" in argv
+        assert "KirocrewRef=dev" in argv
         assert "AllowSshCidr=1.2.3.4/32" in argv
 
     def test_ssh_cidr_omitted_by_default(self):
@@ -312,7 +312,7 @@ class TestDeployDryRun:
 
 class TestDeployShipsSource:
     def test_deploy_uploads_source_and_passes_params(self, monkeypatch):
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
         monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
@@ -320,8 +320,8 @@ class TestDeployShipsSource:
             source_mod,
             "upload_source",
             lambda tag, profile="", region="": (
-                "kiroclaw-src-1-us-east-1",
-                f"{tag}/kiroclaw-src.tar.gz",
+                "kirocrew-src-1-us-east-1",
+                f"{tag}/kirocrew-src.tar.gz",
             ),
         )
         monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1"))
@@ -338,12 +338,12 @@ class TestDeployShipsSource:
             lambda *a, **k: {"instance_id": "i-1", "stack_status": "CREATE_COMPLETE"},
         )
         r = ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
-        assert "SourceBucket=kiroclaw-src-1-us-east-1" in captured["argv"]
-        assert "SourceKey=t1/kiroclaw-src.tar.gz" in captured["argv"]
+        assert "SourceBucket=kirocrew-src-1-us-east-1" in captured["argv"]
+        assert "SourceKey=t1/kirocrew-src.tar.gz" in captured["argv"]
         # the pre-created shared boundary ARN flows into the deploy params
         assert f"PermissionsBoundaryArn={_BOUNDARY_ARN}" in captured["argv"]
         # git repo/ref suppressed when shipping source
-        assert not any(a.startswith("KiroclawRepo=") for a in captured["argv"])
+        assert not any(a.startswith("KirocrewRepo=") for a in captured["argv"])
         assert r.instance_id == "i-1"
 
 
@@ -351,7 +351,7 @@ class TestDeployAbortsOnUnownedStack:
     def test_deploy_aborts_before_upload_on_name_collision(self, monkeypatch):
         # An untagged same-named stack -> find_stack raises -> deploy must abort
         # BEFORE uploading source or calling cloudformation deploy.
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         monkeypatch.setattr(
             ec2,
@@ -376,7 +376,7 @@ class TestDeployCleansSourceOnEarlyFailure:
     def test_network_discovery_failure_deletes_uploaded_source(self, monkeypatch):
         # upload_source runs BEFORE discover_network; a discovery failure must
         # not orphan the just-uploaded tarball in S3.
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         deleted: list[str] = []
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
@@ -694,9 +694,9 @@ class TestDiscoverNetwork:
 class TestStatusAndList:
     def _stack(self, status="CREATE_COMPLETE", instance="i-0abc"):
         return {
-            "StackName": "kiroclaw-t1",
+            "StackName": "kirocrew-t1",
             "StackStatus": status,
-            "Tags": [{"Key": "kiroclaw:managed", "Value": "true"}],
+            "Tags": [{"Key": "kirocrew:managed", "Value": "true"}],
             "Outputs": [
                 {"OutputKey": "InstanceId", "OutputValue": instance},
                 {"OutputKey": "PublicDnsName", "OutputValue": "ec2-x.compute.amazonaws.com"},
@@ -705,7 +705,7 @@ class TestStatusAndList:
         }
 
     def test_find_stack_raises_on_untagged_name_collision(self, monkeypatch):
-        # A stack merely NAMED kiroclaw-<tag> but not tagged managed=true is a
+        # A stack merely NAMED kirocrew-<tag> but not tagged managed=true is a
         # foreign collision — find_stack must RAISE (returning None would read as
         # "absent" to deploy(), which would then deploy against the foreign stack).
         monkeypatch.setattr(
@@ -714,7 +714,7 @@ class TestStatusAndList:
             lambda *a, **k: (
                 0,
                 json.dumps(
-                    {"Stacks": [{"StackName": "kiroclaw-t1", "StackStatus": "CREATE_COMPLETE"}]}
+                    {"Stacks": [{"StackName": "kirocrew-t1", "StackStatus": "CREATE_COMPLETE"}]}
                 ),
                 "",
             ),
@@ -723,7 +723,7 @@ class TestStatusAndList:
             ec2.find_stack("t1", "dev", "us-east-1")
 
     def test_find_stack_raises_on_instance_tag_mismatch(self, monkeypatch):
-        # A managed stack named kiroclaw-t1 but whose kiroclaw:instance tag is a
+        # A managed stack named kirocrew-t1 but whose kirocrew:instance tag is a
         # DIFFERENT value isn't this launch's stack — find_stack must RAISE so
         # destroy/stop/start --tag t1 can't act on it.
         monkeypatch.setattr(
@@ -735,11 +735,11 @@ class TestStatusAndList:
                     {
                         "Stacks": [
                             {
-                                "StackName": "kiroclaw-t1",
+                                "StackName": "kirocrew-t1",
                                 "StackStatus": "CREATE_COMPLETE",
                                 "Tags": [
-                                    {"Key": "kiroclaw:managed", "Value": "true"},
-                                    {"Key": "kiroclaw:instance", "Value": "somethingelse"},
+                                    {"Key": "kirocrew:managed", "Value": "true"},
+                                    {"Key": "kirocrew:instance", "Value": "somethingelse"},
                                 ],
                             }
                         ]
@@ -761,11 +761,11 @@ class TestStatusAndList:
                     {
                         "Stacks": [
                             {
-                                "StackName": "kiroclaw-t1",
+                                "StackName": "kirocrew-t1",
                                 "StackStatus": "CREATE_COMPLETE",
                                 "Tags": [
-                                    {"Key": "kiroclaw:managed", "Value": "true"},
-                                    {"Key": "kiroclaw:instance", "Value": "t1"},
+                                    {"Key": "kirocrew:managed", "Value": "true"},
+                                    {"Key": "kirocrew:instance", "Value": "t1"},
                                 ],
                             }
                         ]
@@ -775,7 +775,7 @@ class TestStatusAndList:
             ),
         )
         st = ec2.find_stack("t1", "dev", "us-east-1")
-        assert st is not None and st["StackName"] == "kiroclaw-t1"
+        assert st is not None and st["StackName"] == "kirocrew-t1"
 
     def test_describe_absent(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", "does not exist"))
@@ -830,7 +830,7 @@ class TestStatusAndList:
                 "ResourceTagMappingList": [
                     {
                         "ResourceARN": "arn:aws:ec2:us-east-1:1:instance/i-0abc",
-                        "Tags": [{"Key": "kiroclaw:instance", "Value": "t1"}],
+                        "Tags": [{"Key": "kirocrew:instance", "Value": "t1"}],
                     },
                 ]
             }
@@ -846,11 +846,11 @@ class TestStatusAndList:
                 "ResourceTagMappingList": [
                     {
                         "ResourceARN": "arn:aws:ec2:us-east-1:1:instance/i-live",
-                        "Tags": [{"Key": "kiroclaw:instance", "Value": "t1"}],
+                        "Tags": [{"Key": "kirocrew:instance", "Value": "t1"}],
                     },
                     {
                         "ResourceARN": "arn:aws:ec2:us-east-1:1:instance/i-dead",
-                        "Tags": [{"Key": "kiroclaw:instance", "Value": "t0"}],
+                        "Tags": [{"Key": "kirocrew:instance", "Value": "t0"}],
                     },
                 ]
             }
@@ -866,7 +866,7 @@ class TestStatusAndList:
         rows = ec2.list_instances("dev", "us-east-1")
         assert rows == [{"tag": "t1", "instance_id": "i-live", "instance_state": "running"}]
 
-    def test_list_stacks_filters_kiroclaw_prefix(self, monkeypatch):
+    def test_list_stacks_filters_kirocrew_prefix(self, monkeypatch):
         captured = {}
 
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
@@ -874,20 +874,128 @@ class TestStatusAndList:
             captured["action"] = action
             return {
                 "StackSummaries": [
-                    {"StackName": "kiroclaw-kc-b", "StackStatus": "CREATE_COMPLETE"},
+                    {"StackName": "kirocrew-kc-b", "StackStatus": "CREATE_COMPLETE"},
                     {"StackName": "other", "StackStatus": "CREATE_COMPLETE"},
-                    {"StackName": "kiroclaw-kc-a", "StackStatus": "UPDATE_COMPLETE"},
+                    {"StackName": "kirocrew-kc-a", "StackStatus": "UPDATE_COMPLETE"},
                 ]
             }
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
         rows = ec2.list_stacks("dev", "us-east-1")
         assert rows == [
-            {"tag": "kc-a", "stack_name": "kiroclaw-kc-a", "stack_status": "UPDATE_COMPLETE"},
-            {"tag": "kc-b", "stack_name": "kiroclaw-kc-b", "stack_status": "CREATE_COMPLETE"},
+            {"tag": "kc-a", "stack_name": "kirocrew-kc-a", "stack_status": "UPDATE_COMPLETE"},
+            {"tag": "kc-b", "stack_name": "kirocrew-kc-b", "stack_status": "CREATE_COMPLETE"},
         ]
         assert captured["action"] == "cloudformation:ListStacks"
         assert "list-stacks" in captured["args"]
+
+
+class TestLegacyDiscovery:
+    """KiroClaw → KiroCrew: discovery must still find pre-rename resources so an
+    existing billable stack is manageable and not silently duplicated."""
+
+    def test_find_stack_falls_back_to_legacy_kiroclaw_stack(self, monkeypatch):
+        # New kirocrew-t1 absent; legacy kiroclaw-t1 present and legacy-tagged.
+        def fake_run(args, profile="", region="", *, timeout=aws.DEFAULT_TIMEOUT):
+            name = args[args.index("--stack-name") + 1]
+            if name == "kirocrew-t1":
+                return (255, "", "ValidationError: Stack ... does not exist")
+            if name == "kiroclaw-t1":
+                return (
+                    0,
+                    json.dumps(
+                        {
+                            "Stacks": [
+                                {
+                                    "StackName": "kiroclaw-t1",
+                                    "StackStatus": "CREATE_COMPLETE",
+                                    "Tags": [
+                                        {"Key": "kiroclaw:managed", "Value": "true"},
+                                        {"Key": "kiroclaw:instance", "Value": "t1"},
+                                    ],
+                                }
+                            ]
+                        }
+                    ),
+                    "",
+                )
+            return (255, "", "does not exist")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        st = ec2.find_stack("t1", "dev", "us-east-1")
+        assert st is not None and st["StackName"] == "kiroclaw-t1"
+
+    def test_find_stack_absent_when_neither_name_exists(self, monkeypatch):
+        monkeypatch.setattr(
+            aws, "run_aws", lambda *a, **k: (255, "", "ValidationError: ... does not exist")
+        )
+        assert ec2.find_stack("t1", "dev", "us-east-1") is None
+
+    def test_find_stack_prefers_current_over_legacy(self, monkeypatch):
+        # If the current stack exists, the legacy name is never queried.
+        seen = []
+
+        def fake_run(args, profile="", region="", *, timeout=aws.DEFAULT_TIMEOUT):
+            name = args[args.index("--stack-name") + 1]
+            seen.append(name)
+            return (
+                0,
+                json.dumps(
+                    {
+                        "Stacks": [
+                            {
+                                "StackName": "kirocrew-t1",
+                                "StackStatus": "CREATE_COMPLETE",
+                                "Tags": [
+                                    {"Key": "kirocrew:managed", "Value": "true"},
+                                    {"Key": "kirocrew:instance", "Value": "t1"},
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        st = ec2.find_stack("t1", "dev", "us-east-1")
+        assert st is not None and st["StackName"] == "kirocrew-t1"
+        assert seen == ["kirocrew-t1"]  # legacy name not queried
+
+    def test_list_stacks_includes_legacy_prefix(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            return {
+                "StackSummaries": [
+                    {"StackName": "kirocrew-new", "StackStatus": "CREATE_COMPLETE"},
+                    {"StackName": "kiroclaw-old", "StackStatus": "CREATE_COMPLETE"},
+                    {"StackName": "unrelated", "StackStatus": "CREATE_COMPLETE"},
+                ]
+            }
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        rows = ec2.list_stacks("dev", "us-east-1")
+        names = {r["stack_name"] for r in rows}
+        assert names == {"kirocrew-new", "kiroclaw-old"}
+
+    def test_list_instances_includes_legacy_tag(self, monkeypatch):
+        # Current-tag query returns nothing; legacy-tag query returns an instance.
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            key = args[args.index("--tag-filters") + 1]
+            if key.startswith("Key=kiroclaw:managed"):
+                return {
+                    "ResourceTagMappingList": [
+                        {
+                            "ResourceARN": "arn:aws:ec2:us-east-1:1:instance/i-legacy",
+                            "Tags": [{"Key": "kiroclaw:instance", "Value": "old"}],
+                        }
+                    ]
+                }
+            return {"ResourceTagMappingList": []}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, "stopped\n", ""))
+        rows = ec2.list_instances("dev", "us-east-1")
+        assert rows == [{"tag": "old", "instance_id": "i-legacy", "instance_state": "stopped"}]
 
 
 class TestLifecycle:
@@ -937,7 +1045,7 @@ class TestStackEventsAndFailures:
                 "LogicalResourceId": "WaitCondition",
                 "ResourceStatus": "CREATE_FAILED",
                 "ResourceStatusReason": "WaitCondition received failed message: "
-                "'kiroclaw install.sh failed' :: ...node-rc=1|No match for nodejs",
+                "'kirocrew install.sh failed' :: ...node-rc=1|No match for nodejs",
             },
             {
                 "EventId": "e2",
@@ -947,7 +1055,7 @@ class TestStackEventsAndFailures:
             },
             {
                 "EventId": "e1",
-                "LogicalResourceId": "kiroclaw-t1",
+                "LogicalResourceId": "kirocrew-t1",
                 "ResourceStatus": "CREATE_IN_PROGRESS",
                 "ResourceStatusReason": "",
             },
@@ -980,7 +1088,7 @@ class TestStackEventsAndFailures:
             "StackEvents": [
                 {
                     "EventId": "e3",
-                    "LogicalResourceId": "kiroclaw-t1",
+                    "LogicalResourceId": "kirocrew-t1",
                     "ResourceStatus": "CREATE_FAILED",
                     "ResourceStatusReason": (
                         "The following resource(s) failed to create: [WaitCondition]."
@@ -1014,7 +1122,7 @@ class TestStackEventsAndFailures:
             "StackEvents": [
                 {
                     "EventId": "e1",
-                    "LogicalResourceId": "kiroclaw-t1",
+                    "LogicalResourceId": "kirocrew-t1",
                     "ResourceStatus": "CREATE_FAILED",
                     "ResourceStatusReason": (
                         "The following resource(s) failed to create: [WaitCondition]."
@@ -1025,10 +1133,10 @@ class TestStackEventsAndFailures:
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, json.dumps(events), ""))
         fails = ec2.get_stack_failures("t1", "dev", "us-east-1")
         assert len(fails) == 1
-        assert fails[0]["resource"] == "kiroclaw-t1"
+        assert fails[0]["resource"] == "kirocrew-t1"
 
     def test_deploy_disable_rollback_appends_flag(self, monkeypatch):
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
         monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
@@ -1055,7 +1163,7 @@ class TestStackEventsAndFailures:
         assert "--disable-rollback" in captured["argv"]
 
     def test_deploy_failure_attaches_root_cause(self, monkeypatch):
-        import kiro_claw.cloud.source as source_mod
+        import kiro_crew.cloud.source as source_mod
 
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
         monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
@@ -1071,7 +1179,7 @@ class TestStackEventsAndFailures:
                 {
                     "resource": "WaitCondition",
                     "status": "CREATE_FAILED",
-                    "reason": "kiroclaw install.sh failed :: node-rc=1",
+                    "reason": "kirocrew install.sh failed :: node-rc=1",
                 }
             ],
         )
@@ -1080,12 +1188,12 @@ class TestStackEventsAndFailures:
 
 
 class TestHumanActionGuard:
-    """Mutating cloud ops must refuse from an agent session (KIROCLAW_SESSION_KEY
+    """Mutating cloud ops must refuse from an agent session (KIROCREW_SESSION_KEY
     set) — closes the bypass where an agent calls ec2.destroy()/deploy() from a
     Python snippet, sidestepping the shell deniedCommands."""
 
     def test_mutations_denied_under_agent_session(self, monkeypatch):
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-123")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-123")
         monkeypatch.setattr(
             aws, "run_aws", lambda *a, **k: pytest.fail("must not reach AWS under agent session")
         )
@@ -1100,14 +1208,14 @@ class TestHumanActionGuard:
 
     def test_dry_run_allowed_under_agent_session(self, monkeypatch):
         # A read-only dry run (no AWS mutation) is fine even from an agent.
-        monkeypatch.setenv("KIROCLAW_SESSION_KEY", "sess-123")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-123")
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
         r = ec2.destroy("t1", "dev", "us-east-1", dry_run=True)
         assert r["dry_run"] is True
 
     def test_mutations_allowed_without_session_key(self, monkeypatch):
-        # Human terminal: no KIROCLAW_SESSION_KEY -> the guard is a no-op.
-        monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
+        # Human terminal: no KIROCREW_SESSION_KEY -> the guard is a no-op.
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         aws.assert_human_action("cloudformation:DeleteStack")  # must not raise
 
 
@@ -1117,14 +1225,14 @@ class TestDestroy:
             "cloudformation",
             "delete-stack",
             "--stack-name",
-            "kiroclaw-t1",
+            "kirocrew-t1",
         ]
 
     def test_dry_run(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
         r = ec2.destroy("t1", "dev", "us-east-1", dry_run=True)
         assert r["dry_run"] is True
-        assert r["argv"] == ["cloudformation", "delete-stack", "--stack-name", "kiroclaw-t1"]
+        assert r["argv"] == ["cloudformation", "delete-stack", "--stack-name", "kirocrew-t1"]
 
     def test_already_absent_is_success(self, monkeypatch):
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
@@ -1143,7 +1251,7 @@ class TestDestroy:
             ec2.destroy("t1", "dev", "us-east-1")
 
     def test_destroy_deletes_and_waits(self, monkeypatch):
-        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kiroclaw-t1"})
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kirocrew-t1"})
         calls = {}
         monkeypatch.setattr(
             aws,
@@ -1158,8 +1266,43 @@ class TestDestroy:
         assert calls["action"] == "cloudformation:DeleteStack"
 
     def test_destroy_no_wait(self, monkeypatch):
-        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kiroclaw-t1"})
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kirocrew-t1"})
         monkeypatch.setattr(aws, "checked", lambda *a, **k: "")
         r = ec2.destroy("t1", "dev", "us-east-1", wait=False)
         assert r["destroyed"] is True
         assert r["waited"] is False
+
+    def test_destroy_targets_legacy_stack_name(self, monkeypatch):
+        # A pre-rename stack is named kiroclaw-t1. destroy must delete + wait on
+        # THAT name, not kirocrew-t1 (which would no-op and leave it billing).
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kiroclaw-t1"})
+        calls = {}
+        monkeypatch.setattr(
+            aws,
+            "checked",
+            lambda args, *a, action="", **k: calls.update(delete=args) or "",
+        )
+        waited = {}
+        monkeypatch.setattr(
+            ec2, "wait_for_delete", lambda *a, name="", **k: waited.update(name=name) or True
+        )
+        r = ec2.destroy("t1", "dev", "us-east-1")
+        assert r["destroyed"] is True
+        assert r["stack_name"] == "kiroclaw-t1"
+        assert "kiroclaw-t1" in calls["delete"]  # delete targets the legacy name
+        assert "kirocrew-t1" not in calls["delete"]
+        assert waited["name"] == "kiroclaw-t1"  # wait targets the legacy name
+
+
+class TestDeployLegacyGuard:
+    def test_deploy_refuses_to_duplicate_legacy_stack(self, monkeypatch):
+        # A legacy kiroclaw-t1 stack exists; deploying would create a duplicate
+        # kirocrew-t1 stack (CFN can't rename), so deploy must raise and NOT ship.
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kiroclaw-t1"})
+        monkeypatch.setattr(
+            aws, "run_aws", lambda *a, **k: pytest.fail("must not deploy over a legacy stack")
+        )
+        with pytest.raises(aws.AWSError) as ei:
+            ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
+        assert "legacy stack" in str(ei.value)
+        assert "destroy" in str(ei.value)

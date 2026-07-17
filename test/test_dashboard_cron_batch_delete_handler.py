@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers.cron import api_cron_batch_delete
+from kiro_crew.dashboard.handlers.cron import api_cron_batch_delete
 
 
 def _make_app(state):
@@ -46,7 +46,7 @@ class TestApiCronBatchDelete:
     def stub_sel(self):
         # Stub the SEL recorder so tests don't write real audit events; expose
         # it so the audit-event test can assert on it.
-        with patch("kiro_claw.dashboard.handlers.cron._sel") as sel_fn:
+        with patch("kiro_crew.dashboard.handlers.cron._sel") as sel_fn:
             recorder = MagicMock()
             sel_fn.return_value = recorder
             yield recorder

@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.llm_helpers import LLMEvent
-from kiro_claw.slack.handler import _PendingApproval
+from kiro_crew.llm_helpers import LLMEvent
+from kiro_crew.slack.handler import _PendingApproval
 
 
 def _make_gateway():
-    from kiro_claw.slack.gateway import GatewayOrchestrator
+    from kiro_crew.slack.gateway import GatewayOrchestrator
 
     gateway = GatewayOrchestrator.__new__(GatewayOrchestrator)
     gateway.sessions = MagicMock()
@@ -64,8 +64,8 @@ class TestApprovalThreading:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ):
             approve_fn = gateway._interactive_approval("subagent")
             result = await approve_fn(_make_event(), "1775113012.860459")
@@ -85,8 +85,8 @@ class TestApprovalThreading:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ):
             approve_fn = gateway._interactive_approval("subagent")
             await approve_fn(_make_event(), "1775113012.860459")
@@ -104,8 +104,8 @@ class TestApprovalThreading:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ):
             approve_fn = gateway._interactive_approval("subagent")
             await approve_fn(_make_event(), "cron:j1")
@@ -123,8 +123,8 @@ class TestApprovalThreading:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ):
             approve_fn = gateway._interactive_approval("subagent")
             await approve_fn(_make_event(), "cron:j1")
@@ -142,8 +142,8 @@ class TestApprovalThreading:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ):
             approve_fn = gateway._interactive_approval("subagent")
             await approve_fn(_make_event(), "")
@@ -162,8 +162,8 @@ class TestApprovalThreading:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ):
             approve_fn = gateway._interactive_approval("subagent")
             await approve_fn(_make_event(), "dashboard:main")
@@ -180,7 +180,7 @@ class TestSubagentPassesParentKey:
     @pytest.mark.asyncio
     async def test_spawn_approval_receives_parent_session_key(self) -> None:
         """on_spawn_approval is called with parent_session_key."""
-        from kiro_claw.subagent import SubagentManager
+        from kiro_crew.subagent import SubagentManager
 
         captured_args: list = []
 
@@ -218,7 +218,7 @@ class TestSubagentPassesParentKey:
     @pytest.mark.asyncio
     async def test_tool_approval_receives_parent_session_key(self) -> None:
         """on_tool_approval is called with parent_session_key during tool requests."""
-        from kiro_claw.subagent import SubagentManager
+        from kiro_crew.subagent import SubagentManager
 
         captured: list = []
 
@@ -281,10 +281,10 @@ class TestIsDmReflectsDestination:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ), patch(
-            "kiro_claw.slack.handler._build_approval_blocks", wraps=None
+            "kiro_crew.slack.handler._build_approval_blocks", wraps=None
         ) as mock_blocks:
             mock_blocks.return_value = [{"type": "section", "text": {"type": "mrkdwn", "text": "test"}}]
             approve_fn = gateway._interactive_approval("subagent")
@@ -301,10 +301,10 @@ class TestIsDmReflectsDestination:
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_claw.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ), patch(
-            "kiro_claw.slack.handler._build_approval_blocks", wraps=None
+            "kiro_crew.slack.handler._build_approval_blocks", wraps=None
         ) as mock_blocks:
             mock_blocks.return_value = [{"type": "section", "text": {"type": "mrkdwn", "text": "test"}}]
             approve_fn = gateway._interactive_approval("subagent")
@@ -328,9 +328,9 @@ class TestApprovalModeSelAudit:
 
         mock_sel = MagicMock()
         mock_sel.log_api_access = MagicMock()
-        with patch("kiro_claw.slack.gateway.sel", return_value=mock_sel), patch(
-            "kiro_claw.slack.handler.is_yolo_mode", return_value=False
-        ), patch("kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
+        with patch("kiro_crew.slack.gateway.sel", return_value=mock_sel), patch(
+            "kiro_crew.slack.handler.is_yolo_mode", return_value=False
+        ), patch("kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
             approve_fn = gateway._interactive_approval("cron")
             result = await approve_fn(_make_event(title="shell: rm -rf /"), "")
 
@@ -353,9 +353,9 @@ class TestApprovalModeSelAudit:
 
         mock_sel = MagicMock()
         mock_sel.log_api_access = MagicMock()
-        with patch("kiro_claw.slack.gateway.sel", return_value=mock_sel), patch(
-            "kiro_claw.slack.handler.is_yolo_mode", return_value=False
-        ), patch("kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
+        with patch("kiro_crew.slack.gateway.sel", return_value=mock_sel), patch(
+            "kiro_crew.slack.handler.is_yolo_mode", return_value=False
+        ), patch("kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
             approve_fn = gateway._interactive_approval("subagent")
             result = await approve_fn(_make_event(title="read /tmp/foo.txt"), "")
 
@@ -379,9 +379,9 @@ class TestApprovalModeSelAudit:
 
         mock_sel = MagicMock()
         mock_sel.log_api_access = MagicMock()
-        with patch("kiro_claw.slack.gateway.sel", return_value=mock_sel), patch(
-            "kiro_claw.slack.handler.is_yolo_mode", return_value=False
-        ), patch("kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
+        with patch("kiro_crew.slack.gateway.sel", return_value=mock_sel), patch(
+            "kiro_crew.slack.handler.is_yolo_mode", return_value=False
+        ), patch("kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
             approve_fn = gateway._interactive_approval("subagent")
             await approve_fn(_make_event(title="shell: rm -rf /"), "")
 
@@ -397,9 +397,9 @@ class TestApprovalModeSelAudit:
         gateway._approval_mode = "yolo"
 
         broken_sel = MagicMock(side_effect=RuntimeError("sel unavailable"))
-        with patch("kiro_claw.slack.gateway.sel", broken_sel), patch(
-            "kiro_claw.slack.handler.is_yolo_mode", return_value=False
-        ), patch("kiro_claw.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
+        with patch("kiro_crew.slack.gateway.sel", broken_sel), patch(
+            "kiro_crew.slack.handler.is_yolo_mode", return_value=False
+        ), patch("kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()):
             approve_fn = gateway._interactive_approval("cron")
             result = await approve_fn(_make_event(), "")
 

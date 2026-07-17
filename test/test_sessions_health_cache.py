@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_claw.dashboard.handlers import sessions
+from kiro_crew.dashboard.handlers import sessions
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,7 @@ async def test_cache_deduplicates_calls_within_ttl():
         call_count += 1
         return {"sess-1": {"reason": "subagent_timeout"}}
 
-    with patch("kiro_claw.dashboard.session_health.compute_session_health", side_effect=fake_compute):
+    with patch("kiro_crew.dashboard.session_health.compute_session_health", side_effect=fake_compute):
         resp1 = await sessions.api_sessions_health(_make_request())
         resp2 = await sessions.api_sessions_health(_make_request())
 

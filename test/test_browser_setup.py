@@ -1,4 +1,4 @@
-"""Tests for kiro_claw.browser.setup — Playwright MCP setup (OSS stub).
+"""Tests for kiro_crew.browser.setup — Playwright MCP setup (OSS stub).
 
 The upstream build installed Playwright MCP via an Amazon-internal package
 manager (AIM) and wired an Amazon-auth cookie/storage-state flow. In the
@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import kiro_claw.browser.setup as setup_mod
-from kiro_claw.browser.setup import (
+import kiro_crew.browser.setup as setup_mod
+from kiro_crew.browser.setup import (
     ensure_playwright_installed,
     generate_playwright_config,
     get_playwright_mcp_args,
@@ -175,18 +175,18 @@ class TestGeneratePlaywrightConfig:
         assert storage_state.startswith(str(tmp_path))
         assert "playwright-storage-state.json" in storage_state
 
-    def test_config_written_to_kiroclaw_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_config_written_to_kirocrew_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_path = generate_playwright_config()
-        assert ".kiroclaw" in str(config_path)
+        assert ".kirocrew" in str(config_path)
         assert config_path.name == "playwright-config.json"
 
     def test_parent_dir_created_if_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        kiroclaw_dir = tmp_path / ".kiroclaw"
-        assert not kiroclaw_dir.exists()
+        kirocrew_dir = tmp_path / ".kirocrew"
+        assert not kirocrew_dir.exists()
         generate_playwright_config()
-        assert kiroclaw_dir.exists()
+        assert kirocrew_dir.exists()
 
     def test_config_pins_chromium_channel(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # Without this pin @playwright/mcp defaults launchOptions.channel to the
@@ -264,7 +264,7 @@ class TestGetPlaywrightMcpArgsWithConfig:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "is_headed", lambda: False)
         # Create the config file
-        config_path = tmp_path / ".kiroclaw" / "playwright-config.json"
+        config_path = tmp_path / ".kirocrew" / "playwright-config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text("{}")
         args = get_playwright_mcp_args()

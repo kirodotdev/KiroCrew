@@ -8,15 +8,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_claw.config.loader import KiroClawConfig
-from kiro_claw.effort import (
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.effort import (
     EFFORT_LEVELS,
     EFFORT_VALUES,
     is_valid_effort,
     model_supports_effort,
     resolve_effort_for_model,
 )
-from kiro_claw.providers.acp import (
+from kiro_crew.providers.acp import (
     _clear_cli_overlay_effort,
     _read_cli_overlay,
     _write_cli_overlay,
@@ -70,7 +70,7 @@ class TestModelSupportsEffort:
         # agnostic, and a kiro/acp Haiku agent reaches it with the RAW
         # "claude-haiku-4.5" spelling (the kiro path does NOT translate). So the
         # raw id must report False, NOT inherit Sonnet's supports_effort flag.
-        from kiro_claw import model_registry as mr
+        from kiro_crew import model_registry as mr
 
         # The fold itself is unchanged — claude_code translation -> Sonnet id.
         assert mr.to_provider_id("claude-haiku-4.5", "claude_code") == (
@@ -180,13 +180,13 @@ class TestFactoryEffortThreading:
     (or the handler's reset-then-respawn) never applies the persisted effort."""
 
     def _capture_provider_kwargs(self, provider_name: str, **factory_call):
-        # Both factory branches lazily `from kiro_claw.providers.acp import
+        # Both factory branches lazily `from kiro_crew.providers.acp import
         # AcpProvider` (circular-import workaround). That import runs inside
         # create_provider_factory(), so patch the source module symbol BEFORE
         # building the factory, then capture the construction kwargs.
-        cfg = KiroClawConfig()
+        cfg = KiroCrewConfig()
         cfg.agent.provider = provider_name
-        with patch("kiro_claw.providers.acp.AcpProvider") as mock_provider:
+        with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
             mock_provider.return_value = MagicMock()
             factory = cfg.create_provider_factory()
             factory(**factory_call)

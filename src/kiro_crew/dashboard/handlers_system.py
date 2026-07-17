@@ -1,0 +1,614 @@
+"""System metrics and status handlers — CPU, memory, network, disk monitoring."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import getpass
+import hashlib
+import hmac
+import logging
+import os
+import platform
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from dataclasses import asdict
+from pathlib import Path
+
+from aiohttp import web
+
+import kiro_crew
+from kiro_crew import platform_compat
+from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.platform import current_context
+from kiro_crew.safety_override import safety_override
+from kiro_crew.stats import Stats
+
+logger = logging.getLogger(__name__)
+
+# Absolute paths for macOS system commands — shutil.which may fail when PATH
+# is minimal (e.g. launched as a background service), so fall back to known
+# locations.
+_SYSCTL = shutil.which("sysctl") or "/usr/sbin/sysctl"
+_VM_STAT = shutil.which("vm_stat") or "/usr/bin/vm_stat"
+_NETSTAT = shutil.which("netstat") or "/usr/sbin/netstat"
+
+# Server-side network speed tracking (survives page refresh)
+_prev_net: dict[str, float] = {"rx": 0.0, "tx": 0.0, "ts": 0.0}
+_net_speed: dict[str, float] = {"rx_kbs": 0.0, "tx_kbs": 0.0}
+
+# Server-side process CPU % tracking (delta of cpu_time / wall_time)
+_prev_cpu: dict[str, float] = {"total": 0.0, "ts": 0.0}
+_proc_cpu_pct: float = 0.0
+
+# Server-side system CPU % tracking (/proc/stat busy/total jiffy delta)
+_prev_sys_cpu: dict[str, float] = {"busy": 0.0, "total": 0.0}
+_sys_cpu_pct: float = 0.0
+
+# Cached static system info (computed once)
+_STATIC_SYSTEM_INFO: dict[str, object] | None = None
+
+
+def _system_cpu_pct_from_proc_stat() -> float | None:
+    """System CPU % from the /proc/stat busy/total jiffy delta since the last
+    call; iowait and steal count as busy. Returns None on non-Linux or the
+    first (pre-delta) sample so the caller can fall back to ps."""
+    try:
+        with open("/proc/stat") as f:
+            fields = f.readline().split()
+        if len(fields) < 5 or fields[0] != "cpu":
+            return None
+        # First 8 cols only (user..steal); guest/guest_nice are already
+        # folded into user/nice, so summing them would double-count.
+        vals = [float(x) for x in fields[1:9]]
+    except (OSError, ValueError):
+        return None
+    total = sum(vals)
+    busy = total - vals[3]  # vals[3] is idle; iowait/steal stay in busy
+    global _sys_cpu_pct
+    prev_total, prev_busy = _prev_sys_cpu["total"], _prev_sys_cpu["busy"]
+    _prev_sys_cpu["total"], _prev_sys_cpu["busy"] = total, busy
+    if prev_total <= 0:
+        return None  # first sample, no delta yet
+    dtotal = total - prev_total
+    if dtotal <= 0:
+        return _sys_cpu_pct  # counters didn't advance; reuse last value
+    _sys_cpu_pct = min(100.0, max(0.0, round((busy - prev_busy) / dtotal * 100, 1)))
+    return _sys_cpu_pct
+
+
+# Eager fallback salt — trivial cost (32 bytes), eliminates race under run_in_executor
+_IN_MEMORY_SALT: bytes = secrets.token_bytes(32)
+
+
+def _get_telemetry_salt() -> bytes:
+    """Return a per-install random salt, generating one on first run."""
+    try:
+        salt_file = Path.home() / ".kirocrew" / "telemetry_salt"
+        if salt_file.exists():
+            data = salt_file.read_bytes()
+            if len(data) == 32:
+                return data
+            # corrupted/truncated — remove before regenerating
+            salt_file.unlink(missing_ok=True)
+        salt_file.parent.mkdir(parents=True, exist_ok=True)
+        salt = secrets.token_bytes(32)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(salt_file.parent))
+        try:
+            os.write(tmp_fd, salt)
+            os.close(tmp_fd)
+            tmp_fd = -1
+            platform_compat.chmod_safe(tmp_path, 0o600)
+            os.link(tmp_path, str(salt_file))
+            return salt
+        except FileExistsError:
+            data = salt_file.read_bytes()
+            if len(data) == 32:
+                return data
+            raise OSError("incomplete salt file")
+        finally:
+            if tmp_fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(tmp_fd)
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+    except (RuntimeError, KeyError, OSError):
+        return _IN_MEMORY_SALT
+
+
+async def api_status(request: web.Request) -> web.Response:
+    state: DashboardState = request.app["state"]
+    uptime = time.time() - state.start_time
+    from kiro_crew.dashboard.handlers import (
+        _UPDATE_CHECK_INTERVAL,
+        _do_update_check,
+        _update_info,
+    )
+    from kiro_crew.dashboard.handlers import updates as _updates_mod
+
+    # Auto-recheck every 12h in background
+    if time.time() - _updates_mod._last_update_check > _UPDATE_CHECK_INTERVAL:
+        asyncio.create_task(_do_update_check())
+
+    data = state.status_snapshot(update_available=bool(_update_info.get("available")))
+    static_info = _get_static_system_info()
+    if state._owner_hash is not None:
+        owner_hash = state._owner_hash
+    else:
+        loop = asyncio.get_running_loop()
+        try:
+            owner_hash = await loop.run_in_executor(None, _get_owner_hash, state)
+        except Exception:
+            owner_hash = "unknown"
+    so_status = safety_override().status()
+    data.update({
+        "uptime_secs": int(uptime),
+        "messages_received": state.messages_received,
+        "cron": state.crons.status(),
+        "stats": Stats().snapshot(),
+        "stats_summary": Stats().summary(),
+        "update_progress": state._update_progress,
+        "version": kiro_crew.__version__,
+        "platform": sys.platform,
+        "yolo": so_status.active,
+        "yolo_active": so_status.active,
+        "yolo_expires_at": so_status.expires_at_iso or "",
+        "yolo_remaining_secs": so_status.remaining_secs,
+        "owner_id_hash": owner_hash,
+        "os_type": static_info.get("os", ""),
+        "arch": static_info.get("arch", ""),
+        "cpu_count": static_info.get("cpu_count", 0),
+        "mem_total_gb": static_info.get("mem_total_gb", 0),
+    })
+    # Frontend RUM config blob (PlatformContext telemetry).  The Default
+    # TelemetryProvider returns None (RUM off), so the standalone status payload
+    # is byte-for-byte unchanged and the SPA's RUM shim stays a no-op.  The
+    # Amazon companion returns the Cognito/RUM config its frontend host consumes;
+    # only then is a ``rum`` key added.  Best-effort — a telemetry-lookup failure
+    # never breaks the status endpoint.
+    try:
+        rum_config = current_context().telemetry.frontend_rum_config()
+        if rum_config is not None:
+            data["rum"] = rum_config
+    except Exception:
+        logger.debug("frontend_rum_config lookup failed; RUM omitted", exc_info=True)
+    return web.json_response(data)
+
+
+def _get_static_system_info() -> dict[str, object]:
+    global _STATIC_SYSTEM_INFO
+    if _STATIC_SYSTEM_INFO is not None:
+        return _STATIC_SYSTEM_INFO
+
+    arch = platform.machine()
+    if sys.platform == "darwin":
+        try:
+            real_arch = (
+                subprocess.check_output([_SYSCTL, "-n", "hw.optional.arm64"], timeout=2)
+                .decode()
+                .strip()
+            )
+            if real_arch == "1":
+                arch = "arm64 (Apple Silicon)"
+        except Exception:
+            pass
+
+    info: dict[str, object] = {
+        "hostname": platform.node(),
+        "os": f"{platform.system()} {platform.release()}",
+        "python": sys.version.split()[0],
+        "arch": arch,
+        "pid": os.getpid(),
+        "cpu_count": os.cpu_count() or 0,
+        "cwd": os.getcwd(),
+    }
+
+    # Total memory (static) — cross-platform
+    if sys.platform == "darwin":
+        try:
+            out = (
+                subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
+            )
+            info["mem_total_gb"] = round(int(out) / (1024**3), 1)
+        except Exception:
+            pass
+    elif sys.platform == "linux":
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        kb = int(line.split()[1])
+                        info["mem_total_gb"] = round(kb / (1024**2), 1)
+                        break
+        except Exception:
+            pass
+
+    _STATIC_SYSTEM_INFO = info
+    return info
+
+
+def _get_owner_hash(state: DashboardState) -> str:
+    """Return a cached HMAC-SHA256 hash of the owner identity. Stored on state to avoid stale globals."""
+    cached = getattr(state, '_owner_hash', None)
+    if cached is not None:
+        return cached
+    try:
+        raw_owner = state.owner_id or f"{platform.node()}:{getpass.getuser()}"
+    except (OSError, KeyError):
+        raw_owner = f"{platform.node()}:unknown"
+    h = hmac.new(
+        _get_telemetry_salt(), raw_owner.encode(), hashlib.sha256
+    ).hexdigest()
+    state._owner_hash = h
+    return h
+
+
+def _collect_system_metrics() -> dict[str, object]:
+    """Collect system metrics synchronously (runs in thread pool).
+
+    All subprocess calls and blocking I/O are isolated here so the
+    asyncio event loop stays responsive.
+    """
+    data: dict[str, object] = dict(_get_static_system_info())
+
+    # Process memory (RSS)
+    try:
+        data["proc_mem_mb"] = round(platform_compat.proc_rss_bytes() / (1024 * 1024), 1)
+    except Exception:
+        data["proc_mem_mb"] = 0
+
+    # System-wide memory — cross-platform
+    try:
+        if sys.platform == "darwin":
+            out = (
+                subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
+            )
+            total_bytes = int(out)
+            data["mem_total_gb"] = round(total_bytes / (1024**3), 1)
+            vm = subprocess.check_output([_VM_STAT], timeout=2).decode()
+            page_size = 16384
+            for line in vm.splitlines():
+                if "page size of" in line:
+                    page_size = int(line.split()[-2])
+                    break
+            free_pages = 0
+            for line in vm.splitlines():
+                if "Pages free" in line:
+                    free_pages = int(line.split()[-1].rstrip("."))
+                elif "Pages inactive" in line:
+                    free_pages += int(line.split()[-1].rstrip("."))
+            mem_free: float = round(free_pages * page_size / (1024**3), 1)
+            mem_total: float = round(total_bytes / (1024**3), 1)
+            data["mem_free_gb"] = mem_free
+            data["mem_used_gb"] = round(mem_total - mem_free, 1)
+        else:
+            with open("/proc/meminfo") as f:
+                meminfo: dict[str, int] = {}
+                for line in f:
+                    parts = line.split()
+                    meminfo[parts[0].rstrip(":")] = int(parts[1])
+                mem_total = round(meminfo.get("MemTotal", 0) / (1024**2), 1)
+                # Prefer the kernel's own MemAvailable (Linux 3.14+): it already
+                # accounts for reclaimable page cache AND reclaimable slab
+                # (SReclaimable), so "used" matches `free`'s accounting. The old
+                # MemFree+Buffers+Cached estimate omitted SReclaimable and could
+                # over-report "used" by the whole slab cache (tens of GB on hosts
+                # with large dentry/inode caches). Fall back to the estimate
+                # (now including SReclaimable) on kernels without MemAvailable.
+                if "MemAvailable" in meminfo:
+                    mem_free = round(meminfo["MemAvailable"] / (1024**2), 1)
+                else:
+                    mem_free = round(
+                        (
+                            meminfo.get("MemFree", 0)
+                            + meminfo.get("Buffers", 0)
+                            + meminfo.get("Cached", 0)
+                            + meminfo.get("SReclaimable", 0)
+                        )
+                        / (1024**2),
+                        1,
+                    )
+                data["mem_total_gb"] = mem_total
+                data["mem_free_gb"] = mem_free
+                data["mem_used_gb"] = round(mem_total - mem_free, 1)
+    except Exception:
+        pass
+
+    # CPU usage
+    cores = os.cpu_count() or 1
+    try:
+        load1, load5, load15 = os.getloadavg()
+        data["load_1m"] = round(load1, 2)
+        data["load_5m"] = round(load5, 2)
+        data["load_15m"] = round(load15, 2)
+    except Exception:
+        pass
+    # Prefer the /proc/stat interval delta (no subprocess, counts iowait+steal);
+    # fall back to the ps lifetime-average on non-Linux or the first sample.
+    cpu_pct = _system_cpu_pct_from_proc_stat()
+    if cpu_pct is None:
+        try:
+            ps_cpu = subprocess.check_output(
+                ["ps", "-A", "-o", "%cpu"], timeout=2, stderr=subprocess.DEVNULL
+            ).decode()
+            total_cpu = sum(float(x) for x in ps_cpu.strip().splitlines()[1:] if x.strip())
+            cpu_pct = min(100.0, round(total_cpu / cores, 1))
+        except Exception:
+            cpu_pct = 0
+    data["cpu_pct"] = cpu_pct
+
+    # Local IP address
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        data["ip"] = s.getsockname()[0]
+        s.close()
+    except Exception:
+        data["ip"] = "127.0.0.1"
+
+    # Network bytes + speed — cross-platform
+    try:
+        rx_total = 0
+        tx_total = 0
+        if sys.platform == "darwin":
+            out = subprocess.check_output([_NETSTAT, "-ib"], timeout=2).decode()
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 10 and parts[2] != "<Link#0>":
+                    try:
+                        rx_total += int(parts[6])
+                        tx_total += int(parts[9])
+                    except (ValueError, IndexError):
+                        pass
+        else:
+            with open("/proc/net/dev") as f:
+                for line in f:
+                    if ":" in line:
+                        parts = line.split(":")[1].split()
+                        rx_total += int(parts[0])
+                        tx_total += int(parts[8])
+        rx_mb = round(rx_total / (1024**2), 1)
+        tx_mb = round(tx_total / (1024**2), 1)
+        data["net_rx_mb"] = rx_mb
+        data["net_tx_mb"] = tx_mb
+
+        now = time.monotonic()
+        if _prev_net["ts"] > 0:
+            dt = now - _prev_net["ts"]
+            if dt > 0.1:
+                _net_speed["rx_kbs"] = round(((rx_mb - _prev_net["rx"]) * 1024) / dt, 1)
+                _net_speed["tx_kbs"] = round(((tx_mb - _prev_net["tx"]) * 1024) / dt, 1)
+        _prev_net["rx"] = rx_mb
+        _prev_net["tx"] = tx_mb
+        _prev_net["ts"] = now
+        data["net_rx_kbs"] = max(0, _net_speed["rx_kbs"])
+        data["net_tx_kbs"] = max(0, _net_speed["tx_kbs"])
+    except Exception:
+        pass
+
+    # Disk — cross-platform (shutil.disk_usage works on all platforms)
+    try:
+        disk_total_v, _used, disk_free_v = shutil.disk_usage("/")
+        data["disk_total_gb"] = round(disk_total_v / (1024**3), 1)
+        data["disk_free_gb"] = round(disk_free_v / (1024**3), 1)
+    except Exception:
+        pass
+
+    # Process monitoring
+    try:
+        data["thread_count"] = threading.active_count()
+    except Exception:
+        data["thread_count"] = 0
+    try:
+        cpu_total = platform_compat.proc_cpu_seconds()
+        now_mono = time.monotonic()
+        global _proc_cpu_pct
+        if _prev_cpu["ts"] > 0:
+            dt = now_mono - _prev_cpu["ts"]
+            if dt > 0.1:
+                cpu_delta = cpu_total - _prev_cpu["total"]
+                _proc_cpu_pct = min(100.0, round(cpu_delta / dt * 100, 1))
+        _prev_cpu["total"] = cpu_total
+        _prev_cpu["ts"] = now_mono
+        data["proc_cpu_pct"] = _proc_cpu_pct
+    except Exception:
+        data["proc_cpu_pct"] = 0
+    try:
+        my_pid = os.getpid()
+        if sys.platform == "darwin":
+            ps_out = subprocess.check_output(
+                ["pgrep", "-P", str(my_pid)], timeout=2, stderr=subprocess.DEVNULL
+            ).decode()
+            child_pids = [p.strip() for p in ps_out.splitlines() if p.strip()]
+        else:
+            task_dir = Path(f"/proc/{my_pid}/task")
+            child_pids = [d.name for d in task_dir.iterdir()] if task_dir.exists() else []
+        data["child_processes"] = len(child_pids)
+    except Exception:
+        data["child_processes"] = 0
+
+    # MCP ecosystem process count — scan for known command-line signatures.
+    # A single process may match multiple signatures (e.g. a sandboxed kiro-cli
+    # matches both "kirocrew_sandbox" and "kiro-cli"); per-category _counts can
+    # overlap, while mcp_total uses _seen for unique PID dedup. kiro-cli is an
+    # optional backend; the signature is harmless when it is not installed.
+    #
+    # Sandbox counting platform differences:
+    #   Linux:  The namespace launcher (python3 /tmp/kirocrew_sandbox_*.py ...)
+    #           forks — the parent stays alive with "kirocrew_sandbox" in its
+    #           /proc/cmdline, so sandbox count is accurate.
+    #   macOS:  sandbox-exec execs the target command, replacing the process
+    #           image. The final cmdline becomes "kiro-cli ..." and the
+    #           "kirocrew_sandbox" string (only in the -f path arg) is lost.
+    #           Sandbox count will be 0 even when sandboxes are running.
+    try:
+        _my = os.getpid()
+        _counts: dict[str, int] = {"sandbox": 0, "kiro_cli": 0}
+        _seen: set[str] = set()
+        if sys.platform == "linux":
+            for d in os.listdir("/proc"):
+                if not d.isdigit() or int(d) == _my:
+                    continue
+                try:
+                    cmd = Path(f"/proc/{d}/cmdline").read_bytes()
+                    matched = False
+                    if b"kirocrew_sandbox" in cmd:
+                        _counts["sandbox"] += 1
+                        matched = True
+                    if b"kiro-cli" in cmd:
+                        _counts["kiro_cli"] += 1
+                        matched = True
+                    if matched:
+                        _seen.add(d)
+                except OSError:
+                    pass
+        else:
+            _sigs = {
+                "kirocrew_sandbox": "sandbox",
+                "kiro-cli": "kiro_cli",
+            }
+            try:
+                out = subprocess.check_output(
+                    ["ps", "-eo", "pid,command"],
+                    timeout=5,
+                    text=True,
+                )
+                for line in out.splitlines():
+                    parts = line.split(None, 1)
+                    if len(parts) < 2:
+                        continue
+                    pid_s, cmd = parts
+                    if pid_s.strip() == str(_my):
+                        continue
+                    matched = False
+                    for sig, key in _sigs.items():
+                        if sig in cmd:
+                            _counts[key] += 1
+                            matched = True
+                    if matched:
+                        _seen.add(pid_s.strip())
+            except Exception:
+                pass
+        data["mcp_processes"] = _counts
+        data["mcp_total"] = len(_seen)
+    except Exception:
+        data["mcp_processes"] = {"sandbox": 0, "kiro_cli": 0}
+        data["mcp_total"] = 0
+
+    # Ollama process monitoring — supports local process or remote via port-forward
+    try:
+        # Detect remote ollama config
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        _remote_ollama = False
+        _ollama_port = "11434"
+        try:
+            _cfg = KiroCrewConfig.load()
+            if _cfg.memory.embedding_provider == "ollama":
+                _url = _cfg.memory.embedding_url or ""
+                if _url:
+                    _port_part = _url.rsplit(":", 1)[-1].strip("/")
+                    if _port_part.isdigit():
+                        _ollama_port = _port_part
+                    if "localhost" not in _url and "127.0.0.1" not in _url:
+                        _remote_ollama = True
+        except Exception:
+            pass
+
+        pids: list[str] = []
+        found_remote = False
+        if _ollama_port != "11434" or _remote_ollama:
+            # Match SSH tunnel forwarding the ollama port
+            try:
+                ps_out = subprocess.check_output(
+                    ["pgrep", "-f", f"{_ollama_port}:"], timeout=2, stderr=subprocess.DEVNULL
+                ).decode()
+                pids = [p.strip() for p in ps_out.splitlines() if p.strip()]
+                if pids:
+                    found_remote = _remote_ollama
+            except Exception:
+                pass
+        if not pids:
+            # Fall back to local ollama process
+            try:
+                ps_out = subprocess.check_output(
+                    ["pgrep", "-f", "ollama"], timeout=2, stderr=subprocess.DEVNULL
+                ).decode()
+                pids = [p.strip() for p in ps_out.splitlines() if p.strip()]
+            except Exception:
+                pass
+
+        if pids:
+            data["ollama_running"] = True
+            data["ollama_pid"] = int(pids[0])
+            data["ollama_remote"] = found_remote
+            # Get RSS memory
+            if sys.platform == "darwin":
+                ps_mem = (
+                    subprocess.check_output(
+                        ["ps", "-o", "rss=", "-p", pids[0]], timeout=2, stderr=subprocess.DEVNULL
+                    )
+                    .decode()
+                    .strip()
+                )
+                data["ollama_mem_mb"] = round(int(ps_mem) / 1024, 1) if ps_mem else 0
+            else:
+                statm = Path(f"/proc/{pids[0]}/statm")
+                if statm.exists():
+                    pages = int(statm.read_text().split()[1])
+                    data["ollama_mem_mb"] = round(pages * 4096 / (1024 * 1024), 1)
+        else:
+            data["ollama_running"] = False
+    except Exception:
+        data["ollama_running"] = False
+
+    return data
+
+
+# Cached system metrics (avoid subprocess spawning on every 1s poll)
+_metrics_cache: dict[str, object] = {}
+_metrics_cache_ts: float = 0.0
+_METRICS_CACHE_TTL = 2.0  # seconds
+
+
+async def api_system(request: web.Request) -> web.Response:
+    """System information endpoint with live CPU, memory, network metrics.
+
+    Caches results for 2 seconds to avoid spawning subprocesses on every
+    poll when multiple dashboard tabs are open.
+    """
+    global _metrics_cache, _metrics_cache_ts
+    now = time.monotonic()
+    if now - _metrics_cache_ts < _METRICS_CACHE_TTL and _metrics_cache:
+        return web.json_response(_metrics_cache)
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, _collect_system_metrics)
+    _metrics_cache = data
+    _metrics_cache_ts = now
+    return web.json_response(data)
+
+
+async def api_midway_ttl(request: web.Request) -> web.Response:
+    """Midway credential TTL — SSH cert primary, cookie fallback."""
+    # Identity status via the active PlatformContext.  The Default adapter
+    # delegates to ``midway.midway_status()`` — the real Midway SSH-cert probe,
+    # which spawns up to 4 subprocesses (5s timeout each) — while the Amazon
+    # companion returns the real Midway TTL.  ``IdentityProvider.status()`` is
+    # SYNCHRONOUS and BLOCKING in both editions, so it must be offloaded to a
+    # thread-pool executor to avoid stalling the aiohttp event loop (matches the
+    # legacy ``midway_status_async()`` which wrapped midway_status() this way).
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, current_context().identity.status)
+    return web.json_response(data)
+
+
+async def api_compliance_yolo_status(request: web.Request) -> web.Response:
+    """GET /api/admin/compliance/yolo-status — safety override governance status."""
+    status = safety_override().status()
+    return web.json_response(asdict(status))

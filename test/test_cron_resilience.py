@@ -9,10 +9,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import kiro_claw.heartbeat as hb_mod
-from kiro_claw.acp.client import AcpClient
-from kiro_claw.cron import CronJob, CronService
-from kiro_claw.heartbeat import _HEADER, HeartbeatService
+import kiro_crew.heartbeat as hb_mod
+from kiro_crew.acp.client import AcpClient
+from kiro_crew.cron import CronJob, CronService
+from kiro_crew.heartbeat import _HEADER, HeartbeatService
 
 
 async def _wait_for(predicate, timeout=5.0, interval=0.05):

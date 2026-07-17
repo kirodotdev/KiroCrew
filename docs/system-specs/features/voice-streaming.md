@@ -27,9 +27,9 @@ Piper:  POST /api/voice/synthesize → synthesize_speech() one WAV
 |-----------|------|------|
 | Sentence detector | `frontend/src/hooks/useWebSocket.ts` | Watches streaming chunks for sentence boundaries |
 | Playback queue | `frontend/src/hooks/useWebSocket.ts` | Queues and plays audio chunks sequentially |
-| Synthesize endpoint | `src/kiro_claw/dashboard/chat_voice.py` | `POST /api/voice/synthesize` — Polly: splits text into sentences + broadcasts chunks; Piper: `_synthesize_nonstreaming()` emits one clip (re-exported via `chat.py`) |
-| Voice config endpoint | `src/kiro_claw/dashboard/chat_voice.py` | `GET/PUT /api/voice/config` — read/update voice settings incl. `provider` + `piper_*` (re-exported via `chat.py`) |
-| TTS synthesis | `src/kiro_claw/voice_reply.py` | `synthesize_speech()` provider dispatcher (Polly `aws polly` / local `piper`), `streaming_voice_reply()` (Polly-only), `validate_length_scale()`, `stitch_mp3s()` |
+| Synthesize endpoint | `src/kiro_crew/dashboard/chat_voice.py` | `POST /api/voice/synthesize` — Polly: splits text into sentences + broadcasts chunks; Piper: `_synthesize_nonstreaming()` emits one clip (re-exported via `chat.py`) |
+| Voice config endpoint | `src/kiro_crew/dashboard/chat_voice.py` | `GET/PUT /api/voice/config` — read/update voice settings incl. `provider` + `piper_*` (re-exported via `chat.py`) |
+| TTS synthesis | `src/kiro_crew/voice_reply.py` | `synthesize_speech()` provider dispatcher (Polly `aws polly` / local `piper`), `streaming_voice_reply()` (Polly-only), `validate_length_scale()`, `stitch_mp3s()` |
 | Settings UI | `website/src/pages/settings/VoicePanel.tsx` | Provider selector + auto-speak toggle; Polly fields (voice/engine/speed/profile/region) or Piper fields (model/binary/speed) |
 
 ## Streaming Auto-Speak Flow
@@ -59,7 +59,7 @@ The DOM event pattern avoids prop drilling between `ChatPage` (where send lives)
 
 ## Voice Configuration
 
-Stored in `~/.kiroclaw/config.json` under `voice_reply`:
+Stored in `~/.kirocrew/config.json` under `voice_reply`:
 
 | Setting | Default | Range |
 |---------|---------|-------|
@@ -160,7 +160,7 @@ Separate from dashboard streaming. Uses `!voice` commands in Slack threads:
 - `!voice speed <percent>` — adjust speed
 - `!voice pitch <percent>` — adjust pitch
 
-Handler integration in `src/kiro_claw/slack/handler.py` with fire-and-forget
+Handler integration in `src/kiro_crew/slack/handler.py` with fire-and-forget
 async pipeline: markdown strip → SSML → Polly → Slack file upload.
 
 ## Frontend State

@@ -6,8 +6,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_claw.dashboard.handlers import api_sessions_search
-from kiro_claw.history import ConversationLog
+from kiro_crew.dashboard.handlers import api_sessions_search
+from kiro_crew.history import ConversationLog
 
 
 def _make_app(log: ConversationLog) -> web.Application:
@@ -89,10 +89,10 @@ class TestSessionsSearchHandler:
             return (text, [])
 
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.redact_credentials", _fake_redact_creds
+            "kiro_crew.dashboard.handlers.redact_credentials", _fake_redact_creds
         )
         monkeypatch.setattr(
-            "kiro_claw.dashboard.handlers.redact_exfiltration_urls", _fake_redact_urls
+            "kiro_crew.dashboard.handlers.redact_exfiltration_urls", _fake_redact_urls
         )
         async with TestClient(TestServer(_make_app(log))) as client:
             resp = await client.get("/api/sessions/search?q=matches")

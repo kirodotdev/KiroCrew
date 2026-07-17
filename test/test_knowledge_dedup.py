@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from kiro_claw.knowledge.dedup import (
+from kiro_crew.knowledge.dedup import (
     DocRef,
     dedup_document,
     dedup_sweep,
@@ -12,8 +12,8 @@ from kiro_claw.knowledge.dedup import (
     normalize_filename,
     pick_winner,
 )
-from kiro_claw.knowledge.embedder import floats_to_bytes
-from kiro_claw.knowledge.store import KnowledgeStore
+from kiro_crew.knowledge.embedder import floats_to_bytes
+from kiro_crew.knowledge.store import KnowledgeStore
 
 
 def _mk_store(tmp_path) -> KnowledgeStore:
@@ -181,7 +181,7 @@ class TestPriority:
         assert pick_winner(upload_docx, folder_pdf)[0].source_id == "f"
 
     def test_format_rank_ordering(self):
-        from kiro_claw.knowledge.dedup import _format_rank
+        from kiro_crew.knowledge.dedup import _format_rank
         assert _format_rank("a.docx") > _format_rank("a.pdf")
         assert _format_rank("a.md") >= _format_rank("a.docx")
         # unknown extension and no extension both fall back to the default rank,

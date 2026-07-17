@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.apps.module_loader import (
+from kiro_crew.apps.module_loader import (
     _module_namespace,
     is_app_module_loaded,
     load_app_module,
@@ -51,7 +51,7 @@ def register_routes(ctx):
     def test_third_party_load_warns_once(self, tmp_path: Path, caplog) -> None:
         import logging
 
-        import kiro_claw.apps.module_loader as ml
+        import kiro_crew.apps.module_loader as ml
 
         ml._warned_third_party_apps.discard("evil-app")
         app_dir = self._make_app(tmp_path)
@@ -67,7 +67,7 @@ def register_routes(ctx):
     def test_builtin_load_does_not_warn(self, caplog) -> None:
         import logging
 
-        import kiro_claw.apps.module_loader as ml
+        import kiro_crew.apps.module_loader as ml
 
         # The deploy_web builtin ships a backend module; loading it must not warn.
         builtins = ml._BUILTINS_DIR
@@ -105,7 +105,7 @@ def register_routes(ctx):
         return app_dir
 
     def test_third_party_denied_when_gate_off(self, tmp_path: Path, monkeypatch) -> None:
-        import kiro_claw.apps.module_loader as ml
+        import kiro_crew.apps.module_loader as ml
 
         monkeypatch.setattr(ml, "_third_party_apps_allowed", lambda: False)
         ml._warned_third_party_apps.discard("evil-app")
@@ -119,7 +119,7 @@ def register_routes(ctx):
         unload_app_modules("evil-app")
 
     def test_third_party_allowed_by_default(self, tmp_path: Path) -> None:
-        import kiro_claw.apps.module_loader as ml
+        import kiro_crew.apps.module_loader as ml
 
         ml._warned_third_party_apps.discard("evil-app")
         app_dir = self._make_app(tmp_path)
@@ -129,7 +129,7 @@ def register_routes(ctx):
         unload_app_modules("evil-app")
 
     def test_builtin_load_not_blocked_by_gate(self, monkeypatch) -> None:
-        import kiro_claw.apps.module_loader as ml
+        import kiro_crew.apps.module_loader as ml
 
         # Gate closed, but builtins are trusted — they must still load.
         monkeypatch.setattr(ml, "_third_party_apps_allowed", lambda: False)
@@ -177,8 +177,8 @@ def register_routes(ctx):
         assert func_b(None) == "routes_from_b"
 
         # Verify they're in sys.modules under different keys
-        assert "_kiroclaw_app_app-a.backend.routes" in sys.modules
-        assert "_kiroclaw_app_app-b.backend.routes" in sys.modules
+        assert "_kirocrew_app_app-a.backend.routes" in sys.modules
+        assert "_kirocrew_app_app-b.backend.routes" in sys.modules
 
         # Cleanup
         unload_app_modules("app-a")
@@ -194,7 +194,7 @@ def setup(ctx):
         load_app_module("my-app", tmp_path, "handlers:setup")
         key = _module_namespace("my-app", "handlers")
         assert key in sys.modules
-        assert key == "_kiroclaw_app_my-app.handlers"
+        assert key == "_kirocrew_app_my-app.handlers"
 
         # Cleanup
         unload_app_modules("my-app")
@@ -292,8 +292,8 @@ class TestModuleUnload:
         assert not is_app_module_loaded("test-app")
 
         # Verify specific keys are gone
-        assert "_kiroclaw_app_test-app.mod_a" not in sys.modules
-        assert "_kiroclaw_app_test-app.sub.mod_b" not in sys.modules
+        assert "_kirocrew_app_test-app.mod_a" not in sys.modules
+        assert "_kirocrew_app_test-app.sub.mod_b" not in sys.modules
 
     def test_unload_does_not_affect_other_apps(self, tmp_path: Path) -> None:
         """Unloading app A does not remove app B's modules."""

@@ -22,10 +22,10 @@ import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
 
 const APPROVAL_SEGMENTS = [
-  { key: 'normal' as const, label: 'Normal', icon: <ShieldCheck size={13} />, tooltip: 'KiroClaw asks you before doing anything', desc: 'KiroClaw checks with you before doing anything' },
-  { key: 'trust_reads' as const, label: 'Reads', icon: <BookOpen size={13} />, tooltip: 'KiroClaw looks things up on its own, but asks before making changes', desc: 'KiroClaw looks things up on its own, but asks before making any changes' },
-  { key: 'trust' as const, label: 'Trust', icon: <Handshake size={13} />, tooltip: 'In this chat, KiroClaw works without asking you first', desc: 'In this chat, KiroClaw works without asking you first' },
-  { key: 'yolo' as const, label: 'YOLO', icon: <Rocket size={13} />, tooltip: 'In every chat, KiroClaw works without asking you first', desc: 'In every chat, KiroClaw works without asking you first' },
+  { key: 'normal' as const, label: 'Normal', icon: <ShieldCheck size={13} />, tooltip: 'KiroCrew asks you before doing anything', desc: 'KiroCrew checks with you before doing anything' },
+  { key: 'trust_reads' as const, label: 'Reads', icon: <BookOpen size={13} />, tooltip: 'KiroCrew looks things up on its own, but asks before making changes', desc: 'KiroCrew looks things up on its own, but asks before making any changes' },
+  { key: 'trust' as const, label: 'Trust', icon: <Handshake size={13} />, tooltip: 'In this chat, KiroCrew works without asking you first', desc: 'In this chat, KiroCrew works without asking you first' },
+  { key: 'yolo' as const, label: 'YOLO', icon: <Rocket size={13} />, tooltip: 'In every chat, KiroCrew works without asking you first', desc: 'In every chat, KiroCrew works without asking you first' },
 ]
 
 /**

@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kiro_claw.config import KiroClawConfig
-from kiro_claw.session import SessionManager
+from kiro_crew.config import KiroCrewConfig
+from kiro_crew.session import SessionManager
 
 
 def _mock_provider_factory():
@@ -28,7 +28,7 @@ def _mock_provider_factory():
 
 @pytest.fixture()
 def config():
-    return KiroClawConfig()
+    return KiroCrewConfig()
 
 
 class TestSetThread:
@@ -132,7 +132,7 @@ class TestSessionMapMigration:
         """Old session_map.json with plain string values gets migrated to dict format."""
         import json
 
-        monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         map_path = tmp_path / "session_map.json"
         map_path.write_text(json.dumps({"thread-1": "sid-abc", "thread-2": "sid-def"}))
         sm = SessionManager(config, provider_factory=_mock_provider_factory())
@@ -150,7 +150,7 @@ class TestSessionMapMigration:
     async def test_load_skips_corrupt_entries(self, config, tmp_path, monkeypatch) -> None:
         import json
 
-        monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         map_path = tmp_path / "session_map.json"
         map_path.write_text(json.dumps({"good": {"sid": "s1"}, "bad": [1, 2, 3]}))
         sm = SessionManager(config, provider_factory=_mock_provider_factory())
@@ -167,7 +167,7 @@ class TestSetSlackLinkUpdate:
 
     @pytest.mark.asyncio
     async def test_update_existing_link(self, config, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         sm = SessionManager(config, provider_factory=_mock_provider_factory())
         sm.set_slack_link("k1", "ts-old", "C-old")
         sm.set_slack_link("k1", "ts-new", "C-new")
@@ -181,7 +181,7 @@ class TestSetSlackLinkUpdate:
 
     @pytest.mark.asyncio
     async def test_idempotent_set_same_link(self, config, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         sm = SessionManager(config, provider_factory=_mock_provider_factory())
         sm.set_slack_link("k1", "ts-1", "C-1")
         sm.set_slack_link("k1", "ts-1", "C-1")  # same values — no-op
@@ -196,7 +196,7 @@ class TestBackwardCompatWrappers:
 
     @pytest.mark.asyncio
     async def test_set_channel_updates_existing_link(self, config, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         sm = SessionManager(config, provider_factory=_mock_provider_factory())
         sm.set_slack_link("k1", "ts-1", "C-old")
         await sm.set_channel("k1", "C-new")
@@ -207,7 +207,7 @@ class TestBackwardCompatWrappers:
 
     @pytest.mark.asyncio
     async def test_set_channel_stores_without_thread(self, config, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         sm = SessionManager(config, provider_factory=_mock_provider_factory())
         await sm.set_channel("k1", "C-1")
         # set_channel now stores unconditionally (mirrors set_thread behavior)
@@ -216,7 +216,7 @@ class TestBackwardCompatWrappers:
 
     @pytest.mark.asyncio
     async def test_get_channel_returns_none_for_unknown(self, config, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_claw.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         sm = SessionManager(config, provider_factory=_mock_provider_factory())
         assert sm.get_channel("nonexistent") is None
         await sm.close_all()

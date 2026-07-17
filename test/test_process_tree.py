@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.acp.client import (
+from kiro_crew.acp.client import (
     AcpClient,
     _direct_children,
     _get_child_pids,
@@ -29,30 +29,30 @@ class TestGetChildPidsVisitedSet:
             call_count += 1
             return {1: [2], 2: [1]}.get(pid, [])
 
-        with patch("kiro_claw.acp.client._direct_children", side_effect=fake_direct):
+        with patch("kiro_crew.acp.client._direct_children", side_effect=fake_direct):
             result = _get_child_pids(1)
         assert result == [2]
         assert call_count <= 3
 
     def test_self_loop(self):
-        with patch("kiro_claw.acp.client._direct_children", return_value=[42]):
+        with patch("kiro_crew.acp.client._direct_children", return_value=[42]):
             assert _get_child_pids(42) == []
 
     def test_diamond_deduplicates(self):
         tree = {1: [2, 3], 2: [4], 3: [4]}
-        with patch("kiro_claw.acp.client._direct_children", side_effect=lambda p: tree.get(p, [])):
+        with patch("kiro_crew.acp.client._direct_children", side_effect=lambda p: tree.get(p, [])):
             assert sorted(_get_child_pids(1)) == [2, 3, 4]
 
     def test_none_pid(self):
         assert _get_child_pids(None) == []
 
     def test_no_children(self):
-        with patch("kiro_claw.acp.client._direct_children", return_value=[]):
+        with patch("kiro_crew.acp.client._direct_children", return_value=[]):
             assert _get_child_pids(999) == []
 
     def test_deep_chain(self):
         tree = {1: [2], 2: [3], 3: [4], 4: [5]}
-        with patch("kiro_claw.acp.client._direct_children", side_effect=lambda p: tree.get(p, [])):
+        with patch("kiro_crew.acp.client._direct_children", side_effect=lambda p: tree.get(p, [])):
             assert _get_child_pids(1) == [2, 3, 4, 5]
 
 
@@ -82,7 +82,7 @@ class TestKillEscapedChildren:
 
         with (
             patch("os.kill", side_effect=fake_kill),
-            patch("kiro_claw.acp.client._is_our_child", return_value=True),
+            patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             _kill_escaped_children({42: 100})
 
@@ -96,7 +96,7 @@ class TestKillEscapedChildren:
 
         with (
             patch("os.kill", side_effect=fake_kill),
-            patch("kiro_claw.acp.client._is_our_child", return_value=False),
+            patch("kiro_crew.acp.client._is_our_child", return_value=False),
         ):
             _kill_escaped_children({42: 100})
         assert all(sig == 0 for _, sig in kills)
@@ -110,7 +110,7 @@ class TestKillEscapedChildren:
 
         with (
             patch("os.kill", side_effect=fake_kill),
-            patch("kiro_claw.acp.client._is_our_child", return_value=True),
+            patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             _kill_escaped_children({10: 1, 20: 2, 30: 3})
         assert killed == [30, 20, 10]
@@ -122,41 +122,41 @@ class TestKillEscapedChildren:
 class TestIsOurChild:
     @pytest.fixture(autouse=True)
     def _force_linux(self):
-        with patch("kiro_claw.acp.client.sys") as mock_sys:
+        with patch("kiro_crew.acp.client.sys") as mock_sys:
             mock_sys.platform = "linux"
             yield
 
     def test_rejects_missing_proc(self):
         with (
-            patch("kiro_claw.acp.client._get_start_time", return_value=1),
-            patch("kiro_claw.acp.client._read_basename", return_value=None),
+            patch("kiro_crew.acp.client._get_start_time", return_value=1),
+            patch("kiro_crew.acp.client._read_basename", return_value=None),
         ):
             # recorded basename was "node" but _read_basename returns None (process gone)
             assert _is_our_child(999, expected_start=1, expected_basename=b"node") is False
 
     def test_rejects_unknown_binary(self):
         with (
-            patch("kiro_claw.acp.client._get_start_time", return_value=1),
-            patch("kiro_claw.acp.client._read_basename", return_value=b"postgres"),
+            patch("kiro_crew.acp.client._get_start_time", return_value=1),
+            patch("kiro_crew.acp.client._read_basename", return_value=b"postgres"),
         ):
             # recorded basename was "node" but live binary is "postgres" (recycled)
             assert _is_our_child(999, expected_start=1, expected_basename=b"node") is False
 
     def test_rejects_start_time_mismatch(self):
-        with patch("kiro_claw.acp.client._get_start_time", return_value=200):
+        with patch("kiro_crew.acp.client._get_start_time", return_value=200):
             assert _is_our_child(999, expected_start=100) is False
 
     def test_accepts_matching_kiro(self):
         with (
-            patch("kiro_claw.acp.client._get_start_time", return_value=100),
-            patch("kiro_claw.acp.client._read_basename", return_value=b"kiro-cli"),
+            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.acp.client._read_basename", return_value=b"kiro-cli"),
         ):
             assert _is_our_child(999, expected_start=100, expected_basename=b"kiro-cli") is True
 
     def test_accepts_mcp_in_name(self):
         with (
-            patch("kiro_claw.acp.client._get_start_time", return_value=50),
-            patch("kiro_claw.acp.client._read_basename", return_value=b"builder-mcp"),
+            patch("kiro_crew.acp.client._get_start_time", return_value=50),
+            patch("kiro_crew.acp.client._read_basename", return_value=b"builder-mcp"),
         ):
             assert _is_our_child(999, expected_start=50, expected_basename=b"builder-mcp") is True
 
@@ -170,8 +170,8 @@ class TestIsOurChild:
 class TestDirectChildren:
     def test_proc_children_parsed(self):
         with (
-            patch("kiro_claw.acp.client.sys") as mock_sys,
-            patch("kiro_claw.acp.client.Path") as mock_path_cls,
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path") as mock_path_cls,
         ):
             mock_sys.platform = "linux"
             mock_path = MagicMock()
@@ -198,10 +198,10 @@ class TestSnapshotProcessTree:
         client._child_pids = {}
 
         with (
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[200, 300, 400]),
-            patch("kiro_claw.acp.client._get_start_time", side_effect=lambda p: p * 10),
-            patch("kiro_claw.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
-            patch("kiro_claw.session_pid.config_dir", return_value=tmp_path),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[200, 300, 400]),
+            patch("kiro_crew.acp.client._get_start_time", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
         ):
             await client._snapshot_process_tree()
 
@@ -217,7 +217,7 @@ class TestSnapshotProcessTree:
         client._pid = 100
         client._child_pids = {}
 
-        with patch("kiro_claw.acp.client._get_child_pids", return_value=[]):
+        with patch("kiro_crew.acp.client._get_child_pids", return_value=[]):
             await client._snapshot_process_tree()
 
         assert client._child_pids == {}
@@ -231,10 +231,10 @@ class TestSnapshotProcessTree:
         client._child_pids = {200: (2000, b"node")}
 
         with (
-            patch("kiro_claw.acp.client._get_child_pids", return_value=[200, 300]),
-            patch("kiro_claw.acp.client._get_start_time", side_effect=lambda p: p * 10),
-            patch("kiro_claw.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
-            patch("kiro_claw.session_pid.config_dir", return_value=tmp_path),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[200, 300]),
+            patch("kiro_crew.acp.client._get_start_time", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
         ):
             await client._snapshot_process_tree()
 
@@ -270,7 +270,7 @@ class TestSessionCleanupOnCancellation:
         tr = self._make_mock_taskrunner(keys)
 
         # Import the real method and bind it
-        from kiro_claw.taskrunner import TaskRunner
+        from kiro_crew.taskrunner import TaskRunner
 
         cleanup = TaskRunner._cleanup_run_sessions
 
@@ -289,7 +289,7 @@ class TestSessionCleanupOnCancellation:
         keys = ["taskrunner:abc123:task0", "taskrunner:other:task0"]
         tr = self._make_mock_taskrunner(keys)
 
-        from kiro_claw.taskrunner import TaskRunner
+        from kiro_crew.taskrunner import TaskRunner
 
         await TaskRunner._cleanup_run_sessions(tr, run)
 
@@ -306,7 +306,7 @@ class TestSessionCleanupOnCancellation:
         tr = self._make_mock_taskrunner(keys)
         tr._sessions.cancel_current = AsyncMock(side_effect=Exception("boom"))
 
-        from kiro_claw.taskrunner import TaskRunner
+        from kiro_crew.taskrunner import TaskRunner
 
         await TaskRunner._cleanup_run_sessions(tr, run)
 
@@ -320,10 +320,10 @@ class TestSessionCleanupOnCancellation:
 class TestPidTracking:
     def test_track_and_untrack(self, tmp_path):
         """_track_pid appends, _untrack_pid removes."""
-        from kiro_claw.session_pid import _track_pid, _untrack_pid
+        from kiro_crew.session_pid import _track_pid, _untrack_pid
 
         pid_file = tmp_path / "pids.txt"
-        with patch("kiro_claw.session_pid._pid_file_path", return_value=pid_file):
+        with patch("kiro_crew.session_pid._pid_file_path", return_value=pid_file):
             _track_pid(100)
             _track_pid(200)
             _track_pid(300)

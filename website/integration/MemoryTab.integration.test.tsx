@@ -35,7 +35,7 @@ describe('MemoryTab Integration Tests', () => {
 
     // Wait for projects to load
     await waitFor(() => {
-      expect(screen.getByText(/kiroclaw/i)).toBeInTheDocument()
+      expect(screen.getByText(/kirocrew/i)).toBeInTheDocument()
     })
 
     expect(screen.getByText(/ai-powered development assistant/i)).toBeInTheDocument()

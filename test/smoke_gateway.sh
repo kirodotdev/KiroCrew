@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gateway end-to-end security smoke test
-# Prerequisites: kiroclaw gateway running on localhost:5476
+# Prerequisites: kirocrew gateway running on localhost:5476
 # Usage: bash test/smoke_gateway.sh [account_id]
 
 set -uo pipefail
@@ -17,7 +17,7 @@ skip() { echo -e "  ${YELLOW}⊘ SKIP${NC}: $1"; ((SKIP++)); }
 
 # Check gateway is running
 if ! curl -sf "$BASE/api/status" >/dev/null 2>&1; then
-    echo "ERROR: Gateway not running at $BASE — start with: kiroclaw gateway"
+    echo "ERROR: Gateway not running at $BASE — start with: kirocrew gateway"
     exit 1
 fi
 
@@ -70,7 +70,7 @@ no_pattern() { ! echo "$1" | grep -qi "$2"; }
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║        KiroClaw Gateway Security Smoke Test (E2E)           ║"
+echo "║        KiroCrew Gateway Security Smoke Test (E2E)           ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 

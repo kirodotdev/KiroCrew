@@ -15,8 +15,8 @@ import json
 
 import pytest
 
-from kiro_claw.platform.context import PlatformCompositionError
-from kiro_claw.platform.governance import (
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance import (
     MODE_ALLOW,
     MODE_DENY,
     SCOPE_CATALOG,
@@ -120,18 +120,18 @@ class TestScopedRuleset:
 
 class TestMcpMatcher:
     def test_server_grant_covers_all_tools(self):
-        r = ScopedRuleset(mode=MODE_DENY, deny=("@kiroclaw-cron",), matcher="mcp")
-        assert not r.permits("@kiroclaw-cron/cron_add").permitted
-        assert not r.permits("@kiroclaw-cron").permitted
-        assert r.permits("@kiroclaw-core/spawn_run").permitted
+        r = ScopedRuleset(mode=MODE_DENY, deny=("@kirocrew-cron",), matcher="mcp")
+        assert not r.permits("@kirocrew-cron/cron_add").permitted
+        assert not r.permits("@kirocrew-cron").permitted
+        assert r.permits("@kirocrew-core/spawn_run").permitted
 
     def test_tool_level_deny_is_specific(self):
-        r = ScopedRuleset(mode=MODE_DENY, deny=("@kiroclaw-cron/cron_remove_all",), matcher="mcp")
-        assert not r.permits("@kiroclaw-cron/cron_remove_all").permitted
-        assert r.permits("@kiroclaw-cron/cron_add").permitted
+        r = ScopedRuleset(mode=MODE_DENY, deny=("@kirocrew-cron/cron_remove_all",), matcher="mcp")
+        assert not r.permits("@kirocrew-cron/cron_remove_all").permitted
+        assert r.permits("@kirocrew-cron/cron_add").permitted
 
     def test_title_to_ref_conversion(self):
-        assert mcp_title_to_ref("mcp__kiroclaw-cron__cron_add") == "@kiroclaw-cron/cron_add"
+        assert mcp_title_to_ref("mcp__kirocrew-cron__cron_add") == "@kirocrew-cron/cron_add"
         assert mcp_title_to_ref("mcp__builder-mcp") == "@builder-mcp"
         assert mcp_title_to_ref("execute_bash") == "execute_bash"
 
@@ -294,16 +294,16 @@ class TestScopedMap:
 # ──────────────────────────────────────────────────────────────────────────
 class TestLoader:
     def test_absent_returns_none(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("KIROCLAW_SECURITY_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         monkeypatch.setattr(
-            "kiro_claw.platform.governance._POLICY_HOME_PATH", tmp_path / "nope.json"
+            "kiro_crew.platform.governance._POLICY_HOME_PATH", tmp_path / "nope.json"
         )
         assert load_security_policy() is None
 
     def test_env_path_wins(self, monkeypatch, tmp_path):
         p = tmp_path / "policy.json"
         p.write_text(json.dumps(_policy_body(approval_mode="interactive")))
-        monkeypatch.setenv("KIROCLAW_SECURITY_POLICY", str(p))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
         ceiling = load_security_policy()
         assert ceiling is not None
         assert ceiling.version == 1
@@ -311,27 +311,27 @@ class TestLoader:
     def test_unreadable_env_fails_closed(self, monkeypatch, tmp_path):
         bad = tmp_path / "policy.json"
         bad.write_text("{ this is not json")
-        monkeypatch.setenv("KIROCLAW_SECURITY_POLICY", str(bad))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(bad))
         with pytest.raises(PlatformCompositionError):
             load_security_policy()
 
     def test_missing_env_path_fails_closed(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("KIROCLAW_SECURITY_POLICY", str(tmp_path / "gone.json"))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(tmp_path / "gone.json"))
         with pytest.raises(PlatformCompositionError):
             load_security_policy()
 
     def test_home_path_used_when_no_env(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("KIROCLAW_SECURITY_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         home = tmp_path / "security_policy.json"
         home.write_text(json.dumps(_policy_body()))
-        monkeypatch.setattr("kiro_claw.platform.governance._POLICY_HOME_PATH", home)
+        monkeypatch.setattr("kiro_crew.platform.governance._POLICY_HOME_PATH", home)
         ceiling = load_security_policy()
         assert ceiling is not None
 
     def test_bundled_loader_precedence(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("KIROCLAW_SECURITY_POLICY", raising=False)
+        monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         monkeypatch.setattr(
-            "kiro_claw.platform.governance._POLICY_HOME_PATH", tmp_path / "nope.json"
+            "kiro_crew.platform.governance._POLICY_HOME_PATH", tmp_path / "nope.json"
         )
         called = {}
 
@@ -347,7 +347,7 @@ class TestLoader:
     def test_env_beats_bundled(self, monkeypatch, tmp_path):
         p = tmp_path / "policy.json"
         p.write_text(json.dumps(_policy_body()))
-        monkeypatch.setenv("KIROCLAW_SECURITY_POLICY", str(p))
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
         # bundled_loader must NOT be consulted when env wins.
         ceiling = load_security_policy(bundled_loader=lambda: pytest.fail("should not call"))
         assert ceiling is not None
@@ -506,7 +506,7 @@ class TestConformanceVectors:
                 sandbox={"min_level": "standard"},
                 commands={"mode": "deny", "deny": ["git push*", "*rm -rf /*"]},
                 tools={"mode": "deny", "deny": []},
-                mcp={"mode": "deny", "deny": ["@kiroclaw-cron/cron_remove_all"]},
+                mcp={"mode": "deny", "deny": ["@kirocrew-cron/cron_remove_all"]},
                 apps={"mode": "allow", "allow": ["auto-research", "deploy-web"]},
                 network={"egress": {"mode": "allow", "allow": ["*.amazonaws.com"]}},
                 channels={
@@ -546,8 +546,8 @@ class TestConformanceVectors:
         assert resolve(ceiling, profile, "commands", "ls -la").permitted
 
     def test_e3_mcp_tool_deny_specific(self, ceiling, profile):
-        assert not resolve(ceiling, profile, "mcp", "@kiroclaw-cron/cron_remove_all").permitted
-        assert resolve(ceiling, profile, "mcp", "@kiroclaw-cron/cron_add").permitted
+        assert not resolve(ceiling, profile, "mcp", "@kirocrew-cron/cron_remove_all").permitted
+        assert resolve(ceiling, profile, "mcp", "@kirocrew-cron/cron_add").permitted
 
     def test_e4_app_within_policy_and_profile(self, ceiling, profile):
         assert resolve(ceiling, profile, "apps", "deploy-web").permitted

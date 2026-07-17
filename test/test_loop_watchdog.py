@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from kiro_claw.dashboard.loop_watchdog import LoopStallWatchdog
+from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 
 
 class _Clock:
@@ -187,7 +187,7 @@ def test_exit_after_none_disables_armed_timer() -> None:
         wd.beat()
         wd.beat()
         # Armed timer fully off; only the soft daemon-thread dump remains. This
-        # is the dashboard-only process configuration (e.g. `kiroclaw chat`,
+        # is the dashboard-only process configuration (e.g. `kirocrew chat`,
         # which never enables faulthandler): NO process-killing timer is ever
         # armed, even across start()+beats, so a non-gateway process can never
         # be _exit()'d by the watchdog.

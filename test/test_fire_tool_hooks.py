@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from kiro_claw.hooks import (
+from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     ScriptHookStore,
     fire_tool_hooks,
@@ -186,7 +186,7 @@ class TestScriptHookStoreFire:
 
     @pytest.mark.asyncio
     async def test_fire_emits_subagent_id_when_set(self, fire_store: ScriptHookStore):
-        with patch("kiro_claw.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
@@ -200,7 +200,7 @@ class TestScriptHookStoreFire:
 
     @pytest.mark.asyncio
     async def test_fire_emits_parent_session_key_when_set(self, fire_store: ScriptHookStore):
-        with patch("kiro_claw.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
@@ -214,7 +214,7 @@ class TestScriptHookStoreFire:
 
     @pytest.mark.asyncio
     async def test_fire_emits_agent_role_when_set(self, fire_store: ScriptHookStore):
-        with patch("kiro_claw.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
@@ -228,7 +228,7 @@ class TestScriptHookStoreFire:
 
     @pytest.mark.asyncio
     async def test_fire_emits_all_three_together(self, fire_store: ScriptHookStore):
-        with patch("kiro_claw.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
@@ -245,7 +245,7 @@ class TestScriptHookStoreFire:
     @pytest.mark.asyncio
     async def test_fire_omits_all_three_when_none(self, fire_store: ScriptHookStore):
         """Backward compatibility: when all three are None (default), payload is byte-identical to pre-CR behavior."""
-        with patch("kiro_claw.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
             await fire_store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="ReadFile")
             (_, _, hook_event), _ = mock_run.call_args

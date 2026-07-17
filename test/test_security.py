@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.security import (
+from kiro_crew.security import (
     audit_bash_command,
     audit_bash_exfiltration,
     is_sensitive_bash_command,
@@ -205,7 +205,8 @@ class TestRedactCredentials:
         [
             "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12",  # GitHub classic PAT
             "gho_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef1234",  # GitHub OAuth
-            "github_pat_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234567890ABCDEFGHIJ",  # fine-grained
+            "github_pat_"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234567890ABCDEFGHIJ",  # fine-grained
             "glpat-" "xxxx1234xxxx5678xxxx",  # GitLab PAT
             "sk_live_" "51HG7aBcDeFgHiJkLmNoPqRsTuVwXyZ",  # Stripe live
             "sk_test_" "51HG7aBcDeFgHiJkLmNoPqRsTuVwXyZ",  # Stripe test
@@ -290,7 +291,7 @@ class TestRedactCredentials:
         assert len(warnings) == 0
 
     def test_preserves_git_output(self) -> None:
-        text = "Cloning into 'KiroClaw'...\nremote: Enumerating objects: 1234"
+        text = "Cloning into 'KiroCrew'...\nremote: Enumerating objects: 1234"
         result, warnings = redact_credentials(text)
         assert result == text
 
@@ -701,7 +702,13 @@ class TestSandboxDeniedCommands:
 
     @pytest.fixture()
     def denied_commands(self) -> list[str]:
-        defaults = Path(__file__).resolve().parent.parent / "src" / "kiro_claw" / "config" / "defaults.json"
+        defaults = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "kiro_crew"
+            / "config"
+            / "defaults.json"
+        )
         with open(defaults) as f:
             data = json.load(f)
         return data["toolsSettings"]["execute_bash"]["deniedCommands"]
@@ -798,7 +805,7 @@ class TestKiroCliBundledDeniedCommands:
     This is a different file from ``agents/defaults.json`` (tested by
     ``TestSandboxDeniedCommands`` above, which is the Q CLI agent config).
     The kiro-cli bundled config is the canonical source for deniedCommands
-    written into ``~/.kiro/agents/kiroclaw.json`` by ``build_agent_config``.
+    written into ``~/.kiro/agents/kirocrew.json`` by ``build_agent_config``.
 
     ``_is_denied`` mirrors kiro-cli's actual matching semantics, not a loose
     ``re.search()``.  Per the kiro-cli pattern matcher
@@ -809,20 +816,26 @@ class TestKiroCliBundledDeniedCommands:
     ``(?s)`` (dotall) mode.  Using ``re.search`` without that wrapping
     would produce false passes for patterns missing ``.*`` prefix/suffix.
 
-    Regression tests for the ``kill``/``kiroclaw`` pattern false positive:
-    the old pattern ``.*kill.*mesh.?claw.*`` matched any command whose
-    argv contained ``~/.kiroclaw/skills/...`` (because ``skills`` contains
-    the substring ``kill``) followed by ``kiroclaw`` anywhere.  The new
-    pattern ``.*\\b(kill|pkill|killall)\\b.*\\bmesh[-.]?claw\\b.*`` anchors
+    Regression tests for the ``kill``/``kirocrew`` pattern false positive:
+    the old pattern ``.*kill.*kiro.?crew.*`` matched any command whose
+    argv contained ``~/.kirocrew/skills/...`` (because ``skills`` contains
+    the substring ``kill``) followed by ``kirocrew`` anywhere.  The new
+    pattern ``.*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*`` anchors
     the kill word on word boundaries so skill-dir paths are no longer
-    caught, while still matching ``kiroclaw``, ``mesh.claw``, and
-    ``kiro-claw``.  Leading/trailing ``.*`` are required for parity with
-    sibling patterns under kiro-cli's ``^...$`` auto-anchoring.
+    caught, while still matching ``kirocrew`` and ``kiro-crew``.
+    Leading/trailing ``.*`` are required for parity with sibling patterns
+    under kiro-cli's ``^...$`` auto-anchoring.
     """
 
     @pytest.fixture(params=["execute_bash", "shell"])
     def denied_commands(self, request: pytest.FixtureRequest) -> list[str]:
-        bundled = Path(__file__).resolve().parent.parent / "src" / "kiro_claw" / "config" / "defaults.json"
+        bundled = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "kiro_crew"
+            / "config"
+            / "defaults.json"
+        )
         with open(bundled) as f:
             data = json.load(f)
         return data["toolsSettings"][request.param]["deniedCommands"]
@@ -845,52 +858,59 @@ class TestKiroCliBundledDeniedCommands:
         """Match kiro-cli's decider: auto-anchored, dotall, full-string match."""
         import re
 
-        return any(
-            re.search(f"(?s){cls._anchor(p)}", cmd) is not None for p in patterns
-        )
+        return any(re.search(f"(?s){cls._anchor(p)}", cmd) is not None for p in patterns)
 
     # --- real kill attempts: blocked ---
 
-    def test_pkill_kiroclaw_blocked(self, denied_commands: list[str]) -> None:
+    def test_pkill_kirocrew_blocked(self, denied_commands: list[str]) -> None:
+        assert self._is_denied("pkill kirocrew", denied_commands)
+
+    def test_kill_kirocrew_pid_blocked(self, denied_commands: list[str]) -> None:
+        assert self._is_denied("kill -9 $(pgrep kirocrew)", denied_commands)
+
+    def test_killall_kirocrew_blocked(self, denied_commands: list[str]) -> None:
+        assert self._is_denied("sudo killall kirocrew", denied_commands)
+
+    def test_kill_kiro_crew_hyphenated_blocked(self, denied_commands: list[str]) -> None:
+        # The `.?` in the pattern covers an optional separator so agents can't
+        # bypass with "kiro-crew".
+        assert self._is_denied("pkill kiro-crew", denied_commands)
+
+    # --- legacy kiroclaw binary: a migrated host may still have it installed,
+    # so the self-protection deny patterns must block BOTH names ---
+
+    def test_legacy_kiroclaw_self_protection_commands_blocked(
+        self, denied_commands: list[str]
+    ) -> None:
+        assert self._is_denied("kirocrew restart", denied_commands)  # new still blocked
+        assert self._is_denied("kiroclaw restart", denied_commands)
+        assert self._is_denied("kiroclaw update", denied_commands)
+        assert self._is_denied("kiroclaw cloud destroy --yes", denied_commands)
+        assert self._is_denied("kiroclaw gateway restart", denied_commands)
         assert self._is_denied("pkill kiroclaw", denied_commands)
-
-    def test_kill_kiroclaw_pid_blocked(self, denied_commands: list[str]) -> None:
         assert self._is_denied("kill -9 $(pgrep kiroclaw)", denied_commands)
-
-    def test_killall_kiroclaw_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("sudo killall kiroclaw", denied_commands)
-
-    def test_kill_kiro_claw_hyphenated_blocked(self, denied_commands: list[str]) -> None:
-        # The `.?` in the pattern covers an optional separator between
-        # "mesh" and "claw" so agents can't bypass with "kiro-claw".
         assert self._is_denied("pkill kiro-claw", denied_commands)
 
     # --- skill-dir false positives: must be allowed ---
 
-    def test_skill_create_sh_kiroclaw_domain_allowed(
-        self, denied_commands: list[str]
-    ) -> None:
+    def test_skill_create_sh_kirocrew_domain_allowed(self, denied_commands: list[str]) -> None:
         """The brazil-workspace skill scaffold must not be blocked."""
-        cmd = "/Users/meyffret/.kiroclaw/skills/brazil-workspace/create.sh --domain kiroclaw"
+        cmd = "/Users/meyffret/.kirocrew/skills/brazil-workspace/create.sh --domain kirocrew"
         assert not self._is_denied(cmd, denied_commands)
 
     def test_skills_dir_listing_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("ls ~/.kiroclaw/skills/", denied_commands)
+        assert not self._is_denied("ls ~/.kirocrew/skills/", denied_commands)
 
-    def test_skill_run_with_kiroclaw_arg_allowed(
-        self, denied_commands: list[str]
-    ) -> None:
-        cmd = "/Users/meyffret/.kiroclaw/skills/coder/run.sh kiroclaw --dry-run"
+    def test_skill_run_with_kirocrew_arg_allowed(self, denied_commands: list[str]) -> None:
+        cmd = "/Users/meyffret/.kirocrew/skills/coder/run.sh kirocrew --dry-run"
         assert not self._is_denied(cmd, denied_commands)
 
     def test_bash_skill_script_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied(
-            "bash ~/.kiroclaw/skills/something.sh", denied_commands
-        )
+        assert not self._is_denied("bash ~/.kirocrew/skills/something.sh", denied_commands)
 
-    def test_cat_kiroclaw_config_allowed(self, denied_commands: list[str]) -> None:
+    def test_cat_kirocrew_config_allowed(self, denied_commands: list[str]) -> None:
         # "cat" has no "kill" word anywhere — must not match.
-        assert not self._is_denied("cat ~/.kiroclaw/config.json", denied_commands)
+        assert not self._is_denied("cat ~/.kirocrew/config.json", denied_commands)
 
 
 class TestBuiltinDenyPatterns:
@@ -904,31 +924,31 @@ class TestBuiltinDenyPatterns:
 
     def test_allows_command_with_credential_in_path(self) -> None:
         """Commands in dirs like CredentialValidatorServiceCDK must not be blocked."""
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         cmd = "cd /home/user/src/CredentialValidatorServiceCDK && git status"
         assert is_denied(cmd) is None
 
     def test_allows_credential_in_package_name(self) -> None:
         """Package names containing 'credential' must not be blocked."""
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("ada credentials update --account 123") is None
         assert is_denied("credential-rotation-service build") is None
         assert is_denied("get-credentials --profile default") is None
 
     def test_blocks_get_secret(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("get_secret_value") is not None
 
     def test_blocks_read_secret(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("read_secret_store") is not None
 
     def test_blocks_git_push(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         # ── Real publish invocations: must remain BLOCKED ──
         assert is_denied("git push origin main") is not None
@@ -945,21 +965,14 @@ class TestBuiltinDenyPatterns:
         # ── Path containing "stash" must NOT bypass deny ──
         # The exception pattern requires a literal " stash push" with a leading
         # space, so "/tmp/stash push" (slash, not space) doesn't match.
-        assert (
-            is_denied("git -C /tmp/stash push origin main --force") is not None
-        )
+        assert is_denied("git -C /tmp/stash push origin main --force") is not None
         # ── Chaining-bypass attempts must remain BLOCKED ──
         # Per-segment evaluation: the embedded real publish lives in its own
         # segment after splitting on `;` / `&&` / `$(` / backtick, so it
         # matches the deny pattern even though an outer stash segment exists.
-        assert (
-            is_denied("git stash push; git push origin main --force") is not None
-        )
+        assert is_denied("git stash push; git push origin main --force") is not None
         assert is_denied("git stash push && git push origin main") is not None
-        assert (
-            is_denied('git stash push -m "$(git push origin main --force)"')
-            is not None
-        )
+        assert is_denied('git stash push -m "$(git push origin main --force)"') is not None
         assert is_denied("git stash push -m `git push origin main`") is not None
         # Newline-chained publish (heredoc / multi-statement script body).
         assert is_denied("echo starting\ngit push origin main") is not None
@@ -989,7 +1002,7 @@ class TestBuiltinDenyPatterns:
         ``test_blocks_git_push`` for the bypass-attempt cases that remain
         blocked because the embedded segment IS a real publish.
         """
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         # The original pain point: stash output piped into a filter.
         assert is_denied('git stash push -m "wip" 2>&1 | tail -3') is None
@@ -1018,7 +1031,7 @@ class TestBuiltinDenyPatterns:
         literal ` stash push` substring (with leading space) which this
         input lacks → outright deny on pass 1, no fall-through to pass 2.
         """
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         # Concrete bypass attempt — flagged by AutoSDE on CR-276508806 rev 1.
         assert is_denied("git$(echo ' ')push origin main") is not None
@@ -1041,13 +1054,11 @@ class TestBuiltinDenyPatterns:
         The fix uses ``&(?!&)`` after ``&&`` in the alternation so ``&&``
         is consumed as a single token and a lone ``&`` is split on.
         """
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         # Core bypass.
         assert is_denied("git stash push & git push origin main") is not None
-        assert (
-            is_denied("git stash push -m 'wip' & git push --force") is not None
-        )
+        assert is_denied("git stash push -m 'wip' & git push --force") is not None
         # Trailing ``&`` to background a real publish.
         assert is_denied("git push origin main &") is not None
         # ``&&`` must continue to work — it's a different operator entirely
@@ -1075,17 +1086,14 @@ class TestBuiltinDenyPatterns:
         against future regressions if either the loop control or the
         ``_DENY_EXCEPTIONS`` map is changed.
         """
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         # Pass 1 sees:
         #   *git*push*       — matches, ` stash push` exception matches → candidate
         #   *terminate_instance* — matches, no exception → outright deny
         # If the candidate logic ever regresses to ``break``, the second
         # pattern would be skipped and this would falsely allow.
-        assert (
-            is_denied("git stash push terminate_instance i-deadbeef")
-            is not None
-        )
+        assert is_denied("git stash push terminate_instance i-deadbeef") is not None
 
     def test_allows_commit_message_mentioning_push(self) -> None:
         """A ``git commit`` whose message merely mentions ``push`` must be
@@ -1099,36 +1107,27 @@ class TestBuiltinDenyPatterns:
         approval prompt.  Anchoring ``push`` as the git subcommand fixes it
         while keeping real ``git push`` blocked.
         """
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("git commit -m 'fix: do not push secrets to remote'") is None
         assert (
-            is_denied(
-                "git commit -m 'refactor: push results downstream and reset cache'"
-            )
-            is None
+            is_denied("git commit -m 'refactor: push results downstream and reset cache'") is None
         )
         # Multi-line / heredoc-style body mentioning push.
-        assert (
-            is_denied("git commit -m 'docs: explain when to push and when to rebase'")
-            is None
-        )
+        assert is_denied("git commit -m 'docs: explain when to push and when to rebase'") is None
 
     def test_allows_git_verbs_with_push_substring_args(self) -> None:
         """Other git subcommands whose arguments contain ``push`` (branch
         names, grep patterns, config keys) must be ALLOWED — only an actual
         ``git push`` invocation is a publish.
         """
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("git log --grep push") is None
         assert is_denied("git config push.default current") is None
         assert is_denied("git branch --contains pushed-feature") is None
         assert (
-            is_denied(
-                "git switch -c fix/security-tighten-git-push origin/beta-braveheart"
-            )
-            is None
+            is_denied("git switch -c fix/security-tighten-git-push origin/beta-braveheart") is None
         )
         # ``git remote`` referencing a remote literally named "push".
         assert is_denied("git remote show push") is None
@@ -1140,21 +1139,16 @@ class TestBuiltinDenyPatterns:
         Covers the ssh symptom from the same thread: remote
         interactions starting with ``ssh xxxx`` were aborting.
         """
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("ssh dev-dsk 'cd /workplace && git status'") is None
-        assert (
-            is_denied("ssh dev-dsk 'git commit -m \"address push-back from review\"'")
-            is None
-        )
+        assert is_denied("ssh dev-dsk 'git commit -m \"address push-back from review\"'") is None
 
     def test_blocks_ssh_remote_real_git_push(self) -> None:
         """A real ``git push`` inside an ``ssh`` remote command stays BLOCKED."""
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
-        assert (
-            is_denied("ssh host 'cd /repo && git push origin main'") is not None
-        )
+        assert is_denied("ssh host 'cd /repo && git push origin main'") is not None
 
     def test_deny_event_audit_emitted_on_block(self, monkeypatch) -> None:
         """Every denial path emits a ``deny_event`` SEL event.
@@ -1163,13 +1157,11 @@ class TestBuiltinDenyPatterns:
         revision only emitted SEL audit on the exception-granted path,
         leaving denials un-audited.
         """
-        import kiro_claw.security as security_module
+        import kiro_crew.security as security_module
 
         captured: list[tuple[str, str, str]] = []
 
-        def fake_emit(
-            tool_name: str, deny_pattern: str, segment: str
-        ) -> None:
+        def fake_emit(tool_name: str, deny_pattern: str, segment: str) -> None:
             captured.append((tool_name, deny_pattern, segment))
 
         monkeypatch.setattr(security_module, "_emit_deny_event", fake_emit)
@@ -1182,9 +1174,7 @@ class TestBuiltinDenyPatterns:
         # Chained bypass attempt is caught on the whole string (the separator
         # is part of the git-publish anchor), and still audited.
         captured.clear()
-        result = security_module.is_denied(
-            "git stash push && git push origin main"
-        )
+        result = security_module.is_denied("git stash push && git push origin main")
         assert result is not None
         assert any("git push origin main" in c[2] for c in captured)
         # A glob-based deny (e.g. terminate_instance) still records its glob.
@@ -1194,27 +1184,27 @@ class TestBuiltinDenyPatterns:
         assert captured[0][1] == "*terminate_instance*"
 
     def test_blocks_delete_stack(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("delete_stack --stack-name foo") is not None
 
     def test_blocks_terminate_instance(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("terminate_instance i-123") is not None
 
     def test_allows_git_status(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("git status") is None
 
     def test_allows_git_log(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("git -P log --oneline -5") is None
 
     def test_allows_cr_command(self) -> None:
-        from kiro_claw.security import is_denied
+        from kiro_crew.security import is_denied
 
         assert is_denied("cr --summary 'Fix test discovery'") is None
 
@@ -1224,7 +1214,7 @@ class TestRedactExfiltrationUrls:
 
     def test_external_long_query_redacted(self) -> None:
         """External domains with long query strings are still redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = "https://evil.com/steal?data=" + "A" * 250
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
@@ -1233,7 +1223,7 @@ class TestRedactExfiltrationUrls:
 
     def test_long_query_redacted_domain_agnostic(self) -> None:
         """Long query strings are redacted regardless of domain (no allowlist)."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         # Detection is domain-agnostic: there is no trusted-domain allowlist,
         # so even a long multi-param query on any host is flagged.
@@ -1246,7 +1236,7 @@ class TestRedactExfiltrationUrls:
 
     def test_heavy_url_encoding_redacted(self) -> None:
         """Heavily URL-encoded destinations are redacted regardless of domain."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = (
             "https://sso.example.com/federate?account=123456789012"
@@ -1261,7 +1251,7 @@ class TestRedactExfiltrationUrls:
 
     def test_short_query_not_redacted_domain_agnostic(self) -> None:
         """Short, benign query strings are not redacted on any domain."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = "https://console.example.com/page?k0=val0&k1=val1&k2=val2"
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
@@ -1270,7 +1260,7 @@ class TestRedactExfiltrationUrls:
 
     def test_safe_domain_credential_still_redacted(self) -> None:
         """Credential patterns on safe domains are still redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = "https://example.amazon.dev/api?key=AKIAIOSFODNN7EXAMPLE1234"
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
@@ -1279,7 +1269,7 @@ class TestRedactExfiltrationUrls:
 
     def test_short_query_no_redaction(self) -> None:
         """Short query strings on any domain are not redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = "https://example.com/page?id=123&name=test"
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
@@ -1288,7 +1278,7 @@ class TestRedactExfiltrationUrls:
 
     def test_amazonaws_not_safe(self) -> None:
         """amazonaws.com is NOT allowlisted — anyone can provision endpoints."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         params = "&".join(f"d{i}=stolen{i}" for i in range(30))
         url = f"https://attacker-bucket.s3.amazonaws.com/exfil?{params}"
@@ -1298,7 +1288,7 @@ class TestRedactExfiltrationUrls:
 
     def test_s3_presigned_url_preserved(self) -> None:
         """S3 presigned URLs on amazonaws.com are NOT redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = (
             "https://my-bucket.s3.us-east-1.amazonaws.com/results/abc.csv"
@@ -1316,7 +1306,7 @@ class TestRedactExfiltrationUrls:
 
     def test_s3_presigned_url_scan_clean(self) -> None:
         """scan_exfiltration_urls returns no warnings for S3 presigned URLs."""
-        from kiro_claw.security import scan_exfiltration_urls
+        from kiro_crew.security import scan_exfiltration_urls
 
         url = (
             "https://bucket.s3.amazonaws.com/file.csv"
@@ -1333,19 +1323,16 @@ class TestRedactExfiltrationUrls:
 
     def test_amazonaws_non_presigned_still_redacted(self) -> None:
         """amazonaws.com URLs without presigned params are still redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
-        url = (
-            "https://evil.s3.amazonaws.com/steal"
-            "?data=" + "A" * 250
-        )
+        url = "https://evil.s3.amazonaws.com/steal" "?data=" + "A" * 250
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
         assert "[REDACTED" in result
         assert len(warnings) == 1
 
     def test_spoofed_presigned_params_still_redacted(self) -> None:
         """Spoofed presigned param names with dummy values are still redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = (
             "https://attacker.s3.amazonaws.com/exfil"
@@ -1357,7 +1344,7 @@ class TestRedactExfiltrationUrls:
 
     def test_presigned_url_with_slack_token_still_redacted(self) -> None:
         """Presigned URL that also contains a Slack token is still redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = (
             "https://bucket.s3.amazonaws.com/file.csv"
@@ -1375,7 +1362,7 @@ class TestRedactExfiltrationUrls:
 
     def test_presigned_url_with_extra_exfil_params_still_redacted(self) -> None:
         """Presigned URL with extra non-standard params is still redacted."""
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         url = (
             "https://attacker.s3.amazonaws.com/file.csv"
@@ -1398,7 +1385,7 @@ class TestRedactExfiltrationUrls:
         (not just scan), because the bad URL causes scan to return warnings,
         so redact doesn't early-return.
         """
-        from kiro_claw.security import redact_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         bad_url = "https://evil.com/steal?data=" + "A" * 250
         good_url = (
@@ -1421,7 +1408,7 @@ class TestRedactExfiltrationUrls:
 
     def test_presigned_url_with_sts_security_token_preserved(self) -> None:
         """Presigned URL with realistic base64 STS session token is preserved."""
-        from kiro_claw.security import scan_exfiltration_urls
+        from kiro_crew.security import scan_exfiltration_urls
 
         # Realistic 200+ char base64 STS token (matches _EXFIL_PATTERNS blob pattern)
         sts_token = "IQoJb3JpZ2luX2VjE" + "A" * 180 + "=="
@@ -1441,7 +1428,7 @@ class TestRedactExfiltrationUrls:
 
     def test_presigned_url_with_exfil_in_allowed_param_redacted(self) -> None:
         """Exfil payload in an allowed param value is caught by value scanning."""
-        from kiro_claw.security import scan_exfiltration_urls
+        from kiro_crew.security import scan_exfiltration_urls
 
         url = (
             "https://evil.s3.us-east-1.amazonaws.com/out.csv"
@@ -1457,7 +1444,7 @@ class TestRedactExfiltrationUrls:
 
     def test_presigned_url_with_exfil_in_credential_scope_redacted(self) -> None:
         """Arbitrary data in credential scope is caught by structural validation."""
-        from kiro_claw.security import scan_exfiltration_urls
+        from kiro_crew.security import scan_exfiltration_urls
 
         url = (
             "https://evil.s3.us-east-1.amazonaws.com/out.csv"
@@ -1473,7 +1460,7 @@ class TestRedactExfiltrationUrls:
 
     def test_presigned_url_with_fake_security_token_redacted(self) -> None:
         """Non-STS payload in Security-Token is caught by structural validation."""
-        from kiro_claw.security import scan_exfiltration_urls
+        from kiro_crew.security import scan_exfiltration_urls
 
         url = (
             "https://evil.s3.us-east-1.amazonaws.com/out.csv"
@@ -1563,24 +1550,39 @@ class TestIsSensitivePath:
     def test_gnupg(self) -> None:
         assert is_sensitive_path("~/.gnupg/private-keys-v1.d") is True
 
-    def test_kiroclaw_env(self) -> None:
+    def test_kirocrew_env(self) -> None:
+        assert is_sensitive_path("~/.kirocrew/.env") is True
+
+    def test_legacy_kiroclaw_paths_still_sensitive(self) -> None:
+        # The KiroClaw -> KiroCrew rename does not move ~/.kiroclaw in place
+        # (migration is a documented manual step), so an unmigrated host still
+        # holds live credentials + governance trust-root files there. Every
+        # legacy analog of a sensitive ~/.kirocrew path must stay blocked.
         assert is_sensitive_path("~/.kiroclaw/.env") is True
+        assert is_sensitive_path("~/.kiroclaw/sel_hmac.key") is True
+        assert is_sensitive_path("~/.kiroclaw/security_events.jsonl") is True
+        assert is_sensitive_path("~/.kiroclaw/app_admission.json") is True
+        assert is_sensitive_path("~/.kiroclaw/security_policy.json") is True
+        assert is_sensitive_path("~/.kiroclaw/admission_policy.json") is True
+        assert is_sensitive_path("~/.kiroclaw/profiles/team.json") is True
+        # Non-sensitive legacy paths remain readable (parity with .kirocrew).
+        assert is_sensitive_path("~/.kiroclaw/sessions.db") is False
 
     def test_sel_hmac_key(self) -> None:
         # Talos finding cdf82704: the SEL HMAC signing key is the trust root of
         # the tamper-evident audit chain. If an audited agent could fs_read it,
         # it could forge the entire chain, so it must be sensitive (read-blocked).
-        assert is_sensitive_path("~/.kiroclaw/sel_hmac.key") is True
+        assert is_sensitive_path("~/.kirocrew/sel_hmac.key") is True
 
     def test_security_events_log(self) -> None:
         # Talos finding cdf82704: the SEL audit log itself must not be
         # readable/rewritable by the audited agent (tamper of the evidence trail).
-        assert is_sensitive_path("~/.kiroclaw/security_events.jsonl") is True
+        assert is_sensitive_path("~/.kirocrew/security_events.jsonl") is True
 
     def test_sel_files_absolute_path(self) -> None:
         home = str(Path.home())
-        assert is_sensitive_path(f"{home}/.kiroclaw/sel_hmac.key") is True
-        assert is_sensitive_path(f"{home}/.kiroclaw/security_events.jsonl") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/sel_hmac.key") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/security_events.jsonl") is True
 
     def test_app_admission_policy(self) -> None:
         # Keystone invariant: app_admission.json is the sole fleet-controlled
@@ -1588,14 +1590,14 @@ class TestIsSensitivePath:
         # governed agent that could rewrite/delete it could neuter its own
         # admission ceiling — it must be read/write blocked via the shared gate.
         home = str(Path.home())
-        assert is_sensitive_path("~/.kiroclaw/app_admission.json") is True
-        assert is_sensitive_path(f"{home}/.kiroclaw/app_admission.json") is True
+        assert is_sensitive_path("~/.kirocrew/app_admission.json") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/app_admission.json") is True
 
-    def test_non_sel_kiroclaw_file_not_blocked(self) -> None:
+    def test_non_sel_kirocrew_file_not_blocked(self) -> None:
         # Regression guard: the SEL additions must not over-block routine
-        # ~/.kiroclaw reads (config.json, sessions.db) that operators/tools need.
-        assert is_sensitive_path("~/.kiroclaw/config.json") is False
-        assert is_sensitive_path("~/.kiroclaw/sessions.db") is False
+        # ~/.kirocrew reads (config.json, sessions.db) that operators/tools need.
+        assert is_sensitive_path("~/.kirocrew/config.json") is False
+        assert is_sensitive_path("~/.kirocrew/sessions.db") is False
 
     def test_safe_path(self) -> None:
         assert is_sensitive_path("~/Documents/code/main.py") is False
@@ -1700,20 +1702,20 @@ class TestIsSensitiveBashCommand:
     def test_cat_sel_hmac_key_blocked(self) -> None:
         # Talos finding cdf82704: reading the SEL HMAC key via bash is blocked
         # (adding it to _SENSITIVE_HOME_DIRS also arms the bash-read matcher).
-        result = is_sensitive_bash_command("cat ~/.kiroclaw/sel_hmac.key")
+        result = is_sensitive_bash_command("cat ~/.kirocrew/sel_hmac.key")
         assert result is not None and "blocked" in result.lower()
 
     def test_cat_security_events_log_blocked(self) -> None:
-        result = is_sensitive_bash_command("cat ~/.kiroclaw/security_events.jsonl")
+        result = is_sensitive_bash_command("cat ~/.kirocrew/security_events.jsonl")
         assert result is not None and "blocked" in result.lower()
 
     def test_write_app_admission_policy_blocked(self) -> None:
         # Keystone invariant: a tee/rm to the admission ceiling is blocked
         # (adding app_admission.json to _SENSITIVE_HOME_DIRS also arms the
         # bash write/extract matcher, so the agent cannot delete or rewrite it).
-        tee = is_sensitive_bash_command("echo '{}' | tee ~/.kiroclaw/app_admission.json")
+        tee = is_sensitive_bash_command("echo '{}' | tee ~/.kirocrew/app_admission.json")
         assert tee is not None and "blocked" in tee.lower()
-        rm = is_sensitive_bash_command("rm -f ~/.kiroclaw/app_admission.json")
+        rm = is_sensitive_bash_command("rm -f ~/.kirocrew/app_admission.json")
         assert rm is not None and "blocked" in rm.lower()
 
     def test_colon_separated_sensitive_path_blocked(self) -> None:
@@ -1727,7 +1729,7 @@ class TestIsSensitiveBashCommand:
         # CR-284272012 H-p9: file-materialising git verbs still blocked.
         assert is_sensitive_bash_command("git checkout -- ~/.aws/credentials") is not None
         assert is_sensitive_bash_command("git restore ~/.ssh/id_rsa") is not None
-        assert is_sensitive_bash_command("git mv x ~/.kiroclaw/profiles/p.json") is not None
+        assert is_sensitive_bash_command("git mv x ~/.kirocrew/profiles/p.json") is not None
 
     def test_readonly_git_non_sensitive_path_allowed(self) -> None:
         # CR-284272012 H-p9: bare `git` was over-blocking read-only inspection.
@@ -1737,17 +1739,17 @@ class TestIsSensitiveBashCommand:
         assert is_sensitive_bash_command("git show HEAD") is None
 
     def test_extract_into_trust_root_subdir_blocked(self) -> None:
-        # CR-284272012 H-p6: extraction into ANY ~/.kiroclaw descendant (not just
+        # CR-284272012 H-p6: extraction into ANY ~/.kirocrew descendant (not just
         # the root or /profiles) can drop files downstream tooling reads.
-        assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kiroclaw/foo/") is not None
-        assert is_sensitive_bash_command("unzip -d ~/.kiroclaw/foo/ evil.zip") is not None
-        assert is_sensitive_bash_command("tar -xf e.tar -C ~/.kiroclaw") is not None
+        assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kirocrew/foo/") is not None
+        assert is_sensitive_bash_command("unzip -d ~/.kirocrew/foo/ evil.zip") is not None
+        assert is_sensitive_bash_command("tar -xf e.tar -C ~/.kirocrew") is not None
 
-    def test_normal_kiroclaw_access_not_overblocked(self) -> None:
+    def test_normal_kirocrew_access_not_overblocked(self) -> None:
         # Regression guard: the broadened rules must not block routine
-        # non-sensitive ~/.kiroclaw access (config.json, sessions.db).
-        assert is_sensitive_bash_command("cat ~/.kiroclaw/config.json") is None
-        assert is_sensitive_bash_command("sqlite3 ~/.kiroclaw/sessions.db .tables") is None
+        # non-sensitive ~/.kirocrew access (config.json, sessions.db).
+        assert is_sensitive_bash_command("cat ~/.kirocrew/config.json") is None
+        assert is_sensitive_bash_command("sqlite3 ~/.kirocrew/sessions.db .tables") is None
 
 
 class TestAuditBashCommand:
@@ -1964,7 +1966,7 @@ class TestStreamRedactor:
 
     @staticmethod
     def _run(chunks):
-        from kiro_claw.security import StreamRedactor
+        from kiro_crew.security import StreamRedactor
 
         r = StreamRedactor()
         emits = [r.feed(c) for c in chunks]
@@ -1981,7 +1983,7 @@ class TestStreamRedactor:
         assert joined == "The access key is [REDACTED: credential]"
 
     def test_char_by_char_stream(self) -> None:
-        from kiro_claw.security import StreamRedactor
+        from kiro_crew.security import StreamRedactor
 
         r = StreamRedactor()
         out = "".join(r.feed(c) for c in "x AKIAIOSFODNN7EXAMPLE y") + r.flush()
@@ -1998,14 +2000,12 @@ class TestStreamRedactor:
         assert "REDACTED" in joined
 
     def test_github_token_split(self) -> None:
-        joined = "".join(
-            self._run(["use ghp_ABCDEFGHIJ", "KLMNOPQRSTUVWXYZ", "abcdef1234567890"])
-        )
+        joined = "".join(self._run(["use ghp_ABCDEFGHIJ", "KLMNOPQRSTUVWXYZ", "abcdef1234567890"]))
         assert "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef" not in joined
         assert "REDACTED" in joined
 
     def test_reset_discards_buffer(self) -> None:
-        from kiro_claw.security import StreamRedactor
+        from kiro_crew.security import StreamRedactor
 
         r = StreamRedactor()
         assert r.feed("AKIA") == ""  # held
@@ -2013,7 +2013,7 @@ class TestStreamRedactor:
         assert r.flush() == ""  # nothing left after reset
 
     def test_flush_empty(self) -> None:
-        from kiro_claw.security import StreamRedactor
+        from kiro_crew.security import StreamRedactor
 
         assert StreamRedactor().flush() == ""
 
@@ -2021,7 +2021,7 @@ class TestStreamRedactor:
         """A pathologically long unbroken credential-class run does not grow the
         held buffer without bound: the excess beyond the cap is committed, and
         no content is lost across feed+flush."""
-        from kiro_claw.security import _STREAM_HOLDBACK_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
 
         r = StreamRedactor()
         blob = "a" * (_STREAM_HOLDBACK_MAX + 300)  # no terminator, all cred-class
@@ -2037,9 +2037,7 @@ class TestStreamRedactor:
     # the header + spaces commit and the token leaks on the next chunk.
 
     def test_bearer_split_at_spaces_not_leaked(self) -> None:
-        emits = self._run(
-            ["Authorization: Bearer ", "opaque-token-value", " trailing text"]
-        )
+        emits = self._run(["Authorization: Bearer ", "opaque-token-value", " trailing text"])
         for e in emits:
             assert "opaque-token-value" not in e
         joined = "".join(emits)
@@ -2072,7 +2070,7 @@ class TestStreamRedactor:
         anchor) must stay authoritative: once the withheld tail exceeds it the
         redactor stops accumulating, so the retained buffer stays bounded.
         """
-        from kiro_claw.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
 
         r = StreamRedactor()
         r.feed("Authorization: Bearer ")
@@ -2095,7 +2093,7 @@ class TestStreamRedactor:
         default 512-char holdback would bisect a long terminal token, emitting the
         first (len-512) chars raw before flush() redacted only the held tail.
         """
-        from kiro_claw.security import _STREAM_HOLDBACK_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
 
         payload = "eyJ" + "A" * (_STREAM_HOLDBACK_MAX + 800)
         jwt = f"{payload}.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6"
@@ -2114,7 +2112,7 @@ class TestStreamRedactor:
         header.key.iv.ciphertext.tag) so it escalates the cap instead of bisecting
         the >512-char JWE at the 512 floor and leaking its raw head.
         """
-        from kiro_claw.security import _STREAM_HOLDBACK_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
 
         seg = "eyJ" + "A" * (_STREAM_HOLDBACK_MAX + 400)
         jwe = f"{seg}.QW5rZXk.aXY.Y2lwaGVydGV4dA.dGFn"  # 5 compact JWE segments
@@ -2134,7 +2132,7 @@ class TestStreamRedactor:
         head raw. `_BEARER_ANCHOR_PARTIAL_RE` now holds the whole anchor together
         and also escalates the cap.
         """
-        from kiro_claw.security import _STREAM_HOLDBACK_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
 
         token = "A1b2C3d4" * ((_STREAM_HOLDBACK_MAX + 400) // 8)  # opaque, no eyJ
         assert len(token) > _STREAM_HOLDBACK_MAX
@@ -2152,7 +2150,7 @@ class TestStreamRedactor:
         token's head raw). feed() redacts+emits the safe prefix, appends the tag,
         and DROPS the oversized tail.
         """
-        from kiro_claw.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
 
         jwt = "eyJ" + "A" * (_STREAM_HOLDBACK_JWT_MAX + 500) + ".eyJz.SflK"
         r = StreamRedactor()
@@ -2171,7 +2169,7 @@ class TestStreamRedactor:
         past the ceiling is still committed verbatim (bisected, no data loss),
         keeping the DoS bound intact without corrupting non-secret output.
         """
-        from kiro_claw.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
+        from kiro_crew.security import _STREAM_HOLDBACK_JWT_MAX, StreamRedactor
 
         blob = "a" * (_STREAM_HOLDBACK_JWT_MAX + 600)  # no eyJ / Bearer anchor
         r = StreamRedactor()
@@ -2188,12 +2186,12 @@ class TestScanMemoryImportGuard:
     def test_non_importerror_degrades_to_empty(self, monkeypatch) -> None:
         import builtins
 
-        from kiro_claw.security import scan_memory
+        from kiro_crew.security import scan_memory
 
         real_import = builtins.__import__
 
         def fake_import(name, *args, **kwargs):
-            if name == "kiro_claw.vector_memory" or name.endswith(".vector_memory"):
+            if name == "kiro_crew.vector_memory" or name.endswith(".vector_memory"):
                 raise OSError("simulated C-extension load failure")
             return real_import(name, *args, **kwargs)
 

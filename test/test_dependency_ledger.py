@@ -1,11 +1,11 @@
-"""Tests for kiro_claw.apps.dependency_ledger — reference-counted dependency tracking."""
+"""Tests for kiro_crew.apps.dependency_ledger — reference-counted dependency tracking."""
 from __future__ import annotations
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kiro_claw.apps.dependency_ledger import (
+from kiro_crew.apps.dependency_ledger import (
     LedgerEntry,
     classify_for_uninstall,
     get_entry,
@@ -18,7 +18,7 @@ from kiro_claw.apps.dependency_ledger import (
 @pytest.fixture(autouse=True)
 def _ledger_home(tmp_path, monkeypatch):
     """Isolate ledger to temp directory."""
-    monkeypatch.setenv("KIROCLAW_HOME", str(tmp_path / "kiroclaw-home"))
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "kirocrew-home"))
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ _dep_key = st.from_regex(r"aim/(mcp|skills|agents)/[a-z][a-z0-9\-]{0,20}", fullm
 
 def _clear_ledger() -> None:
     """Remove the ledger file to reset state between hypothesis examples."""
-    from kiro_claw.apps.dependency_ledger import _ledger_path
+    from kiro_crew.apps.dependency_ledger import _ledger_path
     path = _ledger_path()
     if path.is_file():
         path.unlink()

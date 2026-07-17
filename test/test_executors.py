@@ -8,7 +8,7 @@ kiro-cli/MCP children (the documented root cause of the loop wedge, Mesh-1968).
 
 from __future__ import annotations
 
-import kiro_claw.executors as ex
+import kiro_crew.executors as ex
 
 
 def teardown_function() -> None:

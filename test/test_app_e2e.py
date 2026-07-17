@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.apps.bridges import deregister_app, register_app
-from kiro_claw.apps.manager import (
+from kiro_crew.apps.bridges import deregister_app, register_app
+from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     _read_installed,
     disable_app,
@@ -22,8 +22,8 @@ from kiro_claw.apps.manager import (
     list_apps,
     uninstall_app,
 )
-from kiro_claw.apps.manifest import AppManifest
-from kiro_claw.apps.permissions import validate_permissions
+from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.permissions import validate_permissions
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -77,17 +77,17 @@ def _make_full_app(tmp_path, name="e2e-app"):
 
 @pytest.fixture()
 def app_env(tmp_path, monkeypatch):
-    home = tmp_path / "kiroclaw-home"
+    home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCLAW_HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
-    import kiro_claw.apps.bridges as bridges_mod
+    import kiro_crew.apps.bridges as bridges_mod
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
     # Patch _MCP_JSON_PATH to avoid file descriptor errors in tests
     mcp_path = tmp_path / "mcp.json"
     monkeypatch.setattr(bridges_mod, "_MCP_JSON_PATH", mcp_path)
-    import kiro_claw.apps.backend as bmod
+    import kiro_crew.apps.backend as bmod
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return {"home": home, "kiro_agents": kiro_agents}

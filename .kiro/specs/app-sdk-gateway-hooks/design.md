@@ -2,7 +2,7 @@
 
 ## Overview
 
-This design introduces a gateway-side hook system that allows KiroClaw apps to register HTTP routes, manage cron jobs, and participate in gateway lifecycle events through declarative manifest entries and Python entry points. The core principle is **convention over configuration**: apps declare capabilities in `app.json`, implement them in their own directory, and the gateway discovers and wires them up automatically.
+This design introduces a gateway-side hook system that allows KiroCrew apps to register HTTP routes, manage cron jobs, and participate in gateway lifecycle events through declarative manifest entries and Python entry points. The core principle is **convention over configuration**: apps declare capabilities in `app.json`, implement them in their own directory, and the gateway discovers and wires them up automatically.
 
 **Integration with existing lifecycle**: This is NOT a replacement for the current app lifecycle (`install_app` → `enable_app` → `register_app` via bridges.py → `start_app_backend`). It extends that pipeline by adding new hook points within the existing flow:
 
@@ -10,7 +10,7 @@ This design introduces a gateway-side hook system that allows KiroClaw apps to r
 - `disable_app()` already calls `deregister_app()` and `stop_app_backend()`. The new system adds route deregistration and `on_shutdown` hook invocation **before** the existing teardown.
 - The existing `setup.onEnable`/`setup.onDisable` shell scripts continue to run at their current position in the flow. Python lifecycle hooks run after shell scripts.
 
-**Standalone app compatibility**: The system supports both `resources="gateway"` (KiroClaw-managed) and `resources="app"` (self-managed/standalone) apps:
+**Standalone app compatibility**: The system supports both `resources="gateway"` (KiroCrew-managed) and `resources="app"` (self-managed/standalone) apps:
 
 - **Gateway-managed apps** (`resources="gateway"`): The Route Registry loads their route modules directly into the gateway process. The CronSDK wraps the gateway's CronService. This is the primary use case for builtin apps like Mimir.
 - **Self-managed/standalone apps** (`resources="app"`): These apps run their own backend process (managed by `backend.py`). They can still declare `backend.hooks.routes` — the Route Registry will proxy requests to their backend port rather than loading Python modules directly. The CronSDK is still available via the App Context for programmatic cron management.
@@ -102,7 +102,7 @@ Each value is a Python dotted path in the format `module.path:callable_name`, re
 
 **Manifest Schema Version**: The manifest does not introduce a top-level `schemaVersion` field. Forward compatibility is handled by the existing `extra` dict in `AppManifest.from_dict()` — unknown fields are preserved on round-trip. If `backend.hooks` format changes in the future, a new field name (e.g. `backend.hooks_v2`) will be used rather than breaking the existing format.
 
-### 2. Route Registry (`kiro_claw/apps/route_registry.py`)
+### 2. Route Registry (`kiro_crew/apps/route_registry.py`)
 
 **Implementation choice: Middleware-based soft routing**
 
@@ -202,7 +202,7 @@ Routes are mounted at `/api/apps/{app_name}/{path}`. The registry enforces this 
 
 **App enable status**: When route loading fails during enable, the app is marked as `enabled=True` with an additional `health_status="degraded"` field in `installed.json`. The dashboard displays this as a warning badge. The app's other resources (agents, skills, crons) remain functional — only the failed routes are unavailable.
 
-### 3. Module Isolation (`kiro_claw/apps/module_loader.py`)
+### 3. Module Isolation (`kiro_crew/apps/module_loader.py`)
 
 App modules are loaded in isolation to prevent namespace collisions and sys.path pollution:
 
@@ -213,7 +213,7 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> ModuleTyp
     Uses importlib.util.spec_from_file_location to load directly from
     the file path, avoiding sys.path manipulation entirely.
 
-    Module is registered in sys.modules as `_kiroclaw_app_{app_name}.{module_name}`
+    Module is registered in sys.modules as `_kirocrew_app_{app_name}.{module_name}`
     to prevent collisions between apps that have identically-named modules
     (e.g. two apps both having `backend/routes.py`).
     """
@@ -230,7 +230,7 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> ModuleTyp
         raise ImportError(f"Module path escapes app directory: {file_path}")
 
     # Unique module name to avoid sys.modules collisions
-    unique_name = f"_kiroclaw_app_{app_name}.{dotted_path}"
+    unique_name = f"_kirocrew_app_{app_name}.{dotted_path}"
 
     spec = importlib.util.spec_from_file_location(unique_name, file_path)
     module = importlib.util.module_from_spec(spec)
@@ -245,7 +245,7 @@ def unload_app_modules(app_name: str) -> None:
 
     Called on app disable to ensure re-enable loads fresh code.
     """
-    prefix = f"_kiroclaw_app_{app_name}."
+    prefix = f"_kirocrew_app_{app_name}."
     to_remove = [k for k in sys.modules if k.startswith(prefix)]
     for k in to_remove:
         del sys.modules[k]
@@ -257,7 +257,7 @@ def unload_app_modules(app_name: str) -> None:
 - Clean unload on disable — re-enable loads fresh code (no stale cache)
 - Path containment — app modules cannot escape their directory
 
-### 4. App Context (`kiro_claw/apps/context.py`)
+### 4. App Context (`kiro_crew/apps/context.py`)
 
 ```python
 @dataclass
@@ -284,7 +284,7 @@ class AppHealthStatus:
     last_checked: str = ""  # ISO 8601
 ```
 
-### 4a. EventBus (`kiro_claw/apps/event_bus.py`)
+### 4a. EventBus (`kiro_crew/apps/event_bus.py`)
 
 Thin wrapper over the existing gateway WebSocket broadcast mechanism. Apps publish events scoped to their declared `permissions.events` list.
 
@@ -340,7 +340,7 @@ class EventBus:
 
 **Integration**: The `broadcast_fn` is `DashboardState.broadcast()` — the same function used by existing features (notifications, slot updates, etc.). No new WebSocket infrastructure needed.
 
-### 4b. AppStorage (`kiro_claw/apps/app_storage.py`)
+### 4b. AppStorage (`kiro_crew/apps/app_storage.py`)
 
 Simple key-value store backed by the app's `data_dir`. Provides a typed interface over file I/O with atomic writes and optional JSON serialization.
 
@@ -349,7 +349,7 @@ class AppStorage:
     """App-scoped persistent key-value storage.
 
     Backed by files in the app's data directory:
-    ~/.kiroclaw/apps/{app_name}/data/kv/{key}.json
+    ~/.kirocrew/apps/{app_name}/data/kv/{key}.json
 
     Keys are validated to prevent path traversal.
     Values are JSON-serializable dicts or strings.
@@ -405,7 +405,7 @@ class AppStorage:
 - JSON serialization for structured data, raw string fallback for simple values
 - No quota enforcement in v1 (future: add `max_keys` and `max_bytes` to permissions)
 
-### 5. Cron SDK (`kiro_claw/apps/cron_sdk.py`)
+### 5. Cron SDK (`kiro_crew/apps/cron_sdk.py`)
 
 ```python
 class CronSDK:
@@ -492,7 +492,7 @@ class CronSDK:
         return None
 ```
 
-### 6. Lifecycle Hook Dispatcher (`kiro_claw/apps/lifecycle.py`)
+### 6. Lifecycle Hook Dispatcher (`kiro_crew/apps/lifecycle.py`)
 
 ```python
 class LifecycleDispatcher:
@@ -517,7 +517,7 @@ class LifecycleDispatcher:
     async def _invoke(self, app_name: str, hook_path: str, ctx: AppContext) -> None:
         """Import and call a hook via module_loader (same isolation as routes)."""
         try:
-            from kiro_claw.apps.module_loader import load_app_module
+            from kiro_crew.apps.module_loader import load_app_module
             app_root = app_dir(app_name)
             func = load_app_module(app_name, app_root, hook_path)
             result = func(ctx)
@@ -527,7 +527,7 @@ class LifecycleDispatcher:
             logger.exception("Lifecycle hook %s failed for app %s", hook_path, app_name)
 ```
 
-### 7. Builtin Auto-Discovery (`kiro_claw/apps/discovery.py`)
+### 7. Builtin Auto-Discovery (`kiro_crew/apps/discovery.py`)
 
 ```python
 def discover_builtin_apps(builtins_dir: Path) -> list[dict[str, Any]]:
@@ -586,7 +586,7 @@ Hook paths follow the pattern `module.path:callable_name`:
 - `module.path` is a dotted Python module path resolved to a file path relative to the app directory (e.g. `backend.routes` → `backend/routes.py`)
 - `callable_name` is the function/class to invoke
 - Modules are loaded via `importlib.util.spec_from_file_location` (no sys.path modification)
-- Registered in `sys.modules` as `_kiroclaw_app_{app_name}.{module_path}` to prevent collisions
+- Registered in `sys.modules` as `_kirocrew_app_{app_name}.{module_path}` to prevent collisions
 
 ### Route Registration Return Type
 
@@ -710,7 +710,7 @@ Cron jobs created via the SDK are tagged with `created_by = "app:{app_name}"`. T
 
 ### Property 16: Module unload cleans sys.modules
 
-*For any* app that has been loaded (routes registered), calling `unload_app_modules(app_name)` SHALL remove all entries from `sys.modules` whose key starts with `_kiroclaw_app_{app_name}.`.
+*For any* app that has been loaded (routes registered), calling `unload_app_modules(app_name)` SHALL remove all entries from `sys.modules` whose key starts with `_kirocrew_app_{app_name}.`.
 
 **Validates: Requirements 1.3 (deregistration completeness)**
 
@@ -783,7 +783,7 @@ App route latency/error rates are not automatically tracked. The existing SEL au
 No explicit `schemaVersion` field is added. Forward compatibility relies on:
 - `AppManifest.extra` dict preserving unknown fields on round-trip
 - New features using new field names (not modifying existing ones)
-- The `minKiroClawVersion` field gating features that require newer gateway versions
+- The `minKiroCrewVersion` field gating features that require newer gateway versions
 
 If a breaking change is ever needed, a new top-level field (e.g. `backend_v2`) will be introduced alongside the old one, with a deprecation period.
 

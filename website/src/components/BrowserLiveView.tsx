@@ -9,7 +9,7 @@ import { useAppSelector } from '../store'
  *
  * On a cloud desktop the browse session runs headless on the dev host; this
  * panel mirrors it to the laptop over the dashboard's existing WS + reverse-SSH
- * tunnel. Frames arrive as `kiroclaw-browser-frame` window events (routed from
+ * tunnel. Frames arrive as `kirocrew-browser-frame` window events (routed from
  * the WS `browser_frame` message in useWebSocket) — each is a screenshot the
  * agent captured (or the proxy's idle active-pump), forwarded by the Playwright
  * MCP proxy.
@@ -221,16 +221,16 @@ export default function BrowserLiveView() {
         return 'open'
       })
     }
-    window.addEventListener('kiroclaw-browser-frame', onFrame)
-    return () => window.removeEventListener('kiroclaw-browser-frame', onFrame)
+    window.addEventListener('kirocrew-browser-frame', onFrame)
+    return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
   }, [])
 
   // Programmatic open⇄chip toggle. No UI button dispatches this today (the panel
   // is lifecycle-driven); kept as an internal hook for a future shortcut/command.
   useEffect(() => {
     const onToggle = () => setMode(m => (m === 'open' ? 'chip' : 'open'))
-    window.addEventListener('kiroclaw-toggle-browser-live', onToggle)
-    return () => window.removeEventListener('kiroclaw-toggle-browser-live', onToggle)
+    window.addEventListener('kirocrew-toggle-browser-live', onToggle)
+    return () => window.removeEventListener('kirocrew-toggle-browser-live', onToggle)
   }, [])
 
   // Move from the header. Tracks the cursor→top-left offset so the panel doesn't

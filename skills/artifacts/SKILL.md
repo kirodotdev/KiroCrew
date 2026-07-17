@@ -4,7 +4,7 @@ description: Persist, version, and iterate on LLM-generated UI (widgets, HTML, m
 triggers: artifact, save widget, save this, iterate, iterate on, update the widget, change the widget, version, library, find widget, what have we built, iterate again, redo the
 ---
 
-# Artifacts (`@kiroclaw-core/artifact_*`)
+# Artifacts (`@kirocrew-core/artifact_*`)
 
 A widget rendered inline in chat (`<mcwidget>`) is **transient** — it scrolls
 away with the conversation. An **artifact** is a widget (or other content)
@@ -39,7 +39,7 @@ every file or a copy of the chat.
 | `artifact_versions` | List version numbers for a slug |
 | `artifact_delete` | Permanently remove |
 
-All under the `@kiroclaw-core` MCP server.
+All under the `@kirocrew-core` MCP server.
 
 ## When to save proactively
 
@@ -286,7 +286,7 @@ Required header lines, in order, at the top of the diff body:
 Use `/dev/null` on the `---` line for new files, and on the `+++`
 line for deletions. The dashboard's diff renderer accepts both this
 plain form and git's `--- a/<path>` / `+++ b/<path>` form, but the
-plain form matches `KiroClaw`'s system prompt (`config/prompt.md`)
+plain form matches `KiroCrew`'s system prompt (`config/prompt.md`)
 so emit it consistently.
 
 Example for an artifact-revert summary where the artifact's

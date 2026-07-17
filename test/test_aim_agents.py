@@ -1,4 +1,4 @@
-"""Tests for ``kiro_claw.aim_agents.list_agents`` agent-config scanning.
+"""Tests for ``kiro_crew.aim_agents.list_agents`` agent-config scanning.
 
 Focus on the robustness/security guards around scanning ``~/.kiro/agents/*.json``:
 - macOS AppleDouble (``._*.json``) and non-UTF-8 files must not crash the scan.
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.aim_agents import (
+from kiro_crew.aim_agents import (
     AimAgent,
     _load_project_agents,
     auto_register_project,
@@ -53,7 +53,7 @@ class TestAimAgentDataclass:
 class TestRegistry:
     def test_load_empty(self, tmp_path: Path, monkeypatch: object) -> None:
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: tmp_path / "reg.json"
+            "kiro_crew.aim_agents._registry_path", lambda: tmp_path / "reg.json"
         )
         assert load_registry() == {}
 
@@ -61,7 +61,7 @@ class TestRegistry:
         """Old list-format data is migrated to new dict-format on load."""
         reg_file = tmp_path / "reg.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         save_registry({"/home/user/proj": ["my-agent.json"]})
         result = load_registry()
@@ -75,7 +75,7 @@ class TestRegistry:
         reg_file = tmp_path / "reg.json"
         reg_file.write_text("not json", encoding="utf-8")
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         assert load_registry() == {}
 
@@ -83,7 +83,7 @@ class TestRegistry:
         """load_registry migrates old list format, filtering non-string elements."""
         reg_file = tmp_path / "reg.json"
         reg_file.write_text('{"/proj": [123, null, "good.json", false]}', encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         result = load_registry()
         assert "/proj" in result
         agents = result["/proj"]["agents"]
@@ -94,7 +94,7 @@ class TestRegistry:
         """load_registry skips registry entries whose value is not a list or dict."""
         reg_file = tmp_path / "reg.json"
         reg_file.write_text('{"bad": "string", "good": ["a.json"]}', encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         result = load_registry()
         assert "bad" not in result
         assert "good" in result
@@ -104,7 +104,7 @@ class TestRegistry:
         """load_registry returns {} when the root JSON value is an array, not a dict."""
         reg_file = tmp_path / "reg.json"
         reg_file.write_text('["/proj1", "/proj2"]', encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         assert load_registry() == {}
 
     def test_load_root_is_scalar_returns_empty(self, tmp_path: Path, monkeypatch: object) -> None:
@@ -112,7 +112,7 @@ class TestRegistry:
         for value in ["42", '"just a string"', "null"]:
             reg_file = tmp_path / f"reg_{value[:3]}.json"
             reg_file.write_text(value, encoding="utf-8")
-            monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda p=reg_file: p)  # type: ignore[attr-defined]
+            monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda p=reg_file: p)  # type: ignore[attr-defined]
             assert load_registry() == {}, f"expected {{}} for root value {value!r}"
 
 
@@ -131,7 +131,7 @@ class TestScanDirectory:
     def test_scan_finds_project_agents(self, tmp_path: Path, monkeypatch: object) -> None:
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         self._make_project(tmp_path, "proj-a", "agent-a")
         self._make_project(tmp_path, "proj-b", "agent-b")
@@ -147,7 +147,7 @@ class TestScanDirectory:
     def test_scan_persists_registry(self, tmp_path: Path, monkeypatch: object) -> None:
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         self._make_project(tmp_path, "myproj", "dev-agent")
 
@@ -160,14 +160,14 @@ class TestScanDirectory:
     def test_scan_empty_dir(self, tmp_path: Path, monkeypatch: object) -> None:
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         assert scan_directory(tmp_path) == []
 
     def test_scan_nonexistent_dir(self, tmp_path: Path, monkeypatch: object) -> None:
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         assert scan_directory(tmp_path / "nope") == []
 
@@ -175,7 +175,7 @@ class TestScanDirectory:
         """Projects nested 2 levels deep should be found."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Create project at depth 2: root/org/repo/.kiro/agents/
         nested = tmp_path / "org" / "repo"
@@ -193,7 +193,7 @@ class TestScanDirectory:
         """Projects deeper than max_depth are not found."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Create project at depth 2: root/a/b/.kiro/agents/
         # The .kiro dir is at depth 3, agents at depth 4 from root.
@@ -216,7 +216,7 @@ class TestScanDirectory:
         """Scan aborts with a warning when entries_seen exceeds max_entries."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Create many sibling dirs so entries_seen > 1 immediately
         for i in range(5):
@@ -229,7 +229,7 @@ class TestScanDirectory:
         """Extended prune set: vendor/.cargo/Library/Pods dirs are not traversed."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         for prune_name in ("vendor", ".cargo", "Library", "Pods", "Applications", ".rustup"):
             pruned_dir = tmp_path / prune_name / ".kiro" / "agents"
@@ -249,7 +249,7 @@ class TestScanDirectory:
         """
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Save a registry entry pointing to a non-existent path
         save_registry({"/nonexistent/path": ["agent.json"]})
@@ -265,7 +265,7 @@ class TestScanDirectory:
         """
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         save_registry({"/nonexistent/path": ["agent.json"]})
         _load_project_agents()
@@ -278,7 +278,7 @@ class TestScanDirectory:
         """All registry entries survive _load_project_agents (no deletion)."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         save_registry({"/nonexistent/stale": ["a.json"]})
 
@@ -301,7 +301,7 @@ class TestScanDirectory:
         Ensures a mid-edit save doesn't permanently drop the file from the registry.
         """
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "bad.json").write_text("not json", encoding="utf-8")
@@ -320,7 +320,7 @@ class TestScanDirectory:
     def test_null_mcp_servers_does_not_abort_sibling(self, tmp_path: Path, monkeypatch: object) -> None:
         """scan_directory must not abort the loop when an agent has mcpServers: null."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "null-mcp.json").write_text(
@@ -340,15 +340,15 @@ class TestListAgentsWithProject:
         # Set up a global agents dir with one agent
         global_dir = tmp_path / "global"
         global_dir.mkdir()
-        (global_dir / "kiroclaw.json").write_text(
-            json.dumps({"name": "kiroclaw", "description": "Main", "model": "auto"}),
+        (global_dir / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "description": "Main", "model": "auto"}),
             encoding="utf-8",
         )
 
         # Set up registry with a project agent
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         proj = tmp_path / "myproj"
         agents_dir = proj / ".kiro" / "agents"
@@ -361,20 +361,20 @@ class TestListAgentsWithProject:
 
         agents = list_agents(agents_dir=global_dir, include_project=True)
         names = {a.name for a in agents}
-        assert "kiroclaw" in names
+        assert "kirocrew" in names
         assert "proj-agent" in names
 
     def test_exclude_project_agents(self, tmp_path: Path, monkeypatch: object) -> None:
         global_dir = tmp_path / "global"
         global_dir.mkdir()
-        (global_dir / "kiroclaw.json").write_text(
-            json.dumps({"name": "kiroclaw", "description": "Main", "model": "auto"}),
+        (global_dir / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "description": "Main", "model": "auto"}),
             encoding="utf-8",
         )
 
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         proj = tmp_path / "myproj"
         agents_dir = proj / ".kiro" / "agents"
@@ -386,14 +386,14 @@ class TestListAgentsWithProject:
 
         agents = list_agents(agents_dir=global_dir, include_project=False)
         names = {a.name for a in agents}
-        assert "kiroclaw" in names
+        assert "kirocrew" in names
         assert "proj-agent" not in names
 
     def test_same_name_different_projects(self, tmp_path: Path, monkeypatch: object) -> None:
         """Same agent name in different projects should both appear."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Two projects with same agent name
         for proj_name in ("proj-a", "proj-b"):
@@ -498,7 +498,7 @@ class TestListAgentsRobustness:
         """scan_directory must skip .json files with invalid content without crashing."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
@@ -521,7 +521,7 @@ class TestLoadProjectAgentsCoverage:
         """
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Register an agent file that doesn't exist — still returned from cache
         save_registry({str(tmp_path / "proj"): ["ghost.json"]})
@@ -533,7 +533,7 @@ class TestLoadProjectAgentsCoverage:
         """_load_project_agents skips registry entries with empty filename."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Entry with empty file field
         save_registry({str(tmp_path / "proj"): [{"file": "", "agent_name": "bad"}]})
@@ -544,7 +544,7 @@ class TestLoadProjectAgentsCoverage:
         """_load_project_agents returns agents from cache; broken symlinks don't affect it."""
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         # Even with a broken symlink on disk, the registry cache is used
         save_registry({str(tmp_path / "proj"): ["symlink.json"]})
@@ -561,14 +561,14 @@ class TestScanDirectorySecurityGuards:
     def test_scan_rejects_sensitive_root(self, tmp_path: Path, monkeypatch: object) -> None:
         """scan_directory must refuse to scan a sensitive root path (lines 113-114)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
-        monkeypatch.setattr("kiro_claw.aim_agents.is_sensitive_path", lambda p: True)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents.is_sensitive_path", lambda p: True)  # type: ignore[attr-defined]
         assert scan_directory(tmp_path) == []
 
     def test_scan_skips_broken_symlink(self, tmp_path: Path, monkeypatch: object) -> None:
         """scan_directory skips broken symlinks via OSError on resolve(strict=True) (lines 143-144)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         broken = agents_dir / "broken.json"
@@ -582,7 +582,7 @@ class TestScanDirectorySecurityGuards:
     def test_scan_skips_sensitive_symlink_target(self, tmp_path: Path, monkeypatch: object) -> None:
         """scan_directory skips files whose resolved path is sensitive (lines 146-147)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         real_file = tmp_path / "creds.json"
@@ -593,13 +593,13 @@ class TestScanDirectorySecurityGuards:
         def _sensitive(p: str) -> bool:
             return str(real_file) in p
 
-        monkeypatch.setattr("kiro_claw.aim_agents.is_sensitive_path", _sensitive)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents.is_sensitive_path", _sensitive)  # type: ignore[attr-defined]
         assert scan_directory(tmp_path) == []
 
     def test_scan_skips_non_utf8_file(self, tmp_path: Path, monkeypatch: object) -> None:
         """scan_directory skips files that cannot be decoded as UTF-8 (lines 152-154)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "binary.json").write_bytes(b"\xff\xfe{invalid utf-8}")
@@ -611,7 +611,7 @@ class TestScanDirectorySecurityGuards:
     def test_scan_skips_non_dict_json(self, tmp_path: Path, monkeypatch: object) -> None:
         """scan_directory skips JSON files that aren't objects (line 157)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "array.json").write_text("[1, 2, 3]", encoding="utf-8")
@@ -624,15 +624,15 @@ class TestScanDirectorySecurityGuards:
 
         When a user scans from ~ or ~/Documents, os.walk descends into ~/.kiro/agents/.
         Without the guard this registers $HOME as a project_path, creating a duplicate
-        'kiroclaw' entry that triggers the 409 ambiguity check on every agent switch.
+        'kirocrew' entry that triggers the 409 ambiguity check on every agent switch.
         """
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         # Simulate ~/.kiro/agents/ (the global dir) inside tmp_path acting as home
         fake_kiro_agents = tmp_path / ".kiro" / "agents"
         fake_kiro_agents.mkdir(parents=True)
-        (fake_kiro_agents / "kiroclaw.json").write_text(
-            json.dumps({"name": "kiroclaw", "model": "auto"}), encoding="utf-8"
+        (fake_kiro_agents / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "model": "auto"}), encoding="utf-8"
         )
         # A real project alongside it — must still be found
         proj = tmp_path / "myproject"
@@ -641,7 +641,7 @@ class TestScanDirectorySecurityGuards:
             json.dumps({"name": "dev", "model": "auto"}), encoding="utf-8"
         )
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._KIRO_HOME_DIR", (tmp_path / ".kiro").resolve()
+            "kiro_crew.aim_agents._KIRO_HOME_DIR", (tmp_path / ".kiro").resolve()
         )
         agents = scan_directory(tmp_path)
         assert str(tmp_path) not in {a.project_path for a in agents}, (
@@ -654,14 +654,14 @@ class TestScanDirectorySecurityGuards:
     ) -> None:
         """Any .kiro/agents/ nested inside ~/.kiro is also excluded."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         nested = tmp_path / ".kiro" / "subdir" / ".kiro" / "agents"
         nested.mkdir(parents=True)
         (nested / "sneaky.json").write_text(
             json.dumps({"name": "sneaky", "model": "auto"}), encoding="utf-8"
         )
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._KIRO_HOME_DIR", (tmp_path / ".kiro").resolve()
+            "kiro_crew.aim_agents._KIRO_HOME_DIR", (tmp_path / ".kiro").resolve()
         )
         assert not any(a.name == "sneaky" for a in scan_directory(tmp_path))
 
@@ -672,18 +672,18 @@ class TestLoadProjectAgentsSecurityGuards:
     def test_load_skips_kiro_home_project_path(self, tmp_path: Path, monkeypatch: object) -> None:
         """_load_project_agents never surfaces ~/.kiro or paths inside it as a project."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         fake_kiro = tmp_path / ".kiro"
-        monkeypatch.setattr("kiro_claw.aim_agents._KIRO_HOME_DIR", fake_kiro.resolve())  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._KIRO_HOME_DIR", fake_kiro.resolve())  # type: ignore[attr-defined]
         # Register ~/.kiro as a project — should be filtered out
-        save_registry({str(fake_kiro): ["kiroclaw.json"]})
+        save_registry({str(fake_kiro): ["kirocrew.json"]})
         agents = _load_project_agents()
         assert not any(str(fake_kiro) in a.project_path for a in agents)
 
     def test_load_returns_cached_agent_regardless_of_file_state(self, tmp_path: Path, monkeypatch: object) -> None:
         """_load_project_agents returns agents from cache; file state is irrelevant."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         update_registry(str(tmp_path / "proj"), [{"file": "agent.json", "agent_name": "myagent"}])
         agents = _load_project_agents()
         assert any(a.name == "myagent" for a in agents)
@@ -720,7 +720,7 @@ class TestListAgentsGlobalGuards:
         """list_agents catches exceptions from _load_project_agents (lines 305-306)."""
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        monkeypatch.setattr("kiro_claw.aim_agents._load_project_agents", lambda: (_ for _ in ()).throw(RuntimeError("boom")))  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._load_project_agents", lambda: (_ for _ in ()).throw(RuntimeError("boom")))  # type: ignore[attr-defined]
         # Should not raise
         agents = list_agents(agents_dir=agents_dir, include_project=True)
         assert isinstance(agents, list)
@@ -743,22 +743,22 @@ class TestListAgentsDedup:
         assert a.package == "MyPkg"
         assert a.source == "aim"
 
-    def test_aim_kiroclaw_package_source(self, tmp_path: Path) -> None:
-        """AIM agent from KiroClawAICapabilities gets source='kiroclaw' (line 281)."""
+    def test_aim_kirocrew_package_source(self, tmp_path: Path) -> None:
+        """AIM agent from KiroCrewAICapabilities gets source='kirocrew' (line 281)."""
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        (agents_dir / "KiroClawAICapabilities-myskill.json").write_text(
+        (agents_dir / "KiroCrewAICapabilities-myskill.json").write_text(
             json.dumps({"name": "myskill", "model": "auto"}), encoding="utf-8"
         )
         agents = list_agents(agents_dir=agents_dir)
         a = next((x for x in agents if x.name == "myskill"), None)
         assert a is not None
-        assert a.source == "kiroclaw"
+        assert a.source == "kirocrew"
 
     def test_aim_package_preferred_over_builtin(self, tmp_path: Path, monkeypatch: object) -> None:
         """AIM-packaged agent replaces same-name builtin in dedup (line 318)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         # "dev.json" is builtin (stem == name). "zzz-MyPkg-dev.json" is AIM-packaged.
@@ -777,7 +777,7 @@ class TestListAgentsDedup:
     def test_project_agent_same_name_as_global_both_visible(self, tmp_path: Path, monkeypatch: object) -> None:
         """Project agent with same name as global agent: BOTH are visible (all-visible policy)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         (agents_dir / "dev.json").write_text(
@@ -804,7 +804,7 @@ class TestFinalCoverageGaps:
     def test_scan_skips_appledouble_sidecar(self, tmp_path: Path, monkeypatch: object) -> None:
         """scan_directory skips ._-prefixed AppleDouble sidecar files (line 140)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         agents_dir = tmp_path / "proj" / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "._good.json").write_text(json.dumps({"name": "sidecar"}), encoding="utf-8")
@@ -816,7 +816,7 @@ class TestFinalCoverageGaps:
     def test_load_skips_broken_symlink_via_isfile(self, tmp_path: Path, monkeypatch: object) -> None:
         """_load_project_agents: file passes is_file() but resolve(strict=True) raises (lines 199-200)."""
         reg_file = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg_file)  # type: ignore[attr-defined]
         # _load_project_agents is cache-only — register using new format
         update_registry(str(tmp_path / "proj"), [{"file": "agent.json", "agent_name": "a"}])
         agents = _load_project_agents()
@@ -840,7 +840,7 @@ class TestUpdateRegistry:
         """update_registry adds a project entry atomically."""
         reg_file = tmp_path / "reg.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         update_registry("/tmp/myproj", [{"file": "dev.json", "agent_name": "dev"}])
         result = load_registry()
@@ -852,7 +852,7 @@ class TestUpdateRegistry:
         """update_registry preserves other keys when updating one project."""
         reg_file = tmp_path / "reg.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         save_registry({"/tmp/proj-a": ["a.json"]})
         update_registry("/tmp/proj-b", [{"file": "b.json", "agent_name": "b"}])
@@ -868,7 +868,7 @@ class TestRemoveFromRegistry:
     def test_removes_existing_entry(self, tmp_path: Path, monkeypatch: object) -> None:
         """remove_from_registry deletes the key and writes back."""
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         save_registry({"/proj": ["dev.json"]})
         remove_from_registry("/proj")
         assert load_registry() == {}
@@ -876,7 +876,7 @@ class TestRemoveFromRegistry:
     def test_preserves_other_keys(self, tmp_path: Path, monkeypatch: object) -> None:
         """Only the target key is removed; other entries survive."""
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         save_registry({"/proj-a": ["a.json"], "/proj-b": ["b.json"]})
         remove_from_registry("/proj-a")
         result = load_registry()
@@ -886,7 +886,7 @@ class TestRemoveFromRegistry:
     def test_idempotent_key_absent(self, tmp_path: Path, monkeypatch: object) -> None:
         """remove_from_registry is a no-op when the key doesn't exist — no crash, no write."""
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         save_registry({"/other": ["x.json"]})
         remove_from_registry("/nonexistent")
         result = load_registry()
@@ -895,7 +895,7 @@ class TestRemoveFromRegistry:
     def test_idempotent_on_empty_registry(self, tmp_path: Path, monkeypatch: object) -> None:
         """remove_from_registry on an empty registry doesn't crash."""
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         save_registry({})
         remove_from_registry("/proj")
         assert load_registry() == {}
@@ -903,7 +903,7 @@ class TestRemoveFromRegistry:
     def test_no_op_when_registry_file_missing(self, tmp_path: Path, monkeypatch: object) -> None:
         """remove_from_registry returns silently when registry file doesn't exist yet."""
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         assert not reg.exists()
         remove_from_registry("/proj")
         assert not reg.exists()
@@ -912,7 +912,7 @@ class TestRemoveFromRegistry:
         """remove_from_registry silently does nothing if the registry is corrupt on re-read."""
         reg = tmp_path / "reg.json"
         reg.write_text("not json{{{{", encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         remove_from_registry("/proj")
         # Corrupt file is unchanged — no write happened
         assert reg.read_text() == "not json{{{{"
@@ -920,7 +920,7 @@ class TestRemoveFromRegistry:
     def test_multiple_stale_entries_deleted_independently(self, tmp_path: Path, monkeypatch: object) -> None:
         """Deleting N stale entries one-at-a-time leaves valid entries intact."""
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         save_registry({
             "/stale-a": ["a.json"],
             "/stale-b": ["b.json"],
@@ -940,7 +940,7 @@ class TestRemoveFromRegistry:
         to not_found by refresh_registry_startup at gateway boot.
         """
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         valid = tmp_path / "valid"
         (valid / ".kiro" / "agents").mkdir(parents=True)
         (valid / ".kiro" / "agents" / "dev.json").write_text(
@@ -962,7 +962,7 @@ class TestRemoveFromRegistry:
         With per-entry, remove_from_registry gets {}, sees key absent, skips write.
         """
         reg = tmp_path / "reg.json"
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: reg)  # type: ignore[attr-defined]
         valid = tmp_path / "valid"
         (valid / ".kiro" / "agents").mkdir(parents=True)
         (valid / ".kiro" / "agents" / "dev.json").write_text(
@@ -970,16 +970,16 @@ class TestRemoveFromRegistry:
         )
         save_registry({"/nonexistent/stale": ["a.json"], str(valid): ["dev.json"]})
 
-        original_load = __import__("kiro_claw.aim_agents", fromlist=["load_registry"]).load_registry
+        original_load = __import__("kiro_crew.aim_agents", fromlist=["load_registry"]).load_registry
         call_count = [0]
 
         def patched_load() -> dict:
             call_count[0] += 1
             return {} if call_count[0] >= 2 else original_load()
 
-        monkeypatch.setattr("kiro_claw.aim_agents.load_registry", patched_load)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents.load_registry", patched_load)  # type: ignore[attr-defined]
         _load_project_agents()
-        monkeypatch.setattr("kiro_claw.aim_agents.load_registry", original_load)  # type: ignore[attr-defined]
+        monkeypatch.setattr("kiro_crew.aim_agents.load_registry", original_load)  # type: ignore[attr-defined]
         assert str(valid) in load_registry(), "valid entry must survive corrupt in-lock re-read"
 
 
@@ -993,7 +993,7 @@ class TestAutoRegisterProject:
         (agents_dir / "dev.json").write_text(
             json.dumps({"name": "dev", "description": "Dev agent"}), encoding="utf-8"
         )
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
 
         auto_register_project(str(tmp_path))
 
@@ -1003,7 +1003,7 @@ class TestAutoRegisterProject:
 
     def test_no_kiro_agents_dir_is_noop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Project with no .kiro/agents/ dir leaves registry unchanged."""
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
 
         auto_register_project(str(tmp_path))
 
@@ -1016,8 +1016,8 @@ class TestAutoRegisterProject:
         creds = tmp_path / "secret.json"
         creds.write_text(json.dumps({"name": "bad"}), encoding="utf-8")
         (agents_dir / "bad.json").symlink_to(creds)
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
-        monkeypatch.setattr("kiro_claw.aim_agents.is_sensitive_path", lambda p: str(creds) in p)
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents.is_sensitive_path", lambda p: str(creds) in p)
 
         auto_register_project(str(tmp_path))
 
@@ -1032,7 +1032,7 @@ class TestAutoRegisterProject:
         (agents_dir / "dev.json").write_text(
             json.dumps({"name": "dev"}), encoding="utf-8"
         )
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
 
         auto_register_project(str(tmp_path))
 
@@ -1046,7 +1046,7 @@ class TestAutoRegisterProject:
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "broken.json").symlink_to(tmp_path / "nonexistent.json")
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
 
         auto_register_project(str(tmp_path))
 
@@ -1054,8 +1054,8 @@ class TestAutoRegisterProject:
 
     def test_sensitive_root_path_rejected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """auto_register_project must not register a project when root resolves to a sensitive path."""
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
-        monkeypatch.setattr("kiro_claw.aim_agents.is_sensitive_path", lambda p: True)
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents.is_sensitive_path", lambda p: True)
 
         auto_register_project(str(tmp_path))
 
@@ -1066,8 +1066,8 @@ class TestAutoRegisterProject:
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "dev.json").write_text(json.dumps({"name": "dev"}), encoding="utf-8")
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
-        monkeypatch.setattr("kiro_claw.aim_agents.is_sensitive_path", lambda p: False)
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents.is_sensitive_path", lambda p: False)
 
         auto_register_project(str(tmp_path))
 
@@ -1076,9 +1076,9 @@ class TestAutoRegisterProject:
 
     def test_kiro_home_parent_rejected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """auto_register_project must not register the parent of ~/.kiro (i.e. $HOME) as a project."""
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
         # Simulate _KIRO_HOME_DIR = tmp_path/.kiro so tmp_path is its parent
-        monkeypatch.setattr("kiro_claw.aim_agents._KIRO_HOME_DIR", (tmp_path / ".kiro").resolve())
+        monkeypatch.setattr("kiro_crew.aim_agents._KIRO_HOME_DIR", (tmp_path / ".kiro").resolve())
 
         auto_register_project(str(tmp_path))
 
@@ -1088,8 +1088,8 @@ class TestAutoRegisterProject:
         """auto_register_project must not register any path inside ~/.kiro as a project."""
         fake_kiro = tmp_path / ".kiro"
         fake_kiro.mkdir()
-        monkeypatch.setattr("kiro_claw.aim_agents._registry_path", lambda: tmp_path / "registry.json")
-        monkeypatch.setattr("kiro_claw.aim_agents._KIRO_HOME_DIR", fake_kiro.resolve())
+        monkeypatch.setattr("kiro_crew.aim_agents._registry_path", lambda: tmp_path / "registry.json")
+        monkeypatch.setattr("kiro_crew.aim_agents._KIRO_HOME_DIR", fake_kiro.resolve())
 
         auto_register_project(str(fake_kiro))
 
@@ -1240,12 +1240,12 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         reg_file = tmp_path / "registry" / "project_agents.json"
         monkeypatch.setattr(  # type: ignore[attr-defined]
-            "kiro_claw.aim_agents._registry_path", lambda: reg_file
+            "kiro_crew.aim_agents._registry_path", lambda: reg_file
         )
         global_dir = tmp_path / "global"
         global_dir.mkdir()
-        (global_dir / "kiroclaw.json").write_text(
-            json.dumps({"name": "kiroclaw", "model": "auto"}), encoding="utf-8"
+        (global_dir / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "model": "auto"}), encoding="utf-8"
         )
         proj = tmp_path / "myproj"
         (proj / ".kiro" / "agents").mkdir(parents=True)
@@ -1258,4 +1258,4 @@ class TestListAgentsCache:
         without_proj = {a.name for a in list_agents(agents_dir=global_dir, include_project=False)}
         assert "proj-agent" in with_proj
         assert "proj-agent" not in without_proj
-        assert "kiroclaw" in with_proj and "kiroclaw" in without_proj
+        assert "kirocrew" in with_proj and "kirocrew" in without_proj

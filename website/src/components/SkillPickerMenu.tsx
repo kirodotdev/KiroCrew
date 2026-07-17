@@ -8,7 +8,7 @@ import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 
 // Mesh-588 — $skill inline trigger autocomplete.
 // Mirrors FilePickerMenu but lists skills (from /api/skills, all sources:
-// kiroclaw + workspace + AIM). Selecting one inserts a `$leaf` token; the
+// kirocrew + workspace + AIM). Selecting one inserts a `$leaf` token; the
 // backend SkillsLoader.resolve_dollar_skills then expands it (allowlist match
 // on the leaf segment — no path is constructed from user input, per ARCC BSC1).
 
@@ -16,7 +16,7 @@ interface SkillItem {
   key: string          // full key, e.g. "WorkforceEmploymentKnowledgeBase/oncall-handover"
   name: string
   description: string
-  source?: string      // kiroclaw | aim | kiro-user | kiro-workspace
+  source?: string      // kirocrew | aim | kiro-user | kiro-workspace
 }
 
 interface Props {
@@ -142,7 +142,7 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
               <div className="text-[13px] font-mono font-semibold truncate">${leaf}</div>
               <div className="text-[11px] text-muted truncate">{s.description || s.key}</div>
             </div>
-            {s.source && s.source !== 'kiroclaw' && (
+            {s.source && s.source !== 'kirocrew' && (
               <span className="text-[10px] text-muted shrink-0 whitespace-nowrap uppercase tracking-wide">{s.source}</span>
             )}
           </div>

@@ -19,7 +19,7 @@ import pytest
 def _make_orch(default_deliver, monkeypatch):
     """Build a GatewayOrchestrator (bypassing __init__) wired with a Slack mock
     and a fake config whose heartbeat.default_deliver is *default_deliver*."""
-    from kiro_claw.slack import gateway
+    from kiro_crew.slack import gateway
 
     orch = gateway.GatewayOrchestrator.__new__(gateway.GatewayOrchestrator)
 
@@ -39,7 +39,7 @@ def _make_orch(default_deliver, monkeypatch):
 
     cfg = MagicMock()
     cfg.heartbeat.default_deliver = default_deliver
-    monkeypatch.setattr(gateway.KiroClawConfig, "load", lambda *a, **k: cfg)
+    monkeypatch.setattr(gateway.KiroCrewConfig, "load", lambda *a, **k: cfg)
     return orch, state
 
 

@@ -1,7 +1,7 @@
 """Build gate: no blocking syscall on the asyncio event loop (RFC Phase 1).
 
 A static AST check that fails the build when a known-blocking syscall appears
-lexically inside an ``async def`` body in ``kiro_claw`` source. This is the
+lexically inside an ``async def`` body in ``kiro_crew`` source. This is the
 deterministic enforcement the event-loop fault-isolation RFC calls for
 (``docs/request-for-change/rfc-event-loop-fault-isolation.md`` -> "The piece
 that makes it systematic: a build gate"). It complements the judgment-based
@@ -95,18 +95,18 @@ _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
 def _src_root() -> pathlib.Path:
-    """Locate the kiro_claw source tree.
+    """Locate the kiro_crew source tree.
 
     Prefer the importable package (correct regardless of CWD / install layout);
     fall back to the in-repo path so the gate also runs standalone under a bare
     ``python3`` with no deps installed (used for fast local triage).
     """
     try:
-        import kiro_claw  # noqa: PLC0415
+        import kiro_crew  # noqa: PLC0415
 
-        return pathlib.Path(kiro_claw.__file__).resolve().parent
+        return pathlib.Path(kiro_crew.__file__).resolve().parent
     except Exception:
-        return pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_claw"
+        return pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 
 def _import_bindings(tree: ast.Module) -> tuple[dict[str, str], dict[str, str]]:
@@ -230,7 +230,7 @@ def find_violations(source: str, path: str = "<source>") -> list[tuple[str, int,
 
 
 def collect_repo_violations() -> list[tuple[str, int, str]]:
-    """Scan every ``kiro_claw/**/*.py`` for on-loop blocking calls."""
+    """Scan every ``kiro_crew/**/*.py`` for on-loop blocking calls."""
     root = _src_root()
     base = root.parent
     out: list[tuple[str, int, str]] = []
@@ -267,7 +267,7 @@ def test_no_blocking_call_on_event_loop() -> None:
             "(event-loop fault-isolation RFC, Phase 1 gate).\n"
             "These have no legitimate use on the loop. Offload via "
             "run_in_executor(<pool>, fn, *args) using a pool from "
-            "kiro_claw.executors, or switch to an async API (e.g. "
+            "kiro_crew.executors, or switch to an async API (e.g. "
             "asyncio.sleep, asyncio.create_subprocess_exec). If a line is "
             "genuinely safe on the loop, add a trailing '# loop-ok: <reason>' "
             "comment.\n"

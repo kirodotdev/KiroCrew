@@ -138,7 +138,7 @@ test("tailLines on empty/null input", () => {
 
 test("isPortInUse detects a port-bind failure", () => {
   assert.strictEqual(
-    isPortInUse("17:57:53 ERROR kiro_claw.dashboard.server: Port 7788 already in use -- is another KiroClaw gateway running?"),
+    isPortInUse("17:57:53 ERROR kiro_crew.dashboard.server: Port 7788 already in use -- is another KiroCrew gateway running?"),
     true,
   );
   assert.strictEqual(isPortInUse("OSError: [Errno 48] Address already in use"), true);

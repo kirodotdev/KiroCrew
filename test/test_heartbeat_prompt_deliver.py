@@ -34,7 +34,7 @@ def orchestrator(dashboard_state):
     Note: bypasses __init__ via __new__. If GatewayOrchestrator.__init__ adds
     new required attributes accessed by _deliver_result, update this fixture.
     """
-    from kiro_claw.slack.gateway import GatewayOrchestrator
+    from kiro_crew.slack.gateway import GatewayOrchestrator
 
     orch = GatewayOrchestrator.__new__(GatewayOrchestrator)
     orch.dashboard_state = dashboard_state[0]
@@ -48,7 +48,7 @@ class TestPromptDashboardDeliver:
 
     @pytest.mark.asyncio()
     async def test_prompt_triggers_enqueue_or_run(self, orchestrator, dashboard_state):
-        from kiro_claw.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat import _run_chat
 
         state, slot = dashboard_state
         await orchestrator._deliver_result(
@@ -67,7 +67,7 @@ class TestPromptDashboardDeliver:
         state, _ = dashboard_state
         state.resolve_slot.return_value = None
         sel_mock = MagicMock()
-        monkeypatch.setattr("kiro_claw.slack.gateway.sel", lambda: sel_mock)
+        monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
         await orchestrator._deliver_result(
             "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-99"
         )
@@ -128,7 +128,7 @@ class TestPromptDashboardDeliver:
     async def test_prompt_noop_when_no_dashboard_state(self, orchestrator, caplog):
         import logging
 
-        caplog.set_level(logging.DEBUG, logger="kiro_claw.slack.gateway")
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.slack.gateway")
         orchestrator.dashboard_state = None
         await orchestrator._deliver_result(
             "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
@@ -145,7 +145,7 @@ class TestPromptDashboardDeliver:
 
         # Scope to the gateway logger explicitly — xdist workers may not
         # propagate DEBUG from the root logger reliably.
-        caplog.set_level(logging.DEBUG, logger="kiro_claw.slack.gateway")
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.slack.gateway")
         state, _ = dashboard_state
         await orchestrator._deliver_result(
             "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:"
@@ -157,7 +157,7 @@ class TestPromptDashboardDeliver:
 
     @pytest.mark.asyncio()
     async def test_prompt_truncates_oversized_ascii(self, orchestrator, dashboard_state, caplog):
-        from kiro_claw.dashboard.handlers import MAX_PROMPT_BYTES
+        from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 
         state, slot = dashboard_state
         oversize = "x" * (MAX_PROMPT_BYTES + 1000)
@@ -175,7 +175,7 @@ class TestPromptDashboardDeliver:
         Constructs content that splits a 3-byte char at the truncation point,
         verifying errors='ignore' drops the partial bytes without expanding size.
         """
-        from kiro_claw.dashboard.handlers import MAX_PROMPT_BYTES
+        from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 
         state, slot = dashboard_state
         title = "💓 Heartbeat"
@@ -194,7 +194,7 @@ class TestPromptDashboardDeliver:
     @pytest.mark.asyncio()
     async def test_prompt_passes_through_at_size_boundary(self, orchestrator, dashboard_state):
         """Content sized exactly at the limit (inclusive of prefix) must not be truncated."""
-        from kiro_claw.dashboard.handlers import MAX_PROMPT_BYTES
+        from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 
         state, slot = dashboard_state
         title = "💓 Heartbeat"
@@ -214,7 +214,7 @@ class TestPromptDashboardDeliver:
         import logging
         from unittest.mock import MagicMock
 
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         caplog.set_level(logging.ERROR)
         slot = _ChatSlot(key="chat-1")
@@ -241,7 +241,7 @@ class TestDashboardSlotInjectDeliver:
         state, slot = dashboard_state
         slot.key = "chat-1-1776476208"
         state._slots = {"chat-1-1776476208": slot}
-        from kiro_claw.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState
 
         state.resolve_slot = lambda name: DashboardState.resolve_slot(state, name)
 
@@ -255,7 +255,7 @@ class TestDashboardSlotInjectDeliver:
         state, _ = dashboard_state
         state.resolve_slot.return_value = None
         sel_mock = MagicMock()
-        monkeypatch.setattr("kiro_claw.slack.gateway.sel", lambda: sel_mock)
+        monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
         await orchestrator._deliver_result(
             "💓 Heartbeat", "test", "result", "dashboard:chat-99"
         )
@@ -276,7 +276,7 @@ class TestLogTaskException:
         import asyncio
         import logging
 
-        from kiro_claw.dashboard.state import _log_task_exception
+        from kiro_crew.dashboard.state import _log_task_exception
 
         caplog.set_level(logging.ERROR)
         task = asyncio.create_task(asyncio.sleep(1))
@@ -295,7 +295,7 @@ class TestLogTaskException:
         import asyncio
         import logging
 
-        from kiro_claw.dashboard.state import _log_task_exception
+        from kiro_crew.dashboard.state import _log_task_exception
 
         caplog.set_level(logging.ERROR)
 
@@ -317,7 +317,7 @@ class TestLogTaskException:
         import asyncio
         import logging
 
-        from kiro_claw.dashboard.state import _log_task_exception
+        from kiro_crew.dashboard.state import _log_task_exception
 
         caplog.set_level(logging.ERROR)
 
@@ -344,8 +344,8 @@ class TestLogTaskException:
         import asyncio
         import logging
 
-        from kiro_claw.dashboard import state as state_mod
-        from kiro_claw.dashboard.state import _log_task_exception
+        from kiro_crew.dashboard import state as state_mod
+        from kiro_crew.dashboard.state import _log_task_exception
 
         caplog.set_level(logging.ERROR)
         monkeypatch.setattr(state_mod, "redact_credentials", lambda _tb: (_ for _ in ()).throw(ValueError("boom")))
@@ -373,7 +373,7 @@ class TestSlotRunningIsDerived:
     """
 
     def test_running_is_property_not_assignable_attr(self):
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         # running is a property on the class, not a settable instance attribute
         assert isinstance(_ChatSlot.running, property)
@@ -383,7 +383,7 @@ class TestSlotRunningIsDerived:
         """As soon as slot.task is set, slot.running returns True — no race window."""
         import asyncio
 
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot(key="chat-x")
         assert slot.running is False
@@ -415,7 +415,7 @@ class TestSlotPrefixMatch:
     def test_get_slot_is_exact_match_only(self):
         """get_slot must NOT do prefix matching — it's used by HTTP handlers
         that derive keys from the input name."""
-        from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+        from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
         slots = {"chat-2-1776476208": _ChatSlot(key="chat-2-1776476208")}
         state = self._state_with_slots(slots)
@@ -423,7 +423,7 @@ class TestSlotPrefixMatch:
 
     def test_resolve_slot_exact_match_preferred(self):
         """When both exact and prefix matches exist, exact wins."""
-        from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+        from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
         exact = _ChatSlot(key="chat-2")
         timestamped = _ChatSlot(key="chat-2-1776476208")
@@ -432,14 +432,14 @@ class TestSlotPrefixMatch:
         assert DashboardState.resolve_slot(state, "chat-2") is exact
 
     def test_resolve_slot_prefix_fallback(self):
-        from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+        from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
         timestamped = _ChatSlot(key="chat-2-1776476208")
         state = self._state_with_slots({"chat-2-1776476208": timestamped})
         assert DashboardState.resolve_slot(state, "chat-2") is timestamped
 
     def test_resolve_slot_no_match_returns_none(self):
-        from kiro_claw.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState
 
         state = self._state_with_slots({})
         assert DashboardState.resolve_slot(state, "chat-99") is None
@@ -450,7 +450,7 @@ class TestSlotPrefixMatch:
         restart can leave a stale slot alongside the live one; iteration-order
         tie-break used to route chat-N to the stale slot.
         """
-        from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+        from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
         newer = _ChatSlot(key="chat-2-200")
         oldest = _ChatSlot(key="chat-2-100")
@@ -462,7 +462,7 @@ class TestSlotPrefixMatch:
 
     def test_resolve_slot_does_not_match_cross_prefix(self):
         """chat-2 must not match chat-20-... — prefix requires trailing '-'."""
-        from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+        from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
         slots = {"chat-20-100": _ChatSlot(key="chat-20-100")}
         state = self._state_with_slots(slots)
@@ -471,7 +471,7 @@ class TestSlotPrefixMatch:
     def test_resolve_slot_rejects_non_chat_n_names(self):
         """Prefix fallback must NOT fire for names outside chat-N pattern —
         prevents broad matches like "chat" binding to any slot."""
-        from kiro_claw.dashboard.state import DashboardState, _ChatSlot
+        from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
         slots = {
             "chat-2-100": _ChatSlot(key="chat-2-100"),
@@ -493,7 +493,7 @@ class TestSlotPrefixMatch:
         state, slot = dashboard_state
         slot.key = "chat-1-1776476208"
         state._slots = {"chat-1-1776476208": slot}
-        from kiro_claw.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState
         state.resolve_slot = lambda name: DashboardState.resolve_slot(state, name)
 
         await orchestrator._deliver_result(
@@ -509,7 +509,7 @@ class TestSlotPrefixMatch:
         state, slot = dashboard_state
         slot.key = "chat-1-1776476208"
         state._slots = {"chat-1-1776476208": slot}
-        from kiro_claw.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState
         state.resolve_slot = lambda name: DashboardState.resolve_slot(state, name)
 
         await orchestrator._deliver_result(
@@ -526,7 +526,7 @@ class TestEnqueueOrRunPrompt:
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot(key="chat-1")
         state = MagicMock()
@@ -547,7 +547,7 @@ class TestEnqueueOrRunPrompt:
         import asyncio
         from unittest.mock import AsyncMock
 
-        from kiro_claw.dashboard.state import _ChatSlot
+        from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot(key="chat-1")
         # Make slot appear busy

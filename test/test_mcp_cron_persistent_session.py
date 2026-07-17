@@ -12,8 +12,8 @@ import uuid
 
 import pytest
 
-from kiro_claw.cron import CronService
-from kiro_claw.mcp_cron import _call_tool_inner, _list_tools, _validate_args
+from kiro_crew.cron import CronService
+from kiro_crew.mcp_cron import _call_tool_inner, _list_tools, _validate_args
 
 
 def _unique_name() -> str:
@@ -22,10 +22,10 @@ def _unique_name() -> str:
 
 @pytest.fixture(autouse=True)
 def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_claw.cron._DEFAULT_DIR", tmp_path)
-    monkeypatch.setattr("kiro_claw.mcp_cron.config_dir", lambda: tmp_path)
-    monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
-    monkeypatch.delenv("KIROCLAW_SESSION_KEY", raising=False)
+    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
+    monkeypatch.setattr("kiro_crew.mcp_cron.config_dir", lambda: tmp_path)
+    monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
 
 
 class TestCronAddPersistentSession:
@@ -96,7 +96,7 @@ class TestCronAddPersistentSessionValidation:
 
     def test_schema_has_persistent_session_bool_field(self):
         """CRON_ADD_SCHEMA declares persistent_session with bool type."""
-        from kiro_claw.validation import CRON_ADD_SCHEMA
+        from kiro_crew.validation import CRON_ADD_SCHEMA
 
         specs = {f.name: f for f in CRON_ADD_SCHEMA.fields}
         assert "persistent_session" in specs, (
@@ -123,7 +123,7 @@ class TestCronAddPersistentSessionValidation:
 
     def test_validator_rejects_non_bool_string(self):
         """LLM that sends the string "false" instead of False must be rejected."""
-        from kiro_claw.validation import ValidationError
+        from kiro_crew.validation import ValidationError
 
         with pytest.raises(ValidationError):
             _validate_args(
@@ -138,7 +138,7 @@ class TestCronAddPersistentSessionValidation:
 
     def test_validator_rejects_non_bool_int(self):
         """An int (even 0 or 1) is not a bool — reject so stored state stays typed."""
-        from kiro_claw.validation import ValidationError
+        from kiro_crew.validation import ValidationError
 
         with pytest.raises(ValidationError):
             _validate_args(

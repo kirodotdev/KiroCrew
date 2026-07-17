@@ -5,10 +5,10 @@ always: false
 
 # Greeting Skill
 
-Help new users get oriented with KiroClaw.
+Help new users get oriented with KiroCrew.
 
 ## Key Commands
 
-- `kiroclaw app list` — see installed apps
-- `kiroclaw cron list` — see scheduled jobs
-- `kiroclaw learn list` — see learned preferences
+- `kirocrew app list` — see installed apps
+- `kirocrew cron list` — see scheduled jobs
+- `kirocrew learn list` — see learned preferences

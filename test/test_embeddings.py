@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_claw.embeddings import (
+from kiro_crew.embeddings import (
     _HEALTH_CHECK_INTERVAL_SECS,
     _HEALTH_CHECK_RETRIES,
     EmbeddingClient,
@@ -74,7 +74,7 @@ class TestSsrfProtection:
         # name-based / DNS-rebinding TOCTOU is an accepted risk. The module now
         # imports socket ONLY for the pure, non-blocking ``inet_aton`` literal
         # parse — it must never call ``getaddrinfo`` / ``gethostbyname``.
-        import kiro_claw.embeddings as emb_mod
+        import kiro_crew.embeddings as emb_mod
 
         def _boom(*_a, **_k):  # pragma: no cover - must not be reached
             raise AssertionError("DNS resolution attempted on sync path")
@@ -189,7 +189,7 @@ class TestEmbeddingClient:
         """health() must check the model passed at init, not the hardcoded default."""
         client = EmbeddingClient("http://localhost:19999", model="snowflake-arctic-embed2")
         mock = AsyncMock(return_value=True)
-        with patch("kiro_claw.embeddings._ollama_has_model", mock):
+        with patch("kiro_crew.embeddings._ollama_has_model", mock):
             result = await client.health()
         mock.assert_called_once()
         assert mock.call_args[0][1] == "snowflake-arctic-embed2"
@@ -265,7 +265,7 @@ class TestOllamaManager:
         """model_available() must check the model passed at init, not the hardcoded default."""
         mgr = OllamaManager("http://localhost:19999", model="snowflake-arctic-embed2")
         mock = AsyncMock(return_value=True)
-        with patch("kiro_claw.embeddings._ollama_has_model", mock):
+        with patch("kiro_crew.embeddings._ollama_has_model", mock):
             result = await mgr.model_available()
         mock.assert_called_once_with("http://localhost:19999", "snowflake-arctic-embed2")
         assert result is True
@@ -307,7 +307,7 @@ class TestSyncEmbedCache:
         return patch("urllib.request.urlopen", side_effect=_factory)
 
     def test_caches_successful_result(self) -> None:
-        from kiro_claw.embeddings import make_sync_embed_fn
+        from kiro_crew.embeddings import make_sync_embed_fn
 
         embed = make_sync_embed_fn()
         fake_vec = [0.1] * 1024
@@ -319,7 +319,7 @@ class TestSyncEmbedCache:
         assert mock_urlopen.call_count == 1
 
     def test_returns_none_on_failure(self) -> None:
-        from kiro_claw.embeddings import make_sync_embed_fn
+        from kiro_crew.embeddings import make_sync_embed_fn
 
         embed = make_sync_embed_fn()
         with patch("urllib.request.urlopen", side_effect=ConnectionError):
@@ -327,7 +327,7 @@ class TestSyncEmbedCache:
         assert result is None
 
     def test_retries_after_failure(self) -> None:
-        from kiro_claw.embeddings import make_sync_embed_fn
+        from kiro_crew.embeddings import make_sync_embed_fn
 
         embed = make_sync_embed_fn()
         fake_vec = [0.2] * 1024
@@ -339,7 +339,7 @@ class TestSyncEmbedCache:
         assert mock_urlopen.call_count == 1
 
     def test_malformed_response_returns_none_and_not_cached(self) -> None:
-        from kiro_claw.embeddings import make_sync_embed_fn
+        from kiro_crew.embeddings import make_sync_embed_fn
 
         embed = make_sync_embed_fn()
         with self._mock_raw_response({"embeddings": []}) as mock_urlopen:
@@ -348,7 +348,7 @@ class TestSyncEmbedCache:
         assert mock_urlopen.call_count == 2  # not cached — retried both times
 
     def test_multi_embedding_response_returns_none_and_not_cached(self) -> None:
-        from kiro_claw.embeddings import make_sync_embed_fn
+        from kiro_crew.embeddings import make_sync_embed_fn
 
         embed = make_sync_embed_fn()
         body = {"embeddings": [[0.1, 0.2], [0.3, 0.4]]}
@@ -562,7 +562,7 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()):
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()):
             mgr = OllamaManager()
         assert mgr._use_docker is True
 
@@ -581,22 +581,22 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()):
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()):
             mgr = OllamaManager()
         assert mgr._use_docker is False
 
     def test_init_handles_config_load_failure(self) -> None:
         """OllamaManager should default to _use_docker=False if config load fails."""
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", side_effect=Exception("boom")):
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=Exception("boom")):
             mgr = OllamaManager()
         assert mgr._use_docker is False
 
     def test_persist_embedding_runtime_writes_config(self, tmp_path) -> None:
         """_persist_embedding_runtime should write to config.json."""
-        from kiro_claw.embeddings import _persist_embedding_runtime
+        from kiro_crew.embeddings import _persist_embedding_runtime
 
         config_file = tmp_path / "config.json"
-        with patch("kiro_claw.embeddings.config_path", return_value=config_file):
+        with patch("kiro_crew.embeddings.config_path", return_value=config_file):
             _persist_embedding_runtime("docker")
 
         data = json.loads(config_file.read_text())
@@ -604,11 +604,11 @@ class TestEmbeddingRuntimePersistence:
 
     def test_persist_embedding_runtime_preserves_existing(self, tmp_path) -> None:
         """_persist_embedding_runtime should not clobber existing config keys."""
-        from kiro_claw.embeddings import _persist_embedding_runtime
+        from kiro_crew.embeddings import _persist_embedding_runtime
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"memory": {"embedding_provider": "ollama"}}))
-        with patch("kiro_claw.embeddings.config_path", return_value=config_file):
+        with patch("kiro_crew.embeddings.config_path", return_value=config_file):
             _persist_embedding_runtime("docker")
 
         data = json.loads(config_file.read_text())
@@ -638,14 +638,14 @@ class TestEmbeddingRuntimePersistence:
         proc.returncode = 1
         proc.pid = 12345
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", return_value=False), \
              patch.object(OllamaManager, "ollama_binary", new_callable=lambda: property(lambda self: "/usr/local/bin/ollama")), \
              patch("shutil.which", return_value=None), \
              patch("asyncio.create_subprocess_exec", return_value=proc), \
              patch("asyncio.sleep", new_callable=AsyncMock), \
              patch.object(OllamaManager, "_start_docker_server", new_callable=AsyncMock, return_value=True) as mock_docker, \
-             patch("kiro_claw.embeddings._persist_embedding_runtime") as mock_persist:
+             patch("kiro_crew.embeddings._persist_embedding_runtime") as mock_persist:
             mgr = OllamaManager("http://localhost:19999")
             result = await mgr.start_server()
 
@@ -670,7 +670,7 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", return_value=False), \
              patch.object(OllamaManager, "_docker_bin", return_value=None), \
              patch.object(OllamaManager, "_start_docker_server", new_callable=AsyncMock, return_value=True) as mock_docker, \
@@ -699,7 +699,7 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch("shutil.which", return_value="/usr/bin/docker"), \
              patch.object(OllamaManager, "model_available", new_callable=AsyncMock, return_value=False), \
              patch.object(OllamaManager, "_run_docker", new_callable=AsyncMock, return_value=(0, "")) as mock_docker:
@@ -710,7 +710,7 @@ class TestEmbeddingRuntimePersistence:
         assert result is True
         # Should have pulled via docker exec, not the native ollama binary.
         assert any(
-            call.args[:2] == ("exec", "kiroclaw-ollama") and "pull" in call.args
+            call.args[:2] == ("exec", "kirocrew-ollama") and "pull" in call.args
             for call in mock_docker.call_args_list
         )
 
@@ -719,7 +719,7 @@ class TestEmbeddingRuntimePersistence:
         """A failed ``ollama pull`` must log the documented fallback (nomic-embed-text)."""
         import logging
 
-        from kiro_claw.embeddings import _FALLBACK_EMBEDDING_MODEL
+        from kiro_crew.embeddings import _FALLBACK_EMBEDDING_MODEL
 
         mgr = OllamaManager("http://localhost:19999", model="qwen3-embedding:0.6b")
         mgr._use_docker = False
@@ -732,7 +732,7 @@ class TestEmbeddingRuntimePersistence:
              patch.object(type(mgr), "ollama_binary", new_callable=lambda: property(lambda self: "/usr/local/bin/ollama")), \
              patch("asyncio.create_subprocess_exec", return_value=proc), \
              patch("asyncio.wait_for", new=AsyncMock(return_value=(b"", b"manifest not found"))), \
-             caplog.at_level(logging.ERROR, logger="kiro_claw.embeddings"):
+             caplog.at_level(logging.ERROR, logger="kiro_crew.embeddings"):
             result = await mgr.pull_model()
 
         assert result is False
@@ -756,27 +756,27 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", return_value=True), \
              patch.object(OllamaManager, "_docker_bin", return_value="/usr/bin/docker"), \
              patch.object(OllamaManager, "_run_docker", new_callable=AsyncMock, return_value=(0, "true")) as mock_inspect, \
-             patch("kiro_claw.embeddings._persist_embedding_runtime") as mock_persist:
+             patch("kiro_crew.embeddings._persist_embedding_runtime") as mock_persist:
             mgr = OllamaManager("http://localhost:19999")
             assert mgr._use_docker is False  # starts native
             result = await mgr.start_server()
 
         assert result is True
         assert mgr._use_docker is True  # detected Docker container
-        mock_inspect.assert_called_once_with("inspect", "-f", "{{.State.Running}}", "kiroclaw-ollama", timeout=5)
+        mock_inspect.assert_called_once_with("inspect", "-f", "{{.State.Running}}", "kirocrew-ollama", timeout=5)
         mock_persist.assert_called_once_with("docker")
 
     def test_persist_embedding_runtime_corrupt_json_bails_out(self, tmp_path) -> None:
         """_persist_embedding_runtime should bail if config contains unparseable JSON."""
-        from kiro_claw.embeddings import _persist_embedding_runtime
+        from kiro_crew.embeddings import _persist_embedding_runtime
 
         config_file = tmp_path / "config.json"
         config_file.write_text("{invalid json!!")
-        with patch("kiro_claw.embeddings.config_path", return_value=config_file):
+        with patch("kiro_crew.embeddings.config_path", return_value=config_file):
             _persist_embedding_runtime("docker")
 
         # File should be unchanged — we bailed out on read failure
@@ -784,11 +784,11 @@ class TestEmbeddingRuntimePersistence:
 
     def test_persist_embedding_runtime_non_dict_json_no_crash(self, tmp_path) -> None:
         """_persist_embedding_runtime should not crash if config is a JSON array."""
-        from kiro_claw.embeddings import _persist_embedding_runtime
+        from kiro_crew.embeddings import _persist_embedding_runtime
 
         config_file = tmp_path / "config.json"
         config_file.write_text("[1, 2, 3]")
-        with patch("kiro_claw.embeddings.config_path", return_value=config_file):
+        with patch("kiro_crew.embeddings.config_path", return_value=config_file):
             _persist_embedding_runtime("docker")
 
         # File should be unchanged — setdefault on list raises AttributeError, caught
@@ -796,11 +796,11 @@ class TestEmbeddingRuntimePersistence:
 
     def test_persist_embedding_runtime_write_failure_no_crash(self, tmp_path) -> None:
         """_persist_embedding_runtime should not crash if write fails."""
-        from kiro_claw.embeddings import _persist_embedding_runtime
+        from kiro_crew.embeddings import _persist_embedding_runtime
 
         config_file = tmp_path / "config.json"
         config_file.write_text("{}")
-        with patch("kiro_claw.embeddings.config_path", return_value=config_file), \
+        with patch("kiro_crew.embeddings.config_path", return_value=config_file), \
              patch("pathlib.Path.write_text", side_effect=PermissionError("denied")):
             _persist_embedding_runtime("docker")
         # No exception raised — function handled it gracefully
@@ -822,7 +822,7 @@ class TestEmbeddingRuntimePersistence:
                 self.memory = FakeMemory()
 
         import asyncio
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", return_value=True), \
              patch.object(OllamaManager, "_docker_bin", return_value="/usr/bin/docker"), \
              patch.object(OllamaManager, "_run_docker", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()):
@@ -848,7 +848,7 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", return_value=True), \
              patch.object(OllamaManager, "_docker_bin", return_value="/usr/bin/docker"), \
              patch.object(OllamaManager, "_run_docker", new_callable=AsyncMock, return_value=(0, "false")):
@@ -874,7 +874,7 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", side_effect=[False, True]), \
              patch.object(OllamaManager, "_docker_bin", return_value="/usr/bin/docker"), \
              patch.object(OllamaManager, "_run_docker", new_callable=AsyncMock, return_value=(0, "true")), \
@@ -902,7 +902,7 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", return_value=False), \
              patch.object(OllamaManager, "_docker_bin", return_value="/usr/bin/docker"), \
              patch.object(OllamaManager, "_run_docker", new_callable=AsyncMock, return_value=(0, "true")), \
@@ -931,7 +931,7 @@ class TestEmbeddingRuntimePersistence:
             def __post_init__(self):
                 self.memory = FakeMemory()
 
-        with patch("kiro_claw.config.loader.KiroClawConfig.load", return_value=FakeCfg()), \
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=FakeCfg()), \
              patch.object(OllamaManager, "is_server_running", return_value=False), \
              patch.object(OllamaManager, "_docker_bin", return_value="/usr/bin/docker"), \
              patch.object(OllamaManager, "_run_docker", new_callable=AsyncMock, side_effect=RuntimeError("connection refused")), \
@@ -964,12 +964,12 @@ class TestAuthValidation:
         assert c._auth == "aws_sigv4"
 
     def test_make_sync_embed_fn_rejects_unknown_auth(self) -> None:
-        from kiro_claw.embeddings import make_sync_embed_fn
+        from kiro_crew.embeddings import make_sync_embed_fn
         with pytest.raises(ValueError, match="Unknown embedding auth scheme"):
             make_sync_embed_fn(auth="sigv4")
 
     def test_make_sync_embed_fn_accepts_valid_auth(self) -> None:
-        from kiro_claw.embeddings import make_sync_embed_fn
+        from kiro_crew.embeddings import make_sync_embed_fn
         fn = make_sync_embed_fn(auth="none")
         assert callable(fn)
         fn2 = make_sync_embed_fn(auth="aws_sigv4")
@@ -981,9 +981,9 @@ class TestSigV4Sign:
 
     def test_get_botocore_session_returns_none_without_botocore(self, monkeypatch) -> None:
         """When botocore is not installed, _get_botocore_session returns None."""
-        from kiro_claw.embeddings import _get_botocore_session
+        from kiro_crew.embeddings import _get_botocore_session
         _get_botocore_session.cache_clear()
-        monkeypatch.setattr("kiro_claw.embeddings._HAS_BOTOCORE", False)
+        monkeypatch.setattr("kiro_crew.embeddings._HAS_BOTOCORE", False)
         assert _get_botocore_session() is None
 
     @pytest.mark.skipif(
@@ -992,15 +992,15 @@ class TestSigV4Sign:
     )
     def test_get_botocore_session_returns_session(self) -> None:
         """When botocore IS installed, _get_botocore_session returns a Session."""
-        from kiro_claw.embeddings import _get_botocore_session
+        from kiro_crew.embeddings import _get_botocore_session
         _get_botocore_session.cache_clear()
         sess = _get_botocore_session()
         from botocore.session import Session
         assert isinstance(sess, Session)
 
     def test_sigv4_sign_success(self, monkeypatch) -> None:
-        from kiro_claw.embeddings import _sigv4_sign
-        monkeypatch.setattr("kiro_claw.embeddings._HAS_BOTOCORE", True)
+        from kiro_crew.embeddings import _sigv4_sign
+        monkeypatch.setattr("kiro_crew.embeddings._HAS_BOTOCORE", True)
         mock_creds = MagicMock()
         mock_creds.get_frozen_credentials.return_value = MagicMock(
             access_key="AKID", secret_key="SECRET", token=None
@@ -1010,35 +1010,35 @@ class TestSigV4Sign:
         # Mock AWSRequest to capture headers and return them
         mock_request = MagicMock()
         mock_request.headers = {"Authorization": "AWS4-HMAC-SHA256 ...", "Content-Type": "application/json"}
-        monkeypatch.setattr("kiro_claw.embeddings.AWSRequest", lambda **kw: mock_request)
-        monkeypatch.setattr("kiro_claw.embeddings.SigV4Auth", MagicMock())
-        monkeypatch.setattr("kiro_claw.embeddings._get_botocore_session", lambda: mock_session)
+        monkeypatch.setattr("kiro_crew.embeddings.AWSRequest", lambda **kw: mock_request)
+        monkeypatch.setattr("kiro_crew.embeddings.SigV4Auth", MagicMock())
+        monkeypatch.setattr("kiro_crew.embeddings._get_botocore_session", lambda: mock_session)
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         result = _sigv4_sign("POST", "https://api.example.com/api/embed", {"Content-Type": "application/json"}, b'{}')
         assert result is not None
         assert "Authorization" in result
 
     def test_sigv4_sign_no_credentials(self, monkeypatch) -> None:
-        from kiro_claw.embeddings import _sigv4_sign
-        monkeypatch.setattr("kiro_claw.embeddings._HAS_BOTOCORE", True)
+        from kiro_crew.embeddings import _sigv4_sign
+        monkeypatch.setattr("kiro_crew.embeddings._HAS_BOTOCORE", True)
         mock_session = MagicMock()
         mock_session.get_credentials.return_value = None
-        monkeypatch.setattr("kiro_claw.embeddings._get_botocore_session", lambda: mock_session)
+        monkeypatch.setattr("kiro_crew.embeddings._get_botocore_session", lambda: mock_session)
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         result = _sigv4_sign("POST", "https://api.example.com/api/embed", {}, b'{}')
         assert result is None
 
     def test_sigv4_sign_exception(self, monkeypatch) -> None:
-        from kiro_claw.embeddings import _sigv4_sign
-        monkeypatch.setattr("kiro_claw.embeddings._HAS_BOTOCORE", True)
-        monkeypatch.setattr("kiro_claw.embeddings._get_botocore_session", MagicMock(side_effect=RuntimeError("boom")))
+        from kiro_crew.embeddings import _sigv4_sign
+        monkeypatch.setattr("kiro_crew.embeddings._HAS_BOTOCORE", True)
+        monkeypatch.setattr("kiro_crew.embeddings._get_botocore_session", MagicMock(side_effect=RuntimeError("boom")))
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         result = _sigv4_sign("POST", "https://api.example.com/api/embed", {}, b'{}')
         assert result is None
 
     def test_sigv4_sign_region_fallback(self, monkeypatch) -> None:
-        from kiro_claw.embeddings import _sigv4_sign
-        monkeypatch.setattr("kiro_claw.embeddings._HAS_BOTOCORE", True)
+        from kiro_crew.embeddings import _sigv4_sign
+        monkeypatch.setattr("kiro_crew.embeddings._HAS_BOTOCORE", True)
         mock_creds = MagicMock()
         mock_creds.get_frozen_credentials.return_value = MagicMock(
             access_key="AKID", secret_key="SECRET", token=None
@@ -1047,9 +1047,9 @@ class TestSigV4Sign:
         mock_session.get_credentials.return_value = mock_creds
         mock_request = MagicMock()
         mock_request.headers = {"Authorization": "AWS4-HMAC-SHA256 ..."}
-        monkeypatch.setattr("kiro_claw.embeddings.AWSRequest", lambda **kw: mock_request)
-        monkeypatch.setattr("kiro_claw.embeddings.SigV4Auth", MagicMock())
-        monkeypatch.setattr("kiro_claw.embeddings._get_botocore_session", lambda: mock_session)
+        monkeypatch.setattr("kiro_crew.embeddings.AWSRequest", lambda **kw: mock_request)
+        monkeypatch.setattr("kiro_crew.embeddings.SigV4Auth", MagicMock())
+        monkeypatch.setattr("kiro_crew.embeddings._get_botocore_session", lambda: mock_session)
         monkeypatch.delenv("AWS_REGION", raising=False)
         monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
         result = _sigv4_sign("POST", "https://api.example.com/api/embed", {"Content-Type": "application/json"}, b'{}')
@@ -1057,8 +1057,8 @@ class TestSigV4Sign:
         assert result is not None
 
     def test_sigv4_sign_string_body(self, monkeypatch) -> None:
-        from kiro_claw.embeddings import _sigv4_sign
-        monkeypatch.setattr("kiro_claw.embeddings._HAS_BOTOCORE", True)
+        from kiro_crew.embeddings import _sigv4_sign
+        monkeypatch.setattr("kiro_crew.embeddings._HAS_BOTOCORE", True)
         mock_creds = MagicMock()
         mock_creds.get_frozen_credentials.return_value = MagicMock(
             access_key="AKID", secret_key="SECRET", token=None
@@ -1067,9 +1067,9 @@ class TestSigV4Sign:
         mock_session.get_credentials.return_value = mock_creds
         mock_request = MagicMock()
         mock_request.headers = {"Authorization": "AWS4-HMAC-SHA256 ..."}
-        monkeypatch.setattr("kiro_claw.embeddings.AWSRequest", lambda **kw: mock_request)
-        monkeypatch.setattr("kiro_claw.embeddings.SigV4Auth", MagicMock())
-        monkeypatch.setattr("kiro_claw.embeddings._get_botocore_session", lambda: mock_session)
+        monkeypatch.setattr("kiro_crew.embeddings.AWSRequest", lambda **kw: mock_request)
+        monkeypatch.setattr("kiro_crew.embeddings.SigV4Auth", MagicMock())
+        monkeypatch.setattr("kiro_crew.embeddings._get_botocore_session", lambda: mock_session)
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         result = _sigv4_sign("POST", "https://api.example.com/api/embed", {}, '{"text":"hello"}')
         assert result is not None
@@ -1095,15 +1095,15 @@ class TestUnmanagedEmbeddingPath:
             captured.update(url=url, timeout=timeout, model=model, auth=auth)
             return lambda text: [0.1] * 10
 
-        monkeypatch.setattr("kiro_claw.slack.gateway.make_sync_embed_fn", fake_make_sync)
-        monkeypatch.setattr("kiro_claw.slack.gateway._validate_url", lambda url, allow_remote: None)
+        monkeypatch.setattr("kiro_crew.slack.gateway.make_sync_embed_fn", fake_make_sync)
+        monkeypatch.setattr("kiro_crew.slack.gateway._validate_url", lambda url, allow_remote: None)
 
         # Minimal orchestrator mock
         orch = MagicMock()
         orch._cfg = cfg
         orch.vector_memory = MagicMock(embed_fn=None)
 
-        from kiro_claw.slack.gateway import GatewayOrchestrator
+        from kiro_crew.slack.gateway import GatewayOrchestrator
         await GatewayOrchestrator._start_ollama(orch)
 
         assert captured["url"] == "http://localhost:11434"
@@ -1123,14 +1123,14 @@ class TestUnmanagedEmbeddingPath:
         def strict_validate(url, allow_remote):
             raise ValueError("must be localhost")
 
-        monkeypatch.setattr("kiro_claw.slack.gateway._validate_url", strict_validate)
+        monkeypatch.setattr("kiro_crew.slack.gateway._validate_url", strict_validate)
 
         orch = MagicMock()
         orch._cfg = cfg
         orch.vector_memory = MagicMock(spec=[])
         orch.vector_memory.embed_fn = None
 
-        from kiro_claw.slack.gateway import GatewayOrchestrator
+        from kiro_crew.slack.gateway import GatewayOrchestrator
         await GatewayOrchestrator._start_ollama(orch)
 
         # embed_fn should NOT have been set

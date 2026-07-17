@@ -5,12 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from kiro_claw.mcp_cron import _call_tool
+from kiro_crew.mcp_cron import _call_tool
 
 
 class TestCronAddChannel:
     def test_add_with_channel(self, tmp_path: Path) -> None:
-        with patch("kiro_claw.mcp_cron.CronService") as mock_svc_cls:
+        with patch("kiro_crew.mcp_cron.CronService") as mock_svc_cls:
             mock_svc = mock_svc_cls.return_value
             mock_job = type(
                 "Job",
@@ -39,8 +39,8 @@ class TestCronAddChannel:
             assert "abc" in result
 
     def test_add_without_channel(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.delenv("KIROCLAW_CHANNEL_ID", raising=False)
-        with patch("kiro_claw.mcp_cron.CronService") as mock_svc_cls:
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        with patch("kiro_crew.mcp_cron.CronService") as mock_svc_cls:
             mock_svc = mock_svc_cls.return_value
             mock_job = type(
                 "Job",

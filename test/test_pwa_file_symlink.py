@@ -10,12 +10,12 @@ from aiohttp import web
 
 @pytest.mark.asyncio
 async def test_pwa_file_serves_through_symlinked_dist(tmp_path):
-    """dev-backend.sh symlinks static/dist -> KiroClawWebsite/dist. The
+    """dev-backend.sh symlinks static/dist -> KiroCrewWebsite/dist. The
     traversal guard must compare resolved paths on both sides so the
     legitimate symlinked file isn't rejected (falling through to the SPA
     fallback, which serves index.html as text/html and breaks any JS
     import e.g. /pcm-worklet.js)."""
-    from kiro_claw.dashboard.handlers import core
+    from kiro_crew.dashboard.handlers import core
 
     real_dist = tmp_path / "real-dist"
     real_dist.mkdir()
@@ -34,7 +34,7 @@ async def test_pwa_file_serves_through_symlinked_dist(tmp_path):
 @pytest.mark.asyncio
 async def test_pwa_file_rejects_traversal(tmp_path):
     """Guard still blocks paths resolving outside _DIST_DIR."""
-    from kiro_claw.dashboard.handlers import core
+    from kiro_crew.dashboard.handlers import core
 
     dist = tmp_path / "dist"
     dist.mkdir()

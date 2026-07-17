@@ -1,4 +1,4 @@
-"""Unit tests for the ``kiroclaw workspace`` CLI subcommand group.
+"""Unit tests for the ``kirocrew workspace`` CLI subcommand group.
 
 Tests cover argparse subparser structure, dispatch routing, list output
 format, and error handling for create/update/delete operations.
@@ -14,13 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from kiro_claw.cli import main
+from kiro_crew.cli import main
 
 
 @pytest.fixture(autouse=True)
 def _mock_sel():
     """Mock SEL logging for all workspace CLI tests."""
-    with unittest.mock.patch("kiro_claw.sel.sel"):
+    with unittest.mock.patch("kiro_crew.sel.sel"):
         yield
 
 
@@ -41,7 +41,7 @@ def _base_config() -> dict:
         "default_workspace": "default",
         "agents": {
             "default": {
-                "kiro_agent": "kiroclaw",
+                "kiro_agent": "kirocrew",
                 "workspace": "default",
                 "memory_store": "default",
             },
@@ -64,14 +64,14 @@ class TestWorkspaceArgparse:
         cfg_path = _write_config(tmp_path, _base_config())
         # Verify each subcommand is accepted by argparse (no SystemExit(2)).
         for subcmd, argv in [
-            ("list", ["kiroclaw", "workspace", "list"]),
-            ("create", ["kiroclaw", "workspace", "create", "--name", "newtest"]),
-            ("update", ["kiroclaw", "workspace", "update", "staging"]),
-            ("delete", ["kiroclaw", "workspace", "delete", "staging"]),
+            ("list", ["kirocrew", "workspace", "list"]),
+            ("create", ["kirocrew", "workspace", "create", "--name", "newtest"]),
+            ("update", ["kirocrew", "workspace", "update", "staging"]),
+            ("delete", ["kirocrew", "workspace", "delete", "staging"]),
         ]:
             with (
-                unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-                unittest.mock.patch("kiro_claw.config.loader.config_dir", return_value=tmp_path),
+                unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+                unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
                 unittest.mock.patch("sys.argv", argv),
             ):
                 # Should not raise SystemExit(2) (argparse error)
@@ -82,7 +82,7 @@ class TestWorkspaceArgparse:
     def test_create_requires_name_flag(self) -> None:
         """Req 6.2: create subcommand requires --name."""
         with (
-            unittest.mock.patch("sys.argv", ["kiroclaw", "workspace", "create"]),
+            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "create"]),
             pytest.raises(SystemExit) as exc_info,
         ):
             main()
@@ -93,12 +93,12 @@ class TestWorkspaceArgparse:
         """Req 6.2: create accepts --dir."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("kiro_claw.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
             unittest.mock.patch(
                 "sys.argv",
                 [
-                    "kiroclaw",
+                    "kirocrew",
                     "workspace",
                     "create",
                     "--name",
@@ -120,12 +120,12 @@ class TestWorkspaceArgparse:
         # Create the source workspace directory so copytree has something to copy
         (tmp_path / "workspace-staging").mkdir(parents=True, exist_ok=True)
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("kiro_claw.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
             unittest.mock.patch(
                 "sys.argv",
                 [
-                    "kiroclaw",
+                    "kirocrew",
                     "workspace",
                     "create",
                     "--name",
@@ -145,11 +145,11 @@ class TestWorkspaceArgparse:
         """Req 6.3: update accepts positional name and --dir."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("kiro_claw.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "workspace", "update", "staging", "--dir", "new-path"],
+                ["kirocrew", "workspace", "update", "staging", "--dir", "new-path"],
             ),
         ):
             main()
@@ -162,10 +162,10 @@ class TestWorkspaceArgparse:
         """Req 6.4: delete accepts positional name."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "workspace", "delete", "staging"],
+                ["kirocrew", "workspace", "delete", "staging"],
             ),
         ):
             main()
@@ -183,9 +183,9 @@ class TestWorkspaceDispatch:
         """Req 6.5: workspace command dispatches to _handle_workspace."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", ["kiroclaw", "workspace", "list"]),
-            unittest.mock.patch("kiro_claw.cli._handle_workspace") as mock_handler,
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
+            unittest.mock.patch("kiro_crew.cli._handle_workspace") as mock_handler,
         ):
             main()
         mock_handler.assert_called_once()
@@ -195,7 +195,7 @@ class TestWorkspaceDispatch:
 
 
 class TestWorkspaceList:
-    """Test ``kiroclaw workspace list`` output format."""
+    """Test ``kirocrew workspace list`` output format."""
 
     def test_list_shows_header_and_default_marker(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -203,8 +203,8 @@ class TestWorkspaceList:
         """Req 5.1: formatted table with * marker for default workspace."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", ["kiroclaw", "workspace", "list"]),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
         ):
             main()
 
@@ -223,7 +223,7 @@ class TestWorkspaceList:
 
 
 class TestWorkspaceCreate:
-    """Test ``kiroclaw workspace create`` error paths."""
+    """Test ``kirocrew workspace create`` error paths."""
 
     def test_create_duplicate_name_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -231,10 +231,10 @@ class TestWorkspaceCreate:
         """Req 5.4: duplicate name → stderr + exit 1."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "workspace", "create", "--name", "default"],
+                ["kirocrew", "workspace", "create", "--name", "default"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -250,11 +250,11 @@ class TestWorkspaceCreate:
         """Req 5.5: copy_from with non-existent source → stderr + exit 1."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
                 [
-                    "kiroclaw",
+                    "kirocrew",
                     "workspace",
                     "create",
                     "--name",
@@ -276,7 +276,7 @@ class TestWorkspaceCreate:
 
 
 class TestWorkspaceUpdate:
-    """Test ``kiroclaw workspace update`` error paths."""
+    """Test ``kirocrew workspace update`` error paths."""
 
     def test_update_nonexistent_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -284,10 +284,10 @@ class TestWorkspaceUpdate:
         """Req 5.7: non-existent name → stderr + exit 1."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "workspace", "update", "nonexistent", "--dir", "/x"],
+                ["kirocrew", "workspace", "update", "nonexistent", "--dir", "/x"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -302,7 +302,7 @@ class TestWorkspaceUpdate:
 
 
 class TestWorkspaceDelete:
-    """Test ``kiroclaw workspace delete`` error paths."""
+    """Test ``kirocrew workspace delete`` error paths."""
 
     def test_delete_default_workspace_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -310,10 +310,10 @@ class TestWorkspaceDelete:
         """Req 5.9: delete default workspace → stderr + exit 1."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "workspace", "delete", "default"],
+                ["kirocrew", "workspace", "delete", "default"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -331,17 +331,17 @@ class TestWorkspaceDelete:
         # Add a non-default workspace referenced by an agent
         data["workspaces"]["oncall"] = {"dir": "workspace-oncall"}
         data["agents"]["oncall-agent"] = {
-            "kiro_agent": "kiroclaw",
+            "kiro_agent": "kirocrew",
             "workspace": "oncall",
             "memory_store": "default",
         }
         cfg_path = _write_config(tmp_path, data)
 
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "workspace", "delete", "oncall"],
+                ["kirocrew", "workspace", "delete", "oncall"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -358,10 +358,10 @@ class TestWorkspaceDelete:
         """Req 5.11: non-existent workspace → stderr + exit 1."""
         cfg_path = _write_config(tmp_path, _base_config())
         with (
-            unittest.mock.patch("kiro_claw.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch(
                 "sys.argv",
-                ["kiroclaw", "workspace", "delete", "nonexistent"],
+                ["kirocrew", "workspace", "delete", "nonexistent"],
             ),
             pytest.raises(SystemExit) as exc_info,
         ):

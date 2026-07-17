@@ -1,4 +1,4 @@
-export const FEATURE_REQUEST_URL = 'https://github.com/kirodotdev-labs/kiroclaw/issues/new'
+export const FEATURE_REQUEST_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
 
 export const FEATURE_REQUEST_PROMPT = [
   'The user clicked "Request a Feature".',
@@ -11,7 +11,7 @@ export const FEATURE_REQUEST_PROMPT = [
   'Then offer three submission options and let the user choose:',
   `1. A pre-filled GitHub issue URL built from ${FEATURE_REQUEST_URL} with URL-encoded title/body and a label (\`enhancement\` for features, \`bug\` for bugs) — use when the body is short.`,
   '2. The formatted title and body in a code block for the user to copy/paste into the new-issue form.',
-  '3. Direct creation via `gh issue create --repo kirodotdev-labs/kiroclaw --title "$TITLE" --body-file <file> --label <label>` (needs gh auth; fall back to option 2 on auth errors).',
+  '3. Direct creation via `gh issue create --repo kirodotdev/KiroCrew --title "$TITLE" --body-file <file> --label <label>` (needs gh auth; fall back to option 2 on auth errors).',
   '',
   'Be casual and helpful. This is a conversation, not a form.',
 ].join('\n')

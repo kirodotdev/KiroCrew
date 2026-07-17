@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_claw.dashboard.chat_nav import (
+from kiro_crew.dashboard.chat_nav import (
     _build_link_summary_prompt,
     _normalize_link,
     _resolve_link_summaries,
@@ -49,7 +49,7 @@ class TestResolveLinkSummaries:
     @pytest.mark.asyncio
     async def test_parses_numbered_lines(self, monkeypatch):
         """LLM returns numbered lines like '1. Label Here'."""
-        from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
         class FakeEvent:
             def __init__(self, kind, text=""):
@@ -83,7 +83,7 @@ class TestResolveLinkSummaries:
     @pytest.mark.asyncio
     async def test_preserves_labels_starting_with_digits(self, monkeypatch):
         """Labels like '2024 Design Roadmap' should not be corrupted."""
-        from kiro_claw.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
         class FakeEvent:
             def __init__(self, kind, text=""):
@@ -121,7 +121,7 @@ class TestApiEndpoint:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         app = web.Application()
         app["state"] = None
@@ -135,7 +135,7 @@ class TestApiEndpoint:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         app = web.Application()
         app["state"] = None
@@ -149,8 +149,8 @@ class TestApiEndpoint:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard import chat_nav
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard import chat_nav
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         async def mock_resolve(state, links):
             return ["Summary " + str(i) for i in range(len(links))]
@@ -174,8 +174,8 @@ class TestApiEndpoint:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard import chat_nav
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard import chat_nav
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         received = []
 
@@ -233,8 +233,8 @@ class TestApiEndpointResilience:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard import chat_nav
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard import chat_nav
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         async def mock_resolve(state, links):
             # Exercise the REAL prompt builder to prove normalized links never
@@ -268,7 +268,7 @@ class TestApiEndpointResilience:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         app = web.Application()
         app["state"] = object()
@@ -284,8 +284,8 @@ class TestApiEndpointResilience:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard import chat_nav
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard import chat_nav
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         async def mock_resolve(state, links):
             raise RuntimeError("provider boom")
@@ -323,8 +323,8 @@ class TestApiEndpointResilience:
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
-        from kiro_claw.dashboard import chat_nav
-        from kiro_claw.dashboard.chat_nav import api_chat_nav_resolve_links
+        from kiro_crew.dashboard import chat_nav
+        from kiro_crew.dashboard.chat_nav import api_chat_nav_resolve_links
 
         async def mock_resolve(state, links):
             raise RuntimeError("provider boom")

@@ -11,8 +11,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_claw.dashboard.handlers import api_taskrunner_status
-from kiro_claw.dashboard.handlers_project import (
+from kiro_crew.dashboard.handlers import api_taskrunner_status
+from kiro_crew.dashboard.handlers_project import (
     _redact,
     _run_to_project,
     api_activities_list,
@@ -25,9 +25,9 @@ from kiro_claw.dashboard.handlers_project import (
     api_project_update,
     api_projects_list,
 )
-from kiro_claw.slack.handler import _handle_run_command
-from kiro_claw.task_models import Project
-from kiro_claw.taskrunner import TaskRunner
+from kiro_crew.slack.handler import _handle_run_command
+from kiro_crew.task_models import Project
+from kiro_crew.taskrunner import TaskRunner
 
 # ── Fixtures ──
 
@@ -349,7 +349,7 @@ class TestProjectRunAlias:
 class TestTaskRunnerStatusMcpFilter:
     @pytest.mark.asyncio
     async def test_taskrunner_status_excludes_cron_runs(self):
-        from kiro_claw.task_reporter import build_status
+        from kiro_crew.task_reporter import build_status
 
         runner = MagicMock()
         cron_run = Project(
@@ -398,7 +398,7 @@ class TestTaskRunnerStatusMcpFilter:
         # lessons_learned is LLM-generated text surfaced to the dashboard JSON;
         # it must be scrubbed of credentials like the sibling error / task_details
         # fields the handler already redacts (build_status emits it raw).
-        from kiro_claw.task_reporter import build_status
+        from kiro_crew.task_reporter import build_status
 
         runner = MagicMock()
         run = Project(
