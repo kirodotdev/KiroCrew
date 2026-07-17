@@ -167,6 +167,15 @@ jobs:
           find artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.AppImage" -o -name "*.whl" \) -exec cp {} release/ \;
           ls -la release/
 
+      # Install the CDSigner SigV4 client (awscurl) BEFORE AWS credentials are
+      # configured, so a compromised or version-drifted release can never observe
+      # the signing-role credentials at install time. Pinned for the same reason.
+      - name: Install awscurl (SigV4 client for CDSigner)
+        if: env.HAS_CDSIGNER
+        run: |
+          python3 -m pip install --user --quiet "awscurl==0.44"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Configure AWS credentials
         if: env.HAS_SIGNING_SECRETS
         uses: aws-actions/configure-aws-credentials@v4

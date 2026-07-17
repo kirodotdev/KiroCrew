@@ -98,28 +98,26 @@ MANIFEST=$(cat "$SCRIPT_DIR/manifest-template.json" \
   | sed "s|\${INPUT_KEY}|${INPUT_KEY}|g" \
   | sed "s|\${OUTPUT_KEY}|${OUTPUT_KEY}|g")
 
-# CD Signer ad-hoc signing API v2: POST /v2/sign-tasks. Capture the HTTP
-# status + body (no curl -f, which discards the body on 4xx/5xx) so submit
-# failures -- auth, manifest, or Bindle cansign -- are diagnosable.
-SUBMIT_BODY="$WORK_DIR/submit_response.json"
-HTTP_CODE=$(curl -s -o "$SUBMIT_BODY" -w '%{http_code}' -X POST \
-  "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" \
-  --aws-sigv4 "aws:amz:us-west-2:signer-builder-tools" \
-  -H "Content-Type: application/json" \
-  -d "$MANIFEST") || {
-  echo "ERROR: CDSigner request failed to send (curl exit $?)" >&2
-  exit 4
-}
-RESPONSE=$(cat "$SUBMIT_BODY")
-
-if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-  echo "ERROR: CDSigner sign-task submission failed (HTTP ${HTTP_CODE})" >&2
-  echo "$RESPONSE" >&2
-  exit 4
+# CD Signer ad-hoc signing API v2: POST /v2/sign-tasks. awscurl SigV4-signs
+# from the AWS credential chain (env vars, incl. AWS_SESSION_TOKEN) -- no
+# credentials on the command line. The full response body is surfaced on
+# failure so auth/manifest/Bindle errors stay diagnosable.
+if ! command -v awscurl >/dev/null 2>&1; then
+  echo "ERROR: awscurl not found (required for CDSigner SigV4 signing)" >&2
+  exit 1
 fi
 
+RESPONSE=$(awscurl --service signer-builder-tools --region us-west-2 \
+  -X POST -H "Content-Type: application/json" -d "$MANIFEST" \
+  "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" 2>&1) || {
+  echo "ERROR: CDSigner sign-task submission failed" >&2
+  echo "$RESPONSE" >&2
+  exit 4
+}
+
 SIGN_TASK_ID=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['signTaskId'])" 2>/dev/null) || {
-  echo "ERROR: Could not parse signTaskId from response (HTTP ${HTTP_CODE}): $RESPONSE" >&2
+  echo "ERROR: CDSigner submission returned no signTaskId:" >&2
+  echo "$RESPONSE" >&2
   exit 4
 }
 
@@ -136,8 +134,8 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
   sleep "$POLL_INTERVAL"
   ELAPSED=$((ELAPSED + POLL_INTERVAL))
 
-  STATUS_RESPONSE=$(curl -sf "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks/${SIGN_TASK_ID}" \
-    --aws-sigv4 "aws:amz:us-west-2:signer-builder-tools" \
+  STATUS_RESPONSE=$(awscurl --service signer-builder-tools --region us-west-2 \
+    -X GET "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks/${SIGN_TASK_ID}" \
     2>/dev/null) || continue
 
   STATUS=$(echo "$STATUS_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
