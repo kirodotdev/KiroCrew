@@ -24,7 +24,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
 )
-from kiro_crew.sandbox import sandboxed_spawn_argv
+from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.task_models import (
@@ -790,6 +790,7 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
+            preexec_fn=resource_limit_preexec(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TEST_TIMEOUT)
         output = stdout.decode(errors="replace") if stdout else ""

@@ -16,7 +16,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.vector_memory import SemanticRejectCode
 
@@ -315,11 +315,13 @@ async def _ensure_pip_available() -> tuple[bool, str]:
         [sys.executable, "-m", "ensurepip", "--upgrade"],
         mode="standard",
     )
+    sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
     try:
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            preexec_fn=resource_limit_preexec(),
         )
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
@@ -455,11 +457,15 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                  "faiss-cpu", "--only-binary=:all:"],
                 mode="standard",
             )
+            sandboxed_argv = cgroup_scope_argv(
+                sandboxed_argv
+            )  # cgroup DoS ceiling (Talos bdf0d7e5)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *sandboxed_argv,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    preexec_fn=resource_limit_preexec(),
                 )
                 try:
                     _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)

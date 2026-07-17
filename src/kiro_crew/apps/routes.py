@@ -104,9 +104,10 @@ async def _run_lifecycle_script(
         return {"output": f"app directory not found: {app_root}", "failed": True}
 
     safe_script = f"set -euo pipefail\n{script}"
-    from kiro_crew.sandbox import wrap_argv
+    from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
     base_cmd = ["/bin/bash", "-c", safe_script]
     sandboxed_cmd, cleanup = wrap_argv(base_cmd, mode="standard")
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
     env = minimal_env(NONINTERACTIVE="1")
     if extra_env:
         env.update(extra_env)
@@ -124,6 +125,7 @@ async def _run_lifecycle_script(
             env=env,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            preexec_fn=resource_limit_preexec(),
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -925,13 +927,15 @@ async def handle_open_app(request: web.Request) -> web.Response:
         })
 
     try:
-        from kiro_crew.sandbox import wrap_argv
+        from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
         base_cmd = ["/bin/sh", "-c", open_cmd]
         sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="standard")
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            preexec_fn=resource_limit_preexec(),
         )
         # Don't wait — launch is fire-and-forget
         sel().log_api_access(
@@ -1342,7 +1346,7 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
         _context_clone_sandbox_mode,
         minimal_env,
     )
-    from kiro_crew.sandbox import wrap_argv
+    from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
     git_url = _registry_git_url(repo)
     if not git_url:
@@ -1371,11 +1375,13 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
         sandboxed_cmd, _cleanup = wrap_argv(
             clone_cmd, mode=_context_clone_sandbox_mode(git_url)
         )
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=minimal_env(),
+            preexec_fn=resource_limit_preexec(),
         )
         try:
             _, stderr = await asyncio.wait_for(

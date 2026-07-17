@@ -924,7 +924,11 @@ async def api_models(request: web.Request) -> web.Response:
     try:
         from kiro_crew.acp.client import _resolve_kiro_bin, _resolve_ssh_auth_sock  # noqa: F811
         from kiro_crew.env import augmented_path  # noqa: F811
-        from kiro_crew.sandbox import wrap_argv  # noqa: F811
+        from kiro_crew.sandbox import (  # noqa: F811
+            cgroup_scope_argv,
+            resource_limit_preexec,
+            wrap_argv,
+        )
 
         kiro_bin = _resolve_kiro_bin()
         if not kiro_bin:
@@ -935,6 +939,7 @@ async def api_models(request: web.Request) -> web.Response:
         # pipes); this is a one-shot read-only command, so we replicate the
         # sandbox setup directly.  See AUTOSDE.yaml security-controls.
         argv, cleanup = wrap_argv(argv)
+        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
         try:
             env = {**os.environ}
             env["PATH"] = augmented_path(env.get("PATH", ""))
@@ -945,6 +950,7 @@ async def api_models(request: web.Request) -> web.Response:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
                 env=env,
+                preexec_fn=resource_limit_preexec(),
             )
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)

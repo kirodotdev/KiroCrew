@@ -34,7 +34,12 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import read_local_secret
-from kiro_crew.sandbox import _AGENT_DENIED_ENV_KEYS, wrap_argv
+from kiro_crew.sandbox import (
+    _AGENT_DENIED_ENV_KEYS,
+    cgroup_scope_argv,
+    resource_limit_preexec,
+    wrap_argv,
+)
 from kiro_crew.security import is_sensitive_path, redact
 from kiro_crew.sel import sel
 
@@ -215,6 +220,7 @@ class McpToolClient:
         if not argv:
             raise RuntimeError(f"MCP server '{server_name}' not found in agent config")
         sandboxed_argv, self._sandbox_cleanup = wrap_argv(list(argv), mode="standard")
+        sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
         # Capture stderr to a tempfile instead of DEVNULL so spawn/handshake
         # failures are legible (Mesh-2370). DEVNULL hid the real cause -- wrong
         # Node version, expired Midway cookies, OOM kill, sandbox failure -- behind
@@ -229,6 +235,7 @@ class McpToolClient:
                 stdout=subprocess.PIPE,
                 stderr=self._stderr_file,
                 text=True,
+                preexec_fn=resource_limit_preexec(),
             )
         except Exception:
             self._stderr_file.close()
@@ -476,12 +483,14 @@ def run_script_sandboxed(
         clean_env = _clean_cron_env()
         clean_env["_KIROCREW_SECRET_FILE"] = secret_path
 
+        sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = subprocess.run(
             sandboxed_argv,
             capture_output=True,
             text=True,
             timeout=timeout,
             env=clean_env,
+            preexec_fn=resource_limit_preexec(),
         )
 
         if proc.returncode != 0 and not proc.stdout.strip():
@@ -527,6 +536,7 @@ def run_command_sandboxed(command: str, timeout: int = 300) -> dict:
     # (e.g. macOS >= 26 — see _clean_cron_env). (Finding P454794507, remediation
     # item 2.)
     sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+    sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
     clean_env = _clean_cron_env()
     try:
         proc = subprocess.run(
@@ -535,6 +545,7 @@ def run_command_sandboxed(command: str, timeout: int = 300) -> dict:
             text=True,
             timeout=timeout,
             env=clean_env,
+            preexec_fn=resource_limit_preexec(),
         )
         output = proc.stdout
         if len(output) > _MAX_COMMAND_OUTPUT:

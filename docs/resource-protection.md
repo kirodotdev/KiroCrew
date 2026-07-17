@@ -25,6 +25,8 @@ of failure.
 | ACP prompt timeout | `acp/client.py` | Per-prompt | 2 hr (`_DEFAULT_PROMPT_TIMEOUT`) | No | Raises `AcpTimeoutError` |
 | ACP read timeout | `acp/client.py` | Per-readline | 20s (`_READ_TIMEOUT`) | No | Allows `CancelledError` delivery at each yield point |
 | Process group kill | `acp/client.py` | Process cleanup | Immediate | No | `killpg(SIGTERM)` → `killpg(SIGKILL)` → `_kill_escaped_children` for different-PGID descendants |
+| Per-process resource limits | `security.py` (`apply_resource_limits`) via `sandbox.py` (`resource_limit_preexec`) | Every agent-influenced spawn (root agent, ACP subagents/runtime, MCP servers, app backends, cron scripts, git, hooks, voice) | Kernel-enforced `RLIMIT_NOFILE=1024` default-on; `RLIMIT_NPROC`/`RLIMIT_CPU`/`RLIMIT_AS` opt-in (default off) | Yes — kernel enforces at fork/alloc/open time, no sweep needed | Kernel refuses `open()` past the FD cap (EMFILE); on opt-in NPROC/CPU/AS, EAGAIN / SIGXCPU / ENOMEM |
+| cgroup v2 scope (fork bomb + memory) | `sandbox.py` (`cgroup_scope_argv`) | Every agent-influenced spawn tree (root agent + all its MCP servers/subagents as one scope; each cron/app-backend/hook/git/tool spawn its own) | `pids.max=1024` (`TasksMax`) + `memory.max=65% of host RAM` (`MemoryMax`, `MemorySwapMax=0`) per transient `systemd --user --scope` under `kirocrew-agents.slice`, default-on where cgroup v2 delegation exists | Yes — kernel enforces at fork()/alloc time; OOM-kills the scope on memory breach, `fork()` fails EAGAIN past `pids.max` | Fork bomb bounded to `pids.max`; memory balloon OOM-killed at `memory.max`. Unavailable (no delegation/macOS) → no-op + one loud SECURITY warning; RLIMIT_NOFILE still applies |
 | Bounded restart shutdown | `dashboard/handlers.py` | Dashboard ⚡ Apply & Restart | 5s (`_SHUTDOWN_TIMEOUT_SECS`) | No | `asyncio.wait_for` on `provider.shutdown()`; `_sync_kill_provider` fallback on timeout |
 | Subagent injection outer cap | `subagent.py _run()` | Per-subagent completion | 1200s (`_ON_DONE_TIMEOUT`) | No | Semaphore wait + injection combined; on timeout kills stuck kiro-cli via `sessions.reset()` and queues failure event for parent to drain |
 | Subagent injection inner cap | `gateway.py` | Per `stream_and_collect` | 300s (`INJECTION_TIMEOUT`) | No | `_inject_with_retry` up to 2 retries (3 attempts) with backoff; bounded by outer 1200s cap |
@@ -62,11 +64,86 @@ of failure.
    `kiro_pids.txt` until the next gateway restart. The periodic `_cleanup_orphaned_mcp_servers`
    sweep catches MCP children but not the root kiro-cli process.
 
-3. **No per-process resource limits (cgroups/ulimits).** Agent subprocesses and MCP servers
-   run without CPU, memory, or file descriptor caps. A runaway process can consume unlimited
-   host resources. No per-process cgroup/ulimit wiring exists today; the load-time config
-   clamp (see the Mechanism Table) only bounds process *counts* (subagent count, turn budget,
-   pool size), not per-process CPU/memory. Tracked as Shepherd finding 444f0e03.
+3. **Per-process resource limits — implemented and wired (Talos bdf0d7e5 / V2285983353).**
+   `security.py:apply_resource_limits(config)` returns a `preexec_fn` that applies POSIX
+   `setrlimit` caps in the child (post-fork, pre-exec), and `sandbox.py:resource_limit_preexec()`
+   is the cached accessor every agent-influenced spawn passes as `preexec_fn=` — the root agent
+   and ACP subagents/runtime (`acp/client.py`, `acp/runtime.py`), MCP server probes
+   (`mcp_discovery.py`), app backends and their dependency installs (`apps/backend.py`), the app
+   registry's git clone/build spawns (`apps/registry.py`, `apps/routes.py`), builtin app
+   subprocesses (deploy_web, file_explorer), cron scripts/commands
+   (`cron_script.py`), the task runner's test spawn (`task_executor.py`), agent-selected git
+   (`git_coord.py`), shell hooks (`hooks.py`), the knowledge worker pool
+   (`knowledge/llm_pool.py`), and voice synthesis (`voice_reply.py`).
+   `test/test_spawn_audit.py` enforces that every sandbox-routed spawn also applies the ceiling,
+   so the helper cannot regress to dead code.
+
+   **Defaults — only the one safe-by-default limit is on; the hazardous knobs are opt-in:**
+   - `RLIMIT_NOFILE = 1024` (default-on) — max open file descriptors. It is **per-process**,
+     generous enough that no legitimate tool trips it, yet finite so a descriptor leak (which
+     climbs unbounded) is arrested. This is the only limit safe as a blanket default.
+   - `RLIMIT_NPROC = 0` (disabled by default). CAVEAT: `RLIMIT_NPROC` is enforced **per
+     real-UID** against the count of ALL the user's existing processes *and threads* — not the
+     spawn's own subtree. A busy login/desktop UID routinely holds **thousands** of threads
+     (measured ~3600 on one dev host), so any fixed cap tight enough to bound a fork bomb is
+     already below the host's baseline and would make **every** spawn fail to fork (EAGAIN) —
+     strictly worse than the DoS gap. Safe to enable only when the gateway runs as its own
+     dedicated UID. cgroup v2 `pids.max` (per-cgroup, not per-UID) is the correct fork-bomb
+     ceiling — see the remaining gap below.
+   - `RLIMIT_CPU = 0` (disabled by default). CPU-seconds accrue over a process's **whole
+     lifetime**; the root agent runs up to a 30-min turn and a busy tool-heavy session can
+     legitimately burn hundreds of CPU-seconds, so a non-zero global cap would `SIGXCPU`-kill
+     healthy sessions. Opt in per-deployment only when the spawn population is exclusively
+     short-lived.
+   - `RLIMIT_AS = 0` (disabled by default). `RLIMIT_AS` caps **virtual** address space, not
+     resident memory, and Node/V8 (kiro-cli, claude-agent-acp, every npm MCP server) reserves
+     huge virtual mappings far exceeding real use — measured ~2 GB VSZ for 4 idle worker
+     threads, ~3.4 GB for 8 — so even a "generous" 4 GB cap `SIGKILL`s normal MCP-heavy
+     sessions with spurious ENOMEM. cgroup v2 `memory.max` is the correct RSS ceiling and is
+     tracked separately (below); `RLIMIT_AS` is left as an opt-in escape hatch for non-Node
+     fleets.
+
+   **Config:** operators override defaults via a `resource_limits` object in the config JSON —
+   keys `max_processes`, `max_open_files`, `max_cpu_seconds`, `max_memory_mb` (each a positive
+   int to set, `0` to leave inherited). A requested limit is always clamped **down** to the
+   inherited hard limit — the helper only tightens, never raises. On non-POSIX platforms
+   (`resource` unavailable) it is a no-op; on platforms lacking a specific rlimit (e.g. macOS
+   has no `RLIMIT_NPROC`) that limit degrades gracefully.
+
+   **cgroup v2 scope — the default-on fork-bomb + memory-DoS ceiling.** Because RLIMIT is the
+   wrong tool for those two threats (`RLIMIT_NPROC` is per-UID, `RLIMIT_AS` caps virtual not
+   resident memory), the actual default-on defense is a **cgroup v2 scope** applied by
+   `sandbox.py:cgroup_scope_argv()`. Every agent-influenced spawn is wrapped in a transient
+   `systemd-run --user --scope` (nested under `kirocrew-agents.slice`) with:
+   - `TasksMax` = `pids.max` (default **1024**, from `max_processes`) — the **fork-bomb**
+     ceiling. Per-cgroup, so it bounds the agent + all its MCP-server/tool descendants as one
+     unit without the per-UID footgun; `fork()` fails `EAGAIN` past it.
+   - `MemoryMax` + `MemorySwapMax=0` = `memory.max` (default **65% of physical RAM** — e.g.
+     ~10.6 GB on a 16 GB box, ~21.3 GB on 32 GB; overridable via `max_memory_mb`, and an
+     8192 MB fallback when host RAM can't be read) — the **memory-balloon** ceiling. It scales
+     with the machine and is a **per-scope** cap (each spawn tree gets its own scope), so it
+     bounds a single runaway tree while leaving headroom for the OS + gateway — it is not an
+     aggregate guarantee across many concurrent scopes. This is a true RSS cap (not virtual),
+     so it does not trip on Node/V8's large virtual mappings; the kernel OOM-kills the scope on
+     breach.
+
+   The kernel enforces both at `fork()`/allocation time — no reaper race. `--scope` execs into
+   the target (it does not fork a wrapper), so the gateway's PID tracking / `killpg` /
+   descendant scan are unaffected. It composes *outside* the OS-level sandbox: a child is
+   filesystem-isolated (namespace/seatbelt) **and** cgroup-bounded. `test/test_spawn_audit.py`
+   asserts every sandbox-routed spawn also applies the scope (tripwire against regression).
+
+   **Availability + fallback:** requires Linux with cgroup v2 delegation (the `pids` + `memory`
+   controllers delegated to the user slice) and a systemd user session. Where that is
+   unavailable (older Linux without delegation, no user session, macOS), `cgroup_scope_argv`
+   returns the argv unchanged and logs a **one-time loud SECURITY warning** — `RLIMIT_NOFILE`
+   still applies, but the fork-bomb / memory ceilings are NOT enforced there. Operators on such
+   hosts should run the gateway under an externally-configured cgroup/container limit.
+
+   **Remaining gap:** these are per-*scope* ceilings, not a single per-*session* aggregate
+   across a session's multiple spawn trees; and enforcement depends on cgroup v2 delegation
+   being present. The load-time config clamp (see the Mechanism Table) only bounds process
+   *counts* (subagent count, turn budget, pool size). Tracked as Shepherd finding 444f0e03.
 
 ## Interaction Notes
 

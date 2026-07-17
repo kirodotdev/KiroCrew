@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from kiro_crew.hooks import safe_read_file_bytes
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
@@ -377,12 +377,14 @@ def _git_status(repo_root: Path) -> dict:
         cmd_branch, _ = wrap_argv(
             ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"]
         )
+        cmd_branch = cgroup_scope_argv(cmd_branch)  # cgroup DoS ceiling (Talos bdf0d7e5)
         branch = subprocess.run(
             cmd_branch,
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SEC,
             check=False,
+            preexec_fn=resource_limit_preexec(),
         )
         if branch.returncode == 0:
             out["branch"] = branch.stdout.strip()
@@ -390,12 +392,14 @@ def _git_status(repo_root: Path) -> dict:
         out["branch_error"] = str(exc)
     try:
         cmd_status, _ = wrap_argv(["git", "-C", str(repo_root), "status", "--porcelain=1", "-z"])
+        cmd_status = cgroup_scope_argv(cmd_status)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = subprocess.run(
             cmd_status,
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SEC,
             check=False,
+            preexec_fn=resource_limit_preexec(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         out["status_error"] = str(exc)
@@ -477,12 +481,14 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
     cmd += ["--", query, str(root)]
     try:
         wrapped_cmd, _ = wrap_argv(cmd)
+        wrapped_cmd = cgroup_scope_argv(wrapped_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = subprocess.run(
             wrapped_cmd,
             capture_output=True,
             text=True,
             timeout=SEARCH_TIMEOUT_SEC,
             check=False,
+            preexec_fn=resource_limit_preexec(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("rg failed: %s — falling back to python", exc)

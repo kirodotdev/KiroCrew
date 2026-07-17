@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.security import (
+    apply_resource_limits,
     audit_bash_command,
     audit_bash_exfiltration,
     is_sensitive_bash_command,
@@ -2168,3 +2169,227 @@ class TestScanMemoryImportGuard:
         monkeypatch.setattr(builtins, "__import__", fake_import)
         # Must return cleanly (empty findings), not raise.
         assert scan_memory() == []
+
+
+# resource is POSIX-only. Import it conditionally + skip ONLY the class below
+# via skipif — a module-level pytest.importorskip would drop this ENTIRE file
+# (credential redaction, bash auditing, exfil-URL scanning, ...) on non-POSIX
+# platforms, far wider than intended (AutoSDE finding on Talos bdf0d7e5).
+try:
+    import resource as _resource_mod
+except ImportError:
+    _resource_mod = None
+
+
+@pytest.mark.skipif(_resource_mod is None, reason="resource module is POSIX-only")
+class TestApplyResourceLimits:
+    """apply_resource_limits() returns a preexec_fn that caps a child's
+    resources (Talos bdf0d7e5 / V2285983353). The helper existed as dead code
+    once; these tests pin its behavior AND its wiring guarantees."""
+
+    def test_returns_callable(self) -> None:
+        assert callable(apply_resource_limits())
+        assert callable(apply_resource_limits({"resource_limits": {"max_processes": 64}}))
+
+    def test_defaults_set_nofile_only(self) -> None:
+        """With no config only NOFILE is capped (per-process, safe); NPROC/CPU/AS
+        stay inherited (default 0 = disabled) so a long-lived Node agent on a
+        busy UID is not EAGAIN/SIGXCPU/ENOMEM-killed."""
+        import subprocess
+        import sys
+
+        inherited_nproc = _resource_mod.getrlimit(_resource_mod.RLIMIT_NPROC)[0]
+        inherited_cpu = _resource_mod.getrlimit(_resource_mod.RLIMIT_CPU)[0]
+        inherited_as = _resource_mod.getrlimit(_resource_mod.RLIMIT_AS)[0]
+        probe = (
+            "import resource,json;"
+            "print(json.dumps({"
+            "'nproc':resource.getrlimit(resource.RLIMIT_NPROC)[0],"
+            "'nofile':resource.getrlimit(resource.RLIMIT_NOFILE)[0],"
+            "'cpu':resource.getrlimit(resource.RLIMIT_CPU)[0],"
+            "'as':resource.getrlimit(resource.RLIMIT_AS)[0],"
+            "}))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=apply_resource_limits(),
+        )
+        assert out.returncode == 0, out.stderr
+        limits = json.loads(out.stdout)
+        assert limits["nofile"] == 1024
+        # NPROC, CPU, AS disabled by default -> left exactly at the inherited
+        # value (NOT clamped to a fixed cap). Assert equality to the parent's
+        # inherited limit rather than a tautology that only excludes 0.
+        assert limits["nproc"] == inherited_nproc
+        assert limits["cpu"] == inherited_cpu
+        assert limits["as"] == inherited_as
+
+    def test_config_overrides_applied(self) -> None:
+        import subprocess
+        import sys
+
+        # NOFILE is per-process so a small override (256, distinct from the 1024
+        # default) is safe. NPROC is per-real-UID against the user's whole
+        # process+thread count, so it MUST be requested well above any real
+        # count — clamping min(requested, inherited_hard) down to the inherited
+        # hard cap is always >= current usage (nothing could be running
+        # otherwise), so the child can still fork. A small NPROC (e.g. 77) would
+        # make the probe child fail to start on any busy/CI UID.
+        nproc_hard = _resource_mod.getrlimit(_resource_mod.RLIMIT_NPROC)[1]
+        nproc_req = 100_000
+        expected_nproc = (
+            nproc_req
+            if nproc_hard == _resource_mod.RLIM_INFINITY or nproc_hard >= nproc_req
+            else nproc_hard
+        )
+        cfg = {"resource_limits": {"max_processes": nproc_req, "max_open_files": 256}}
+        probe = (
+            "import resource,json;"
+            "print(json.dumps({"
+            "'nproc':resource.getrlimit(resource.RLIMIT_NPROC)[0],"
+            "'nofile':resource.getrlimit(resource.RLIMIT_NOFILE)[0],"
+            "}))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=apply_resource_limits(cfg),
+        )
+        assert out.returncode == 0, out.stderr
+        limits = json.loads(out.stdout)
+        assert limits["nproc"] == expected_nproc
+        assert limits["nofile"] == 256
+
+    def test_nofile_limit_actually_enforced(self) -> None:
+        """The NOFILE cap is real: a child told it may open few FDs hits the
+        ceiling."""
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys\n"
+            "fds=[]\n"
+            "try:\n"
+            "    for _ in range(200):\n"
+            "        fds.append(open('/dev/null'))\n"
+            "    print('opened-all')\n"
+            "except OSError:\n"
+            "    print('hit-limit')\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=apply_resource_limits({"resource_limits": {"max_open_files": 32}}),
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "hit-limit"
+
+    def test_zero_disables_a_limit(self) -> None:
+        """max_open_files=0 leaves NOFILE inherited (not clamped to the
+        default), so an operator can opt a limit out."""
+        import subprocess
+        import sys
+
+        inherited = _resource_mod.getrlimit(_resource_mod.RLIMIT_NOFILE)[0]
+        probe = "import resource,json;" "print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=apply_resource_limits({"resource_limits": {"max_open_files": 0}}),
+        )
+        assert out.returncode == 0, out.stderr
+        assert int(out.stdout.strip()) == inherited
+
+    def test_never_raises_above_inherited_hard_limit(self) -> None:
+        """A request larger than the inherited hard cap is clamped down, so the
+        setrlimit call cannot raise EPERM and abort the spawn."""
+        import subprocess
+        import sys
+
+        hard = _resource_mod.getrlimit(_resource_mod.RLIMIT_NOFILE)[1]
+        if hard == _resource_mod.RLIM_INFINITY:
+            pytest.skip("NOFILE hard limit is unlimited; nothing to clamp against")
+        probe = "import resource;print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=apply_resource_limits(
+                {"resource_limits": {"max_open_files": hard + 100_000}}
+            ),
+        )
+        assert out.returncode == 0, out.stderr
+        assert int(out.stdout.strip()) <= hard
+
+    def test_junk_config_values_ignored(self) -> None:
+        """Non-numeric / negative / bool values fall back to defaults rather
+        than crashing or disabling protection."""
+        import subprocess
+        import sys
+
+        inherited_nproc = _resource_mod.getrlimit(_resource_mod.RLIMIT_NPROC)[0]
+        cfg = {"resource_limits": {"max_processes": "lots", "max_open_files": -5}}
+        probe = (
+            "import resource,json;"
+            "print(json.dumps({"
+            "'nproc':resource.getrlimit(resource.RLIMIT_NPROC)[0],"
+            "'nofile':resource.getrlimit(resource.RLIMIT_NOFILE)[0],"
+            "}))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=apply_resource_limits(cfg),
+        )
+        assert out.returncode == 0, out.stderr
+        limits = json.loads(out.stdout)
+        # Junk -> defaults retained: NOFILE default-on (1024); NPROC stays
+        # disabled by default -> inherited (junk "lots" ignored, not clamped).
+        assert limits["nproc"] == inherited_nproc
+        assert limits["nofile"] == 1024
+
+    def test_default_preexec_allows_child_to_fork(self) -> None:
+        """Regression: the DEFAULT preexec must not cap RLIMIT_NPROC, because it
+        is enforced per-real-UID against the user's existing process+thread
+        count (often thousands on a shared/desktop UID). A fixed NPROC default
+        tight enough to matter would make every child fail to fork with EAGAIN —
+        strictly worse than the DoS gap it aims to close. Verify a spawned child
+        under the default preexec can itself spawn a subprocess."""
+        import subprocess
+        import sys
+
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess,sys;"
+                "subprocess.run([sys.executable,'-c','pass'],check=True);"
+                "print('nested-fork-ok')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            preexec_fn=apply_resource_limits(),
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "nested-fork-ok"
+
+    def test_none_resource_module_is_noop(self, monkeypatch) -> None:
+        """On non-POSIX (resource is None) the helper returns a harmless no-op."""
+        import kiro_crew.security as sec
+
+        monkeypatch.setattr(sec, "_resource", None)
+        fn = sec.apply_resource_limits({"resource_limits": {"max_processes": 1}})
+        assert fn() is None

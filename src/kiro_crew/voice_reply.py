@@ -27,7 +27,7 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -285,11 +285,13 @@ async def _synthesize_piper(
             # unlink after the child exits (Linux launcher script /
             # macOS seatbelt profile).
             cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
+            cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                preexec_fn=resource_limit_preexec(),
             )
             try:
                 _stdout, stderr = await asyncio.wait_for(
@@ -450,10 +452,12 @@ async def _synthesize_polly(
             # a backend and returns a cleanup path that we must unlink after
             # the child exits.
             cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
+            cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                preexec_fn=resource_limit_preexec(),
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)

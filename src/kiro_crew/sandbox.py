@@ -31,9 +31,13 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
 from kiro_crew.platform import current_context
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -1158,6 +1162,14 @@ def sandboxed_spawn_argv(
         (a temp launcher/profile) after the child exits.
     """
     wrapped, cleanup = wrap_argv(argv, mode=mode, strip_python_env=strip_python_env)
+    # cgroup v2 scope (OUTERMOST layer): bound the spawned process tree with
+    # pids.max + memory.max. Applied here so every sandboxed_spawn_argv caller
+    # gets the fork-bomb / memory-DoS ceiling without threading it through each
+    # site. No-op (with a one-time loud warning) where cgroup delegation is
+    # unavailable. Safe re: the cleanup path — that is returned separately, not
+    # re-derived from an argv index, so prepending systemd-run does not disturb
+    # it. See docs/resource-protection.md (Talos bdf0d7e5).
+    wrapped = cgroup_scope_argv(wrapped)
     # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
     # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it
     # returns argv unmodified and the strip never happens. Apply the same strip
@@ -1165,3 +1177,235 @@ def sandboxed_spawn_argv(
     # whether a backend is available.
     extra = _PYTHON_ENV_PREFIXES if strip_python_env else None
     return wrapped, scrub_env(env, extra_prefixes=extra), cleanup
+
+
+# ── cgroup v2 scope enforcement (fork bomb + memory DoS) ──
+# The RLIMIT preexec (resource_limit_preexec) caps a SINGLE process's FDs, but
+# RLIMIT is the wrong tool for the finding's headline threats: RLIMIT_NPROC is
+# per-real-UID (not per-spawn-subtree) and RLIMIT_AS caps virtual not resident
+# memory. cgroup v2 pids.max / memory.max are the correct per-cgroup ceilings —
+# they bound the agent + all its MCP-server/tool descendants as one unit, and
+# the kernel enforces at fork()/alloc time (no reaper race). We place each
+# agent-influenced spawn in a transient systemd --user --scope, which works
+# UNPRIVILEGED when the user session has cgroup v2 delegation (pids + memory
+# controllers). See docs/resource-protection.md (Talos bdf0d7e5).
+
+# Default cgroup ceilings (per agent scope). Overridable via the same
+# ``resource_limits`` config block used by apply_resource_limits.
+_CGROUP_DEFAULT_MAX_PROCESSES = 1024  # pids.max — bounds fork bombs
+
+# The memory.max default is HOST-PROPORTIONAL, not a flat cap: the agent
+# subprocess tree may occupy up to this fraction of physical RAM before the
+# kernel OOM-kills the scope. This is a PER-SCOPE ceiling (each spawn gets its
+# own transient scope), so 65% bounds a single runaway tree to a share that
+# leaves headroom for the OS + gateway — it is NOT an aggregate host guarantee
+# across many concurrent scopes. It gives the agent real headroom on the 16–32
+# GB machines this targets (16 GB → ~10.6 GB, 32 GB → ~21.3 GB) — where a flat
+# 8 GB cap was both too tight on big boxes and too loose on small ones. There
+# is deliberately NO floor: a floor could push a tiny box above 65%, and 65% is
+# the ceiling on our take.
+_CGROUP_MEMORY_FRACTION = 0.65
+# Fallback memory.max (MB) used only when physical RAM can't be read (sysconf
+# missing/unknown). The cgroup path is Linux-only, where SC_PHYS_PAGES exists,
+# so this is a belt-and-suspenders default, not the normal path.
+_CGROUP_FALLBACK_MAX_MEMORY_MB = 8192
+
+
+def _default_max_memory_mb() -> int:
+    """Return the default cgroup ``memory.max`` in MB: a fixed fraction
+    (:data:`_CGROUP_MEMORY_FRACTION`) of physical RAM, so the ceiling scales
+    with the machine instead of being a flat cap. Falls back to
+    :data:`_CGROUP_FALLBACK_MAX_MEMORY_MB` if host RAM can't be determined.
+    """
+    try:
+        total_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        mb = int(total_bytes * _CGROUP_MEMORY_FRACTION) // (1024 * 1024)
+        if mb > 0:
+            return mb
+    except (ValueError, OSError, AttributeError):
+        pass
+    return _CGROUP_FALLBACK_MAX_MEMORY_MB
+
+
+# Cached (available, reason) probe result — the environment doesn't change
+# within a process, and the probe shells out, so compute it once.
+_CGROUP_SCOPE_PROBE: tuple[bool, str] | None = None
+_CGROUP_WARNED = False
+
+
+def _probe_cgroup_scope() -> tuple[bool, str]:
+    """Return (available, reason) for unprivileged cgroup-v2 scope enforcement.
+
+    Requires, on Linux: a pure cgroup-v2 mount, the ``pids`` and ``memory``
+    controllers delegated to our user slice, a ``systemd-run`` binary, and a
+    user session bus (XDG_RUNTIME_DIR). Any missing piece → not available.
+    """
+    global _CGROUP_SCOPE_PROBE
+    if _CGROUP_SCOPE_PROBE is None:
+        _CGROUP_SCOPE_PROBE = _compute_cgroup_scope_probe()
+    return _CGROUP_SCOPE_PROBE
+
+
+def _compute_cgroup_scope_probe() -> tuple[bool, str]:
+    """Uncached capability check backing :func:`_probe_cgroup_scope`."""
+    if sys.platform != "linux":
+        return (False, "not Linux")
+    if shutil.which("systemd-run") is None:
+        return (False, "systemd-run not found")
+    # A user session bus is required for `systemd-run --user`.
+    if not os.environ.get("XDG_RUNTIME_DIR"):
+        return (False, "no XDG_RUNTIME_DIR (no systemd user session)")
+    # Pure cgroup v2 unified hierarchy.
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as fh:
+            # v2 is a single line beginning "0::".
+            if not any(line.startswith("0::") for line in fh):
+                return (False, "not a cgroup v2 unified hierarchy")
+    except OSError as exc:
+        return (False, f"cannot read /proc/self/cgroup: {exc}")
+    # The pids + memory controllers must be delegated to our user slice, else
+    # systemd-run --scope can set the knobs but the kernel won't enforce them.
+    try:
+        uid = os.getuid()
+        ctrl_path = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/cgroup.controllers"
+        with open(ctrl_path, encoding="utf-8") as fh:
+            controllers = set(fh.read().split())
+        missing = {"pids", "memory"} - controllers
+        if missing:
+            return (False, f"controllers not delegated: {sorted(missing)}")
+    except OSError as exc:
+        return (False, f"cannot read delegated controllers: {exc}")
+    return (True, "ok")
+
+
+def _cgroup_limits_from_config() -> tuple[int, int]:
+    """Return ``(max_processes, max_memory_mb)`` for the cgroup scope.
+
+    Reads the same ``resource_limits`` config block as apply_resource_limits;
+    falls back to the module defaults. ``0`` (or junk) means "use default" for
+    the cgroup ceiling — unlike the RLIMIT path, we never leave the cgroup DoS
+    ceiling unset by default (that is the whole point of this control). The
+    memory default is host-proportional (see :func:`_default_max_memory_mb`).
+    """
+    max_procs = _CGROUP_DEFAULT_MAX_PROCESSES
+    max_mem_mb = _default_max_memory_mb()
+    try:
+        from kiro_crew.config.loader import _raw_config
+
+        rl = _raw_config().get("resource_limits")
+        if isinstance(rl, dict):
+            p = rl.get("max_processes")
+            if isinstance(p, (int, float)) and not isinstance(p, bool) and p > 0:
+                max_procs = int(p)
+            m = rl.get("max_memory_mb")
+            if isinstance(m, (int, float)) and not isinstance(m, bool) and m > 0:
+                max_mem_mb = int(m)
+    except Exception:
+        logger.debug("cgroup limits: config unavailable, using defaults")
+    return max_procs, max_mem_mb
+
+
+def cgroup_scope_argv(argv: list[str]) -> list[str]:
+    """Wrap *argv* in a transient systemd --user --scope with cgroup v2 limits.
+
+    Prepends ``systemd-run --user --scope`` with ``TasksMax`` (pids.max, the
+    fork-bomb ceiling) and ``MemoryMax`` + ``MemorySwapMax=0`` (memory.max, the
+    RSS balloon ceiling), so the spawned agent AND all its MCP-server/tool
+    descendants are bounded as one cgroup and the kernel kills the scope on
+    breach. ``--scope`` execs into the target (it does NOT fork a wrapper), so
+    the returned argv's eventual PID is the real child — parent PID tracking,
+    ``killpg``, and descendant scans are unaffected.
+
+    Layers OUTSIDE the OS-level sandbox: callers pass the already-``wrap_argv``-ed
+    argv here so the child is filesystem-isolated AND cgroup-bounded.
+
+    On a host without cgroup v2 delegation (older Linux, no systemd user
+    session, macOS), returns *argv* unchanged and logs a one-time loud SECURITY
+    warning — the RLIMIT_NOFILE preexec still applies, but the fork-bomb/memory
+    DoS ceiling is NOT enforced there.
+    """
+    global _CGROUP_WARNED
+    available, reason = _probe_cgroup_scope()
+    if not available:
+        if not _CGROUP_WARNED:
+            _CGROUP_WARNED = True
+            logger.warning(
+                "SECURITY: cgroup v2 scope enforcement unavailable (%s); agent "
+                "subprocess fork-bomb / memory-DoS ceilings are NOT enforced on "
+                "this host. RLIMIT_NOFILE still applies. See "
+                "docs/resource-protection.md.",
+                reason,
+            )
+        return argv
+    max_procs, max_mem_mb = _cgroup_limits_from_config()
+    return [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "-q",
+        "--slice=kirocrew-agents.slice",
+        "-p",
+        f"TasksMax={max_procs}",
+        "-p",
+        f"MemoryMax={max_mem_mb}M",
+        "-p",
+        "MemorySwapMax=0",
+        "--",
+        *argv,
+    ]
+
+
+# Cached preexec_fn shared by every agent-influenced spawn. Built once from the
+# loaded config (limits are process-global, not per-spawn) so the hot path adds
+# nothing but a dict lookup. ``_UNSET`` distinguishes "not built yet" from the
+# legitimate ``None`` result on non-POSIX platforms.
+_UNSET = object()
+_RESOURCE_PREEXEC: object = _UNSET
+
+
+def resource_limit_preexec() -> "Callable[[], None] | None":
+    """Return the shared ``preexec_fn`` that caps a spawned child's resources.
+
+    This is the companion to :func:`sandboxed_spawn_argv`: the sandbox wrapper
+    gives a child filesystem + credential isolation, and this gives it a
+    kernel-enforced ceiling on processes / file descriptors / CPU / memory so a
+    fork bomb or runaway allocation in a compromised tool or MCP server cannot
+    exhaust the host out from under the gateway. Every agent-influenced spawn
+    passes the result as ``preexec_fn=`` (see ``docs/resource-protection.md``).
+
+    Returns the callable from :func:`kiro_crew.security.apply_resource_limits`,
+    or ``None`` on non-POSIX platforms (where there is nothing to enforce and
+    ``preexec_fn`` must be ``None``). The callable and the underlying config
+    read are computed once and cached — the limits are a host-global policy, not
+    a per-spawn decision.
+    """
+    global _RESOURCE_PREEXEC
+    if _RESOURCE_PREEXEC is _UNSET:
+        if os.name != "posix":
+            # Non-POSIX (Windows): preexec_fn is unsupported by
+            # create_subprocess_exec and MUST be None — passing any callable
+            # (even a no-op) raises ValueError. Cache None to honor the return
+            # contract. (apply_resource_limits also no-ops there, but it returns
+            # a callable, so we must not forward it.)
+            _RESOURCE_PREEXEC = None
+            return None
+        # Lazy imports: sandbox is a low-level module (see the SEL import note in
+        # wrap_argv) and must not import config/security at module load.
+        from kiro_crew.security import apply_resource_limits
+
+        cfg: dict | None = None
+        try:
+            # Raw config.json (process-cached) — carries the unrecognized
+            # ``resource_limits`` key an operator may add; the typed config
+            # schema drops unknown keys, so read the raw dict here.
+            from kiro_crew.config.loader import _raw_config
+
+            cfg = _raw_config()
+        except Exception:
+            # Config unavailable (early boot, tests) — apply_resource_limits
+            # falls back to its safe built-in defaults.
+            logger.debug("resource_limit_preexec: config unavailable, using defaults")
+        # POSIX: apply_resource_limits returns a callable (a no-op only when
+        # every limit is disabled). Cache it; passing a no-op preexec_fn is fine.
+        _RESOURCE_PREEXEC = apply_resource_limits(cfg)
+    return _RESOURCE_PREEXEC  # type: ignore[return-value]

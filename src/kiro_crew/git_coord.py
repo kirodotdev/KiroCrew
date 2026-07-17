@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.sandbox import sandboxed_spawn_argv
+from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import Project, Task
@@ -110,6 +110,7 @@ async def _is_git_repo(path: str) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            preexec_fn=resource_limit_preexec(),
         )
         await proc.communicate()
         return proc.returncode == 0
@@ -128,6 +129,7 @@ async def _git(work_dir: str, *args: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            preexec_fn=resource_limit_preexec(),
         )
         stdout, stderr = await proc.communicate()
     finally:

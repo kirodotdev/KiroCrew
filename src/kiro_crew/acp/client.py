@@ -95,7 +95,7 @@ from kiro_crew.hooks import (
     get_global_hook_store,
 )
 from kiro_crew.mcp_gateway.claim import schedule_claim
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -1576,6 +1576,11 @@ class AcpClient:
         argv, self._sandbox_cleanup = wrap_argv(
             argv, mode=self._sandbox_mode, strip_python_env=True
         )
+        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+        # No-op + loud warning where cgroup delegation is unavailable. --scope
+        # execs into the target, so self._pid below is still the real child.
+        argv = cgroup_scope_argv(argv)
 
         # Build the child environment (process-group isolation flags are set on
         # the spawn kwargs below, per-platform).
@@ -1635,6 +1640,7 @@ class AcpClient:
             env=env,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            preexec_fn=resource_limit_preexec(),
         )
         self._pid = self._process.pid
         self._start_time = await asyncio.get_running_loop().run_in_executor(

@@ -26,7 +26,7 @@ import aiohttp
 from kiro_crew.env import augmented_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_utils import mcp_server_alias
-from kiro_crew.sandbox import sandboxed_spawn_argv
+from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -677,6 +677,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             stderr=asyncio.subprocess.PIPE,
             env=env,
             limit=1024 * 1024,  # 1 MB — some MCP servers return large responses
+            preexec_fn=resource_limit_preexec(),
         )
 
         # Send initialize request

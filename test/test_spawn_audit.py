@@ -71,6 +71,23 @@ _SPAWN_BASES = {"subprocess", "asyncio"}
 # routed through the sandbox chokepoint.
 _ROUTED_TOKENS = ("sandboxed_spawn_argv", "wrap_argv")
 
+# Token marking a routed function as also applying a kernel resource ceiling
+# (RLIMIT_NPROC/NOFILE/CPU/AS) to its child via ``preexec_fn`` — the second
+# layer of the spawn guarantee (Talos bdf0d7e5 / V2285983353). Every
+# sandbox-routed function must reference it: the sandbox gives the child
+# filesystem + credential isolation, this gives it a fork-bomb / resource
+# ceiling. Functions whose ONLY spawns are fixed-argv internal probes (no
+# agent-influenced child) are exempted in ``PREEXEC_EXEMPT`` below.
+_PREEXEC_TOKEN = "resource_limit_preexec"
+
+# Routed functions exempt from the resource-limit requirement: the enclosing
+# function is sandbox-routed (so it appears routed) but the specific spawn is a
+# fixed-argv internal probe against our own process/host, not a child running
+# agent-influenced code — a resource ceiling adds nothing. Keyed by
+# ``<relpath>::<function>`` with a justification, same discipline as
+# ``BENIGN_SPAWNS``.
+PREEXEC_EXEMPT: frozenset[str] = frozenset(set())
+
 # Benign spawns: command/args/cwd are fixed or operator-controlled, NOT
 # influenced by the agent, a hostile MCP-config entry, or an agent-selected
 # repository. Keyed by ``<relpath>::<enclosing function>``. When adding an
@@ -189,10 +206,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
 )
 
 
-def _collect_unrouted_spawns() -> set[str]:
-    """Return ``<relpath>::<func>`` for every spawn whose enclosing function
-    does NOT reference the sandbox chokepoint."""
-    unrouted: set[str] = set()
+def _collect_spawn_functions() -> dict[str, str]:
+    """Map ``<relpath>::<func>`` -> the enclosing function's source, for every
+    function containing a subprocess spawn. ``<module>`` marks a module-level
+    spawn (no enclosing function)."""
+    out: dict[str, str] = {}
     for path in _SRC_ROOT.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
@@ -224,15 +242,50 @@ def _collect_unrouted_spawns() -> set[str]:
                     best = f.lineno
                     enc = f.name
                     enc_node = f
-            routed = False
-            if enc_node is not None:
-                fsrc = "\n".join(
-                    lines[enc_node.lineno - 1 : (enc_node.end_lineno or enc_node.lineno)]
-                )
-                routed = any(tok in fsrc for tok in _ROUTED_TOKENS)
-            if not routed:
-                unrouted.add(f"{rel}::{enc}")
-    return unrouted
+            fsrc = (
+                "\n".join(lines[enc_node.lineno - 1 : (enc_node.end_lineno or enc_node.lineno)])
+                if enc_node is not None
+                else ""
+            )
+            out[f"{rel}::{enc}"] = fsrc
+    return out
+
+
+def _collect_unrouted_spawns() -> set[str]:
+    """Return ``<relpath>::<func>`` for every spawn whose enclosing function
+    does NOT reference the sandbox chokepoint."""
+    return {
+        key
+        for key, fsrc in _collect_spawn_functions().items()
+        if not any(tok in fsrc for tok in _ROUTED_TOKENS)
+    }
+
+
+def _collect_routed_spawns_without_preexec() -> set[str]:
+    """Return ``<relpath>::<func>`` for every sandbox-routed spawn function that
+    does NOT also apply the resource-limit ``preexec_fn``."""
+    return {
+        key
+        for key, fsrc in _collect_spawn_functions().items()
+        if any(tok in fsrc for tok in _ROUTED_TOKENS) and _PREEXEC_TOKEN not in fsrc
+    }
+
+
+# A routed spawn function applies the cgroup v2 DoS ceiling either directly
+# (``cgroup_scope_argv``) or via the ``sandboxed_spawn_argv`` chokepoint, which
+# wraps every routed argv in the scope internally.
+_CGROUP_TOKENS = ("cgroup_scope_argv", "sandboxed_spawn_argv")
+
+
+def _collect_routed_spawns_without_cgroup() -> set[str]:
+    """Return ``<relpath>::<func>`` for every sandbox-routed spawn function that
+    does NOT also apply the cgroup v2 scope (pids.max / memory.max)."""
+    return {
+        key
+        for key, fsrc in _collect_spawn_functions().items()
+        if any(tok in fsrc for tok in _ROUTED_TOKENS)
+        and not any(tok in fsrc for tok in _CGROUP_TOKENS)
+    }
 
 
 def test_every_spawn_is_routed_or_allowlisted():
@@ -275,3 +328,61 @@ def test_agent_influenced_sites_are_routed():
             f"{key} must route its spawn through sandboxed_spawn_argv "
             "(Talos 92e24570) but is no longer sandbox-wrapped."
         )
+
+
+def test_every_routed_spawn_applies_resource_limits():
+    """Every sandbox-routed spawn must ALSO cap the child's resources.
+
+    The sandbox chokepoint gives a child filesystem + credential isolation; a
+    ``preexec_fn`` from ``resource_limit_preexec()`` gives it a kernel-enforced
+    ceiling (RLIMIT_NPROC/NOFILE/CPU/AS) so a fork bomb or runaway allocation in
+    a compromised tool / MCP server cannot exhaust the host. This is the
+    regression tripwire for Talos bdf0d7e5 (V2285983353): the helper was merged
+    once as dead code (defined, zero callers). If you add a new agent-influenced
+    spawn, pass ``preexec_fn=resource_limit_preexec()`` — or, if the spawn is a
+    fixed-argv internal probe with no agent-influenced child, add its
+    ``file::function`` key to ``PREEXEC_EXEMPT`` with a justification.
+    """
+    missing = _collect_routed_spawns_without_preexec() - PREEXEC_EXEMPT
+    assert not missing, (
+        "Sandbox-routed spawn(s) missing a resource-limit preexec_fn:\n  "
+        + "\n  ".join(sorted(missing))
+        + "\n\nPass preexec_fn=kiro_crew.sandbox.resource_limit_preexec() to the "
+        "spawn (kernel RLIMIT ceiling — fork bomb / FD / mem / CPU), or add the "
+        "file::function key to PREEXEC_EXEMPT with a justification. "
+        "See Talos finding bdf0d7e5 / V2285983353."
+    )
+
+
+def test_preexec_exempt_has_no_stale_entries():
+    """Every PREEXEC_EXEMPT entry must still name a routed spawn function that
+    lacks the preexec token, so the exemption list cannot accumulate dead
+    entries that would mask a future regression."""
+    routed_missing = _collect_routed_spawns_without_preexec()
+    stale = PREEXEC_EXEMPT - routed_missing
+    assert not stale, (
+        "Stale PREEXEC_EXEMPT entries (no longer a routed spawn lacking the "
+        "preexec token — remove them):\n  " + "\n  ".join(sorted(stale))
+    )
+
+
+def test_every_routed_spawn_applies_cgroup_scope():
+    """Every sandbox-routed spawn must ALSO be placed in a cgroup v2 scope.
+
+    The RLIMIT preexec caps a single process's FDs; the cgroup scope
+    (``cgroup_scope_argv`` → pids.max + memory.max) is the actual default-on
+    fork-bomb + memory-DoS ceiling the finding's headline threats require
+    (Talos bdf0d7e5). A function satisfies this by calling ``cgroup_scope_argv``
+    directly or by routing through ``sandboxed_spawn_argv`` (which applies the
+    scope internally). The ``PREEXEC_EXEMPT`` fixed-argv internal probes are
+    also exempt here — same rationale (no agent-influenced child to bound).
+    """
+    missing = _collect_routed_spawns_without_cgroup() - PREEXEC_EXEMPT
+    assert not missing, (
+        "Sandbox-routed spawn(s) missing a cgroup v2 scope:\n  "
+        + "\n  ".join(sorted(missing))
+        + "\n\nWrap the final argv with kiro_crew.sandbox.cgroup_scope_argv() "
+        "(pids.max + memory.max fork-bomb / memory-DoS ceiling), or route the "
+        "spawn through sandboxed_spawn_argv which applies it. "
+        "See Talos finding bdf0d7e5 / V2285983353."
+    )

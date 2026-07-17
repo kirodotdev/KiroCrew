@@ -21,7 +21,7 @@ import os
 import subprocess
 from typing import Any, Optional
 
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,7 @@ def run_aws(
     assert_chokepoint_allowed(args)
     argv = _build_argv(args, profile, region)
     sandboxed, cleanup = wrap_argv(argv, mode="standard")
+    sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling (Talos bdf0d7e5)
     proc: Optional[subprocess.Popen[str]] = None
     try:
         try:
@@ -230,6 +231,7 @@ def run_aws(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                preexec_fn=resource_limit_preexec(),
             )
             if proc_sink is not None:
                 try:

@@ -723,7 +723,8 @@ async def run_script_hook(
     stdin_data = json.dumps(hook_event).encode()
 
     try:
-        from kiro_crew.sandbox import wrap_argv
+        # circular import: sandbox → registry → apps → hooks, so import at call time
+        from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
         env = {**os.environ, "KIROCREW_HOOK_EVENT": hook.event, "KIROCREW_HOOK_CONTEXT": context}
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
@@ -732,6 +733,7 @@ async def run_script_hook(
         else:
             argv = ["/bin/sh", "-c", hook.command]
         wrapped_argv, cleanup_path = wrap_argv(argv)
+        wrapped_argv = cgroup_scope_argv(wrapped_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
         # Process-group isolation for clean tree-kill on timeout. Pass both flags
         # explicitly (NOT **dict unpack — breaks mypy's Popen overload resolution
         # on the build fleet): start_new_session=True is a no-op on Windows,
@@ -745,6 +747,7 @@ async def run_script_hook(
             env=env,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            preexec_fn=resource_limit_preexec(),
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(

@@ -50,7 +50,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.manifest import AppManifest
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.sel import sel
 
 try:
@@ -405,11 +405,13 @@ async def _fetch_app_manifest(
             tmp_root,
         ]
         sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=minimal_env(),
+            preexec_fn=resource_limit_preexec(),
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
         if proc.returncode != 0:
@@ -738,11 +740,13 @@ async def _fetch_external_registry_index(
             tmp_root,
         ]
         sandboxed_cmd, _ = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=minimal_env(),
+            preexec_fn=resource_limit_preexec(),
         )
         _, _ = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
         if proc.returncode != 0:
@@ -909,14 +913,16 @@ async def list_registry() -> list[dict[str, Any]]:
         if not detect_cmd:
             continue
         try:
-            from kiro_crew.sandbox import wrap_argv
+            from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
             sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
             proc = await asyncio.create_subprocess_exec(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                preexec_fn=resource_limit_preexec(),
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode == 0:
@@ -1069,17 +1075,16 @@ async def _git_clone_or_pull(
         # Already cloned — fetch and fast-forward the target branch.
         log_lines.append(f"Updating {git_url} (branch: {branch})...")
         proc = await asyncio.create_subprocess_exec(
-            "git",
-            "pull",
-            "--ff-only",
-            "origin",
-            branch,
+            *cgroup_scope_argv(  # cgroup DoS ceiling (Talos bdf0d7e5)
+                ["git", "pull", "--ff-only", "origin", branch]
+            ),
             cwd=str(dest),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             env=minimal_env(),
+            preexec_fn=resource_limit_preexec(),
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
@@ -1108,6 +1113,7 @@ async def _git_clone_or_pull(
         str(dest),
     ]
     sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
     proc = await asyncio.create_subprocess_exec(
         *sandboxed_cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -1115,6 +1121,7 @@ async def _git_clone_or_pull(
         start_new_session=platform_compat.IS_POSIX,
         creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         env=minimal_env(),
+        preexec_fn=resource_limit_preexec(),
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
@@ -1235,6 +1242,7 @@ async def _run_app_build(
     for cmd in build_cmds:
         log_lines.append(f"Running {' '.join(cmd)} in {build_dir}...")
         sandboxed_cmd, _cleanup = wrap_argv(cmd, mode="standard")
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             cwd=str(build_dir),
@@ -1243,6 +1251,7 @@ async def _run_app_build(
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             env=minimal_env(),
+            preexec_fn=resource_limit_preexec(),
         )
         assert proc.stdout is not None
 
@@ -1385,14 +1394,16 @@ async def install_from_registry(
     detect_cmd = entry.get("detectInstalled", "")
     if detect_cmd:
         try:
-            from kiro_crew.sandbox import wrap_argv
+            from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
             sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
             proc = await asyncio.create_subprocess_exec(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                preexec_fn=resource_limit_preexec(),
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode == 0:
@@ -1471,10 +1482,11 @@ async def install_from_registry(
             #   set -u  — treat unset variables as errors (prevents rm -rf $EMPTY/)
             #   set -o pipefail — propagate pipe failures
             safe_script = f"set -euo pipefail\n{install_script}"
-            from kiro_crew.sandbox import wrap_argv
+            from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
             base_cmd = ["/bin/bash", "-c", safe_script]
             sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="standard")
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
             proc = await asyncio.create_subprocess_exec(
                 *sandboxed_cmd,
                 cwd=str(app_source),
@@ -1483,6 +1495,7 @@ async def install_from_registry(
                 env=minimal_env(NONINTERACTIVE="1"),
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                preexec_fn=resource_limit_preexec(),
             )
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_SCRIPT_TIMEOUT)

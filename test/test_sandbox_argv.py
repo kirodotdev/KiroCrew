@@ -499,3 +499,200 @@ class TestCleanupStaleSandboxProfiles:
             cleanup_stale_sandbox_profiles()
 
         assert other_file.exists()
+
+
+class TestResourceLimitPreexec:
+    """resource_limit_preexec() is the cached companion to sandboxed_spawn_argv:
+    it hands every agent-influenced spawn the kernel resource ceiling
+    (Talos bdf0d7e5 / V2285983353)."""
+
+    def _reset_cache(self):
+        import kiro_crew.sandbox as sb
+
+        sb._RESOURCE_PREEXEC = sb._UNSET
+
+    def test_returns_callable_and_caches(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset_cache()
+        try:
+            first = sb.resource_limit_preexec()
+            second = sb.resource_limit_preexec()
+            assert callable(first)
+            assert first is second
+        finally:
+            self._reset_cache()
+
+    def test_config_read_failure_falls_back_to_defaults(self):
+        """If config load raises, the preexec still builds from safe defaults
+        (no crash, protection still applied)."""
+        import kiro_crew.sandbox as sb
+
+        self._reset_cache()
+        try:
+            with patch("kiro_crew.config.loader._raw_config", side_effect=RuntimeError("boom")):
+                fn = sb.resource_limit_preexec()
+            assert callable(fn)
+        finally:
+            self._reset_cache()
+
+    def test_non_posix_returns_none(self):
+        """On non-POSIX (os.name != 'posix'), returns None — create_subprocess_exec
+        rejects any non-None preexec_fn on Windows with ValueError, so the
+        contract must be None there (AutoSDE CR-289826109)."""
+        import kiro_crew.sandbox as sb
+
+        self._reset_cache()
+        try:
+            with patch("kiro_crew.sandbox.os.name", "nt"):
+                assert sb.resource_limit_preexec() is None
+        finally:
+            self._reset_cache()
+
+
+class TestCgroupScopeArgv:
+    """cgroup_scope_argv() wraps agent spawns in a transient systemd --user
+    --scope with pids.max + memory.max — the default-on fork-bomb / memory-DoS
+    ceiling the finding's headline threats require (Talos bdf0d7e5)."""
+
+    def _reset_probe(self):
+        import kiro_crew.sandbox as sb
+
+        sb._CGROUP_SCOPE_PROBE = None
+        sb._CGROUP_WARNED = False
+
+    def test_available_prepends_systemd_scope_with_limits(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch(
+                    "kiro_crew.sandbox._cgroup_limits_from_config",
+                    return_value=(1024, 8192),
+                ),
+            ):
+                out = sb.cgroup_scope_argv(["kiro-cli", "chat"])
+            assert out[0] == "systemd-run"
+            assert "--user" in out and "--scope" in out
+            assert "TasksMax=1024" in out
+            assert "MemoryMax=8192M" in out
+            assert "MemorySwapMax=0" in out
+            assert out[out.index("--") + 1 :] == ["kiro-cli", "chat"]
+        finally:
+            self._reset_probe()
+
+    def test_unavailable_is_passthrough_and_warns_once(self, caplog):
+        import logging
+
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with patch(
+                "kiro_crew.sandbox._probe_cgroup_scope",
+                return_value=(False, "not Linux"),
+            ):
+                with caplog.at_level(logging.WARNING):
+                    out1 = sb.cgroup_scope_argv(["git", "status"])
+                    out2 = sb.cgroup_scope_argv(["git", "log"])
+            assert out1 == ["git", "status"]
+            assert out2 == ["git", "log"]
+            sec = [r for r in caplog.records if "SECURITY" in r.getMessage()]
+            assert len(sec) == 1
+            assert "not Linux" in sec[0].getMessage()
+        finally:
+            self._reset_probe()
+
+    def test_config_overrides_cgroup_limits(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with patch(
+                "kiro_crew.config.loader._raw_config",
+                return_value={"resource_limits": {"max_processes": 200, "max_memory_mb": 2048}},
+            ):
+                procs, mem = sb._cgroup_limits_from_config()
+            assert procs == 200
+            assert mem == 2048
+        finally:
+            self._reset_probe()
+
+    def test_config_defaults_when_absent_or_zero(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            # Missing block -> module defaults (never leave the cgroup ceiling
+            # unset). Memory default is host-proportional (65% of RAM).
+            with patch("kiro_crew.config.loader._raw_config", return_value={}):
+                procs, mem = sb._cgroup_limits_from_config()
+            assert procs == sb._CGROUP_DEFAULT_MAX_PROCESSES
+            assert mem == sb._default_max_memory_mb()
+            with patch(
+                "kiro_crew.config.loader._raw_config",
+                return_value={"resource_limits": {"max_processes": 0, "max_memory_mb": "x"}},
+            ):
+                procs, mem = sb._cgroup_limits_from_config()
+            assert procs == sb._CGROUP_DEFAULT_MAX_PROCESSES
+            assert mem == sb._default_max_memory_mb()
+        finally:
+            self._reset_probe()
+
+    def test_default_max_memory_is_host_proportional(self):
+        """The memory default scales with physical RAM (65%), not a flat cap."""
+        import kiro_crew.sandbox as sb
+
+        # A known 16 GiB box -> 65% -> ~10649 MB.
+        sixteen_g = 16 * 1024**3
+        with patch("os.sysconf", side_effect=lambda n: sixteen_g // 4096 if "PHYS" in n else 4096):
+            mb = sb._default_max_memory_mb()
+        assert mb == int(sixteen_g * sb._CGROUP_MEMORY_FRACTION) // (1024 * 1024)
+        assert 10_000 < mb < 11_000  # ~10.6 GB, sanity band
+
+    def test_default_max_memory_falls_back_when_ram_unknown(self):
+        """If sysconf can't report RAM, fall back to the flat MB constant."""
+        import kiro_crew.sandbox as sb
+
+        with patch("os.sysconf", side_effect=OSError("no sysconf")):
+            assert sb._default_max_memory_mb() == sb._CGROUP_FALLBACK_MAX_MEMORY_MB
+        # Non-positive product also falls back (never returns 0 -> unlimited).
+        with patch("os.sysconf", return_value=0):
+            assert sb._default_max_memory_mb() == sb._CGROUP_FALLBACK_MAX_MEMORY_MB
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="cgroup v2 scope enforcement is Linux-only")
+    def test_real_pids_max_enforced_when_available(self):
+        """If this host actually has cgroup delegation, the scope must ENFORCE
+        pids.max — a child under a tiny TasksMax cannot fork past it. Skips
+        cleanly where delegation is unavailable (the probe returns False)."""
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            available, _ = sb._probe_cgroup_scope()
+            if not available:
+                pytest.skip("no cgroup v2 delegation on this host")
+            with patch("kiro_crew.sandbox._cgroup_limits_from_config", return_value=(20, 8192)):
+                argv = sb.cgroup_scope_argv(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import os,sys\n"
+                        "n=0\n"
+                        "try:\n"
+                        "    for _ in range(200):\n"
+                        "        if os.fork()==0:\n"
+                        "            import time; time.sleep(1); os._exit(0)\n"
+                        "        n+=1\n"
+                        "    print('forked-all')\n"
+                        "except OSError:\n"
+                        "    print('hit-limit')\n",
+                    ]
+                )
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            assert out.returncode == 0, out.stderr
+            assert out.stdout.strip() == "hit-limit"
+        finally:
+            self._reset_probe()

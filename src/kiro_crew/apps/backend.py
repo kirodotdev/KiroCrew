@@ -27,7 +27,7 @@ from kiro_crew.apps.manager import _read_installed, app_dir, get_app_manifest, l
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -453,18 +453,22 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 venv_cmd, _ = wrap_argv(
                     ["python3", "-m", "venv", str(venv_dir)], mode="standard"
                 )
+                venv_cmd = cgroup_scope_argv(venv_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
                 subprocess.run(
                     venv_cmd,
                     check=True, capture_output=True, timeout=60, env=_env,
+                    preexec_fn=resource_limit_preexec(),
                 )
             pip_bin = str(venv_dir / "bin" / "pip")
             pip_cmd, _ = wrap_argv(
                 [pip_bin, "install", "--quiet", "--disable-pip-version-check",
                  "-r", str(req_file)], mode="standard"
             )
+            pip_cmd = cgroup_scope_argv(pip_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
             subprocess.run(
                 pip_cmd,
                 capture_output=True, timeout=60, env=_env,
+                preexec_fn=resource_limit_preexec(),
             )
         except Exception as exc:
             logger.warning("Failed to install deps for app %s: %s", app_name, exc)
@@ -515,9 +519,13 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                         [npm_bin, "install", "--production", "--no-audit", "--no-fund"],
                         mode="standard",
                     )
+                    sandboxed_npm = cgroup_scope_argv(
+                        sandboxed_npm
+                    )  # cgroup DoS ceiling (Talos bdf0d7e5)
                     subprocess.run(
                         sandboxed_npm,
                         cwd=str(root), env=env, capture_output=True, timeout=120,
+                        preexec_fn=resource_limit_preexec(),
                     )
                 except Exception as exc:
                     logger.warning("Failed to install npm deps for app %s: %s", app_name, exc)
@@ -572,6 +580,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
 
     # Apply OS-level sandbox to app backend process
     sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard")
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
 
     logger.info(
         "Spawning app %s backend: %s", app_name, " ".join(sandboxed_cmd),
@@ -600,6 +609,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 env=env,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                preexec_fn=resource_limit_preexec(),
             )
         except OSError:
             log_fh.close()

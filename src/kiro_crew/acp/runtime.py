@@ -45,7 +45,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.sandbox import wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.session_pid import (
     _track_pid,
     _track_session_pid,
@@ -388,6 +388,11 @@ class AcpRuntime:
         argv, self._sandbox_cleanup = wrap_argv(
             argv, mode=self._sandbox_mode, strip_python_env=True
         )
+        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+        # No-op + loud warning where cgroup delegation is unavailable. --scope
+        # execs into the target, so self._pid below is still the real child.
+        argv = cgroup_scope_argv(argv)
 
         env = {**os.environ}
         if self._extra_env:
@@ -410,6 +415,7 @@ class AcpRuntime:
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             env=env,
+            preexec_fn=resource_limit_preexec(),
         )
         self._pid = self._process.pid
         self._start_time = _get_start_time(self._pid)

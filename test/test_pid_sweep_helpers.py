@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,16 @@ import pytest
 from kiro_crew.session_pid import (
     _kill_confirmed_and_writeback,
     _periodic_pid_sweep,
+)
+
+# The spawn-grace helpers (_pid_age_seconds / _pid_in_spawn_grace) read Linux
+# /proc and hard-gate on ``sys.platform == "linux"`` (macOS/Windows have
+# separate reaping paths). Tests that assert the Linux /proc semantics can only
+# pass on Linux, so skip them elsewhere. The genuinely cross-platform cases
+# (non-Linux early-return, /proc read failure) stay unmarked and run everywhere.
+_linux_only = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Linux /proc spawn-grace semantics; non-Linux uses separate reaping",
 )
 
 
@@ -565,6 +576,7 @@ class TestProtectedPidSweepShield:
 class TestPidAgeSeconds:
     """Tests for _pid_age_seconds using a fake proc_root."""
 
+    @_linux_only
     def test_young_pid_age_below_grace(self, tmp_path: Path) -> None:
         """A process started recently returns a small age value."""
         from kiro_crew.session_pid import _pid_age_seconds
@@ -599,6 +611,7 @@ class TestPidAgeSeconds:
         assert age is not None
         assert abs(age - age_desired) < 1.0  # within 1s tolerance
 
+    @_linux_only
     def test_old_pid_age_above_grace(self, tmp_path: Path) -> None:
         """A process started long ago returns a large age value."""
         from kiro_crew.session_pid import _pid_age_seconds
@@ -632,6 +645,7 @@ class TestPidAgeSeconds:
         age = _pid_age_seconds(99999, proc_root=str(tmp_path))
         assert age is None
 
+    @_linux_only
     def test_comm_with_spaces_and_parens(self, tmp_path: Path) -> None:
         """comm field '(Web Content (Manager))' with spaces+parens parses correctly."""
         from kiro_crew.session_pid import _pid_age_seconds
@@ -676,6 +690,7 @@ class TestPidInSpawnGrace:
         with patch("kiro_crew.session_pid.sys.platform", "darwin"):
             assert _pid_in_spawn_grace(12345) is False
 
+    @_linux_only
     def test_linux_young_pid_returns_true(self) -> None:
         """Linux + age < 120s → True (skip the kill)."""
         from kiro_crew.session_pid import _pid_in_spawn_grace
@@ -690,6 +705,7 @@ class TestPidInSpawnGrace:
         with patch("kiro_crew.session_pid._pid_age_seconds", return_value=200.0):
             assert _pid_in_spawn_grace(12345) is False
 
+    @_linux_only
     def test_linux_parse_failure_returns_true(self) -> None:
         """Linux + age=None (parse failure) → True (safe direction: skip kill)."""
         from kiro_crew.session_pid import _pid_in_spawn_grace
