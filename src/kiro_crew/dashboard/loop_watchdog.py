@@ -34,6 +34,13 @@ fed by the async heartbeat calling :meth:`LoopStallWatchdog.beat` every tick:
    (25s vs ≳20s) rather than comfortably separated, so they must be kept in sync
    if either side is tuned; see :class:`LoopStallWatchdog` for the exact timing.
 
+   **Journal visibility:** hard-exit dumps land in the dedicated file only (not
+   stderr/journal) because ``faulthandler.dump_traceback_later`` targets a single
+   fd.  On the next gateway startup, ``server.py`` detects and replays the dump
+   content to the logger at WARNING level (capped at 120 lines / 8 KB), so
+   journal-only operators (containers, ``journalctl``) see the stacks one restart
+   later — exactly when they are investigating why the gateway died.
+
 2. **Soft observability dump (the daemon-thread fallback).**  A separate daemon
    thread compares the last beat against the clock and, once the loop has not
    beaten for ``stall_after`` seconds, logs a marker and dumps all thread stacks
@@ -57,27 +64,43 @@ import logging
 import sys
 import threading
 import time
+import typing
 from collections.abc import Callable
 
 logger = logging.getLogger("kiro_crew.dashboard.loop_watchdog")
 
 
-def _default_dump() -> None:
-    """Dump every thread's stack to stderr (which the gateway redirects to its log)."""
-    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+def _default_dump(file: "typing.IO[str] | None" = None) -> None:
+    """Dump every thread's stack to a dedicated file AND stderr.
+
+    Writes to both the dedicated crash-dump file (for discoverability) and stderr
+    (for journal/terminal visibility) so dumps are never lost.
+    """
+    target = file or sys.stderr
+    faulthandler.dump_traceback(file=target, all_threads=True)
+    # Also write to stderr if the target is a different file
+    if target is not sys.stderr:
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
 
 
-def _default_arm_later(timeout: float) -> None:
+def _default_arm_later(timeout: float, file: "typing.IO[str] | None" = None) -> None:
     """Arm faulthandler's C-level timer.
 
     After ``timeout`` seconds with no re-pet, it dumps every thread's stack to
-    stderr and then ``_exit(1)``.  Re-petted by every
+    the dedicated crash-dump file and then ``_exit(1)``.  Re-petted by every
     :meth:`LoopStallWatchdog.beat`.  Runs on faulthandler's own thread and reads
     thread states in C, so it fires even when the loop thread is wedged in a
     blocking syscall.  ``repeat=False`` because the process exits the first time
     it fires.
+
+    **Trade-off:** hard-exit dumps land ONLY in the dedicated file (not
+    stderr/journal) because ``faulthandler.dump_traceback_later`` targets a
+    single fd.  To ensure journal-only operators (containers, systemd) still see
+    the stacks, the gateway replays the dump content into the logger on the next
+    startup (see ``server.py`` startup dump surfacing).
     """
-    faulthandler.dump_traceback_later(timeout, repeat=False, file=sys.stderr, exit=True)
+    target = file or sys.stderr
+    faulthandler.dump_traceback_later(timeout, repeat=False, file=target, exit=True)
 
 
 def _default_cancel_later() -> None:
@@ -142,14 +165,16 @@ class LoopStallWatchdog:
         dump: Callable[[], None] | None = None,
         arm_later: Callable[[float], None] | None = None,
         cancel_later: Callable[[], None] | None = None,
+        dump_file: "typing.IO[str] | None" = None,
         log: logging.Logger | None = None,
     ) -> None:
         self._stall_after = stall_after
         self._exit_after = exit_after
         self._poll_interval = poll_interval
         self._now = now
-        self._dump = dump or _default_dump
-        self._arm_later = arm_later or _default_arm_later
+        self._dump_file = dump_file
+        self._dump = dump or (lambda: _default_dump(dump_file))
+        self._arm_later = arm_later or (lambda t: _default_arm_later(t, dump_file))
         self._cancel_later = cancel_later or _default_cancel_later
         self._log = log or logger
         self._last_beat = now()

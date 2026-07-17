@@ -67,6 +67,13 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
 )
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.dashboard.crash_dump_store import (
+    dump_age_seconds,
+    dump_replay_lines,
+    newest_dump_with_stacks,
+    open_dump_file,
+    rotate_dumps,
+)
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     bind_address_for,
@@ -1693,7 +1700,13 @@ async def start_dashboard(
     # thread stacks via faulthandler once the heartbeat stops beating, so the
     # stuck frame lands in the log automatically instead of leaving us to sample
     # the PID by hand.
-    _loop_watchdog = LoopStallWatchdog()
+    #
+    # Crash-dump discoverability: route dumps to a dedicated file under
+    # ~/.kirocrew/logs/crash-dumps/ so they are findable via `kirocrew doctor`
+    # and startup warnings, rather than buried in interleaved stderr/journal.
+    await asyncio.to_thread(rotate_dumps)
+    _dump_file = await asyncio.to_thread(open_dump_file)
+    _loop_watchdog = LoopStallWatchdog(dump_file=_dump_file)
 
     async def _loop_heartbeat() -> None:
         # 5s (not 10s) so the watchdog's armed dump-then-exit timer is re-petted
@@ -1737,6 +1750,34 @@ async def start_dashboard(
     # Stopped on shutdown via the ``_watchdog_shutdown`` on_cleanup hook,
     # which is registered before ``runner.setup()`` freezes the signal lists.
     state._loop_watchdog = _loop_watchdog  # prevent GC; stop on cleanup
+
+    # Surface any prior crash dump from a previous gateway session.
+    # The armed dump-then-exit path (exit_after=25s) writes ONLY to the dedicated
+    # file — not stderr/journal — because faulthandler.dump_traceback_later targets
+    # a single fd. To ensure journal-only operators (containers) still see the stacks,
+    # we replay the dump content into the logger on next startup.
+    _prior_dump = await asyncio.to_thread(newest_dump_with_stacks)
+    if _prior_dump is not None:
+        _age_h = await asyncio.to_thread(dump_age_seconds, _prior_dump) / 3600
+        if _age_h < 168:  # Only surface dumps less than 7 days old
+            logger.warning(
+                "⚠️  Prior loop-stall crash dump found: %s (%.1f hours ago). "
+                "Run `kirocrew doctor` for details.",
+                _prior_dump,
+                _age_h,
+            )
+            # Replay stack content to journal so container/journal-only operators
+            # can see it without accessing the file system.
+            _replay_lines, _truncated = await asyncio.to_thread(
+                dump_replay_lines, _prior_dump
+            )
+            if _replay_lines:
+                _replay_body = "\n".join(_replay_lines)
+                if _truncated:
+                    _replay_body += "\n  [truncated — full dump at above path]"
+                logger.warning(
+                    "Replaying prior crash dump stacks:\n%s", _replay_body
+                )
 
     # Fire background MCP probe at startup (non-blocking)
     asyncio.create_task(handlers._bg_mcp_probe())

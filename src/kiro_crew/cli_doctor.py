@@ -20,6 +20,12 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import config_dir
 from kiro_crew.constants import OLLAMA_DOCKER_CONTAINER
+from kiro_crew.dashboard.crash_dump_store import (
+    dump_age_seconds,
+    dump_first_stack_lines,
+    get_dumps_dir,
+    newest_dump_with_stacks,
+)
 from kiro_crew.dashboard.origin import (
     is_local_only,
     machine_hostname,
@@ -600,6 +606,30 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
     else:
         print("  status:      ⏭  not configured (dashboard-only mode)")
         print("  setup:       run 'kirocrew setup' to add Slack tokens")
+
+    # ── Loop-stall crash dumps ──
+    print("\nLoop-stall Crash Dumps")
+    try:
+        dumps_dir = get_dumps_dir()
+        _latest = newest_dump_with_stacks(dumps_dir)
+        if _latest is not None:
+            _age_s = dump_age_seconds(_latest)
+            if _age_s < 7 * 86400:  # Less than 7 days old
+                _age_h = _age_s / 3600
+                print(f"  last dump:   ⚠️  {_latest.name} ({_age_h:.1f}h ago)")
+                _stack = dump_first_stack_lines(_latest, max_lines=5)
+                if _stack:
+                    print("  MainThread stuck at:")
+                    for _line in _stack:
+                        print(f"    {_line}")
+                issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
+            else:
+                print(f"  last dump:   ✅ oldest only ({_age_s / 86400:.0f}d ago, no recent stalls)")
+        else:
+            print("  dumps:       ✅ no crash dumps found (healthy)")
+        print(f"  dump dir:    {dumps_dir}")
+    except Exception as exc:
+        print(f"  crash dumps: ⚠️  check failed ({exc})")
 
     # ── Connectivity ──
     print("\nConnectivity")
