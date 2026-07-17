@@ -126,13 +126,15 @@ describe('ChatSidebar Folder Grouping', () => {
     await user.click(await screen.findByLabelText('More create options'))
     await user.click(await screen.findByText('New folder'))
     const input = screen.getByPlaceholderText('Folder name…')
-    // The input is focused via a rAF effect (Mesh-2683); user.keyboard dispatches
-    // to document.activeElement, so under load Escape could land on <body> before
-    // the focus settled and the cancel handler never fired (flaky in CI).
-    await waitFor(() => expect(input).toHaveFocus())
-    await user.keyboard('{Escape}')
+    // Escape is bound via onKeyDown on the input itself (useImeGuard.bindEnter).
+    // Dispatch the key straight at the node instead of user.keyboard, which
+    // routes through document.activeElement: the input focuses on a rAF effect
+    // (Mesh-2683), so under load activeElement could still be <body> and Escape
+    // would miss the cancel handler (Mesh-2738 flake). Targeting the node is
+    // focus-timing-independent.
+    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' })
 
-    expect(screen.queryByPlaceholderText('Folder name…')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByPlaceholderText('Folder name…')).not.toBeInTheDocument())
   })
 
   it('does not submit folder create on Enter while IME is composing', async () => {
