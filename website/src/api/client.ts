@@ -236,12 +236,28 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Map raw edge/proxy error bodies to a human-readable message. A dashboard
+ * served through Builder Tunnels sits behind API Gateway, whose throttle
+ * response is the opaque `{"message":"Rate exceeded","throttlingReasons":null}`
+ * — rendering that verbatim in an error card is a terrible UX. The mapped
+ * message only ever shows after the QueryClient's 429 retry ladder
+ * (api/queryClient.ts) is exhausted.
+ */
+const friendlyErrText = (status: number, body: string): string => {
+  if (status === 429) {
+    return 'Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. '
+      + 'The dashboard retries automatically; if this persists, wait a few seconds and reload.'
+  }
+  return body
+}
+
 const j = async (r: Response) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
   if (!r.ok) {
     const errText = await r.text()
-    throw new ApiError(r.status, errText || `HTTP ${r.status}`)
+    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`)
   }
   return r.json()
 }
