@@ -98,21 +98,32 @@ MANIFEST=$(cat "$SCRIPT_DIR/manifest-template.json" \
   | sed "s|\${INPUT_KEY}|${INPUT_KEY}|g" \
   | sed "s|\${OUTPUT_KEY}|${OUTPUT_KEY}|g")
 
-RESPONSE=$(curl -sf -X POST "${CDSIGNER_API_ENDPOINT}/prod/v1/signing_requests" \
+# CD Signer ad-hoc signing API v2: POST /v2/sign-tasks. Capture the HTTP
+# status + body (no curl -f, which discards the body on 4xx/5xx) so submit
+# failures -- auth, manifest, or Bindle cansign -- are diagnosable.
+SUBMIT_BODY="$WORK_DIR/submit_response.json"
+HTTP_CODE=$(curl -s -o "$SUBMIT_BODY" -w '%{http_code}' -X POST \
+  "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" \
   --aws-sigv4 "aws:amz:us-west-2:signer-builder-tools" \
   -H "Content-Type: application/json" \
   -d "$MANIFEST") || {
-  echo "ERROR: CDSigner API request failed" >&2
+  echo "ERROR: CDSigner request failed to send (curl exit $?)" >&2
+  exit 4
+}
+RESPONSE=$(cat "$SUBMIT_BODY")
+
+if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+  echo "ERROR: CDSigner sign-task submission failed (HTTP ${HTTP_CODE})" >&2
   echo "$RESPONSE" >&2
   exit 4
-}
+fi
 
-REQUEST_ID=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['requestId'])" 2>/dev/null) || {
-  echo "ERROR: Could not parse requestId from response: $RESPONSE" >&2
+SIGN_TASK_ID=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['signTaskId'])" 2>/dev/null) || {
+  echo "ERROR: Could not parse signTaskId from response (HTTP ${HTTP_CODE}): $RESPONSE" >&2
   exit 4
 }
 
-log "Signing request submitted: ${REQUEST_ID}"
+log "Sign task submitted: ${SIGN_TASK_ID}"
 
 # ── 4. Poll for completion ──────────────────────────────────────────────────
 log "Polling for completion (timeout: 15 min)..."
@@ -125,30 +136,33 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
   sleep "$POLL_INTERVAL"
   ELAPSED=$((ELAPSED + POLL_INTERVAL))
 
-  STATUS_RESPONSE=$(curl -sf "${CDSIGNER_API_ENDPOINT}/prod/v1/signing_requests/${REQUEST_ID}" \
+  STATUS_RESPONSE=$(curl -sf "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks/${SIGN_TASK_ID}" \
     --aws-sigv4 "aws:amz:us-west-2:signer-builder-tools" \
     2>/dev/null) || continue
 
   STATUS=$(echo "$STATUS_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
 
   case "$STATUS" in
-    COMPLETED|completed)
+    success)
       log "Signing completed! (${ELAPSED}s)"
       break
       ;;
-    FAILED|failed)
+    failure)
       echo "ERROR: Signing failed" >&2
       echo "$STATUS_RESPONSE" >&2
       exit 4
       ;;
-    *)
+    created|processing|inProgress)
       printf "  [%ds] status: %s\n" "$ELAPSED" "$STATUS"
+      ;;
+    *)
+      printf "  [%ds] status: %s\n" "$ELAPSED" "${STATUS:-<none>}"
       ;;
   esac
 done
 
 if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
-  echo "ERROR: Signing timed out after ${MAX_WAIT}s (request: ${REQUEST_ID})" >&2
+  echo "ERROR: Signing timed out after ${MAX_WAIT}s (sign task: ${SIGN_TASK_ID})" >&2
   exit 5
 fi
 
