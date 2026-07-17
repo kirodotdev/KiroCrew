@@ -16,6 +16,103 @@
 #                so frontend sync is by CONTENT within the post-snapshot window, not a
 #                clean SHA range. This SHA records the upstream tip last triaged.
 
+# --- Batch-37 (dual-repo beta sync 2026-07-17) -------------------------------
+# Branch sync/beta-2026-07-17 off origin/main (b111ee0). Backend window
+# f9b37d8c..5d1961ef, frontend window e7c1de9..7665cc8e, triaged by content.
+# 20 target commits PORTED IN CHRONOLOGICAL ORDER (+1 prereq), one fix per commit,
+# ZERO left out this batch. Tally: 16 backend (15 target + 90f5c3f1 prereq) + 5
+# frontend = 21 real commits. All decided by DIFF against fork content, not SHA.
+# LATE ADD (2026-07-17): 3 keeper commits — 1fee24ce (backend cgroup/ulimit,
+# KEEP), b493aa40 (backend PARTIAL — generic drain helper) and 597a0697 (frontend
+# cron model selector, KEEP) — were initially DROPPED because their triage-skeptic
+# agents hit API errors (the pipeline nulled them); they were re-triaged by diff
+# and ported on top of the batch (inserted before this boundary chore), so the
+# counts above include them. 2 of the 15 backend targets are PARTIAL (e7619f5e,
+# bcc97453) plus b493aa40 => 3 PARTIAL total.
+# CODE-REVIEW FIXES (2026-07-17, commit 4ea586f before this chore): /code-review
+# max on the branch found 3 defects, fixed fork-side: (1) artifact DELETE
+# pre-fetch caught only ArtifactNotFoundError -> a bad slug leaked HTTP 500 (was
+# 400); broadened to ArtifactError. (2) cron per-job model override validated
+# against available_models("claude_code") (5 ids) while the fork's dropdown comes
+# from the live kiro-cli --list-models (~21) -> 11/21 models 400'd; dropped the
+# membership gate at all 4 sites to match the chat model path (format regex +
+# auto sentinel kept). (3) test_acp_client backend-selection tests failed on a
+# cgroup-delegated host (our cgroup_scope_argv wiring adds a systemd-run prefix);
+# a class-scoped autouse fixture neutralizes the probe for those tests.
+# BACKEND PORTED (15 target + 1 prereq):
+#   5d1961ef offload SEL prune + memory maintenance off the event loop
+#     (run_in_executor via maintenance_executor; SEL.prune streaming os.replace
+#     under self._lock); 3b93b1f3 ctx.phase() returns a no-op context manager
+#     (_PhaseContextManager/_NoOpContextManager + validate.py visit_With/AsyncWith
+#     guards) — fixes AttributeError('__enter__'); a636d32c watchdog crash-dump
+#     discoverability (new crash_dump_store.py + loop_watchdog dump_file +
+#     server startup replay + `kirocrew doctor` section); e7619f5e artifact-bound
+#     companion sessions + artifact_update WS event (PARTIAL — dropped the
+#     pull-latest/relocate emits, absent Artifactory handlers; delete path fetches
+#     art before delete to capture version); 192b5c5c per-job cron model override
+#     (CronJob.model round-trip + MCP/dashboard validation + gateway
+#     _acquire_with_model_fallback/_annotate_model_downgrade; the upstream
+#     test_taskrunner de-flake was not in this commit's tree — nothing to port);
+#     902d22cb drain in-flight turns before stale-asset watchdog shutdown
+#     (_drain_in_flight + _count_in_flight_work); 90f5c3f1 (PREREQUISITE) surface
+#     live {{MAX_SUBAGENTS}} cap (context resolver + mcp_core hints); 2e4bf165
+#     extend cap guidance to orchestrator + trim prompt.md; 99d5947f grill skill
+#     one-question-per-turn (regenerated from post-image, no brand tokens);
+#     bcc97453 detect expansion-produced git-publish program names
+#     (_GIT_PUBLISH_SUBST_PROGRAM_RE; PARTIAL — kept the fork's stricter
+#     _AMBIGUOUS_EXPANSION_RE fail-closed, inverted the feature-allow test);
+#     d3aeb079 configurable knowledge embedder timeout + content budget
+#     (KnowledgeConfig.embed_timeout_secs/embed_content_budget; fork's
+#     embed_signature has no base_url, dropped upstream's socket-timeout hunks);
+#     a093ccdf teach session-history resolver the cron JSONL naming (Mesh-2546);
+#     46bf6b96 /goal command (v0 self-verdict loop over AutoNudgeService);
+#     75d2be54 subagent-registry test isolation fixture in conftest + remove the
+#     flaky test_global_timeout;
+#     1fee24ce wire per-process + cgroup resource limits into agent spawns
+#     (LATE ADD; HEADLINE SECURITY, Talos bdf0d7e5 / CR-289825986) — rewrote
+#     security.apply_resource_limits (_RLIMIT_DEFAULTS; NOFILE default-on 1024,
+#     NPROC/CPU/AS opt-in 0, clamp-to-hard on soft+hard), added
+#     sandbox.resource_limit_preexec + cgroup_scope_argv (transient
+#     systemd-run --user --scope under kirocrew-agents.slice, TasksMax + MemoryMax,
+#     host-proportional 65% RAM / 8192 MB fallback, no-op+warn where no cgroup v2
+#     delegation), wired preexec_fn/cgroup into every fork routed-spawn site
+#     (acp/client+runtime, apps/backend+registry+routes, deploy_web, file_explorer,
+#     cron_script, dashboard handlers agents/memory/sessions, git_coord, hooks,
+#     mcp_discovery, task_executor, voice_reply + fork-only cloud/aws & knowledge/
+#     llm_pool), 2 new test_spawn_audit tripwires + TestApplyResourceLimits /
+#     TestResourceLimitPreexec / TestCgroupScopeArgv + non-Linux /proc skip guards.
+#     DROPPED the upstream claude_code/taskkeeper/code_reviewer wiring (absent) and
+#     the black-only conftest/security churn;
+#     b493aa40 extract shared pending-context drain helper (LATE ADD; PARTIAL,
+#     CR-289037039 / Mesh-2837) — ported ONLY the generic ungated half
+#     (chat_runner.drain_pending_context + shared state._MAX_PENDING_CONTEXT across
+#     the 2 eviction sites; test_thread_backfill drain-contract + PersistMapReconnect).
+#     DROPPED the headline slack thread-backfill (_backfill_thread_context) — it
+#     fires only on the challenge-redirect flow this fork deliberately removes; its
+#     chat_slack hunk + auth/security/guard tests dropped with it.
+# FRONTEND PORTED (5): 7665cc8e 429-aware retry ladder + friendly-429 mapper
+#   (Usage page behind a throttling edge); fe9137b5 steer-by-default split send
+#   button + steer carries attachments; abfe9692 Schedule Running badge +
+#   refreshTrigger auto-reload + running-first sort (switched tests to
+#   renderWithProviders, kept the fork's batch-select divergence); 08e6d08b
+#   deflake ChatSidebar folder-create Escape-cancel;
+#   597a0697 cron model selector in job form + list (LATE ADD; KEEP,
+#   CR-289627904) — CronJob.model + JobForm useQuery(['models']) selector (both
+#   layouts) + CronTab Model column (colSpan 10->11) + SchedulePage inline model;
+#   the UI counterpart to the already-ported backend per-job model override
+#   192b5c5c. Generic model override over /api/models (the single acp backend),
+#   NOT a provider selector.
+# KiroACP invariant HELD (enum ["acp"], no cc_agent/Bedrock/ClaudeCodeProvider
+#   re-added; the to_provider_id("claude_code") uses are the canonical model-id
+#   namespace key, not a selectable provider). SHOW_ARTIFACT_ITERATE untouched
+#   (no ArtifactDetailPage in the diff). De-Amazon audit: 0 LIVE couplings on
+#   added lines (only inert provenance comments + the KiroClaw/Talos/CR ids in
+#   the git-publish provenance comment). Verify: per-commit pytest (touched
+#   files, python3.11 venv) + flake8 all green; frontend tsc -b clean + touched
+#   vitest green. NOTE: config-baseline.json regenerated (+2 knowledge fields).
+#   Pre-existing unrelated fail: tests/test_context.py::test_pointer_is_short
+#   (WIDGET_BLOCK prose >300 chars) fails identically on origin/main — untouched.
+#
 # --- Batch-36 addendum (folded into PR #92 / branch sync/beta-2026-07-15-batch35) ---
 # After batch-35's ports landed, a third upstream wave arrived (backend
 # 3cae0aad..f9b37d8c = 9 commits; frontend 340cfa9..e7c1de9 = 3). Folded into the
@@ -196,8 +293,8 @@
 #   + builder-mcp test-fixture string only). Verify: per-commit pytest (touched files) + flake8 +
 #   isort all green; frontend tsc -b clean + touched vitest green.
 
-beta f9b37d8c20fe75ce268c9eb356ce5bfd2a909e72      # 2026-07-16 MeshClaw backend triaged tip (batch-36 addendum, folded into PR #92; advanced from batch-35 3cae0aad). Window 3cae0aad..f9b37d8c (9 commits): 7 PORTED + 2 SKIP_INTERNAL — see batch-36 note above. Window 84d8abf3..d757fd9d triaged by content; 5 backend KEEP ported (36527cd3 Heimdall pentest security.py hardening, 7cc8217d Talos redaction/SSRF/XPIA follow-ups, 82560fb7 exfil-URL path/raw-IP + bash-egress gate, 56fbb774 mcp-gateway claim-push caller identity, 0917c9aa queue chat during sub-agent runs). 791c0cb5 (Board removal / Channels hide) ALREADY_PRESENT (merged fork PR #78). SKIP: cdb2d135 (CC deny union-merge — SKIP_NONKIROACP, confined to deleted cc_agent.py), d757fd9d (brazil ws-create timeout — SKIP_INTERNAL, Brazil installer path absent from fork). DEFER: ed984a05 (Talos legacy-HTML-dashboard removal — KEEP-worthy generic-core XSS-surface reduction, but a 16-file behavior-changing removal that landed after the batch verdicts were verified; held for the next verified batch — see left-out.md).
-frontend-beta e7c1de9ca2535a198ca1a3057a83271fb6998664  # 2026-07-16 MeshClawWebsite triaged tip (batch-36 addendum; advanced from batch-35 340cfa9). Window 340cfa9..e7c1de9 (3 commits): 273cb0e playwright load-stability PORTED, c0fb568 Slack panel + conversation-map ALREADY_PRESENT (fork PR #65/#84), e7c1de9 registry regen no-op. Window 4b9d6255..340cfa9 (4 commits) all PORTED (store cache-evict/notif-cap, semantic-memory render cap, sidebar folder drag-move, command-palette Settings provider). See batch-35 note above. Window ab0d8d2c..4b9d6255 triaged by content; 1 frontend KEEP ported (4b9d6255 reflect sub-agent runs in composer busy state — selectComposerBusy/selectSlotSubagentsActive). c64af69 (Board removal frontend) ALREADY_PRESENT (merged fork PR #78). No frontend SKIP/DEFER this batch.
+beta 5d1961ef3051f72503fdbbbf139a79f3b43068b2      # 2026-07-17 MeshClaw backend triaged tip (batch-37, branch sync/beta-2026-07-17). Window f9b37d8c..5d1961ef triaged by content; 11 backend PORTED (+1 prereq 90f5c3f1) — see batch-37 note above. PRIOR: f9b37d8c 2026-07-16 backend triaged tip (batch-36 addendum, folded into PR #92; advanced from batch-35 3cae0aad). Window 3cae0aad..f9b37d8c (9 commits): 7 PORTED + 2 SKIP_INTERNAL — see batch-36 note above. Window 84d8abf3..d757fd9d triaged by content; 5 backend KEEP ported (36527cd3 Heimdall pentest security.py hardening, 7cc8217d Talos redaction/SSRF/XPIA follow-ups, 82560fb7 exfil-URL path/raw-IP + bash-egress gate, 56fbb774 mcp-gateway claim-push caller identity, 0917c9aa queue chat during sub-agent runs). 791c0cb5 (Board removal / Channels hide) ALREADY_PRESENT (merged fork PR #78). SKIP: cdb2d135 (CC deny union-merge — SKIP_NONKIROACP, confined to deleted cc_agent.py), d757fd9d (brazil ws-create timeout — SKIP_INTERNAL, Brazil installer path absent from fork). DEFER: ed984a05 (Talos legacy-HTML-dashboard removal — KEEP-worthy generic-core XSS-surface reduction, but a 16-file behavior-changing removal that landed after the batch verdicts were verified; held for the next verified batch — see left-out.md).
+frontend-beta 7665cc8eb7a0c9df117962b0819f2d269d89c356  # 2026-07-17 MeshClawWebsite triaged tip (batch-37). Window e7c1de9..7665cc8e triaged by content; 4 frontend PORTED (7665cc8e throttle-retry, fe9137b5 steer split-send, abfe9692 Schedule running badge, 08e6d08b ChatSidebar deflake) — see batch-37 note above. PRIOR: e7c1de9 2026-07-16 (batch-36 addendum; advanced from batch-35 340cfa9). Window 340cfa9..e7c1de9 (3 commits): 273cb0e playwright load-stability PORTED, c0fb568 Slack panel + conversation-map ALREADY_PRESENT (fork PR #65/#84), e7c1de9 registry regen no-op. Window 4b9d6255..340cfa9 (4 commits) all PORTED (store cache-evict/notif-cap, semantic-memory render cap, sidebar folder drag-move, command-palette Settings provider). See batch-35 note above. Window ab0d8d2c..4b9d6255 triaged by content; 1 frontend KEEP ported (4b9d6255 reflect sub-agent runs in composer busy state — selectComposerBusy/selectSlotSubagentsActive). c64af69 (Board removal frontend) ALREADY_PRESENT (merged fork PR #78). No frontend SKIP/DEFER this batch.
 mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainline tip (upstream), unchanged since batch-27 (batch-33 re-confirmed). No NEW mainline-only content to port (all in-window candidates reached the fork via beta-braveheart; every mainline-only delta is a release-merge or already triaged via beta).
 # NOTE: this 'mainline' SHA is the UPSTREAM MeshClaw mainline tip (for the mainline-only
 # candidate check), NOT the fork's mainline — batch-12 mistakenly recorded the fork SHA
