@@ -1,7 +1,8 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { safeSetItem } from '../utils/safeStorage'
 import ChatInput from '../components/ChatInput'
 import { SlotProvider } from '../providers/SlotContext'
 
@@ -1120,6 +1121,99 @@ describe('ChatInput', () => {
       fireEvent.click(btn)
       expect(onSend).toHaveBeenCalled()
       expect(onStop).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('split send button while running (steer default)', () => {
+    const runningProps = () => ({
+      ...defaultProps,
+      value: 'more',
+      isRunning: true,
+      canSteer: true,
+      onStop: vi.fn(),
+      onSend: vi.fn(),
+      onSteer: vi.fn(),
+    })
+
+    it('renders Steer as the default main action with a dropdown caret', () => {
+      renderWithProviders(<ChatInput {...runningProps()} />)
+      expect(screen.getByTestId('busy-send-button')).toHaveAttribute('aria-label', 'Steer')
+      expect(screen.getByTestId('busy-send-caret')).toBeInTheDocument()
+    })
+
+    it('main button fires onSteer (not onSend) in steer mode', () => {
+      const p = runningProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.click(screen.getByTestId('busy-send-button'))
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('Enter steers while running in steer mode', () => {
+      const p = runningProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('dropdown switches to Queue — main button and Enter then queue, choice persists', () => {
+      const p = runningProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.click(screen.getByTestId('busy-send-caret'))
+      fireEvent.click(screen.getByTestId('busy-send-mode-queue'))
+      expect(localStorage.getItem('mc-busy-send-mode')).toBe('queue')
+      const main = screen.getByTestId('busy-send-button')
+      expect(main).toHaveAttribute('aria-label', 'Queue message')
+      fireEvent.click(main)
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSend).toHaveBeenCalledTimes(2)
+      expect(p.onSteer).not.toHaveBeenCalled()
+    })
+
+    it('restores persisted queue mode from localStorage', () => {
+      safeSetItem('mc-busy-send-mode', 'queue')
+      renderWithProviders(<ChatInput {...runningProps()} />)
+      expect(screen.getByTestId('busy-send-button')).toHaveAttribute('aria-label', 'Queue message')
+    })
+
+    it('dropdown is keyboard operable: focus on open, arrows roam, Escape returns to caret', async () => {
+      renderWithProviders(<ChatInput {...runningProps()} />)
+      fireEvent.click(screen.getByTestId('busy-send-caret'))
+      // useListboxKeyboard focuses the first option on open (setTimeout 0)
+      await waitFor(() => expect(screen.getByTestId('busy-send-mode-steer')).toHaveFocus())
+      const menu = screen.getByRole('menu')
+      fireEvent.keyDown(menu, { key: 'ArrowDown' })
+      expect(screen.getByTestId('busy-send-mode-queue')).toHaveFocus()
+      fireEvent.keyDown(menu, { key: 'ArrowUp' })
+      expect(screen.getByTestId('busy-send-mode-steer')).toHaveFocus()
+      fireEvent.keyDown(menu, { key: 'Escape' })
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+      expect(screen.getByTestId('busy-send-caret')).toHaveFocus()
+    })
+
+    it('shows split button with only pending files (image-only steer)', () => {
+      const p = { ...runningProps(), value: '', pendingFiles: ['/tmp/shot.png'] }
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.click(screen.getByTestId('busy-send-button'))
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+    })
+
+    it('Enter falls back to queue while stopping (soft_pending) even in steer mode', () => {
+      const p = { ...runningProps(), stopState: 'soft_pending' as const }
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+      expect(p.onSteer).not.toHaveBeenCalled()
+    })
+
+    it('Enter sends normally when not running even if onSteer is provided', () => {
+      const p = { ...runningProps(), isRunning: false, onStop: undefined }
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+      expect(p.onSteer).not.toHaveBeenCalled()
     })
   })
 

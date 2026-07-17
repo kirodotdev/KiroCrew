@@ -2284,16 +2284,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
 
   const queuedMessages = useMemo(() => messages.filter(m => m.role === 'queued'), [messages])
 
-  // Mid-turn steer: inject the composer text into the RUNNING turn instead of
-  // queueing for the next one. The POST goes through steerMutation (above);
-  // fire-and-forget — the backend falls back to the queue if steer is
-  // unavailable, and echoes the text inline via the 'steer_push' WS event.
-  // Composer clearing is handled by ChatInput.
-  const steer = useCallback((text: string) => {
-    const t = (text || '').trim()
-    if (!t || !activeSlot) return
-    steerMutation.mutate(t)
-  }, [activeSlot, steerMutation])
+  // Mid-turn steer: inject the composer content into the RUNNING turn instead
+  // of queueing for the next one. Mirrors send()'s payload prep so pending
+  // files ride along — images become `![image](path)` markdown and other
+  // files `[attached_file N]` tokens (previously steer sent only the raw
+  // text, silently dropping attachments). kiro-cli's `_session/steer` is a
+  // text-only channel, so unlike a queued send the image travels as its
+  // absolute path for the agent to open with a tool, not as an inline
+  // content block. Paste tokens are expanded for the LLM the same way
+  // send() does. The POST goes through steerMutation (above); fire-and-forget
+  // — the backend falls back to the queue if steer is unavailable, and echoes
+  // the text inline via the 'steer_push' WS event. Composer, pending files,
+  // paste blocks, and the per-slot drafts are all cleared HERE (not in
+  // ChatInput) so text and attachments clear atomically.
+  const steer = useCallback(() => {
+    if (!activeSlot) return
+    const raw = inputRef.current.trim()
+    const files = pendingFilesRef.current
+    if (!raw && !files.length) return
+    const { txt } = prepareSendPayload(raw, files)
+    const activePastes = pasteBlocksRef.current
+    const llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
+    steerMutation.mutate(llmTxt)
+    setInput(''); setPendingFiles([]); setPasteBlocks([])
+    delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
+    saveDrafts()
+  }, [activeSlot, steerMutation, saveDrafts])
 
   const handleCancelQueued = useCallback((queueId: string) => {
     if (!activeSlot) return
@@ -3093,7 +3109,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               onChange={setInput}
               onSend={() => send()}
               canSteer={slotRunning}
-              onSteer={(t: string) => steer(t)}
+              onSteer={steer}
               onFollowUpSend={(text?: string) => send(text)}
               disabled={
                 /* Streaming, compaction (Mesh-1345), and stopping (Mesh-2004) all

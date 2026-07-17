@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, ShieldCheck, BookOpen, Handshake, Rocket, X, ClipboardList, CheckCircle, Check, Ban, Sparkles, Goal, Target, Lock, Globe, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, ShieldCheck, BookOpen, Handshake, Rocket, X, ClipboardList, CheckCircle, Ban, Sparkles, Goal, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import VoiceStatusBar from './VoiceStatusBar'
 import { createPortal } from 'react-dom'
@@ -19,6 +19,7 @@ import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import TrustDropdown from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ContextBar, { contextTip, contextPctClamped, contextColor } from './ContextBar'
@@ -75,6 +76,16 @@ const INPUT_DRAG_MIN_H = 93
 const FILE_PREVIEW_H = 81 // h-16 (64px) + py-2 (16px) + border-t (1px)
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
+
+// Send behavior while a turn is RUNNING. 'steer' (default) injects the
+// composer into the running turn; 'queue' defers it to the next turn. The
+// user picks via the split send button's dropdown; choice persists.
+const BUSY_SEND_MODE_LS_KEY = 'mc-busy-send-mode'
+type BusySendMode = 'steer' | 'queue'
+const BUSY_SEND_MODES: Array<{ mode: BusySendMode; label: string; desc: string; icon: React.ReactNode }> = [
+  { mode: 'steer', label: 'Steer', desc: 'Inject into the running turn right away', icon: <Target size={15} /> },
+  { mode: 'queue', label: 'Queue', desc: 'Run after the current turn finishes', icon: <ArrowUpFromLine size={15} /> },
+]
 
 // Prompt undo/redo tuning. The chat textarea is a controlled component, so any
 // programmatic value reset (send-clear, ↑/↓ history recall, prompt optimize)
@@ -134,12 +145,15 @@ interface ChatInputProps {
   value: string
   onChange: (v: string) => void
   onSend: () => void
-  /** When true (turn is running), show the Steer button. v1 gates on turn-running
-   * only; if the slot's backend is not steer-capable (e.g. claude), the POST safely
-   * falls through to the queue server-side. Plumbing a per-slot capability flag is a follow-up. */
+  /** When true (turn is running), show the split Steer/Queue send button.
+   * v1 gates on turn-running only; if the slot's backend is not steer-capable
+   * (e.g. claude), the POST safely falls through to the queue server-side.
+   * Plumbing a per-slot capability flag is a follow-up. */
   canSteer?: boolean
-  /** Inject a mid-turn steer with the given text into the running turn. */
-  onSteer?: (text: string) => void
+  /** Inject a mid-turn steer into the running turn. Reads the composer text
+   * and pending files itself (ChatPage) and clears them atomically — ChatInput
+   * must NOT clear the value around this call. */
+  onSteer?: () => void
   disabled?: boolean
   placeholder?: string
   prefillHint?: boolean
@@ -365,13 +379,6 @@ function ChatInput({
   const hasApproval = !!pendingApproval
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
 
-  // Brief "sent" confirmation on the Steer button. Clicking Steer clears the
-  // composer, which would instantly unmount the button — so hold the composer
-  // for a beat, show a check, then clear.
-  const [steerFlash, setSteerFlash] = useState(false)
-  const steerFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => { if (steerFlashTimer.current) clearTimeout(steerFlashTimer.current) }, [])
-
   const activeSlot = slotId
   const approvalMeta = pendingApproval?.meta as Record<string, unknown> | undefined
   const approvalId = approvalMeta?.approval_id as string | undefined
@@ -508,6 +515,64 @@ function ChatInput({
     el.click()
     setPlusOpen(false)
   }
+  // Split send button (running turn): 'steer' (default) vs 'queue', chosen via
+  // the chevron dropdown and persisted so the preference sticks across sessions.
+  const [busySendMode, setBusySendMode] = useState<BusySendMode>(() => {
+    try { return localStorage.getItem(BUSY_SEND_MODE_LS_KEY) === 'queue' ? 'queue' : 'steer' } catch { return 'steer' }
+  })
+  const [busyMenuOpen, setBusyMenuOpen] = useState(false)
+  const [busyMenuRect, setBusyMenuRect] = useState<DOMRect | null>(null)
+  const busySplitRef = useRef<HTMLDivElement>(null)
+  const busyMenuRef = useRef<HTMLDivElement>(null)
+  const busyCaretRef = useRef<HTMLButtonElement>(null)
+  // This menu has no filter input; the ref stays null so useListboxKeyboard
+  // treats ArrowUp from the first option as a no-op instead of a focus jump.
+  const busyNoInputRef = useRef<HTMLElement | null>(null)
+  const closeBusyMenuToTrigger = useCallback(() => {
+    setBusyMenuOpen(false)
+    busyCaretRef.current?.focus()
+  }, [])
+  // Keyboard operability for the portaled menu (WAI-ARIA menu pattern):
+  // focus moves into the first option on open, ArrowUp/Down + Home/End roam,
+  // Escape/Tab close and return focus to the caret trigger.
+  const { onListKeyDown: onBusyMenuKeyDown } = useListboxKeyboard({
+    open: busyMenuOpen,
+    dropdownRef: busyMenuRef,
+    inputRef: busyNoInputRef,
+    hasFilterInput: false,
+    filteredCount: BUSY_SEND_MODES.length,
+    onEnterSingleMatch: () => {},
+    closeToTrigger: closeBusyMenuToTrigger,
+  })
+  useEffect(() => {
+    if (!busyMenuOpen) return
+    // Menu is portaled to <body> (escapes the input's overflow-hidden), so the
+    // outside-click guard must exclude both the split button and the menu.
+    const h = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!busySplitRef.current?.contains(t) && !busyMenuRef.current?.contains(t)) setBusyMenuOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [busyMenuOpen])
+  const toggleBusyMenu = () => {
+    if (!busyMenuOpen && busySplitRef.current) setBusyMenuRect(busySplitRef.current.getBoundingClientRect())
+    setBusyMenuOpen(o => !o)
+  }
+  const selectBusyMode = (m: BusySendMode) => {
+    setBusySendMode(m)
+    safeSetItem(BUSY_SEND_MODE_LS_KEY, m)
+    closeBusyMenuToTrigger()
+  }
+  // Steer is the active Enter/send action only while a live (not stopping)
+  // turn is running on a steer-capable slot and the user hasn't switched the
+  // split button to Queue. Everywhere else the composer falls back to onSend
+  // (normal send, or server-side queue while running).
+  const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
+  const fireComposer = useCallback(() => {
+    if (steerActive && onSteer) onSteer()
+    else onSend()
+  }, [steerActive, onSteer, onSend])
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const ime = useImeGuard()
@@ -1193,10 +1258,12 @@ function ChatInput({
     if (sendKey && !e.defaultPrevented && !ime.isComposing(e) && !optimizingRef.current) {
       // preventDefault always fires when sendKey matches so the textarea's
       // default Enter behavior (newline insert into draft) doesn't leak
-      // through when the gateway is offline. The send itself is gated on
+      // through when the gateway is offline. The action itself is gated on
       // `connected` to match the disabled-state on the Send button.
+      // While a turn is running, Enter follows the split-button mode:
+      // steer (default) injects into the running turn; queue defers.
       e.preventDefault()
-      if (connected) onSend()
+      if (connected) fireComposer()
       return
     }
     // Prompt history: ↑/↓ cycles through prior user messages.
@@ -1260,7 +1327,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [onSend, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1868,30 +1935,71 @@ function ChatInput({
                   <Loader2 size={18} className="animate-spin" />
                 </button>
               ) : value.trim() || pendingFiles.length ? (
-                <>
-                  {canSteer && onSteer && (
-                    <button
-                      className={`w-8 h-8 rounded-full border-none flex items-center justify-center transition-all ${steerFlash ? 'bg-ok/20 text-ok cursor-default' : 'bg-accent/20 text-accent hover:bg-accent/30 cursor-pointer'}`}
-                      onClick={() => {
-                        if (steerFlash) return
-                        const t = value.trim()
-                        if (!t) return
-                        onSteer(t)
-                        setSteerFlash(true)
-                        if (steerFlashTimer.current) clearTimeout(steerFlashTimer.current)
-                        steerFlashTimer.current = setTimeout(() => { onChange(''); setSteerFlash(false) }, 700)
-                      }}
-                      title={steerFlash ? 'Steered into the running turn' : "Steer — inject into the running turn (doesn't wait for it to finish)"}
-                      aria-label="Steer"
-                      data-testid="steer-button"
-                    >
-                      {steerFlash ? <Check size={16} /> : <Target size={16} />}
-                    </button>
-                  )}
+                canSteer && onSteer ? (
+                  /* Split send button (mock: [ action | ▾ ]) — main area fires the
+                   * selected busy-send mode (steer by default, same as Enter);
+                   * the chevron opens a dropdown to switch modes (persisted). */
+                  <div className="relative flex items-center" ref={busySplitRef}>
+                    <div className={`flex items-stretch h-8 rounded-full overflow-hidden transition-colors ${busySendMode === 'steer' ? 'bg-accent text-accent-fg' : 'bg-warn text-warn-fg'}`}>
+                      <button
+                        className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer hover:bg-black/15 transition-all text-inherit"
+                        onClick={fireComposer}
+                        title={busySendMode === 'steer' ? 'Steer — inject into the running turn (Enter)' : 'Queue — run after the current turn finishes (Enter)'}
+                        aria-label={busySendMode === 'steer' ? 'Steer' : 'Queue message'}
+                        data-testid="busy-send-button"
+                      >
+                        {busySendMode === 'steer' ? <Target size={16} /> : <ArrowUpFromLine size={16} />}
+                      </button>
+                      <div className="w-px my-1.5 bg-current opacity-40" aria-hidden="true" />
+                      <button
+                        ref={busyCaretRef}
+                        className="w-6 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer hover:bg-black/15 transition-all text-inherit"
+                        onClick={toggleBusyMenu}
+                        aria-haspopup="menu"
+                        aria-expanded={busyMenuOpen}
+                        aria-label="Send options"
+                        title="Send options"
+                        data-testid="busy-send-caret"
+                      >
+                        <ChevronDown size={14} className={`transition-transform ${busyMenuOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                    </div>
+                    {busyMenuOpen && busyMenuRect && createPortal(
+                      <div
+                        ref={busyMenuRef}
+                        role="menu"
+                        onKeyDown={onBusyMenuKeyDown}
+                        className="fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]"
+                        style={{ left: Math.max(8, Math.min(busyMenuRect.right - 250, window.innerWidth - 250 - 8)), bottom: window.innerHeight - busyMenuRect.top + 8 }}
+                      >
+                        {BUSY_SEND_MODES.map(({ mode, label, desc, icon }) => (
+                          <button
+                            key={mode}
+                            role="menuitemradio"
+                            aria-checked={busySendMode === mode}
+                            data-option=""
+                            tabIndex={-1}
+                            onClick={() => selectBusyMode(mode)}
+                            className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover focus:bg-bg-hover focus:outline-none transition-colors cursor-pointer text-left border-none"
+                            data-testid={`busy-send-mode-${mode}`}
+                          >
+                            <span className={`shrink-0 ${mode === 'steer' ? 'text-accent' : 'text-warn'}`}>{icon}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[12px] font-medium text-text">{label}</div>
+                              <div className="text-[11px] text-muted leading-snug">{desc}</div>
+                            </div>
+                            {busySendMode === mode && <Check size={14} className="text-accent shrink-0" />}
+                          </button>
+                        ))}
+                      </div>,
+                      document.body
+                    )}
+                  </div>
+                ) : (
                   <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onSend} title="Queue message" aria-label="Queue message">
                     <ArrowUpFromLine size={18} />
                   </button>
-                </>
+                )
               ) : (
                 <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={onStop} title="Stop generation" aria-label="Stop generation" data-testid="stop-button-armed">
                   <Square size={18} fill="currentColor" />
