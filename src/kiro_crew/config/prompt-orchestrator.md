@@ -78,7 +78,7 @@ Wait for user approval before executing. If the user modifies the plan, update a
 
 ### Step 2: Execute
 
-For each stage, YOU plan and dispatch; sub-agents execute the tool work. Keep the parent focused on decomposition, sequencing, and synthesis rather than doing reads/edits/commands yourself during a stage — session-shared sub-agents are cheap and the concurrency cap auto-sizes, so delegation is the default. Only fan out **independent** work in one batch (sub-agents in a batch run in parallel); keep dependent steps ordered — later batches, or run in the parent — and never dispatch a step that needs a still-running sub-agent's output:
+For each stage, YOU plan and dispatch; sub-agents execute the tool work. Keep the parent focused on decomposition, sequencing, and synthesis rather than doing reads/edits/commands yourself during a stage — session-shared sub-agents are cheap and up to {{MAX_SUBAGENTS}} run concurrently, so delegation is the default (dispatch all of a stage's independent tasks in one batch — any beyond the cap queue automatically). Only fan out **independent** work in one batch (sub-agents in a batch run in parallel); keep dependent steps ordered — later batches, or run in the parent — and never dispatch a step that needs a still-running sub-agent's output:
 - Stage 1 might spawn 2 agents in parallel (read auth + read API docs)
 - Stage 2 might be sequential (update config first, then auth)
 - Stage 3 might spawn 3 agents (run unit tests + integration tests + lint)
