@@ -203,22 +203,44 @@ export function useChatLauncher(): {
 import React from 'react'
 
 function createScopedApi(allowedPaths: string[], appName: string): AppApi {
-  const check = (path: string) => {
-    const pathOnly = path.split('?')[0]
-    const allowed = allowedPaths.some(p => pathOnly === p || pathOnly.startsWith(p.endsWith('/') ? p : p + '/'))
-    if (!allowed) {
-      throw new Error(`[app-sdk] App "${appName}" not permitted to access ${path}. Declared: [${allowedPaths.join(', ')}]`)
+  const check = (path: string): string => {
+    // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
+    // are rejected too: the URL parser treats `\` like `/`, so `/\evil.com` or
+    // `\\evil.com` would otherwise be parsed as a protocol-relative authority.
+    if (/^(?:https?:)?[/\\]{2}/i.test(path) || path.includes('\\')) {
+      throw new Error(`[app-sdk] Absolute URLs are not allowed: ${path}`)
     }
+    // Normalize BEFORE the allowlist check so `..` traversal cannot escape the
+    // declared scope (e.g. `/api/apps/x/../../secret` → `/api/secret`).
+    const parsed = new URL(path, 'http://localhost')
+    const normalized = parsed.pathname
+    const allowed = allowedPaths.some(p => normalized === p || normalized.startsWith(p.endsWith('/') ? p : p + '/'))
+    if (!allowed) {
+      throw new Error(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
+    }
+    return normalized + parsed.search
   }
 
   const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-    check(path)
-    const res = await fetch(path, init)
+    const safePath = check(path)
+    const res = await fetch(safePath, init)
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
       throw new Error(`API ${res.status}: ${text}`)
     }
-    return res.json()
+    // An empty-body response is not JSON — res.json() would throw a SyntaxError
+    // (e.g. a 204 No Content on DELETE, or a 200 with an empty body and no
+    // Content-Length header). Read the body as text and only parse when it is
+    // non-empty, so any empty body returns undefined regardless of status or
+    // whether a Content-Length: 0 header was sent.
+    if (res.status === 204 || res.status === 205) {
+      return undefined as T
+    }
+    const text = await res.text()
+    if (text.trim() === '') {
+      return undefined as T
+    }
+    return JSON.parse(text) as T
   }
 
   return {
