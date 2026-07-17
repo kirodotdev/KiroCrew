@@ -137,6 +137,23 @@ _GIT_PUBLISH_RE = re.compile(
 # literal ``git_push`` (kiro-cli historically denied that form).
 _GIT_PUBLISH_GLUE_RE = re.compile(r"git(?:\$\([^)]*\)|`[^`]*`)+push|git_push")
 
+# Program NAME produced by an expansion the shell resolves to the git binary
+# BEFORE exec, so the literal ``git`` token never appears in the source text and
+# neither the regex above nor the normalizer (which does not expand arbitrary
+# vars) sees it:
+#   ``$(echo git) push``, `` `echo git` push ``, ``${GIT} push``, ``$GIT push``
+# (where e.g. ``GIT=/usr/bin/git``).  We cannot execute the expansion to recover
+# the program, so a ``push`` subcommand immediately following an unresolvable
+# program token is treated as a publish (FAIL CLOSED); ``_is_push_to_protected_branch``
+# then reads the push target and denies a protected / bare / ambiguous one while
+# still allowing an explicit feature-branch target.  Ported from KiroClaw
+# CR-289796406 + CR-289806273 (Talos 3eeb3852 / TT V2285983365).
+_GIT_PUBLISH_SUBST_PROGRAM_RE = re.compile(
+    r"(?:^|[;&|`\n])\s*"
+    r"(?:\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_]\w*)"
+    r"\s+push(?=\s|$|[)`;&|])"
+)
+
 # Human-readable label recorded in the denial reason + SEL audit event when
 # a git-publish invocation is blocked (the regexes above are the mechanism).
 _GIT_PUBLISH_DENY_LABEL = "git push"
@@ -149,7 +166,9 @@ def _is_git_publish(text_lower: str) -> bool:
 
     1. **Fast first-pass (regex):** ``_GIT_PUBLISH_RE`` and
        ``_GIT_PUBLISH_GLUE_RE`` catch normal ``git push`` invocations and
-       command-substitution glue-evasion (e.g. ``git$(echo ' ')push``).
+       command-substitution glue-evasion (e.g. ``git$(echo ' ')push``);
+       ``_GIT_PUBLISH_SUBST_PROGRAM_RE`` catches expansion-produced program
+       names (``$(echo git) push``, ``${GIT} push``, ``$GIT push``).
     2. **Normalizer second-pass:** ``normalize_shell_command`` strips quotes
        and empty-string concatenation so evasions like ``"git" push``,
        ``g""it push``, or ``'g'it push`` are resolved to their true tokens.
@@ -160,7 +179,11 @@ def _is_git_publish(text_lower: str) -> bool:
     Operates on an already-lowercased string.
     """
     # Pass 1: regex fast-path
-    if _GIT_PUBLISH_RE.search(text_lower) or _GIT_PUBLISH_GLUE_RE.search(text_lower):
+    if (
+        _GIT_PUBLISH_RE.search(text_lower)
+        or _GIT_PUBLISH_GLUE_RE.search(text_lower)
+        or _GIT_PUBLISH_SUBST_PROGRAM_RE.search(text_lower)
+    ):
         return True
 
     # Pass 2: normalizer-based detection (catches quote evasions like

@@ -192,6 +192,25 @@ class TestIsGitPublishDetection:
         assert _is_git_publish("git_pus" + "h") is True
         assert _is_git_publish(f"git$(echo ' ')pus{'h'} origin main") is True
 
+    def test_program_substitution_evasion_detected(self) -> None:
+        # Program NAME produced by an expansion the shell resolves to git before
+        # exec -- the literal ``git`` token never appears in the source text.
+        # Port of KiroClaw CR-289796406 + CR-289806273 (Talos 3eeb3852).
+        P = "pus" + "h"
+        assert _is_git_publish("$(echo git) %s origin main" % P) is True
+        assert _is_git_publish("`echo git` %s origin main" % P) is True
+        assert _is_git_publish("${git} %s origin main" % P) is True
+        assert _is_git_publish("$git %s origin main" % P) is True
+        # Bare $VAR after an env-assignment in a chained segment.
+        assert _is_git_publish("git=x; $git %s origin mainline" % P) is True
+
+    def test_program_substitution_non_push_not_detected(self) -> None:
+        # Substitutions/expansions NOT followed by a ``push`` subcommand, and
+        # unrelated $VAR usage, must NOT be flagged.
+        assert _is_git_publish("$(echo ls) -la") is False
+        assert _is_git_publish("$editor notes.txt") is False
+        assert _is_git_publish("echo $git is set") is False
+
 
 @pytest.fixture
 def captured_sel_events(monkeypatch):
@@ -232,6 +251,32 @@ class TestGitPushEnforcement:
         assert is_denied(f"{PUSH} origin main").startswith("Blocked by security policy")
         assert is_denied(f"{PUSH} --force origin master").startswith("Blocked by security policy")
         assert not any(e.event_type == "push_allowed" for e in captured_sel_events)
+
+    def test_substitution_program_push_blocked(self, captured_sel_events) -> None:
+        # Verb obfuscated via an expansion that resolves to git; the branch gate
+        # still reads the target and blocks a protected one (Talos 3eeb3852).
+        P = "pus" + "h"
+        assert is_denied("$(echo git) %s origin main" % P).startswith(
+            "Blocked by security policy"
+        )
+        assert is_denied("$git %s origin mainline" % P).startswith(
+            "Blocked by security policy"
+        )
+        assert is_denied("${git} %s origin master" % P).startswith(
+            "Blocked by security policy"
+        )
+        assert not any(e.event_type == "push_allowed" for e in captured_sel_events)
+
+    def test_substitution_program_push_to_feature_blocked(self, captured_sel_events) -> None:
+        # Fork divergence: unlike upstream (which allows an explicit
+        # feature-branch target under an obfuscated verb), this fork's
+        # _AMBIGUOUS_EXPANSION_RE fails closed — a push whose program token is
+        # an unresolvable expansion is denied even for a feature target, because
+        # the gate cannot prove the resolved command is really `git push`.
+        P = "pus" + "h"
+        assert is_denied("$(echo git) %s origin my-feature" % P).startswith(
+            "Blocked by security policy"
+        )
 
     def test_bare_push_blocked(self, captured_sel_events) -> None:
         assert is_denied(PUSH).startswith("Blocked by security policy")
