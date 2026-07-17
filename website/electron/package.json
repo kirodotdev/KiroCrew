@@ -19,7 +19,7 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "dev.kirocrew.desktop",
+    "appId": "com.amazon.kiro.crew",
     "productName": "KiroCrew",
     "mac": {
       "category": "public.app-category.developer-tools",
