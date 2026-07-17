@@ -137,7 +137,7 @@ class KnowledgeWatcher:
             return
         if self._reembed_task and not self._reembed_task.done():
             return
-        sig = embed_signature(embedder.model)
+        sig = embed_signature(embedder.model, embedder.content_budget)
         stale = self.store.db.execute(
             "SELECT COUNT(*) AS c FROM items "
             "WHERE status = 'active' AND (embedding_sig IS NULL OR embedding_sig != ?)",

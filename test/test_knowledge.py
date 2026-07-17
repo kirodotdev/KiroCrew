@@ -1109,6 +1109,7 @@ class _FakeEmbedder:
     """Embedder stub: returns a fixed vector and records which items it embedded."""
 
     model = "fake-embed"
+    content_budget = 10_000  # mirrors the real _EMBED_CONTENT_BUDGET default
 
     def __init__(self):
         self.embedded_titles: list[str] = []

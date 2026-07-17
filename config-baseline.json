@@ -1210,7 +1210,9 @@
           "text",
           "html",
           "json"
-        ]
+        ],
+        "embed_timeout_secs": 10.0,
+        "embed_content_budget": 0
       }
     },
     {
@@ -1259,6 +1261,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "knowledge.embed_timeout_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embed Timeout (seconds)",
+      "help": "Per-request timeout for the Knowledge-Library embedder. Raise it when a large chunk times out on a cold Ollama model load (the embed then never completes and the item is retried every maintenance pass). 0 or unset keeps the built-in 10s default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10.0
+    },
+    {
+      "path": "knowledge.embed_content_budget",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embed Content Budget (chars)",
+      "help": "Safety bound (chars) on chunk content folded into an item embedding. 0 or unset keeps the built-in default (a generous backstop for pathological un-chunked input); raise/lower only to tune truncation.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "skills",

@@ -421,7 +421,7 @@ class IngestionPipeline:
         if vec:
             self.store.db.execute(
                 "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? WHERE id = ?",
-                (floats_to_bytes(vec), embed_signature(self.embedder.model),
+                (floats_to_bytes(vec), embed_signature(self.embedder.model, self.embedder.content_budget),
                  datetime.now().isoformat(), item_id))
             self.store.db.commit()
 
@@ -488,7 +488,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
     internally); batch size is only the commit/progress cadence, not a throttle.
     """
     loop = asyncio.get_running_loop()
-    sig = embed_signature(embedder.model)
+    sig = embed_signature(embedder.model, embedder.content_budget)
     processed = 0
     if force:
         where = "status = 'active' AND id > ?"

@@ -933,6 +933,25 @@ class KnowledgeConfig:
             "(UI/dashboards, not documents) and svg has no reader support.",
         ),
     )
+    embed_timeout_secs: float = field(
+        default=10.0,
+        metadata=_meta(
+            "Embed Timeout (seconds)",
+            "Per-request timeout for the Knowledge-Library embedder. Raise it "
+            "when a large chunk times out on a cold Ollama model load (the embed "
+            "then never completes and the item is retried every maintenance "
+            "pass). 0 or unset keeps the built-in 10s default.",
+        ),
+    )
+    embed_content_budget: int = field(
+        default=0,
+        metadata=_meta(
+            "Embed Content Budget (chars)",
+            "Safety bound (chars) on chunk content folded into an item embedding. "
+            "0 or unset keeps the built-in default (a generous backstop for "
+            "pathological un-chunked input); raise/lower only to tune truncation.",
+        ),
+    )
 
 
 @dataclass
@@ -2714,6 +2733,12 @@ class KiroCrewConfig:
                     )
                     if isinstance(k, str)
                 ],
+                embed_timeout_secs=float(
+                    knowledge_data.get("embed_timeout_secs", 10.0)
+                ),
+                embed_content_budget=int(
+                    knowledge_data.get("embed_content_budget", 0)
+                ),
             ),
             telegram=TelegramConfig(
                 enabled=bool(telegram_data.get("enabled", False)),

@@ -41,9 +41,22 @@ _EMBED_CONTENT_BUDGET = (CHUNK_TOKEN_SIZE + CHUNK_OVERLAP) * 10
 class OllamaEmbedder:
     """Embed text via Ollama. Returns None on any failure (graceful degradation)."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, base_url: str = DEFAULT_BASE_URL):
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout_secs: float = TIMEOUT,
+        content_budget: int = _EMBED_CONTENT_BUDGET,
+    ):
         self.model = model
         self.base_url = base_url.rstrip("/")
+        # Per-request embed timeout and content-fold budget. Both default to the
+        # module constants (preserving prior behavior) but are overridable via
+        # config so operators can raise the timeout when a large chunk times out
+        # on a cold model load (the embed then never completes and the item is
+        # retried every maintenance pass). See create_embedder_from_config.
+        self.timeout_secs = timeout_secs
+        self.content_budget = content_budget
         self._available: bool | None = None  # cached availability check
         self._last_check: float = 0.0
 
@@ -95,7 +108,7 @@ class OllamaEmbedder:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout_secs) as resp:
                 data = json.loads(resp.read())
             return data.get("embedding")
         except Exception as e:
@@ -118,14 +131,14 @@ class OllamaEmbedder:
         if summary:
             parts.append(summary)
         if content:
-            if len(content) > _EMBED_CONTENT_BUDGET:
+            if len(content) > self.content_budget:
                 logger.warning(
                     "Embedding content truncated %d -> %d chars for item %r; chunk "
                     "exceeds the safety bound (likely un-chunked/separator-less input). "
                     "Tail is excluded from the vector.",
-                    len(content), _EMBED_CONTENT_BUDGET, title,
+                    len(content), self.content_budget, title,
                 )
-                content = content[:_EMBED_CONTENT_BUDGET]
+                content = content[:self.content_budget]
             parts.append(content)
         return self.embed(" ".join(parts))
 
@@ -141,7 +154,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
     return list(struct.unpack(f"{n}f", data))
 
 
-def embed_signature(model: str) -> str:
+def embed_signature(model: str, content_budget: int = _EMBED_CONTENT_BUDGET) -> str:
     """Signature over the embedding inputs a re-embed can actually change.
 
     Captures the model name and the content budget — change either and a stored
@@ -154,8 +167,29 @@ def embed_signature(model: str) -> str:
     needs a manual ``force`` rebuild. Upgrade path: add an ast-normalized source
     hash here if that logic starts churning.
     """
-    raw = f"{model}|{_EMBED_CONTENT_BUDGET}"
+    raw = f"{model}|{content_budget}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def embedder_signature(embedder: OllamaEmbedder) -> str:
+    """Current sig for an embedder. Single source of truth for callsites so the
+    set of inputs (model + budget) can't drift between them."""
+    return embed_signature(embedder.model, embedder.content_budget)
+
+
+def _positive_or(value: object, default: float) -> float:
+    """Return ``value`` when it is a positive number, else ``default``.
+
+    Guards a config-sourced timeout/budget: a missing key (None), an explicit
+    ``0`` sentinel, a negative value, or a non-numeric all fall back to the
+    built-in default rather than passing a nonsensical value to the embedder
+    (a negative timeout makes every embed raise/return None; a negative budget
+    mangles slicing and log output). ``bool`` is excluded so ``True``/``False``
+    can't masquerade as ``1``/``0``.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        return value
+    return default
 
 
 def create_embedder_from_config(config: dict) -> OllamaEmbedder | None:
@@ -169,4 +203,16 @@ def create_embedder_from_config(config: dict) -> OllamaEmbedder | None:
         return None
     model = memory_cfg.get("embedding_model", DEFAULT_MODEL)
     base_url = memory_cfg.get("embedding_url", DEFAULT_BASE_URL)
-    return OllamaEmbedder(model=model, base_url=base_url)
+    # Knowledge-Library-specific embed tuning. Fall back to the module defaults
+    # unless the config supplies a *positive* number: a missing key, an explicit
+    # 0 sentinel, a negative value, or a non-numeric all resolve to the built-in
+    # default rather than passing a nonsensical timeout/budget to the embedder.
+    knowledge_cfg = config.get("knowledge", {}) or {}
+    timeout_secs = _positive_or(knowledge_cfg.get("embed_timeout_secs"), TIMEOUT)
+    content_budget = int(_positive_or(knowledge_cfg.get("embed_content_budget"), _EMBED_CONTENT_BUDGET))
+    return OllamaEmbedder(
+        model=model,
+        base_url=base_url,
+        timeout_secs=timeout_secs,
+        content_budget=content_budget,
+    )

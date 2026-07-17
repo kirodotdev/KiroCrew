@@ -1243,7 +1243,7 @@ async def batch_embed_items(request: web.Request) -> web.Response:
     ).fetchall()
 
     loop = asyncio.get_running_loop()
-    sig = embed_signature(embedder.model)
+    sig = embed_signature(embedder.model, embedder.content_budget)
     embedded = 0
     for row in rows:
         vec = await loop.run_in_executor(

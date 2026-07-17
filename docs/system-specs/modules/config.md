@@ -204,6 +204,8 @@ class KnowledgeConfig:
     # under MemoryConfig (shared via create_embedder_from_config).
     auto_ingest_artifacts: bool = True                  # on by default; ingest local artifacts into the KB (aggregate "Artifacts" source)
     auto_ingest_artifact_kinds: list[str] = ["markdown", "text", "html", "json"]  # reader-extractable kinds (widget/svg excluded)
+    embed_timeout_secs: float = 10.0                    # per-request embed timeout; 0/unset -> built-in TIMEOUT (10s)
+    embed_content_budget: int = 0                       # chunk-content fold budget (chars); 0/unset -> built-in _EMBED_CONTENT_BUDGET
 
 @dataclass
 class ChannelConfig:
@@ -341,7 +343,9 @@ Returns the effective config for a channel:
   },
   "knowledge": {
     "auto_ingest_artifacts": true,
-    "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"]
+    "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"],
+    "embed_timeout_secs": 10.0,
+    "embed_content_budget": 0
   },
   "hooks": {},
   "slack": {
