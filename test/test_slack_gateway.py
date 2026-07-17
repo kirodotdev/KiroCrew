@@ -3912,3 +3912,73 @@ class TestConnectSlackResilience:
         orch._socket_client.connect = AsyncMock(side_effect=asyncio.CancelledError)
         with pytest.raises(asyncio.CancelledError):
             await orch._connect_slack()
+
+
+def _provider(active: bool):
+    """A provider mock whose has_active_turn() returns *active*."""
+    p = MagicMock()
+    p.has_active_turn = MagicMock(return_value=active)
+    return p
+
+
+class TestCountInFlightWork:
+    """Cover GatewayOrchestrator._count_in_flight_work (stale-asset drain)."""
+
+    def test_zero_when_idle(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch._session_tasks = {}
+        assert orch._count_in_flight_work() == 0
+
+    def test_counts_active_provider_turns_only(self):
+        orch = _make_orchestrator()
+        state = MagicMock()
+        state.sessions.active_providers.return_value = [
+            _provider(True), _provider(False), _provider(True)
+        ]
+        orch.dashboard_state = state
+        orch._session_tasks = {}
+        assert orch._count_in_flight_work() == 2
+
+    def test_skips_missing_accessor_and_swallows_predicate_errors(self):
+        orch = _make_orchestrator()
+        no_attr = MagicMock(spec=[])  # no has_active_turn attribute
+        raising = MagicMock()
+        raising.has_active_turn = MagicMock(side_effect=RuntimeError("boom"))
+        state = MagicMock()
+        state.sessions.active_providers.return_value = [
+            no_attr, raising, _provider(True)
+        ]
+        orch.dashboard_state = state
+        orch._session_tasks = {}
+        # no_attr skipped, raising treated as idle, only the active one counts.
+        assert orch._count_in_flight_work() == 1
+
+    def test_counts_undone_session_tasks(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        undone1, undone2, done = MagicMock(), MagicMock(), MagicMock()
+        undone1.done.return_value = False
+        undone2.done.return_value = False
+        done.done.return_value = True
+        orch._session_tasks = {"a": undone1, "b": done, "c": undone2}
+        assert orch._count_in_flight_work() == 2
+
+    def test_active_providers_failure_is_treated_as_idle(self):
+        orch = _make_orchestrator()
+        state = MagicMock()
+        state.sessions.active_providers.side_effect = RuntimeError("nope")
+        orch.dashboard_state = state
+        orch._session_tasks = {}
+        # A broken introspection surface must not wedge shutdown -> counts 0.
+        assert orch._count_in_flight_work() == 0
+
+    def test_provider_turns_and_session_tasks_sum(self):
+        orch = _make_orchestrator()
+        state = MagicMock()
+        state.sessions.active_providers.return_value = [_provider(True)]
+        orch.dashboard_state = state
+        undone = MagicMock()
+        undone.done.return_value = False
+        orch._session_tasks = {"x": undone}
+        assert orch._count_in_flight_work() == 2

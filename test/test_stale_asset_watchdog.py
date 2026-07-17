@@ -73,6 +73,151 @@ async def test_watchdog_survives_transient_asset_gap():
 
 
 @pytest.mark.asyncio
+async def test_watchdog_drains_in_flight_before_shutdown():
+    """A vanish waits for in-flight work to finish before setting shutdown."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    call_count = 0
+
+    def _mock_assets_present() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count <= 1  # startup True, then permanent vanish
+
+    # Two in-flight tasks that clear after the first drain poll.
+    pending = {"n": 2}
+    poll_calls = {"n": 0}
+
+    def _count() -> int:
+        poll_calls["n"] += 1
+        if poll_calls["n"] >= 2:
+            pending["n"] = 0
+        return pending["n"]
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.05,
+                confirm_delay=0.01,
+                count_in_flight=_count,
+                drain_timeout=5.0,
+                drain_poll=0.01,
+            ),
+            timeout=5.0,
+        )
+
+    # Shutdown still fired (the prune is permanent) but only after the drain
+    # observed the in-flight work reach zero.
+    assert shutdown.is_set()
+    assert poll_calls["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_watchdog_drain_respects_timeout():
+    """If in-flight work never clears, shutdown still fires after the timeout."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    call_count = 0
+
+    def _mock_assets_present() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count <= 1
+
+    # Work that never drains — must not defer shutdown past the timeout.
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.05,
+                confirm_delay=0.01,
+                count_in_flight=lambda: 3,  # permanently busy
+                drain_timeout=0.1,
+                drain_poll=0.02,
+            ),
+            timeout=5.0,
+        )
+
+    assert shutdown.is_set()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_no_drain_when_no_work():
+    """With zero in-flight work, shutdown fires immediately (no drain wait)."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    call_count = 0
+
+    def _mock_assets_present() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count <= 1
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.05,
+                confirm_delay=0.01,
+                count_in_flight=lambda: 0,
+                drain_timeout=30.0,  # large: would hang the test if drained
+                drain_poll=0.01,
+            ),
+            timeout=5.0,
+        )
+
+    assert shutdown.is_set()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_drain_predicate_failure_does_not_block_shutdown():
+    """A broken count_in_flight predicate must not wedge shutdown."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    call_count = 0
+
+    def _mock_assets_present() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count <= 1
+
+    def _boom() -> int:
+        raise RuntimeError("predicate exploded")
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.05,
+                confirm_delay=0.01,
+                count_in_flight=_boom,
+                drain_timeout=30.0,
+                drain_poll=0.01,
+            ),
+            timeout=5.0,
+        )
+
+    assert shutdown.is_set()
+
+
+@pytest.mark.asyncio
 async def test_watchdog_does_not_arm_when_assets_never_existed():
     """A dev install that never built its frontend is NOT killed."""
     from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog

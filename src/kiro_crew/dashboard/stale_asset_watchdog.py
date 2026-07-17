@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Protocol
 
 from kiro_crew.dashboard.handlers.core import _DIST_INDEX
@@ -43,6 +44,16 @@ _CHECK_INTERVAL_SECS = 60
 # a genuine update prune is permanent, so the confirmation only adds this
 # much detection latency.
 _CONFIRM_DELAY_SECS = 2.0
+
+# Max time to let in-flight backend turns finish before forcing shutdown after
+# a confirmed asset vanish. An update prune only breaks static-asset serving —
+# live ACP turns keep working — so draining lets active turns complete (result
+# captured, history saved) instead of being killed mid-prompt when the
+# supervisor restarts. Bounded so a wedged turn can't defer the restart forever.
+_DRAIN_TIMEOUT_SECS = 120.0
+# Poll cadence while draining (seconds). Also the max latency to react to an
+# external SIGTERM arriving mid-drain.
+_DRAIN_POLL_SECS = 2.0
 
 
 class _ShutdownSignal(Protocol):
@@ -76,6 +87,9 @@ async def run_stale_asset_watchdog(
     *,
     interval: float = _CHECK_INTERVAL_SECS,
     confirm_delay: float = _CONFIRM_DELAY_SECS,
+    count_in_flight: Callable[[], int] | None = None,
+    drain_timeout: float = _DRAIN_TIMEOUT_SECS,
+    drain_poll: float = _DRAIN_POLL_SECS,
 ) -> None:
     """Background loop: check asset presence, trigger shutdown if stale.
 
@@ -90,6 +104,11 @@ async def run_stale_asset_watchdog(
     cannot kill an otherwise-healthy gateway. A genuine update prune is
     permanent and still shuts down within one confirmation delay.
 
+    Once a vanish is confirmed, in-flight backend work is *drained* before the
+    shutdown event is set (see ``_drain_in_flight``): the prune only breaks
+    static-asset serving, so active ACP turns can finish rather than being
+    killed mid-prompt when the supervisor restarts a fresh process.
+
     Parameters
     ----------
     shutdown_event:
@@ -99,6 +118,16 @@ async def run_stale_asset_watchdog(
         Seconds between checks. Default 60s.
     confirm_delay:
         Seconds to wait before re-checking a failed sample. Default 2s.
+    count_in_flight:
+        Optional callable returning the number of in-flight backend tasks
+        (active provider turns, Slack session turns). When provided, the
+        watchdog waits for it to reach zero — bounded by ``drain_timeout`` —
+        before triggering shutdown. ``None`` disables draining (legacy
+        behaviour: shut down immediately on vanish).
+    drain_timeout:
+        Max seconds to wait for in-flight work to finish. Default 120s.
+    drain_poll:
+        Seconds between in-flight re-counts while draining. Default 2s.
     """
     if not assets_present():
         # Assets were never here — this is likely a dev/source install that
@@ -146,5 +175,103 @@ async def run_stale_asset_watchdog(
                 "pruned the running install. Initiating graceful shutdown "
                 "so a supervisor can restart a fresh gateway."
             )
+            await _drain_in_flight(
+                shutdown_event,
+                count_in_flight,
+                drain_timeout=drain_timeout,
+                drain_poll=drain_poll,
+            )
+            if shutdown_event.is_set():
+                # An external SIGTERM arrived during the drain window and has
+                # already begun graceful shutdown — don't double-signal.
+                return
             shutdown_event.set()
             return
+
+
+async def _drain_in_flight(
+    shutdown_event: _ShutdownSignal,
+    count_in_flight: Callable[[], int] | None,
+    *,
+    drain_timeout: float,
+    drain_poll: float,
+) -> None:
+    """Wait (bounded) for in-flight backend turns to finish before shutdown.
+
+    An update prune breaks only static-asset serving; live ACP turns keep
+    working. Draining lets active turns complete (result captured, history
+    saved) instead of being killed mid-prompt when the supervisor restarts —
+    directly preventing the "❌ lost to gateway restart / no result captured"
+    orphaning seen on an abrupt prune.
+
+    Returns as soon as any of the following is true:
+      * there is no in-flight work,
+      * the ``drain_timeout`` elapses (remaining tasks are snapshotted for
+        resume by the normal shutdown path), or
+      * an external shutdown is signalled mid-drain (SIGTERM wins).
+
+    Any failure to count in-flight work is treated as "idle" — a broken
+    predicate must never wedge shutdown.
+    """
+    if count_in_flight is None or drain_timeout <= 0:
+        return
+    try:
+        pending = count_in_flight()
+    except Exception:
+        logger.debug(
+            "Stale-asset watchdog: initial in-flight count failed — "
+            "skipping drain.",
+            exc_info=True,
+        )
+        return
+    if pending <= 0:
+        return
+
+    logger.warning(
+        "Stale-asset watchdog: draining %d in-flight task(s) before shutdown "
+        "(up to %.0fs)…",
+        pending,
+        drain_timeout,
+    )
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + drain_timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        # Sleep interruptibly: an external SIGTERM sets shutdown_event and
+        # wakes us immediately so we don't keep draining past a real shutdown.
+        try:
+            await asyncio.wait_for(
+                shutdown_event.wait(), timeout=min(drain_poll, remaining)
+            )
+            logger.warning(
+                "Stale-asset watchdog: external shutdown during drain — "
+                "stopping drain."
+            )
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            pending = count_in_flight()
+        except Exception:
+            logger.debug(
+                "Stale-asset watchdog: in-flight count failed mid-drain — "
+                "proceeding with shutdown.",
+                exc_info=True,
+            )
+            return
+        if pending <= 0:
+            logger.warning(
+                "Stale-asset watchdog: all in-flight tasks drained — "
+                "proceeding with shutdown."
+            )
+            return
+
+    logger.warning(
+        "Stale-asset watchdog: drain timeout (%.0fs) elapsed with %d task(s) "
+        "still in flight — proceeding with shutdown; open sessions resume "
+        "from snapshot on restart.",
+        drain_timeout,
+        pending,
+    )

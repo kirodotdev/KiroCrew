@@ -516,6 +516,43 @@ class GatewayOrchestrator:
         self._ollama_manager: object | None = None  # OllamaManager (lazy import)
         self._mcp_gateway_manager: GatewayManager | None = None
 
+    def _count_in_flight_work(self) -> int:
+        """Count in-flight backend tasks that an abrupt restart would lose.
+
+        Used by the stale-asset watchdog to drain before shutting down: an
+        update prune only breaks static-asset serving, not live ACP turns, so
+        letting active turns finish avoids the "❌ lost to gateway restart /
+        no result captured" orphaning. Counts active provider turns (dashboard
+        chat + task-runner sessions) plus in-flight Slack session turns.
+
+        Defensive: any failure to introspect a surface is treated as idle, so
+        a broken accessor can never wedge shutdown.
+        """
+        count = 0
+        state = self.dashboard_state
+        if state is not None:
+            try:
+                for provider in state.sessions.active_providers():
+                    checker = getattr(provider, "has_active_turn", None)
+                    if not callable(checker):
+                        continue
+                    try:
+                        if checker():
+                            count += 1
+                    except Exception:
+                        # A provider that can't report turn state must not
+                        # block shutdown — treat it as idle.
+                        pass
+            except Exception:
+                logger.debug(
+                    "in-flight count: active_providers() failed", exc_info=True
+                )
+        # In-flight Slack session turns (one task per active thread turn).
+        for task in list(self._session_tasks.values()):
+            if not task.done():
+                count += 1
+        return count
+
     # ------------------------------------------------------------------
     # Tool approval callback (shared by cron, heartbeat, subagent, task)
     # ------------------------------------------------------------------
@@ -4071,8 +4108,14 @@ class GatewayOrchestrator:
 
         # Stale-asset watchdog: detects when an update prunes the running
         # install's static assets and triggers graceful shutdown so the
-        # supervisor can restart a fresh process. (Mesh-2690)
-        _watchdog = asyncio.create_task(run_stale_asset_watchdog(shutdown_event))
+        # supervisor can restart a fresh process. It first drains in-flight
+        # backend turns (count_in_flight) so active work isn't killed
+        # mid-prompt by the restart. (Mesh-2690)
+        _watchdog = asyncio.create_task(
+            run_stale_asset_watchdog(
+                shutdown_event, count_in_flight=self._count_in_flight_work
+            )
+        )
         self._background_tasks.add(_watchdog)
         _watchdog.add_done_callback(self._background_tasks.discard)
 
