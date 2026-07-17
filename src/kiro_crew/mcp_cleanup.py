@@ -27,33 +27,25 @@ _KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
 # doctor`'s MCP probe — get a deterministic order.
 KIROCREW_BIN_MCP_SERVERS = ("kirocrew-cron", "kirocrew-core")
 
-# The dead predecessor product binaries in the rename lineage
-# (MeshClaw → KiroClaw → KiroCrew). Their managed-server entries — pointing at
-# now-dead build paths — get left behind in the user's global provider config
-# by a rename and are unambiguously stale and safe to purge. ``kiroclaw`` is
-# the immediate predecessor (an existing KiroClaw install wrote
-# ``kiroclaw-cron`` / ``kiroclaw-core`` there); ``meshclaw`` is the generation
-# before that. Both are dead — keep purging both.
-PREDECESSOR_BINS = frozenset({"kiroclaw", "meshclaw"})
-PREDECESSOR_BIN_MCP_SERVERS = frozenset(
-    f"{bin_name}-{suffix}" for bin_name in PREDECESSOR_BINS for suffix in ("cron", "core")
-)
+# MeshClaw was the predecessor of KiroCrew. The rename left these managed
+# server entries — pointing at now-dead MeshClaw build paths — behind in the
+# user's global provider config; they are unambiguously stale and safe to purge.
+PREDECESSOR_BIN_MCP_SERVERS = frozenset({"meshclaw-cron", "meshclaw-core"})
 
 # Every managed-binary server name KiroCrew is responsible for removing from
 # the user's global mcp.json (KiroCrew never legitimately writes these there).
 STALE_MANAGED_MCP_SERVERS = frozenset(KIROCREW_BIN_MCP_SERVERS) | PREDECESSOR_BIN_MCP_SERVERS
 
 
-def _invokes_predecessor_bin(spec: object) -> bool:
-    """True if a server spec's command is a dead predecessor product binary.
+def _invokes_meshclaw(spec: object) -> bool:
+    """True if a server spec's command is the dead MeshClaw predecessor binary.
 
     Catches stale entries the rename left behind whose *name* isn't in the
     managed set — e.g. a leftover ``npm:@playwright/mcp`` proxy pointing at an
-    old KiroClaw or MeshClaw runtime (``.../KiroClaw/.../bin/kiroclaw``,
-    ``...\\KiroClaw\\Scripts\\kiroclaw.exe``, ``.../MeshClaw/.../bin/meshclaw``).
-    Keyed on the command basename so it matches both the bare name and absolute
-    paths, and never matches a genuine playwright server (which runs
-    ``npx``/``node``).
+    old MeshClaw runtime (``.../MeshClaw/.../bin/meshclaw``,
+    ``...\\MeshClaw\\Scripts\\meshclaw.exe``). Keyed on the command basename so
+    it matches both the bare name and absolute paths, and never matches a
+    genuine playwright server (which runs ``npx``/``node``).
     """
     if not isinstance(spec, dict):
         return False
@@ -63,11 +55,11 @@ def _invokes_predecessor_bin(spec: object) -> bool:
     # mcp.json is cross-platform data (a config written on Windows may be read
     # anywhere), so split on BOTH separators rather than the host's os.sep —
     # os.path.basename only honors the local separator. Then drop a launcher
-    # suffix so ``...\\Scripts\\kiroclaw.exe`` (pip's Windows console script)
+    # suffix so ``...\\Scripts\\meshclaw.exe`` (pip's Windows console script)
     # matches the bare predecessor name.
     leaf = re.split(r"[\\/]", cmd)[-1]
     stem = leaf.split(".", 1)[0]
-    return stem in PREDECESSOR_BINS
+    return stem == "meshclaw"
 
 
 def clean_stale_managed_mcp() -> list[str]:
@@ -82,12 +74,10 @@ def clean_stale_managed_mcp() -> list[str]:
 
     * **By name** — ``kirocrew-cron`` / ``kirocrew-core`` (written there by an
       older install method; KiroCrew now keeps these in the agent file) and the
-      dead predecessors ``kiroclaw-cron`` / ``kiroclaw-core`` and
-      ``meshclaw-cron`` / ``meshclaw-core``.
-    * **By command** — any server whose command is a dead predecessor product
-      binary (basename ``kiroclaw`` or ``meshclaw``), e.g. a leftover
-      ``npm:@playwright/mcp`` proxy entry pointing at an old KiroClaw or
-      MeshClaw runtime.
+      dead predecessor ``meshclaw-cron`` / ``meshclaw-core``.
+    * **By command** — any server whose command is the dead MeshClaw predecessor
+      binary (basename ``meshclaw``), e.g. a leftover ``npm:@playwright/mcp``
+      proxy entry pointing at an old MeshClaw runtime.
 
     Returns names of removed servers (empty list on no-op or error).
     """
@@ -103,7 +93,7 @@ def clean_stale_managed_mcp() -> list[str]:
     removed = sorted(
         name
         for name, spec in servers.items()
-        if name in STALE_MANAGED_MCP_SERVERS or _invokes_predecessor_bin(spec)
+        if name in STALE_MANAGED_MCP_SERVERS or _invokes_meshclaw(spec)
     )
     if not removed:
         return []

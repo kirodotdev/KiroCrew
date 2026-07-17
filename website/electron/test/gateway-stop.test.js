@@ -166,20 +166,6 @@ test("forceStopPort: killable owner frees the port (freed=true)", async () => {
   assert.deepStrictEqual(deps.killed, [[4242, "SIGKILL"]]);
 });
 
-test("forceStopPort: recognizes a legacy kiroclaw gateway (KiroClaw -> KiroCrew)", async () => {
-  // An upgraded host can have a leftover pre-rename `kiroclaw` gateway holding
-  // the port. It must be recognized as ours (killed), not treated as foreign.
-  const deps = fakeDeps({
-    listenSeq: [[4242], []],
-    command: "python -m kiro_claw gateway",
-  });
-  const r = await forceStopPort(7788, deps);
-  assert.strictEqual(r.killed, 1);
-  assert.strictEqual(r.freed, true);
-  assert.strictEqual(r.foreignHolder, false);
-  assert.deepStrictEqual(deps.killed, [[4242, "SIGKILL"]]);
-});
-
 test("forceStopPort: UNKILLABLE owner still holds port -> freed=false, survivors listed", async () => {
   // The regression case: SIGKILL is accepted but the process is in
   // uninterruptible sleep, so every subsequent lsof still shows it. We must

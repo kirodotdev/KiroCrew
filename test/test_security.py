@@ -876,21 +876,6 @@ class TestKiroCliBundledDeniedCommands:
         # bypass with "kiro-crew".
         assert self._is_denied("pkill kiro-crew", denied_commands)
 
-    # --- legacy kiroclaw binary: a migrated host may still have it installed,
-    # so the self-protection deny patterns must block BOTH names ---
-
-    def test_legacy_kiroclaw_self_protection_commands_blocked(
-        self, denied_commands: list[str]
-    ) -> None:
-        assert self._is_denied("kirocrew restart", denied_commands)  # new still blocked
-        assert self._is_denied("kiroclaw restart", denied_commands)
-        assert self._is_denied("kiroclaw update", denied_commands)
-        assert self._is_denied("kiroclaw cloud destroy --yes", denied_commands)
-        assert self._is_denied("kiroclaw gateway restart", denied_commands)
-        assert self._is_denied("pkill kiroclaw", denied_commands)
-        assert self._is_denied("kill -9 $(pgrep kiroclaw)", denied_commands)
-        assert self._is_denied("pkill kiro-claw", denied_commands)
-
     # --- skill-dir false positives: must be allowed ---
 
     def test_skill_create_sh_kirocrew_domain_allowed(self, denied_commands: list[str]) -> None:
@@ -1552,21 +1537,6 @@ class TestIsSensitivePath:
 
     def test_kirocrew_env(self) -> None:
         assert is_sensitive_path("~/.kirocrew/.env") is True
-
-    def test_legacy_kiroclaw_paths_still_sensitive(self) -> None:
-        # The KiroClaw -> KiroCrew rename does not move ~/.kiroclaw in place
-        # (migration is a documented manual step), so an unmigrated host still
-        # holds live credentials + governance trust-root files there. Every
-        # legacy analog of a sensitive ~/.kirocrew path must stay blocked.
-        assert is_sensitive_path("~/.kiroclaw/.env") is True
-        assert is_sensitive_path("~/.kiroclaw/sel_hmac.key") is True
-        assert is_sensitive_path("~/.kiroclaw/security_events.jsonl") is True
-        assert is_sensitive_path("~/.kiroclaw/app_admission.json") is True
-        assert is_sensitive_path("~/.kiroclaw/security_policy.json") is True
-        assert is_sensitive_path("~/.kiroclaw/admission_policy.json") is True
-        assert is_sensitive_path("~/.kiroclaw/profiles/team.json") is True
-        # Non-sensitive legacy paths remain readable (parity with .kirocrew).
-        assert is_sensitive_path("~/.kiroclaw/sessions.db") is False
 
     def test_sel_hmac_key(self) -> None:
         # Talos finding cdf82704: the SEL HMAC signing key is the trust root of

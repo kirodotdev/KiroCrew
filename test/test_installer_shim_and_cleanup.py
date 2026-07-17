@@ -187,41 +187,6 @@ def test_cleanup_purges_meshclaw_predecessor_entries(tmp_path, monkeypatch):
     assert {"meshclaw-core", "meshclaw-cron"} <= set(removed)
 
 
-def test_cleanup_purges_kiroclaw_immediate_predecessor_entries(tmp_path, monkeypatch):
-    """The KiroClaw -> KiroCrew rename made ``kiroclaw`` the immediate dead
-    predecessor. An existing KiroClaw install wrote ``kiroclaw-core`` /
-    ``kiroclaw-cron`` into the user's global mcp.json; those now point at a dead
-    binary and must be purged by name alongside the older ``meshclaw-*`` set,
-    while genuine user servers are preserved."""
-    mcp_path = tmp_path / "mcp.json"
-    mcp_path.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "kiroclaw-core": {"command": "kiroclaw", "args": ["mcp-core"]},
-                    "kiroclaw-cron": {"command": "kiroclaw", "args": ["mcp-cron"]},
-                    "meshclaw-core": {
-                        "command": "/old/MeshClaw/bin/meshclaw",
-                        "args": ["mcp-core"],
-                    },
-                    "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
-                }
-            },
-            indent=2,
-        )
-    )
-    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", mcp_path)
-
-    removed = mcp_cleanup.clean_stale_managed_mcp()
-    remaining = set(json.loads(mcp_path.read_text())["mcpServers"])
-
-    assert "kiroclaw-core" not in remaining, "stale kiroclaw-core not purged"
-    assert "kiroclaw-cron" not in remaining, "stale kiroclaw-cron not purged"
-    assert "meshclaw-core" not in remaining
-    assert "ai-community-slack-mcp" in remaining, "purge must not touch user servers"
-    assert {"kiroclaw-core", "kiroclaw-cron", "meshclaw-core"} <= set(removed)
-
-
 # --------------------------------------------------------------------------
 # Shim install — mirrors install.sh for install paths that skip it (the app)
 # --------------------------------------------------------------------------
@@ -477,59 +442,20 @@ def test_clean_stale_purges_meshclaw_command_playwright(tmp_path, monkeypatch):
     assert "ai-community-slack-mcp" in remaining  # user server kept
 
 
-def test_clean_stale_purges_kiroclaw_command_playwright(tmp_path, monkeypatch):
-    """A leftover proxy whose command is the dead immediate-predecessor
-    ``kiroclaw`` binary (name not in the managed set) is purged by command
-    basename, exactly like the older ``meshclaw`` case."""
-    p = tmp_path / "mcp.json"
-    p.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "npm:@playwright/mcp": {
-                        "command": "/Users/x/workspace/KiroClaw/env/KiroClaw-1.0/runtime/bin/kiroclaw",
-                        "args": [
-                            "mcp-playwright-proxy",
-                            "--config",
-                            "/Users/x/.kiroclaw/playwright-config.json",
-                        ],
-                    },
-                    "@playwright/mcp": {"command": "kirocrew", "args": ["mcp-playwright-proxy"]},
-                    "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
-                }
-            },
-            indent=2,
-        )
-    )
-    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
-
-    removed = mcp_cleanup.clean_stale_managed_mcp()
-    remaining = set(json.loads(p.read_text())["mcpServers"])
-
-    assert "npm:@playwright/mcp" not in remaining  # stale kiroclaw-command entry purged
-    assert "npm:@playwright/mcp" in removed
-    assert "@playwright/mcp" in remaining  # the live kirocrew proxy kept
-    assert "ai-community-slack-mcp" in remaining  # user server kept
-
-
 def test_clean_stale_purges_windows_exe_predecessor_command(tmp_path, monkeypatch):
-    """On Windows the predecessor console script is ``kiroclaw.exe`` /
-    ``meshclaw.exe``; the by-command purge must match after stripping the
-    launcher suffix, or a stale proxy pointing at a Windows predecessor binary
-    survives on a supported platform."""
+    """On Windows the predecessor console script is ``meshclaw.exe``; the
+    by-command purge must match after stripping the launcher suffix, or a stale
+    proxy pointing at a Windows predecessor binary survives on a supported
+    platform."""
     p = tmp_path / "mcp.json"
     p.write_text(
         json.dumps(
             {
                 "mcpServers": {
                     "npm:@playwright/mcp": {
-                        "command": r"C:\Users\x\KiroClaw\.venv\Scripts\kiroclaw.exe",
+                        "command": r"C:\Users\x\MeshClaw\.venv\Scripts\meshclaw.exe",
                         "args": ["mcp-playwright-proxy"],
                     },
-                    "meshclaw-legacy": {
-                        "command": r"C:\Users\x\MeshClaw\Scripts\meshclaw.exe",
-                        "args": [],
-                    },
                     "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
                 }
             },
@@ -541,9 +467,8 @@ def test_clean_stale_purges_windows_exe_predecessor_command(tmp_path, monkeypatc
     removed = mcp_cleanup.clean_stale_managed_mcp()
     remaining = set(json.loads(p.read_text())["mcpServers"])
 
-    assert "npm:@playwright/mcp" not in remaining  # kiroclaw.exe command matched by stem
-    assert "meshclaw-legacy" not in remaining  # meshclaw.exe command matched by stem
-    assert {"npm:@playwright/mcp", "meshclaw-legacy"} <= set(removed)
+    assert "npm:@playwright/mcp" not in remaining  # meshclaw.exe command matched by stem
+    assert "npm:@playwright/mcp" in removed
     assert "ai-community-slack-mcp" in remaining  # user server kept
 
 

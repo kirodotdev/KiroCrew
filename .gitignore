@@ -25,8 +25,6 @@ __pycache__/
 
 # Generated agent config — contains machine-specific absolute paths
 .kiro/agents/kirocrew.json
-# Legacy (pre-rename) — an unmigrated install may still have this file
-.kiro/agents/kiroclaw.json
 
 # Generated per-machine by install_cc_agent_config()
 .mcp.json
@@ -63,18 +61,15 @@ hs_err_pid*.log
 Thumbs.db
 .git.old
 
-# Dev mode data directory (+ legacy pre-rename names, for in-place upgrades)
+# Dev mode data directory
 .kirocrew-dev/
 .kirocrew-dev2/
-.kiroclaw-dev/
-.kiroclaw-dev2/
 
 # Potential task progress files
 *.TASK_PROGRESS.md
 docs/TASK_PLAN_MODE.md
 frontend/src/.backup_pre_mdpanel/
 kirocrew-data.tar.gz
-kiroclaw-data.tar.gz
 .kiro/hooks/track-with-agent.kiro.hook
 
 # AI attribution tracking data

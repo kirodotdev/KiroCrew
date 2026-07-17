@@ -735,14 +735,8 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 members = [m for m in tar.getmembers() if _data_filter(m) is not None]
                 tar.extractall(work, members=members)
 
-        # Accept the current kirocrew-snapshot- prefix and the legacy
-        # kiroclaw-snapshot- prefix a pre-rename install produced, so snapshots
-        # taken before the KiroClaw → KiroCrew rename still restore.
         snap_dirs = [
-            d
-            for d in work.iterdir()
-            if d.is_dir()
-            and (d.name.startswith("kirocrew-snapshot-") or d.name.startswith("kiroclaw-snapshot-"))
+            d for d in work.iterdir() if d.is_dir() and d.name.startswith("kirocrew-snapshot-")
         ]
         if not snap_dirs:
             print("❌ Invalid snapshot format")

@@ -18,8 +18,7 @@ custom-rules:
 
       - Never read sensitive credential paths (~/.aws, ~/.ssh, ~/.gnupg,
         ~/.docker, ~/.kube, ~/.npmrc, ~/.pypirc, ~/.netrc, ~/.git-credentials,
-        ~/.kirocrew/.env, and the legacy ~/.kiroclaw/.env an unmigrated install
-        may still hold). File reads of user- or LLM-influenced paths MUST go
+        ~/.kirocrew/.env). File reads of user- or LLM-influenced paths MUST go
         through hooks.py, which enforces is_sensitive_path(); trusted
         fixed-path internal config/package reads are exempt. Never weaken that
         keystone.

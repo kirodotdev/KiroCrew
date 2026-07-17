@@ -370,13 +370,7 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
 # One-time migrations performed automatically on gateway first-run (so the
 # desktop app, which never runs `kirocrew setup`, still gets them).
 _MIGRATIONS_DIR = _USER_DIR / ".migrations"
-# Versioned marker: bumped to _v2 for the KiroClaw → KiroCrew rename, which added
-# the now-dead `kiroclaw-*` predecessor to the stale-MCP purge set. An existing
-# install already carries the v1 marker (from the earlier MeshClaw-era purge);
-# without a bump the early return would skip the new kiroclaw cleanup, leaving a
-# migrated user's orphaned kiroclaw-* global MCP entries pointing at a dead
-# binary. The v2 marker makes the idempotent purge run exactly once more.
-_STALE_MCP_PURGE_MARKER = _MIGRATIONS_DIR / "stale_managed_mcp_purged_v2"
+_STALE_MCP_PURGE_MARKER = _MIGRATIONS_DIR / "stale_managed_mcp_purged"
 
 
 def run_first_run_setup() -> None:

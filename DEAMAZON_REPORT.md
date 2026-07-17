@@ -1,14 +1,11 @@
-# De-Amazoning Report — KiroClaw (public OSS fork)
+# De-Amazoning Report — KiroCrew (public OSS fork)
 
-> **Historical record — names as of 2026-06-02.** This report documents the
-> de-Amazon pass, when the project was named **KiroClaw** (package `kiro_claw`).
-> The project was later renamed to **KiroCrew** (package `kiro_crew`) in
-> 2026-07; the KiroClaw / `kiro_claw` names below are preserved as accurate
-> history of that earlier state and are intentionally NOT rewritten.
+> **Historical record — as of 2026-06-02.** This report documents the completed
+> de-Amazon pass that produced the public KiroCrew fork.
 
-_Date: 2026-06-02. KiroClaw is the public, GitHub-distributable,
+_Date: 2026-06-02. KiroCrew is the public, GitHub-distributable,
 pip+npm-installable OSS fork that strips all Amazon-internal couplings. The
-de-Amazoned fork now lives in this `KiroClaw` package._
+de-Amazoned fork now lives in this `KiroCrew` package._
 
 > **NOTE (updated post-2026-06-02):** a later **KiroACP-only** refactor
 > superseded the `claude_code`-default decisions recorded below — `agent.provider`
@@ -20,13 +17,13 @@ de-Amazoned fork now lives in this `KiroClaw` package._
 
 | Check | Result |
 |---|---|
-| `import kiro_claw` | **IMPORT_OK** |
+| `import kiro_crew` | **IMPORT_OK** |
 | Backend test suite (`pytest test/ -n auto`) | **7780 passed, 39 skipped, 0 failed, 0 errors** |
 | Frontend typecheck (`tsc -b`) | **0 errors** |
-| Frontend build (`npm run build`) | **succeeds** → `website/dist` → copied to `src/kiro_claw/static/dist` |
+| Frontend build (`npm run build`) | **succeeds** → `website/dist` → copied to `src/kiro_crew/static/dist` |
 | Repo-wide Amazon-infra string scan | **0 remaining** (live URLs / accounts / aliases / org-IDs / build) |
 | Default agent provider | `acp` (kiro-cli over ACP) — KiroACP-only (see note above) |
-| Original KiroClaw package | untouched (git clean) |
+| Original KiroCrew package | untouched (git clean) |
 
 ## What Was Removed (deleted)
 
@@ -61,7 +58,7 @@ de-Amazoned fork now lives in this `KiroClaw` package._
 - **Slack enterprise gate** is DEFAULT-OPEN (no hardcoded org-ID frozenset; opt-in via
   `slack.allowed_enterprise_ids`).
 - **Default agent config** drops `@builder-mcp` + `arcc-governance` + the AIM publish-metrics hook +
-  brazil deny lines; keeps `kiroclaw-core` + `kiroclaw-cron` (KiroClaw's own servers).
+  brazil deny lines; keeps `kirocrew-core` + `kirocrew-cron` (KiroCrew's own servers).
 - **Self-update** is `git pull` + `pip install -e .` + `npm build` (no toolbox/brazil).
 - **App registry** install rewritten from Brazil/`ssh://git.amazon.com` to generic `git clone`.
 - `amazon-transcribe` + `boto3` + Polly are OPTIONAL (lazy imports; `[options.extras_require]`); local
@@ -77,7 +74,7 @@ de-Amazoned fork now lives in this `KiroClaw` package._
 - ACP client + the single ACP provider driving the `kiro-cli` backend (KiroACP-only). The
   claude-agent-acp and Bedrock providers were removed in the later KiroACP-only refactor; the dormant
   `ACP_BACKEND_CLAUDE` protocol seam in `acp/client.py` is kept for an internal companion.
-- Internal module/field names (`kiro_claw`, `kiro_agent`, etc.) — renaming the import namespace was out
+- Internal module/field names (`kiro_crew`, `kiro_agent`, etc.) — renaming the import namespace was out
   of scope and would break the 7780-test suite. Only user-facing strings were genericized.
 
 ## Tests
@@ -89,7 +86,7 @@ de-Amazoned fork now lives in this `KiroClaw` package._
 
 ## Follow-ups for public launch (human / out of scope here)
 
-- Replace `https://github.com/YOUR_ORG/kiroclaw` placeholders with the real repo URL.
+- Replace `https://github.com/YOUR_ORG/kirocrew` placeholders with the real repo URL.
 - Rotate any previously-committed secrets at the source (the live Cognito/RUM ids were removed here but
   must be torn down in AWS by the owner).
 - Add a `LICENSE` file (Apache-2.0) and run the formal OSS release / legal clearance before publishing.
@@ -106,7 +103,7 @@ A recall-mode review of the de-Amazoning diff surfaced 15 findings + 6 sweep gap
 1. `slack/gateway.py::_auto_apply_update` — the third (gateway auto-update) path was still fully Amazon-coupled (toolbox/brazil/aim); rewritten to git pull + build in-tree `website/` + pip install + execv restart.
 2. `slack/enterprise.py` — `validate_enterprise` now FAILS CLOSED when an allowlist is configured but `auth.test` can't verify the workspace (was fail-open); still default-open only when no allowlist is set.
 3. `apps/routes.py` blob proxy — replaced `git archive --remote` (GitHub-incompatible) with sandboxed `git clone --depth 1 --single-branch`; widened repo validation to accept vetted https/scp/ssh git URLs (was bare-name-only).
-4/5/6. Build/update unification — `frontend.py` now builds the in-tree `website/` and stages `website/dist → src/kiro_claw/static/dist`; `cli_server._update` and `dashboard/handlers/updates.py` both use the shared helper and stage the served dir.
+4/5/6. Build/update unification — `frontend.py` now builds the in-tree `website/` and stages `website/dist → src/kiro_crew/static/dist`; `cli_server._update` and `dashboard/handlers/updates.py` both use the shared helper and stage the served dir.
 7/8/9. Phantom UI — removed `taskkeeper`/`secretary` from backend `_BUILTIN_APPS`; removed the frontend TaskKeeper Settings tab + panel + tk* client methods; removed the leftover Amazon Midway card from OverviewPage.
 10. `dashboard/handlers/usage.py` — provider fallback `acp` → `claude_code` (matches new default).
 11/12. `voice_reply.DEFAULT_PROVIDER` → piper (local); removed `use_aws` from default agent tools/allowedTools.

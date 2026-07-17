@@ -167,11 +167,11 @@
         ".*cp.*/\\.ssh/.*",
         ".*python.*open.*/\\.aws/.*",
         ".*python.*open.*/\\.ssh/.*",
-        ".*kiro.?(crew|claw) restart.*",
-        ".*kiro.?(crew|claw) update.*",
-        ".*kiro.?(crew|claw)\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|login).*",
-        ".*kiro.?(crew|claw) gateway restart.*",
-        ".*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?(crew|claw)\\b.*"
+        ".*kiro.?crew restart.*",
+        ".*kiro.?crew update.*",
+        ".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|login).*",
+        ".*kiro.?crew gateway restart.*",
+        ".*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*"
       ]
     },
     "shell": {
@@ -301,11 +301,11 @@
         ".*cp.*/\\.ssh/.*",
         ".*python.*open.*/\\.aws/.*",
         ".*python.*open.*/\\.ssh/.*",
-        ".*kiro.?(crew|claw) restart.*",
-        ".*kiro.?(crew|claw) update.*",
-        ".*kiro.?(crew|claw)\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|login).*",
-        ".*kiro.?(crew|claw) gateway restart.*",
-        ".*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?(crew|claw)\\b.*"
+        ".*kiro.?crew restart.*",
+        ".*kiro.?crew update.*",
+        ".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|login).*",
+        ".*kiro.?crew gateway restart.*",
+        ".*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*"
       ]
     }
   },

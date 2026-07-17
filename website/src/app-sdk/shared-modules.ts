@@ -29,13 +29,6 @@ declare global {
       '@kirocrew/app-sdk': typeof appSdk
       '@kirocrew/ui': typeof kirocrewUi
     }
-    // Legacy alias (KiroClaw → KiroCrew rename): an already-installed app bundle
-    // built against the old SDK reads window.__kiroclaw_modules['@kiroclaw/*'].
-    // Kept pointing at the SAME module instances so those bundles keep working.
-    __kiroclaw_modules?: Window['__kirocrew_modules'] & {
-      '@kiroclaw/app-sdk': typeof appSdk
-      '@kiroclaw/ui': typeof kirocrewUi
-    }
   }
 }
 
@@ -47,14 +40,4 @@ window.__kirocrew_modules = {
   '@tanstack/react-query': reactQuery,
   '@kirocrew/app-sdk': appSdk,
   '@kirocrew/ui': kirocrewUi,
-}
-
-// Legacy compatibility shim for pre-rename app bundles. Same module instances,
-// exposed under the old global + old bare-specifier keys so a bundle built
-// against @kiroclaw/app-sdk still resolves the host's React/SDK (no duplicate
-// React, which would break hooks).
-window.__kiroclaw_modules = {
-  ...window.__kirocrew_modules,
-  '@kiroclaw/app-sdk': appSdk,
-  '@kiroclaw/ui': kirocrewUi,
 }

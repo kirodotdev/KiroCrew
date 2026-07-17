@@ -108,7 +108,7 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "::group::sensitive-path reads must go through is_sensitive_path()"
-          SENSITIVE_PATHS='\.aws/|\.ssh/|\.gnupg/|\.docker/|\.kube/|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.kirocrew/security_policy|\.kirocrew/admission_policy|\.kiroclaw/security_policy|\.kiroclaw/admission_policy'
+          SENSITIVE_PATHS='\.aws/|\.ssh/|\.gnupg/|\.docker/|\.kube/|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.kirocrew/security_policy|\.kirocrew/admission_policy'
           # Best-effort: covers open()/Path.open()/read_text()/os.open()/aiofiles.
           # The authoritative control is security.py/hooks.py + their unit tests;
           # this grep is a fast pre-filter, not the guarantee.

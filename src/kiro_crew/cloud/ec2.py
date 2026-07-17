@@ -31,16 +31,6 @@ STACK_PREFIX = "kirocrew-"
 MANAGED_TAG_KEY = "kirocrew:managed"
 INSTANCE_TAG_KEY = "kirocrew:instance"
 
-# Legacy predecessor naming (KiroClaw → KiroCrew rename). Stacks provisioned by
-# an older KiroClaw install carry the kiroclaw- prefix and kiroclaw:managed /
-# kiroclaw:instance tags. NEW stacks are always created with the kirocrew names
-# above, but discovery (find_stack / list_instances / list_stacks) MUST also see
-# legacy resources: otherwise existing billable EC2 stacks become invisible —
-# stop/destroy/status can't find them and a fresh launch would duplicate them.
-LEGACY_STACK_PREFIX = "kiroclaw-"
-LEGACY_MANAGED_TAG_KEY = "kiroclaw:managed"
-LEGACY_INSTANCE_TAG_KEY = "kiroclaw:instance"
-
 # Terminal CloudFormation stack states.
 _COMPLETE_STATES = {"CREATE_COMPLETE", "UPDATE_COMPLETE"}
 _FAILED_STATES = {
@@ -149,24 +139,8 @@ def load_template() -> str:
 
 
 def stack_name(tag: str) -> str:
-    """Deterministic stack name for a discovery tag (new kirocrew- prefix)."""
+    """Deterministic stack name for a discovery tag."""
     return f"{STACK_PREFIX}{tag}"
-
-
-def _resolved_stack_name(stack: Optional[dict[str, Any]], tag: str) -> str:
-    """Return the ACTUAL name of a discovered stack, or the new-prefix default.
-
-    Lifecycle ops (destroy/wait/failure inspection) must target the real stack
-    name, not always ``kirocrew-<tag>``: a pre-rename install's stack is named
-    ``kiroclaw-<tag>``, so building the delete/wait argv from ``stack_name(tag)``
-    would no-op against a nonexistent name and leave a still-billing legacy stack
-    behind. ``find_stack`` returns the summary; this reads its StackName.
-    """
-    if stack:
-        name = stack.get("StackName")
-        if isinstance(name, str) and name:
-            return name
-    return stack_name(tag)
 
 
 def validate_profile(profile: str) -> str:
@@ -498,23 +472,6 @@ def deploy(
     existing = find_stack(tag, profile, region)
     reused = existing is not None
 
-    # If the discovered stack is a LEGACY kiroclaw-<tag> stack, deploying would
-    # create a SECOND stack under the new kirocrew-<tag> name (CloudFormation
-    # can't rename in place) — duplicating a still-billing instance. Refuse and
-    # point the user at destroy, which now targets the legacy stack by its real
-    # name. A migrated (kirocrew-) stack updates in place as before.
-    if existing is not None:
-        existing_name = _resolved_stack_name(existing, tag)
-        if existing_name.startswith(LEGACY_STACK_PREFIX):
-            raise aws.AWSError(
-                f"a legacy stack {existing_name} (from a pre-rename KiroClaw "
-                f"install) already exists for tag '{tag}'. Deploying would create "
-                f"a duplicate {stack_name(tag)} stack and double-bill. Tear the "
-                f"legacy stack down first: `kirocrew cloud destroy --tag {tag}` "
-                "(it targets the legacy stack), then re-launch.",
-                action="cloudformation:CreateStack",
-            )
-
     from kiro_crew.cloud import source as source_mod
 
     # Ensure the SHARED, immutable instance permissions boundary exists (created
@@ -606,50 +563,14 @@ def deploy(
 def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[str, Any]]:
     """Return the CloudFormation stack summary for ``tag``, or None if absent.
 
-    Looks up the current ``kirocrew-<tag>`` stack first, then falls back to the
-    legacy ``kiroclaw-<tag>`` stack a pre-rename install may still be running, so
-    stop/destroy/status/deploy can find and manage it (and a re-launch updates it
-    in place instead of duplicating a still-billing instance).
-
-    Only a genuine "does not exist" (for BOTH names) is reported as absent
-    (``None``). Any other non-zero exit — throttling, network, expired SSO, or
-    ``AccessDenied`` on ``cloudformation:DescribeStacks`` — is raised as an
-    :class:`aws.AWSError`, so callers like :func:`destroy` never mistake a
-    transient failure for "already gone" and falsely report that a still-billing
-    stack was removed.
-    """
-    stack = _find_stack_by_name(
-        stack_name(tag), tag, MANAGED_TAG_KEY, INSTANCE_TAG_KEY, profile, region
-    )
-    if stack is not None:
-        return stack
-    # Fall back to the legacy predecessor name/tags for an unmigrated install.
-    return _find_stack_by_name(
-        f"{LEGACY_STACK_PREFIX}{tag}",
-        tag,
-        LEGACY_MANAGED_TAG_KEY,
-        LEGACY_INSTANCE_TAG_KEY,
-        profile,
-        region,
-    )
-
-
-def _find_stack_by_name(
-    name: str,
-    tag: str,
-    managed_key: str,
-    instance_key: str,
-    profile: str,
-    region: str,
-) -> Optional[dict[str, Any]]:
-    """Describe one stack by exact name, validating its managed/instance tags.
-
-    Returns the stack summary if it exists and is ours, ``None`` if it does not
-    exist, and raises :class:`aws.AWSError` on a transient failure or a
-    name-collision with a stack we didn't create.
+    Only a genuine "does not exist" is reported as absent (``None``). Any other
+    non-zero exit — throttling, network, expired SSO, or ``AccessDenied`` on
+    ``cloudformation:DescribeStacks`` — is raised as an :class:`aws.AWSError`, so
+    callers like :func:`destroy` never mistake a transient failure for "already
+    gone" and falsely report that a still-billing stack was removed.
     """
     rc, out, err = aws.run_aws(
-        ["cloudformation", "describe-stacks", "--stack-name", name, "--output", "json"],
+        ["cloudformation", "describe-stacks", "--stack-name", stack_name(tag), "--output", "json"],
         profile,
         region,
         timeout=_POLL_TIMEOUT,
@@ -661,7 +582,7 @@ def _find_stack_by_name(
             return None
         missing = aws.map_missing_action(err)
         raise aws.AWSError(
-            f"could not query stack {name}: {err.strip()[:300]}",
+            f"could not query stack {stack_name(tag)}: {err.strip()[:300]}",
             action="cloudformation:DescribeStacks",
             missing_action=missing,
             returncode=rc,
@@ -676,28 +597,31 @@ def _find_stack_by_name(
     if not stacks:
         return None
     stack = stacks[0]
-    # A stack merely NAMED <prefix>-<tag> isn't necessarily ours — verify the
-    # managed tag. A same-named but UNTAGGED stack is a collision with
+    # A stack merely NAMED kirocrew-<tag> isn't necessarily ours — verify the
+    # kirocrew:managed tag. A same-named but UNTAGGED stack is a collision with
     # something we didn't create: raise (not return None), because "None" means
     # "absent" to deploy() and would make it run `cloudformation deploy` against
     # the foreign stack. Raising makes every caller (deploy/destroy/stop/start/
     # status) abort instead.
     tags = {t.get("Key"): t.get("Value") for t in stack.get("Tags", [])}
-    if tags.get(managed_key) != "true":
+    if tags.get(MANAGED_TAG_KEY) != "true":
         raise aws.AWSError(
-            f"a CloudFormation stack named {name} already exists but is "
-            f"NOT tagged {managed_key}=true — refusing to touch it (it wasn't "
+            f"a CloudFormation stack named {stack_name(tag)} already exists but is "
+            f"NOT tagged {MANAGED_TAG_KEY}=true — refusing to touch it (it wasn't "
             "created by KiroCrew). Use a different --tag, or remove that stack.",
             action="cloudformation:DescribeStacks",
         )
     # Also require the instance tag to match THIS tag. A managed stack that
-    # merely shares the name prefix but carries a different instance value is
-    # not this launch's stack — destroy/stop/start must not act on it.
-    inst = tags.get(instance_key)
+    # merely shares the kirocrew- name prefix but carries a different
+    # kirocrew:instance value is not this launch's stack — destroy/stop/start
+    # must not act on it. (The stack is looked up by name, so this guards against
+    # a managed stack whose instance tag was changed or that a companion tool
+    # created under the same prefix.)
+    inst = tags.get(INSTANCE_TAG_KEY)
     if inst is not None and inst != tag:
         raise aws.AWSError(
-            f"stack {name} is {managed_key}=true but its "
-            f"{instance_key} tag is '{inst}', not '{tag}' — refusing to touch "
+            f"stack {stack_name(tag)} is {MANAGED_TAG_KEY}=true but its "
+            f"{INSTANCE_TAG_KEY} tag is '{inst}', not '{tag}' — refusing to touch "
             "it (it isn't this launch's stack). Use the correct --tag.",
             action="cloudformation:DescribeStacks",
         )
@@ -851,52 +775,36 @@ def _instance_state(instance_id: str, profile: str, region: str) -> str:
 
 
 def list_instances(profile: str = "", region: str = "") -> list[dict[str, Any]]:
-    """List all launcher-managed instances live by tag (stateless-by-tag).
-
-    Queries both the current ``kirocrew:managed`` tag and the legacy
-    ``kiroclaw:managed`` tag so instances from a pre-rename install stay visible
-    (otherwise a re-launch would duplicate a still-billing instance). Results are
-    deduped by instance id, preferring the current instance-tag value.
-    """
+    """List all launcher-managed instances live by tag (stateless-by-tag)."""
     profile = validate_profile(profile)
     region = validate_region(region)
-    out: dict[str, dict[str, Any]] = {}
-    for managed_key, instance_key in (
-        (MANAGED_TAG_KEY, INSTANCE_TAG_KEY),
-        (LEGACY_MANAGED_TAG_KEY, LEGACY_INSTANCE_TAG_KEY),
-    ):
-        data = aws.checked_json(
-            [
-                "resourcegroupstaggingapi",
-                "get-resources",
-                "--tag-filters",
-                f"Key={managed_key},Values=true",
-                "--resource-type-filters",
-                "ec2:instance",
-            ],
-            profile,
-            region,
-            action="tag:GetResources",
-        )
-        for mapping in data.get("ResourceTagMappingList", []) if isinstance(data, dict) else []:
-            arn = mapping.get("ResourceARN", "")
-            tags = {t["Key"]: t["Value"] for t in mapping.get("Tags", [])}
-            tag = tags.get(instance_key, "")
-            instance_id = arn.rsplit("/", 1)[-1] if "/" in arn else ""
-            state = _instance_state(instance_id, profile, region) if instance_id else ""
-            # The tagging API keeps returning terminated instances for a while;
-            # only surface live ones (running/stopped/pending/stopping/...), not
-            # terminated/shutting-down.
-            if state in ("terminated", "shutting-down"):
-                continue
-            # Dedup by instance id; a current-tag entry wins over a legacy one.
-            if instance_id in out and not out[instance_id]["tag"] and tag:
-                out[instance_id]["tag"] = tag
-            out.setdefault(
-                instance_id,
-                {"tag": tag, "instance_id": instance_id, "instance_state": state},
-            )
-    return sorted(out.values(), key=lambda r: r["tag"])
+    data = aws.checked_json(
+        [
+            "resourcegroupstaggingapi",
+            "get-resources",
+            "--tag-filters",
+            f"Key={MANAGED_TAG_KEY},Values=true",
+            "--resource-type-filters",
+            "ec2:instance",
+        ],
+        profile,
+        region,
+        action="tag:GetResources",
+    )
+    out: list[dict[str, Any]] = []
+    for mapping in data.get("ResourceTagMappingList", []) if isinstance(data, dict) else []:
+        arn = mapping.get("ResourceARN", "")
+        tags = {t["Key"]: t["Value"] for t in mapping.get("Tags", [])}
+        tag = tags.get(INSTANCE_TAG_KEY, "")
+        instance_id = arn.rsplit("/", 1)[-1] if "/" in arn else ""
+        state = _instance_state(instance_id, profile, region) if instance_id else ""
+        # The tagging API keeps returning terminated instances for a while; only
+        # surface live ones (running/stopped/pending/stopping/...), not
+        # terminated/shutting-down.
+        if state in ("terminated", "shutting-down"):
+            continue
+        out.append({"tag": tag, "instance_id": instance_id, "instance_state": state})
+    return sorted(out, key=lambda r: r["tag"])
 
 
 def list_stacks(profile: str = "", region: str = "") -> list[dict[str, Any]]:
@@ -920,14 +828,9 @@ def list_stacks(profile: str = "", region: str = "") -> list[dict[str, Any]]:
     summaries = data.get("StackSummaries", []) if isinstance(data, dict) else []
     for summary in summaries:
         name = str(summary.get("StackName", ""))
-        # Match current kirocrew- stacks and legacy kiroclaw- stacks a pre-rename
-        # install may still be running (so they're listed for stop/destroy).
-        if name.startswith(STACK_PREFIX):
-            tag = name[len(STACK_PREFIX) :]
-        elif name.startswith(LEGACY_STACK_PREFIX):
-            tag = name[len(LEGACY_STACK_PREFIX) :]
-        else:
+        if not name.startswith(STACK_PREFIX):
             continue
+        tag = name[len(STACK_PREFIX) :]
         if not tag:
             continue
         out.append(
@@ -1017,13 +920,14 @@ def destroy(
     profile = validate_profile(profile)
     region = validate_region(region)
 
+    argv = build_destroy_argv(tag)
     if dry_run:
         return {
             "tag": tag,
             "stack_name": stack_name(tag),
             "action": "destroy",
             "dry_run": True,
-            "argv": build_destroy_argv(tag),
+            "argv": argv,
         }
 
     stack = find_stack(tag, profile, region)
@@ -1036,46 +940,30 @@ def destroy(
             "already_absent": True,
         }
 
-    # Target the ACTUAL discovered stack — a legacy install's stack is named
-    # kiroclaw-<tag>, so deleting/waiting on stack_name(tag) would no-op and
-    # leave a still-billing stack behind.
-    actual_name = _resolved_stack_name(stack, tag)
-    argv = ["cloudformation", "delete-stack", "--stack-name", actual_name]
-
     aws.checked(argv, profile, region, action="cloudformation:DeleteStack", timeout=_POLL_TIMEOUT)
     if not wait:
         return {
             "tag": tag,
-            "stack_name": actual_name,
+            "stack_name": stack_name(tag),
             "action": "destroy",
             "destroyed": True,
             "waited": False,
         }
 
-    final = wait_for_delete(tag, profile, region, name=actual_name)
+    final = wait_for_delete(tag, profile, region)
     return {
         "tag": tag,
-        "stack_name": actual_name,
+        "stack_name": stack_name(tag),
         "action": "destroy",
         "destroyed": final,
         "waited": True,
     }
 
 
-def wait_for_delete(tag: str, profile: str = "", region: str = "", *, name: str = "") -> bool:
-    """Block until the stack is gone. Returns True on DELETE_COMPLETE.
-
-    ``name`` overrides the stack name to wait on (the discovered actual name,
-    which may be the legacy ``kiroclaw-<tag>``); defaults to the new-prefix name.
-    """
+def wait_for_delete(tag: str, profile: str = "", region: str = "") -> bool:
+    """Block until the stack is gone. Returns True on DELETE_COMPLETE."""
     rc, _out, _err = aws.run_aws(
-        [
-            "cloudformation",
-            "wait",
-            "stack-delete-complete",
-            "--stack-name",
-            name or stack_name(tag),
-        ],
+        ["cloudformation", "wait", "stack-delete-complete", "--stack-name", stack_name(tag)],
         profile,
         region,
         timeout=_DEPLOY_TIMEOUT,

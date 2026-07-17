@@ -137,10 +137,7 @@ async function forceStopPort(
     getCommand,
     kill,
     sleep,
-    // Also match the legacy kiroclaw process names: after the KiroClaw → KiroCrew
-    // rename, a leftover kiroclaw gateway can still be holding the port on an
-    // upgraded host, and must be recoverable (not treated as a foreign holder).
-    isKirocrew = /kiro_crew|kirocrew|kiro_claw|kiroclaw/i,
+    isKirocrew = /kiro_crew|kirocrew/i,
     verifyTimeoutMs = 4000,
     pollIntervalMs = 250,
     log = () => {},

@@ -527,20 +527,6 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".kirocrew/admission_policy.json",
 ]
 
-# Legacy predecessor home dir (KiroClaw → KiroCrew rename). An in-place upgrade
-# does NOT move ~/.kiroclaw (migration is a documented manual step), so an old
-# install can still hold live credentials and governance trust-root files under
-# ~/.kiroclaw. The security gate must keep treating every ~/.kiroclaw analog of a
-# sensitive ~/.kirocrew path as sensitive, or a prompt-injected agent on an
-# unmigrated host could read the old .env / rewrite the old security_policy.json.
-# Derived from the canonical list so the two never drift.
-_LEGACY_HOME_DIR = ".kiroclaw"
-_SENSITIVE_HOME_DIRS += [
-    d.replace(".kirocrew/", _LEGACY_HOME_DIR + "/", 1)
-    for d in _SENSITIVE_HOME_DIRS
-    if d.startswith(".kirocrew/")
-]
-
 # ── Write-protected paths (block modification, allow reads) ──
 # Runtime config files carry security-relevant resource ceilings (concurrent
 # subagents, per-agent turn budget, warm-pool size). A prompt-injected agent
@@ -560,13 +546,6 @@ _SENSITIVE_HOME_DIRS += [
 _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     ".kirocrew/config.json",
     ".kirocrew/config.local.json",
-]
-# Same legacy-home coverage as _SENSITIVE_HOME_DIRS: an unmigrated ~/.kiroclaw
-# still holds the config the loader reads, so keep its writes blocked too.
-_WRITE_PROTECTED_HOME_PATHS += [
-    p.replace(".kirocrew/", _LEGACY_HOME_DIR + "/", 1)
-    for p in _WRITE_PROTECTED_HOME_PATHS
-    if p.startswith(".kirocrew/")
 ]
 
 # Regex for bash commands that read sensitive paths.
@@ -777,7 +756,7 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
 _EXTRACT_INTO_TRUST_ROOT_RE = re.compile(
     r"-(?:C|d)\s+(?:~|\$HOME|/home/[^/\s]+|/Users/[^/\s]+|"
     + re.escape(str(Path.home()))
-    + r")/\.kiro(?:crew|claw)(?:/[^\s]*)?(?:\s|$|['\"])",
+    + r")/\.kirocrew(?:/[^\s]*)?(?:\s|$|['\"])",
     re.IGNORECASE,
 )
 

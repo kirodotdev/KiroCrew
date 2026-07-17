@@ -1478,13 +1478,6 @@ class TestArgsLookLikeKirocrew:
             "/usr/local/bin/kirocrew gateway",
             "/Users/x/.toolbox/bin/kirocrew start",
             "kirocrew dashboard",
-            # Legacy pre-rename (KiroClaw) forms — an upgraded host can still have
-            # a running kiroclaw gateway holding the port; stop/status must detect
-            # it so it isn't treated as a foreign holder.
-            "python3 -m kiro_claw gateway",
-            "python -m kiro_claw.gateway",
-            "/usr/local/bin/kiroclaw gateway",
-            "kiroclaw start",
         ],
     )
     def test_matches_server_launch_forms(self, args):
@@ -1504,9 +1497,7 @@ class TestArgsLookLikeKirocrew:
             "python -m kiro_crew run gateway",  # "gateway" is a file arg to run, not the subcommand
             "python -m kiro_crew run start",  # "start" is a file arg to run, not the subcommand
             "python -m kiro_crew_other gateway",  # different package named kiro_crew_other
-            "python -m kiro_claw_other gateway",  # legacy near-miss: different package
             "/usr/bin/kirocrew",  # wrapper with no subcommand
-            "/usr/bin/kiroclaw",  # legacy wrapper with no subcommand
             "grep -m kiro_crew gateway somefile",  # "-m" is grep's flag (no python interpreter)
         ],
     )

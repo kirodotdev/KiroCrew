@@ -422,11 +422,7 @@ def _args_look_like_kirocrew(args: str) -> bool:
                 # "kiro_crew.gateway" -> ("kiro_crew", "gateway"); a bare
                 # "kiro_crew" -> ("kiro_crew", "").
                 package, _, dotted_subcmd = tokens[index + 1].partition(".")
-                # Accept the legacy kiro_claw module too: after the KiroClaw →
-                # KiroCrew rename, an upgraded host can still have a running
-                # ``-m kiro_claw gateway`` holding the port, and stop/status must
-                # detect it.
-                if package in ("kiro_crew", "kiro_claw"):
+                if package == "kiro_crew":
                     # Dotted submodule form: ``-m kiro_crew.gateway``.
                     if dotted_subcmd in _KIROCREW_SERVER_SUBCOMMANDS:
                         return True
@@ -443,10 +439,8 @@ def _args_look_like_kirocrew(args: str) -> bool:
                         return True
 
         # --- Console-script form: ".../kirocrew <subcmd>" (or kirocrew.exe on Win)
-        # Also match the legacy ``kiroclaw`` console script a pre-rename install
-        # may still be running.
         if (
-            _basename_stem(token) in ("kirocrew", "kiroclaw")
+            _basename_stem(token) == "kirocrew"
             and index + 1 < len(tokens)
             and tokens[index + 1] in _KIROCREW_SERVER_SUBCOMMANDS
         ):

@@ -282,33 +282,6 @@ class TestRestoreReplace:
         assert backups
         assert (backups[0] / "workspace/local_only.md").is_file()
 
-    def test_restore_legacy_kiroclaw_snapshot_prefix(self, env, monkeypatch):
-        """A snapshot taken before the KiroClaw → KiroCrew rename has its inner
-        dir named kiroclaw-snapshot-*; restore must accept that legacy prefix
-        instead of rejecting it as 'Invalid snapshot format'."""
-        _, _, tarball, tmp_path = env
-        # Repack the fixture tarball with its inner dir renamed to the legacy
-        # kiroclaw-snapshot- prefix.
-        unpack = tmp_path / "unpack_legacy"
-        unpack.mkdir()
-        with tarfile.open(str(tarball)) as tar:
-            tar.extractall(unpack, filter=lambda t, _d="": t)
-        inner = next(d for d in unpack.iterdir() if d.name.startswith("kirocrew-snapshot-"))
-        legacy_name = inner.name.replace("kirocrew-snapshot-", "kiroclaw-snapshot-", 1)
-        legacy_dir = unpack / legacy_name
-        inner.rename(legacy_dir)
-        legacy_tarball = tmp_path / "legacy-snapshot.tar.gz"
-        with tarfile.open(str(legacy_tarball), "w:gz") as tar:
-            tar.add(str(legacy_dir), arcname=legacy_name)
-
-        fresh = tmp_path / "fresh_legacy"
-        fresh.mkdir()
-        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
-        ret = restore_main([str(legacy_tarball), "--mode", "replace", "--force"])
-        assert ret == 0
-        assert (fresh / "memory.db").is_file()
-        assert (fresh / "config.json").is_file()
-
 
 class TestRestoreMerge:
     def test_merge_memory_dedup(self, env, monkeypatch):

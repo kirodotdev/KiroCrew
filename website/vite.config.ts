@@ -70,10 +70,6 @@ function appImportMapPlugin(): Plugin {
             'react/jsx-runtime': '/vendor/react-jsx-runtime.mjs',
             '@kirocrew/app-sdk': '/vendor/kirocrew-app-sdk.mjs',
             '@kirocrew/app-sdk/ui': '/vendor/kirocrew-ui.mjs',
-            // Legacy specifiers (KiroClaw → KiroCrew): keep already-installed app
-            // bundles built against the old SDK resolving to the same host stubs.
-            '@kiroclaw/app-sdk': '/vendor/kiroclaw-app-sdk.mjs',
-            '@kiroclaw/app-sdk/ui': '/vendor/kiroclaw-ui.mjs',
             'lucide-react': '/vendor/lucide-react.mjs',
           },
         }
