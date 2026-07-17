@@ -56,6 +56,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.subagent import resolve_max_subagents
 from kiro_crew.subagent_persistence import _agent_dir
 from kiro_crew.validation import (
     _SLACK_TS_RE,
@@ -183,6 +184,24 @@ def _list_tools() -> list[dict[str, Any]]:
         (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "negative"),
         MAX_SHORT_STRING,
     )
+    # Advertise the live concurrent sub-agent cap so the model fans out with
+    # confidence instead of self-limiting. resolve_max_subagents is the single
+    # source of truth (auto-sizes from host mem/CPU + learned cost, or the
+    # explicit agent.max_subagents). A snapshot at tool-list time is fine: this
+    # is advisory guidance, not an enforced limit, and SubagentManager
+    # auto-queues any overflow regardless.
+    try:
+        _max_sub = resolve_max_subagents(KiroCrewConfig.load())
+    except Exception:
+        _max_sub = 0
+    _cap_hint = (
+        f" You can run up to {_max_sub} sub-agents concurrently; if a task has "
+        "more independent parts than that, still pass ALL of them in one call — "
+        "any beyond the cap are queued and drained automatically as slots free, "
+        "so you never need to split the work into multiple manual rounds."
+        if _max_sub > 0
+        else ""
+    )
     return [
         {
             "name": "spawn_run",
@@ -190,8 +209,9 @@ def _list_tools() -> list[dict[str, Any]]:
                 "Spawn subagent(s) to run tasks in the background. "
                 "Returns immediately — results arrive as [Subagent completion event] "
                 "messages in your conversation. For parallel work, use 'tasks' array. "
-                "Tasks are automatically batched if they exceed the concurrency limit. "
-                "WAIT for all completion events before responding to the user."
+                "Tasks are automatically batched if they exceed the concurrency limit."
+                + _cap_hint
+                + " WAIT for all completion events before responding to the user."
             ),
             "inputSchema": {
                 "type": "object",
@@ -317,6 +337,7 @@ def _list_tools() -> list[dict[str, Any]]:
                 "complete, then returns their collected results. Use for delegating "
                 "independent subtasks to specialist agents. Preferred over spawn_run when "
                 "you need results before continuing."
+                + _cap_hint
             ),
             "inputSchema": {
                 "type": "object",

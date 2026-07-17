@@ -943,7 +943,26 @@ class ContextBuilder:
         """Resolve conditional template blocks in prompt text.
 
         Dashboard sessions get a short widget pointer; Slack/CLI get it stripped.
+        The ``{{MAX_SUBAGENTS}}`` token is replaced with the live resolved
+        concurrent sub-agent cap so the delegation guidance carries a concrete
+        number the model can fan out to with confidence. Resolved for every
+        transport (not just dashboard), before the widget-block branch.
         """
+        if "{{MAX_SUBAGENTS}}" in prompt:
+            # Lazy import: kiro_crew.subagent imports this module, so a
+            # top-level import would cycle.
+            try:
+                from kiro_crew.subagent import (  # circular import: subagent -> context
+                    resolve_max_subagents,
+                )
+
+                cap = resolve_max_subagents(KiroCrewConfig.load())
+            except Exception:
+                cap = 0
+            prompt = prompt.replace(
+                "{{MAX_SUBAGENTS}}", str(cap) if cap > 0 else "several"
+            )
+
         is_dashboard = session_key and (
             session_key.startswith("dashboard:") or session_key.startswith("dashboard_")
         )
