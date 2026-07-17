@@ -14,6 +14,7 @@ from zoneinfo import available_timezones
 
 from aiohttp import web
 
+from kiro_crew import model_registry
 from kiro_crew.aim_agents import auto_register_project as _auto_register_project
 from kiro_crew.aim_agents import find_agent_file as _find_agent_file
 from kiro_crew.dashboard.cron_inject import (
@@ -23,7 +24,6 @@ from kiro_crew.dashboard.cron_inject import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import cron_executor
 from kiro_crew.llm_helpers import stream_and_collect
-from kiro_crew import model_registry
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
@@ -191,7 +191,12 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
     # Validate model BEFORE add_job so an invalid value never leaves an
     # orphaned job behind (a retried create would then duplicate it).
-    model_val = (body.get("model") or "").strip()
+    model_raw = body.get("model")
+    if model_raw is not None and not isinstance(model_raw, str):
+        # A numeric/bool JSON `model` would raise AttributeError on .strip()
+        # (HTTP 500); reject it as a clean 400 instead.
+        return web.json_response({"error": "invalid model format"}, status=400)
+    model_val = (model_raw or "").strip()
     if model_val:
         if len(model_val) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model_val):
             return web.json_response({"error": "invalid model format"}, status=400)
@@ -480,7 +485,11 @@ async def api_cron_update(request: web.Request) -> web.Response:
             )
         kwargs["project_path"] = resolved_pp
     if "model" in body:
-        m = (body["model"] or "").strip()
+        model_raw = body["model"]
+        if model_raw is not None and not isinstance(model_raw, str):
+            # Non-string JSON `model` would raise on .strip() (HTTP 500) — 400.
+            return web.json_response({"error": "invalid model format"}, status=400)
+        m = (model_raw or "").strip()
         if m:
             if len(m) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(m):
                 return web.json_response({"error": "invalid model format"}, status=400)

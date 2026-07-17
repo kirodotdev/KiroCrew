@@ -139,6 +139,18 @@ class TestCronCreateModel:
         job = request.app["state"].crons.add_job.return_value
         assert job.model == "glm-4.7"
 
+    @pytest.mark.asyncio
+    async def test_non_string_model_rejected(self):
+        # A numeric/bool JSON `model` must be rejected as a clean 400, not raise
+        # AttributeError on .strip() and leak an HTTP 500.
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": 123}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 400
+        body = json.loads(resp.body)
+        assert "invalid model format" in body["error"]
+
 
 class TestCronListFields:
     @pytest.mark.asyncio

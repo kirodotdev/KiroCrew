@@ -931,6 +931,13 @@ class CronService:
             logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
             await asyncio.sleep(jitter)
         exec_started_at = time.time()
+        # Notify dashboard that the job has started executing so the live
+        # is_running badge appears without a manual reload (upstream a5326708).
+        try:
+            if self._push_refresh:
+                self._push_refresh("crons")
+        except Exception:
+            logger.debug("push_refresh failed on job start", exc_info=True)
         try:
             await self._execute_with_timeout(job)
         finally:
@@ -942,6 +949,12 @@ class CronService:
             self._reaped_jobs.discard(job.id)
             self._executing.discard(job.id)
             self._running_tasks.pop(job.id, None)
+            # Notify dashboard that the job has finished (clears the badge).
+            try:
+                if self._push_refresh:
+                    self._push_refresh("crons")
+            except Exception:
+                logger.debug("push_refresh failed on job end", exc_info=True)
             # For 'every' jobs, use started_at to prevent cumulative drift
             if not reaped and job.schedule.kind == "every":
                 job.last_run_ts = started_at

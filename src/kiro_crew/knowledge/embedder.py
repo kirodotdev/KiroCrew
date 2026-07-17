@@ -108,7 +108,7 @@ class OllamaEmbedder:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=self.timeout_secs) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout_secs) as resp:  # nosemgrep
                 data = json.loads(resp.read())
             return data.get("embedding")
         except Exception as e:

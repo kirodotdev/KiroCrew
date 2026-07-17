@@ -50,9 +50,9 @@ from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
 )
 from kiro_crew.dashboard.state import (
+    _MAX_PENDING_CONTEXT,
     DashboardState,
     _ChatSlot,
-    _MAX_PENDING_CONTEXT,
     _mark_permission_resolved,
 )
 from kiro_crew.providers.acp import AcpProvider

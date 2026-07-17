@@ -650,7 +650,7 @@ class TestCgroupScopeArgv:
         with patch("os.sysconf", side_effect=lambda n: sixteen_g // 4096 if "PHYS" in n else 4096):
             mb = sb._default_max_memory_mb()
         assert mb == int(sixteen_g * sb._CGROUP_MEMORY_FRACTION) // (1024 * 1024)
-        assert 10_000 < mb < 11_000  # ~10.6 GB, sanity band
+        assert 10_000 < mb < 11_000  # ~10.6 GB, expected range
 
     def test_default_max_memory_falls_back_when_ram_unknown(self):
         """If sysconf can't report RAM, fall back to the flat MB constant."""

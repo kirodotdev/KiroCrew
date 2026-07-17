@@ -1074,10 +1074,17 @@ async def _git_clone_or_pull(
     if dest.is_dir() and (dest / ".git").is_dir():
         # Already cloned — fetch and fast-forward the target branch.
         log_lines.append(f"Updating {git_url} (branch: {branch})...")
+        # Route through wrap_argv (OS sandbox) THEN cgroup_scope_argv, matching
+        # the fresh-clone path below — the cgroup DoS ceiling is the outermost
+        # layer but must not replace the wrap_argv sandbox on this
+        # agent-influenced git spawn (Talos bdf0d7e5).
+        pull_cmd, _cleanup = wrap_argv(
+            ["git", "pull", "--ff-only", "origin", branch],
+            mode=_context_clone_sandbox_mode(git_url),
+        )
+        pull_cmd = cgroup_scope_argv(pull_cmd)
         proc = await asyncio.create_subprocess_exec(
-            *cgroup_scope_argv(  # cgroup DoS ceiling (Talos bdf0d7e5)
-                ["git", "pull", "--ff-only", "origin", branch]
-            ),
+            *pull_cmd,
             cwd=str(dest),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,

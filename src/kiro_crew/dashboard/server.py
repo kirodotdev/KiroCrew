@@ -44,6 +44,13 @@ from kiro_crew.dashboard import (
     stt_stream,
     ws,
 )
+from kiro_crew.dashboard.crash_dump_store import (
+    dump_age_seconds,
+    dump_replay_lines,
+    newest_dump_with_stacks,
+    open_dump_file,
+    rotate_dumps,
+)
 from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_delete,
     api_artifact_detail,
@@ -67,13 +74,6 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
 )
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
-from kiro_crew.dashboard.crash_dump_store import (
-    dump_age_seconds,
-    dump_replay_lines,
-    newest_dump_with_stacks,
-    open_dump_file,
-    rotate_dumps,
-)
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     bind_address_for,
