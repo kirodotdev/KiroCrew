@@ -228,7 +228,10 @@ def test_terminate_handles_already_exited_proc() -> None:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    proc.wait(timeout=5)
+    # 30s: generous for `python -c pass`, but the package-builder fleet can
+    # stall a fresh child process >5s under load (two consecutive Dry Run
+    # failures on CR-289659586 with TimeoutExpired at timeout=5).
+    proc.wait(timeout=30)
     assert proc.poll() is not None  # already exited
 
     # Should not raise even though the process is gone.
@@ -288,7 +291,10 @@ def test_terminate_pgid_noop_when_pid_gone() -> None:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    proc.wait(timeout=5)
+    # 30s: generous for `python -c pass`, but the package-builder fleet can
+    # stall a fresh child process >5s under load (two consecutive Dry Run
+    # failures on CR-289659586 with TimeoutExpired at timeout=5).
+    proc.wait(timeout=30)
     # Reaped — getpgid raises ProcessLookupError, terminate_pgid swallows it.
     terminate_pgid(proc.pid)
 

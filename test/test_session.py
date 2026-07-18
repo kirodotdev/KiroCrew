@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1888,6 +1889,7 @@ class TestCleanupLoop:
 
         with patch.object(mgr, "_expire_idle", new_callable=AsyncMock) as mock_expire, \
              patch("kiro_crew.session._cleanup_orphaned_mcp_servers", return_value=0), \
+             patch("kiro_crew.session.cleanup_stale_sandbox_profiles", return_value=0), \
              patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
              patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
              patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
@@ -1907,6 +1909,7 @@ class TestCleanupLoop:
 
         with patch.object(mgr, "_expire_idle", new_callable=AsyncMock) as mock_expire, \
              patch("kiro_crew.session._cleanup_orphaned_mcp_servers", return_value=0), \
+             patch("kiro_crew.session.cleanup_stale_sandbox_profiles", return_value=0), \
              patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
              patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
              patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
@@ -1932,6 +1935,7 @@ class TestCleanupLoop:
 
         with patch.object(mgr, "_expire_idle", new_callable=AsyncMock) as mock_expire, \
              patch("kiro_crew.session._cleanup_orphaned_mcp_servers", return_value=0), \
+             patch("kiro_crew.session.cleanup_stale_sandbox_profiles", return_value=0), \
              patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
              patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
              patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
@@ -1955,6 +1959,47 @@ class TestCleanupLoop:
             mock_event.wait = AsyncMock(return_value=None)
             # Should return immediately since shutdown is set
             await mgr._cleanup_loop()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_loop_runs_sandbox_sweep_via_executor(self, cfg, caplog):
+        """Sandbox sweep is invoked through run_in_executor on maintenance_executor.
+
+        Asserts the offload specifically (the AutoSDE blocking fix): the sweep
+        must execute on a maintenance-executor worker thread, NOT the event
+        loop thread, so its blocking os.listdir/os.kill/os.remove I/O cannot
+        freeze the loop.
+        """
+        cfg.session.timeout_secs = 120
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+
+        sweep_threads: list[str] = []
+
+        def _fake_sweep() -> int:
+            sweep_threads.append(threading.current_thread().name)
+            return 3
+
+        with patch.object(mgr, "_expire_idle", new_callable=AsyncMock), \
+             patch("kiro_crew.session._cleanup_orphaned_mcp_servers", return_value=0), \
+             patch("kiro_crew.session.cleanup_stale_sandbox_profiles", side_effect=_fake_sweep) as mock_sweep, \
+             patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
+             patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
+             patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.shutdown_event") as mock_event:
+            mock_event.is_set = lambda: mock_sweep.call_count >= 1
+            mock_event.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+            with caplog.at_level(logging.INFO, logger="kiro_crew.session"):
+                await mgr._cleanup_loop()
+
+        # Verify: sweep was called (production wiring)
+        mock_sweep.assert_called_once()
+        # Verify the offload: ran on a maintenance-executor worker thread,
+        # not the event loop thread (run_in_executor path).
+        assert sweep_threads, "sweep never executed"
+        assert sweep_threads[0] != threading.main_thread().name
+        assert sweep_threads[0].startswith("mc-maint")
+        # Verify: non-zero return produces the info log
+        assert "removed 3 stale sandbox launchers" in caplog.text
         await mgr.close_all()
 
 

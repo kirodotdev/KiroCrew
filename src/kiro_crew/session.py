@@ -89,6 +89,7 @@ from kiro_crew.config.loader import POOL_SIZE_MAX, build_provider_factory, defau
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.messaging.link import ChannelLink, canonical_key, legacy_key
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
+from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _KIRO_SESSIONS_DIR  # noqa: F401
 from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
@@ -2731,6 +2732,21 @@ class SessionManager:
                     )
             except Exception:
                 pass
+
+            # Sweep orphaned sandbox launcher scripts and seatbelt profiles
+            # from ~/.kirocrew/run/.  PID-tagged filenames; the blocking
+            # os.kill/os.remove loop is kept off the event loop (Mesh-1968).
+            try:
+                sandbox_removed = await asyncio.get_running_loop().run_in_executor(
+                    maintenance_executor(), cleanup_stale_sandbox_profiles
+                )
+                if sandbox_removed:
+                    logger.info(
+                        "Periodic sweep: removed %d stale sandbox launchers",
+                        sandbox_removed,
+                    )
+            except Exception as exc:
+                logger.debug("sandbox launcher sweep failed: %s", type(exc).__name__)
 
             # Sweep kiro-cli processes tracked in kiro_session_pids.txt
             # but no longer in self._sessions or self._warm_pool (leaked by

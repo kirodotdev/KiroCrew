@@ -676,9 +676,10 @@ class TestCleanupStaleSandboxProfiles:
 
         with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
             with patch("kiro_crew.sandbox.os.kill", side_effect=OSError("No such process")):
-                cleanup_stale_sandbox_profiles()
+                removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
 
         assert not stale_file.exists()
+        assert removed == 1
 
     def test_preserves_live_pid_profile(self, tmp_path):
         """Profile file whose PID is alive (current process) is preserved."""
@@ -690,9 +691,10 @@ class TestCleanupStaleSandboxProfiles:
         live_file.write_text("(version 1)")
 
         with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
-            cleanup_stale_sandbox_profiles()
+            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
 
         assert live_file.exists()
+        assert removed == 0
 
     def test_ignores_non_sandbox_files(self, tmp_path):
         """Files not matching kirocrew_sandbox_*.sb pattern are left alone."""
@@ -704,9 +706,10 @@ class TestCleanupStaleSandboxProfiles:
         other_file.write_text("keep me")
 
         with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
-            cleanup_stale_sandbox_profiles()
+            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
 
         assert other_file.exists()
+        assert removed == 0
 
 
 class TestResourceLimitPreexec:

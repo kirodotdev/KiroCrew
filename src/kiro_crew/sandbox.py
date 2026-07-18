@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+# Launcher scripts and seatbelt profiles are read exactly once at child exec.
+# Any file older than this threshold is garbage regardless of PID liveness.
+_LAUNCHER_MAX_AGE_SECONDS = 3600
+
+# Legacy sandbox launcher directory (before migration to ~/.kirocrew/run/).
+_LEGACY_LAUNCHER_DIR = "/tmp"
 
 # Sensitive directories to hide from the agent subprocess tree.
 # "strict" mode hides all; "standard" mode only hides non-workflow dirs.
@@ -449,14 +457,15 @@ def _build_launcher_script(
 """Namespace sandbox launcher — spawned by KiroCrew."""
 import sys
 # Harden against stdlib shadowing. This launcher runs as
-# ``python /tmp/kirocrew_sandbox_*.py``, so CPython prepends the script's own
-# directory (sys.path[0], typically /tmp) to sys.path. A stray sibling module
-# left in that directory by another process — /tmp/struct.py, /tmp/os.py — then
-# shadows the real stdlib and crashes the imports below (seen in the wild:
-# "ImportError: cannot import name 'calcsize' from '/tmp/struct.py'", which
-# kills the agent subprocess on spawn). ``sys`` is a builtin and cannot be
-# shadowed, so importing it first is safe; drop the launcher dir (and any cwd
-# "" entry) before importing anything that resolves from the filesystem.
+# ``python ~/.kirocrew/run/kirocrew_sandbox_*.py``, so CPython prepends the
+# script's own directory (sys.path[0], typically ~/.kirocrew/run/) to sys.path.
+# A stray sibling module left in that directory by another process — e.g.
+# struct.py, os.py — then shadows the real stdlib and crashes the imports below
+# (seen in the wild: "ImportError: cannot import name 'calcsize' from
+# '/tmp/struct.py'", which kills the agent subprocess on spawn). ``sys`` is a
+# builtin and cannot be shadowed, so importing it first is safe; drop the
+# launcher dir (and any cwd "" entry) before importing anything that resolves
+# from the filesystem.
 sys.path[:] = [p for p in sys.path if p not in ("", sys.path[0])]
 import ctypes
 import ctypes.util
@@ -796,6 +805,19 @@ if __name__ == "__main__":
 '''
 
 
+def _ensure_run_dir() -> str:
+    """Create ~/.kirocrew/run/ with mode 0o700, falling back to system tmpdir on failure."""
+    run_dir = os.path.join(os.path.expanduser("~"), ".kirocrew", "run")
+    try:
+        os.makedirs(run_dir, mode=0o700, exist_ok=True)
+        # exist_ok does not re-apply mode on existing dirs — enforce explicitly
+        os.chmod(run_dir, 0o700)
+    except OSError:
+        logger.warning("Cannot create %s; falling back to system tmpdir", run_dir)
+        run_dir = tempfile.gettempdir()
+    return run_dir
+
+
 def namespace_argv(
     argv: list[str],
     sandbox_level: str = "strict",
@@ -813,7 +835,8 @@ def namespace_argv(
         real_argv[0] = _resolve_real_kiro_bin(real_argv[0])
 
     script = _build_launcher_script(sandbox_level, strip_python_env=strip_python_env)
-    fd, path = tempfile.mkstemp(suffix=".py", prefix="kirocrew_sandbox_")
+    run_dir = _ensure_run_dir()
+    fd, path = tempfile.mkstemp(suffix=".py", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir)
     os.write(fd, script.encode())
     os.close(fd)
     platform_compat.chmod_safe(path, 0o700)
@@ -919,11 +942,8 @@ def sandbox_exec_argv(
         real_argv[0] = _resolve_real_kiro_bin(real_argv[0])
 
     profile = _build_seatbelt_profile(sandbox_level)
-    run_dir = os.path.join(os.path.expanduser("~"), ".kirocrew", "run")
-    os.makedirs(run_dir, exist_ok=True)
-    fd, path = tempfile.mkstemp(
-        suffix=".sb", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir
-    )
+    run_dir = _ensure_run_dir()
+    fd, path = tempfile.mkstemp(suffix=".sb", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir)
     os.write(fd, profile.encode())
     os.close(fd)
     # Build env -u flags for sensitive vars present in current env. cc/strict
@@ -943,30 +963,93 @@ def sandbox_exec_argv(
     return ["env", *unset_args, "sandbox-exec", "-f", path, *real_argv], path
 
 
-def cleanup_stale_sandbox_profiles() -> None:
-    """Remove orphan .sb profiles whose owning process is dead from ~/.kirocrew/run/.
+def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
+    """Remove orphan sandbox files from ~/.kirocrew/run/ and legacy /tmp.
 
-    Called at gateway startup to prevent accumulation after unclean shutdowns.
-    Filenames follow the pattern: kirocrew_sandbox_{pid}_{random}.sb
+    A file is removed when EITHER:
+      - The tagged PID is dead (os.kill probe fails), OR
+      - The file mtime is older than _LAUNCHER_MAX_AGE_SECONDS (the launcher
+        is consumed exactly once at child exec, so old files are garbage
+        regardless of PID liveness — this handles the spawner-PID design
+        where the gateway PID is always alive for current-generation files).
+
+    Also sweeps legacy /tmp/kirocrew_sandbox_*.py files that predate the
+    migration to ~/.kirocrew/run/ — these have no PID segment, so only the
+    age threshold applies.
+
+    Called from the periodic cleanup sweep in session.py, offloaded to the
+    maintenance executor (blocking I/O).  Safe to call from sync contexts too.
+
+    Returns:
+        Number of stale files removed.
     """
+    now = time.time()
+    if legacy_dir is None:
+        legacy_dir = _LEGACY_LAUNCHER_DIR
     run_dir = os.path.join(os.path.expanduser("~"), ".kirocrew", "run")
-    if not os.path.isdir(run_dir):
-        return
-    for entry in os.listdir(run_dir):
-        if not entry.startswith("kirocrew_sandbox_") or not entry.endswith(".sb"):
-            continue
-        # Extract PID from kirocrew_sandbox_{pid}_{random}.sb
-        middle = entry[len("kirocrew_sandbox_") : -len(".sb")]
-        pid_str = middle.split("_", 1)[0]
-        if not pid_str.isdigit():
-            continue
-        try:
-            os.kill(int(pid_str), 0)
-        except OSError:
+    removed = 0
+
+    # ── Sweep ~/.kirocrew/run/ (PID + age) ──
+    if os.path.isdir(run_dir):
+        for entry in os.listdir(run_dir):
+            if not entry.startswith("kirocrew_sandbox_"):
+                continue
+            if entry.endswith(".sb"):
+                suffix = ".sb"
+            elif entry.endswith(".py"):
+                suffix = ".py"
+            else:
+                continue
+            filepath = os.path.join(run_dir, entry)
+            # Age check first — handles the spawner-PID design flaw
             try:
-                os.remove(os.path.join(run_dir, entry))
+                mtime = os.stat(filepath).st_mtime
             except OSError:
-                pass
+                continue
+            if (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+                try:
+                    os.remove(filepath)
+                    removed += 1
+                except OSError:
+                    pass
+                continue
+            # Fresh file — fall back to PID liveness check
+            middle = entry[len("kirocrew_sandbox_"):-len(suffix)]
+            pid_str = middle.split("_", 1)[0]
+            if not pid_str.isdigit():
+                continue
+            try:
+                os.kill(int(pid_str), 0)
+            except (OSError, OverflowError, ValueError):
+                try:
+                    os.remove(filepath)
+                    removed += 1
+                except OSError:
+                    pass
+
+    # ── Sweep legacy /tmp/kirocrew_sandbox_*.py (age only, no PID segment) ──
+    if os.path.isdir(legacy_dir):
+        try:
+            with os.scandir(legacy_dir) as it:
+                for dentry in it:
+                    if not dentry.name.startswith("kirocrew_sandbox_"):
+                        continue
+                    if not dentry.name.endswith(".py"):
+                        continue
+                    try:
+                        mtime = dentry.stat().st_mtime
+                    except OSError:
+                        continue
+                    if (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+                        try:
+                            os.remove(dentry.path)
+                            removed += 1
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+
+    return removed
 
 
 # ── Public API ──
