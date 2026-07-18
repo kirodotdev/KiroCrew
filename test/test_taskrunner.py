@@ -1514,6 +1514,24 @@ class TestHistoryIntegration:
 
 
 class TestWatchdog:
+    @pytest.fixture(autouse=True)
+    def _passthrough_sandbox(self, monkeypatch):
+        """TestWatchdog runs the real ``TaskRunner.run()`` which reaches
+        ``git_coord.init_workspace`` → ``sandboxed_spawn_argv`` → ``wrap_argv``,
+        raising on hosts without an OS-level sandbox backend (e.g. the dry-run
+        build fleet). These tests exercise watchdog/timeout logic, not sandbox
+        availability, so run commands unwrapped in-test (same pattern as
+        TestGitCoord)."""
+        import os as _os
+
+        from kiro_crew import git_coord
+
+        monkeypatch.setattr(
+            git_coord,
+            "sandboxed_spawn_argv",
+            lambda argv, *a, **k: (list(argv), dict(_os.environ), None),
+        )
+
     @pytest.mark.asyncio
     async def test_watchdog_stall_notification(self) -> None:
         """Watchdog sends notification when no progress in _STALL_TIMEOUT."""
