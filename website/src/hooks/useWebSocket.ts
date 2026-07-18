@@ -4,7 +4,7 @@ import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
-import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentDone, sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendMessage, setQuestionCard } from '../store/chatSlice'
+import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentDone, sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard } from '../store/chatSlice'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { StatusData, ChatSlot, Notification } from '../types'
@@ -381,11 +381,13 @@ export function useWebSocket() {
             break
           case 'steer_push':
             // Mid-turn steer echo: show the user's steered text inline in the
-            // active slot's transcript. v1 renders on-send; consumed-based
-            // materialization + reload persistence is a follow-up.
-            if ((data as { slot?: string }).slot === store.getState().chat.activeSlot) {
-              dispatch(appendMessage({ role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true } }))
-            }
+            // target slot's transcript. Uses appendSlotMessage so the bubble
+            // appears whether or not the slot is currently active (background
+            // tabs). Persisted server-side — survives page reload.
+            dispatch(appendSlotMessage({
+              slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
+              message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true }, ts: (data as { ts?: string }).ts },
+            }))
             break
           case 'queue_cancel':
             dispatch(cancelQueuedMessage(data))
