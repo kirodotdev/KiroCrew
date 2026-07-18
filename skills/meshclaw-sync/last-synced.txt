@@ -16,6 +16,51 @@
 #                so frontend sync is by CONTENT within the post-snapshot window, not a
 #                clean SHA range. This SHA records the upstream tip last triaged.
 
+# --- Batch-38 (dual-repo beta sync 2026-07-18) -------------------------------
+# Branch sync/beta-2026-07-18 off origin/main (6814cab2). 31 target commits
+# PORTED IN CHRONOLOGICAL ORDER, one fix per commit, all decided by DIFF against
+# fork content (not SHA). Tally: 19 backend + 12 frontend.
+#
+# Backend PORTED (19): 4765e2d3 tail-only fork; 85aacc60 TurnUsage nesting
+# (PARTIAL, dropped CC hunk); 43243ab4 taskrunner run-scoped AcpRuntime +
+# workspace_dir + parallel-cap; 363c57ab stop/interrupt idempotent (PARTIAL,
+# defect-3 only, CC defects 1&2 dropped); 93e8efd7 sandbox launcher →
+# ~/.kirocrew/run + cleanup sweep; aaca64c1 Knowledge LLMPool idle-TTL;
+# 0492da73 lean /goal nudge; 7de4f830 mcp_gateway oversize (PARTIAL, additive
+# Layer-2 spill only, kept fork's diverged Layer-1); 7aae5273 steer persist to
+# JSONL; 0e5f2a00 /assets immutable cache; c906883f launcher-chmod test
+# (PARTIAL, test-only — code already present); edb8c188 image-authoring skill +
+# primitives; bde1a556 metrics no-op when otel missing; e6c35eb6 auth secrets →
+# is_sensitive_path; 78d4af44 /api/models 503 (dropped CC branch); 31b8a10b
+# skills.sh browser (dropped ALREADY_PRESENT otel setup.cfg hunk); 50eae442
+# --slack-only auth parity; 90e3cccc utf-8 non-crash agent.py; 670922ac exfil
+# URL no-path-query fix.
+#
+# Frontend PORTED (12): 2c46e44 tail-fork UI toggle; 729e09d 4 dropdowns →
+# shadcn (fork-adapted: pre-cut-mode TrustDropdown, richer integration mocks);
+# bad099f commentDrafts → slotDraftStore factory; 397d6a4 paste→optimizer;
+# add4817 DetailPanel row-width cap (PARTIAL, dropped absent ArtifactPanel);
+# 82df28c session tags in list view; 115e024 steer_push→appendSlotMessage
+# (prereq); c326758 recency-tint cap 50; 3448707 render-sent + slot-switch
+# reply preserve; 62bfa8e Task Runner rename + emoji→icon (PARTIAL, dropped
+# workspace selector + Export-YAML — backend surfaces absent/entangled);
+# 0f6cbc4 Recent session filter; fdd8734 flat view.
+#
+# DEFER (landed in the window AFTER this batch's target set was planned; NOT yet
+# triaged — the next sync run re-scans them, so the boundary is set to the
+# newest PORTED SHA, not the current beta tip):
+#   Backend (beta 670922ac..4075a006): 4075a006 (hyphenated destructive AWS CLI
+#   deny — likely KEEP generic security), 24c320f6 (PID-ns signal containment),
+#   40965431 (mcp-gateway blue-green cutover), 9d4360d7 (knowledge thread-local
+#   sqlite), ed2f65b0 (cron cancel running executions), 1d8f9a4c (toolbox-shim
+#   bypass — likely SKIP_INTERNAL/toolbox), 25cfdce3 (code-review-sage test mypy
+#   — SKIP, app ABSENT), 8c8d085d (system-monitor registry removal — N/A, app
+#   ABSENT from fork), 081c7b47 (docs sync sweep — triage by content next run).
+#   Frontend (frontend-beta ec0c619 & 9f68580 & 08e28b8): 9f68580 (Skill browser
+#   modal — the FE half of 31b8a10b, port next run), ec0c619 (cron-cancel UI —
+#   pairs with backend ed2f65b0), 08e28b8 (Electron shell redesign — triage).
+#
+# ── Prior batch ──────────────────────────────────────────────────────────────
 # --- Batch-37 (dual-repo beta sync 2026-07-17) -------------------------------
 # Branch sync/beta-2026-07-17 off origin/main (b111ee0). Backend window
 # f9b37d8c..5d1961ef, frontend window e7c1de9..7665cc8e, triaged by content.
@@ -293,8 +338,8 @@
 #   + builder-mcp test-fixture string only). Verify: per-commit pytest (touched files) + flake8 +
 #   isort all green; frontend tsc -b clean + touched vitest green.
 
-beta 5d1961ef3051f72503fdbbbf139a79f3b43068b2      # 2026-07-17 MeshClaw backend triaged tip (batch-37, branch sync/beta-2026-07-17). Window f9b37d8c..5d1961ef triaged by content; 11 backend PORTED (+1 prereq 90f5c3f1) — see batch-37 note above. PRIOR: f9b37d8c 2026-07-16 backend triaged tip (batch-36 addendum, folded into PR #92; advanced from batch-35 3cae0aad). Window 3cae0aad..f9b37d8c (9 commits): 7 PORTED + 2 SKIP_INTERNAL — see batch-36 note above. Window 84d8abf3..d757fd9d triaged by content; 5 backend KEEP ported (36527cd3 Heimdall pentest security.py hardening, 7cc8217d Talos redaction/SSRF/XPIA follow-ups, 82560fb7 exfil-URL path/raw-IP + bash-egress gate, 56fbb774 mcp-gateway claim-push caller identity, 0917c9aa queue chat during sub-agent runs). 791c0cb5 (Board removal / Channels hide) ALREADY_PRESENT (merged fork PR #78). SKIP: cdb2d135 (CC deny union-merge — SKIP_NONKIROACP, confined to deleted cc_agent.py), d757fd9d (brazil ws-create timeout — SKIP_INTERNAL, Brazil installer path absent from fork). DEFER: ed984a05 (Talos legacy-HTML-dashboard removal — KEEP-worthy generic-core XSS-surface reduction, but a 16-file behavior-changing removal that landed after the batch verdicts were verified; held for the next verified batch — see left-out.md).
-frontend-beta 7665cc8eb7a0c9df117962b0819f2d269d89c356  # 2026-07-17 MeshClawWebsite triaged tip (batch-37). Window e7c1de9..7665cc8e triaged by content; 4 frontend PORTED (7665cc8e throttle-retry, fe9137b5 steer split-send, abfe9692 Schedule running badge, 08e6d08b ChatSidebar deflake) — see batch-37 note above. PRIOR: e7c1de9 2026-07-16 (batch-36 addendum; advanced from batch-35 340cfa9). Window 340cfa9..e7c1de9 (3 commits): 273cb0e playwright load-stability PORTED, c0fb568 Slack panel + conversation-map ALREADY_PRESENT (fork PR #65/#84), e7c1de9 registry regen no-op. Window 4b9d6255..340cfa9 (4 commits) all PORTED (store cache-evict/notif-cap, semantic-memory render cap, sidebar folder drag-move, command-palette Settings provider). See batch-35 note above. Window ab0d8d2c..4b9d6255 triaged by content; 1 frontend KEEP ported (4b9d6255 reflect sub-agent runs in composer busy state — selectComposerBusy/selectSlotSubagentsActive). c64af69 (Board removal frontend) ALREADY_PRESENT (merged fork PR #78). No frontend SKIP/DEFER this batch.
+beta 670922ac27d71264d771d93839f767b766ed0f75      # 2026-07-18 MeshClaw backend triaged/ported tip (batch-38, branch sync/beta-2026-07-18). Window 5d1961ef..670922ac: 19 backend PORTED — see batch-38 note above. Boundary set to the newest PORTED SHA (670922ac), NOT the beta tip 4075a006: the commits between (24c320f6 PID-ns, 40965431 blue-green, 9d4360d7 knowledge sqlite, ed2f65b0 cron-cancel, 1d8f9a4c toolbox-shim, 25cfdce3 CRS-test-mypy, 8c8d085d system-monitor, 081c7b47 docs-sync, 4075a006 AWS-CLI deny) landed after this batch's target set was fixed and are UN-TRIAGED — the next run re-scans 670922ac..beta. PRIOR: 5d1961ef 2026-07-17 backend triaged tip (batch-37, branch sync/beta-2026-07-17). Window f9b37d8c..5d1961ef triaged by content; 11 backend PORTED (+1 prereq 90f5c3f1) — see batch-37 note above. PRIOR: f9b37d8c 2026-07-16 backend triaged tip (batch-36 addendum, folded into PR #92; advanced from batch-35 3cae0aad). Window 3cae0aad..f9b37d8c (9 commits): 7 PORTED + 2 SKIP_INTERNAL — see batch-36 note above. Window 84d8abf3..d757fd9d triaged by content; 5 backend KEEP ported (36527cd3 Heimdall pentest security.py hardening, 7cc8217d Talos redaction/SSRF/XPIA follow-ups, 82560fb7 exfil-URL path/raw-IP + bash-egress gate, 56fbb774 mcp-gateway claim-push caller identity, 0917c9aa queue chat during sub-agent runs). 791c0cb5 (Board removal / Channels hide) ALREADY_PRESENT (merged fork PR #78). SKIP: cdb2d135 (CC deny union-merge — SKIP_NONKIROACP, confined to deleted cc_agent.py), d757fd9d (brazil ws-create timeout — SKIP_INTERNAL, Brazil installer path absent from fork). DEFER: ed984a05 (Talos legacy-HTML-dashboard removal — KEEP-worthy generic-core XSS-surface reduction, but a 16-file behavior-changing removal that landed after the batch verdicts were verified; held for the next verified batch — see left-out.md).
+frontend-beta fdd8734620cb5770933fead5954078cee78673e8  # 2026-07-18 MeshClawWebsite triaged/ported tip (batch-38). Window 7665cc8e..fdd8734: 12 frontend PORTED — see batch-38 note above. Boundary set to the newest PORTED SHA (fdd8734), NOT the beta tip ec0c619: 9f68580 (Skill browser modal — FE half of 31b8a10b), ec0c619 (cron-cancel UI), 08e28b8 (Electron shell redesign) landed after this batch's target set and are UN-TRIAGED — the next run re-scans by content. PRIOR: 7665cc8e 2026-07-17 MeshClawWebsite triaged tip (batch-37). Window e7c1de9..7665cc8e triaged by content; 4 frontend PORTED (7665cc8e throttle-retry, fe9137b5 steer split-send, abfe9692 Schedule running badge, 08e6d08b ChatSidebar deflake) — see batch-37 note above. PRIOR: e7c1de9 2026-07-16 (batch-36 addendum; advanced from batch-35 340cfa9). Window 340cfa9..e7c1de9 (3 commits): 273cb0e playwright load-stability PORTED, c0fb568 Slack panel + conversation-map ALREADY_PRESENT (fork PR #65/#84), e7c1de9 registry regen no-op. Window 4b9d6255..340cfa9 (4 commits) all PORTED (store cache-evict/notif-cap, semantic-memory render cap, sidebar folder drag-move, command-palette Settings provider). See batch-35 note above. Window ab0d8d2c..4b9d6255 triaged by content; 1 frontend KEEP ported (4b9d6255 reflect sub-agent runs in composer busy state — selectComposerBusy/selectSlotSubagentsActive). c64af69 (Board removal frontend) ALREADY_PRESENT (merged fork PR #78). No frontend SKIP/DEFER this batch.
 mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainline tip (upstream), unchanged since batch-27 (batch-33 re-confirmed). No NEW mainline-only content to port (all in-window candidates reached the fork via beta-braveheart; every mainline-only delta is a release-merge or already triaged via beta).
 # NOTE: this 'mainline' SHA is the UPSTREAM MeshClaw mainline tip (for the mainline-only
 # candidate check), NOT the fork's mainline — batch-12 mistakenly recorded the fork SHA
