@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.executors import maintenance_executor
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
@@ -61,6 +62,7 @@ from kiro_crew.mcp_gateway.prewarm import (
     default_hot_keys_path,
     prewarm_from_payloads,
 )
+from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sel import SecurityEventLog
 
@@ -360,6 +362,13 @@ async def run_gatewayd(
         # 0700 $KIROCREW_HOME directory; the per-connection SO_PEERCRED check in
         # _handle_connection is the second layer.
         socketsec.chmod_socket_0600(socket_path)
+        # Mesh-2861: clean up stale spill files from prior runs (older than 24h).
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                maintenance_executor(), cleanup_old_spill_files
+            )
+        except Exception:  # pragma: no cover — defensive
+            logger.debug("spill cleanup failed at startup", exc_info=True)
         logger.info(
             "gatewayd listening socket=%s max_backends=%d idle_timeout=%ds",
             socket_path, max_backends, idle_timeout_secs,

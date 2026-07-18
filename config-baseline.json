@@ -1722,7 +1722,9 @@
         "idle_timeout_secs": 300,
         "max_backends": 64,
         "poolable_servers": [],
-        "prewarm_count": 0
+        "prewarm_count": 0,
+        "read_buffer_limit_bytes": 67108864,
+        "response_spill_threshold_bytes": 262144
       }
     },
     {
@@ -1836,6 +1838,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "mcp_gateway.read_buffer_limit_bytes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Read Buffer Limit",
+      "help": "Maximum bytes for a single MCP response line before asyncio drops it. Default 64 MiB. Responses exceeding this are fast-failed with -32000. Env override: KIROCREW_MCP_READ_LIMIT.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 67108864
+    },
+    {
+      "path": "mcp_gateway.response_spill_threshold_bytes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Response Spill Threshold",
+      "help": "Tool-call responses larger than this (bytes) have their text content written to ~/.kirocrew/mcp_spill/ and truncated inline to 16 KiB + a file path marker. Default 256 KiB. Set 0 to disable spilling. Env override: KIROCREW_MCP_SPILL_THRESHOLD.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 262144
     },
     {
       "path": "instances",

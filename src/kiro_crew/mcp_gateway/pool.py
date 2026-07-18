@@ -38,21 +38,56 @@ logger = logging.getLogger(__name__)
 
 # Per-stream byte ceiling for ``readuntil(b"\n")`` across the gateway.
 # Passed as ``limit=`` to every asyncio reader the module creates
-# (subprocess pipes, unix sockets). Asyncio's stdlib default is 64 KiB,
-# which is below observed MCP response sizes (~100 KiB for typical
-# tool-call results). 1 MiB matches the declared frame ceiling in
-# ``gatewayd.py``; lines beyond this are still rejected loudly, but the
-# asyncio reader no longer chokes on legitimate payloads first.
-# Per-frame read/response cap for a POOLED backend (1 MiB). This bounds the
-# shared daemon's RSS against a pathological backend, but it also means a
-# pooled server whose response legitimately exceeds 1 MiB (e.g. a full-page
-# browser snapshot or a large file read) has that response dropped — whereas
-# the same server run UN-pooled (per-session exec) has no such cap. Poolability
-# is opt-in, so the guidance is: do NOT pool servers that routinely emit
-# >1 MiB responses; leave them non-poolable and they run per-session uncapped.
-# Kept as a documented limitation rather than raised, to preserve the
-# shared-daemon memory bound.
-READ_BUFFER_LIMIT_BYTES = 1 << 20  # 1 MiB
+# (subprocess pipes, unix sockets). Default 64 MiB — generous enough for
+# any real MCP tool response (ReadInternalWebsites can return 1-5 MiB pages).
+# Config-driven via ``mcp_gateway.read_buffer_limit_bytes`` / env var
+# ``KIROCREW_MCP_READ_LIMIT``. Asyncio's stdlib default is 64 KiB which is
+# too small; the previous 1 MiB hard-coded value caused silent drops for
+# legitimate large responses (Mesh-2861).
+_DEFAULT_READ_BUFFER_LIMIT = 64 * 1024 * 1024  # 64 MiB
+
+
+def _resolve_read_buffer_limit() -> int:
+    """Resolve the read buffer limit from env or fall back to default.
+
+    Env var: ``KIROCREW_MCP_READ_LIMIT`` (bytes, integer).
+    Config key: ``mcp_gateway.read_buffer_limit_bytes``.
+    """
+    raw = os.environ.get("KIROCREW_MCP_READ_LIMIT")
+    if raw:
+        try:
+            val = int(raw)
+            if val >= 1024:
+                return val
+        except (ValueError, TypeError):
+            pass
+    return _DEFAULT_READ_BUFFER_LIMIT
+
+
+READ_BUFFER_LIMIT_BYTES: int = _resolve_read_buffer_limit()
+
+
+# Default spill threshold — responses larger than this (but under the read
+# limit) get their text content spilled to file and truncated inline.
+# Config-driven via ``mcp_gateway.response_spill_threshold_bytes`` / env var
+# ``KIROCREW_MCP_SPILL_THRESHOLD``.
+_DEFAULT_SPILL_THRESHOLD = 256 * 1024  # 256 KiB
+
+
+def _resolve_spill_threshold() -> int:
+    """Resolve the spill threshold from env or fall back to default."""
+    raw = os.environ.get("KIROCREW_MCP_SPILL_THRESHOLD")
+    if raw:
+        try:
+            val = int(raw)
+            if val >= 0:
+                return val
+        except (ValueError, TypeError):
+            pass
+    return _DEFAULT_SPILL_THRESHOLD
+
+
+RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold()
 
 
 # Upper bound on processes walked when summing a backend's subtree RSS. A

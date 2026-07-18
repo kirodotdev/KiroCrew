@@ -30,7 +30,9 @@ from kiro_crew.mcp_caller import (
     CallerContext,
     build_caller_meta,
 )
-from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
+from kiro_crew.executors import maintenance_executor
+from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
+from kiro_crew.mcp_gateway.spill import maybe_spill_response
 from kiro_crew.security import redact
 
 if False:  # typing-only import guard
@@ -762,6 +764,22 @@ class Backend:
                     continue
                 if not line:
                     break
+                # Spill oversized (but under the read limit) responses to a
+                # sidecar file and truncate inline, so a large-but-legitimate
+                # tool result doesn't balloon the shared daemon's memory or the
+                # agent's context. Offloaded to the maintenance executor (short
+                # filesystem I/O); a spill failure falls back to the raw line.
+                if len(line) > RESPONSE_SPILL_THRESHOLD_BYTES:
+                    try:
+                        line = await asyncio.get_running_loop().run_in_executor(
+                            maintenance_executor(),
+                            maybe_spill_response,
+                            line,
+                            self.pool_key.server_name,
+                            RESPONSE_SPILL_THRESHOLD_BYTES,
+                        )
+                    except Exception:
+                        logger.debug("spill-to-file failed; routing raw line", exc_info=True)
                 await self._route_backend_line(line)
         except asyncio.CancelledError:
             raise

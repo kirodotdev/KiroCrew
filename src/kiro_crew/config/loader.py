@@ -1894,6 +1894,25 @@ class McpGatewayConfig:
             "disables prewarming — no hot-key file is read or written.",
         ),
     )
+    read_buffer_limit_bytes: int = field(
+        default=64 * 1024 * 1024,
+        metadata=_meta(
+            "Read Buffer Limit",
+            "Maximum bytes for a single MCP response line before asyncio drops it. "
+            "Default 64 MiB. Responses exceeding this are fast-failed with -32000. "
+            "Env override: KIROCREW_MCP_READ_LIMIT.",
+        ),
+    )
+    response_spill_threshold_bytes: int = field(
+        default=256 * 1024,
+        metadata=_meta(
+            "Response Spill Threshold",
+            "Tool-call responses larger than this (bytes) have their text content "
+            "written to ~/.kirocrew/mcp_spill/ and truncated inline to 16 KiB + "
+            "a file path marker. Default 256 KiB. Set 0 to disable spilling. "
+            "Env override: KIROCREW_MCP_SPILL_THRESHOLD.",
+        ),
+    )
 
 
 @dataclass
@@ -2899,6 +2918,8 @@ class KiroCrewConfig:
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
                 ],
                 prewarm_count=max(0, int(mcp_gateway_data.get("prewarm_count", 0))),
+                read_buffer_limit_bytes=max(1024, int(mcp_gateway_data.get("read_buffer_limit_bytes", 64 * 1024 * 1024))),
+                response_spill_threshold_bytes=max(0, int(mcp_gateway_data.get("response_spill_threshold_bytes", 256 * 1024))),
             ),
             instances=InstancesConfig(
                 enabled=bool(instances_data.get("enabled", False)),
