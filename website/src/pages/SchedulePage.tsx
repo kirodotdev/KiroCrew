@@ -130,11 +130,12 @@ export default function SchedulePage() {
   }, [])
   useEffect(() => { load() }, [load])
 
-  // Auto-reload when backend pushes a 'crons' refresh (e.g. job starts/ends).
+  // Auto-reload when backend pushes a 'crons' refresh (e.g. job starts/ends,
+  // or a run is cancelled) — supersedes interval polling for is_running state.
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   useEffect(() => { if (refreshTrigger > 0) load() }, [refreshTrigger, load])
 
-  const { running, actionError, setActionError, runNow, openInChat } = useCronActions(load)
+  const { running, actionError, setActionError, runNow, openInChat, cancelling, cancelRun } = useCronActions(load)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const confirmRevertTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -343,12 +344,14 @@ export default function SchedulePage() {
                 <td className="px-2.5 py-2 border-b border-border text-sm">{j.script ? <span className="text-[var(--accent)] font-medium text-[13px]">script · python</span> : j.command ? <span className="text-[var(--warn)] font-medium text-[13px]">command · shell</span> : <span className="text-muted text-[13px]">agent · {j.agent || 'default'}{j.model ? ` · ${j.model}` : ''}</span>}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><code>{j.schedule}</code>{j.timezone && <span className="block text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</td>
                 <td className="px-2.5 py-2 border-b border-border align-top max-w-[360px]"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></td>
-                <td className="px-2.5 py-2 border-b border-border text-sm" title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1" />Running</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">OK</Badge> : j.last_status === 'error' ? <Badge variant="err">Error</Badge> : <Badge variant="ok">Ready</Badge>) : <Badge variant="warn">Paused</Badge>}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm" title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />Running</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">OK</Badge> : j.last_status === 'error' ? <Badge variant="err">Error</Badge> : <Badge variant="ok">Ready</Badge>) : <Badge variant="warn">Paused</Badge>}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtAgo(j.last_run_ts)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted" title={j.next_run_ts ? new Date(j.next_run_ts * 1000).toLocaleString() : ''}>{fmtIn(j.next_run_ts)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap" onClick={e => e.stopPropagation()}>
                   <span title={j.strict_schedule ? 'Disable strict schedule (allow jitter)' : 'Enable strict schedule (no jitter)'}><Btn onClick={async () => { try { await api.updateCron(j.id, { strict_schedule: !j.strict_schedule }); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : 'Failed' }) } }}>{j.strict_schedule ? <><Check className="lucide-inline" /> Strict</> : 'Strict'}</Btn></span>{' '}
-                  <span title={j.enabled ? 'Run now' : 'Resume to run'}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? '...' : 'Run'}</Btn></span>{' '}
+                  {j.is_running
+                    ? <span title="Cancel running execution"><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : 'Cancel'}</Btn></span>
+                    : <span title={j.enabled ? 'Run now' : 'Resume to run'}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? '...' : 'Run'}</Btn></span>}{' '}
                   <span title={j.has_slot ? 'Continue session' : j.has_result ? 'View last result' : 'No result'}><Btn onClick={() => openInChat(j.id)} disabled={!j.has_result && !j.has_slot}>{j.has_slot ? 'Continue' : 'View'}</Btn></span>{' '}
                   <Btn onClick={async () => { try { await api.toggleCron(j.id, !j.enabled); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : 'Failed' }) } }}>{j.enabled ? 'Pause' : 'Resume'}</Btn>{' '}
                   <Btn
@@ -531,7 +534,9 @@ function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
             />
             <div className="flex gap-2">
               <Btn onClick={async () => { try { await api.toggleCron(job.id, !job.enabled); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }}>{job.enabled ? 'Pause' : 'Resume'}</Btn>
-              <SendBtn onClick={async () => { try { await api.runCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }}>Run Now</SendBtn>
+              {job.is_running
+                ? <Btn danger onClick={async () => { try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }}>Cancel Run</Btn>
+                : <SendBtn onClick={async () => { try { await api.runCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }}>Run Now</SendBtn>}
             </div>
           </div>
         )}
@@ -541,7 +546,7 @@ function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
           </div>
         )}
         {detailTab === 'logs' && job ? (
-          <JobLogsView jobId={job.id} isRunning={job.is_running} runningSince={job.running_since} />
+          <JobLogsView jobId={job.id} isRunning={job.is_running} runningSince={job.running_since} onCancel={async () => { try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }} />
         ) : (
           <>
             <JobForm job={job} agents={agents} defaultAgent={defaultAgent} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />

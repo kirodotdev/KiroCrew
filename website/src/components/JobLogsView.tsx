@@ -6,7 +6,7 @@ import LogEntry, { type LogEntryData } from './LogEntry'
 
 const PAGE_SIZE = 10
 
-export default function JobLogsView({ jobId, isRunning, runningSince }: { jobId: string; isRunning?: boolean; runningSince?: number | null }) {
+export default function JobLogsView({ jobId, isRunning, runningSince, onCancel }: { jobId: string; isRunning?: boolean; runningSince?: number | null; onCancel?: () => void }) {
   const [page, setPage] = useState(0)
   const [elapsed, setElapsed] = useState(0)
 
@@ -38,7 +38,10 @@ export default function JobLogsView({ jobId, isRunning, runningSince }: { jobId:
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-ok-subtle border border-ok/20">
           <span className="w-2 h-2 rounded-full bg-ok animate-pulse" />
           <span className="text-[13px] text-ok font-medium">Currently running…</span>
-          {elapsed > 0 && <span className="text-[12px] text-muted ml-auto">{elapsed}s elapsed</span>}
+          <span className="ml-auto flex items-center gap-2">
+            {elapsed > 0 && <span className="text-[12px] text-muted">{elapsed}s elapsed</span>}
+            {onCancel && <Btn danger onClick={onCancel} title="Cancel running execution">Cancel</Btn>}
+          </span>
         </div>
       )}
       {error ? (

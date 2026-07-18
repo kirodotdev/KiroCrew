@@ -436,6 +436,7 @@ export const api = {
   updateCron: (id: string, body: object) =>
     fetch('/api/crons/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   runCron: (id: string) => post('/api/crons/' + id + '/run').then(j),
+  cancelCron: (id: string) => post('/api/crons/' + id + '/cancel').then(j),
   cronToChat: (id: string) => post('/api/crons/' + id + '/to-chat').then(j),
   toggleCron: (id: string, enabled: boolean) => post('/api/crons/' + id + '/enable', { enabled }).then(j),
   cronHistory: (jobId: string, offset?: number, limit?: number) => {

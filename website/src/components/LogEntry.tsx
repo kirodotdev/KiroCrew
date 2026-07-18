@@ -6,7 +6,7 @@ import { api } from '../api/client'
 
 export interface LogEntryData {
   run_id: string
-  status: 'success' | 'failure' | 'timeout'
+  status: 'success' | 'failure' | 'timeout' | 'cancelled'
   started_at: number
   duration_ms?: number | null
   trigger: 'scheduled' | 'manual'
@@ -35,6 +35,7 @@ export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId:
 
   const statusBadge = entry.status === 'success' ? <Badge variant="ok">OK</Badge>
     : entry.status === 'failure' ? <Badge variant="err">Error</Badge>
+    : entry.status === 'cancelled' ? <Badge variant="warn">Cancelled</Badge>
     : <Badge variant="warn">Timeout</Badge>
 
   const triggerPill = (

@@ -11,7 +11,7 @@ interface HistoryEntry {
   run_id: string
   started_at: number
   duration_ms: number
-  status: 'success' | 'failure' | 'timeout'
+  status: 'success' | 'failure' | 'timeout' | 'cancelled'
   trigger: string
   summary?: string
 }
@@ -79,7 +79,7 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
               return (<Fragment key={e.run_id}>
                 <tr className={`hover:bg-bg-hover transition-colors cursor-pointer ${isDeleted ? 'opacity-50' : ''}`} onClick={() => toggleExpand(e)}>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
-                    {e.status === 'success' ? <Badge variant="ok">OK</Badge> : e.status === 'failure' ? <Badge variant="err">Error</Badge> : <Badge variant="warn">Timeout</Badge>}
+                    {e.status === 'success' ? <Badge variant="ok">OK</Badge> : e.status === 'failure' ? <Badge variant="err">Error</Badge> : e.status === 'cancelled' ? <Badge variant="warn">Cancelled</Badge> : <Badge variant="warn">Timeout</Badge>}
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">{e.job_name}{isDeleted && <span className="ml-1.5 text-muted text-[11px]">(deleted)</span>}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtTime(e.started_at)}</td>
