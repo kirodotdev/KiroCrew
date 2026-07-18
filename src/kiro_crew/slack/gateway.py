@@ -3329,6 +3329,8 @@ class GatewayOrchestrator:
             task_runner=self.task_runner,
             slack_client=self.slack,
             owner_id=self._owner_id,
+            local_only=self._local_only,
+            configured_host=configured_host,
         )
         if dashboard_port == 0 and self._dashboard_runner is not None:
             addresses = self._dashboard_runner.addresses

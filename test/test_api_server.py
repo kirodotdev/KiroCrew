@@ -335,3 +335,256 @@ class TestApiKirocrewConfig:
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put("/api/config/kirocrew", json={"agent": {"unknown_key": 42}})
             assert resp.status == 400
+
+
+class TestApiServerAuth:
+    """--slack-only headless mode must authenticate MCP tool routes at parity
+    with the default dashboard mode (P474490481 / regression of v1.2.3).
+
+    The gateway binds loopback, but loopback is NOT a trust boundary: local
+    port forwarders and any web page the user opens can reach 127.0.0.1. So
+    state-changing MCP routes must require the ``X-Internal-Secret`` handshake
+    (machine-to-machine) exactly as ``start_dashboard`` enforces it.
+    """
+
+    async def _start(self, tmp_path, monkeypatch, **kwargs):
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.server as _srv
+        import kiro_crew.dashboard.state as _st
+
+        # Route config_dir() into the test's tmp dir at the sites that resolve it
+        # here: the secret-file write (server.py's own bound name), SEL/state
+        # (state.py), and the token_auth revoked-nonce store — the fork's
+        # token_auth.py resolves config_dir LAZILY via
+        # ``from kiro_crew.config.loader import config_dir`` at call time (no
+        # module-level attr), so patching the loader's real attribute covers it.
+        # Each of these is a REAL module attribute, so monkeypatch restores it
+        # cleanly. Do NOT patch ``kiro_crew.config.config_dir`` — that name is
+        # served by a PEP-562 lazy ``__getattr__`` (not a real __dict__ entry),
+        # so setattr there pollutes the package dict and leaks across tests.
+        monkeypatch.setattr(_srv, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+
+        from kiro_crew.dashboard.server import start_api_server
+
+        runner, state = await start_api_server(
+            sessions=MagicMock(count=0),
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+            **kwargs,
+        )
+        addrs = runner.addresses
+        base = f"http://127.0.0.1:{addrs[0][1]}"
+        return runner, state, base
+
+    @pytest.mark.asyncio
+    async def test_get_crons_denied_without_secret(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/api/crons") as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_get_spawn_denied_without_secret(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/api/spawn") as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_post_spawn_denied_without_secret(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        mock_mgr = MagicMock()
+        mock_mgr.spawn.return_value = MagicMock(id="x", done=False, error="")
+        runner, _state, base = await self._start(
+            tmp_path, monkeypatch, subagents=mock_mgr
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base}/api/spawn",
+                    json={"task": "noop", "approval_mode": "auto"},
+                ) as resp:
+                    assert resp.status == 403
+            # The denied request must never reach the handler.
+            assert not mock_mgr.spawn.called
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_post_lessons_denied_without_secret(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base}/api/lessons", json={"text": "injected"}
+                ) as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_get_crons_allowed_with_secret(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            secret = (tmp_path / ".local_secret").read_text().strip()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{base}/api/crons",
+                    headers={"X-Internal-Secret": secret},
+                ) as resp:
+                    assert resp.status == 200
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_get_crons_denied_with_wrong_secret(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{base}/api/crons",
+                    headers={"X-Internal-Secret": "deadbeef"},
+                ) as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_local_secret_file_written(self, tmp_path, monkeypatch):
+        runner, state, _base = await self._start(tmp_path, monkeypatch)
+        try:
+            # Parity with start_dashboard: the secret is exposed on the app and
+            # persisted so in-repo MCP callers can read it.
+            assert (tmp_path / ".local_secret").is_file()
+            assert runner.app["local_secret"]
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_artifact_folders_denied_without_secret(self, tmp_path, monkeypatch):
+        # /api/artifact-folders is called by MCP tools (_get/_post w/ secret) AND
+        # the browser (client.ts) — classified as a mixed internal path. Must
+        # deny an unauthenticated caller.
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/api/artifact-folders") as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_artifact_folders_allowed_with_secret(self, tmp_path, monkeypatch):
+        # The MCP artifact-folder tools authenticate via X-Internal-Secret; the
+        # request must reach the handler (not be 403'd by auth) with the secret.
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            secret = (tmp_path / ".local_secret").read_text().strip()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{base}/api/artifact-folders",
+                    headers={"X-Internal-Secret": secret},
+                ) as resp:
+                    # Auth passed → handler reached (200). NOT 403 (auth reject).
+                    assert resp.status != 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_slack_profile_denied_without_secret(self, tmp_path, monkeypatch):
+        # /api/slack-profile is MCP-only (no browser caller) — a strict internal
+        # path. Unauthenticated callers are denied at the auth layer.
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base}/api/slack-profile", json={"user": "U123"}
+                ) as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_cross_origin_post_denied_by_csrf(self, tmp_path, monkeypatch):
+        # A browser CSRF attempt (cross-site Origin on a state-changing request)
+        # is rejected by csrf_middleware before token auth even runs, even if it
+        # somehow carried the secret. The finding's browser-CSRF vector.
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            secret = (tmp_path / ".local_secret").read_text().strip()
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base}/api/spawn",
+                    json={"task": "noop"},
+                    headers={
+                        "Origin": "https://evil.example.com",
+                        "X-Internal-Secret": secret,
+                    },
+                ) as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_csrf_denial_is_audited(self, tmp_path, monkeypatch):
+        # A CSRF rejection is a security-relevant permission decision and must be
+        # written to the SEL audit log (detectability — the finding's item 5).
+        # ``sel`` is the process-wide singleton (keyed on ~/.kirocrew, not
+        # config_dir), so assert on the call rather than reading a file.
+        import aiohttp
+
+        import kiro_crew.dashboard.server as _srv
+
+        fake_sel = MagicMock()
+        monkeypatch.setattr(_srv, "sel", lambda: fake_sel)
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base}/api/spawn",
+                    json={"task": "noop"},
+                    headers={"Origin": "https://evil.example.com"},
+                ) as resp:
+                    assert resp.status == 403
+            # A denied CSRF event was audited.
+            denied = [
+                c
+                for c in fake_sel.log_api_access.call_args_list
+                if c.kwargs.get("outcome") == "denied"
+                and "CSRF check failed" in c.kwargs.get("error", "")
+            ]
+            assert denied, "CSRF denial was not logged to SEL"
+        finally:
+            await runner.cleanup()

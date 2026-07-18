@@ -144,6 +144,58 @@ _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 _DIST_DIR = _STATIC_DIR / "dist"
 
 
+# Strict internal API paths — exact paths that ONLY internal processes
+# (mcp-core, doctor, cron) call, never the browser. Access requires loopback
+# AND a matching ``X-Internal-Secret`` header; non-loopback is always denied and
+# there is no cookie fall-through (see token_auth.token_auth_middleware).
+#
+# Module-level and shared by BOTH ``start_dashboard`` and ``start_api_server``
+# so the two entrypoints can never drift: the ``--slack-only`` headless server
+# must gate exactly the same MCP tool routes the dashboard does. A prior drift
+# here — headless mounting no token auth at all — was the auth-bypass regression
+# of the v1.2.3 fix (P474490481). Keep this as the single source of truth.
+_STRICT_INTERNAL_API_PATHS = frozenset(
+    {
+        "/api/send-message",
+        "/api/delete-message",
+        "/api/browser-event",
+        "/api/browser/frame",
+        "/api/browser/pump-audit",
+        "/api/session-keepalive",
+        "/api/session-tool-policy",
+        "/api/hooks/agent",
+        "/api/outbox/notify",
+        "/api/slack/upload-file",
+        "/api/slack/pins",
+        "/api/slack/reactions",
+        "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
+        "/api/mcp/servers",
+    }
+)
+
+# Mixed internal API paths — called by MCP (loopback + X-Internal-Secret) AND
+# the browser (DCV/SSH-forwarded cookie auth). Shared by both entrypoints for
+# the same anti-drift reason as _STRICT_INTERNAL_API_PATHS. See token_auth.py.
+_MIXED_INTERNAL_API_PATHS = frozenset(
+    {
+        "/api/spawn",
+        "/api/chat",
+        "/api/lessons",
+        "/api/crons",  # CLI cron trigger; prefix covers all sub-routes (consistent with spawn/taskrunner)
+        "/api/taskrunner",
+        "/api/artifacts",
+        # The 5 artifact_folder_* MCP tools authenticate via X-Internal-Secret.
+        # token_auth prefix-matching is (path == p or path.startswith(p + "/")),
+        # so "/api/artifact-folders" is NOT covered by the "/api/artifacts"
+        # entry above — without this entry those MCP calls fall through to
+        # cookie auth and fail with "Token required".
+        "/api/artifact-folders",
+        "/api/workflows",  # DW engine: MCP tools + Workflows tab polling
+        "/v1/chat/completions",  # OpenAI-compat API
+    }
+)
+
+
 # Base Content-Security-Policy applied to all dashboard responses.
 # See ``_apply_security_headers`` for the full rationale and the
 # instances-mode ``frame-src`` extension.
@@ -1613,45 +1665,8 @@ async def start_dashboard(
         no_cache_middleware,
         csrf_middleware,
         token_auth_middleware(
-            internal_paths=frozenset(
-                {
-                    "/api/send-message",
-                    "/api/delete-message",
-                    "/api/browser-event",
-                    "/api/browser/frame",
-                    "/api/browser/pump-audit",
-                    "/api/session-keepalive",
-                    "/api/session-tool-policy",
-                    "/api/hooks/agent",
-                    "/api/outbox/notify",
-                    "/api/slack/upload-file",
-                    "/api/slack/pins",
-                    "/api/slack/reactions",
-                    "/api/mcp/servers",
-                }
-            ),
-            mixed_internal_paths=frozenset(
-                {
-                    # Called by MCP (loopback + secret) AND browser polling
-                    # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
-                    "/api/spawn",
-                    "/api/chat",
-                    "/api/lessons",
-                    "/api/crons",  # CLI cron trigger; prefix covers all sub-routes (consistent with spawn/taskrunner)
-                    "/api/taskrunner",
-                    "/api/artifacts",
-                    # The 5 artifact_folder_* MCP tools authenticate via
-                    # X-Internal-Secret. token_auth prefix-matching is
-                    # (path == p or path.startswith(p + "/")), so
-                    # "/api/artifact-folders" is NOT covered by the
-                    # "/api/artifacts" entry above — without this entry those
-                    # MCP calls fall through to cookie auth and fail with
-                    # "Token required".
-                    "/api/artifact-folders",
-                    "/api/workflows",  # DW engine: MCP tools + Workflows tab polling
-                    "/v1/chat/completions",  # OpenAI-compat API
-                }
-            ),
+            internal_paths=_STRICT_INTERNAL_API_PATHS,
+            mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
             internal_secret=_internal_secret,
             port=port,
             local_only=local_only,
@@ -1920,8 +1935,21 @@ async def start_api_server(
     task_runner: TaskRunner | None = None,
     slack_client: Any = None,
     owner_id: str = "",
+    local_only: bool = True,
+    configured_host: str = "",
 ) -> tuple[web.AppRunner, DashboardState]:
-    """Start a minimal API-only server for MCP tool transport (no UI)."""
+    """Start a minimal API-only server for MCP tool transport (no UI).
+
+    Headless (``--slack-only``) mode. This server exposes the SAME
+    state-changing MCP tool routes as the dashboard (``_register_mcp_routes``),
+    so it MUST authenticate them at parity with ``start_dashboard``: loopback is
+    NOT a trust boundary (local port forwarders and any web page the user opens
+    can reach 127.0.0.1), so the internal MCP routes require the
+    ``X-Internal-Secret`` machine-to-machine handshake, and state-changing
+    requests are guarded against DNS-rebinding (Host) and cross-site browsers
+    (Origin). Every in-repo caller (mcp-core, cron) already sends the secret.
+    See P474490481 (regression of the v1.2.3 loopback-bypass fix).
+    """
     state = DashboardState(
         sessions=sessions,
         crons=crons,
@@ -1952,8 +1980,24 @@ async def start_api_server(
 
     _precompute_telemetry(state)
 
+    # ── Auth parity with start_dashboard (P474490481) ────────────────────────
+    # The MCP route surface is identical to the dashboard's, so the middleware
+    # chain must be too. Host-allowlist source of truth is shared with the CSRF
+    # Origin check via build_allowed_origins/check_host/check_origin (origin.py).
+    app["allowed_origins"] = build_allowed_origins(port, local_only, configured_host)
+    app["local_only"] = local_only
+
+    # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
+    # Deferred file write until after the port binds (mirrors start_dashboard) so
+    # a failed second instance never poisons the live gateway's secret file.
+    _secret_path = config_dir() / ".local_secret"
+    _secret_path.parent.mkdir(parents=True, exist_ok=True)
+    _internal_secret = os.urandom(16).hex()
+    app["local_secret"] = _internal_secret
+
     # SEL audit middleware — log mutating MCP tool calls
     _sel_methods = {"GET", "POST", "PUT", "DELETE"}
+    _safe_methods = {"GET", "HEAD", "OPTIONS"}
 
     @web.middleware  # type: ignore[misc]
     async def sel_audit_middleware(
@@ -1961,8 +2005,8 @@ async def start_api_server(
         handler: object,
     ) -> web.StreamResponse:
         if request.method in _sel_methods and request.path.startswith("/api/"):
-            from kiro_crew.sel import sel
-
+            # ``sel`` is imported at module scope (top of file); no in-function
+            # import needed (host/csrf middleware below call it unqualified too).
             try:
                 resp = await handler(request)  # type: ignore[operator]
                 sel().log_api_access(
@@ -1983,7 +2027,69 @@ async def start_api_server(
                 raise
         return await handler(request)  # type: ignore[operator]
 
-    app.middlewares.append(sel_audit_middleware)
+    @web.middleware  # type: ignore[misc]
+    async def host_validation_middleware(
+        request: web.Request,
+        handler: object,
+    ) -> web.StreamResponse:
+        # DNS-rebinding defense-in-depth (AVP-23427), parity with start_dashboard.
+        if not check_host(request):
+            sel().log_api_access(
+                caller="mcp_tool",
+                operation=f"{request.method} {request.path}",
+                outcome="denied",
+                resources=request.path,
+                error=f"host header not allowed: {request.headers.get('Host', '')[:100]}",
+            )
+            raise web.HTTPForbidden(
+                text="Host header not allowed.",
+                content_type="text/plain",
+            )
+        return await handler(request)  # type: ignore[operator]
+
+    @web.middleware  # type: ignore[misc]
+    async def csrf_middleware(
+        request: web.Request,
+        handler: object,
+    ) -> web.StreamResponse:
+        # Cross-site CSRF barrier on state-changing routes, parity with
+        # start_dashboard. Loopback local processes (mcp-core, cron) send no
+        # Origin header and are trusted by check_origin; a browser always sends
+        # Origin, so a cross-site page is rejected here even before token auth.
+        if request.method not in _safe_methods:
+            if not check_origin(request, require=True, fallback_header="Referer"):
+                # Audit the CSRF denial (security-relevant permission decision),
+                # mirroring host_validation_middleware — a blocked cross-origin
+                # mutation is exactly the signal a SEL review looks for.
+                sel().log_api_access(
+                    caller="mcp_tool",
+                    operation=f"{request.method} {request.path}",
+                    outcome="denied",
+                    resources=request.path,
+                    error=f"CSRF check failed: origin not allowed: {request.headers.get('Origin', '')[:100]}",
+                )
+                raise web.HTTPForbidden(
+                    text="CSRF check failed: request origin not allowed.",
+                    content_type="text/plain",
+                )
+        return await handler(request)  # type: ignore[operator]
+
+    # Explicit ordering mirrors start_dashboard: host → csrf → token → audit.
+    app.middlewares[:] = [
+        host_validation_middleware,
+        csrf_middleware,
+        token_auth_middleware(
+            internal_paths=_STRICT_INTERNAL_API_PATHS,
+            mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+            internal_secret=_internal_secret,
+            port=port,
+            local_only=local_only,
+            # No SPA shell in headless mode: a no-token request must be denied
+            # outright, never served an HTML shell (there is no UI to boot).
+            spa_shell_handler=None,
+        ),
+        sel_audit_middleware,
+    ]
 
     _register_mcp_routes(app)
 
@@ -1991,6 +2097,15 @@ async def start_api_server(
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", port)
     await _start_site(site, port)
+
+    # Port bind succeeded — now safe to persist the secret file (parity with
+    # start_dashboard: write deferred so a failed bind can't poison it).
+    try:
+        _write_secret_file(_secret_path, _internal_secret)
+    except OSError:
+        await runner.cleanup()
+        raise
+
     logger.info("API-only server listening on 127.0.0.1:%d", port)
 
     return runner, state
