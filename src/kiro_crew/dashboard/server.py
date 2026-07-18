@@ -72,6 +72,11 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_me,
     api_auth_refresh,
 )
+from kiro_crew.dashboard.handlers.discover import (
+    api_skills_discover,
+    api_skills_discover_install,
+    api_skills_discover_preview,
+)
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
@@ -993,6 +998,10 @@ async def start_dashboard(
     # catch-all {name:.+} so aiohttp reaches them first.
     app.router.add_get("/api/skills", handlers.api_skills)
     app.router.add_post("/api/skills", handlers.api_skills_create)
+    # Multi-provider skill discovery (skills.sh REST browser)
+    app.router.add_get("/api/skills/-/discover", api_skills_discover)
+    app.router.add_get("/api/skills/-/discover/preview", api_skills_discover_preview)
+    app.router.add_post("/api/skills/-/discover/install", api_skills_discover_install)
     app.router.add_get("/api/skills/{name:.+}/-/tree", handlers.api_skill_tree)
     app.router.add_get("/api/skills/{name:.+}/-/file", handlers.api_skill_file)
     app.router.add_get("/api/skills/{name:.+}", handlers.api_skill_detail)

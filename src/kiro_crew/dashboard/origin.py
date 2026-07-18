@@ -395,6 +395,7 @@ def build_allowed_origins(
     }
     if os.environ.get("KIROCREW_HOME"):
         origins.add("http://localhost:3000")
+        origins.add("http://127.0.0.1:3000")
     if configured_host:
         origins.add(f"http://{configured_host}:{port}")
     if dashboard_url:
