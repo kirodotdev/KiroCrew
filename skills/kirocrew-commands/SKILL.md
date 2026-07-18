@@ -2,7 +2,7 @@
 name: kirocrew-commands
 description: Complete CLI reference for KiroCrew commands. Use for help, commands, setup, how to, what can you do, getting started, onboarding.
 always: false
-triggers: help, commands, setup, gateway, how to, what can you do, getting started, onboard, browse, auth, doctor, cron, artifact, memory, snapshot, eval, security
+triggers: help, commands, setup, gateway, how to, what can you do, getting started, onboard, browse, auth, doctor, cron, artifact, memory, snapshot, eval, security, kirocrew pod, pod up, pod down, pod ls, pod status, pod logs, pod provision, pod install, pod token
 ---
 # KiroCrew CLI Reference
 
@@ -47,6 +47,32 @@ triggers: help, commands, setup, gateway, how to, what can you do, getting start
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |
+
+## Pods (Isolated Worktree Test Instances)
+
+Ephemeral, full-stack KiroCrew gateways — one per feature worktree — that run on
+their own port + isolated `KIROCREW_HOME` and never touch the live `:5476`
+gateway or shared data. Linux `systemd --user` only. `<wt>` is a worktree name
+(resolved by directory basename or `feat/<name>` branch convention).
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew pod install` | Lay down the systemd --user template unit (once per machine) |
+| `kirocrew pod provision <wt>` | Build the worktree's venv + SPA dist (the on-ramp) |
+| `kirocrew pod up <wt>` | Bring up an isolated pod (auto-builds venv; fails if dist missing) |
+| `kirocrew pod up <wt> --provision` | Provision (venv + dist build) then bring up |
+| `kirocrew pod up <wt> --json` | Bring up and print `{base_url, token, port}` as JSON |
+| `kirocrew pod ls` | List running pods |
+| `kirocrew pod status <wt>` | Up/down + health for one pod |
+| `kirocrew pod token <wt>` | (Re)mint a dashboard token for a running pod |
+| `kirocrew pod url <wt>` | Print the pod's base URL |
+| `kirocrew pod logs <wt> -n N` | Tail the pod's journal |
+| `kirocrew pod down <wt>` | Evict the pod and delete its isolated HOME |
+
+Port derivation: `base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`).
+Override with `PORT=` in `~/.kirocrew/pods/<name>.env`.
+
+See `src/kiro_crew/pod/README.md` for the full reference.
 
 ## Dashboard Access
 
@@ -272,3 +298,7 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `KIROCREW_HOME` | Override config/data directory | `~/.kirocrew` |
 | `KIROCREW_PORT` | Override dashboard port | `5476` |
 | `KIROCREW_PROJECT_DIR` | Override agent config/skills directory | Auto-detected |
+| `KIROCREW_POD_REPO` | Repo to resolve worktree names from | invoking cwd |
+| `KIROCREW_POD_ROOT` | Isolated pod HOMEs (nuked on stop) | `~/.kirocrew-pods` |
+| `KIROCREW_POD_BASE_PORT` | Port derivation base | `7810` |
+| `KIROCREW_POD_LIVE_PORT` | Port a pod must never bind | `5476` |
