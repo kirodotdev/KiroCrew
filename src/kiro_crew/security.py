@@ -548,6 +548,23 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".kirocrew/security_policy.json",
     ".kirocrew/profiles",
     ".kirocrew/admission_policy.json",
+    # KiroCrew's own dashboard-auth secrets (Mesh-2369). ``token_signing.key``
+    # (dashboard/token_secret.py) signs every access + refresh token;
+    # ``refresh_chains.json`` (dashboard/refresh_tokens.py) stores refresh-token
+    # chain state; ``.local_secret`` (server.py / cli_commands.py / mcp_core.py /
+    # cron_script.py / mcp_shared.py) is the shared internal-auth secret used to
+    # authenticate MCP/cron/hook callbacks back into the gateway. These are this
+    # host's own crown-jewel credentials: like the SEL trust root (sel_hmac.key),
+    # the app-admission root, and the governance security_policy.json above, an
+    # agent that could fs_read them could forge dashboard auth tokens or
+    # impersonate internal callers. All legitimate readers (token_secret.py,
+    # refresh_tokens.py, cli_commands.py, mcp_core.py, cron_script.py,
+    # mcp_shared.py, mcp_playwright_proxy.py, cli_server.py, mcp_cron.py) open
+    # these files directly via ``Path.read_text()``/``open()`` and do NOT route
+    # through this gate, so legitimate token minting/verification still works.
+    ".kirocrew/token_signing.key",
+    ".kirocrew/refresh_chains.json",
+    ".kirocrew/.local_secret",
 ]
 
 # ── Write-protected paths (block modification, allow reads) ──

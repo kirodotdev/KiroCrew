@@ -1564,6 +1564,30 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kirocrew/app_admission.json") is True
         assert is_sensitive_path(f"{home}/.kirocrew/app_admission.json") is True
 
+    def test_token_signing_key(self) -> None:
+        # Mesh-2369: token_signing.key (dashboard/token_secret.py) signs every
+        # dashboard access + refresh token. An agent that could fs_read it could
+        # forge auth tokens for itself, so it must be read-blocked like the SEL
+        # HMAC key above.
+        assert is_sensitive_path("~/.kirocrew/token_signing.key") is True
+
+    def test_refresh_chains_json(self) -> None:
+        # Mesh-2369: refresh_chains.json (dashboard/refresh_tokens.py) stores
+        # refresh-token chain state used to mint new access tokens.
+        assert is_sensitive_path("~/.kirocrew/refresh_chains.json") is True
+
+    def test_local_secret(self) -> None:
+        # Mesh-2369: .local_secret is the shared internal-auth secret used to
+        # authenticate MCP/cron/hook callbacks back into the gateway
+        # (mcp_core.py, cron_script.py, mcp_shared.py, etc.).
+        assert is_sensitive_path("~/.kirocrew/.local_secret") is True
+
+    def test_dashboard_secrets_absolute_path(self) -> None:
+        home = str(Path.home())
+        assert is_sensitive_path(f"{home}/.kirocrew/token_signing.key") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/refresh_chains.json") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/.local_secret") is True
+
     def test_non_sel_kirocrew_file_not_blocked(self) -> None:
         # Regression guard: the SEL additions must not over-block routine
         # ~/.kirocrew reads (config.json, sessions.db) that operators/tools need.
