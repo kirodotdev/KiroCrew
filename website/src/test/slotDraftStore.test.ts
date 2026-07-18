@@ -103,6 +103,58 @@ describe('slotDraftStore', () => {
       s.save(d)
       expect(Object.keys(s.load()).length).toBe(200)
     })
+
+    it('default (evict-before-write) caps the caller even when the persist throws', () => {
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', maxEntries: 3, sanitize: isString })
+      const d: Record<string, string> = {}
+      for (let i = 0; i < 6; i++) d[`slot-${i}`] = `d${i}`
+      const orig = Storage.prototype.setItem
+      Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
+      try { s.save(d) } finally { Storage.prototype.setItem = orig }
+      // In-place eviction ran before the failed write, so the caller is capped.
+      expect(Object.keys(d).length).toBe(3)
+    })
+  })
+
+  describe('evictAfterWrite (evict-after-successful-persist, commentDrafts contract)', () => {
+    it('syncs evictions back to the caller after a successful persist', () => {
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', maxEntries: 3, evictAfterWrite: true, sanitize: isString })
+      const d: Record<string, string> = {}
+      for (let i = 0; i < 6; i++) d[`slot-${i}`] = `d${i}`
+      s.save(d)
+      expect(Object.keys(d).sort()).toEqual(['slot-3', 'slot-4', 'slot-5'])
+      expect(d['slot-0']).toBeUndefined()
+      expect(d['slot-5']).toBe('d5')
+      expect(Object.keys(s.load()).length).toBe(3)
+    })
+
+    it('leaves the caller whole when the persist throws (no silent data loss)', () => {
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', maxEntries: 3, evictAfterWrite: true, sanitize: isString })
+      const d: Record<string, string> = {}
+      for (let i = 0; i < 6; i++) d[`slot-${i}`] = `d${i}`
+      const orig = Storage.prototype.setItem
+      Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
+      try { s.save(d) } finally { Storage.prototype.setItem = orig }
+      // Persist failed, so NO eviction is mirrored back — every draft survives.
+      expect(Object.keys(d).length).toBe(6)
+      expect(d['slot-0']).toBe('d0')
+    })
+
+    it('does not mutate the caller when nothing needs eviction (under cap)', () => {
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', maxEntries: 3, evictAfterWrite: true, sanitize: isString })
+      const d: Record<string, string> = { 'slot-0': 'a', 'slot-1': 'b' }
+      s.save(d)
+      expect(d).toEqual({ 'slot-0': 'a', 'slot-1': 'b' })
+      expect(s.load()).toEqual({ 'slot-0': 'a', 'slot-1': 'b' })
+    })
+
+    it('warns in DEV when paired with ttlMs (unsupported desync-prone combo)', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, evictAfterWrite: true, sanitize: isString })
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('evictAfterWrite + ttlMs'))
+      } finally { warn.mockRestore() }
+    })
   })
 
   describe('byte-aware store-level LRU (Mesh-1909)', () => {

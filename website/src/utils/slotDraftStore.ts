@@ -1,8 +1,9 @@
 /**
  * Generic per-slot draft persistence factory (Mesh-1909). Extracts the
  * load -> sanitize -> TTL-prune -> LRU/byte-cap -> persist skeleton shared by
- * `chatDrafts`, `chatFileDrafts`, and `chatPasteDrafts`. Each module becomes a
- * thin instance configured through `SlotDraftStoreOpts`.
+ * `chatDrafts`, `chatFileDrafts`, `chatPasteDrafts`, `goalDrafts`, and
+ * `commentDrafts`. Each module becomes a thin instance configured through
+ * `SlotDraftStoreOpts`.
  *
  * One storage key holds a single JSON blob (`Record<slot, T>`); quota is
  * enforced on the whole blob. Two eviction policies bound growth:
@@ -45,6 +46,15 @@ export interface SlotDraftStoreOpts<T> {
    *  semantically empty like `''` / `[]`). Run on both load and set, so a value
    *  it accepts is always isolated from the caller's reference. */
   sanitize: (v: unknown) => T | null
+  /** Eviction ordering on `save`. Default (false) caps the caller's object in
+   *  place BEFORE the write, so the in-memory copy always matches storage. True
+   *  caps a COPY and only syncs evictions back to the caller AFTER a successful
+   *  persist, so a failed write (e.g. QuotaExceeded) never silently drops
+   *  in-memory drafts that were never persisted (`commentDrafts` contract).
+   *  Pair only with non-TTL stores: a failed write keeps the caller's evicted
+   *  slots while the shared `timestamps` map already dropped them, so combining
+   *  with `ttlMs` would desync the two. No current instance combines them. */
+  evictAfterWrite?: boolean
 }
 
 export interface SlotDraftStore<T> {
@@ -57,18 +67,24 @@ export interface SlotDraftStore<T> {
 }
 
 export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftStore<T> {
-  const { key, storage, ttlMs, maxEntries, maxStoreBytes, sanitize } = opts
+  const { key, storage, ttlMs, maxEntries, maxStoreBytes, sanitize, evictAfterWrite } = opts
   const tsKey = `${key}-ts`
   const hasTtl = ttlMs !== undefined
+
+  // evictAfterWrite keeps the caller's evicted slots on a failed write, but
+  // capEntries already dropped them from `timestamps`; combining with a TTL
+  // desyncs the two. Warn loudly so a future instance can't do it silently.
+  if (import.meta.env.DEV && hasTtl && evictAfterWrite) {
+    // eslint-disable-next-line no-console -- intentional dev-only diagnostic
+    console.warn(`slotDraftStore[${key}]: evictAfterWrite + ttlMs desyncs timestamps on a failed write; use one or the other`)
+  }
 
   const timestamps: Record<string, number> = {}
   let timestampsLoaded = false
 
   const store = (): Storage => (storage === 'local' ? localStorage : sessionStorage)
-  const safeWrite = (k: string, v: string): void => {
-    if (storage === 'local') safeSetItem(k, v)
-    else safeSetSessionItem(k, v)
-  }
+  const safeWrite = (k: string, v: string): boolean =>
+    storage === 'local' ? safeSetItem(k, v) : safeSetSessionItem(k, v)
 
   function ensureTimestampsLoaded(): void {
     if (!hasTtl || timestampsLoaded) return
@@ -135,7 +151,9 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     }
   }
 
-  function persistNow(drafts: Record<string, T>): void {
+  /** Cap `drafts` in place, persist, and report whether the drafts write stuck.
+   *  The boolean drives the evict-after-write sync-back in `save`. */
+  function persistNow(drafts: Record<string, T>): boolean {
     capEntries(drafts)
     capBytes(drafts)
     if (hasTtl) {
@@ -149,10 +167,11 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
       // that a later load would mistake for legacy and re-stamp, resetting TTL.
       // safeWrite reclaims disposable cache + retries on quota (never throws).
       if (hasTtl) safeWrite(tsKey, JSON.stringify(timestamps))
-      safeWrite(key, JSON.stringify(drafts))
+      return safeWrite(key, JSON.stringify(drafts))
     } catch (e) {
       // eslint-disable-next-line no-console -- intentional dev-only diagnostic
       if (import.meta.env.DEV) console.warn(`slotDraftStore[${key}]: save failed`, e)
+      return false
     }
   }
 
@@ -189,7 +208,15 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
 
   function save(drafts: Record<string, T>): void {
     ensureTimestampsLoaded()
-    persistNow(drafts)
+    if (!evictAfterWrite) { persistNow(drafts); return }
+    // Evict-after-write: cap a copy, persist it, and only mirror the evictions
+    // back to the caller once the write actually stuck. A failed persist leaves
+    // the caller's in-memory drafts whole so nothing that never reached storage
+    // is silently dropped.
+    const toSave = { ...drafts }
+    if (persistNow(toSave)) {
+      for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
+    }
   }
 
   /** Mutate `drafts` for `slot`: delete-then-reinsert a sanitized deep copy if

@@ -1,10 +1,12 @@
-import { safeSetItem } from './safeStorage'
 /**
  * Per-file inline comment draft persistence. Pending (unsubmitted) comments
  * survive `MarkdownPanel` close, page refresh, and browser crashes via
- * localStorage. All functions are safe against corrupt/missing storage.
+ * localStorage. Thin instance of `createSlotDraftStore` (Mesh-1978); keyed by
+ * filePath, capped at COMMENT_DRAFT_MAX_FILES, no TTL. Uses `evictAfterWrite` so
+ * a failed persist (e.g. QuotaExceeded) never silently drops in-memory drafts.
  */
 import type { InlineComment } from '../components/CommentOverlay'
+import { createSlotDraftStore } from './slotDraftStore'
 
 export const COMMENT_DRAFTS_KEY = 'mc-comment-drafts'
 /** Cap stored files to prevent unbounded growth from long-term reviewers. */
@@ -12,67 +14,29 @@ export const COMMENT_DRAFT_MAX_FILES = 20
 
 export type CommentDrafts = Record<string, InlineComment[]>
 
-/** Defensive: accept only non-empty arrays of objects with required keys. */
-function isValidComments(v: unknown): v is InlineComment[] {
-  if (!Array.isArray(v) || v.length === 0) return false
-  return v.every(c => c && typeof c === 'object'
+/** Accept only non-empty arrays of comments carrying the required string keys;
+ *  return a deep copy isolating the store from caller mutations, or null to
+ *  drop. The per-comment spread is a full copy ONLY because every InlineComment
+ *  field is a primitive; adding a nested object/array field would silently make
+ *  this a shallow copy (no compile error) and must switch to a structured clone. */
+function isValidComments(v: unknown): InlineComment[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null
+  const ok = v.every(c => c && typeof c === 'object'
     && typeof (c as InlineComment).id === 'string'
     && typeof (c as InlineComment).anchor === 'string'
     && typeof (c as InlineComment).text === 'string')
+  return ok ? v.map(c => ({ ...(c as InlineComment) })) : null
 }
 
-export function loadCommentDrafts(): CommentDrafts {
-  try {
-    const raw = localStorage.getItem(COMMENT_DRAFTS_KEY)
-    const parsed = raw ? JSON.parse(raw) : {}
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    // Drop any entries that don't match the expected shape (tolerate partial corruption).
-    const clean: CommentDrafts = {}
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (isValidComments(v)) clean[k] = v
-    }
-    return clean
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    if (import.meta.env.DEV) console.warn('commentDrafts: load failed', e)
-    return {}
-  }
-}
+const store = createSlotDraftStore<InlineComment[]>({
+  key: COMMENT_DRAFTS_KEY,
+  storage: 'local',
+  maxEntries: COMMENT_DRAFT_MAX_FILES,
+  evictAfterWrite: true,
+  sanitize: isValidComments,
+})
 
-/**
- * Evict oldest file entries (by insertion order) if over the cap. Mutates in
- * place. `setCommentsForFile` refreshes insertion position on every write so
- * the most-recently-edited file survives.
- */
-function capDrafts(drafts: CommentDrafts): void {
-  const keys = Object.keys(drafts)
-  if (keys.length <= COMMENT_DRAFT_MAX_FILES) return
-  for (const k of keys.slice(0, keys.length - COMMENT_DRAFT_MAX_FILES)) delete drafts[k]
-}
-
-/**
- * Persist `drafts` to localStorage. If over cap, evicts oldest entries — but
- * only after a successful write, so a `setItem` failure (e.g. QuotaExceeded)
- * doesn't silently drop in-memory drafts that were never persisted.
- * Full overwrite (last-write-wins across tabs) — dashboard is typically
- * single-tab; a read-merge approach caused LRU ordering bugs in Mesh-686.
- */
-export function saveCommentDrafts(drafts: CommentDrafts): void {
-  const toSave = { ...drafts }
-  capDrafts(toSave)
-  const ok = safeSetItem(COMMENT_DRAFTS_KEY, JSON.stringify(toSave))
-  if (ok) {
-    // Sync evictions back to the caller only after a successful persist.
-    for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
-  }
-}
-
-/**
- * Set (or delete if empty) the comments for `filePath`. Delete-then-reinsert
- * refreshes insertion-order position so LRU eviction targets the least
- * recently touched file.
- */
-export function setCommentsForFile(drafts: CommentDrafts, filePath: string, comments: InlineComment[]): void {
-  delete drafts[filePath]
-  if (comments.length > 0) drafts[filePath] = comments
-}
+export const loadCommentDrafts = store.load
+export const saveCommentDrafts = store.save
+/** Set (or delete if empty) the comments for a file path. */
+export const setCommentsForFile = store.set
