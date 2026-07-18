@@ -79,6 +79,7 @@ for rel in [
     "docs",            # in-app docs served by the dashboard
     "static",          # css/js + the staged dashboard dist
     "skills",          # bundled SKILL.md (if present under the pkg)
+    "builtin_skills",  # packaged builtin skills (e.g. image-authoring)
 ]:
     _add_tree(rel, rel)
 

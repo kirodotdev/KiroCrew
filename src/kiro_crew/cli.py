@@ -1442,7 +1442,7 @@ Examples:
     art_list.add_argument("--tag", help="Filter by tag")
     art_list.add_argument(
         "--kind",
-        choices=["widget", "html", "markdown", "svg", "json", "text"],
+        choices=["widget", "html", "markdown", "svg", "json", "text", "image"],
         help="Filter by kind",
     )
     art_list.add_argument("-q", "--q", help="Substring filter on artifact name")
@@ -1460,7 +1460,7 @@ Examples:
     art_save.add_argument("--name", required=True, help="Human-readable name")
     art_save.add_argument(
         "--kind",
-        choices=["widget", "html", "markdown", "svg", "json", "text"],
+        choices=["widget", "html", "markdown", "svg", "json", "text", "image"],
         default=None,
         help="Artifact kind (default: inferred from content / file extension)",
     )

@@ -54,6 +54,7 @@ from kiro_crew.session_pid import (
     register_protected_pid,
     unregister_protected_pid,
 )
+from kiro_crew.validation import MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
 
@@ -248,9 +249,17 @@ class AcpRuntime:
         mcp_gateway_socket: str | Path | None = None,
         max_age_secs: float = _DEFAULT_MAX_AGE_SECS,
         max_rss_mb: float = _DEFAULT_MAX_RSS_MB,
+        model: str | None = None,
     ):
         self._work_dir = Path(work_dir) if work_dir else Path.home() / ".kirocrew" / "workspace"
         self._agent = agent
+        if model is not None:
+            if not MODEL_ID_RE.match(model):
+                raise ValueError(
+                    f"Invalid model identifier: {model!r} — must match "
+                    f"^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,127}}$"
+                )
+        self._model = model
         self._sandbox_mode = sandbox_mode
         self._extra_env = extra_env or {}
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
@@ -378,6 +387,12 @@ class AcpRuntime:
             raise AcpRuntimeError(f"{KIRO_CLI_BIN} not found in PATH")
 
         argv: list[str] = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
+        if self._model:
+            # Pin the model at process start (mirrors `kiro-cli chat --model X`).
+            # This is the ONLY reliable way to run a non-default provider model
+            # (e.g. GPT for image generation) — post-session set_model cannot
+            # cross provider boundaries, and agent configs may pin a model.
+            argv += ["--model", self._model]
 
         # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
         # MCP-gateway overlay / gateway-socket options remain absent (inert) in

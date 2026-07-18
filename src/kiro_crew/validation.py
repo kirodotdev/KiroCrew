@@ -539,7 +539,12 @@ WORKFLOW_RERUN_SCHEMA = ToolSchema(
 # Artifact tools — slug pattern matches kiro_crew.artifacts._SLUG_RE.
 _ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
 _ARTIFACT_TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}$")
-_ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text)$")
+_ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image)$")
+
+# Model identifiers passed to kiro-cli ``--model`` (AcpRuntime). First char
+# must be alphanumeric so a value can never be parsed as a CLI flag, and the
+# charset covers real model ids (gpt-5.6-sol, claude-sonnet-4.6) only.
+MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 _ARTIFACT_SOURCE_RE = re.compile(r"^(chat|cron|subagent|manual|import)$")
 ARTIFACT_CONTENT_MAX = 1_048_576  # 1 MiB — matches MAX_CONTENT_BYTES in artifacts.py
 
