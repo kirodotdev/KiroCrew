@@ -100,6 +100,14 @@ def safe_read_file(path: str) -> str:
     return resolved.read_text()
 ```
 
+**Audited internal carve-out.** `safe_read_file_internal(read_id)` permits a small, hardcoded
+allowlist of system-internal reads of otherwise-sensitive paths (today only the kiro-cli SSO
+token, read to call the CodeWhisperer `GetUsageLimits` API that powers the dashboard credit
+pill). It re-verifies `is_sensitive_path()`, SEL-audits every outcome, and fails closed — a
+`success` whose audit cannot be persisted synchronously returns `None`. The token bytes go
+only to the hardcoded prod AWS endpoint over TLS (verify on, redirects off) and never reach an
+LLM/agent surface; the parsed numeric result is credential-redacted before caching.
+
 ## Layer 2: Command Denial (`security.py` + `agents/defaults.json`)
 
 ### Denied Commands (113 patterns)

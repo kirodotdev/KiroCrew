@@ -509,6 +509,18 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".pypirc",
     ".netrc",
     ".git-credentials",
+    # kiro-cli / amazon-q auth stores hold the live SSO bearer token, read by
+    # the dashboard credit pill via the audited kiro_usage_api._token_from_sqlite
+    # helper. Classify the WHOLE data directories (not just data.sqlite3) so the
+    # WAL/SHM/journal sidecars — which can hold the same credential bytes — are
+    # covered too. Agent file tools must not read them through the shared gate.
+    # The internal reader opens the DB read-only + SEL-audited (NOT via
+    # is_sensitive_path), so it still works; the sandbox bind-mount list
+    # (sandbox.py) is SEPARATE, so kiro-cli's own auth is unaffected.
+    ".local/share/kiro-cli",
+    ".local/share/amazon-q",
+    "Library/Application Support/kiro-cli",
+    "Library/Application Support/amazon-q",
     ".kirocrew/.env",
     # Security Event Log trust root (Talos finding cdf82704). The SEL is a
     # tamper-evident, HMAC-SHA256-chained audit trail (``sel.py``): each entry
