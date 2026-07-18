@@ -43,9 +43,9 @@ describe('computeRecentRank', () => {
     expect(computeRecentRank([{ key: 'a', last_ts: iso(10) }], 0).size).toBe(0)
   })
 
-  it('RECENT_TINT_COUNT defaults to 0 and MAX_RECENT_TINT_COUNT is 10', () => {
+  it('RECENT_TINT_COUNT defaults to 0 and MAX_RECENT_TINT_COUNT is 50', () => {
     expect(RECENT_TINT_COUNT).toBe(0)
-    expect(MAX_RECENT_TINT_COUNT).toBe(10)
+    expect(MAX_RECENT_TINT_COUNT).toBe(50)
   })
 })
 
@@ -54,9 +54,9 @@ describe('clampTintCount', () => {
     expect(clampTintCount(3)).toBe(3)
     expect(clampTintCount(4.6)).toBe(5)
   })
-  it('clamps to [0, 10]', () => {
+  it('clamps to [0, 50]', () => {
     expect(clampTintCount(-2)).toBe(0)
-    expect(clampTintCount(99)).toBe(10)
+    expect(clampTintCount(99)).toBe(50)
   })
   it('falls back to the default for missing / non-numeric values', () => {
     expect(clampTintCount(undefined)).toBe(RECENT_TINT_COUNT)

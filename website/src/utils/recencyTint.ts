@@ -7,8 +7,10 @@
 export const RECENT_TINT_COUNT = 0
 
 // Upper bound for the configurable tint count. The graded stripe hard-caps width/opacity at
-// 7px/100%, so counts beyond ~5 plateau the most-recent tints — 10 is a sane ceiling.
-export const MAX_RECENT_TINT_COUNT = 10
+// 7px/100%, so ranks beyond the 5 most-recent plateau at full intensity rather than fading —
+// the extra slots still mark a session as recent. 50 comfortably covers a heavy multi-session
+// sidebar without being unbounded.
+export const MAX_RECENT_TINT_COUNT = 50
 
 // Coerce a raw config value (possibly missing / non-numeric / out-of-range) into a valid
 // tint count: rounds, clamps to [0, MAX_RECENT_TINT_COUNT], and falls back to the default.
