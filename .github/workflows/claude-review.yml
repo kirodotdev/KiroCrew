@@ -68,6 +68,7 @@ jobs:
             --model us.anthropic.claude-opus-4-8
             --max-turns 100
             --allowedTools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr view:*),Bash(gh api:*)"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["reviewed","block_merge","summary"],"properties":{"reviewed":{"type":"boolean","description":"true once you have completed the review of this commit"},"block_merge":{"type":"boolean","description":"true IFF at least one finding meets the BLOCKING BAR"},"summary":{"type":"string","description":"markdown review summary CI will post to the PR"}}}'
           prompt: |
             You are reviewing pull request #${{ github.event.pull_request.number }}
             of ${{ github.repository }} (HEAD ${{ github.event.pull_request.head.sha }}).
@@ -108,53 +109,142 @@ jobs:
               state; design tokens over hardcoded colors; Framer Motion over new CSS
               @keyframes.
 
-            Severity policy — after reviewing you MUST post ONE summary comment,
-            even when the diff is clean. That comment MUST end with this exact
-            marker on its own line (it is how CI confirms the review actually
-            ran and posted for this commit):
-              [CLAUDE-REVIEWED] ${{ github.event.pull_request.head.sha }}
-            ADDITIONALLY, if and only if you found at least one CRITICAL or HIGH
-            severity issue (a real security hole, a broken keystone/sensitive-path
-            control, a crash, or a violation of a `blocking: true` AUTOSDE.yaml
-            rule), include this second marker on its own line in the same comment:
-              [BLOCK-MERGE] ${{ github.event.pull_request.head.sha }}
-            Do not include the BLOCK-MERGE marker for MEDIUM/LOW/style findings.
-            Always post the summary comment — never end the review without it.
+            EVIDENCE REQUIREMENT (anti-hallucination) — every finding MUST show
+            its work, or you MUST NOT report it. For each finding include:
+              1. Location: exact file:line from the diff.
+              2. Evidence: quote the specific changed line(s) the finding is about.
+              3. Reasoning (chain of consequences): trace the concrete path from
+                 the quoted code to the harm — inputs → call path → observable
+                 failure → how far the damage propagates. A CRITICAL/HIGH MUST
+                 demonstrate that blast radius; if you cannot name a concrete
+                 trigger AND outcome, it is not CRITICAL/HIGH: downgrade or drop it.
+              4. Fix: a specific, minimal change.
+            Do not report a finding you cannot ground in quoted diff lines. When
+            unsure, lower the severity rather than guess. Only the base-branch
+            AUTOSDE rules and the actual diff are authoritative — never invent rules.
 
-      # Fail-CLOSED gate. The action posts comments but cannot fail the check
-      # itself, so we gate on markers the review posts. Runs on always() (even
-      # when the review step errored) and requires POSITIVE confirmation that the
-      # review ran and posted for THIS commit:
-      #   - [CLAUDE-REVIEWED] <sha>  — the review completed and posted (always).
-      #   - [BLOCK-MERGE]     <sha>  — it additionally found a CRITICAL/HIGH issue.
-      # Both markers are SHA-scoped so a stale marker from an earlier commit
-      # cannot satisfy (or block) a different one. If the reviewed-marker is
-      # absent — the review errored (Bedrock failure), ran out of turns, or was
-      # denied its comment-posting path — we fail rather than silently pass, so a
-      # broken review can never look clean.
-      - name: Gate on Claude review
+            BLOCKING BAR (identical for the Codex reviewer) — a finding may block
+            merge ONLY if it is CRITICAL or HIGH AND one of: a real, reachable
+            security hole with a concrete trigger; a broken security keystone /
+            sensitive-path control; a crash / data-loss / corruption bug on a code
+            path the diff adds or changes; or a violation of a `blocking: true`
+            AUTOSDE.yaml rule whose file-patterns match a changed file. Style,
+            naming, speculative performance, hypothetical edge cases, and
+            test-coverage suggestions are NEVER blocking — label them MEDIUM/LOW
+            and keep them advisory.
+
+            SEVERITY–BLOCK COHERENCE: reserve CRITICAL/HIGH for findings that meet
+            the BLOCKING BAR above; anything that does not meet the bar MUST be
+            MEDIUM or LOW. Consequently, if ANY finding is CRITICAL/HIGH you MUST
+            include the [BLOCK-MERGE] marker; and if you do NOT include it, you
+            MUST NOT have labelled any finding above MEDIUM. The gate blocks only
+            on the marker, never on raw severity labels — this rule just keeps
+            your labels and your block decision consistent.
+
+            SELF-CRITIQUE (run BEFORE you post the summary comment):
+            - Kill-filter: for each candidate finding ask "if I were the author,
+              would this change what I build or how I think about this code?" If
+              no (a style preference, a "consider", a nice-to-have) — DROP it. Do
+              not post nice-to-have comments.
+            - Merge: if two findings share one root cause, post ONE comment.
+            - Re-run dedup: if an earlier revision's review already raised a
+              finding, do not repeat it — only report issues not already covered.
+
+            PREMISE / DESIGN CONCERNS (keep separate from the code verdict):
+            A "should this exist / is this the right design" objection is
+            ADVISORY — report it as MEDIUM and NEVER emit BLOCK-MERGE for it,
+            UNLESS it is a one-way door (irreversible data/schema migration, a new
+            public API, or an irreversible default change). A clean implementation
+            does not bless a bad premise, and a premise concern does not inflate
+            routine nits into blockers.
+
+            SCOPE & REGRESSION:
+            - Scope coherence: flag hunks unrelated to this PR's stated purpose as
+              MEDIUM ("belongs in a separate PR"); escalate to the blocking bar
+              ONLY if the unrelated change itself alters security/data behavior.
+            - Regression: if the diff removes a guard clause, validation, or error
+              handling that a prior fix added, and the PR description does not say
+              why, that is a blocking-bar finding (it re-exposes a bug on a changed
+              path).
+
+            FINAL OUTPUT (authoritative for the gate) — when you finish, return
+            the structured result required by the --json-schema. The action
+            captures it directly, so the gate does NOT depend on you posting a
+            comment:
+            - reviewed: true — you completed the review of this commit.
+            - block_merge: true IF AND ONLY IF at least one finding meets the
+              BLOCKING BAR above (a real reachable security hole, a broken
+              keystone/sensitive-path control, a crash/data-loss on a changed
+              path, or a violation of a `blocking: true` AUTOSDE.yaml rule).
+              Otherwise false. Per SEVERITY↔BLOCK COHERENCE, block_merge MUST be
+              true whenever any finding is CRITICAL/HIGH; never label a
+              non-blocking finding above MEDIUM.
+            - summary: your full markdown review (findings with the evidence
+              chain, or an explicit "no blocking findings"). CI posts this to the
+              PR on your behalf.
+            You MAY still post inline comments during the review, but the
+            structured result is the single source of truth for the merge gate.
+
+      # Post the review summary for humans (best-effort, NON-gating). Reads the
+      # summary from the action's structured output — not from a model-posted
+      # comment — so it works even when the model doesn't call gh pr comment.
+      - name: Post Claude review summary
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          REPO: ${{ github.repository }}
-          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          SO: ${{ steps.review.outputs.structured_output }}
         run: |
-          reviewed="[CLAUDE-REVIEWED] $HEAD"
-          blocked="[BLOCK-MERGE] $HEAD"
-          # Search both issue comments and review comments for the SHA-scoped markers.
-          bodies="$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[].body'; \
-                    gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq '.[].body')"
+          [ -z "$SO" ] && { echo "no structured output to post"; exit 0; }
+          summary=$(printf '%s' "$SO" | jq -r '.summary // ""')
+          verdict=$(printf '%s' "$SO" | jq -r 'if .block_merge then "🔴 changes requested (blocking)" else "✅ no blocking findings" end')
+          [ -z "$summary" ] && exit 0
+          { echo "## Claude Review — $verdict"; echo; printf '%s\n' "$summary"; echo; echo "_Verdict recorded via the action's structured output for commit \`$HEAD\`._"; } > /tmp/claude-summary.md
+          gh pr comment "$PR" --body-file /tmp/claude-summary.md || true
 
-          if printf '%s' "$bodies" | grep -Fq "$blocked"; then
-            echo "::error::Claude review flagged CRITICAL/HIGH issue(s) on this commit — see PR comments."
+      # Fail-CLOSED gate. Gates on the action's OWN structured output
+      # (steps.review.outputs.structured_output, produced by the --json-schema in
+      # claude_args) — NOT on a model-posted comment. This fixes two problems the
+      # comment-marker approach had:
+      #   1. No-post fragility: the action can report success while the model
+      #      never calls `gh pr comment`, leaving no marker and failing the gate
+      #      spuriously. structured_output is captured by the action regardless.
+      #   2. Comment spoofing: reading a PR comment trusted any github-actions[bot]
+      #      body; structured_output comes from THIS review step's own output and
+      #      cannot be injected by another comment.
+      # Fail closed unless the step succeeded AND emitted structured output with
+      # reviewed==true, so a review that errored / ran out of turns / produced no
+      # verdict can never look clean.
+      - name: Gate on Claude review
+        if: always()
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          SO: ${{ steps.review.outputs.structured_output }}
+        run: |
+          if [ "$REVIEW_OUTCOME" != "success" ]; then
+            echo "::error::Claude review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
             exit 1
           fi
-
-          if ! printf '%s' "$bodies" | grep -Fq "$reviewed"; then
-            echo "::error::Claude review did not complete for $HEAD (review step outcome: ${REVIEW_OUTCOME:-unknown}; no [CLAUDE-REVIEWED] marker posted). Failing closed — re-run the workflow or inspect the Claude review step logs."
+          if [ -z "$SO" ]; then
+            echo "::error::Claude review produced no structured output for $HEAD (review did not complete / ran out of turns). Failing closed — re-run or inspect the Claude review step logs."
             exit 1
           fi
-
-          echo "Claude review completed for $HEAD with no high-severity findings."
+          reviewed=$(printf '%s' "$SO" | jq -r '.reviewed // false')
+          block=$(printf '%s' "$SO" | jq -r 'if has("block_merge") then (.block_merge|tostring) else "MISSING" end')
+          if [ "$reviewed" != "true" ]; then
+            echo "::error::Claude review did not confirm completion (reviewed != true) for $HEAD. Failing closed."
+            printf 'structured_output: %s\n' "$SO"
+            exit 1
+          fi
+          if [ "$block" = "MISSING" ]; then
+            echo "::error::Claude structured output is missing block_merge for $HEAD. Failing closed."
+            printf 'structured_output: %s\n' "$SO"
+            exit 1
+          fi
+          if [ "$block" = "true" ]; then
+            echo "::error::Claude review flagged a blocking (CRITICAL/HIGH) issue on $HEAD — see the posted review summary."
+            exit 1
+          fi
+          echo "Claude review completed for $HEAD with no blocking findings."
