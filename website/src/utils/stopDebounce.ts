@@ -12,6 +12,19 @@ export const FORCE_KILL_ARMING_MS = 400
 export type StopAction = 'soft' | 'force' | 'ignore'
 
 /**
+ * Whether a slot's `stop_state` means a Stop press should escalate to a
+ * hard kill rather than send another (redundant) soft cancel.
+ *
+ * - `soft_pending`: the classic second-press force kill.
+ * - `killing`: the >15s escape hatch — the hard kill itself has stalled, so
+ *   the press must re-dispatch `force: true`; a plain soft cancel would be
+ *   ignored as redundant by the backend and the button would be a no-op.
+ */
+export function isEscalationState(stopState: string | undefined | null): boolean {
+  return stopState === 'soft_pending' || stopState === 'killing'
+}
+
+/**
  * Decide what a Stop-button press should do.
  *
  * @param isSoftPending whether the slot is already in the `soft_pending` state

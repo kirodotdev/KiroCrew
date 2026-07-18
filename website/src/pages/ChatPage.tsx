@@ -26,7 +26,7 @@ import { useProvider } from '../providers'
 import { type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
-import { handleStopPress } from '../utils/stopDebounce'
+import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { EmptyState, Btn, Input } from '../components/ui'
 import MarkdownPanel from '../components/MarkdownPanel'
 import DiffPanel from '../components/DiffPanel'
@@ -3183,7 +3183,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               onStop={() => {
                 const slot = activeSlot
                 if (!slot) return
-                const isSoftPending = currentSlot?.stop_state === 'soft_pending'
+                const isEscalation = isEscalationState(currentSlot?.stop_state)
                 // Per-slot view over the map, satisfying SoftStopRef so the
                 // arming window is measured against THIS slot's soft press.
                 const map = softStopAtMapRef.current
@@ -3192,7 +3192,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   set current(v: number) { map.set(slot, v) },
                 }
                 const action = handleStopPress(
-                  isSoftPending,
+                  isEscalation,
                   Date.now(),
                   slotRef,
                   () => dispatch(requestStop({ slotId: slot, force: false })),

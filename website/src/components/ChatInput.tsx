@@ -69,6 +69,7 @@ import SlashCommandMenu from './SlashCommandMenu'
 import FilePickerMenu from './FilePickerMenu'
 import SkillPickerMenu from './SkillPickerMenu'
 import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from './composerTokens'
+import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
@@ -430,6 +431,9 @@ function ChatInput({
   const showInChat = useCallback(() => {
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
+
+  // Stop button: killing-state escape hatch (re-enable after 15s)
+  const { escaped: killingEscaped } = useStopEscapeHatch(stopState)
 
   const handleApprovalAction = useCallback((decision: string, pattern?: string) => {
     if (!approvalId) return
@@ -1926,21 +1930,39 @@ function ChatInput({
             )}
             {(isRunning || stopState === 'soft_pending' || stopState === 'killing') && onStop ? (
               stopState === 'killing' ? (
-                <button className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-not-allowed transition-all" disabled title="Killing…" aria-label="Killing session">
-                  <Loader2 size={18} className="animate-spin" />
-                </button>
+                killingEscaped ? (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-all"
+                      onClick={onStop}
+                      title="Force reset — taking longer than expected"
+                      aria-label="Force reset session (taking longer than expected)"
+                      data-testid="stop-button-escape-hatch"
+                    >
+                      <Square size={18} fill="currentColor" />
+                    </button>
+                    <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-escape-hint">taking longer than expected</span>
+                  </div>
+                ) : (
+                  <button className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-not-allowed transition-all" disabled title="Killing…" aria-label="Killing session" data-testid="stop-button-killing">
+                    <Loader2 size={18} className="animate-spin" />
+                  </button>
+                )
               ) : stopState === 'soft_pending' ? (
-                <motion.button
-                  className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all"
-                  onClick={onStop}
-                  title="Force kill — discards in-progress work and queued messages"
-                  aria-label="Force kill session (discards in-progress work and queued messages)"
-                  animate={{ opacity: [0.6, 1, 0.6] }}
-                  transition={{ duration: 1.2, repeat: Infinity }}
-                  data-testid="stop-button-pulsing"
-                >
-                  <Square size={18} fill="currentColor" />
-                </motion.button>
+                <div className="flex items-center gap-1.5">
+                  <motion.button
+                    className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all"
+                    onClick={onStop}
+                    title="Force kill — discards in-progress work and queued messages"
+                    aria-label="Force kill session (discards in-progress work and queued messages)"
+                    animate={{ opacity: [0.6, 1, 0.6] }}
+                    transition={{ duration: 1.2, repeat: Infinity }}
+                    data-testid="stop-button-pulsing"
+                  >
+                    <Square size={18} fill="currentColor" />
+                  </motion.button>
+                  <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-force-hint">Click again to force stop</span>
+                </div>
               ) : isQueued ? (
                 <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onStop} title="Stopping…" aria-label="Stopping">
                   <Loader2 size={18} className="animate-spin" />

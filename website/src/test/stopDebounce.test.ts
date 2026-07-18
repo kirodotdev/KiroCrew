@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { decideStopAction, handleStopPress, FORCE_KILL_ARMING_MS } from '../utils/stopDebounce'
+import { decideStopAction, handleStopPress, isEscalationState, FORCE_KILL_ARMING_MS } from '../utils/stopDebounce'
 
 describe('decideStopAction', () => {
   it('first press (not soft_pending) is a soft cancel', () => {
@@ -110,5 +110,36 @@ describe('handleStopPress (ChatPage onStop wiring)', () => {
     // t=1100: press on already-soft_pending slot B, only 100ms after A's soft
     // press. With a shared ref this would wrongly 'ignore'; per-slot it forces.
     expect(handleStopPress(true, 1_100, viewFor('B'), noop, noop)).toBe('force')
+  })
+})
+
+
+describe('isEscalationState', () => {
+  it('returns false for idle/undefined states (press = soft cancel)', () => {
+    expect(isEscalationState(undefined)).toBe(false)
+    expect(isEscalationState(null)).toBe(false)
+    expect(isEscalationState('idle')).toBe(false)
+  })
+
+  it('returns true for soft_pending (second press = force kill)', () => {
+    expect(isEscalationState('soft_pending')).toBe(true)
+  })
+
+  it('returns true for killing (escape hatch must re-dispatch force)', () => {
+    expect(isEscalationState('killing')).toBe(true)
+  })
+
+  it('killing-state escape hatch press dispatches force, not soft', () => {
+    // The escape hatch appears after 15s of killing; the original soft press
+    // is far outside the 400ms arming window, so the press must escalate.
+    const onSoft = vi.fn()
+    const onForce = vi.fn()
+    const ref = { current: Date.now() - 16_000 }
+    const action = handleStopPress(
+      isEscalationState('killing'), Date.now(), ref, onSoft, onForce,
+    )
+    expect(action).toBe('force')
+    expect(onForce).toHaveBeenCalledTimes(1)
+    expect(onSoft).not.toHaveBeenCalled()
   })
 })
