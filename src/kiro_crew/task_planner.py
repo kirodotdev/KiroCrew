@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_DENY
@@ -238,8 +239,15 @@ async def decompose(
     session_key = (
         f"{SESSION_PREFIX}:{task_id}:decompose" if task_id else f"{SESSION_PREFIX}:decompose"
     )
+    # Route onto the run's shared AcpRuntime (one process per run), keyed by the
+    # run's task_id. get_or_create would cold-start a dedicated process instead.
+    parent_key = (
+        f"{SESSION_PREFIX}:{task_id}:runtime" if task_id else f"{SESSION_PREFIX}:runtime"
+    )
     try:
-        client, is_new, _resumed = await sessions.get_or_create(session_key, agent=agent or None)
+        client, is_new, _resumed = await sessions.open_task_session(
+            parent_key, session_key, agent=agent or None, cwd=work_dir or None
+        )
         if ctx:
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_prompt, _ = await run_in_embed_pool(
@@ -523,3 +531,73 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
 
     _check_acyclic(tasks)
     return normalize_cross_group_deps(tasks)
+
+
+# Matches the "Agent: ...\nTimeout: ...\n\n<prompt>" preamble that decompose_yaml
+# packs into Task.description on import, so export can round-trip it back out into
+# the dedicated `agent`/`timeout`/`prompt` YAML keys instead of double-wrapping.
+_YAML_PREAMBLE_RE = re.compile(
+    r"^Agent:\s*(?P<agent>[^\n]*)\nTimeout:\s*(?P<timeout>[^\n]*)\n\n(?P<prompt>.*)$",
+    re.DOTALL,
+)
+
+
+def _slugify_agent_name(title: str, index: int, used: set[str]) -> str:
+    """Derive a unique, YAML-safe agent key from a task title (deduped with -N suffix)."""
+    base = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
+    if not base:
+        base = f"task-{index}"
+    name = base
+    n = 2
+    while name in used:
+        name = f"{base}-{n}"
+        n += 1
+    used.add(name)
+    return name
+
+
+def plan_to_yaml(tasks: list[Task]) -> str:
+    """Serialize a plan's tasks into the ``agents:`` YAML workflow schema.
+
+    Inverse of :func:`decompose_yaml` — the emitted YAML re-imports through
+    ``decompose_yaml`` to the same task graph (titles + dependency structure).
+    ``depends_on`` is emitted as agent-name references (not indices) so the DAG
+    survives re-import's renumbering. ``requires_approval`` has no YAML
+    representation (not an allowed agent key) and is intentionally dropped.
+    """
+    if not tasks:
+        raise ValueError("no tasks to export")
+    try:
+        import yaml as _yaml  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise ImportError(
+            "PyYAML is required for YAML workflow export: pip install PyYAML"
+        ) from exc
+
+    ordered = sorted(tasks, key=lambda t: t.index)
+    used: set[str] = set()
+    idx_to_name: dict[int, str] = {t.index: _slugify_agent_name(t.title, t.index, used) for t in ordered}
+
+    agents: dict[str, Any] = {}
+    for t in ordered:
+        spec: dict[str, Any] = {"description": t.title or idx_to_name[t.index]}
+        m = _YAML_PREAMBLE_RE.match(t.description or "")
+        if m:
+            agent_val = m.group("agent").strip()
+            timeout_val = m.group("timeout").strip()
+            if agent_val:
+                spec["agent"] = agent_val
+            if timeout_val:
+                spec["timeout"] = timeout_val
+            prompt = m.group("prompt")
+        else:
+            prompt = t.description or ""
+        spec["prompt"] = prompt
+        deps = [idx_to_name[d] for d in t.depends_on if d in idx_to_name]
+        if deps:
+            spec["depends_on"] = deps
+        agents[idx_to_name[t.index]] = spec
+
+    return _yaml.safe_dump(
+        {"agents": agents}, sort_keys=False, allow_unicode=True, default_flow_style=False
+    )

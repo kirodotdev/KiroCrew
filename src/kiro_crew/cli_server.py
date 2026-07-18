@@ -942,6 +942,8 @@ async def _run_task(args: argparse.Namespace) -> None:
         lesson_store=lessons,
         fresh=fresh,
         global_timeout=timeout,
+        workspace_dir=cfg.taskrunner.workspace_dir,
+        max_parallel_steps=cfg.taskrunner.max_parallel_steps,
     )
 
     # Pre-warm session pool (background session for lesson extraction)

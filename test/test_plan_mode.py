@@ -19,6 +19,12 @@ def _make_mock_sessions() -> MagicMock:
     sessions._lock = asyncio.Lock()
     sessions._sessions = {}
     sessions.get_or_create = AsyncMock()
+
+    async def _open_task_session(_pk, session_key, *, agent=None, cwd=None, approval_policy=""):
+        return await sessions.get_or_create(session_key, agent=agent, cwd=cwd)
+
+    sessions.open_task_session = _open_task_session
+    sessions.release_subagent_runtime = AsyncMock()
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()

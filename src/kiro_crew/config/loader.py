@@ -99,7 +99,7 @@ _CREDENTIAL_KEYS = (
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
-DEFAULT_MAX_PARALLEL_STEPS = 2
+DEFAULT_MAX_PARALLEL_STEPS = 0  # 0 = auto: derive from agent.subagent_auto_max via compute_max_subagents
 
 _DEFAULT_PORT = 5476
 
@@ -697,7 +697,17 @@ class SessionConfig:
 class TaskRunnerConfig:
     max_parallel_steps: int = field(
         default=DEFAULT_MAX_PARALLEL_STEPS,
-        metadata=_meta("Max Parallel Steps", "Maximum number of task steps to run in parallel."),
+        metadata=_meta("Max Parallel Steps", "Maximum task steps to run in parallel. 0 = auto (the host-safe cap from agent.subagent_auto_max, clamped to memory/CPU). A positive value only *lowers* concurrency — it is capped at the auto maximum and can never exceed the host-safe limit."),
+    )
+    workspace_dir: str = field(
+        default="",
+        metadata=_meta(
+            "Workspace Folder",
+            "Absolute path where task runner executions run. When set, "
+            "every execution operates in this folder instead of a per-run scratch "
+            "directory, so the task runner works on the intended target location. "
+            "Empty = use the default per-run workspace directory.",
+        ),
     )
 
 
@@ -2687,6 +2697,7 @@ class KiroCrewConfig:
                 max_parallel_steps=taskrunner_data.get(
                     "max_parallel_steps", DEFAULT_MAX_PARALLEL_STEPS
                 ),
+                workspace_dir=str(taskrunner_data.get("workspace_dir", "")),
             ),
             cron_history=CronHistoryConfig(
                 cron_summary_cap=int(cron_history_data.get("cron_summary_cap", 200)),

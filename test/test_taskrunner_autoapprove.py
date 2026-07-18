@@ -26,6 +26,12 @@ from kiro_crew.task_models import Project, Task
 def _mock_sessions(provider):
     s = MagicMock()
     s.get_or_create = AsyncMock(return_value=(provider, True, False))
+
+    async def _open_task_session(_pk, session_key, *, agent=None, cwd=None, approval_policy=""):
+        return await s.get_or_create(session_key, agent=agent, cwd=cwd)
+
+    s.open_task_session = _open_task_session
+    s.release_subagent_runtime = AsyncMock()
     s.release = MagicMock()
     s.reset = AsyncMock()
     s.record_success = MagicMock()

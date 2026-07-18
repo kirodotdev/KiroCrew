@@ -35,6 +35,12 @@ def _make_mock_sessions() -> MagicMock:
     sessions.record_failure = AsyncMock()
     sessions.check_context_usage = MagicMock()
     sessions.recycle_background = AsyncMock()
+
+    async def _open_task_session(_parent_key, session_key, *, agent=None, cwd=None, approval_policy=""):
+        return await sessions.get_or_create(session_key, agent=agent, cwd=cwd)
+
+    sessions.open_task_session = _open_task_session
+    sessions.release_subagent_runtime = AsyncMock()
     return sessions
 
 
@@ -105,7 +111,7 @@ class TestScenarioStepOrdering:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get(key, agent=None):
+        async def _get(key, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -163,7 +169,7 @@ class TestScenarioStepOrdering:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get(key, agent=None):
+        async def _get(key, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -457,7 +463,7 @@ class TestScenarioFailureInParallelGroup:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get(key, agent=None):
+        async def _get(key, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -575,7 +581,7 @@ class TestScenarioParallelExecution:
             p.context_usage_pct = MagicMock(return_value=0.0)
             return p
 
-        async def _get(key, agent=None):
+        async def _get(key, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return _make_step_provider(), True, False

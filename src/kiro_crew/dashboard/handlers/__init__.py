@@ -296,6 +296,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401
     api_taskrunner_cancel,
     api_taskrunner_delete,
     api_taskrunner_execute_plan,
+    api_taskrunner_export_yaml,
     api_taskrunner_from_chat,
     api_taskrunner_pause,
     api_taskrunner_plan,

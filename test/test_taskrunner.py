@@ -38,6 +38,14 @@ def _make_mock_sessions() -> MagicMock:
     sessions.record_failure = AsyncMock()
     sessions.check_context_usage = MagicMock()
     sessions.close_all = AsyncMock()
+
+    async def _open_task_session(_parent_key, session_key, *, agent=None, cwd=None, approval_policy=""):
+        # Fake: the run-scoped shared runtime is mocked away; forward to whatever
+        # get_or_create is set to (preserves per-step key/call assertions).
+        return await sessions.get_or_create(session_key, agent=agent, cwd=cwd)
+
+    sessions.open_task_session = _open_task_session
+    sessions.release_subagent_runtime = AsyncMock()
     return sessions
 
 
@@ -280,7 +288,7 @@ class TestRun:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             nonlocal call_count
             call_count += 1
             if "decompose" in key:
@@ -352,7 +360,7 @@ class TestRun:
         fail_provider.approve_tool = AsyncMock()
         fail_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return fail_provider, True, False
@@ -901,7 +909,7 @@ class TestCheckpointResume:
 
         execute_count = 0
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             nonlocal execute_count
             if "decompose" in key:
                 return decompose_provider, True, False
@@ -972,7 +980,7 @@ class TestCheckpointResume:
 
         execute_count = 0
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             nonlocal execute_count
             if "decompose" in key:
                 return decompose_provider, True, False
@@ -1473,7 +1481,7 @@ class TestHistoryIntegration:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -1722,7 +1730,7 @@ class TestPlanRevision:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -1777,7 +1785,7 @@ class TestPlanRevision:
         fail_provider.approve_tool = AsyncMock()
         fail_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return fail_provider, True, False
@@ -1837,7 +1845,7 @@ class TestPlanRevision:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -1903,7 +1911,7 @@ class TestPlanRevision:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -2202,7 +2210,7 @@ class TestTokenBudget:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -2425,7 +2433,7 @@ class TestEdgeCases:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -2597,7 +2605,7 @@ class TestParallelGroups:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -2649,7 +2657,7 @@ class TestGitCoord:
 
     @pytest.mark.asyncio
     async def test_init_workspace_no_repo(self, tmp_path: Path) -> None:
-        """init_workspace in non-git dir → git init + branch."""
+        """init_workspace in a non-git dir → run in place, no git init."""
         from kiro_crew import git_coord
 
         work_dir = tmp_path / "work"
@@ -2662,9 +2670,41 @@ class TestGitCoord:
 
         await git_coord.init_workspace(run)
 
-        assert run.branch_name == "kirocrew/task/test_123"
-        assert run.base_branch != ""
-        assert run.worktree_path == ""  # no worktree for fresh init
+        # The task runner must NOT impose git on a non-repo folder.
+        assert run.git_enabled is False
+        assert run.branch_name == ""
+        assert run.worktree_path == ""
+        assert run.work_dir == str(work_dir)  # runs in place
+        assert not (work_dir / ".git").exists()  # no git init
+
+    @pytest.mark.asyncio
+    async def test_init_workspace_missing_git_binary(self, tmp_path: Path, monkeypatch) -> None:
+        """No ``git`` binary on the host → treated as non-git (run in place), not a crash.
+
+        Locks the git-optional guarantee independently of whether the test host
+        actually has git installed, by simulating the missing binary.
+        """
+        from kiro_crew import git_coord
+
+        async def _no_git(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory", "git")
+
+        monkeypatch.setattr(git_coord.asyncio, "create_subprocess_exec", _no_git)
+
+        # The probe swallows the missing binary and reports "not a repo".
+        assert await git_coord._is_git_repo(str(tmp_path)) is False
+
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.task_id = "nogit_123"
+        run.work_dir = str(work_dir)
+
+        await git_coord.init_workspace(run)
+
+        assert run.git_enabled is False
+        assert run.work_dir == str(work_dir)  # unchanged — no worktree
+        assert run.worktree_path == ""
 
     @pytest.mark.asyncio
     async def test_init_workspace_existing_repo(self, tmp_path: Path) -> None:
@@ -2699,14 +2739,18 @@ class TestGitCoord:
         """commit_step creates commit, revert_step undoes it."""
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "work"
+        work_dir = tmp_path / "repo"
         work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "seed.txt").write_text("seed")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
 
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.task_id = "cr_test"
         run.work_dir = str(work_dir)
 
-        await git_coord.init_workspace(run)
+        await git_coord.init_workspace(run)  # git repo → worktree, git_enabled=True
 
         # Create a file and commit
         (Path(run.work_dir) / "new.py").write_text("print('hello')")
@@ -2720,13 +2764,19 @@ class TestGitCoord:
         assert len(run.commit_hashes) == 0
         assert not (Path(run.work_dir) / "new.py").exists()
 
+        await git_coord.finalize(run)
+
     @pytest.mark.asyncio
     async def test_commit_no_changes(self, tmp_path: Path) -> None:
         """commit_step with no changes → empty string."""
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "work"
+        work_dir = tmp_path / "repo"
         work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "seed.txt").write_text("seed")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
 
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.task_id = "nc_test"
@@ -2738,13 +2788,46 @@ class TestGitCoord:
         sha = await git_coord.commit_step(run, step)
         assert sha == ""
 
+        await git_coord.finalize(run)
+
+    @pytest.mark.asyncio
+    async def test_non_git_workspace_git_ops_are_noops(self, tmp_path: Path) -> None:
+        """A non-git workspace runs in place; all git helpers are safe no-ops."""
+        from kiro_crew import git_coord
+
+        work_dir = tmp_path / "plain"
+        work_dir.mkdir()
+        (work_dir / "a.py").write_text("x = 1")
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.task_id = "plain_test"
+        run.work_dir = str(work_dir)
+
+        await git_coord.init_workspace(run)
+        assert run.git_enabled is False
+
+        step = Step(index=1, title="Edit", description="d")
+        assert await git_coord.commit_step(run, step) == ""  # no commit
+        await git_coord.revert_step(run)  # no-op, no raise
+        assert await git_coord.get_state_summary(run) == ""
+        assert await git_coord.get_step_diff(run) == ""
+        assert await git_coord.finalize(run) == ""  # nothing to clean
+        # The file the "step" would have created is untouched (no git reset).
+        assert (work_dir / "a.py").exists()
+
+        await git_coord.finalize(run)
+
     @pytest.mark.asyncio
     async def test_get_state_summary(self, tmp_path: Path) -> None:
         """get_state_summary returns git log + diff stat."""
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "work"
+        work_dir = tmp_path / "repo"
         work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "seed.txt").write_text("seed")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
 
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.task_id = "ss_test"
@@ -2759,6 +2842,8 @@ class TestGitCoord:
         summary = await git_coord.get_state_summary(run)
         assert "Git Log" in summary
         assert "foo.py" in summary
+
+        await git_coord.finalize(run)
 
     @pytest.mark.asyncio
     async def test_revert_no_commits(self, tmp_path: Path) -> None:
@@ -2858,3 +2943,102 @@ class TestTaskNaming:
             await asyncio.sleep(0)  # yield to let the background task run
             mock_run.assert_called_once()
             assert mock_run.call_args.kwargs.get("name") == "bg-task"
+
+
+class TestWorkspaceDirValidation:
+    """taskrunner.workspace_dir must reject credential/secret paths (security)."""
+
+    def test_sensitive_workspace_dir_rejected(self):
+        with pytest.raises(ValueError, match="sensitive"):
+            TaskRunner(sessions=_make_mock_sessions(), workspace_dir="~/.aws")
+
+    def test_sensitive_ssh_dir_rejected(self):
+        with pytest.raises(ValueError, match="sensitive"):
+            TaskRunner(sessions=_make_mock_sessions(), workspace_dir="~/.ssh")
+
+    def test_normal_workspace_dir_accepted(self, tmp_path):
+        tr = TaskRunner(sessions=_make_mock_sessions(), workspace_dir=str(tmp_path))
+        assert tr._workspace_dir == str(Path(tmp_path).resolve())
+
+    def test_traversal_into_sensitive_dir_rejected(self):
+        # A `..`-traversal spelling that resolves into ~/.aws must be caught
+        # AFTER canonicalization, not slip past the raw-string check.
+        aws = Path("~/.aws").expanduser().resolve()
+        sneaky = str(aws.parent / "x" / ".." / ".aws")
+        with pytest.raises(ValueError, match="sensitive"):
+            TaskRunner(sessions=_make_mock_sessions(), workspace_dir=sneaky)
+
+    def test_symlink_to_sensitive_dir_rejected(self, tmp_path):
+        # A symlink pointing at a credential dir must be rejected once resolved.
+        target = Path("~/.ssh").expanduser().resolve()
+        link = tmp_path / "innocent"
+        try:
+            link.symlink_to(target)
+        except OSError:
+            pytest.skip("symlinks not supported on this platform")
+        with pytest.raises(ValueError, match="sensitive"):
+            TaskRunner(sessions=_make_mock_sessions(), workspace_dir=str(link))
+
+    def test_resolve_helper_blank_and_normal(self, tmp_path):
+        from kiro_crew.taskrunner import _resolve_workspace_dir
+
+        assert _resolve_workspace_dir("") == ""
+        assert _resolve_workspace_dir("   ") == ""
+        assert _resolve_workspace_dir(str(tmp_path)) == str(Path(tmp_path).resolve())
+
+    def test_resolve_helper_rejects_sensitive(self):
+        from kiro_crew.taskrunner import _resolve_workspace_dir
+
+        with pytest.raises(ValueError, match="sensitive"):
+            _resolve_workspace_dir("~/.aws")
+
+    def test_start_background_rejects_sensitive_workspace(self, tmp_path):
+        # The per-run override is validated synchronously at the top of
+        # start_background so the HTTP handler surfaces a 400 immediately —
+        # a bad path must raise before any background task is spawned.
+        runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
+        with pytest.raises(ValueError, match="sensitive"):
+            runner.start_background("anything.md", workspace_dir="~/.ssh")
+
+    @pytest.mark.asyncio
+    async def test_plan_per_run_workspace_override(self, tmp_path):
+        # A per-run workspace_dir overrides the runner's default base dir: the
+        # planned run operates directly in the chosen (resolved) folder.
+        runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
+        runner._decompose = AsyncMock(return_value=[Step(index=1, title="step", description="desc")])
+        override = tmp_path / "custom-root"
+        run = await runner.plan(input_text="do X", source="text", workspace_dir=str(override))
+        assert run.work_dir == str(override.resolve())
+
+
+class TestMaxParallelStepsClamp:
+    """`compute_max_subagents` is the host-safe ceiling; a positive
+    `max_parallel_steps` may only lower it, never raise it above the ceiling."""
+
+    def _cap(self, value):
+        sessions = _make_mock_sessions()
+        # Pin the computed host-safe ceiling to a known value (9).
+        with patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9):
+            runner = TaskRunner(sessions=sessions, auto_test=False, max_parallel_steps=value)
+        return runner._max_parallel_steps
+
+    def test_auto_zero_uses_computed_ceiling(self):
+        assert self._cap(0) == 9
+
+    def test_none_uses_computed_ceiling(self):
+        assert self._cap(None) == 9
+
+    def test_positive_below_ceiling_is_honored(self):
+        # Intentional throttle below the ceiling is respected.
+        assert self._cap(2) == 2
+
+    def test_positive_above_ceiling_is_clamped(self):
+        # An aggressive value can never exceed the host-safe ceiling.
+        assert self._cap(50) == 9
+
+    def test_compute_failure_falls_back_to_legacy_default(self):
+        sessions = _make_mock_sessions()
+        with patch("kiro_crew.taskrunner.compute_max_subagents", side_effect=RuntimeError("boom")):
+            runner = TaskRunner(sessions=sessions, auto_test=False, max_parallel_steps=0)
+        # Falls back to _MAX_PARALLEL_TASKS (3) when the ceiling can't be computed.
+        assert runner._max_parallel_steps == 3

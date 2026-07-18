@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.task_planner import _check_acyclic, decompose_yaml
+from kiro_crew.task_planner import _check_acyclic, decompose_yaml, plan_to_yaml
 
 # ── Happy path ──
 
@@ -217,3 +217,81 @@ def test_decompose_yaml_without_pyyaml(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", mock_import)
     with pytest.raises(ImportError, match="PyYAML is required"):
         decompose_yaml("agents:\n  a:\n    prompt: x\n")
+
+
+# ── plan_to_yaml (export, inverse of decompose_yaml) ──
+
+
+def test_plan_to_yaml_roundtrips_titles_and_dag():
+    """Serialize → decompose reconstructs the same titles and dependency structure."""
+    from kiro_crew.task_models import Task
+
+    tasks = [
+        Task(index=1, title="Set up DB", description="create schema"),
+        Task(index=2, title="Wire API", description="build endpoints", depends_on=[1]),
+        Task(index=3, title="Add tests", description="write tests", depends_on=[1, 2]),
+    ]
+    y = plan_to_yaml(tasks)
+    rt = decompose_yaml(y)
+    assert [t.title for t in rt] == ["Set up DB", "Wire API", "Add tests"]
+    # index 1 has no deps; 2 depends on 1; 3 depends on 1 and 2 (by name → index)
+    assert rt[0].depends_on == []
+    assert rt[1].depends_on == [1]
+    assert sorted(rt[2].depends_on) == [1, 2]
+
+
+def test_plan_to_yaml_dedups_duplicate_titles():
+    """Two tasks with the same title get distinct agent keys (foo / foo-2)."""
+    from kiro_crew.task_models import Task
+
+    tasks = [
+        Task(index=1, title="Do work", description="a"),
+        Task(index=2, title="Do work", description="b", depends_on=[1]),
+    ]
+    y = plan_to_yaml(tasks)
+    assert "do-work:" in y and "do-work-2:" in y
+    rt = decompose_yaml(y)
+    assert len(rt) == 2
+    assert rt[1].depends_on == [1]  # dedup didn't break the dep mapping
+
+
+def test_plan_to_yaml_extracts_agent_timeout_preamble():
+    """A description carrying the import preamble round-trips back into agent/timeout keys."""
+    from kiro_crew.task_models import Task
+
+    tasks = [Task(index=1, title="Build", description="Agent: coder\nTimeout: 30m\n\nrun the build")]
+    y = plan_to_yaml(tasks)
+    assert "agent: coder" in y
+    assert "timeout: 30m" in y
+    assert "run the build" in y
+    # the preamble is not double-wrapped into the prompt
+    assert "Agent: coder" not in y
+
+
+def test_plan_to_yaml_preamble_multiparagraph_prompt_not_mis_split():
+    """DOTALL must not let a blank-line-containing prompt bleed into the timeout
+    capture — agent/timeout are single-line, the prompt keeps all paragraphs."""
+    from kiro_crew.task_models import Task
+
+    desc = "Agent: coder\nTimeout: 30m\n\nFirst paragraph.\n\nSecond paragraph."
+    tasks = [Task(index=1, title="Build", description=desc)]
+    y = plan_to_yaml(tasks)
+    # timeout stays exactly "30m" (would be a quoted/block scalar under the bug)
+    assert "timeout: 30m" in y
+    assert "agent: coder" in y
+    # both paragraphs survive in the prompt
+    assert "First paragraph." in y
+    assert "Second paragraph." in y
+
+
+def test_plan_to_yaml_blank_title_falls_back_to_task_index():
+    from kiro_crew.task_models import Task
+
+    tasks = [Task(index=5, title="", description="something")]
+    y = plan_to_yaml(tasks)
+    assert "task-5:" in y
+
+
+def test_plan_to_yaml_empty_raises():
+    with pytest.raises(ValueError, match="no tasks"):
+        plan_to_yaml([])

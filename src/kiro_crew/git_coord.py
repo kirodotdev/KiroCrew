@@ -16,32 +16,45 @@ logger = logging.getLogger(__name__)
 
 
 async def init_workspace(run: Project) -> None:
-    """Set up git branch + worktree for task isolation."""
+    """Set up git isolation for a run when the workspace is a git repo.
+
+    The task runner is a general coding tool, so it must NOT assume the target
+    is (or should become) a git repo:
+
+    - **Git repo** (including a nested subdirectory of one — ``--show-toplevel``
+      resolves the root): create an isolated worktree on a task branch and run
+      there, leaving the user's working tree untouched.
+    - **Non-git folder**: run in place. We do NOT ``git init`` — imposing version
+      control on a folder the user didn't set up as a repo is surprising. Git
+      isolation (per-step commit / revert / diff-review) is simply disabled for
+      the run via ``git_enabled = False``.
+    """
     orig_dir = run.work_dir
     branch = f"kirocrew/task/{run.task_id}"
 
-    if await _is_git_repo(orig_dir):
-        run.base_branch = (await _git(orig_dir, "rev-parse", "--abbrev-ref", "HEAD")).strip()
-        repo_root = (await _git(orig_dir, "rev-parse", "--show-toplevel")).strip()
-        wt_dir = str(Path(repo_root).parent / ".kirocrew-work" / run.task_id)
-        await _git(orig_dir, "worktree", "add", wt_dir, "-b", branch)
-        run.work_dir = wt_dir
-        run.worktree_path = wt_dir
-        run.repo_root = repo_root
-    else:
-        await _git(orig_dir, "init")
-        await _git(orig_dir, "add", "-A")
-        await _git(orig_dir, "commit", "-m", "initial", "--allow-empty")
-        await _git(orig_dir, "add", "-A")  # capture files created by git hooks
-        await _git(orig_dir, "commit", "--amend", "-m", "initial", "--allow-empty")
-        run.base_branch = (await _git(orig_dir, "rev-parse", "--abbrev-ref", "HEAD")).strip()
-        await _git(orig_dir, "checkout", "-b", branch)
+    if not await _is_git_repo(orig_dir):
+        # General coding task on a non-git folder — run directly in it, no git.
+        run.git_enabled = False
+        return
 
+    run.base_branch = (await _git(orig_dir, "rev-parse", "--abbrev-ref", "HEAD")).strip()
+    repo_root = (await _git(orig_dir, "rev-parse", "--show-toplevel")).strip()
+    wt_dir = str(Path(repo_root).parent / ".kirocrew-work" / run.task_id)
+    await _git(orig_dir, "worktree", "add", wt_dir, "-b", branch)
+    run.work_dir = wt_dir
+    run.worktree_path = wt_dir
+    run.repo_root = repo_root
     run.branch_name = branch
+    run.git_enabled = True
 
 
 async def commit_step(run: Project, step: Task) -> str:
-    """Stage all changes and commit. Returns sha or empty string."""
+    """Stage all changes and commit. Returns sha or empty string.
+
+    No-op (returns "") when the run has no git workspace.
+    """
+    if not run.git_enabled:
+        return ""
     await _git(run.work_dir, "add", "-A")
     head_tree = (await _git(run.work_dir, "rev-parse", "HEAD^{tree}")).strip()
     idx_tree = (await _git(run.work_dir, "write-tree")).strip()
@@ -55,8 +68,8 @@ async def commit_step(run: Project, step: Task) -> str:
 
 
 async def revert_step(run: Project) -> None:
-    """Revert the last commit (failed step). No-op if nothing to revert."""
-    if not run.commit_hashes:
+    """Revert the last commit (failed step). No-op if git-disabled or nothing to revert."""
+    if not run.git_enabled or not run.commit_hashes:
         return
     try:
         await _git(run.work_dir, "reset", "--hard", "HEAD~1")
@@ -66,7 +79,9 @@ async def revert_step(run: Project) -> None:
 
 
 async def get_state_summary(run: Project) -> str:
-    """Build context from git log + diff stat."""
+    """Build context from git log + diff stat. Empty when git-disabled."""
+    if not run.git_enabled:
+        return ""
     try:
         log = await _git(run.work_dir, "log", "--oneline", f"{run.base_branch}..HEAD")
         stat = await _git(run.work_dir, "diff", "--stat", run.base_branch)
@@ -81,7 +96,9 @@ async def get_state_summary(run: Project) -> str:
 
 
 async def get_step_diff(run: Project) -> str:
-    """Get the diff of the last commit (for review)."""
+    """Get the diff of the last commit (for review). Empty when git-disabled."""
+    if not run.git_enabled:
+        return ""
     try:
         return await _git(run.work_dir, "diff", "HEAD~1")
     except Exception:
@@ -114,6 +131,12 @@ async def _is_git_repo(path: str) -> bool:
         )
         await proc.communicate()
         return proc.returncode == 0
+    except FileNotFoundError:
+        # No ``git`` binary on this host. The task runner is git-optional, so a
+        # host without git simply has no git repos — treat the workspace as
+        # non-git (run in place, git_enabled=False) instead of crashing.
+        logger.debug("git binary not found; treating workspace as non-git", exc_info=True)
+        return False
     finally:
         if cleanup:
             Path(cleanup).unlink(missing_ok=True)

@@ -315,8 +315,11 @@ async def execute_task(
         try:
             await check_context(session_key, sessions)
 
-            client, is_new, _resumed = await sessions.get_or_create(
-                session_key, agent=agent or None
+            client, is_new, _resumed = await sessions.open_task_session(
+                f"{SESSION_PREFIX}:{run.task_id}:runtime",
+                session_key,
+                agent=agent or None,
+                cwd=str(work_dir) if work_dir else None,
             )
             _acquired = True
 
@@ -760,7 +763,12 @@ async def self_review(
                 'Respond with ONLY JSON: {"ok": true} or {"ok": false, "issue": "..."}\n'
             )
 
-        client, *_ = await sessions.get_or_create(review_key, agent=agent or None)
+        client, *_ = await sessions.open_task_session(
+            f"{SESSION_PREFIX}:{run.task_id}:runtime",
+            review_key,
+            agent=agent or None,
+            cwd=str(run.work_dir) if run.work_dir else None,
+        )
         result = await stream_and_collect_json(client, prompt)
         if result and not result.get("ok", True):
             issue = result.get("issue", "Review found issues")

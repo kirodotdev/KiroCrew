@@ -11,7 +11,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_crew.dashboard.handlers import api_taskrunner_status
+from kiro_crew.dashboard.handlers import api_taskrunner_export_yaml, api_taskrunner_status
 from kiro_crew.dashboard.handlers_project import (
     _redact,
     _run_to_project,
@@ -428,3 +428,98 @@ class TestTaskRunnerStatusMcpFilter:
         assert "AKIAIOSFODNN7EXAMPLE" not in joined  # secret scrubbed
         assert "[REDACTED" in lessons[0]  # redaction marker present
         assert lessons[1] == "A second, clean lesson with no secrets"  # clean text intact, list shape preserved
+
+    @pytest.mark.asyncio
+    async def test_taskrunner_status_surfaces_default_workspace_dir(self, tmp_path):
+        # The UI pre-fills its per-run workspace-folder selector from this field:
+        # the configured workspace_dir when set, else the base work dir.
+        from kiro_crew.task_reporter import build_status
+
+        runner = MagicMock()
+        runner._runs = {}
+        runner._tasks = {}
+        runner._agent = ""
+        runner._workspace_dir = ""
+        runner._work_dir = tmp_path
+        runner.status.return_value = build_status(runner._runs, runner._tasks, runner._agent)
+
+        app = _make_app(runner=runner)
+        resp = await api_taskrunner_status(_make_request(app, path="/api/taskrunner"))
+        assert json.loads(resp.body)["default_workspace_dir"] == str(tmp_path)
+
+        # A configured workspace_dir takes precedence over the base work dir.
+        runner._workspace_dir = "/srv/work"
+        resp2 = await api_taskrunner_status(_make_request(app, path="/api/taskrunner"))
+        assert json.loads(resp2.body)["default_workspace_dir"] == "/srv/work"
+
+
+class TestTaskRunnerExportYaml:
+    """GET /api/taskrunner/{task_id}/plan.yaml — plan → YAML download."""
+
+    def _run_with_tasks(self, task_id="r1", name="My Plan"):
+        from kiro_crew.task_models import Task
+
+        run = Project(spec_path="", spec_content="", task_id=task_id, name=name, status="planned")
+        run.tasks = [
+            Task(index=1, title="Set up DB", description="create schema"),
+            Task(index=2, title="Wire API", description="endpoints", depends_on=[1]),
+        ]
+        return run
+
+    @pytest.mark.asyncio
+    async def test_export_success_roundtrips(self):
+        from kiro_crew.task_planner import decompose_yaml
+
+        runner = MagicMock()
+        runner._runs = {"r1": self._run_with_tasks()}
+        req = _make_request(_make_app(runner=runner), match_info={"task_id": "r1"})
+        resp = await api_taskrunner_export_yaml(req)
+        assert resp.status == 200
+        assert resp.content_type == "application/x-yaml"
+        assert "attachment" in resp.headers["Content-Disposition"]
+        assert 'filename="My_Plan.yaml"' in resp.headers["Content-Disposition"]
+        body = resp.text
+        assert "agents:" in body
+        # The downloaded file re-imports to the same task graph.
+        rt = decompose_yaml(body)
+        assert [t.title for t in rt] == ["Set up DB", "Wire API"]
+        assert rt[1].depends_on == [1]
+
+    @pytest.mark.asyncio
+    async def test_export_unknown_task_id_returns_generic_404(self):
+        runner = MagicMock()
+        runner._runs = {}
+        req = _make_request(_make_app(runner=runner), match_info={"task_id": "nope"})
+        resp = await api_taskrunner_export_yaml(req)
+        assert resp.status == 404
+        # Generic message — does not reflect the requested id.
+        assert "nope" not in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_export_empty_plan_returns_409(self):
+        run = Project(spec_path="", spec_content="", task_id="r1", name="Empty", status="planned")
+        run.tasks = []
+        runner = MagicMock()
+        runner._runs = {"r1": run}
+        req = _make_request(_make_app(runner=runner), match_info={"task_id": "r1"})
+        resp = await api_taskrunner_export_yaml(req)
+        assert resp.status == 409
+
+    @pytest.mark.asyncio
+    async def test_export_no_runner_returns_400(self):
+        req = _make_request(_make_app(runner=None), match_info={"task_id": "r1"})
+        resp = await api_taskrunner_export_yaml(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_export_sanitizes_unsafe_filename(self):
+        run = self._run_with_tasks(name='../../etc/pw"; drop')
+        runner = MagicMock()
+        runner._runs = {"r1": run}
+        req = _make_request(_make_app(runner=runner), match_info={"task_id": "r1"})
+        resp = await api_taskrunner_export_yaml(req)
+        cd = resp.headers["Content-Disposition"]
+        # No path separators, quotes, or spaces leak into the header.
+        assert "/" not in cd.split("filename=")[1]
+        assert '"' not in cd.split("filename=")[1].strip('"')
+        assert ".." not in cd

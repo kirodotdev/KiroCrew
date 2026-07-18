@@ -259,6 +259,8 @@ class TestSessionCleanupOnCancellation:
         tr._sessions.cancel_current = AsyncMock()
         tr._sessions.release = MagicMock()
         tr._sessions.reset = AsyncMock()
+        tr._sessions.release_subagent_runtime = AsyncMock()
+        tr._release_run_runtime = AsyncMock()
         return tr
 
     @pytest.mark.asyncio

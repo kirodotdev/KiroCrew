@@ -689,7 +689,8 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "max_parallel_steps": 2
+        "max_parallel_steps": 0,
+        "workspace_dir": ""
       }
     },
     {
@@ -701,10 +702,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Parallel Steps",
-      "help": "Maximum number of task steps to run in parallel.",
+      "help": "Maximum task steps to run in parallel. 0 = auto (the host-safe cap from agent.subagent_auto_max, clamped to memory/CPU). A positive value only *lowers* concurrency — it is capped at the auto maximum and can never exceed the host-safe limit.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 2
+      "defaultValue": 0
+    },
+    {
+      "path": "taskrunner.workspace_dir",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Workspace Folder",
+      "help": "Absolute path where task runner executions run. When set, every execution operates in this folder instead of a per-run scratch directory, so the task runner works on the intended target location. Empty = use the default per-run workspace directory.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "orchestrator",

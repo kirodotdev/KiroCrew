@@ -1037,13 +1037,13 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
     {
         "name": "projects",
         "version": "1.0.0",
-        "displayName": "Projects",
+        "displayName": "Task Runner",
         "description": "Autonomous multi-step task execution — compose ideas, generate plans, and run them to completion",
         "author": "kirocrew",
         "tags": ["tasks", "autonomy", "execution"],
         "defaultEnabled": False,
         "ui": {
-            "pages": [{"route": "/projects", "label": "Projects", "icon": "BookOpenText"}],
+            "pages": [{"route": "/projects", "label": "Task Runner", "icon": "BookOpenText"}],
         },
     },
     # -------------------------------------------------------------------------

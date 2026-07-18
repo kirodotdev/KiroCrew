@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -3000,4 +3000,93 @@ class TestGetBgSessionRecycle:
         # offloaded _is_stale() probe.
         stale._is_stale.assert_not_awaited()
         assert result is sentinel
+        await mgr.close_all()
+
+
+def _run_runtime_factory(created_runtimes: list):
+    """Factory whose providers each carry a fully-configured shared AcpRuntime.
+
+    In production each factory call spawns its own kiro-cli process; the task
+    runner must call the factory ONCE per run and reuse that runtime for every
+    step. ``created_runtimes`` records each runtime so tests can assert the
+    factory ran exactly once.
+    """
+
+    def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+        runtime = MagicMock()
+        runtime.is_alive = MagicMock(return_value=True)
+        runtime.pid = 4321
+        runtime.create_session = AsyncMock(
+            side_effect=lambda **kw: MagicMock(session_id="step-session")
+        )
+        runtime.terminate_session = AsyncMock()
+        runtime.kill = AsyncMock()
+        created_runtimes.append(runtime)
+
+        boot_handle = MagicMock()
+        boot_handle.session_id = "bootstrap-sess"
+        session_provider = MagicMock()
+        session_provider._runtime = runtime
+        session_provider._handle = boot_handle
+        session_provider._owns_runtime = True
+
+        provider = AsyncMock()
+        provider.start = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider._client = session_provider
+        return provider
+
+    return factory
+
+
+class TestOpenTaskSession:
+    """The task runner shares ONE run-scoped AcpRuntime across all its steps."""
+
+    @pytest.mark.asyncio
+    async def test_run_shares_one_runtime_across_sessions(self, cfg):
+        created: list = []
+        mgr = SessionManager(cfg, provider_factory=_run_runtime_factory(created))
+        parent = "taskrunner:run1:runtime"
+
+        p1, new1, res1 = await mgr.open_task_session(
+            parent, "taskrunner:run1:decompose", agent="kirocrew"
+        )
+        p2, new2, res2 = await mgr.open_task_session(
+            parent, "taskrunner:run1:task0", agent="kirocrew"
+        )
+
+        # Exactly ONE factory-built runtime, adopted + reused for both steps.
+        assert len(created) == 1
+        runtime = created[0]
+        assert mgr._subagent_runtimes[parent] is runtime
+        # Each step opened its own isolated session on the shared runtime.
+        assert runtime.create_session.await_count == 2
+        # The factory provider's bootstrap session was freed (runtime kept alive).
+        runtime.terminate_session.assert_awaited_once_with("bootstrap-sess")
+        # Fresh, never-resumed sessions.
+        assert new1 is True and new2 is True
+        assert res1 is False and res2 is False
+
+        # Release frees the shared runtime exactly once.
+        mgr.release("taskrunner:run1:decompose")
+        mgr.release("taskrunner:run1:task0")
+        await mgr.release_subagent_runtime(parent)
+        runtime.kill.assert_awaited_once()
+        assert parent not in mgr._subagent_runtimes
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_open_task_session_registers_under_key(self, cfg):
+        created: list = []
+        mgr = SessionManager(cfg, provider_factory=_run_runtime_factory(created))
+        parent = "taskrunner:run2:runtime"
+        key = "taskrunner:run2:task0"
+
+        provider, is_new, _resumed = await mgr.open_task_session(parent, key, agent="kirocrew")
+
+        # Registered under the per-step key so reset/context helpers work by key.
+        assert key in mgr._sessions
+        assert mgr._sessions[key].provider is provider
+        mgr.release(key)
+        await mgr.release_subagent_runtime(parent)
         await mgr.close_all()

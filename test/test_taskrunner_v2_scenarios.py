@@ -56,6 +56,12 @@ def _mock_sessions() -> MagicMock:
     s.record_success = MagicMock()
     s.record_failure = AsyncMock()
     s.check_context_usage = MagicMock()
+
+    async def _open_task_session(_parent_key, session_key, *, agent=None, cwd=None, approval_policy=""):
+        return await s.get_or_create(session_key, agent=agent, cwd=cwd)
+
+    s.open_task_session = _open_task_session
+    s.release_subagent_runtime = AsyncMock()
     return s
 
 
@@ -276,7 +282,7 @@ class TestBug4ReturnAfterReplanInGroup:
             p.context_usage_pct = MagicMock(return_value=0.0)
             return p
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return _make_step_provider(), True, False
@@ -346,7 +352,7 @@ class TestScenarioGitCoordinationE2E:
         step_provider.approve_tool = AsyncMock()
         step_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -398,12 +404,16 @@ class TestScenarioRevertPreservesEarlierWork:
     async def test_revert_only_affects_last_commit(self, tmp_path: Path) -> None:
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "work"
-        work_dir.mkdir()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.task_id = "rv_test"
-        run.work_dir = str(work_dir)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
         wt = Path(run.work_dir)
@@ -423,6 +433,8 @@ class TestScenarioRevertPreservesEarlierWork:
         await git_coord.revert_step(run)
         assert not (wt / "bad.py").exists(), "bad.py should be gone after revert"
         assert (wt / "good.py").exists(), "good.py should survive revert"
+
+        await git_coord.finalize(run)
 
 
 # ── Scenario: Non-git directory fallback ──
@@ -451,12 +463,16 @@ class TestScenarioNonGitFallback:
         """With git, prompt includes git state."""
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "work"
-        work_dir.mkdir()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.task_id = "prompt_test"
-        run.work_dir = str(work_dir)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
         wt = Path(run.work_dir)
@@ -472,6 +488,8 @@ class TestScenarioNonGitFallback:
         prompt = await runner._build_task_prompt(run, step2, attempt=1)
         assert "Git Log" in prompt
         assert "branch" in prompt.lower()
+
+        await git_coord.finalize(run)
 
 
 # ── Scenario: Review with git diff vs without ──
@@ -786,7 +804,7 @@ class TestScenarioCompletionNotification:
 
         step_provider = _make_provider("done")
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -847,7 +865,7 @@ class TestScenarioGitInitFailureNonFatal:
 
         step_provider = _make_provider("done")
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             return step_provider, True, False
@@ -1122,11 +1140,10 @@ class TestScenarioTokenBudgetMidExecution:
 # ── Scenario: Non-git init_workspace path (git init) ──
 
 
-@requires_git
 class TestScenarioNonGitInitWorkspace:
     @pytest.mark.asyncio
     async def test_init_creates_repo_and_branch(self, tmp_path: Path) -> None:
-        """init_workspace on non-git dir creates repo, initial commit, and branch."""
+        """init_workspace on a plain non-git dir sets git_enabled=False and returns immediately."""
         from kiro_crew import git_coord
 
         work_dir = tmp_path / "plain"
@@ -1138,17 +1155,13 @@ class TestScenarioNonGitInitWorkspace:
 
         await git_coord.init_workspace(run)
 
-        assert run.branch_name == "kirocrew/task/init_test"
-        assert run.base_branch != ""
-        # work_dir stays the same (no worktree for non-git)
-        assert run.work_dir == str(work_dir)
+        assert run.git_enabled is False
+        assert run.branch_name == ""
         assert run.worktree_path == ""
-
-        # Should be able to commit
-        (work_dir / "new.py").write_text("new")
-        step = Step(index=1, title="Add", description="d")
-        sha = await git_coord.commit_step(run, step)
-        assert sha != ""
+        # work_dir unchanged
+        assert run.work_dir == str(work_dir)
+        # No .git directory created
+        assert not (work_dir / ".git").exists()
 
 
 # ── BUG 5: Review failure doesn't revert committed step before retry ──
@@ -2333,7 +2346,7 @@ class TestScenarioPerStepSessionKey:
         provider = _make_provider("done")
         session_keys_seen: list[str] = []
 
-        async def _track_sessions(key: str, agent=None):
+        async def _track_sessions(key: str, agent=None, cwd=None, **kwargs):
             session_keys_seen.append(key)
             return provider, True, False  # is_new=True every time
 
@@ -2357,7 +2370,7 @@ class TestScenarioPerStepSessionKey:
 
         call_count = 0
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             nonlocal call_count
             call_count += 1
             session_keys_seen.append(key)
@@ -2411,7 +2424,7 @@ class TestScenarioPerStepSessionIsNew:
         decompose_provider.approve_tool = AsyncMock()
         decompose_provider.context_usage_pct = MagicMock(return_value=0.0)
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             if "decompose" in key:
                 return decompose_provider, True, False
             # Every step session is new (fresh key)
@@ -2439,7 +2452,7 @@ class TestScenarioReplanStepSessionReset:
 
         provider = _make_provider("done")
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             session_keys_seen.append(key)
             return provider, True, False
 
@@ -2569,7 +2582,7 @@ class TestScenarioReplanSessionNotLeaked:
 
         created_keys: list[str] = []
 
-        async def _track_create(key: str, agent=None):
+        async def _track_create(key: str, agent=None, cwd=None, **kwargs):
             created_keys.append(key)
             return provider, True, False
 
@@ -2742,7 +2755,7 @@ class TestScenarioParallelGroupMiddleFails:
     async def test_middle_step_failure_others_still_run(self, tmp_path: Path) -> None:
         sessions = _mock_sessions()
 
-        async def _get_or_create(key: str, agent=None):
+        async def _get_or_create(key: str, agent=None, cwd=None, **kwargs):
             provider = MagicMock()
             if ":task2" in key:
                 # Second step fails

@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from kiro_crew import git_coord, shutdown_event
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.llm_helpers import stream_and_collect_json
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
+from kiro_crew.subagent import compute_max_subagents
 from kiro_crew.task_executor import (
     build_task_prompt,
     execute_single_task,
@@ -93,6 +95,53 @@ _DEAD_THRESHOLD = 2  # consecutive dead checks before fail-fast reset
 _RESULT_MEM_CAP = 4000  # truncate task.result in memory after step completes
 
 
+def _resolve_workspace_dir(raw: str) -> str:
+    """Canonicalize a user-supplied workspace_dir and reject sensitive paths.
+
+    Expands ``~`` and resolves symlinks + ``..`` traversal BEFORE the
+    ``is_sensitive_path`` check, so a value like ``/tmp/../../home/user/.aws``
+    or a symlink pointing at ``~/.ssh`` cannot slip past by presenting a
+    non-sensitive-looking spelling. Returns the resolved absolute path, or an
+    empty string when ``raw`` is blank. Raises ``ValueError`` for
+    sensitive/credential locations.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    resolved = str(Path(raw).expanduser().resolve())
+    if is_sensitive_path(resolved):
+        # Security-relevant permission decision — audit before rejecting so a
+        # probe for workspace_dir bypass vectors leaves a trace in the SEL log.
+        try:
+            sel().log_tool_invocation(
+                session_key="taskrunner",
+                source="taskrunner",
+                tool_name="workspace_dir_validate",
+                outcome="denied",
+                metadata={"raw": raw, "resolved": resolved, "reason": "sensitive_path"},
+            )
+        except Exception:
+            logger.debug("SEL audit for workspace_dir rejection failed", exc_info=True)
+        raise ValueError(
+            "workspace_dir resolves to a sensitive/credential path and was "
+            f"rejected: {raw!r}"
+        )
+    # Accepting a workspace_dir authorizes LLM-driven autonomous execution in
+    # that directory — a permission decision, so audit the "allowed" outcome too
+    # (mirrors the "denied" branch above). Audit failure must not block the run.
+    try:
+        sel().log_tool_invocation(
+            session_key="taskrunner",
+            source="taskrunner",
+            tool_name="workspace_dir_validate",
+            outcome="allowed",
+            metadata={"raw": raw, "resolved": resolved},
+        )
+    except Exception:
+        logger.debug("SEL audit for workspace_dir acceptance failed", exc_info=True)
+    return resolved
+
+
 def _decompose_yaml_with_audit(yaml_content: str, task_id: str) -> list[Task]:
     """Decompose YAML with SEL audit logging."""
     try:
@@ -130,14 +179,26 @@ class TaskRunner:
         global_timeout: float = 0.0,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
         on_approval: Callable[[Task], Awaitable[bool]] | None = None,
-        max_parallel_steps: int = _MAX_PARALLEL_TASKS,
+        max_parallel_steps: int | None = None,
+        workspace_dir: str = "",
     ) -> None:
         self._sessions = sessions
         self._ctx = context_builder
         self._on_notify = on_notify
         self._auto_test = auto_test
         self._auto_commit = auto_commit
-        self._work_dir = work_dir or Path.cwd()
+        # Configured target folder for all executions (item 4). When set, every
+        # run operates directly in this folder instead of a per-run scratch dir,
+        # so the workflow works on the intended location rather than a path it
+        # creates for itself. Empty = legacy per-run workspace behavior.
+        # Security note: this folder becomes the cwd for autonomous, LLM-driven
+        # task execution, so _resolve_workspace_dir rejects credential/secret
+        # locations (canonicalized first to defeat traversal/symlink bypasses).
+        self._workspace_dir = _resolve_workspace_dir(workspace_dir)
+        if self._workspace_dir:
+            self._work_dir = Path(self._workspace_dir)
+        else:
+            self._work_dir = work_dir or Path.cwd()
         self._test_cmd: list[str] | None = None
         self._conversation_log = conversation_log
         self._consolidator = consolidator
@@ -146,7 +207,22 @@ class TaskRunner:
         self._global_timeout = global_timeout
         self._token_budget = token_budget
         self._on_approval = on_approval
-        self._max_parallel_steps = max(1, max_parallel_steps)
+        # Concurrency cap for parallel task groups. ``compute_max_subagents`` is
+        # the host-safe ceiling (derived from ``agent.subagent_auto_max`` and
+        # clamped to host memory/CPU headroom) — it exists to prevent OOM, so it
+        # is always the upper bound. A positive ``taskrunner.max_parallel_steps``
+        # may only lower it (intentional throttling for cost / rate-limits);
+        # ``0`` (or unset) means "use the computed ceiling". An explicit value can
+        # never raise concurrency above the host-safe maximum.
+        try:
+            auto_cap = compute_max_subagents(KiroCrewConfig.load())
+        except Exception:
+            auto_cap = _MAX_PARALLEL_TASKS
+        auto_cap = max(1, auto_cap)
+        if max_parallel_steps and max_parallel_steps >= 1:
+            self._max_parallel_steps = min(max_parallel_steps, auto_cap)
+        else:
+            self._max_parallel_steps = auto_cap
         self._runs: dict[str, Project] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._plan_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -197,6 +273,7 @@ class TaskRunner:
         source: str = "text",
         spec_path: str = "",
         agent: str = "",
+        workspace_dir: str = "",
     ) -> Project:
         self._agent = agent
         if source == "file":
@@ -218,7 +295,9 @@ class TaskRunner:
             spec_content = ""
 
         task_id = f"plan_{int(time.time())}"
-        task_dir = self._work_dir / f"plan_{task_id}"
+        _override = _resolve_workspace_dir(workspace_dir)
+        _effective_ws = _override or self._workspace_dir
+        task_dir = Path(_effective_ws) if _effective_ws else self._work_dir / f"plan_{task_id}"
         task_dir.mkdir(parents=True, exist_ok=True)
         run = Project(
             spec_path=spec_path or "",
@@ -307,13 +386,22 @@ class TaskRunner:
         self._persist_runs()
         return {"index": task.index, "title": task.title, "description": task.description, "depends_on": task.depends_on, "requires_approval": task.requires_approval, "force_approval": task.force_approval}
 
-    def execute_plan(self, task_id: str, agent: str = "", fresh: bool = False) -> str:
+    def execute_plan(self, task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "") -> str:
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
         restartable = {"planned", "paused", "cancelled", "failed"}
         if run.status not in restartable:
             raise ValueError(f"Run {task_id} is not in a startable state (status={run.status})")
+
+        # Optional per-run workspace override: only applied to a run that has NOT
+        # begun yet (status "planned"). A resumed run (paused/cancelled/failed) keeps
+        # its original work_dir, so re-targeting the folder can't orphan work already
+        # produced there (files/commits, git worktree state). The path is still
+        # resolved+validated below regardless of status (audit/sensitive-path guard).
+        _override = _resolve_workspace_dir(workspace_dir)
+        if _override and run.status == "planned":
+            run.work_dir = _override
 
         # Guard: limit concurrent running tasks — check BEFORE mutating state
         active = sum(1 for t in self._tasks.values() if not t.done())
@@ -407,7 +495,8 @@ class TaskRunner:
     # ── Core Execution ──
 
     async def run(
-        self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = ""
+        self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "",
+        workspace_dir: str = "",
     ) -> Project:
         spec_path = Path(spec_path)
         if not spec_path.exists():
@@ -417,7 +506,9 @@ class TaskRunner:
             raise ValueError("Spec file is empty")
         if not task_id:
             task_id = f"{spec_path.stem}_{int(time.time())}"
-        task_dir = self._work_dir / spec_path.stem
+        _override = _resolve_workspace_dir(workspace_dir)
+        _effective_ws = _override or self._workspace_dir
+        task_dir = Path(_effective_ws) if _effective_ws else self._work_dir / spec_path.stem
         task_dir.mkdir(parents=True, exist_ok=True)
         run = Project(
             spec_path=str(spec_path),
@@ -573,8 +664,8 @@ class TaskRunner:
                 # Batch large groups to avoid resource exhaustion
                 results: list[bool | BaseException] = []
                 try:
-                    for batch_start in range(0, len(resolved), _MAX_PARALLEL_TASKS):
-                        batch = resolved[batch_start : batch_start + _MAX_PARALLEL_TASKS]
+                    for batch_start in range(0, len(resolved), self._max_parallel_steps):
+                        batch = resolved[batch_start : batch_start + self._max_parallel_steps]
                         batch_results = await asyncio.gather(
                             *(
                                 self._execute_single_task(
@@ -729,8 +820,13 @@ class TaskRunner:
         return True
 
     def start_background(
-        self, spec_path: str | Path, agent: str = "", name: str = "", source: str = ""
+        self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "",
+        workspace_dir: str = "",
     ) -> str:
+        # Validate the per-run workspace override synchronously so the caller
+        # (HTTP handler) surfaces a bad/sensitive path immediately, not inside
+        # the background task where run() would re-resolve it.
+        _resolve_workspace_dir(workspace_dir)
         active = sum(1 for t in self._tasks.values() if not t.done())
         if active >= _MAX_CONCURRENT_TASKS:
             raise ValueError(
@@ -776,7 +872,7 @@ class TaskRunner:
 
         async def _wrapped() -> None:
             try:
-                await self.run(spec_path, task_id=task_id, name=name, source=source)
+                await self.run(spec_path, task_id=task_id, name=name, source=source, workspace_dir=workspace_dir)
             except Exception as exc:
                 logger.exception("start_background task %s failed", task_id)
                 placeholder = self._runs.get(task_id)
@@ -806,6 +902,7 @@ class TaskRunner:
         prefix = f"{_SESSION_PREFIX}:{run.task_id}:"
         keys = [k for k in list(self._sessions._sessions) if k.startswith(prefix)]
         if not keys:
+            await self._release_run_runtime(run)
             return
         logger.info("Cleaning up %d sessions for run %s", len(keys), run.task_id)
         failed_keys: list[str] = []
@@ -832,6 +929,24 @@ class TaskRunner:
                 len(failed_keys),
                 run.task_id,
             )
+        # Kill the run's shared AcpRuntime after its per-step sessions are torn
+        # down (one kiro-cli process for the whole run).
+        await self._release_run_runtime(run)
+
+    async def _release_run_runtime(self, run: Project) -> None:
+        """Kill the run's shared AcpRuntime once (idempotent) at run teardown.
+
+        The task runner routes every step (decompose/tasks/self_review/replan)
+        onto one run-scoped runtime keyed ``{prefix}:{task_id}:runtime`` via
+        ``SessionManager.open_task_session``; this frees that process exactly
+        once on any termination path (success/fail/cancel). No-op if absent.
+        """
+        try:
+            await self._sessions.release_subagent_runtime(
+                f"{_SESSION_PREFIX}:{run.task_id}:runtime"
+            )
+        except Exception:
+            logger.debug("release run runtime failed for %s", run.task_id, exc_info=True)
 
     def delete_run(self, task_id: str) -> bool:
         run = self._runs.get(task_id)

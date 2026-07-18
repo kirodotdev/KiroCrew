@@ -3225,6 +3225,7 @@ class GatewayOrchestrator:
             consolidator=self.consolidator,
             lesson_store=LessonStore(),
             max_parallel_steps=self._cfg.taskrunner.max_parallel_steps,
+            workspace_dir=self._cfg.taskrunner.workspace_dir,
         )
         self.task_runner._on_tool_approval = self._interactive_approval("taskrunner")
 

@@ -117,6 +117,7 @@ class Project:
     commit_hashes: list[str] = field(default_factory=list)
     worktree_path: str = ""
     repo_root: str = ""  # original repo root (for worktree cleanup)
+    git_enabled: bool = True  # False when the workspace is not a git repo (run in place, no git ops)
     lessons_learned: list[str] = field(default_factory=list)
     mode: str = "quick"  # "quick" (text only) | "spec" (has spec file/content)
     source_spec: str = ""  # original input text or spec content

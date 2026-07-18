@@ -440,7 +440,8 @@ def _list_tools() -> list[dict[str, Any]]:
             "name": "task_run",
             "description": (
                 "Start the autonomous task runner from a spec file or inline content. "
-                "Use when the user provides a task spec or says 'run this task'. "
+                "Use when the user provides a task spec or says 'run this task', "
+                "'start a task', or 'run a task'. "
                 "For inline specs, prefix content with __inline__:"
             ),
             "inputSchema": {

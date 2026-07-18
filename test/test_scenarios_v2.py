@@ -36,7 +36,6 @@ def _passthrough_sandbox(monkeypatch):
         lambda argv, *a, **k: (list(argv), dict(_os.environ), None),
     )
 
-
 # ═══════════════════════════════════════════════════════════════════════
 # Scenario 1: Multi-step code task in existing git repo (worktree path)
 # User runs: "implement a REST API with 3 endpoints"
@@ -147,12 +146,16 @@ class TestScenarioStepFailureAndRevert:
     @pytest.mark.asyncio
     async def test_revert_restores_previous_state(self, tmp_path: Path) -> None:
         """Step 2 fails → revert → file from step 2 gone, step 1 intact."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "revert_test"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -175,15 +178,21 @@ class TestScenarioStepFailureAndRevert:
         assert (Path(run.work_dir) / "auth.py").read_text() == "def login(): pass"
         assert len(run.commit_hashes) == 1
 
+        await git_coord.finalize(run)
+
     @pytest.mark.asyncio
     async def test_revert_then_new_commit(self, tmp_path: Path) -> None:
         """After revert, a new step can commit cleanly."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "revert_retry"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -203,15 +212,21 @@ class TestScenarioStepFailureAndRevert:
         assert len(run.commit_hashes) == 2
         assert (Path(run.work_dir) / "b.py").read_text() == "fixed"
 
+        await git_coord.finalize(run)
+
     @pytest.mark.asyncio
     async def test_multiple_reverts(self, tmp_path: Path) -> None:
         """Multiple consecutive reverts work correctly."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "multi_revert"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -239,18 +254,20 @@ class TestScenarioStepFailureAndRevert:
         await git_coord.revert_step(run)
         assert len(run.commit_hashes) == 0
 
+        await git_coord.finalize(run)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Scenario 3: Task in non-git directory (greenfield project)
 # User runs: "create a new CLI tool from scratch"
-# Expected: git init in place, no worktree
+# Expected: git_enabled=False, no git init, runs in place without versioning
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestScenarioGreenfieldProject:
     @pytest.mark.asyncio
     async def test_git_init_in_empty_dir(self, tmp_path: Path) -> None:
-        """Non-git dir → git init, branch created, commits work."""
+        """Non-git dir → git_enabled=False, no git init, runs in place."""
         work = tmp_path / "newproject"
         work.mkdir()
 
@@ -260,19 +277,15 @@ class TestScenarioGreenfieldProject:
 
         await git_coord.init_workspace(run)
 
-        assert run.branch_name == "kirocrew/task/greenfield"
-        assert run.worktree_path == ""  # no worktree
-        assert run.base_branch != ""
-        assert await git_coord._is_git_repo(str(work))
-
-        # Can commit
-        (work / "main.py").write_text("print('hello')")
-        sha = await git_coord.commit_step(run, Step(index=1, title="Init", description="d"))
-        assert sha != ""
+        assert run.git_enabled is False
+        assert run.branch_name == ""
+        assert run.worktree_path == ""
+        assert run.work_dir == str(work)  # unchanged
+        assert not (work / ".git").exists()  # no git init
 
     @pytest.mark.asyncio
     async def test_git_init_with_existing_files(self, tmp_path: Path) -> None:
-        """Non-git dir with existing files → git init captures them."""
+        """Non-git dir with existing files → git_enabled=False, no git init, files untouched."""
         work = tmp_path / "existing"
         work.mkdir()
         (work / "config.yaml").write_text("key: value")
@@ -284,9 +297,14 @@ class TestScenarioGreenfieldProject:
 
         await git_coord.init_workspace(run)
 
-        # Initial commit should have captured existing files
-        log = await git_coord._git(str(work), "log", "--oneline")
-        assert "initial" in log
+        assert run.git_enabled is False
+        assert run.branch_name == ""
+        assert run.worktree_path == ""
+        assert run.work_dir == str(work)  # unchanged
+        assert not (work / ".git").exists()  # no git init
+        # Existing files are untouched
+        assert (work / "config.yaml").read_text() == "key: value"
+        assert (work / "data.json").read_text() == "{}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -321,12 +339,16 @@ class TestScenarioNoFileChanges:
     @pytest.mark.asyncio
     async def test_mixed_noop_and_real_steps(self, tmp_path: Path) -> None:
         """Some steps change files, some don't — only real changes get commits."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "mixed"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -344,6 +366,8 @@ class TestScenarioNoFileChanges:
         assert sha3 == ""
 
         assert len(run.commit_hashes) == 1  # only step 2
+
+        await git_coord.finalize(run)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -408,12 +432,16 @@ class TestScenarioConcurrentTasks:
 class TestScenarioLargeRefactor:
     @pytest.mark.asyncio
     async def test_incremental_state_summary(self, tmp_path: Path) -> None:
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "refactor"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -440,6 +468,8 @@ class TestScenarioLargeRefactor:
         assert "Renamed" in diff
         assert "module3.py" not in diff  # wasn't modified in step 2
 
+        await git_coord.finalize(run)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Scenario 7: Edge cases in git_coord
@@ -450,12 +480,16 @@ class TestScenarioEdgeCases:
     @pytest.mark.asyncio
     async def test_binary_files(self, tmp_path: Path) -> None:
         """Binary files (images, compiled) can be committed."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "binary"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -464,15 +498,21 @@ class TestScenarioEdgeCases:
         sha = await git_coord.commit_step(run, Step(index=1, title="Add image", description="d"))
         assert sha != ""
 
+        await git_coord.finalize(run)
+
     @pytest.mark.asyncio
     async def test_deeply_nested_files(self, tmp_path: Path) -> None:
         """Files in deep directory structures are tracked."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "nested"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -485,15 +525,21 @@ class TestScenarioEdgeCases:
         summary = await git_coord.get_state_summary(run)
         assert "App.java" in summary
 
+        await git_coord.finalize(run)
+
     @pytest.mark.asyncio
     async def test_file_deletion_tracked(self, tmp_path: Path) -> None:
         """Deleting files is captured in commits."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "delete"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -509,15 +555,21 @@ class TestScenarioEdgeCases:
         diff = await git_coord.get_step_diff(run)
         assert "temp.py" in diff
 
+        await git_coord.finalize(run)
+
     @pytest.mark.asyncio
     async def test_special_chars_in_commit_message(self, tmp_path: Path) -> None:
         """Step titles with special chars don't break git commit."""
-        work = tmp_path / "work"
-        work.mkdir()
+        repo = tmp_path / "work"
+        repo.mkdir()
+        await git_coord._git(str(repo), "init")
+        (repo / "seed.txt").write_text("seed")
+        await git_coord._git(str(repo), "add", "-A")
+        await git_coord._git(str(repo), "commit", "-m", "initial")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "special"
-        run.work_dir = str(work)
+        run.work_dir = str(repo)
 
         await git_coord.init_workspace(run)
 
@@ -525,6 +577,8 @@ class TestScenarioEdgeCases:
         step = Step(index=1, title='Fix "quotes" & <angles> (parens)', description="d")
         sha = await git_coord.commit_step(run, step)
         assert sha != ""
+
+        await git_coord.finalize(run)
 
     @pytest.mark.asyncio
     async def test_empty_dir_state_summary(self, tmp_path: Path) -> None:

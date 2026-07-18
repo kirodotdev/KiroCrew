@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import uuid
 from pathlib import Path
 
 from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.task_planner import plan_to_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,11 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
                 for lesson in run["lessons_learned"]
             ]
     data["available"] = True
+    # Pre-fill value for the UI's per-run workspace-folder selector: the
+    # configured workspace_dir if set, else the default per-run base directory.
+    # str-coerced so the payload always JSON-serializes.
+    _ws = state.task_runner._workspace_dir
+    data["default_workspace_dir"] = str(_ws) if _ws else str(state.task_runner._work_dir)
     return web.json_response(data)
 
 
@@ -70,25 +78,18 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
 
     # Validate non-inline paths against traversal
     if not spec_path.startswith("__inline__:"):
-        from pathlib import Path  # noqa: F811
-
         resolved = Path(spec_path).resolve()
         if ".." in Path(spec_path).parts or not resolved.is_file():
             return web.json_response({"error": "invalid spec path"}, status=400)
-        from kiro_crew.security import is_sensitive_path  # noqa: F811
-
         if is_sensitive_path(str(resolved)):
             return web.json_response({"error": "access denied"}, status=403)
 
     # Handle inline spec content
     if spec_path.startswith("__inline__:"):
-        from pathlib import Path  # noqa: F811
-
         content = spec_path[len("__inline__:"):]
         if not content.strip():
             return web.json_response({"error": "empty spec content"}, status=400)
         work_dir = state.task_runner._work_dir
-        import uuid
         fname = f"TASK_{uuid.uuid4().hex[:8]}.md"
         fpath = Path(work_dir) / fname
         fpath.parent.mkdir(parents=True, exist_ok=True)
@@ -98,12 +99,13 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     try:
         agent = body.get("agent", "")
         task_name = body.get("name", "")
+        workspace_dir = body.get("workspace_dir", "")
         allowed_sources = {"dashboard", "text", "spec", "file", "chat", "mcp", "cron", "yaml"}
         source = body.get("source", "dashboard")
         if source not in allowed_sources:
             source = "dashboard"
         task_id = state.task_runner.start_background(
-            spec_path, agent=agent, name=task_name, source=source
+            spec_path, agent=agent, name=task_name, source=source, workspace_dir=workspace_dir
         )
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -260,6 +262,51 @@ async def api_taskrunner_plan_context(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "context": context, "task_id": task_id})
 
 
+async def api_taskrunner_export_yaml(request: web.Request) -> web.Response:
+    """GET /api/taskrunner/{task_id}/plan.yaml — download the run's plan as a YAML workflow.
+
+    Serializes the run's tasks to the ``agents:`` schema so the file round-trips
+    back through the "From YAML" import path.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.task_runner:
+        return web.json_response({"error": "task runner not available"}, status=400)
+    task_id = request.match_info["task_id"]
+    run = state.task_runner._runs.get(task_id)
+    if not run:
+        # Generic 404 — do not reflect the requested id or reveal existence.
+        return web.json_response({"error": "not found"}, status=404)
+    if not run.tasks:
+        return web.json_response({"error": "no plan to export"}, status=409)
+
+    try:
+        yaml_text = plan_to_yaml(run.tasks)
+    except Exception:
+        # Generic message; details stay in server logs (no stack trace to client).
+        logger.exception("plan_to_yaml failed for task_id=%s", task_id)
+        return web.json_response({"error": "failed to export plan"}, status=500)
+    # Plan titles/descriptions are LLM/user-authored text — redact before download,
+    # mirroring the status endpoint's treatment of the same fields.
+    yaml_text = redact_exfiltration_urls(yaml_text)[0]
+    yaml_text = redact_credentials(yaml_text)[0]
+    # Sanitize the run name into a safe download filename (prevents header injection
+    # / path chars leaking into Content-Disposition). Collapse any run of dots so a
+    # traversal-looking ".." cannot survive the allowlist (which permits a single '.').
+    # run.name is LLM-generated (auto_name) — apply BOTH redactors (matching the
+    # yaml_text body above) before sanitizing: credential/URL fragments are
+    # alphanumeric and would otherwise survive the allowlist into the header.
+    raw_name = redact_exfiltration_urls(run.name or run.task_id)[0]
+    raw_name = redact_credentials(raw_name)[0]
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_name)
+    safe_name = re.sub(r"\.{2,}", "_", safe_name).strip("._-") or "plan"
+    return web.Response(
+        text=yaml_text,
+        content_type="application/x-yaml",  # explicit type — mitigates MIME sniffing
+        charset="utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.yaml"'},
+    )
+
+
 async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/to-chat — open task results in a chat slot."""
     state: DashboardState = request.app["state"]
@@ -372,12 +419,14 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
     source = body.get("source", "text")
     spec_path = body.get("spec", "")
     agent = body.get("agent", "")
+    workspace_dir = body.get("workspace_dir", "")
     try:
         plan_coro = state.task_runner.plan(
             input_text=input_text,
             source=source,
             spec_path=spec_path,
             agent=agent,
+            workspace_dir=workspace_dir,
         )
         state.task_runner._plan_task = asyncio.current_task()
         run = await plan_coro
@@ -467,8 +516,9 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON"}, status=400)
     agent = body.get("agent", "")
     fresh = body.get("fresh", False)
+    workspace_dir = body.get("workspace_dir", "")
     try:
-        state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh)
+        state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh, workspace_dir=workspace_dir)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "task_id": task_id})
@@ -493,7 +543,6 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
         if task_id:
             run = state.task_runner.update_plan(task_id, steps)
         else:
-            import uuid
             new_id = f"plan_{uuid.uuid4().hex[:8]}"
             task_dir = state.task_runner._work_dir / new_id
             task_dir.mkdir(parents=True, exist_ok=True)
