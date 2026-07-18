@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shlex
+import socket
 import string
 import uuid
 from collections import Counter
@@ -2547,6 +2548,22 @@ def canonicalize_ip(s: str) -> str:
                 # Four octets (each 0-255)
                 if all(0 <= o <= 255 for o in octets):
                     return f"{octets[0]}.{octets[1]}.{octets[2]}.{octets[3]}"
+            elif len(octets) in (2, 3):
+                # inet_aton "short" forms the OS resolver / curl accept but which
+                # neither ipaddress nor the 1-/4-octet branches above canonicalize:
+                #   a.b     -> a.(b as 24-bit)     e.g. 169.16689662  -> 169.254.169.254
+                #   a.b.c   -> a.b.(c as 16-bit)   e.g. 169.254.43518 -> 169.254.169.254
+                # Resolve them exactly as the OS does via inet_aton (which also
+                # rejects out-of-range forms like 169.254.11207422), so an IMDS
+                # SSRF cannot slip through in a 2-/3-part encoding. The last octet
+                # carries the remaining low-order bytes, so a decimal/hex value up
+                # to 0xFFFFFF (3-part) / 0xFFFFFFFF (2-part) is legal — validate the
+                # leading octets are single bytes, then defer to inet_aton.
+                if all(0 <= o <= 255 for o in octets[:-1]):
+                    try:
+                        return socket.inet_ntoa(socket.inet_aton(s))
+                    except OSError:
+                        pass
 
     # Try parsing as a plain integer (no dots) -- decimal or hex
     try:
@@ -2580,6 +2597,13 @@ _IP_CANDIDATE_RE = re.compile(
     r"(?:"
     r"::ffff:[0-9a-fA-Fx.:]+|"  # IPv6-mapped
     r"0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-Fx]+)*|"  # Hex (with possible dotted)
+    # inet_aton "short" forms the OS resolver / curl accept (a.b.c and a.b),
+    # where the trailing component packs the remaining low-order bytes. These
+    # must be captured WHOLE (not just the tail) so canonicalize_ip can resolve
+    # them and catch an IMDS SSRF hidden in a 2-/3-part encoding. Listed before
+    # the bare-integer / dotted-quad alternatives so the full token wins.
+    r"\d{1,3}\.\d{1,3}\.(?:0[xX][0-9a-fA-F]+|\d{4,10})|"  # 3-part: a.b.c
+    r"\d{1,3}\.(?:0[xX][0-9a-fA-F]+|\d{5,10})|"  # 2-part: a.b
     r"\d{7,10}|"  # Large decimal (single integer IP)
     r"(?:0[0-7]+\.){3}0[0-7]+|"  # Octal dotted
     r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"  # Standard dotted-quad

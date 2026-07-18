@@ -1814,6 +1814,40 @@ class TestIsSensitiveBashCommand:
         assert is_sensitive_bash_command("cat ~/.kirocrew/config.json") is None
         assert is_sensitive_bash_command("sqlite3 ~/.kirocrew/sessions.db .tables") is None
 
+    # ── IMDS short-form (inet_aton 2-/3-part) encodings ──
+    # canonicalize_ip only handled 1-part and 4-part encodings, so the 2-part
+    # (169.16689662) and 3-part (169.254.43518) inet_aton forms — which the OS
+    # resolver / curl DO accept and route to 169.254.169.254 — bypassed the IMDS
+    # gate entirely (credential-theft SSRF). Ground truth: socket.inet_aton on
+    # each of these resolves to 169.254.169.254.
+
+    def test_imds_shortform_encodings_blocked(self) -> None:
+        from kiro_crew.security import _check_imds_access, canonicalize_ip
+
+        # Each of these genuinely resolves to 169.254.169.254 via inet_aton.
+        for host in ("169.254.43518", "169.16689662", "169.254.0xA9FE", "169.0xFEA9FE"):
+            assert canonicalize_ip(host) == "169.254.169.254", host
+            cmd = f"curl http://{host}/latest/meta-data/iam/security-credentials/"
+            assert _check_imds_access(cmd) is not None, host
+            assert is_sensitive_bash_command(cmd) is not None, host
+
+    def test_imds_plainform_still_blocked(self) -> None:
+        from kiro_crew.security import _check_imds_access
+
+        cmd = "curl http://169.254.169.254/latest/meta-data/"
+        assert _check_imds_access(cmd) is not None
+
+    def test_non_imds_shortform_not_overblocked(self) -> None:
+        from kiro_crew.security import _check_imds_access, canonicalize_ip
+
+        # 169.254.11207422 is an ILLEGAL inet_aton form (final part > 65535); it
+        # does not resolve, so it must NOT be canonicalized to IMDS or flagged.
+        assert canonicalize_ip("169.254.11207422") == "169.254.11207422"
+        assert _check_imds_access("curl http://169.254.11207422/x") is None
+        # A benign host that resolves elsewhere must not be flagged as IMDS.
+        assert _check_imds_access("curl http://93.184.216.34/") is None
+        assert canonicalize_ip("8.8.8.8") == "8.8.8.8"
+
 
 class TestAuditBashCommand:
     """Tests for audit_bash_command()."""
