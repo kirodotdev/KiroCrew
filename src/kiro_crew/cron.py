@@ -1180,11 +1180,22 @@ class CronService:
     async def _execute(self, job: CronJob) -> None:
         """Run the job callback and update runtime fields (last_run_ts, last_status)."""
         logger.info("Cron: executing '%s' (%s)", job.name, job.id)
+        # Reset status for this run so a prior run's "error" can't leak into an
+        # "ok" decision below.
+        job.last_status = None
         try:
             if self._on_job:
                 await self._on_job(job)
-            job.last_status = "ok"
-            job.last_error = None
+            # Only mark "ok" if the callback did not itself report failure. The
+            # command/script paths return NORMALLY and signal failure by mutating
+            # the shared job (last_status="error"); only the LLM path raises.
+            # Overwriting unconditionally with "ok" destroyed that error before
+            # the history recorder and _merge_job_result read it, mis-reporting
+            # failed command/script runs as successful on the dashboard and in
+            # cron_list.
+            if job.last_status != "error":
+                job.last_status = "ok"
+                job.last_error = None
         except Exception as exc:
             job.last_status = "error"
             job.last_error = str(exc)

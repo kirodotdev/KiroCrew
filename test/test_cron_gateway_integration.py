@@ -464,3 +464,79 @@ class TestModelFallback:
 
         with pytest.raises(RuntimeError, match="model spawn failed"):
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+
+class TestExecutePreservesCallbackStatus:
+    """CronService._execute must not clobber a failure the callback reported by
+    mutating the job. Command/script callbacks return NORMALLY and signal
+    failure via job.last_status="error"; only the LLM path raises. Overwriting
+    unconditionally with "ok" mis-reported failed runs as healthy on the
+    dashboard and in cron_list.
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_preserves_callback_error(self, tmp_path):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+
+        async def failing_cb(job):
+            # command/script contract: report failure by mutation, return normally
+            job.last_status = "error"
+            job.last_error = "command failed (exit_code=1)"
+
+        svc._on_job = failing_cb
+        job = svc.add_job("failing", "false", every_secs=3600)
+        await svc._execute(job)
+        assert job.last_status == "error"
+        assert job.last_error == "command failed (exit_code=1)"
+
+    @pytest.mark.asyncio
+    async def test_execute_marks_ok_when_callback_clean(self, tmp_path):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+
+        async def clean_cb(job):
+            return None  # no error mutation, no raise
+
+        svc._on_job = clean_cb
+        job = svc.add_job("okjob", "echo hi", every_secs=3600)
+        await svc._execute(job)
+        assert job.last_status == "ok"
+        assert job.last_error is None
+
+    @pytest.mark.asyncio
+    async def test_execute_marks_error_when_callback_raises(self, tmp_path):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+
+        async def raising_cb(job):
+            raise RuntimeError("boom")
+
+        svc._on_job = raising_cb
+        job = svc.add_job("raises", "x", every_secs=3600)
+        await svc._execute(job)
+        assert job.last_status == "error"
+        assert "boom" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_execute_clears_stale_error_on_success(self, tmp_path):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        results = ["error", "clean"]
+
+        async def cb(job):
+            if results.pop(0) == "error":
+                job.last_status = "error"
+                job.last_error = "prior failure"
+
+        svc._on_job = cb
+        job = svc.add_job("flappy", "cmd", every_secs=3600)
+        await svc._execute(job)  # first run fails
+        assert job.last_status == "error"
+        await svc._execute(job)  # second run clean → must reset to ok, not stay error
+        assert job.last_status == "ok"
+        assert job.last_error is None
