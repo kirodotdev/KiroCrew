@@ -152,8 +152,8 @@ _DIST_DIR = _STATIC_DIR / "dist"
 # Module-level and shared by BOTH ``start_dashboard`` and ``start_api_server``
 # so the two entrypoints can never drift: the ``--slack-only`` headless server
 # must gate exactly the same MCP tool routes the dashboard does. A prior drift
-# here — headless mounting no token auth at all — was the auth-bypass regression
-# of the v1.2.3 fix (P474490481). Keep this as the single source of truth.
+# here — headless mounting no token auth at all — was an auth-bypass regression
+# of the loopback-bypass fix. Keep this as the single source of truth.
 _STRICT_INTERNAL_API_PATHS = frozenset(
     {
         "/api/send-message",
@@ -173,11 +173,16 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
     }
 )
 
-# Mixed internal API paths — called by MCP (loopback + X-Internal-Secret) AND
-# the browser (DCV/SSH-forwarded cookie auth). Shared by both entrypoints for
-# the same anti-drift reason as _STRICT_INTERNAL_API_PATHS. See token_auth.py.
+# Mixed internal API paths — called by BOTH internal processes (loopback +
+# ``X-Internal-Secret``) AND the browser (cookie auth), e.g. ``/api/spawn``
+# polled by DCV/SSH-forwarded browsers. On non-loopback they perform explicit
+# cookie validation (deny-by-default) rather than hard-denying, so forwarded
+# browsers don't trip false "session expired" banners. Prefix-matched:
+# ``path == p or path.startswith(p + "/")``. Shared by both entrypoints.
 _MIXED_INTERNAL_API_PATHS = frozenset(
     {
+        # Called by MCP (loopback + secret) AND browser polling
+        # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
         "/api/spawn",
         "/api/chat",
         "/api/lessons",
@@ -543,11 +548,15 @@ async def _start_site(
 def _write_secret_file(secret_path: Path, secret: str) -> None:
     """Write *secret* to *secret_path* with mode 0o600.
 
-    On failure the (possibly truncated) file is removed and the original
-    ``OSError`` is re-raised.  Caller is responsible for any further
-    cleanup (e.g. tearing down the app runner).
+    Creates the parent directory if needed. On failure the (possibly
+    truncated) file is removed and the original ``OSError`` is re-raised.
+    Caller is responsible for any further cleanup (e.g. tearing down the app
+    runner). Both blocking steps (``mkdir`` and the ``os.open``/``os.close`` +
+    ``restrict_to_owner`` write) live here so the caller can offload the whole
+    thing with a single ``run_in_executor`` (no-blocking-call-on-event-loop).
     """
     try:
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             # Enforce perms even if the file already exists at looser mode.
@@ -1633,10 +1642,11 @@ async def start_dashboard(
         return await handler(request)  # type: ignore[operator]
 
     # Generate per-session secret for local app / IPC authentication.
-    # NOTE: file write deferred until after port bind succeeds to avoid
-    # poisoning the secret file when a second instance fails to start.
+    # NOTE: file write (and parent mkdir) deferred until after port bind
+    # succeeds — both live in _write_secret_file, offloaded below — to avoid
+    # poisoning the secret file when a second instance fails to start and to
+    # keep blocking fs I/O off the event loop.
     _secret_path = config_dir() / ".local_secret"
-    _secret_path.parent.mkdir(parents=True, exist_ok=True)
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
 
@@ -1722,9 +1732,14 @@ async def start_dashboard(
     site = web.TCPSite(runner, bind_address_for(local_only), port)
     await _start_site(site, port)
 
-    # Port bind succeeded — now safe to write the secret file
+    # Port bind succeeded — now safe to write the secret file. Offloaded:
+    # _write_secret_file does blocking fs I/O (os.open/os.close and, on Windows,
+    # an icacls subprocess via restrict_to_owner), so it must not run on the
+    # event loop (no-blocking-call-on-event-loop).
     try:
-        _write_secret_file(_secret_path, _internal_secret)
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _write_secret_file, _secret_path, _internal_secret
+        )
     except OSError:
         await runner.cleanup()
         raise
@@ -1948,7 +1963,6 @@ async def start_api_server(
     ``X-Internal-Secret`` machine-to-machine handshake, and state-changing
     requests are guarded against DNS-rebinding (Host) and cross-site browsers
     (Origin). Every in-repo caller (mcp-core, cron) already sends the secret.
-    See P474490481 (regression of the v1.2.3 loopback-bypass fix).
     """
     state = DashboardState(
         sessions=sessions,
@@ -1980,18 +1994,19 @@ async def start_api_server(
 
     _precompute_telemetry(state)
 
-    # ── Auth parity with start_dashboard (P474490481) ────────────────────────
+    # ── Auth parity with start_dashboard ─────────────────────────────────────
     # The MCP route surface is identical to the dashboard's, so the middleware
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
-    # Origin check via build_allowed_origins/check_host/check_origin (origin.py).
+    # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
     app["allowed_origins"] = build_allowed_origins(port, local_only, configured_host)
     app["local_only"] = local_only
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
-    # Deferred file write until after the port binds (mirrors start_dashboard) so
-    # a failed second instance never poisons the live gateway's secret file.
+    # Deferred file write (and parent mkdir) until after the port binds (mirrors
+    # start_dashboard): both live in _write_secret_file, offloaded below, so a
+    # failed second instance never poisons the live gateway's secret file and no
+    # blocking fs I/O runs on the event loop.
     _secret_path = config_dir() / ".local_secret"
-    _secret_path.parent.mkdir(parents=True, exist_ok=True)
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
 
@@ -2059,8 +2074,7 @@ async def start_api_server(
         if request.method not in _safe_methods:
             if not check_origin(request, require=True, fallback_header="Referer"):
                 # Audit the CSRF denial (security-relevant permission decision),
-                # mirroring host_validation_middleware — a blocked cross-origin
-                # mutation is exactly the signal a SEL review looks for.
+                # mirroring host_validation_middleware.
                 sel().log_api_access(
                     caller="mcp_tool",
                     operation=f"{request.method} {request.path}",
@@ -2100,8 +2114,13 @@ async def start_api_server(
 
     # Port bind succeeded — now safe to persist the secret file (parity with
     # start_dashboard: write deferred so a failed bind can't poison it).
+    # Offloaded: _write_secret_file does blocking fs I/O (os.open/os.close and,
+    # on Windows, an icacls subprocess via restrict_to_owner), so it must not run
+    # on the event loop (no-blocking-call-on-event-loop).
     try:
-        _write_secret_file(_secret_path, _internal_secret)
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _write_secret_file, _secret_path, _internal_secret
+        )
     except OSError:
         await runner.cleanup()
         raise
