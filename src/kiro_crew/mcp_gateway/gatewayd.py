@@ -44,10 +44,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kiro_crew import platform_compat
-from kiro_crew.config.loader import config_dir as _config_dir
-from kiro_crew.executors import maintenance_executor, subprocess_executor
+from kiro_crew.executors import maintenance_executor
 from kiro_crew.mcp_caller import CallerContext
-from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
 from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
@@ -863,59 +861,6 @@ def _audit_caller_rekey(caller: str, pool_label: str) -> None:
         logger.debug("SEL audit emit for gateway caller-rekey failed", exc_info=True)
 
 
-def _audit_pidns_identity_resolved(caller: str, peer_pid: int, stub_uuid: str) -> None:
-    """Emit a SEL audit event when a key-less stub is granted a session
-    identity via the PID-namespace server-side resolution path.
-
-    Granting an identity to a previously-unidentified peer is a permission
-    decision: the connection moves from effectively unauthorized to acting as
-    a specific session. The downstream :func:`_audit_peer_allowed` records the
-    final session_key but not *how* it was obtained — this event captures that
-    the SO_PEERCRED + /proc-ancestry mechanism specifically granted it, so a
-    tricked ancestry walk would leave a distinguishable forensic trail.
-    Wrapped defensively — an audit-log failure must never break the handler.
-    """
-    try:
-        SecurityEventLog().log_api_access(
-            caller=caller or "unknown",
-            operation="mcp-gateway.pidns-identity-resolved",
-            outcome="allowed",
-            source="gateway",
-            resources=f"peer_pid={peer_pid} stub_uuid={stub_uuid}",
-        )
-    except Exception:  # pragma: no cover — audit must never break the handler
-        logger.debug(
-            "SEL audit emit for pidns identity resolution failed", exc_info=True
-        )
-
-
-def _audit_pidns_identity_denied(
-    reason: str, peer_pid: int | None, stub_uuid: str
-) -> None:
-    """Emit a SEL audit event when PID-namespace identity resolution is DENIED.
-
-    A key-less stub whose peer credentials could not be positively attested
-    (missing SO_PEERCRED pid, or uid not confirmed to match ours) is refused
-    server-side resolution. This is the deny arm of
-    :func:`_audit_pidns_identity_resolved` — recording it mirrors the
-    :func:`_audit_peer_allowed` / :func:`_audit_peer_denied` pairing so a
-    potential unauthorized identity-acquisition attempt leaves a trail.
-    Wrapped defensively — an audit-log failure must never break the handler.
-    """
-    try:
-        SecurityEventLog().log_api_access(
-            caller="unknown",
-            operation="mcp-gateway.pidns-identity-denied",
-            outcome="denied",
-            source="gateway",
-            resources=f"peer_pid={peer_pid} stub_uuid={stub_uuid} reason={reason}",
-        )
-    except Exception:  # pragma: no cover — audit must never break the handler
-        logger.debug(
-            "SEL audit emit for pidns identity denial failed", exc_info=True
-        )
-
-
 def _audit_recaller_rejected(existing_caller: str, pool_label: str, reason: str) -> None:
     """Emit a SEL audit event when a ``recaller`` frame is REJECTED — either a
     pivot attempt (the connection already carries a session identity) or a
@@ -1269,61 +1214,6 @@ async def _handle_connection(
 
     caller = _caller_from_register(register)
 
-    # PID-namespace server-side identity resolution: when the stub registered
-    # with an empty session_key (it runs inside a PID namespace and cannot walk
-    # /proc to find the session_pid file), resolve it server-side using the
-    # peer's real PID from SO_PEERCRED. The gatewayd runs OUTSIDE the namespace
-    # and sees real PIDs, so its /proc ancestry walk finds the file. The
-    # resolved key is returned in the register response so the stub can adopt it.
-    resolved_session_key = ""
-    if caller is None or not caller.session_key:
-        peer_pid = socketsec.get_peer_pid(writer)
-        # Deny-by-default: never grant an identity without positive uid
-        # confirmation. get_peer_pid() extracts only the pid; a misconfigured
-        # socket could let a different-uid peer connect, so require the kernel
-        # to positively attest the peer uid equals ours before resolving.
-        peer_uid_ok = socketsec.check_peer_uid(writer, os.getuid())
-        if peer_pid is None or peer_uid_ok is not socketsec.PeerCredResult.MATCH:
-            # Resolution attempted but denied: a key-less peer we could not
-            # positively attest is a security-relevant event (potential
-            # unauthorized identity acquisition) — leave an audit trail.
-            _audit_pidns_identity_denied(
-                reason=(
-                    "no peer pid (SO_PEERCRED unavailable)"
-                    if peer_pid is None
-                    else f"peer uid not positively verified ({peer_uid_ok.name})"
-                ),
-                peer_pid=peer_pid,
-                stub_uuid=stub_uuid,
-            )
-        else:
-            try:
-                # subprocess_executor: a /proc read can block indefinitely on a
-                # D-state target; isolate it from the default/maintenance pools.
-                resolved_session_key = await asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(), _resolve_session_key_from_peer_pid, peer_pid
-                )
-            except Exception:  # graceful degradation: identity stays empty
-                logger.exception(
-                    "pid-ns session_key resolution failed for peer_pid=%d", peer_pid
-                )
-                resolved_session_key = ""
-            if resolved_session_key:
-                caller = CallerContext(
-                    session_key=resolved_session_key,
-                    session_type="pidns-resolved",
-                    principal_id=str(register.get("principal_id") or register.get("user_identity") or ""),
-                    channel_id=str(register.get("channel_id") or ""),
-                    from_gateway=True,
-                )
-                _audit_pidns_identity_resolved(
-                    resolved_session_key, peer_pid, stub_uuid
-                )
-                logger.info(
-                    "pid-ns resolved session_key for stub %s via peer_pid=%d",
-                    stub_uuid, peer_pid,
-                )
-
     # Claim-push index: record the runtime process tree that owns this stub
     # so a ``claim`` frame naming ANY level of that tree re-targets every
     # connection of the claimed runtime. Best-effort — stubs that send no
@@ -1337,20 +1227,19 @@ async def _handle_connection(
     # spawns. Using the pool digest gives operators a stable grep key that
     # ties together every stub sharing the same backend even before spawn.
     provisional_id = f"pending-{pool_key.stable_hash()[:12]}"
-    registered_response: dict[str, Any] = {
-        "type": "registered",
-        "backend_id": provisional_id,
-        "pool_label": pool_key.human_readable(),
-        # Capability advertisement: lets a new stub detect a
-        # new gateway and run the ensure_backend pre-flight. Absent on an
-        # old gateway, so the new stub skips the pre-flight (no 25s skew
-        # penalty) and falls back to the legacy lazy-spawn path.
-        "capabilities": ["ensure_backend"],
-    }
-    # Return the resolved session_key so the stub can adopt it (PID-ns case).
-    if resolved_session_key:
-        registered_response["resolved_session_key"] = resolved_session_key
-    await _write_json_line(writer, registered_response)
+    await _write_json_line(
+        writer,
+        {
+            "type": "registered",
+            "backend_id": provisional_id,
+            "pool_label": pool_key.human_readable(),
+            # Capability advertisement: lets a new stub detect a
+            # new gateway and run the ensure_backend pre-flight. Absent on an
+            # old gateway, so the new stub skips the pre-flight (no 25s skew
+            # penalty) and falls back to the legacy lazy-spawn path.
+            "capabilities": ["ensure_backend"],
+        },
+    )
     logger.info(
         "registered stub_uuid=%s pool=%s",
         stub_uuid, pool_key.human_readable(),
@@ -1902,40 +1791,6 @@ def _caller_from_register(register: dict[str, Any]) -> Optional[CallerContext]:
         channel_id=str(src.get("channel_id") or src.get("channelId") or ""),
         from_gateway=True,
     )
-
-
-def _resolve_session_key_from_peer_pid(peer_pid: int) -> str:
-    """Walk the peer's real-PID ancestry to find a session_pid file (server-side).
-
-    When a stub runs inside a PID namespace (sandbox/unshare), its
-    ``CallerContext.from_env()`` sees namespace-local PIDs and can never match
-    the session_pid files written by the gateway with real PIDs. This function
-    runs IN gatewayd's namespace (real PIDs), so the /proc walk succeeds.
-
-    Returns the session_key string from the first matching file, or ``""`` if
-    no ancestor has a session_pid file (normal for genuinely key-less contexts).
-    """
-    try:
-        cfg_dir = _config_dir()
-    except Exception:
-        return ""
-
-    pid = peer_pid
-    seen: set[int] = set()
-    while pid > 1 and pid not in seen:
-        seen.add(pid)
-        pid_file = cfg_dir / f"session_pid_{pid}.txt"
-        try:
-            if pid_file.exists():
-                return pid_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-        try:
-            pid = _ppid_fn(pid)
-        except (OSError, ValueError):
-            # Target exited mid-walk (/proc/<pid>/stat gone or malformed).
-            break
-    return ""
 
 
 def _jsonrpc_error(msg: dict[str, Any], reason: str) -> dict[str, Any]:

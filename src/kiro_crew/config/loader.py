@@ -430,17 +430,6 @@ class AgentConfig:
             "outside apps/builtins/ until out-of-process isolation ships (CSE SEC-012).",
         ),
     )
-    sandbox_pid_namespace: bool = field(
-        default=True,
-        metadata=_meta(
-            "Sandbox PID Namespace",
-            "Run sandboxed subprocesses (ACP sessions, cron scripts/commands) inside "
-            "a Linux PID namespace so signal broadcasts like kill(-1)/killpg cannot "
-            "reach the gateway, the systemd --user manager, or other sessions "
-            "(2026-07-15 incident guard). Emergency kill-switch: set false to revert "
-            "to user+mount namespaces only. No effect on macOS.",
-        ),
-    )
     jail: str = field(
         default=JAIL_MODE_AUTO,
         metadata=_meta(
@@ -2684,9 +2673,6 @@ class KiroCrewConfig:
                 ),
                 apps_allow_third_party=bool(
                     agent_data.get("apps_allow_third_party", True)
-                ),
-                sandbox_pid_namespace=bool(
-                    agent_data.get("sandbox_pid_namespace", True)
                 ),
                 jail=_normalize_jail(agent_data.get("jail", "auto")),
                 yolo=agent_data.get("yolo", False),

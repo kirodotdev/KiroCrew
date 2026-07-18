@@ -97,12 +97,8 @@ class TestWrapArgv:
     @patch("kiro_crew.sandbox.namespace_argv")
     def test_namespace_backend(self, mock_ns_argv, mock_detect):
         mock_ns_argv.return_value = [sys.executable, "/tmp/launcher.py", "kiro-cli"]
-        # Explicit pid_namespace keeps the test independent of live config
-        # (wrap_argv resolves the flag lazily from config when None).
-        result, cleanup = wrap_argv(["kiro-cli"], mode="strict", pid_namespace=True)
-        mock_ns_argv.assert_called_once_with(
-            ["kiro-cli"], "strict", strip_python_env=False, pid_namespace=True
-        )
+        result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
+        mock_ns_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     @patch("kiro_crew.sandbox.sandbox_exec_argv")

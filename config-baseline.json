@@ -23,7 +23,6 @@
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
         "apps_allow_third_party": true,
-        "sandbox_pid_namespace": true,
         "jail": "auto",
         "yolo": false,
         "notify_override_expiry": true,
@@ -184,20 +183,6 @@
       "tags": [],
       "label": "Allow Third-Party Apps",
       "help": "Allow running third-party (non-builtin) app Python. App code runs with FULL gateway privileges (filesystem, network, in-memory credentials) and is NOT sandboxed — the permission system gates only the SDK tool surface. Defaults to true (apps are operator-installed). Set false to refuse both in-process module loads AND out-of-process backend spawns for any app outside apps/builtins/ until out-of-process isolation ships (CSE SEC-012).",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": true
-    },
-    {
-      "path": "agent.sandbox_pid_namespace",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Sandbox PID Namespace",
-      "help": "Run sandboxed subprocesses (ACP sessions, cron scripts/commands) inside a Linux PID namespace so signal broadcasts like kill(-1)/killpg cannot reach the gateway, the systemd --user manager, or other sessions (2026-07-15 incident guard). Emergency kill-switch: set false to revert to user+mount namespaces only. No effect on macOS.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

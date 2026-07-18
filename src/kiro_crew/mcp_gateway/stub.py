@@ -370,25 +370,6 @@ def build_register_payload(args: argparse.Namespace) -> dict:
     }
 
 
-def adopt_resolved_session_key(payload: dict, registered: object) -> bool:
-    """Adopt gatewayd's server-side resolved session key (PID-ns case).
-
-    When the stub registered with an empty ``session_key`` (inside a PID
-    namespace it cannot /proc-walk to the gateway-written session_pid file),
-    gatewayd resolves the identity server-side via SO_PEERCRED and returns it
-    as ``resolved_session_key`` in the register response. Mutates *payload*
-    in place and returns True when a key was adopted. Never overwrites an
-    existing key (anti-tamper, mirrors the recaller deny-by-default gate).
-    """
-    if payload.get("session_key") or not isinstance(registered, dict):
-        return False
-    resolved_key = registered.get("resolved_session_key", "")
-    if not resolved_key:
-        return False
-    payload["session_key"] = resolved_key
-    return True
-
-
 async def _write_frame(writer: asyncio.StreamWriter, obj: dict) -> None:
     writer.write(json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n")
     await writer.drain()
@@ -872,16 +853,6 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             logger.warning("gateway fallback-rejected ensure_backend (%s); falling back pool=%s", reason, pool_label)
             fallback_exec(args)
             return 1  # unreachable
-
-    # PID-namespace identity adoption: if we registered with an empty
-    # session_key (running inside a PID namespace where /proc walk fails) and
-    # gatewayd resolved our identity server-side via SO_PEERCRED + its own
-    # /proc walk, adopt the resolved key. This eliminates the need for the
-    # recaller loop in the pid-ns case.
-    if adopt_resolved_session_key(payload, registered):
-        logger.info(
-            "adopted resolved_session_key from gatewayd (pid-ns resolution)"
-        )
 
     # Warm-pool caller repair: if we registered without a session key (the
     # kiro-cli was pool-spawned before its session was claimed), watch for the
