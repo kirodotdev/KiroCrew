@@ -59,7 +59,6 @@ from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     is_sensitive_path,
-    redact,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -215,13 +214,25 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     logger.warning("steer failed for slot %s: %s", slot.key, exc)
                     steered = False
                 if steered:
-                    _redacted = _redact_for_display(redact(message))
+                    _ts = datetime.now(timezone.utc).isoformat()
+                    # Sanitize: same chain as the queue path.
+                    _sanitized, _ = redact_exfiltration_urls(message)
+                    _sanitized, _ = redact_credentials(_sanitized)
+                    _redacted = _redact_for_display(_sanitized)
+                    # Persist the steered message so it survives page reload
+                    # (dirty-flush picks it up on next save cycle). Store the
+                    # sanitized form — raw content must never reach an external
+                    # surface (AUTOSDE security-controls).
+                    slot.append(
+                        "user", _sanitized, "msg msg-u", ts=_ts,
+                        meta={"steer": True},
+                    )
                     state.broadcast_ws(
                         "steer_push",
                         {
                             "slot": slot.key,
                             "content": _redacted,
-                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "ts": _ts,
                         },
                     )
                     return web.json_response({"ok": True, "steered": True})
