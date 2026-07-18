@@ -660,7 +660,11 @@ class SubagentManager:
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
-        self._queue: list[tuple[str, str, str, int, str]] = []  # (task, parent, agent, max_turns, cwd)
+        # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
+        # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
+        # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
+        # a queued silent spawn emit output. See _drain_queue.
+        self._queue: list[dict[str, Any]] = []
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Cache global approval_mode at init to avoid disk I/O on every
         # parentless spawn (cron, webhooks).
@@ -1116,15 +1120,23 @@ class SubagentManager:
         if task and not task.done():
             task.cancel()
 
+        freed_slot = False
         if not info.done:
             info.done = True
             if not info.error:
                 info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False)}]"
             self._running_count = max(0, self._running_count - 1)
+            freed_slot = True
             Stats().inc_subagent_failed()
             self._write_tombstone(info, "reaped")
             self._record_cost(info)
         info.reaped = True
+        # A reap/cancel frees a slot but — unlike normal completion (the `if not
+        # info.reaped` finally block in _run) — does NOT otherwise pump the queue.
+        # Without this, queued spawns sit stranded until an unrelated agent finishes
+        # or a new spawn arrives. Drain here so a freed slot is used immediately.
+        if freed_slot:
+            self._drain_queue()
 
         try:
             sel().log_tool_invocation(
@@ -1481,7 +1493,20 @@ class SubagentManager:
         now = time.monotonic()
         should_queue, slot_free = self._should_stagger_queue(now)
         if should_queue:
-            self._queue.append((task, parent_session_key, agent, max_turns, resolved_cwd))
+            self._queue.append(
+                {
+                    "task": task,
+                    "parent_session_key": parent_session_key,
+                    "agent": agent,
+                    "max_turns": max_turns,
+                    "model": model,
+                    "allowed_tools": allowed_tools,
+                    "bare": bare,
+                    "cwd": resolved_cwd,
+                    "approval_mode": approval_mode,
+                    "silent": silent,
+                }
+            )
             logger.info(
                 "Subagent queued (%d running, %d queued, slot_free=%s)",
                 self._running_count,
@@ -1647,11 +1672,15 @@ class SubagentManager:
             except RuntimeError:
                 pass  # no running loop (sync/test context)
             return
-        task, parent, agent, max_turns, cwd = self._queue.pop(0)
-        logger.info("Draining queue: spawning '%s' (%d left)", task[:40], len(self._queue))
+        params = self._queue.pop(0)
+        logger.info(
+            "Draining queue: spawning '%s' (%d left)", str(params.get("task", ""))[:40], len(self._queue)
+        )
         # spawn() re-checks the gate; since elapsed >= stagger and a slot is
-        # free, it starts immediately and updates _last_spawn_ts.
-        self.spawn(task, parent_session_key=parent, agent=agent, max_turns=max_turns, cwd=cwd)
+        # free, it starts immediately and updates _last_spawn_ts. Forward the FULL
+        # kwarg set so approval_mode / silent / model / allowed_tools / bare survive
+        # the queue round-trip.
+        self.spawn(**params)
         if self._queue and self._running_count < self._max_concurrent:
             try:
                 asyncio.get_event_loop().call_later(

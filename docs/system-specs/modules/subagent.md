@@ -114,6 +114,7 @@ class SubagentInfo:
 - `_reaper_loop`: sweeps every 60s, calls `_force_reap` on expired agents
 - `_force_reap`: reset with 30s timeout → SIGKILL fallback → mark done → fire `subagent_done` WS event
 - `_sigkill_session`: best-effort SIGKILL when graceful reset hangs
+- After decrementing `_running_count`, `_force_reap` calls `_drain_queue()` so the freed slot immediately starts a queued spawn. Normal completion pumps the queue via its `finally` block, but that block is gated on `not info.reaped`; a reap sets `reaped=True` and decrements the count itself, so without this explicit drain a queued spawn would sit stranded until an unrelated agent finished or a new spawn arrived.
 - Wired up in `gateway.py` after `SubagentManager` init
 
 ## Completion Injection

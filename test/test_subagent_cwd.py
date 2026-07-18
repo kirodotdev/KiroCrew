@@ -281,10 +281,11 @@ class TestSpawnCwd:
         assert info is not None
         assert info.id.startswith("q"), "spawn at capacity should have returned a queued id"
         # Queue must carry the resolved cwd so dequeue can re-spawn correctly.
+        # The queue stores the full spawn() kwarg dict (not a 5-tuple) so a
+        # drained spawn preserves approval_mode / silent / model / allowed_tools.
         assert len(manager._queue) == 1
         queued = manager._queue[0]
-        assert len(queued) == 5
-        assert queued[4] == os.path.realpath(str(project))
+        assert queued["cwd"] == os.path.realpath(str(project))
 
     @pytest.mark.asyncio
     async def test_spawn_fails_closed_when_config_load_raises(

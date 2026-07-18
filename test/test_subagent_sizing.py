@@ -248,7 +248,7 @@ class TestDrainPump:
         async def run() -> None:
             now = _t.monotonic()
             m = _mgr(running=0, max_concurrent=16, last_ts=now, stagger=2.0)
-            m._queue = [("task", "", "", 0, "")]
+            m._queue = [{"task": "task", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False}]
             m.spawn = MagicMock()  # type: ignore[method-assign]
             m._drain_queue()
             m.spawn.assert_not_called()  # too soon → no burst
@@ -264,7 +264,10 @@ class TestDrainPump:
         async def run() -> None:
             now = _t.monotonic()
             m = _mgr(running=0, max_concurrent=16, last_ts=now - 5.0, stagger=2.0)
-            m._queue = [("task-a", "", "", 0, ""), ("task-b", "", "", 0, "")]
+            m._queue = [
+                {"task": "task-a", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False},
+                {"task": "task-b", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False},
+            ]
             m.spawn = MagicMock()  # type: ignore[method-assign]
             m._drain_queue()
             assert m.spawn.call_count == 1  # exactly one per pump cycle
@@ -279,7 +282,7 @@ class TestDrainPump:
 
         async def run() -> None:
             m = _mgr(running=16, max_concurrent=16, last_ts=_t.monotonic() - 99, stagger=2.0)
-            m._queue = [("task", "", "", 0, "")]
+            m._queue = [{"task": "task", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False}]
             m.spawn = MagicMock()  # type: ignore[method-assign]
             m._drain_queue()
             m.spawn.assert_not_called()
@@ -519,3 +522,83 @@ class TestAvailableMemoryClamp:
         cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
         # mem_term = floor(4*0.8/0.315)=10 ; cpu_term=48 → min 10, clamp(10,3,16)=10
         assert compute_max_subagents(cfg) == 10
+
+
+# ---------------------------------------------------------------------------
+# Queued-spawn parameter preservation + reap-drains-queue (round-2 bugfix)
+# ---------------------------------------------------------------------------
+
+
+class TestQueuedSpawnParamsPreserved:
+    """A queued spawn must drain with ALL its spawn() kwargs intact.
+
+    The queue previously stored only (task, parent, agent, max_turns, cwd), so a
+    drained spawn silently lost approval_mode / silent / model / allowed_tools /
+    bare — an auto (headless) spawn hit the deny-by-default gate and a silent
+    spawn started emitting output.
+    """
+
+    def test_drain_forwards_all_spawn_kwargs(self) -> None:
+        import time as _t
+        from unittest.mock import MagicMock
+
+        m = _mgr(running=0, max_concurrent=16, last_ts=_t.monotonic() - 100.0, stagger=2.0)
+        # Seed the queue exactly as spawn() now does, with non-default kwargs.
+        m._queue.append(
+            {
+                "task": "do work",
+                "parent_session_key": "p1",
+                "agent": "kirocrew",
+                "max_turns": 7,
+                "model": "claude-x",
+                "allowed_tools": ["fs_read"],
+                "bare": True,
+                "cwd": "/tmp/ws",
+                "approval_mode": "auto",
+                "silent": True,
+            }
+        )
+        captured = {}
+        m.spawn = MagicMock(side_effect=lambda **kw: captured.update(kw))  # type: ignore[method-assign]
+        m._drain_queue()
+        m.spawn.assert_called_once()
+        # Every parameter survives the queue round-trip.
+        assert captured["approval_mode"] == "auto"
+        assert captured["silent"] is True
+        assert captured["model"] == "claude-x"
+        assert captured["allowed_tools"] == ["fs_read"]
+        assert captured["bare"] is True
+        assert captured["max_turns"] == 7
+        assert captured["cwd"] == "/tmp/ws"
+        assert captured["parent_session_key"] == "p1"
+
+
+class TestForceReapDrainsQueue:
+    """_force_reap frees a slot; it must pump the queue so a queued spawn starts.
+
+    Previously _force_reap decremented _running_count but never called
+    _drain_queue, so queued spawns were stranded until an unrelated agent
+    finished normally or a new spawn arrived.
+    """
+
+    @pytest.mark.asyncio
+    async def test_force_reap_calls_drain_queue(self) -> None:
+        import time as _t
+        from unittest.mock import MagicMock
+
+        from kiro_crew.subagent import SubagentInfo
+
+        m = _mgr(running=3, max_concurrent=3, last_ts=_t.monotonic() - 100.0)
+        m._queue.append({"task": "queued", "parent_session_key": "", "agent": "",
+                         "max_turns": 0, "model": None, "allowed_tools": None,
+                         "bare": False, "cwd": "", "approval_mode": None, "silent": False})
+        m._drain_queue = MagicMock()  # type: ignore[method-assign]
+        m._sessions = MagicMock()
+        m._write_tombstone = MagicMock()  # type: ignore[method-assign]
+        m._record_cost = MagicMock()  # type: ignore[method-assign]
+
+        info = SubagentInfo(id="a1", task="running", agent="")
+        await m._force_reap("a1", info, elapsed=999.0)
+
+        assert m._running_count == 2  # slot freed
+        m._drain_queue.assert_called_once()  # queue pumped
