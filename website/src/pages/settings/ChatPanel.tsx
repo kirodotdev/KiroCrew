@@ -37,7 +37,7 @@ export function ChatPanel() {
     queryKey: ['dashboardConfig'],
     queryFn: () => api.dashboardConfig(),
   })
-  const dashCfg = dashQ.data ?? { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, quick_send: false, session_grid: false }
+  const dashCfg = dashQ.data ?? { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, quick_send: false, session_grid: false, tail_fork_enabled: false }
 
   const dashMut = useMutation({
     mutationFn: (next: DashboardConfig) => api.updateDashboardConfig(next),
@@ -166,6 +166,7 @@ export function ChatPanel() {
           {dashQ.isError && <div className="text-[13px] text-danger mb-2">Failed to load config. <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => dashQ.refetch()}>Retry</button></div>}
           <SettingsToggle label="Merge Queued Messages" description="Combine follow-up messages into a single labeled prompt while the agent is busy" checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
           <SettingsSelect label="Widget Density" description="How aggressively the agent uses inline widgets for visual content" value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={['More (encourage widgets)', 'Less (only when needed)']} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
+          <SettingsToggle label="Tail-only Fork" description="Fork keeps only the messages after the chosen point instead of those up to it." checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label="Confirm Before Closing Session" description="Show a confirmation dialog when closing a session" checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
           <SettingsToggle label="Default to Autopilot Mode" description="New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions." checked={chatCfg.defaultAutopilot} onChange={v => setChat('defaultAutopilot', v)} />
           <SettingsToggle label="Simplified Tool Call Names" description="When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run" checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />

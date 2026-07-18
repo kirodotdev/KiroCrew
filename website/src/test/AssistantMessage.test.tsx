@@ -169,6 +169,60 @@ describe('AssistantMessage', () => {
     render(<AssistantMessage content={'Doing X [STEERING steer-abc: did Y]'} isStreaming={true} slotRunning={true} />)
     expect(screen.getByTestId('md')).not.toHaveTextContent('[STEERING')
   })
+
+  // Spinner-scoping (busyAction refactor, 2026-07-07): fork and plan each own
+  // their spinner slot so clicking one does not spin the other's icon.
+  it('spins only the Plan button when Plan is clicked; fork icon stays a GitFork, not a spinner', async () => {
+    let resolvePlan!: () => void
+    const onPlanFromHere = vi.fn(() => new Promise<void>(res => { resolvePlan = res }))
+    const onFork = vi.fn()
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
+
+    const planBtn = screen.getByTitle('Plan from here')
+    const forkBtn = screen.getByTitle('Fork conversation from here')
+
+    fireEvent.click(planBtn)
+
+    // Plan button shows its Loader2 spinner (aria-hidden svg has no title, so
+    // assert via the disabled state + absence of the ClipboardList icon class
+    // is fragile; instead assert both buttons are disabled (busyAction !== null)
+    // while only the fork button still renders its GitFork icon svg).
+    expect(planBtn).toBeDisabled()
+    expect(forkBtn).toBeDisabled()
+    // Fork icon (GitFork, lucide class "lucide-git-fork") must remain the fork
+    // button's icon -- it must NOT have been swapped for a spinner.
+    expect(forkBtn.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    // Plan button's icon IS the spinner while its action is in flight.
+    expect(planBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(planBtn.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
+
+    await act(async () => { resolvePlan(); await Promise.resolve() })
+    expect(planBtn).not.toBeDisabled()
+  })
+
+  it('spins only the Fork button when Fork is clicked; plan icon stays a ClipboardList, not a spinner', async () => {
+    let resolveFork!: () => void
+    const onFork = vi.fn(() => new Promise<void>(res => { resolveFork = res }))
+    const onPlanFromHere = vi.fn()
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
+
+    const planBtn = screen.getByTitle('Plan from here')
+    const forkBtn = screen.getByTitle('Fork conversation from here')
+
+    fireEvent.click(forkBtn)
+
+    expect(forkBtn).toBeDisabled()
+    expect(planBtn).toBeDisabled()
+    expect(planBtn.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
+    expect(planBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
+
+    await act(async () => { resolveFork(); await Promise.resolve() })
+    expect(forkBtn).not.toBeDisabled()
+  })
+
 })
 
 describe('parseOptions', () => {

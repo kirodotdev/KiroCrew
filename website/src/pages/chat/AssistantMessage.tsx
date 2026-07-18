@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Link2, Compass } from 'lucide-react'
+import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -80,7 +80,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const [applied, setApplied] = useState(false)
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
-  const [forking, setForking] = useState(false)
+  const [busyAction, setBusyAction] = useState<'fork' | 'plan' | null>(null)
   const [rawMode, setRawMode] = useState(false)
   const [localIdx, setLocalIdx] = useState<number | null>(null)
   useEffect(() => { setLocalIdx(null) }, [content, variants?.length])
@@ -194,8 +194,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         {timestamp && <span className="text-muted text-[12px] font-mono mr-1.5">{timestamp}</span>}
         <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Copy" aria-label={copied ? 'Copied!' : 'Copy'} onClick={() => { copyToClipboard(steerCleaned).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {}) }}>{copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}</button>
         {messageTs && slotKey && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Copy link to message" aria-label="Copy link to message" onClick={() => { copySessionLink(slotKey, slotTitle, messageTs, mode).then(() => { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500) }).catch(() => {}) }}>{linkCopied ? <Check size={14} className="text-ok" /> : <Link2 size={14} />}</button>}
-        {onFork && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={forking} title="Fork conversation from here" aria-label="Fork conversation from here" onClick={async () => { setForking(true); try { await onFork(forkIndex) } finally { setForking(false) } }}><GitFork size={14} /></button>}
-        {onPlanFromHere && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={forking} title="Plan from here" aria-label="Plan from here" onClick={async () => { setForking(true); try { await onPlanFromHere(forkIndex) } finally { setForking(false) } }}><ClipboardList size={14} /></button>}
+        {onFork && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title="Fork conversation from here" aria-label="Fork conversation from here" onClick={async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
+        {onPlanFromHere && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title="Plan from here" aria-label="Plan from here" onClick={async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
         {text.length >= 50 && onSpeak && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Speak" aria-label="Speak message" onClick={onSpeak}><Volume2 size={14} /></button>}
         {text.length > 20 && <button className={`p-0.5 rounded transition-colors flex items-center gap-0.5 text-[11px] ${rawMode ? 'text-text' : 'text-muted hover:text-text'}`} title={rawMode ? 'Rendered view' : 'Raw markdown'} aria-label={rawMode ? 'Switch to rendered view' : 'Switch to raw markdown view'} onClick={() => setRawMode(!rawMode)}><Code size={14} />{rawMode ? 'rendered' : 'raw'}</button>}
         {onRegenerate && !slotRunning && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Regenerate" aria-label="Regenerate response" onClick={onRegenerate}><RefreshCw size={14} /></button>}

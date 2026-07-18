@@ -1220,6 +1220,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     }
   }, [messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
   const handleFork = useCallback(async (visibleIndex: number) => {
     if (!activeSlot) return
     try {
@@ -1228,7 +1229,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       // per-slot draft mechanism saves the source slot's composer text on
       // slot-switch, so the user's parked draft stays safe in the original
       // session and the fork opens with an empty composer.
-      const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex })).unwrap()
+      //
+      // B3 cold-cache fix (D2): forkCfg is undefined until the dashboardConfig
+      // query resolves for the first time. Use the cache when warm; otherwise
+      // fetch a fresh value directly so direction never silently falls back
+      // to an undefined config (which previously downgraded an intended
+      // tail-fork to a head-fork whenever the query had errored/settled with
+      // no data, not just while it was loading).
+      const resolvedCfg = forkCfg ?? await api.dashboardConfig()
+      const direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
+      const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, direction })).unwrap()
       if (result.ok) {
         await dispatch(switchSlot(result.key))
       } else {
@@ -1237,7 +1247,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     } catch (e) {
       alert('Fork failed: ' + (e instanceof Error ? e.message : String(e)))
     }
-  }, [activeSlot, dispatch])
+  }, [activeSlot, dispatch, forkCfg])
 
   const handlePlanFromHere = useCallback(async (visibleIndex: number) => {
     if (!activeSlot) return
