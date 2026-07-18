@@ -87,6 +87,7 @@ from kiro_crew.agent import _enforce_denied_commands
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import POOL_SIZE_MAX, build_provider_factory, default_project_dir
 from kiro_crew.executors import maintenance_executor, subprocess_executor
+from kiro_crew.mcp_gateway.abort import schedule_abort
 from kiro_crew.messaging.link import ChannelLink, canonical_key, legacy_key
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
 from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
@@ -2590,11 +2591,17 @@ class SessionManager:
         if not preserve_queue:
             self.clear_queue(key)
         budget: float = self._cfg.agent.soft_stop_budget_secs
+        t0 = time.monotonic()
 
         if not force:
             outcome = await session.provider.cancel(wait_ack_timeout=budget)
             logger.debug("stop_turn: provider.cancel outcome=%r for %s", outcome, key)
             if outcome == "acked":
+                elapsed = time.monotonic() - t0
+                logger.info(
+                    "stop_turn outcome=soft-acked session=%s elapsed=%.2fs",
+                    key, elapsed,
+                )
                 # kiro-cli discards cancelled turns from its conversation log,
                 # so the next prompt must re-inject the cancelled turn context.
                 session.prev_turn_cancelled = True
@@ -2605,10 +2612,27 @@ class SessionManager:
                         logger.warning("on_soft hook failed for %s", key, exc_info=True)
                 return "soft"
             if outcome == "no_turn":
+                logger.info("stop_turn outcome=idle session=%s (no active turn)", key)
                 return "idle"
             # timeout or error → escalate to hard kill
+            logger.info(
+                "stop_turn outcome=escalated-to-hard session=%s "
+                "cancel_result=%r elapsed=%.2fs",
+                key, outcome, time.monotonic() - t0,
+            )
+
+        # --- Hard kill path ---
+        # Scope A gateway hook: send abort frame to gatewayd for this
+        # session's runtime PIDs so in-flight tool work is cancelled in the
+        # pooled backend processes.
+        await self._send_abort_for_session(key, session)
 
         await self.reset(key)
+        elapsed = time.monotonic() - t0
+        logger.info(
+            "stop_turn outcome=hard-done session=%s elapsed=%.2fs",
+            key, elapsed,
+        )
         # Keep a strong reference — the event loop holds only a weak ref,
         # and without this the task could be GC'd mid-respawn.
         t = asyncio.create_task(self._eager_respawn(key))
@@ -2620,6 +2644,52 @@ class SessionManager:
             except Exception:
                 logger.warning("on_hard hook failed for %s", key, exc_info=True)
         return "hard"
+
+    async def _send_abort_for_session(self, key: str, session: Any) -> None:
+        """Send an abort frame to gatewayd for the session's runtime PID(s).
+
+        Best-effort: failures are logged but never block the hard-kill path.
+        """
+        try:
+            # Prefer the stable runtime_info() API on the provider base class.
+            pid, socket_path = session.provider.runtime_info()
+
+            # Fallback for providers that haven't overridden runtime_info().
+            if pid is None:
+                client = getattr(session.provider, "_client", None)
+                pid = getattr(client, "_pid", None) if client else None
+            if socket_path is None:
+                client = getattr(session.provider, "_client", None)
+                socket_path = getattr(client, "_mcp_gateway_socket", None) if client else None
+
+            if isinstance(pid, int) and pid > 1 and socket_path:
+                # SEL audit at the point of decision: schedule_abort is
+                # fire-and-forget and the downstream _audit_abort_applied in
+                # gatewayd only fires on success — record the initiation here
+                # so there is an audit trail even if gatewayd never acks.
+                try:
+                    sel().log_api_access(
+                        caller="session",
+                        operation="mcp-gateway.abort-initiated",
+                        outcome="initiated",
+                        source="session",
+                        resources=f"pid={pid} session={key}",
+                        error="reason=hard-stop",
+                    )
+                except Exception:  # pragma: no cover — audit must never block the kill path
+                    logger.debug("SEL audit for abort initiation failed", exc_info=True)
+                schedule_abort(socket_path, [pid], reason=f"hard-stop session={key}")
+            else:
+                # Visible-by-default: if provider internals get renamed, the
+                # abort push silently stops firing and the stop/kill bug this
+                # exists to fix would quietly return. Warn so regressions show.
+                logger.warning(
+                    "abort-push skipped for %s: no runtime pid/socket resolved "
+                    "(pid=%r socket=%r) — in-flight tool calls will not be cancelled",
+                    key, pid, socket_path,
+                )
+        except Exception:
+            logger.debug("_send_abort_for_session failed for %s", key, exc_info=True)
 
     async def _eager_respawn(self, key: str) -> None:
         """Fire-and-forget respawn after hard kill.

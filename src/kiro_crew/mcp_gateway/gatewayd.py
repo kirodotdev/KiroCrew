@@ -1019,6 +1019,70 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
     return {"type": "claimed", "updated": updated, "connections": len(conns)}
 
 
+def _audit_abort_applied(
+    pids: list[int], reason: str, outcome: str, cancelled: int = 0, stubs: int = 0
+) -> None:
+    """Emit a SEL audit event for an ``abort`` frame (gateway-authoritative
+    cancel of in-flight tool calls, with possible backend recycle).
+
+    Cancelling another runtime's in-flight tool work is a security-relevant
+    action: it terminates executing tools and may SIGKILL a pooled backend.
+    Recorded in the HMAC-chained SEL mirroring :func:`_audit_caller_claimed`.
+    Trust basis: the uid-gated 0700 socket, same as Register/Claim. Wrapped
+    defensively — an audit failure must never break the abort path.
+    """
+    try:
+        SecurityEventLog().log_api_access(
+            caller="gateway",
+            operation="mcp-gateway.abort-in-flight",
+            outcome=outcome,
+            source="gateway",
+            resources=f"pids={pids} stubs={stubs}",
+            error=f"reason={reason} cancelled={cancelled}" if outcome == "allowed" else reason,
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for gateway abort failed", exc_info=True)
+
+
+async def _apply_abort(frame: dict[str, Any], pool: "BackendPool") -> dict[str, Any]:
+    """Apply an ``abort`` frame: cancel in-flight requests for all stubs under
+    the named PIDs.
+
+    This is the gateway-authoritative abort path (Mesh-2808 Scope A):
+    on session hard-stop, the gateway sends abort for the killed runtime's
+    PIDs so gatewayd can propagate MCP cancel notifications to backends.
+    Backend recycle happens on the subsequent stub disconnect path, not here.
+    """
+    raw_pids = frame.get("pids")
+    if not isinstance(raw_pids, list):
+        _audit_abort_applied([], "missing or invalid pids", "denied")
+        return {"type": "abort-rejected", "reason": "missing or invalid pids"}
+    pids = [p for p in raw_pids if isinstance(p, int) and not isinstance(p, bool) and p > 1]
+    if not pids:
+        _audit_abort_applied([], "no valid pids", "denied")
+        return {"type": "abort-rejected", "reason": "no valid pids"}
+    reason = str(frame.get("reason", "session hard-stop"))
+
+    total_cancelled = 0
+    affected_stubs = set()
+    for pid in pids:
+        conns = _CONN_INDEX.get(pid, set())
+        for conn in list(conns):
+            affected_stubs.add(conn.stub_uuid)
+    # Find backends attached to the affected stubs and cancel their in-flight work
+    for backend in pool.all_backends():
+        for stub_uuid in affected_stubs:
+            cancelled = await backend.cancel_in_flight_for_stub(stub_uuid)
+            total_cancelled += len(cancelled)
+
+    logger.info(
+        "abort applied: pids=%r reason=%s cancelled=%d stubs=%d",
+        pids, reason, total_cancelled, len(affected_stubs),
+    )
+    _audit_abort_applied(pids, reason, "allowed", total_cancelled, len(affected_stubs))
+    return {"type": "aborted", "cancelled": total_cancelled, "stubs": len(affected_stubs)}
+
+
 def _audit_pool_fallback(caller: str, pool_label: str, reason: str) -> None:
     """Emit a SEL audit event when the gateway directs a stub to fall back to a
     direct, unpooled per-session exec.
@@ -1184,6 +1248,15 @@ async def _handle_connection(
     # ``_apply_claim``.
     if register.get("type") == "claim":
         await _write_json_line(writer, _apply_claim(register))
+        return
+
+    # Abort-push short-circuit (one-shot control connection from the main
+    # gateway process): "cancel all in-flight tool calls for runtime PIDs X"
+    # — sends MCP notifications/cancelled to each backend. Backend recycle
+    # happens on the subsequent stub disconnect path, not here. Trust basis:
+    # same uid-gated 0700 socket as Register/Claim.
+    if register.get("type") == "abort":
+        await _write_json_line(writer, await _apply_abort(register, pool))
         return
 
     if register.get("type") not in (None, "register"):
@@ -1455,7 +1528,7 @@ async def _handle_connection(
                         # refcount>0 keeps the backend from eviction.
                         pool.unreserve(pool_key)
                     writer_task = asyncio.create_task(
-                        _drain_inbox_to_stub(inbox, writer),
+                        _drain_inbox_to_stub(inbox, writer, stub_uuid),
                         name=f"mcp-gateway-stub-writer-{stub_uuid[:8]}",
                     )
                     # OTEL metric: acquire-only duration (captured above, before
@@ -1518,7 +1591,7 @@ async def _handle_connection(
                 finally:
                     pool.unreserve(pool_key)
                 writer_task = asyncio.create_task(
-                    _drain_inbox_to_stub(inbox, writer),
+                    _drain_inbox_to_stub(inbox, writer, stub_uuid),
                     name=f"mcp-gateway-stub-writer-{stub_uuid[:8]}",
                 )
                 # OTEL metrics: lazy-load count + duration + acquire duration
@@ -1570,8 +1643,53 @@ async def _handle_connection(
     finally:
         _conn_index_discard(conn)
         if backend is not None:
+            # Scope A: before detaching, cancel any in-flight tool calls this
+            # stub owned — the backend would otherwise run them to completion
+            # with no consumer (the root cause of the stop/kill bug).
+            # Best-effort: a failure here must never skip detach_stub below,
+            # or the backend's refcount leaks and it can never be recycled.
+            had_in_flight = any(
+                p.stub_uuid == stub_uuid for p in backend._pending_requests.values()
+            )
+            cancelled: list = []
+            try:
+                cancelled = await backend.cancel_in_flight_for_stub(stub_uuid)
+            except Exception:
+                logger.warning(
+                    "cancel_in_flight_for_stub failed for %s", stub_uuid,
+                    exc_info=True,
+                )
             remaining = await backend.detach_stub(stub_uuid)
-            logger.debug("stub %s detached; refcount=%d", stub_uuid, remaining)
+            if cancelled:
+                logger.info(
+                    "stub %s detached with %d in-flight request(s) %s -> cancelled; refcount=%d",
+                    stub_uuid, len(cancelled), cancelled[:5], remaining,
+                )
+                # SEL audit: cancelling in-flight tool work on a plain stub
+                # disconnect is the same security-relevant action as the abort
+                # frame path (which audits via _audit_abort_applied) — record
+                # it so a disconnect-triggered cancellation has an audit trail.
+                try:
+                    SecurityEventLog().log_api_access(
+                        caller="gatewayd",
+                        operation="mcp-gateway.disconnect-cancel",
+                        outcome="cancelled",
+                        source="gateway",
+                        resources=f"stub={stub_uuid} refcount={remaining}",
+                        error=f"cancelled={len(cancelled)} in-flight on stub disconnect",
+                    )
+                except Exception:  # pragma: no cover — audit must never break detach
+                    logger.debug("SEL audit for disconnect-cancel failed", exc_info=True)
+            else:
+                logger.debug("stub %s detached; refcount=%d", stub_uuid, remaining)
+            # Scope B: if no consumers remain and the backend had in-flight
+            # work, kill+respawn (the cancel notification is best-effort —
+            # the backend may not honour it).
+            if remaining == 0 and had_in_flight:
+                await backend.recycle_if_idle()
+            # Scope B: if quarantined and now drained, recycle
+            elif remaining == 0 and backend.quarantined:
+                await backend.recycle_if_idle()
         if writer_task is not None:
             writer_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -1724,7 +1842,7 @@ async def _respawn_backend_for_stub(
     finally:
         pool.unreserve(pool_key)
     new_writer_task = asyncio.create_task(
-        _drain_inbox_to_stub(new_inbox, writer),
+        _drain_inbox_to_stub(new_inbox, writer, stub_uuid),
         name=f"mcp-gateway-stub-writer-{stub_uuid[:8]}",
     )
     logger.info(
@@ -1737,6 +1855,7 @@ async def _respawn_backend_for_stub(
 async def _drain_inbox_to_stub(
     inbox: "asyncio.Queue[bytes]",
     writer: asyncio.StreamWriter,
+    stub_uuid: str = "",
 ) -> None:
     """Forward every payload queued by the backend into the stub writer.
 
@@ -1756,6 +1875,13 @@ async def _drain_inbox_to_stub(
                         writer.drain(), timeout=_WRITE_REPLY_TIMEOUT_SECS
                     )
             except (ConnectionError, BrokenPipeError):
+                # Scope E: log late responses dropped after stub detach
+                # instead of letting BrokenPipeError propagate unlogged.
+                logger.info(
+                    "stub %s: response arrived after disconnect — dropped "
+                    "(%d bytes); this is expected during session stop",
+                    stub_uuid or "unknown", len(payload),
+                )
                 return
             except asyncio.TimeoutError:
                 # Stub passed the handshake but stopped reading; don't pin this

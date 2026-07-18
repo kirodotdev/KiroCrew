@@ -34,6 +34,7 @@ from kiro_crew.mcp_caller import (
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
 from kiro_crew.mcp_gateway.spill import maybe_spill_response
 from kiro_crew.security import redact
+from kiro_crew.sel import SecurityEventLog
 
 if False:  # typing-only import guard
     from kiro_crew.mcp_gateway.pool import PoolKey
@@ -313,6 +314,8 @@ class Backend:
     # loop and (b) outlives shutdown if the process survives SIGKILL, leaking
     # its stderr pipe fd across LRU-eviction churn.
     _stderr_task: Optional[asyncio.Task[None]] = None
+    # Quarantine: no new stubs may attach; kill when refcount drains to 0.
+    quarantined: bool = False
     # Best-effort latency-metric emits, fired off the stdout-pump hot path so a
     # slow/NFS metrics volume cannot add head-of-line latency to frame routing.
     # Tracked (with a discard done-callback) so a task is not GC'd before it
@@ -1245,6 +1248,109 @@ class Backend:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
                 setattr(self, attr, None)
+
+    async def cancel_in_flight_for_stub(self, stub_uuid: str) -> list[str]:
+        """Send MCP ``notifications/cancelled`` for every in-flight request
+        owned by ``stub_uuid``. Returns the list of cancelled forward-ids.
+
+        This is the core Scope-A fix: when a stub disconnects (session killed),
+        the backend receives explicit cancellation so it can abort long-running
+        tool work instead of running to completion with no consumer.
+        """
+        # Collect in-flight requests for this stub (before detach clears them)
+        in_flight = [
+            (fid, p) for fid, p in self._pending_requests.items()
+            if p.stub_uuid == stub_uuid
+        ]
+        cancelled_ids: list[str] = []
+        for fid, pending in in_flight:
+            if not self.is_alive:
+                break
+            cancel_notification = {
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {
+                    "requestId": fid,
+                    "reason": "Session stopped — caller disconnected",
+                },
+            }
+            try:
+                await _write_json_line(self.stdin, cancel_notification)
+                cancelled_ids.append(fid)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Backend already dead — no point sending more
+                break
+        if cancelled_ids:
+            logger.info(
+                "backend pid=%s: sent %d cancel notifications for stub=%s [ids: %s]",
+                self.pid, len(cancelled_ids), stub_uuid,
+                ", ".join(cancelled_ids[:5]) + ("..." if len(cancelled_ids) > 5 else ""),
+            )
+        return cancelled_ids
+
+    async def recycle_if_idle(self) -> bool:
+        """Kill this backend if refcount == 0 (Scope B fallback).
+
+        The kill is immediate; the *respawn* is lazy — the next pool
+        ``get_or_create`` for this key sees a dead entry and spawns fresh.
+        Returns True if the backend was killed. Called after cancel
+        notifications when the last stub disconnects and the backend may
+        still be executing cancelled work (race window before backend
+        processes the cancel notification).
+        """
+        if self.refcount > 0:
+            # Co-tenants still attached — quarantine instead of killing
+            self.quarantined = True
+            logger.info(
+                "backend pid=%s quarantined: has %d remaining co-tenants, "
+                "will recycle when drained",
+                self.pid, self.refcount,
+            )
+            return False
+        # No consumers left — hard kill the backend process
+        if self.is_alive:
+            pid = self.process.pid
+            pgid = None
+            try:
+                pgid = os.getpgid(pid) if isinstance(pid, int) and pid > 1 else None
+            except (ProcessLookupError, OSError):
+                pass
+            # Guard per learned correction: only kill pids > 1, pgid > 1,
+            # pgid != our own process group
+            if (
+                isinstance(pid, int) and pid > 1
+                and pgid is not None and pgid > 1
+                and pgid != os.getpgid(0)
+            ):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                self._dead_reason = "recycled after last stub detached with in-flight work"
+                logger.info(
+                    "backend pid=%s recycled (killed): last stub detached with "
+                    "in-flight work",
+                    pid,
+                )
+                # SEL audit: SIGKILLing a pooled backend is a security-relevant
+                # action — record it in the HMAC-chained event log regardless
+                # of which path (abort frame or plain disconnect) got us here.
+                try:
+                    SecurityEventLog().log_api_access(
+                        caller="gatewayd",
+                        operation="mcp-gateway.backend-recycle-kill",
+                        outcome="killed",
+                        source="gateway",
+                        resources=f"pid={pid} server={self.pool_key.server_name}",
+                        error=self._dead_reason,
+                    )
+                except Exception:  # pragma: no cover — audit must never break recycle
+                    logger.debug("SEL audit for backend recycle kill failed", exc_info=True)
+                return True
+        return False
 
     async def shutdown(self, timeout: float = 5.0) -> None:
         """Close stdin, wait for the process to exit, escalate to SIGKILL

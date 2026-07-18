@@ -1097,8 +1097,32 @@ class SubagentManager:
         session_key = f"subagent:{agent_id}"
 
         if info._session_sharing:
-            # Session-sharing subagent: destroy the session handle only.
-            # Do NOT kill the shared runtime (other subagents may still use it).
+            # Session-sharing subagent: NEVER SIGKILL the shared runtime —
+            # the parent session owns it and other co-tenants may be active.
+            # Conservative approach: shut down only this subagent's provider
+            # handle, leaving the shared runtime intact.
+            runtime_pid = info._pid
+            logger.info(
+                "Reaper: conservative shutdown for session-sharing %s — "
+                "runtime pid=%s kept alive (shared runtime, never SIGKILL)",
+                agent_id, runtime_pid,
+            )
+            try:
+                sel().log_tool_invocation(
+                    session_key=session_key,
+                    source="subagent",
+                    tool_name="smart_hard_kill",
+                    outcome="conservative-shutdown",
+                    resources=f"runtime_pid={runtime_pid}",
+                    metadata={
+                        "subagent_id": agent_id,
+                        "runtime_pid": runtime_pid,
+                        "decision": "session-sharing-never-kill",
+                    },
+                )
+            except Exception:
+                logger.debug("SEL audit for conservative shutdown failed", exc_info=True)
+            # Shutdown the shared provider handle only
             try:
                 if info._shared_provider:
                     await info._shared_provider.shutdown()

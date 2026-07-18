@@ -135,16 +135,24 @@ class _RecordingWriter:
 
 class _FakeBackend:
     supports_caller_identity = True
+    quarantined = False
 
     def __init__(self) -> None:
         self.callers: list[Any] = []
         self.forwarded = asyncio.Event()
+        self._pending_requests: dict = {}
 
     async def attach_stub(self, _uuid: str) -> "asyncio.Queue[bytes]":
         return asyncio.Queue()
 
     async def detach_stub(self, _uuid: str) -> int:
         return 0
+
+    async def cancel_in_flight_for_stub(self, _stub_uuid: str) -> list[str]:
+        return []
+
+    async def recycle_if_idle(self) -> bool:
+        return False
 
     async def forward_from_stub(self, _uuid: str, _msg: dict, caller: Any = None) -> None:
         self.callers.append(caller)
@@ -183,7 +191,7 @@ def _patch_env(monkeypatch: pytest.MonkeyPatch) -> tuple[_FakeBackend, list[dict
     async def _fake_acquire(_pool: Any, _key: Any, _resolver: Any):
         return fake_backend, True
 
-    async def _fake_drain(_inbox: Any, _writer: Any) -> None:
+    async def _fake_drain(_inbox: Any, _writer: Any, _stub_uuid: str = "") -> None:
         await asyncio.sleep(0)
 
     monkeypatch.setattr(gw, "SecurityEventLog", _FakeSEL)

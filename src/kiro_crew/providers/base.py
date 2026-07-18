@@ -149,3 +149,11 @@ class LLMProvider(ABC):
     def touch_activity(self) -> None:
         """Refresh provider activity timestamp without I/O. Default no-op."""
         return None
+
+    def runtime_info(self) -> tuple[int | None, str | None]:
+        """Return (runtime_pid, gateway_socket_path) for abort propagation.
+
+        Subclasses that manage a child process override this to return the
+        real values. Base returns (None, None) which disables abort push.
+        """
+        return (None, None)

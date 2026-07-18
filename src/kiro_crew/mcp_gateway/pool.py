@@ -529,7 +529,7 @@ class BackendPool:
         """
         digest = key.stable_hash()
         existing = await self.get(key)
-        if existing is not None and existing.is_alive:
+        if existing is not None and existing.is_alive and not existing.quarantined:
             self.reserve(key)
             return existing
 
@@ -547,9 +547,27 @@ class BackendPool:
                 # Double-check after acquiring the per-key lock: another task
                 # may have completed the spawn while we were queued.
                 existing = await self.get(key)
-                if existing is not None and existing.is_alive:
+                if existing is not None and existing.is_alive and not existing.quarantined:
                     self.reserve(key)
                     return existing
+                if existing is not None and existing.is_alive and existing.quarantined:
+                    # Quarantine enforcement: never hand a quarantined backend to
+                    # a new stub — it may still be executing cancelled (possibly
+                    # wedged) work. Shut it down and spawn a fresh one.
+                    logger.info(
+                        "get_or_create: backend pid=%s for %s is quarantined — "
+                        "shutting down and spawning fresh",
+                        existing.pid, key.server_name,
+                    )
+                    try:
+                        await existing.shutdown()
+                    except Exception:
+                        logger.debug("quarantined backend shutdown failed", exc_info=True)
+                    # We hold the per-key spawn lock — keep it across the evict
+                    # (fork convention; a plain evict would drop it and allow a
+                    # concurrent get_or_create to spawn a duplicate backend).
+                    await self.evict(key, keep_spawn_lock=True)
+                    existing = None
                 if existing is not None:
                     # Stale/dead entry — record the death against the breaker
                     # (a no-op when the death was slow or the breaker disabled)
@@ -788,6 +806,15 @@ class BackendPool:
         """
         async with self._lock:
             return [(b.pool_key, b) for b in self._backends.values()]
+
+    def all_backends(self) -> list["Backend"]:
+        """Return all current backends (non-async, lock-free snapshot).
+
+        Used by the abort handler which needs to iterate backends to cancel
+        in-flight requests for specific stubs. The list is a snapshot so
+        mutations during iteration are safe.
+        """
+        return list(self._backends.values())
 
     async def shutdown_all(self, timeout: float = 5.0) -> None:
         """Shut down every registered backend and clear the pool.

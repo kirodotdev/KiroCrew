@@ -865,6 +865,12 @@ class AcpProvider(LLMProvider):
     def touch_activity(self) -> None:
         self._client.touch_activity()
 
+    def runtime_info(self) -> tuple[int | None, str | None]:
+        """Return (runtime_pid, gateway_socket_path) for abort propagation."""
+        pid = getattr(self._client, "_pid", None)
+        socket_path = getattr(self._client, "_mcp_gateway_socket", None)
+        return (pid, socket_path)
+
     @property
     def session_id(self) -> str:
         """Return the kiro-cli session UUID."""
