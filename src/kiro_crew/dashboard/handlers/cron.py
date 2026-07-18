@@ -553,6 +553,22 @@ async def api_cron_run(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "name": safe_name})
 
 
+async def api_cron_cancel(request: web.Request) -> web.Response:
+    """POST /api/crons/{id}/cancel — cancel a running execution."""
+    state: DashboardState = request.app["state"]
+    job_id = request.match_info["job_id"]
+    jobs = state.crons.list_jobs(include_disabled=True)
+    job = next((j for j in jobs if j.id == job_id), None)
+    if not job:
+        return web.json_response({"error": "job not found"}, status=404)
+    cancelled = await state.crons.cancel(job_id)
+    if not cancelled:
+        return web.json_response({"error": "job is not running"}, status=409)
+    state.push_refresh("crons")
+    safe_name = redact_credentials(redact_exfiltration_urls(job.name)[0])[0]
+    return web.json_response({"ok": True, "name": safe_name})
+
+
 async def api_cron_to_chat(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/to-chat — open last result in a chat session."""
     state: DashboardState = request.app["state"]

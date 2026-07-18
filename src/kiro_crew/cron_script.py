@@ -23,9 +23,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from functools import lru_cache
@@ -55,6 +58,118 @@ _CRON_ENV_DENY: frozenset[str] = frozenset({"KIROCREW_INTERNAL_SECRET", *_AGENT_
 def _clean_cron_env() -> dict[str, str]:
     """Return os.environ minus the cron env-deny set (secrets never inherited)."""
     return {k: v for k, v in os.environ.items() if k not in _CRON_ENV_DENY}
+
+
+# ── Running-subprocess registry (user-initiated cancellation) ──
+#
+# Script/command crons run as blocking ``subprocess`` calls inside the cron
+# thread executor — cancelling the owning asyncio task cannot interrupt them.
+# Each sandboxed child is registered here (keyed by job id) so that
+# ``CronService.cancel()`` can SIGTERM the whole process group mid-run.
+_PROCS_LOCK = threading.Lock()
+_RUNNING_PROCS: dict[str, subprocess.Popen] = {}
+_CANCELLED_PROC_JOBS: set[str] = set()
+
+_KILL_ESCALATION_GRACE_SECS = 5.0
+
+
+def _register_proc(job_id: str, proc: subprocess.Popen) -> None:
+    with _PROCS_LOCK:
+        _RUNNING_PROCS[job_id] = proc
+
+
+def _unregister_proc(job_id: str, proc: subprocess.Popen) -> bool:
+    """Remove the registry entry; return True if this run was cancelled."""
+    with _PROCS_LOCK:
+        if _RUNNING_PROCS.get(job_id) is proc:
+            _RUNNING_PROCS.pop(job_id, None)
+        cancelled = job_id in _CANCELLED_PROC_JOBS
+        _CANCELLED_PROC_JOBS.discard(job_id)
+        return cancelled
+
+
+def _resolve_safe_pgid(proc: subprocess.Popen) -> int | None:
+    """Resolve *proc*'s process group id with broadcast protection.
+
+    Returns None (caller must fall back to the direct Popen handle) unless
+    every check passes:
+
+    - ``proc.pid`` must be a real ``int`` > 1. A ``MagicMock`` pid coerces to
+      1 via ``__index__``, and ``os.killpg(1, sig)`` is ``kill(-1, sig)`` in
+      libc — a signal broadcast to EVERY process this uid can reach, which
+      SIGKILLed the whole login session (systemd --user manager included).
+    - The resolved pgid must be > 1 (same ``kill(-1)`` footgun) and must not
+      be our own process group (suicide / killing the gateway tree).
+    """
+    pid = getattr(proc, "pid", None)
+    if type(pid) is not int or pid <= 1:
+        logger.error("kill guard: refusing non-int/reserved pid %r", pid)
+        return None
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        return None
+    if pgid <= 1 or pgid == os.getpgid(0):
+        logger.error(
+            "kill guard: refusing broadcast/self pgid %d for pid %d", pgid, pid
+        )
+        return None
+    return pgid
+
+
+def kill_running_process(job_id: str) -> bool:
+    """SIGTERM the sandboxed subprocess group for a running script/command cron.
+
+    Escalates to SIGKILL after a grace period from a daemon thread so the
+    caller (the async cancel path) never blocks. Returns True when a live
+    subprocess was found and signalled.
+    """
+    with _PROCS_LOCK:
+        maybe_proc = _RUNNING_PROCS.get(job_id)
+        if maybe_proc is None or maybe_proc.poll() is not None:
+            return False
+        proc: subprocess.Popen = maybe_proc
+        _CANCELLED_PROC_JOBS.add(job_id)
+    pgid = _resolve_safe_pgid(proc)
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = None
+    if pgid is None:
+        # Already gone (or unsignallable) — fall back to the direct handle.
+        try:
+            proc.terminate()
+        except Exception:
+            # Signal never delivered: clear the cancelled flag so a natural
+            # completion is not misreported as a cancellation.
+            with _PROCS_LOCK:
+                _CANCELLED_PROC_JOBS.discard(job_id)
+            return False
+
+    def _escalate() -> None:
+        time.sleep(_KILL_ESCALATION_GRACE_SECS)
+        if proc.poll() is None:
+            _kill_proc_group(proc)
+
+    threading.Thread(target=_escalate, name=f"cron-cancel-{job_id}", daemon=True).start()
+    logger.info("Cancel: sent SIGTERM to subprocess group of cron %s (pid %d)", job_id, proc.pid)
+    return True
+
+
+def _kill_proc_group(proc: subprocess.Popen) -> None:
+    """Best-effort SIGKILL of a subprocess and its whole process group."""
+    pgid = _resolve_safe_pgid(proc)
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 if TYPE_CHECKING:
@@ -484,26 +599,37 @@ def run_script_sandboxed(
         clean_env["_KIROCREW_SECRET_FILE"] = secret_path
 
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
-        proc = subprocess.run(
-            sandboxed_argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=clean_env,
+        proc = subprocess.Popen(
+            sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=clean_env, start_new_session=True,
             preexec_fn=resource_limit_preexec(),
         )
+        _register_proc(job_id, proc)
+        try:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # Popen.communicate does not kill the child on timeout
+                # (unlike subprocess.run) — clean up before re-raising.
+                _kill_proc_group(proc)
+                proc.communicate()
+                raise
+        finally:
+            cancelled = _unregister_proc(job_id, proc)
+        if cancelled:
+            return {"status": "cancelled", "error": "Cancelled by user"}
 
-        if proc.returncode != 0 and not proc.stdout.strip():
-            error_text = proc.stderr[:500] or f"exit {proc.returncode}"
+        if proc.returncode != 0 and not stdout.strip():
+            error_text = stderr[:500] or f"exit {proc.returncode}"
             error_text = redact(error_text)
             return {"status": "error", "error": error_text}
 
         try:
-            return json.loads(proc.stdout.strip().split("\n")[-1])
+            return json.loads(stdout.strip().split("\n")[-1])
         except (json.JSONDecodeError, IndexError):
             return {
                 "status": "error",
-                "error": f"Bad output: {redact(proc.stdout[:200])}",
+                "error": f"Bad output: {redact(stdout[:200])}",
             }
     except subprocess.TimeoutExpired:
         return {"status": "error", "error": f"Script timed out after {timeout}s"}
@@ -517,10 +643,10 @@ def run_script_sandboxed(
 _MAX_COMMAND_OUTPUT = 65536  # 64KB cap
 
 
-def run_command_sandboxed(command: str, timeout: int = 300) -> dict:
+def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None = None) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
-    Returns: {"status": "ok"|"error", "output": "...", "exit_code": N}
+    Returns: {"status": "ok"|"error"|"cancelled", "output": "...", "exit_code": N}
     """
     argv = ["sh", "-c", command]
     # mode="cc" (not "standard"): the command string is fully model-supplied via
@@ -539,31 +665,36 @@ def run_command_sandboxed(command: str, timeout: int = 300) -> dict:
     sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
     clean_env = _clean_cron_env()
     try:
-        proc = subprocess.run(
-            sandboxed_argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=clean_env,
+        proc = subprocess.Popen(
+            sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=clean_env, start_new_session=True,
             preexec_fn=resource_limit_preexec(),
         )
-        output = proc.stdout
+        if job_id:
+            _register_proc(job_id, proc)
+        cancelled = False
+        try:
+            try:
+                output, stderr_out = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_proc_group(proc)
+                proc.communicate()
+                return {"status": "error", "output": f"❌ Command timed out after {timeout}s", "exit_code": -1}
+        finally:
+            if job_id:
+                cancelled = _unregister_proc(job_id, proc)
+        if cancelled:
+            return {"status": "cancelled", "output": "Cancelled by user", "exit_code": proc.returncode}
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:
             output = f"⚠️ Exit code {proc.returncode}\n\n{output}"
-            if proc.stderr:
-                output += f"\n\nstderr:\n{proc.stderr[:1000]}"
+            if stderr_out:
+                output += f"\n\nstderr:\n{stderr_out[:1000]}"
         return {
             "status": "ok" if proc.returncode == 0 else "error",
             "output": output,
             "exit_code": proc.returncode,
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "error",
-            "output": f"❌ Command timed out after {timeout}s",
-            "exit_code": -1,
         }
     except Exception as exc:
         return {"status": "error", "output": f"❌ Command failed: {exc}", "exit_code": -1}

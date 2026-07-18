@@ -44,9 +44,10 @@ except ImportError:
     get_description = None  # type: ignore[assignment]
 from croniter import croniter  # type: ignore[import-untyped]
 
-from kiro_crew import platform_compat, shutdown_event
+from kiro_crew import cron_script, platform_compat, sel, shutdown_event
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
+from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +338,7 @@ class CronService:
         self._running_tasks: dict[str, asyncio.Task[None]] = {}  # strong refs to prevent GC
         self._job_start_times: dict[str, float] = {}  # job ID → epoch start
         self._reaped_jobs: set[str] = set()  # job IDs killed by the reaper
+        self._cancelled_jobs: set[str] = set()  # job IDs cancelled by the user
         self._job_jitter: dict[str, float] = {}  # job ID → jitter seconds applied
         self._job_run_meta: dict[str, tuple[float, str]] = {}  # job_id → (start_time, trigger)
         # Mesh-1026: job_id → active session_key for the in-flight run.
@@ -529,9 +531,9 @@ class CronService:
                 return
             client = getattr(session.provider, "_client", None)
             raw_pid = getattr(client, "_pid", None) if client else None
-            pid = raw_pid if isinstance(raw_pid, int) else None
+            pid = raw_pid if isinstance(raw_pid, int) and raw_pid > 1 else None
             if not pid:
-                logger.warning("Reaper: no PID found for %s", session_key)
+                logger.warning("Reaper: no usable PID (%r) for %s", raw_pid, session_key)
                 return
             # Snapshot child tree before killing — children in different
             # PGIDs survive killpg.
@@ -561,10 +563,15 @@ class CronService:
                 session_key,
             )
             try:
-                # killpg(getpgid) on POSIX, taskkill /T on Windows — routed through
-                # platform_compat so the reaper doesn't AttributeError on win32
-                # (os.getpgid/os.killpg/signal.SIGKILL are POSIX-only).
+                # killpg(getpgid) on POSIX, taskkill /T on Windows — routed
+                # through platform_compat, whose POSIX path carries the
+                # broadcast guard (refuses pgid<=1 / own group; see
+                # platform_compat.kill_process_tree).
                 platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
+            except ValueError:
+                # Guard refused the pid outright (non-int/reserved) — nothing
+                # safe to signal.
+                logger.error("Reaper: kill guard refused pid %r for %s", pid, session_key)
             except (ProcessLookupError, OSError):
                 try:
                     platform_compat.kill_pid(pid, platform_compat.SIGKILL)
@@ -573,6 +580,107 @@ class CronService:
             _kill_escaped_children(child_pids)
         except Exception:
             logger.exception("Reaper: SIGKILL failed for %s", session_key)
+
+    # ── User-initiated cancellation ──
+
+    async def cancel(self, job_id: str) -> bool:
+        """Cancel a running cron execution (user-initiated).
+
+        Kills the sandboxed subprocess (script/command crons) or the kiro-cli
+        session (agent crons), cancels the asyncio task, records a
+        ``cancelled`` history entry, and leaves ``consecutive_failures``
+        untouched. Returns True when a running execution was found.
+        """
+        if job_id not in self._executing:
+            return False
+        logger.info("Cancel: user-initiated cancellation of cron job %s", job_id)
+        self._cancelled_jobs.add(job_id)
+        meta = self._job_run_meta.pop(job_id, None)
+        started_at = meta[0] if meta else self._job_start_times.get(job_id, time.time())
+        trigger = meta[1] if meta else "scheduled"
+        elapsed = time.time() - started_at
+        self._job_start_times.pop(job_id, None)
+        self._job_jitter.pop(job_id, None)
+
+        job = next((j for j in self._jobs if j.id == job_id), None)
+
+        # 1. Script/command crons: SIGTERM the sandboxed subprocess group.
+        # Offloaded: kill_running_process performs blocking kernel calls.
+        killed_proc = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), cron_script.kill_running_process, job_id
+        )
+
+        # 2. Agent crons: kill the kiro-cli session (mirrors _force_reap).
+        session_key = self._active_session_keys.get(job_id) or f"cron:{job_id}"
+        is_agent_job = job is None or not (job.script or job.command)
+        if self._sessions and is_agent_job and not killed_proc:
+            try:
+                await asyncio.wait_for(
+                    self._sessions.reset(session_key), timeout=_REAPER_RESET_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Cancel: reset hung for cron %s, attempting SIGKILL", job_id)
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), self._sigkill_session, session_key
+                )
+            except Exception:
+                logger.exception("Cancel: reset failed for cron %s, attempting SIGKILL", job_id)
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), self._sigkill_session, session_key
+                )
+
+        # 3. Cancel the asyncio task and clean up tracking state directly
+        # (idempotent with _run_job_isolated's finally).
+        task = self._running_tasks.pop(job_id, None)
+        if task and not task.done():
+            task.cancel()
+        self._executing.discard(job_id)
+
+        # 4. Update job state, persist, and record history.
+        if job:
+            job.last_status = "error"
+            job.last_error = f"Cancelled by user after {int(elapsed)}s"
+            job.last_run_ts = time.time()
+            try:
+                self._save()
+            except Exception:
+                logger.exception("Cancel: failed to persist state for cron %s", job_id)
+            try:
+                record = CronRunRecord(
+                    job_id=job_id,
+                    trigger=trigger,
+                    started_at=started_at,
+                    finished_at=time.time(),
+                    duration_ms=int(elapsed * 1000),
+                    status="cancelled",
+                    summary=job.last_error or "",
+                    error=job.last_error or "",
+                )
+                await self._history.append(record)
+                if self._push_refresh:
+                    self._push_refresh("cron_history")
+            except Exception:
+                logger.exception("Cancel: failed to record history for cron %s", job_id)
+        if self._push_refresh:
+            self._push_refresh("crons")
+
+        # SEL audit.
+        try:
+            sel.sel().log_tool_invocation(
+                session_key=session_key,
+                source="cron",
+                tool_name="cron_cancel",
+                outcome="cancelled",
+                metadata={
+                    "job_id": job_id,
+                    "session_key": session_key,
+                    "elapsed": int(elapsed),
+                    "killed_subprocess": killed_proc,
+                },
+            )
+        except Exception:
+            logger.exception("Cancel: SEL audit failed for cron %s", job_id)
+        return True
 
     # ── Public API ──
 
@@ -947,6 +1055,8 @@ class CronService:
             self._job_run_meta.pop(job.id, None)
             reaped = job.id in self._reaped_jobs
             self._reaped_jobs.discard(job.id)
+            cancelled = job.id in self._cancelled_jobs
+            self._cancelled_jobs.discard(job.id)
             self._executing.discard(job.id)
             self._running_tasks.pop(job.id, None)
             # Notify dashboard that the job has finished (clears the badge).
@@ -956,9 +1066,9 @@ class CronService:
             except Exception:
                 logger.debug("push_refresh failed on job end", exc_info=True)
             # For 'every' jobs, use started_at to prevent cumulative drift
-            if not reaped and job.schedule.kind == "every":
+            if not reaped and not cancelled and job.schedule.kind == "every":
                 job.last_run_ts = started_at
-            if not reaped:
+            if not reaped and not cancelled:
                 try:
                     self._merge_job_result(job)
                 except Exception:

@@ -30,6 +30,11 @@ IS_LINUX: bool = sys.platform == "linux"
 
 # Portable signal constants — signal.SIGKILL is undefined on Windows.
 SIGKILL: int = getattr(signal, "SIGKILL", 9)
+
+# Our own process group, captured at import time (POSIX; 0 on Windows where
+# os.getpgid doesn't exist). Used by kill_process_tree's broadcast guard so
+# the self-check is stable and immune to test-time os.getpgid patching.
+_OWN_PGID: int = os.getpgid(0) if hasattr(os, "getpgid") else 0
 SIGTERM: int = getattr(signal, "SIGTERM", 15)
 
 # Portable subprocess creation flags — these constants exist ONLY on Windows
@@ -652,9 +657,26 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
     genuine Windows failure (protected descendant, transient
     access-denied) instead of the shim silently returning False.
     Returns True on success on both platforms.
+
+    POSIX broadcast guard: ``killpg(1, sig)`` is ``kill(-1, sig)`` in
+    libc — a signal to EVERY process this uid owns (systemd --user
+    manager, SSH, the gateway itself). A non-int pid (e.g. a mocked
+    ``Popen``'s ``MagicMock`` pid coerces to 1 via ``__index__``),
+    pid <= 1, pgid <= 1, or our own process group is therefore refused
+    for the *group* signal and degrades to a pid-scoped ``os.kill``
+    (or raises ``ValueError`` for a non-int pid).
     """
     if IS_POSIX:
+        if type(pid) is not int or pid <= 1:
+            raise ValueError(f"kill_process_tree: refusing non-int/reserved pid {pid!r}")
         pgid = os.getpgid(pid)
+        if pgid <= 1 or pgid == _OWN_PGID:
+            logger.error(
+                "kill_process_tree: refusing broadcast/self pgid %d for pid %d; "
+                "falling back to pid-scoped kill", pgid, pid,
+            )
+            os.kill(pid, sig)
+            return True
         os.killpg(pgid, sig)
         return True
     try:

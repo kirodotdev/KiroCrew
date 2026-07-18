@@ -398,6 +398,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_patch("/api/crons/{job_id}", handlers.api_cron_update)
     app.router.add_post("/api/crons/{job_id}/enable", handlers.api_cron_enable)
     app.router.add_post("/api/crons/{job_id}/run", handlers.api_cron_run)
+    app.router.add_post("/api/crons/{job_id}/cancel", handlers.api_cron_cancel)
     app.router.add_post("/api/crons/{job_id}/to-chat", handlers.api_cron_to_chat)
     app.router.add_post("/api/crons/{job_id}/ack", handlers.api_cron_ack)
     app.router.add_get("/api/crons/{job_id}/history", handlers.api_cron_history)

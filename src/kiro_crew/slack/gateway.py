@@ -1280,9 +1280,14 @@ class GatewayOrchestrator:
                             run_command_sandboxed,
                             job.command,
                             cmd_timeout,
+                            job.id,
                         ),
                         timeout=cmd_timeout + 5,
                     )
+                    if result.get("status") == "cancelled":
+                        # User-initiated cancel: CronService.cancel() owns the
+                        # bookkeeping/history — no failure counting, no delivery.
+                        return None
                     output = result.get("output", "")
                     if not output.strip():
                         if result.get("status") == "ok":
@@ -1375,6 +1380,10 @@ class GatewayOrchestrator:
                         timeout=script_timeout + 5,
                     )
                     status = result.get("status", "error")
+                    if status == "cancelled":
+                        # User-initiated cancel: CronService.cancel() owns the
+                        # bookkeeping/history — no failure counting, no delivery.
+                        return None
                     if status == "ok":
                         job.last_result = "ok"
                         job.last_error = ""

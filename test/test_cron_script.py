@@ -812,15 +812,13 @@ class TestRunCommandSandboxedExceptions:
         )
 
     def test_timeout_returns_error(self):
-        import subprocess
-
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 300)):
-            result = run_command_sandboxed("sleep 999")
+        # Real subprocess: communicate(timeout=1) fires and the child is killed.
+        result = run_command_sandboxed("sleep 30", timeout=1)
         assert result["status"] == "error"
         assert "timed out" in result["output"]
 
     def test_exception_returns_error(self):
-        with patch("subprocess.run", side_effect=OSError("No such file")):
+        with patch("subprocess.Popen", side_effect=OSError("No such file")):
             result = run_command_sandboxed("nonexistent_binary")
         assert result["status"] == "error"
         assert "failed" in result["output"].lower() or "No such file" in result["output"]
@@ -900,14 +898,13 @@ class TestRunScriptSandboxedErrorPaths:
 
     def test_nonzero_exit_no_stdout(self, tmp_path):
         """Line 333: subprocess fails with no stdout."""
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = "segfault"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", "segfault")
         with patch(
             "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
         ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
-            "subprocess.run", return_value=mock_result
+            "subprocess.Popen", return_value=mock_proc
         ), patch(
             "pathlib.Path.unlink"
         ):
@@ -917,14 +914,13 @@ class TestRunScriptSandboxedErrorPaths:
 
     def test_bad_json_output(self, tmp_path):
         """Lines 337-338: stdout is not valid JSON."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "not json at all\n"
-        mock_result.stderr = ""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = ("not json at all\n", "")
         with patch(
             "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
         ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
-            "subprocess.run", return_value=mock_result
+            "subprocess.Popen", return_value=mock_proc
         ), patch(
             "pathlib.Path.unlink"
         ):
@@ -1068,10 +1064,18 @@ class TestRunScriptSandboxedTimeout:
     def test_script_timeout_returns_error(self):
         import subprocess as sp
 
+        mock_proc = MagicMock()
+        # CRITICAL: a bare MagicMock pid coerces to 1 via __index__, and the
+        # timeout cleanup path would then run os.killpg(1, SIGKILL) ==
+        # kill(-1, SIGKILL) — SIGKILLing every process this uid owns
+        # (it repeatedly killed the whole login session on 2026-07-15).
+        # Always give mocked Popen objects a real, nonexistent int pid.
+        mock_proc.pid = 2**22 + 12345  # > PID_MAX default, never a real pid
+        mock_proc.communicate.side_effect = [sp.TimeoutExpired("cmd", 30), ("", "")]
         with patch(
             "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
         ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
-            "subprocess.run", side_effect=sp.TimeoutExpired("cmd", 30)
+            "subprocess.Popen", return_value=mock_proc
         ), patch(
             "pathlib.Path.unlink"
         ):
@@ -1079,6 +1083,93 @@ class TestRunScriptSandboxedTimeout:
         assert result["status"] == "error"
         assert "timed out" in result["error"]
         assert "30s" in result["error"]
+
+
+class TestKillBroadcastGuard:
+    """_resolve_safe_pgid must never let a kill path degenerate into kill(-1)."""
+
+    def test_mock_pid_refused(self):
+        from kiro_crew.cron_script import _resolve_safe_pgid
+        assert _resolve_safe_pgid(MagicMock()) is None  # MagicMock pid -> not int
+
+    def test_pid_one_refused(self):
+        from kiro_crew.cron_script import _resolve_safe_pgid
+        proc = MagicMock()
+        proc.pid = 1
+        assert _resolve_safe_pgid(proc) is None
+
+    def test_negative_pid_refused(self):
+        from kiro_crew.cron_script import _resolve_safe_pgid
+        proc = MagicMock()
+        proc.pid = -1
+        assert _resolve_safe_pgid(proc) is None
+
+    def test_bool_pid_refused(self):
+        from kiro_crew.cron_script import _resolve_safe_pgid
+        proc = MagicMock()
+        proc.pid = True  # bool is an int subclass; type() check must reject it
+        assert _resolve_safe_pgid(proc) is None
+
+    def test_own_pgid_refused(self):
+        import os
+
+        from kiro_crew.cron_script import _resolve_safe_pgid
+        proc = MagicMock()
+        proc.pid = os.getpid()  # our own group -> must refuse (self-kill)
+        assert _resolve_safe_pgid(proc) is None
+
+    def test_kill_proc_group_never_calls_killpg_for_mock(self):
+        from kiro_crew.cron_script import _kill_proc_group
+        proc = MagicMock()  # bare mock pid — the original footgun
+        with patch("os.killpg") as mock_killpg:
+            _kill_proc_group(proc)
+        mock_killpg.assert_not_called()
+        proc.kill.assert_called_once()
+
+    def test_shim_kill_process_tree_refuses_mock_pid(self):
+        """platform_compat.kill_process_tree: non-int pid must raise, never killpg."""
+        import pytest as _pytest
+
+        from kiro_crew import platform_compat
+        with patch("os.killpg") as mock_killpg, patch("os.kill") as mock_kill:
+            with _pytest.raises(ValueError):
+                platform_compat.kill_process_tree(MagicMock(), platform_compat.SIGKILL)
+        mock_killpg.assert_not_called()
+        mock_kill.assert_not_called()
+
+    def test_shim_kill_process_tree_broadcast_pgid_degrades_to_pid_kill(self):
+        """platform_compat.kill_process_tree: pgid<=1 degrades to scoped os.kill."""
+        from kiro_crew import platform_compat
+        target = 2**22 + 31337
+        with patch("os.getpgid", return_value=1), \
+             patch("os.killpg") as mock_killpg, \
+             patch("os.kill") as mock_kill:
+            assert platform_compat.kill_process_tree(target, platform_compat.SIGKILL) is True
+        mock_killpg.assert_not_called()
+        mock_kill.assert_called_once_with(target, platform_compat.SIGKILL)
+
+    def test_cancel_flag_cleared_when_terminate_fails(self):
+        """kill_running_process: signal never delivered -> flag must not leak.
+
+        Otherwise a later natural completion would be misreported as cancelled
+        by _unregister_proc.
+        """
+        from kiro_crew.cron_script import (
+            _CANCELLED_PROC_JOBS,
+            _RUNNING_PROCS,
+            kill_running_process,
+        )
+        proc = MagicMock()
+        proc.pid = 2**22 + 54321  # nonexistent real int pid
+        proc.poll.return_value = None  # "still running"
+        proc.terminate.side_effect = OSError("terminate failed")
+        _RUNNING_PROCS["flagleak"] = proc
+        try:
+            assert kill_running_process("flagleak") is False
+            assert "flagleak" not in _CANCELLED_PROC_JOBS
+        finally:
+            _RUNNING_PROCS.pop("flagleak", None)
+            _CANCELLED_PROC_JOBS.discard("flagleak")
 
 
 class TestResolveInternalSecret:
@@ -1118,10 +1209,13 @@ class TestResolveInternalSecret:
         (tmp_path / ".local_secret").write_text("realsecret\n")
         captured = {}
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             sf = kwargs.get("env", {}).get("_KIROCREW_SECRET_FILE")
             captured["secret"] = open(sf).read() if sf else None
-            return SimpleNamespace(returncode=0, stdout='{"status": "ok"}', stderr="")
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.communicate.return_value = ('{"status": "ok"}', "")
+            return proc
 
         env = {k: v for k, v in os.environ.items() if k != "KIROCREW_INTERNAL_SECRET"}
         with patch.dict(os.environ, env, clear=True), patch(
@@ -1129,7 +1223,7 @@ class TestResolveInternalSecret:
         ), patch("kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")), patch(
             "kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)
         ), patch(
-            "subprocess.run", side_effect=fake_run
+            "subprocess.Popen", side_effect=fake_popen
         ), patch(
             "pathlib.Path.unlink"
         ):

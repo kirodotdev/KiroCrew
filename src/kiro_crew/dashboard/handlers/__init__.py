@@ -102,6 +102,7 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_ack,
     api_cron_batch_delete,
+    api_cron_cancel,
     api_cron_delete,
     api_cron_enable,
     api_cron_history,
