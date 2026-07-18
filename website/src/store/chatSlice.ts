@@ -162,9 +162,9 @@ function pushHistory(history: string[], key: string): string[] {
  */
 function applyNonActiveFrame(
   state: ChatState,
-  p: { slot: string; role: string; content: string; ts?: string; seq?: number; cls?: string; meta?: Record<string, unknown>; kind?: string },
+  p: { slot: string; role: string; content: string; ts?: string; seq?: number; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean },
 ) {
-  const { slot, role, content, ts, seq, cls, meta, kind } = p
+  const { slot, role, content, ts, seq, cls, meta, kind, batched } = p
   const msgs = (state.slotMessages[slot] ??= [])
   const run = (state.slotRun[slot] ??= { state: 'idle' })
   const sa = (state.slotActivity[slot] ??= { toolLog: [], subagents: {} })
@@ -214,7 +214,14 @@ function applyNonActiveFrame(
     if (streamIdx >= 0) {
       const msg = msgs[streamIdx]
       // Share missedChunkMarker with the active path so the two cannot drift.
-      if (seq !== undefined && run.lastChunkSeq !== undefined) {
+      // Skip on batched frames: the live WS flush buffer already owns gap
+      // detection across the chunks it merges and inlines the marker into the
+      // batch content, and it dispatches each batch carrying only the batch's
+      // LAST seq. Comparing consecutive batches' last-seqs here would treat the
+      // batch size as a gap and fabricate a false "[N chunk(s) missed]" marker
+      // on every multi-chunk background-pane batch. Mirror the active path,
+      // which guards the identical branch with `!batched`.
+      if (!batched && seq !== undefined && run.lastChunkSeq !== undefined) {
         msg.content += missedChunkMarker(run.lastChunkSeq, seq)
       }
       msg.content += content
