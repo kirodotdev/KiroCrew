@@ -1102,6 +1102,31 @@ class TestBuiltinDenyPatterns:
         # Multi-line / heredoc-style body mentioning push.
         assert is_denied("git commit -m 'docs: explain when to push and when to rebase'") is None
 
+    def test_feature_push_not_blocked_by_prose_push_word_in_earlier_segment(self) -> None:
+        """A legit feature-branch push must be ALLOWED even when an EARLIER
+        chained segment merely contains the word ``push``.
+
+        Ported upstream regression guard (MeshClaw f93e2f07 / CR-290209851):
+        upstream's two-pass gate matched a bare ``\\bpush\\b`` in any segment,
+        so prose like ``git commit -m 'ready to push'`` was denied before the
+        refspec normalizer could allow the real feature-branch push. This
+        fork's ``_is_push_to_protected_branch`` never had that pass — it gates
+        each segment on ``_is_git_publish`` and parses via the verb-anchored
+        ``_git_push_args`` — but this test locks in the contract: a prose
+        "push" in an earlier chained segment never blocks a real
+        feature-branch push, while chained protected pushes stay denied.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied("git commit -m 'ready to push' && git push origin feature-x") is None
+        assert is_denied("echo 'time to push' && git push origin my-feature") is None
+        # The protective behavior must remain: a real protected push chained
+        # AFTER a benign feature push is still blocked.
+        assert is_denied("git push origin feat && git push origin main") is not None
+        assert (
+            is_denied("git commit -m 'ready to push' && git push origin main") is not None
+        )
+
     def test_allows_git_verbs_with_push_substring_args(self) -> None:
         """Other git subcommands whose arguments contain ``push`` (branch
         names, grep patterns, config keys) must be ALLOWED — only an actual
