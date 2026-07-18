@@ -1227,7 +1227,8 @@
           "json"
         ],
         "embed_timeout_secs": 10.0,
-        "embed_content_budget": 0
+        "embed_content_budget": 0,
+        "pool_idle_ttl_secs": 300
       }
     },
     {
@@ -1304,6 +1305,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "knowledge.pool_idle_ttl_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pool Idle TTL (secs)",
+      "help": "Seconds the document-extraction worker pool may sit fully idle before it is scaled to zero (all workers shut down, freeing ~1GB of held process trees); the next ingest respawns them lazily. 0 keeps the workers warm indefinitely.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 300
     },
     {
       "path": "skills",

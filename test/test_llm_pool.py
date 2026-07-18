@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from kiro_crew.knowledge.llm_pool import (
+    DEFAULT_IDLE_TTL_SECS,
     AcpWorker,
     CCWorker,
     LLMPool,
     Worker,
+    _get_idle_ttl,
     _get_provider_type,
     _get_sandbox_mode,
     _read_config,
@@ -722,3 +725,199 @@ class TestFetchUrlContent:
         pool = _make_pool_with_fake_workers(pool_size=1, responses=["   \n  "])
         with pytest.raises(RuntimeError, match="empty content"):
             await fetch_url_content("https://example.com/doc", pool)
+
+
+# ---------------------------------------------------------------------------
+# Tests: idle-TTL config reader
+# ---------------------------------------------------------------------------
+
+
+class TestIdleTtlConfig:
+    """``knowledge.pool_idle_ttl_secs`` reader: default, override, 0-disable,
+    and rejection of bad/typed-wrong values back to the default."""
+
+    def test_default_is_300(self, tmp_path):
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS == 300.0
+
+    def test_reads_value_from_config(self, tmp_path):
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"knowledge": {"pool_idle_ttl_secs": 60}}')
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            assert _get_idle_ttl() == 60.0
+
+    def test_zero_disables(self, tmp_path):
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"knowledge": {"pool_idle_ttl_secs": 0}}')
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            assert _get_idle_ttl() == 0.0
+
+    def test_negative_falls_back_to_default(self, tmp_path):
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"knowledge": {"pool_idle_ttl_secs": -5}}')
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS
+
+    def test_bool_falls_back_to_default(self, tmp_path):
+        # JSON ``true`` is an int subclass in Python; must not read as 1s TTL.
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"knowledge": {"pool_idle_ttl_secs": true}}')
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS
+
+    def test_string_falls_back_to_default(self, tmp_path):
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"knowledge": {"pool_idle_ttl_secs": "600"}}')
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS
+
+
+# ---------------------------------------------------------------------------
+# Tests: idle-TTL reaper (scale-to-zero)
+# ---------------------------------------------------------------------------
+
+
+class TestIdleReaper:
+    """The reaper scales a fully-idle pool to zero after the TTL and the pool
+    transparently respawns on the next acquire."""
+
+    @pytest.mark.asyncio
+    async def test_reaps_when_idle_past_ttl(self):
+        pool = _make_pool_with_fake_workers(pool_size=3)
+        pool._idle_ttl = 0.01
+        pool._in_use = 0
+        pool._idle_since = time.monotonic() - 1.0  # well past the TTL
+        workers = list(pool._workers)
+
+        reaped = await pool._maybe_scale_to_zero()
+
+        assert reaped is True
+        assert pool._started is False
+        assert pool._workers == []
+        assert all(not w.is_alive() for w in workers)  # every worker shut down
+        assert pool._idle_since is None
+        assert pool._in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_no_reap_while_busy(self):
+        pool = _make_pool_with_fake_workers(pool_size=3)
+        pool._idle_ttl = 0.01
+        pool._in_use = 1  # a worker is checked out
+        pool._idle_since = None
+
+        reaped = await pool._maybe_scale_to_zero()
+
+        assert reaped is False
+        assert pool._started is True
+        assert len(pool._workers) == 3
+
+    @pytest.mark.asyncio
+    async def test_no_reap_before_ttl(self):
+        pool = _make_pool_with_fake_workers(pool_size=2)
+        pool._idle_ttl = 100.0
+        pool._in_use = 0
+        pool._idle_since = time.monotonic()  # just went idle
+
+        reaped = await pool._maybe_scale_to_zero()
+
+        assert reaped is False
+        assert pool._started is True
+        assert len(pool._workers) == 2
+
+    @pytest.mark.asyncio
+    async def test_ttl_zero_never_reaps(self):
+        pool = _make_pool_with_fake_workers(pool_size=1)
+        pool._idle_ttl = 0.0  # disabled
+        pool._in_use = 0
+        pool._idle_since = time.monotonic() - 10_000
+
+        reaped = await pool._maybe_scale_to_zero()
+
+        assert reaped is False
+        assert pool._started is True
+
+    @pytest.mark.asyncio
+    async def test_release_marks_idle_transition(self):
+        pool = _make_pool_with_fake_workers(pool_size=2)
+        idx, _ = await pool.acquire()
+        assert pool._in_use == 1
+        assert pool._idle_since is None  # busy → no idle clock
+
+        pool.release(idx)
+        assert pool._in_use == 0
+        assert pool._idle_since is not None  # idle clock started
+
+    @pytest.mark.asyncio
+    async def test_acquire_respawns_after_reap(self, tmp_path):
+        # Simulate a pool the reaper already scaled to zero.
+        pool = LLMPool(pool_size=2)
+        pool._started = False
+        pool._workers = []
+
+        created: list[FakeWorker] = []
+
+        async def _fake_create():
+            w = FakeWorker(responses=["respawned"])
+            w._started = True
+            created.append(w)
+            return w
+
+        pool._create_worker = _fake_create  # type: ignore[assignment]
+        # No config on disk → idle_ttl defaults to 300 (>0) → a reaper is armed.
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            idx, worker = await pool.acquire()
+
+        assert pool._started is True
+        assert isinstance(worker, FakeWorker)
+        assert worker.is_alive()
+        assert len(created) == 2  # pool respawned to full size
+        assert pool._reaper_task is not None
+
+        pool.release(idx)
+        await pool.shutdown()  # cancels the armed reaper task
+        assert pool._reaper_task is None
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_reaper(self, tmp_path):
+        pool = LLMPool(pool_size=1)
+
+        async def _fake_create():
+            w = FakeWorker()
+            w._started = True
+            return w
+
+        pool._create_worker = _fake_create  # type: ignore[assignment]
+        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+            await pool.start()
+        assert pool._reaper_task is not None
+        task = pool._reaper_task
+
+        await pool.shutdown()
+
+        assert task.cancelled() or task.done()
+        assert pool._reaper_task is None
+        assert pool._started is False
+
+    @pytest.mark.asyncio
+    async def test_shutdown_drains_abandoned_reaping_workers(self):
+        # Simulate a reaper that shutdown() cancelled mid-teardown: it left the
+        # workers it was shutting down stashed on _reaping_workers. shutdown()
+        # must still drain them (AutoSDE CR-289829600 post 3).
+        pool = _make_pool_with_fake_workers(pool_size=2)
+        abandoned = [FakeWorker(), FakeWorker()]
+        for w in abandoned:
+            w._started = True
+        pool._reaping_workers = abandoned
+        live = list(pool._workers)
+
+        await pool.shutdown()
+
+        assert all(not w.is_alive() for w in abandoned)  # abandoned set drained
+        assert all(not w.is_alive() for w in live)  # live set drained too
+        assert pool._reaping_workers is None
+        assert pool._started is False

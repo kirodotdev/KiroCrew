@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -44,6 +45,12 @@ DEFAULT_POOL_SIZE = 3
 DEFAULT_TIMEOUT = 60.0
 FETCH_TIMEOUT = 120.0
 AGENT_NAME = "kirocrew-knowledge"
+
+# Seconds the pool may sit FULLY idle (no worker checked out) before it is
+# scaled to zero — all workers shut down, freeing ~1GB of held process trees.
+# Workers respawn lazily on the next acquire(). 0 keeps them warm indefinitely
+# (the historical always-on behaviour). See Mesh idle-TTL bug (2026-07-16).
+DEFAULT_IDLE_TTL_SECS = 300.0
 
 
 # Sandbox modes accepted by ``kiro_crew.sandbox.wrap_argv`` (see its docstring).
@@ -110,6 +117,24 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
         return mode
     return "auto"
+
+
+def _get_idle_ttl(config: Optional[dict] = None) -> float:
+    """Seconds the pool may sit fully idle before scaling to zero.
+
+    Reads ``knowledge.pool_idle_ttl_secs`` (default 300). ``0`` disables the
+    reaper (workers stay warm indefinitely). A bool, negative, or typed-wrong
+    value falls back to the default rather than silently disabling the reaper.
+    """
+    data = _read_config() if config is None else config
+    value = _section(data, "knowledge").get(
+        "pool_idle_ttl_secs", DEFAULT_IDLE_TTL_SECS
+    )
+    if isinstance(value, bool):
+        return DEFAULT_IDLE_TTL_SECS
+    if isinstance(value, (int, float)) and value >= 0:
+        return float(value)
+    return DEFAULT_IDLE_TTL_SECS
 
 
 class Worker(ABC):
@@ -353,6 +378,17 @@ class LLMPool:
         self._sandbox_mode: str = "auto"
         self._config: dict = {}
         self._start_lock = asyncio.Lock()
+        # Idle-TTL scale-to-zero (see DEFAULT_IDLE_TTL_SECS). Set from config in
+        # start(); the reaper shuts all workers down once the pool has been fully
+        # idle for longer than the TTL, and the next acquire() respawns lazily.
+        self._idle_ttl: float = 0.0
+        self._in_use: int = 0
+        self._idle_since: Optional[float] = None
+        self._reaper_task: Optional["asyncio.Task[None]"] = None
+        # Workers a reaper is mid-way through shutting down (outside the lock).
+        # Kept visible so a concurrent shutdown() that cancels the reaper can
+        # still drain any workers it abandoned.
+        self._reaping_workers: Optional[list[Worker]] = None
 
     @property
     def provider_type(self) -> str:
@@ -367,6 +403,7 @@ class LLMPool:
             config = await asyncio.to_thread(_read_config)
             self._provider_type = _get_provider_type(config)
             self._sandbox_mode = _get_sandbox_mode(config)
+            self._idle_ttl = _get_idle_ttl(config)
             self._config = config
             try:
                 for i in range(self._pool_size):
@@ -382,7 +419,11 @@ class LLMPool:
                 self._workers.clear()
                 self._available = asyncio.Queue()
                 raise
+            self._in_use = 0
+            self._idle_since = time.monotonic()
             self._started = True
+            if self._idle_ttl > 0 and self._reaper_task is None:
+                self._reaper_task = asyncio.create_task(self._idle_reaper())
             logger.info(
                 "LLMPool started: %d workers, provider=%s",
                 self._pool_size, self._provider_type,
@@ -401,33 +442,131 @@ class LLMPool:
         """Acquire a worker from the pool. Blocks if all busy.
 
         Returns (worker_index, worker). Caller must release after use.
+        Transparently restarts the pool if the idle reaper scaled it to zero.
         """
-        if not self._started:
-            await self.start()
-        await self._semaphore.acquire()
-        idx = await self._available.get()
-        worker = self._workers[idx]
+        while True:
+            if not self._started:
+                await self.start()
+            await self._semaphore.acquire()
+            async with self._start_lock:
+                if not self._started:
+                    # The idle reaper scaled the pool to zero while we were
+                    # blocked on the (now-discarded) semaphore. Do NOT release
+                    # the fresh semaphore that replaced it — just restart and
+                    # retry. The stale permit dies with the old semaphore.
+                    continue
+                # A held permit guarantees a matching index is already queued
+                # (release() enqueues before releasing the permit), so this
+                # never blocks.
+                idx = self._available.get_nowait()
+                self._in_use += 1
+                self._idle_since = None
+                worker = self._workers[idx]
 
-        if not worker.is_alive():
-            logger.warning("LLMPool: worker %d dead, replacing", idx)
-            try:
-                await worker.shutdown()
-            except Exception:
-                pass
-            try:
-                worker = await self._create_worker()
-                self._workers[idx] = worker
-            except Exception:
-                self._available.put_nowait(idx)
-                self._semaphore.release()
-                raise
+            if not worker.is_alive():
+                logger.warning("LLMPool: worker %d dead, replacing", idx)
+                try:
+                    await worker.shutdown()
+                except Exception:
+                    pass
+                try:
+                    new_worker = await self._create_worker()
+                except Exception:
+                    self.release(idx)
+                    raise
+                async with self._start_lock:
+                    if self._started and idx < len(self._workers):
+                        self._workers[idx] = new_worker
+                        worker = new_worker
+                        replaced = True
+                    else:
+                        replaced = False
+                if not replaced:
+                    # Pool was shut down / scaled to zero while we respawned.
+                    # Discard the fresh worker and restart; the stale permit
+                    # dies with the old semaphore (as in the reaped path above).
+                    try:
+                        await new_worker.shutdown()
+                    except Exception:
+                        pass
+                    continue
 
-        return idx, worker
+            return idx, worker
 
     def release(self, idx: int) -> None:
-        """Return a worker to the pool."""
+        """Return a worker to the pool and track the idle transition.
+
+        Enqueues the index BEFORE releasing the semaphore so a held permit
+        always implies an available index (acquire relies on this invariant).
+        """
         self._available.put_nowait(idx)
+        if self._in_use > 0:
+            self._in_use -= 1
+        if self._in_use == 0:
+            self._idle_since = time.monotonic()
         self._semaphore.release()
+
+    async def _idle_reaper(self) -> None:
+        """Scale the pool to zero after it sits fully idle past the TTL.
+
+        Runs while the pool is started; exits once it scales the pool to zero
+        (a fresh reaper is created by the next start()) or the pool is shut
+        down. Cancelled by shutdown().
+        """
+        ttl = self._idle_ttl
+        interval = min(ttl, 30.0) if ttl > 0 else 30.0
+        while True:
+            await asyncio.sleep(interval)
+            if await self._maybe_scale_to_zero():
+                return
+
+    async def _maybe_scale_to_zero(self) -> bool:
+        """Shut down all workers iff the pool is fully idle past the TTL.
+
+        Returns True if the pool was reaped (or is already gone) — the caller
+        (the reaper) should then exit. Returns False to keep polling. The
+        worker teardown happens after the pool state is swapped out under the
+        lock, so a concurrent acquire() observes ``_started is False`` and
+        cleanly restarts rather than racing a half-torn-down pool.
+        """
+        async with self._start_lock:
+            if not self._started:
+                return True
+            if self._idle_ttl <= 0:
+                return False
+            if self._in_use != 0 or self._idle_since is None:
+                return False
+            if (time.monotonic() - self._idle_since) < self._idle_ttl:
+                return False
+            workers = self._workers
+            self._workers = []
+            self._available = asyncio.Queue()
+            self._semaphore = asyncio.Semaphore(self._pool_size)
+            self._started = False
+            self._in_use = 0
+            self._idle_since = None
+            self._reaper_task = None
+            # Keep the workers visible to shutdown() so a concurrent shutdown()
+            # that cancels us mid-teardown can still drain them.
+            self._reaping_workers = workers
+
+        try:
+            for worker in workers:
+                try:
+                    await worker.shutdown()
+                except Exception:
+                    logger.debug("Worker shutdown error", exc_info=True)
+        except asyncio.CancelledError:
+            # shutdown() cancelled us mid-teardown; leave _reaping_workers set
+            # so shutdown() drains the survivors, then finish cancelling.
+            raise
+        else:
+            self._reaping_workers = None
+        logger.info(
+            "LLMPool: scaled to zero after %.0fs idle (%d workers freed)",
+            self._idle_ttl, len(workers),
+        )
+        return True
 
     async def send(
         self,
@@ -462,14 +601,33 @@ class LLMPool:
         return results
 
     async def shutdown(self) -> None:
-        """Destroy all workers."""
-        for worker in self._workers:
+        """Destroy all workers and stop the idle reaper."""
+        task = self._reaper_task
+        self._reaper_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except BaseException:  # noqa: BLE001 - reaper is being torn down
+                pass
+        # Swap state out under the lock (mirrors _maybe_scale_to_zero) so a
+        # concurrent acquire() observes _started is False rather than racing a
+        # half-cleared pool. Also drain any workers a just-cancelled reaper
+        # abandoned mid-teardown (stashed on _reaping_workers).
+        async with self._start_lock:
+            workers = list(self._workers)
+            if self._reaping_workers:
+                workers.extend(self._reaping_workers)
+            self._workers.clear()
+            self._reaping_workers = None
+            self._started = False
+            self._in_use = 0
+            self._idle_since = None
+        for worker in workers:
             try:
                 await worker.shutdown()
             except Exception:
                 logger.debug("Worker shutdown error", exc_info=True)
-        self._workers.clear()
-        self._started = False
         logger.info("LLMPool: all workers shut down")
 
     async def __aenter__(self) -> "LLMPool":

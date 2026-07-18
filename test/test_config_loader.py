@@ -2772,3 +2772,34 @@ def test_heartbeat_default_deliver_invalid_falls_back_to_slack():
     """Any value outside {slack, dashboard} normalizes to the safe default."""
     cfg = _load_from_dict({"heartbeat": {"default_deliver": "carrier-pigeon"}})
     assert cfg.heartbeat.default_deliver == "slack"
+
+
+class TestKnowledgePoolIdleTtl:
+    """``knowledge.pool_idle_ttl_secs`` parsing: default, override, explicit 0,
+    and rejection of negative / bool / typed-wrong values back to the default."""
+
+    def test_default_is_300(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.knowledge.pool_idle_ttl_secs == 300
+
+    def test_reads_value(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": 60}})
+        assert cfg.knowledge.pool_idle_ttl_secs == 60
+
+    def test_zero_preserved(self) -> None:
+        # 0 is a valid explicit "keep warm forever" opt-out, not a fallback.
+        cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": 0}})
+        assert cfg.knowledge.pool_idle_ttl_secs == 0
+
+    def test_negative_falls_back_to_default(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": -1}})
+        assert cfg.knowledge.pool_idle_ttl_secs == 300
+
+    def test_bool_falls_back_to_default(self) -> None:
+        # bool is an int subclass; must not read True as a 1s TTL.
+        cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": True}})
+        assert cfg.knowledge.pool_idle_ttl_secs == 300
+
+    def test_string_falls_back_to_default(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": "60"}})
+        assert cfg.knowledge.pool_idle_ttl_secs == 300

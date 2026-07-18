@@ -962,6 +962,16 @@ class KnowledgeConfig:
             "pathological un-chunked input); raise/lower only to tune truncation.",
         ),
     )
+    pool_idle_ttl_secs: int = field(
+        default=300,
+        metadata=_meta(
+            "Pool Idle TTL (secs)",
+            "Seconds the document-extraction worker pool may sit fully idle "
+            "before it is scaled to zero (all workers shut down, freeing ~1GB "
+            "of held process trees); the next ingest respawns them lazily. "
+            "0 keeps the workers warm indefinitely.",
+        ),
+    )
 
 
 @dataclass
@@ -2757,6 +2767,15 @@ class KiroCrewConfig:
                 ),
                 embed_content_budget=int(
                     knowledge_data.get("embed_content_budget", 0)
+                ),
+                pool_idle_ttl_secs=(
+                    ttl
+                    if isinstance(
+                        (ttl := knowledge_data.get("pool_idle_ttl_secs", 300)), int
+                    )
+                    and not isinstance(ttl, bool)
+                    and ttl >= 0
+                    else 300
                 ),
             ),
             telegram=TelegramConfig(
