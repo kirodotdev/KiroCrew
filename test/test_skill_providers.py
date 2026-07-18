@@ -209,7 +209,11 @@ class TestProviderRegistry:
             await asyncio.sleep(20)
             return []
 
-        with patch.object(p, "search", side_effect=slow_search):
+        # Patch the defining module's budget instead of waiting out the
+        # production 10s — the test pins the timeout->empty-result contract,
+        # not the budget's magnitude.
+        with patch.object(p, "search", side_effect=slow_search), \
+             patch("kiro_crew.skill_providers.base._SEARCH_TIMEOUT_SECS", 0.05):
             results = await reg.search("test")
             assert results == []
 

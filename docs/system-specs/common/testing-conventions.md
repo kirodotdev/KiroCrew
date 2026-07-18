@@ -1,6 +1,6 @@
 # Testing Conventions
 
-Last Updated: 2026-03-08
+Last Updated: 2026-07-18
 
 ## Framework
 
@@ -58,6 +58,34 @@ Use `tmp_path` fixture:
 def test_custom_work_dir(self, tmp_path):
     client = AcpClient(work_dir=tmp_path)
 ```
+
+### Patch the defining module, not a re-export
+
+`monkeypatch.setattr`/`patch` rebind a NAME in one module namespace. Code
+reads its globals from its **defining** module, so patching a package
+re-export (e.g. `kiro_crew.dashboard.handlers.X`, imported there from
+`handlers/sessions.py`) is a **silent no-op** — the test still passes but
+exercises the production value. Symptom: a test that "shortens" a timeout yet
+still takes the full production duration.
+
+```python
+# WRONG — handlers/__init__.py only re-exports the constant; sessions.py
+# still reads its own module global (test silently waits the real 10s):
+monkeypatch.setattr("kiro_crew.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05)
+
+# RIGHT — patch where the constant is defined and read:
+monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
+```
+
+### Loop-wiring tests stub every dispatched operation
+
+A test that drives a periodic/maintenance loop (e.g. `SessionManager.
+_cleanup_loop`) pins the loop's *wiring* — which operations run, with what
+args, and when. Stub **all** of them: any sweep left unstubbed runs for real
+against the dev machine (process-table scans, `~/.kirocrew` PID files), which
+violates the isolation rules below and costs seconds per test (an unstubbed
+`find_orphan_mcp_candidates` alone added ~9s to every `TestCleanupLoop`
+test). The sweep's own behavior belongs in its own module's tests.
 
 ## Rules
 

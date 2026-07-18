@@ -111,10 +111,13 @@ class TestResetAllSessionsShutdown:
     @pytest.mark.asyncio
     async def test_force_kills_hung_provider_after_timeout(self, monkeypatch) -> None:
         """When ``shutdown()`` hangs past the budget, ``_sync_kill_provider`` runs."""
-        # Shorten timeout so the test doesn't take 5s. The production default
-        # is 5.0 but tests only need to verify the timeout->kill path fires.
+        # Shorten the shutdown budget so the test verifies the timeout->kill
+        # path without waiting the production 10s. NOTE: patch the DEFINING
+        # module (handlers.sessions), not the handlers package re-export —
+        # ``_safe_shutdown`` reads the global from its own module, so patching
+        # the re-export is a silent no-op and the test blocks the full 10s.
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05
+            "kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05
         )
 
         async def _never_returns() -> None:
@@ -142,8 +145,10 @@ class TestResetAllSessionsShutdown:
         complete so ``asyncio.gather`` doesn't abort other providers' shutdowns
         and ``start_pool`` runs. Regression guard for AutoSDE comment on CR-268228120.
         """
+        # Patch the DEFINING module (handlers.sessions), not the package
+        # re-export — see test_force_kills_hung_provider_after_timeout.
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05
+            "kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05
         )
 
         async def _never_returns() -> None:

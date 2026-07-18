@@ -2396,6 +2396,24 @@ class TestApplyResourceLimits:
             if nproc_hard == _resource_mod.RLIM_INFINITY or nproc_hard >= nproc_req
             else nproc_hard
         )
+        if sys.platform == "darwin":
+            # Darwin SILENTLY clamps a non-root setrlimit(RLIMIT_NPROC) to
+            # kern.maxprocperuid, which can sit BELOW the inherited hard cap
+            # (kern.maxproc) — e.g. 8000 vs a 12000 hard cap — so the child
+            # observes the per-UID cap, not min(requested, hard), and this
+            # assertion fails on every Mac while passing on Linux. Fold the
+            # kernel cap into the expectation. (os.sysconf('SC_CHILD_MAX')
+            # tracks the *soft rlimit*, not this cap — read the sysctl.)
+            per_uid_cap = int(
+                subprocess.run(
+                    ["/usr/sbin/sysctl", "-n", "kern.maxprocperuid"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=True,
+                ).stdout.strip()
+            )
+            expected_nproc = min(expected_nproc, per_uid_cap)
         cfg = {"resource_limits": {"max_processes": nproc_req, "max_open_files": 256}}
         probe = (
             "import resource,json;"

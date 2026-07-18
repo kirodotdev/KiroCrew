@@ -89,7 +89,10 @@ of failure.
      already below the host's baseline and would make **every** spawn fail to fork (EAGAIN) —
      strictly worse than the DoS gap. Safe to enable only when the gateway runs as its own
      dedicated UID. cgroup v2 `pids.max` (per-cgroup, not per-UID) is the correct fork-bomb
-     ceiling — see the remaining gap below.
+     ceiling — see the remaining gap below. Darwin nuance: the kernel silently clamps a
+     non-root `RLIMIT_NPROC` to `kern.maxprocperuid`, which can sit below the inherited hard
+     cap (`kern.maxproc`); the clamp is strictly tighter so enforcement is unaffected, and
+     `test_config_overrides_applied` folds the sysctl into its expectation on macOS.
    - `RLIMIT_CPU = 0` (disabled by default). CPU-seconds accrue over a process's **whole
      lifetime**; the root agent runs up to a 30-min turn and a busy tool-heavy session can
      legitimately burn hundreds of CPU-seconds, so a non-zero global cap would `SIGXCPU`-kill

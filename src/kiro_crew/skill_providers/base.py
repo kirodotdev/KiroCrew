@@ -9,6 +9,11 @@ from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
+# Per-provider budget for one fan-out search. A slow provider is dropped (with
+# a warning) rather than stalling the aggregate search. Module-level so tests
+# can patch it instead of waiting out the production budget.
+_SEARCH_TIMEOUT_SECS = 10.0
+
 
 @dataclass(frozen=True)
 class SkillSearchResult:
@@ -131,7 +136,9 @@ class ProviderRegistry:
             if p is None or not p.is_available():
                 return []
             try:
-                return await asyncio.wait_for(p.search(query, limit=limit), timeout=10.0)
+                return await asyncio.wait_for(
+                    p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
+                )
             except asyncio.TimeoutError:
                 logger.warning("Provider %s timed out for query %r", provider, query)
                 return []
@@ -145,7 +152,9 @@ class ProviderRegistry:
 
         async def _search_one(p: SkillProvider) -> list[SkillSearchResult]:
             try:
-                return await asyncio.wait_for(p.search(query, limit=limit), timeout=10.0)
+                return await asyncio.wait_for(
+                    p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
+                )
             except asyncio.TimeoutError:
                 logger.warning("Provider %s timed out for query %r", p.name, query)
                 return []

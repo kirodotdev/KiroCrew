@@ -49,6 +49,7 @@ unit tests to tolerate the sandbox wrapper.
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
@@ -205,10 +206,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
 )
 
 
+@functools.lru_cache(maxsize=1)
 def _collect_spawn_functions() -> dict[str, str]:
     """Map ``<relpath>::<func>`` -> the enclosing function's source, for every
     function containing a subprocess spawn. ``<module>`` marks a module-level
-    spawn (no enclosing function)."""
+    spawn (no enclosing function).
+
+    Cached: all six audit tests derive from this one rglob+ast.parse scan of
+    the whole source tree (~2s), so re-scanning per test multiplies pure
+    duplicated wall-clock. The source tree cannot change mid-run and callers
+    only read the mapping, so a shared instance is safe.
+    """
     out: dict[str, str] = {}
     for path in _SRC_ROOT.rglob("*.py"):
         source = path.read_text(encoding="utf-8")

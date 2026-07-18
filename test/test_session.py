@@ -1880,7 +1880,16 @@ class TestPoolHealthLoop:
 
 
 class TestCleanupLoop:
-    """Tests for _cleanup_loop periodic maintenance."""
+    """Tests for _cleanup_loop periodic maintenance.
+
+    Every sweep the loop dispatches is stubbed: these tests pin the LOOP's
+    wiring (which sweeps run, with what args, and when), not sweep behavior —
+    each sweep has its own tests in its own module. Leaving a sweep unstubbed
+    (notably ``find_orphan_mcp_candidates``, a full process-table scan, and
+    ``cleanup_orphaned_session_roots``, which reads the operator's real
+    ``~/.kirocrew`` PID file) made each test take ~10-20s of wall-clock and
+    probe live system state — both banned by testing-conventions.md.
+    """
 
     @pytest.mark.asyncio
     async def test_cleanup_loop_calls_expire_idle(self, cfg):
@@ -1893,6 +1902,8 @@ class TestCleanupLoop:
              patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
              patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
              patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.cleanup_orphaned_session_roots", return_value=0), \
+             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]), \
              patch("kiro_crew.session.shutdown_event") as mock_event:
             # First wait_for returns TimeoutError (normal wakeup), second signals shutdown
             mock_event.is_set = lambda: mock_expire.await_count >= 1
@@ -1913,6 +1924,8 @@ class TestCleanupLoop:
              patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
              patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
              patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.cleanup_orphaned_session_roots", return_value=0), \
+             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]), \
              patch("kiro_crew.session.shutdown_event") as mock_event:
             call_count = [0]
 
@@ -1939,6 +1952,8 @@ class TestCleanupLoop:
              patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
              patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
              patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.cleanup_orphaned_session_roots", return_value=0), \
+             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]), \
              patch("kiro_crew.session.shutdown_event") as mock_event:
             mock_event.is_set = lambda: mock_expire.await_count >= 1
             mock_event.wait = AsyncMock(side_effect=asyncio.TimeoutError)
@@ -1985,6 +2000,8 @@ class TestCleanupLoop:
              patch("kiro_crew.session._collect_active_pids", return_value=({}, True)), \
              patch("kiro_crew.session._periodic_pid_sweep", return_value=([], [])), \
              patch("kiro_crew.session._kill_confirmed_and_writeback", return_value=0), \
+             patch("kiro_crew.session.cleanup_orphaned_session_roots", return_value=0), \
+             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]), \
              patch("kiro_crew.session.shutdown_event") as mock_event:
             mock_event.is_set = lambda: mock_sweep.call_count >= 1
             mock_event.wait = AsyncMock(side_effect=asyncio.TimeoutError)
