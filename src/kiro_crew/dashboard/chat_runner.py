@@ -1362,23 +1362,17 @@ async def _handle_goal_command(
             _sentinel = str(Path.home() / ".kirocrew" / "goal-stop" / f"{_slug}.stop")
             Path(_sentinel).unlink(missing_ok=True)
             _nudge = (
-                f"Continue toward your goal: {_objective}\n\n"
-                "Every cycle, in order:\n"
-                f"1. STOP CHECK: if the file {_sentinel} exists, call the "
-                'autonudge_stop MCP tool (reason="sentinel") and stop.\n'
-                "2. DONE CHECK: decide whether the goal is fully met, verified "
-                "by concrete evidence (a passing test, a built file, command "
-                "output) — not a guess. If met, call autonudge_stop"
-                '(reason="goal met"), post a one-line summary citing the '
-                "evidence, and stop.\n"
-                "3. Otherwise do ONE atomic step toward the goal (<=5 tool "
-                "calls). Make the deliverable durable (write the file / run the "
-                "check) before declaring done.\n\n"
-                "Rules: never git push; never read credential files; if you hit "
-                "a hard blocker needing the user, state it once and call "
-                f'autonudge_stop(reason="blocked"). Budget is {_max_cycles} '
-                "turns (the service stops you at the cap). One short progress "
-                "line per cycle."
+                f"Goal: {_objective}\n"
+                "Each idle cycle, in order: "
+                f'(1) if the file {_sentinel} exists -> autonudge_stop(reason="sentinel") and stop; '
+                "(2) if the goal is fully met by concrete evidence (a passing test, a built file, "
+                'command output — not a guess) -> autonudge_stop(reason="goal met"), post a one-line '
+                "summary citing the evidence, and stop; "
+                "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
+                "(write the file / run the check) before claiming progress.\n"
+                'Guardrails: never git push; never read credential files. Hard blocker -> state it once and '
+                f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
+                "the cap). One short progress line per cycle."
             )
             await _goal_svc.add(
                 slot.key,

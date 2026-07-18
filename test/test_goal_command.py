@@ -109,6 +109,15 @@ async def test_arm_default_budget(
     # Objective is embedded in the nudge, along with the safety rules.
     assert "ship the feature" in call.kwargs["message"]
     assert "never git push" in call.kwargs["message"]
+    # V1-4 lean nudge: compressed, but must still carry every load-bearing
+    # directive (STOP CHECK sentinel, evidence-based DONE CHECK, blocker path,
+    # one-atomic-step rule) so the shorter form can't silently drop a control.
+    _msg = call.kwargs["message"]
+    assert 'autonudge_stop(reason="sentinel")' in _msg
+    assert 'autonudge_stop(reason="goal met")' in _msg
+    assert 'autonudge_stop(reason="blocked")' in _msg
+    assert "atomic step" in _msg
+    assert "concrete evidence" in _msg
     # Sentinel path is per-slot, slug-sanitized, and cleared before re-arming.
     sentinel = call.kwargs["stop_sentinel_path"]
     assert sentinel == str(stale_sentinel)
