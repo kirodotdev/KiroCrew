@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu } from 'lucide-react'
+import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu } from 'lucide-react'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -496,6 +496,8 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: 'name-desc', label: 'Z → A' },
 ]
 const SORT_LS_KEY = 'mc-session-sort'
+/** Flat view ("explode chats out of folders") persistence key. */
+const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 
 function compareSlots(a: Slot, b: Slot, key: SortKey): number {
   return compareBySort(a, b, key)
@@ -608,6 +610,14 @@ function ChatSidebar({
     const saved = localStorage.getItem(SORT_LS_KEY)
     return SORT_OPTIONS.some(o => o.value === saved) ? saved as SortKey : 'date-desc'
   })
+  // Flat view: temporarily explode every chat out of its folder into one
+  // recency-sorted list, for working temporally across many folders ("what's
+  // the latest?"). Pure view projection — folder membership is untouched, and
+  // toggling back restores the folder tree exactly as it was.
+  const [flatView, setFlatView] = useState(() => localStorage.getItem(FLAT_VIEW_LS_KEY) === '1')
+  const toggleFlatView = useCallback(() => {
+    setFlatView(v => { const next = !v; safeSetItem(FLAT_VIEW_LS_KEY, next ? '1' : '0'); return next })
+  }, [])
   const [activeFilters, setActiveFilters] = useState<Set<SessionFilterKey>>(() => {
     const initialFilters = new Set<SessionFilterKey>()
     for (const filterDef of SESSION_FILTERS) { if (localStorage.getItem(filterDef.storageKey) === '1') initialFilters.add(filterDef.key) }
@@ -1167,6 +1177,16 @@ function ChatSidebar({
     [enrichedSlots, slotFilter, slotSearchKeys, pinned, sortKey, activeFilters]
   )
 
+  // Flat-view projection: every visible session (foldered + unfoldered) in one
+  // list. Removes ONLY the folder rendering hierarchy — the user's sort
+  // (incl. pin priority) and active filters/search apply exactly as in the
+  // tree, via filteredSlots.
+  const folderNameById = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const f of folders) m[f.id] = f.name
+    return m
+  }, [folders])
+
   // Folder mutations
   const createFolderMutation = useMutation({
     mutationFn: ({ name, parentId }: { name: string; parentId?: string }) => api.createChatFolder(name.trim(), parentId),
@@ -1542,6 +1562,12 @@ function ChatSidebar({
   // can render in several columns at once; same layoutId in one LayoutGroup
   // collides (Framer paints one, hides the rest). Distinct scope = distinct id.
   const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list') => {
+    // Flat view shares the tree's layoutId namespace so Framer Motion treats a
+    // row as the SAME element across the view toggle and animates it from its
+    // tree position into the flat lane (and back). Safe: the two views are
+    // ternary branches — never mounted simultaneously — so IDs can't collide.
+    // Behavior stays keyed on the real scope ('flat' disables DnD etc.).
+    const layoutScope = scope === 'flat' ? 'list' : scope
     const agentName = s.agent || defaultAgent || ''
     const agentMeta = installedAgents.find(a => a.name === agentName)
     const isAim = agentMeta?.source === 'aim'
@@ -1572,7 +1598,7 @@ function ChatSidebar({
       onRename: () => { const sl = slots.find(x => x.key === s.key); suppressMenuRestoreRef.current = true; setRenamingSlot(s.key); setRenameScope(scope); setRenameValue(sl?.title && sl.title !== sl.key ? sl.title : '') },
     }
     return (
-      <motion.div key={s.key} layout="position" layoutId={`slot-${scope}-${s.key}`}
+      <motion.div key={s.key} layout="position" layoutId={`slot-${layoutScope}-${s.key}`}
         data-slot-key={s.key}
         initial={{ opacity: 0, x: -12 }}
         animate={{ opacity: 1, x: 0 }}
@@ -1589,9 +1615,9 @@ function ChatSidebar({
           data-draggable={(renamingSlot !== s.key).toString()}
           className={`session-row group relative flex items-start gap-2.5 px-4 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''}`}
           style={boostStyle as React.CSSProperties}
-          draggable={(scope !== 'list' && renamingSlot !== s.key) && (connected || isActive)}
+          draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
-          onDragStart={scope !== 'list' ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move' }) : undefined}
+          onDragStart={scope !== 'list' && scope !== 'flat' ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move' }) : undefined}
           onClick={e => {
             if ((e.target as HTMLElement).closest?.('[data-fork]')) { sessionActions.duplicate(s.key); return }
             if ((e.target as HTMLElement).closest?.('[data-close]')) { sessionActions.close(s.key); return }
@@ -1633,7 +1659,20 @@ function ChatSidebar({
                     {s.memory_mode === 'temporary' && <span className="text-aim" title="Temporary — no memory reads or writes"><VenetianMask size={10} /></span>}
                   </>}
               {s.mode === 'orchestrator' && <span className="text-[11px] px-1 py-0 rounded bg-accent/15 text-accent font-medium" title="Autopilot mode">Autopilot</span>}
-              {(s.last_ts || s.created) && <span className="ml-auto text-[11px] text-muted font-normal shrink-0">{fmtRelativeTime(s.last_ts || s.created!)}</span>}
+              {/* Trailing meta grouped under ONE ml-auto: two sibling auto
+               *  margins would split the free space and strand the folder
+               *  chip mid-row (AutoSDE, CR-290079557). */}
+              {(scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]]) || s.last_ts || s.created ? (
+                <span className="ml-auto inline-flex items-center gap-1 shrink-0">
+                  {scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]] && (
+                    <span className="text-[10px] text-muted font-normal inline-flex items-center gap-0.5 max-w-[90px]" title={`In folder: ${folderNameById[slotFolders[s.key]]}`}>
+                      <Folder size={9} className="shrink-0" aria-hidden />
+                      <span className="truncate">{folderNameById[slotFolders[s.key]]}</span>
+                    </span>
+                  )}
+                  {(s.last_ts || s.created) && <span className="text-[11px] text-muted font-normal shrink-0">{fmtRelativeTime(s.last_ts || s.created!)}</span>}
+                </span>
+              ) : null}
             </div>
             <div className="text-[13px] font-semibold leading-snug line-clamp-2 break-words text-text" title={s.title && s.title !== s.key ? s.title : s.key}>
               {s.forked_from && slots.some(x => x.key === s.forked_from!.replace(/^dashboard:/, '')) && (
@@ -2101,11 +2140,26 @@ function ChatSidebar({
       {/* Search with inline sort/filter control */}
       <div className="px-2 pt-2 pb-1">
         <div className="relative">
-          <SearchInput className={`w-full ${slotFilter ? '[&>input]:pr-14' : '[&>input]:pr-9'}`} placeholder="Search sessions…" value={slotFilter} onChange={e => setSlotFilter(e.target.value)} />
+          <SearchInput className={`w-full ${slotFilter ? (folders.length > 0 ? '[&>input]:pr-[76px]' : '[&>input]:pr-14') : (folders.length > 0 ? '[&>input]:pr-14' : '[&>input]:pr-9')}`} placeholder="Search sessions…" value={slotFilter} onChange={e => setSlotFilter(e.target.value)} />
           {slotFilter && (
-            <button type="button" className="absolute right-8 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setSlotFilter('')} aria-label="Clear search"><X size={13} /></button>
+            <button type="button" className={`absolute ${folders.length > 0 ? 'right-[56px]' : 'right-8'} top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors`} onClick={() => setSlotFilter('')} aria-label="Clear search"><X size={13} /></button>
           )}
-          <div className="absolute right-1 inset-y-0 flex items-center">
+          <div className="absolute right-1 inset-y-0 flex items-center gap-0.5">
+            {/* Flat-view toggle only makes sense when folders exist — without
+             *  them the list is already flat. */}
+            {folders.length > 0 && (
+            <button
+              type="button"
+              className={`relative w-6 h-6 rounded flex items-center justify-center cursor-pointer transition-colors border-none ${flatView ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`}
+              onClick={toggleFlatView}
+              title={flatView ? 'Back to folder view' : 'Flat view — all chats without folders'}
+              aria-label={flatView ? 'Switch to folder view' : 'Switch to flat view (all chats without folders)'}
+              aria-pressed={flatView}
+              data-testid="flat-view-toggle"
+            >
+              <List size={14} />
+            </button>
+            )}
             <DropdownMenu open={filterSortOpen} onOpenChange={setFilterSortOpen}>
               <DropdownMenuTrigger asChild>
                 <button
@@ -2277,7 +2331,57 @@ function ChatSidebar({
         </div>
       )}
       <LayoutGroup id="chat-slots">
-        {orderedColumns.length === 0 ? (
+        {flatView && folders.length > 0 ? (
+          // Flat view: every chat exploded out of its folder into one lane.
+          // Removes only the folder rendering hierarchy — sort, pin priority,
+          // filters, and search all apply as usual (filteredSlots). No folder
+          // tree, no DnD. Takes precedence over the tag-columns layout.
+          // Inactive without folders (the toggle is hidden then too), so a
+          // persisted flat preference can never strand the user.
+          <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col" data-testid="flat-view-lane">
+            {(() => {
+              // Date segments (Today / Yesterday / Last 7 Days / …) between
+              // rows — resurrects the 9bb0f71 active-list pattern: only for
+              // date sorts (segments mislead on name/created order, same
+              // guard as the history pane), and pinned rows render first
+              // without segments since pinning overrides date order.
+              const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
+              const segOf = (s: Slot) => isDateSort && !pinned.has(s.key) ? dateSegment(s.last_ts || s.created) : ''
+              let prevSeg = ''
+              return filteredSlots.map((s, i) => {
+                const seg = segOf(s)
+                const showHeader = seg !== '' && seg !== prevSeg
+                if (seg) prevSeg = seg
+                const next = i < filteredSlots.length - 1 ? filteredSlots[i + 1] : null
+                const nextIsActive = next != null && activeSlot === next.key
+                const isActive = activeSlot === s.key
+                // No divider before a segment header — the header separates.
+                const nextSeg = next ? segOf(next) : seg
+                const showDivider = next != null && !isActive && !nextIsActive && nextSeg === seg
+                return (
+                  <Fragment key={s.key}>
+                    {showHeader && (
+                      <div data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
+                    )}
+                    {renderSessionRow(s, 0, showDivider, 'flat')}
+                  </Fragment>
+                )
+              })
+            })()}
+            {filteredSlots.length === 0 && (
+              <div className="px-3 py-4 text-[12px] text-muted">No sessions match</div>
+            )}
+            {!historyOpen && (
+              <button
+                type="button"
+                onClick={() => { setHistoryOpen(true); dispatch(fetchHistory(false)) }}
+                className="mt-1 mx-1 px-2 py-1.5 text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
+              >
+                Show all older sessions
+              </button>
+            )}
+          </motion.div>
+        ) : orderedColumns.length === 0 ? (
           // Legacy single-lane layout (identical to pre-columns behavior)
           <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col">
             {/* One DndContext owns folder reorder (sortable) + session drag-to-
