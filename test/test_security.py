@@ -1179,6 +1179,42 @@ class TestBuiltinDenyPatterns:
 
         assert is_denied("terminate_instance i-123") is not None
 
+    def test_blocks_real_hyphenated_destructive_aws_cli(self) -> None:
+        """Real AWS CLI destructive subcommands use HYPHENS, not underscores.
+
+        The built-in deny globs historically only matched the underscore
+        forms (``*delete_stack*`` …), which the AWS CLI never emits — so the
+        actual destructive invocations (``aws cloudformation delete-stack``
+        …) slipped through ``is_denied`` entirely. ``mcp_cron._vet_shell_command``
+        relies on ``is_denied`` to stop a prompt-injected ``cron_add`` from
+        scheduling destructive shell, so this was an exploitable gap on the
+        cron command path.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied("aws cloudformation delete-stack --stack-name prod") is not None
+        assert is_denied("aws ec2 terminate-instances --instance-ids i-123") is not None
+        assert is_denied("aws s3api delete-bucket --bucket prod-data") is not None
+        assert is_denied("aws dynamodb delete-table --table-name prod") is not None
+        # Underscore/boto3 method-name forms must remain blocked too.
+        assert is_denied("terminate_instances call") is not None
+        assert is_denied("delete_table x") is not None
+
+    def test_allows_benign_aws_reads_after_deny_fix(self) -> None:
+        """The hyphenated destructive patterns must not over-block benign
+        AWS reads or package/command names that merely contain 'delete'/'credential'."""
+        from kiro_crew.security import is_denied
+
+        # Read-only AWS operations stay allowed.
+        assert is_denied("aws ec2 describe-instances") is None
+        assert is_denied("aws s3 ls s3://my-bucket") is None
+        assert is_denied("aws sts get-caller-identity") is None
+        assert is_denied("aws logs filter-log-events --log-group-name /x") is None
+        # Non-destructive verbs that merely contain a destructive word as a
+        # substring of a DIFFERENT token must not trip the specific globs.
+        assert is_denied("credential-rotation-service build") is None
+        assert is_denied("get-credentials --profile default") is None
+
     def test_allows_git_status(self) -> None:
         from kiro_crew.security import is_denied
 

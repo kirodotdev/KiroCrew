@@ -55,11 +55,27 @@ BUILTIN_DENY_PATTERNS: list[str] = [
     # CredentialValidatorServiceCDK, credential-rotation-service).
     "get_secret*",
     "read_secret*",
-    # Destructive AWS operations
+    # Destructive AWS operations.
+    # Real AWS CLI subcommands are HYPHENATED (``aws cloudformation
+    # delete-stack``, ``aws ec2 terminate-instances``); boto3 SDK method names
+    # are the UNDERSCORE forms (``client.delete_stack(...)``). The underscore
+    # globs alone matched no real CLI invocation, so a destructive
+    # ``aws … delete-stack``/``terminate-instances`` slipped through
+    # ``is_denied`` — notably on the ``mcp_cron`` command path, which relies on
+    # ``is_denied`` to block prompt-injected destructive shell. Cover BOTH
+    # spellings. Patterns are specific destructive subcommand tokens, so they
+    # don't over-block benign reads (``describe-instances``, ``s3 ls``) or
+    # command/package names like ``get-credentials`` / ``credential-rotation``.
     "*delete_stack*",
+    "*delete-stack*",
     "*terminate_instance*",
+    "*terminate-instance*",  # matches terminate-instance and terminate-instances
     "*drop_table*",
+    "*drop-table*",
+    "*delete_table*",
+    "*delete-table*",
     "*delete_bucket*",
+    "*delete-bucket*",
     # NOTE: ``git push`` is NOT a glob here — a broad ``*git*push*`` substring
     # glob over-blocked any command whose text merely contained "push" (e.g. a
     # ``git commit -m`` message mentioning push, or an ``ssh host '...'`` whose
