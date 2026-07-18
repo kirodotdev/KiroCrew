@@ -79,6 +79,25 @@ export function useSmoothStream(content: string, streaming: boolean, enabled: bo
     }
   }, [enabled, content.length])
 
+  // Snap to full length when content GROWS while not streaming. Once a message
+  // finishes, the rAF loop stops itself (raf = 0 when !streaming && caughtUp)
+  // and never restarts (its deps are [enabled, speed]), so a later content
+  // change — a variant switch to a longer answer, or a post-completion patch —
+  // was permanently truncated to the old emitLen by the slice at the bottom.
+  // A non-streaming content change is not an incremental token reveal; render
+  // it instantly (matching the "already-complete messages render instantly"
+  // intent of the emitLen initializer). Genuine streaming growth is still
+  // handled by the rAF loop below.
+  useEffect(() => {
+    if (!enabled || streaming) return
+    if (content.length !== emitRef.current) {
+      revRef.current = content.length
+      emitRef.current = content.length
+      lastTargetRef.current = content.length
+      setEmitLen(content.length)
+    }
+  }, [content, streaming, enabled])
+
   // The rAF drain loop. Restarts whenever `enabled`/`streaming` flips; reads
   // the latest content via ref so it doesn't restart on every delta.
   useEffect(() => {
