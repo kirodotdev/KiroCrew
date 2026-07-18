@@ -922,12 +922,19 @@ function ChatInput({
   }, [onChange])
 
   const optimizeMutation = useMutation({
-    mutationFn: async ({ prompt, context }: { prompt: string; context: string; slotId: string | null }) => {
+    mutationFn: async (
+      { prompt, context, pastes }: {
+        prompt: string
+        context: string
+        pastes?: Array<{ seq: number; content: string }>
+        slotId: string | null
+      },
+    ) => {
       const resp = await fetch('/api/optimizer/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-session-key': 'dashboard:ui' },
         credentials: 'same-origin',
-        body: JSON.stringify({ prompt, context }),
+        body: JSON.stringify({ prompt, context, pastes }),
       })
       if (!resp.ok) throw new Error('optimizer failed')
       return resp.json()
@@ -1030,8 +1037,15 @@ function ChatInput({
       .slice(-10)
       .map(m => (m.content || '').slice(0, 200))
       .join('\n')
-    runOptimize({ prompt: txt, context, slotId })
-  }, [runOptimize, chatMessages, slotId])
+    // Forward the full content behind each paste placeholder still present in
+    // the draft, so the optimizer understands the paste without us expanding
+    // the "[ Paste #N · M lines ]" token inline. The optimizer preserves the
+    // tokens verbatim in its output, so pasteBlocks keeps mapping them back on
+    // send. Only referenced blocks are sent (pruneBlocks drops stale ones).
+    const referenced = pruneBlocks(txt, pasteBlocks)
+    const pastes = referenced.map(b => ({ seq: b.seq, content: b.content }))
+    runOptimize({ prompt: txt, context, pastes, slotId })
+  }, [runOptimize, chatMessages, pasteBlocks, slotId])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V → next paste inserts full text inline (no chip collapse).
