@@ -22,7 +22,6 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.executors import cron_executor
 from kiro_crew.llm_helpers import stream_and_collect
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
@@ -346,14 +345,19 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         )
     deleted: list[str] = []
     failed: list[str] = []
-    loop = asyncio.get_running_loop()
     for job_id in unique_ids:
         try:
-            # remove_job is a synchronous file save under a lock; offload it so a
-            # large batch (up to _MAX_BATCH_DELETE) can't block the event loop.
-            removed = await loop.run_in_executor(
-                cron_executor(), state.crons.remove_job, job_id
-            )
+            # remove_job MUST run on the event-loop thread: after saving to disk it
+            # calls _arm_timer() -> asyncio.create_task(), which raises
+            # "RuntimeError: no running event loop" in a worker thread. Offloading it
+            # to run_in_executor therefore raised AFTER the on-disk delete completed,
+            # so the job was gone yet the id was reported as `failed` (offering a
+            # retry that can never succeed) and the scheduler's timer was left
+            # cancelled — killing all future cron runs. Every other caller
+            # (single-delete handler, mcp_cron, slack, apps, CLI) invokes remove_job
+            # directly on the loop; do the same here. The file I/O is a fast,
+            # bounded (<= _MAX_BATCH_DELETE) sync save under a lock.
+            removed = state.crons.remove_job(job_id)
         except Exception:
             # remove_job itself raised (unexpected) — record and keep going.
             logger.warning("Batch delete failed for cron %s", job_id, exc_info=True)

@@ -178,3 +178,41 @@ class TestApiCronBatchDelete:
         assert kw["source"] == "api_cron_batch_delete"
         # requested ids + outcome captured for auditability
         assert "a" in kw["resources"] and "ghost" in kw["resources"]
+
+    @pytest.mark.asyncio
+    async def test_real_cronservice_delete_succeeds_and_scheduler_survives(self, tmp_path):
+        """Regression: batch-delete must run remove_job on the event loop.
+
+        The mock-based tests above never caught that the handler offloaded
+        remove_job to a worker thread: remove_job -> _arm_timer ->
+        asyncio.create_task() raises "RuntimeError: no running event loop" off
+        the loop, AFTER the on-disk delete. That reported a completed delete as
+        `failed` (retry-that-never-succeeds) and left the scheduler's timer
+        cancelled — killing all future cron runs. This uses a REAL running
+        CronService so a regression re-raises on the loop-vs-thread boundary.
+        """
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        await svc.start()
+        try:
+            job = svc.add_job("t", "echo hi", every_secs=3600)
+            state = MagicMock()
+            state.crons = svc
+            state.push_refresh = MagicMock()
+            with patch("kiro_crew.dashboard.handlers.cron._sel") as sel_fn:
+                sel_fn.return_value = MagicMock()
+                async with TestClient(TestServer(_make_app(state))) as client:
+                    resp = await client.delete("/api/crons", json={"ids": [job.id]})
+                    assert resp.status == 200
+                    data = await resp.json()
+                    # The delete actually succeeded, so it must be reported as such.
+                    assert data["deleted"] == [job.id]
+                    assert data["failed"] == []
+                    assert data["ok"] is True
+            # Job is gone AND the scheduler is still alive (timer armed, running).
+            assert svc.get_job(job.id) is None
+            assert svc._running is True
+            assert svc._timer_task is not None and not svc._timer_task.done()
+        finally:
+            await svc.stop()
