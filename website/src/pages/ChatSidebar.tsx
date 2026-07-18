@@ -8,7 +8,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession } from '../store/chatSlice'
@@ -36,6 +36,17 @@ import { DndDraggable, DndDroppable } from '../components/dnd'
 import { collectFolderSubtreeIds } from '../utils/folderTree'
 import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SubagentActivity } from '../types'
 import { decideUnreadDrain } from './unreadDrain'
+import {
+  type RecentUnit,
+  DEFAULT_RECENT_WINDOW_MS,
+  RECENT_WINDOW_PRESETS,
+  decomposeRecentWindow,
+  formatRecentWindow,
+  clampRecentAmount,
+  customRecentWindowMs,
+  recentTickIntervalMs,
+  isWithinRecentWindow,
+} from './recentWindow'
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 
 /** Telegram-style relative time: time today, "Yesterday hh:mm", weekday+time this week,
@@ -209,6 +220,9 @@ interface Slot {
   clean_mode?: boolean
   folder_id?: string
   pinned?: boolean
+  // Derived (not a payload field), like `unread`: true when the slot's last
+  // activity falls inside `RECENT_WINDOW_MS`. Computed in `enrichedSlots`.
+  recent?: boolean
   tags?: string[]
   forked_from?: string | null
 }
@@ -229,28 +243,60 @@ interface AgentInfo {
   source: string
 }
 
-type SessionFilterKey = 'unread' | 'running' | 'pinned'
+type SessionFilterKey = 'unread' | 'running' | 'pinned' | 'recent'
+
+// Recency window for the "Recent" filter: surfaces sessions whose last activity
+// is within the selected window (default one hour), keyed off the same
+// last-activity timestamp the date sort uses. The window is user-selectable
+// (presets + custom) and persisted under RECENT_WINDOW_LS_KEY. The pure window
+// math lives in ./recentWindow so it can be unit-tested without a render.
+const RECENT_WINDOW_LS_KEY = 'mc-session-recent-window-ms'
+
+/** Read the persisted Recent window (ms), falling back to the default. Runs in
+ *  a useState initializer during render, so a throwing localStorage (private
+ *  mode / disabled storage) must not crash the component — fall back instead. */
+function readStoredRecentWindow(): number {
+  try {
+    const saved = Number(localStorage.getItem(RECENT_WINDOW_LS_KEY))
+    return Number.isFinite(saved) && saved > 0 ? saved : DEFAULT_RECENT_WINDOW_MS
+  } catch {
+    return DEFAULT_RECENT_WINDOW_MS
+  }
+}
 
 interface SessionFilterDef {
   key: SessionFilterKey
   storageKey: string
   label: string
+  description: string
   color: string
   icon: (active: boolean) => React.ReactNode
 }
 
 const SESSION_FILTERS: SessionFilterDef[] = [
   {
-    key: 'unread', storageKey: 'mc-session-unread-only', label: 'Unread', color: 'var(--info)',
+    key: 'unread', storageKey: 'mc-session-unread-only', label: 'Unread',
+    description: 'Show only sessions with unread messages',
+    color: 'var(--info)',
     icon: (active) => <Circle size={12} className={active ? 'text-[var(--info)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--info)' } : {})} />,
   },
   {
-    key: 'running', storageKey: 'mc-session-running-only', label: 'In progress', color: 'var(--warn)',
+    key: 'running', storageKey: 'mc-session-running-only', label: 'In progress',
+    description: 'Show only sessions the agent is actively working on',
+    color: 'var(--warn)',
     icon: (active) => <Zap size={12} className={active ? 'text-[var(--warn)]' : 'text-muted'} {...(active ? { fill: 'var(--warn)', stroke: 'none' } : {})} />,
   },
   {
-    key: 'pinned', storageKey: 'mc-session-pinned-only', label: 'Pinned', color: 'var(--accent)',
+    key: 'pinned', storageKey: 'mc-session-pinned-only', label: 'Pinned',
+    description: 'Show only sessions you have pinned',
+    color: 'var(--accent)',
     icon: (active) => <Pin size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { fill: 'var(--accent)', stroke: 'none' } : {})} />,
+  },
+  {
+    key: 'recent', storageKey: 'mc-session-recent-only', label: 'Recent',
+    description: 'Show only sessions active within the selected window',
+    color: 'var(--ok)',
+    icon: (active) => <Clock size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} />,
   },
 ]
 
@@ -629,10 +675,65 @@ function ChatSidebar({
   // O(1) lookup set for the filter predicate (mirrors the `pinned` and
   // `slotSearchKeys` patterns elsewhere in this file).
   const unreadSet = useMemo(() => new Set(unreadSlots), [unreadSlots])
-  const enrichedSlots = useMemo<Slot[]>(() =>
-    slots.map(s => ({ ...s, unread: unreadSet.has(s.key) })),
-    [slots, unreadSet]
-  )
+  // Heartbeat that re-evaluates recency even when nothing else re-renders.
+  // Sidebar interactions (new messages, status changes, opening the menu) all
+  // recompute `enrichedSlots` for free, so this only matters when the sidebar
+  // sits idle with the Recent filter on — without it a stale session would
+  // never age out of the list. Gated on the filter being active so we don't
+  // wake an idle tab needlessly, mirroring the `staleTick` pattern in App.tsx.
+  const recentFilterActive = activeFilters.has('recent')
+  // User-selectable recency window (ms), persisted. Presets + custom value live
+  // in the filter submenu; the chip and menu row show the current window.
+  const [recentWindowMs, setRecentWindowMs] = useState(readStoredRecentWindow)
+  const setRecentWindow = useCallback((ms: number) => {
+    setRecentWindowMs(ms)
+    safeSetItem(RECENT_WINDOW_LS_KEY, String(ms))
+  }, [])
+  // Custom-picker draft state. The amount is a raw string (not derived from the
+  // committed window) so the field can be cleared / partially edited without
+  // snapping to 1 on every keystroke, and the unit stays exactly as the user
+  // picked it rather than being re-derived (24 "hours" must not flip to 1 "day").
+  // We commit + clamp to `recentWindowMs` only on blur / Enter / unit change; a
+  // preset click re-seeds both drafts so the boxes track the chosen preset.
+  const [recentAmountDraft, setRecentAmountDraft] = useState(() => String(decomposeRecentWindow(recentWindowMs).value))
+  const [recentUnitDraft, setRecentUnitDraft] = useState<RecentUnit>(() => decomposeRecentWindow(recentWindowMs).unit)
+  const selectRecentPreset = useCallback((ms: number) => {
+    setRecentWindow(ms)
+    const { value, unit } = decomposeRecentWindow(ms)
+    setRecentAmountDraft(String(value))
+    setRecentUnitDraft(unit)
+  }, [setRecentWindow])
+  const commitRecentAmount = useCallback(() => {
+    const clamped = clampRecentAmount(recentAmountDraft)
+    setRecentAmountDraft(String(clamped))
+    setRecentWindow(customRecentWindowMs(clamped, recentUnitDraft))
+  }, [recentAmountDraft, recentUnitDraft, setRecentWindow])
+  const changeRecentUnit = useCallback((unit: RecentUnit) => {
+    setRecentUnitDraft(unit)
+    setRecentWindow(customRecentWindowMs(recentAmountDraft, unit))
+  }, [recentAmountDraft, setRecentWindow])
+  const [recentTick, setRecentTick] = useState(0)
+  useEffect(() => {
+    if (!recentFilterActive) return
+    // Tick often enough that a slot ages out promptly relative to its window
+    // (~1/10th the window), but never faster than every 30s and never slower
+    // than RECENT_TICK_MS — a short custom window shouldn't wake the tab every
+    // few seconds, and a long one shouldn't lag by more than ~10 minutes.
+    const id = setInterval(() => setRecentTick(t => t + 1), recentTickIntervalMs(recentWindowMs))
+    return () => clearInterval(id)
+  }, [recentFilterActive, recentWindowMs])
+  const enrichedSlots = useMemo<Slot[]>(() => {
+    // Snapshot `now` once per recompute so every slot's recency is measured
+    // against the same instant. The last-activity timestamp mirrors the
+    // date-sort comparator (`last_ts` ISO, else `created` ISO).
+    const now = Date.now()
+    return slots.map(s => {
+      const recent = isWithinRecentWindow(s.last_ts || s.created, now, recentWindowMs)
+      return { ...s, unread: unreadSet.has(s.key), recent }
+    })
+    // `recentTick` is an intentional dep: it forces recency to re-evaluate on
+    // the heartbeat above so idle sessions age out of the Recent filter.
+  }, [slots, unreadSet, recentWindowMs, recentTick]) // eslint-disable-line react-hooks/exhaustive-deps
   const filterCounts = useMemo(() => {
     const counts = {} as Record<SessionFilterKey, number>
     for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = enrichedSlots.filter(slot => slot[filterDef.key]).length
@@ -976,17 +1077,6 @@ function ChatSidebar({
     return () => cancelAnimationFrame(raf)
   }, [columnEditId, popoverPos])
 
-  // Close filter/sort popover on outside click
-  useEffect(() => {
-    if (!filterSortOpen) return
-    const handler = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null
-      if (t?.closest('[data-filter-sort]')) return
-      setFilterSortOpen(false)
-    }
-    const id3 = setTimeout(() => document.addEventListener('mousedown', handler), 0)
-    return () => { clearTimeout(id3); document.removeEventListener('mousedown', handler) }
-  }, [filterSortOpen])
 
   const createColumnMutation = useMutation({
     mutationFn: (body: { name?: string; tag_ids?: string[]; mode?: TagColumnMode }) => api.createTagColumn(body),
@@ -2015,62 +2105,153 @@ function ChatSidebar({
           {slotFilter && (
             <button type="button" className="absolute right-8 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setSlotFilter('')} aria-label="Clear search"><X size={13} /></button>
           )}
-          <div className="absolute right-1 inset-y-0 flex items-center" data-filter-sort>
-            <button
-              type="button"
-              className="relative w-6 h-6 rounded text-muted flex items-center justify-center cursor-pointer transition-colors hover:text-text hover:bg-bg-hover bg-transparent border-none"
-              onClick={() => setFilterSortOpen(o => !o)}
-              title="Sort & filter sessions"
-              aria-label="Sort and filter sessions"
-              aria-haspopup="menu"
-              aria-expanded={filterSortOpen}
-            >
-              <ListFilter size={14} />
-              {filterCounts['unread'] > 0 && (
-                <span
-                  aria-hidden="true"
-                  className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-[var(--info)] text-white text-[10px] font-semibold leading-[14px] text-center pointer-events-none shadow-[0_0_4px_rgba(59,130,246,.5)]"
-                >
-                  {filterCounts['unread'] > 99 ? '99+' : filterCounts['unread']}
-                </span>
-              )}
-            </button>
-            {filterSortOpen && (
-            <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] rounded-lg border border-border bg-bg-elevated shadow-lg py-1 animate-rise" role="menu">
-              <div className="px-3 pt-1 pb-1 text-[11px] font-medium text-muted uppercase tracking-[.04em]">Filter</div>
-              {SESSION_FILTERS.map(filterDef => {
-                const active = activeFilters.has(filterDef.key)
-                const slotCount = filterCounts[filterDef.key] ?? 0
-                return (
-                  <button
-                    key={filterDef.key}
-                    role="menuitemcheckbox"
-                    aria-checked={active}
-                    className="w-full px-3 py-1.5 text-left text-[13px] text-text flex items-center gap-2 hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
-                    onClick={() => toggleFilter(filterDef.key)}
-                  >
-                    {filterDef.icon(active)}
-                    <span className="flex-1">{filterDef.label}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
-                    {active && <Check size={14} className="text-accent" />}
-                  </button>
-                )
-              })}
-              <div className="my-1 border-t border-border" />
-              <div className="px-3 pt-1 pb-1 text-[11px] font-medium text-muted uppercase tracking-[.04em]">Sort by</div>
-              {SORT_OPTIONS.map(o => (
+          <div className="absolute right-1 inset-y-0 flex items-center">
+            <DropdownMenu open={filterSortOpen} onOpenChange={setFilterSortOpen}>
+              <DropdownMenuTrigger asChild>
                 <button
-                  key={o.value}
-                  role="menuitemradio"
-                  aria-checked={sortKey === o.value}
-                  className="w-full px-3 py-1.5 text-left text-[13px] text-text flex items-center gap-2 hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
-                  onClick={() => { setSortKey(o.value); safeSetItem(SORT_LS_KEY, o.value); setFilterSortOpen(false) }}
+                  type="button"
+                  className="relative w-6 h-6 rounded text-muted flex items-center justify-center cursor-pointer transition-colors hover:text-text hover:bg-bg-hover bg-transparent border-none"
+                  title="Sort & filter sessions"
+                  aria-label="Sort and filter sessions"
                 >
-                  <span className="flex-1">{o.label}</span>
-                  {sortKey === o.value && <Check size={14} className="text-accent" />}
+                  <ListFilter size={14} />
+                  {filterCounts['unread'] > 0 && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-[var(--info)] text-white text-[10px] font-semibold leading-[14px] text-center pointer-events-none shadow-[0_0_4px_rgba(59,130,246,.5)]"
+                    >
+                      {filterCounts['unread'] > 99 ? '99+' : filterCounts['unread']}
+                    </span>
+                  )}
                 </button>
-              ))}
-            </div>
-          )}
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[180px]">
+                <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">Filter</DropdownMenuLabel>
+                {SESSION_FILTERS.map(filterDef => {
+                  const active = activeFilters.has(filterDef.key)
+                  const slotCount = filterCounts[filterDef.key] ?? 0
+                  const isRecent = filterDef.key === 'recent'
+                  if (isRecent) {
+                    // Recent gets a nested submenu (flyout) for choosing the
+                    // window. The whole row is a single SubTrigger (one focusable
+                    // menu item with correct roving-tabindex). Toggling the
+                    // filter must be reachable by every input modality:
+                    //  - pointer/touch: onClick toggles; we deliberately do NOT
+                    //    preventDefault so Radix's own click-to-open still fires
+                    //    (touch/coarse pointers have no hover path to the picker).
+                    //  - keyboard: Radix routes Enter/Space/ArrowRight to open the
+                    //    submenu and the SubTrigger is a div (no synthetic click),
+                    //    so onClick never fires for keys. onKeyDown toggles on
+                    //    Enter/Space (preventDefault suppresses Radix's open for
+                    //    just those keys); ArrowRight falls through and opens.
+                    return (
+                      <DropdownMenuSub key={filterDef.key}>
+                        <DropdownMenuSubTrigger
+                          title={filterDef.description}
+                          onClick={() => toggleFilter('recent')}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              toggleFilter('recent')
+                            }
+                          }}
+                        >
+                          {filterDef.icon(active)}
+                          <span className="flex-1 truncate">
+                            {filterDef.label}
+                            <span className="text-muted"> · {formatRecentWindow(recentWindowMs)}</span>
+                            {slotCount > 0 ? ` (${slotCount})` : ''}
+                          </span>
+                          {active && <Check size={14} className="text-accent shrink-0" />}
+                          <ChevronRight size={13} className="text-muted shrink-0" />
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent className="min-w-[190px] p-2">
+                          {/* Non-menu-item controls: stop click/keydown from
+                              reaching Radix so choosing a window doesn't dismiss
+                              the menu (mirrors the folder-rename input pattern). */}
+                          <div
+                            onClick={e => e.stopPropagation()}
+                            onMouseDown={e => e.stopPropagation()}
+                            onKeyDown={e => e.stopPropagation()}
+                          >
+                            <div className="px-1 pb-1 text-[11px] text-muted">Within</div>
+                            <div className="flex flex-wrap gap-1 px-1 mb-2">
+                              {RECENT_WINDOW_PRESETS.map(preset => (
+                                <button
+                                  key={preset.ms}
+                                  type="button"
+                                  aria-pressed={recentWindowMs === preset.ms}
+                                  className="px-2 py-0.5 rounded-full text-[11px] cursor-pointer border transition-colors"
+                                  style={recentWindowMs === preset.ms
+                                    ? { background: 'color-mix(in srgb, var(--ok) 12%, transparent)', color: 'var(--ok)', borderColor: 'color-mix(in srgb, var(--ok) 35%, transparent)' }
+                                    : { background: 'transparent', color: 'var(--muted)', borderColor: 'var(--border)' }}
+                                  onClick={() => selectRecentPreset(preset.ms)}
+                                >
+                                  {preset.label}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="px-1 text-[12px] text-muted">
+                              <div className="mb-1">Custom</div>
+                              <div className="flex items-center gap-1.5">
+                                {/* Draft-string value so the field can be cleared
+                                    / partially typed; commit + clamp on blur or
+                                    Enter. Unit changes commit immediately but keep
+                                    the amount as-typed (no re-derivation flip). */}
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={9999}
+                                  value={recentAmountDraft}
+                                  onChange={e => setRecentAmountDraft(e.target.value)}
+                                  onBlur={commitRecentAmount}
+                                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitRecentAmount() } }}
+                                  aria-label="Custom recency amount"
+                                  className="w-12 shrink-0 px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text text-[12px]"
+                                />
+                                <select
+                                  value={recentUnitDraft}
+                                  onChange={e => changeRecentUnit(e.target.value as RecentUnit)}
+                                  aria-label="Custom recency unit"
+                                  className="flex-1 min-w-0 px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text text-[12px] cursor-pointer"
+                                >
+                                  <option value="minutes">min</option>
+                                  <option value="hours">hours</option>
+                                  <option value="days">days</option>
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                    )
+                  }
+                  return (
+                    <DropdownMenuItem
+                      key={filterDef.key}
+                      title={filterDef.description}
+                      // Keep the menu open so multiple filters can be toggled.
+                      onSelect={e => { e.preventDefault(); toggleFilter(filterDef.key) }}
+                    >
+                      {filterDef.icon(active)}
+                      <span className="flex-1 truncate">{filterDef.label}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
+                      {active && <Check size={14} className="text-accent shrink-0" />}
+                    </DropdownMenuItem>
+                  )
+                })}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">Sort by</DropdownMenuLabel>
+                {SORT_OPTIONS.map(o => (
+                  <DropdownMenuItem
+                    key={o.value}
+                    onSelect={() => { setSortKey(o.value); safeSetItem(SORT_LS_KEY, o.value) }}
+                  >
+                    <span className="flex-1">{o.label}</span>
+                    {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
@@ -2088,7 +2269,7 @@ function ChatSidebar({
                 title={`Clear ${filterDef.label.toLowerCase()} filter`}
                 aria-label={`Clear ${filterDef.label.toLowerCase()} filter`}
               >
-                {filterDef.label}{slotCount > 0 ? ` (${slotCount})` : ''}
+                {filterDef.label}{filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}{slotCount > 0 ? ` (${slotCount})` : ''}
                 <X size={11} />
               </button>
             )
