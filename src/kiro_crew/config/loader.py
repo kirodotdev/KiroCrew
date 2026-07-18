@@ -1115,6 +1115,14 @@ class DashboardConfig:
             enum=["more", "less"],
         ),
     )
+    tail_fork_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Tail-only Fork",
+            "When forking, keep only the messages after the chosen point. The "
+            "earlier messages are dropped.",
+        ),
+    )
     auto_open_browser: bool = field(
         default=True,
         metadata=_meta(
@@ -2804,6 +2812,7 @@ class KiroCrewConfig:
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
                 widget_density=dashboard_data.get("widget_density", "more"),
+                tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
                 terminal=dashboard_data.get("terminal", {"enabled": True}),
                 default_project=dashboard_data.get("default_project", ""),
                 theme_mode=dashboard_data.get("theme_mode", ""),

@@ -2582,6 +2582,7 @@
         "merge_queued_messages": false,
         "mcp_probe_timeout_secs": 15,
         "widget_density": "more",
+        "tail_fork_enabled": false,
         "auto_open_browser": true,
         "quick_send": false,
         "session_grid": false,
@@ -2709,6 +2710,20 @@
         "less"
       ],
       "defaultValue": "more"
+    },
+    {
+      "path": "dashboard.tail_fork_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tail-only Fork",
+      "help": "When forking, keep only the messages after the chosen point. The earlier messages are dropped.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.auto_open_browser",

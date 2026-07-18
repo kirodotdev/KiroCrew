@@ -49,6 +49,12 @@ no longer destroy older turns.
   writes sibling files. `tab_id` is 1:1 with a file (fork creates a fresh slot
   with its own file), so chaining is untouched and legacy no-tab_id sessions are
   never merged with unrelated sessions.
+- **Tail-only fork** (`direction="tail"`): copies only `visible[at_index+1:]`
+  into the new slot instead of the head `visible[:at_index+1]`. The head is
+  always dropped -- there is no summarize option. Gated server-side by
+  `dashboard.tail_fork_enabled`; if the gate is off, a `direction="tail"`
+  request falls back to a normal head-fork instead of erroring. The source
+  slot's history file is untouched, so the head stays archived in the parent.
 - **Concurrency**: `_flush_dirty_slots` runs the save in an executor thread while
   `_run_chat` mutates `slot.messages` on the event loop. `slot._lock` is an
   asyncio lock (unusable from the thread), so the save instead takes a

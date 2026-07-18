@@ -189,6 +189,7 @@ Full-featured React SPA at `localhost:5476` (or `http://kirocrew.localhost:5476`
 - **Edit & resend** — edit and resend previous user messages with history preserved
 - **Rewind** — edit any past user message in place and replay the conversation from that point
 - **Fork session** — fork a session into a new tab with full context carried over
+- **Tail-only fork** — opt-in fork variant (Settings › Chat) that keeps only the messages after the chosen point, verbatim; the earlier messages are dropped. Controlled by a single Settings toggle — the fork icon itself no longer changes appearance.
 - **Regenerate replies** — regenerate assistant replies with variant history navigation
 - **Warm session pool** — pre-warm kiro-cli sessions with configurable default agent for instant response
 - **Tool purpose pills** — tool call labels show purpose text, persisted across reloads

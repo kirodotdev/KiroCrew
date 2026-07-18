@@ -6,6 +6,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_utils import _history_key_for, _sync_dashboard_slots
 from kiro_crew.dashboard.state import DashboardState
@@ -17,15 +18,23 @@ logger = logging.getLogger(__name__)
 _MAX_SLOTS_FOR_FORK = 500
 _FORK_TITLE_MARKER = "↳ "
 
+# Fork direction: "head" copies messages up to and including the fork point
+# (legacy default behavior); "tail" copies only the messages after it.
+_FORK_DIRECTION_HEAD = "head"
+_FORK_DIRECTION_TAIL = "tail"
+_FORK_DIRECTIONS = (_FORK_DIRECTION_HEAD, _FORK_DIRECTION_TAIL)
+
 
 async def api_chat_slot_fork(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/fork — fork session into a new tab.
 
-    Creates a new slot with messages copied from the source up to
-    ``at_message_index`` (inclusive, into the visible user/assistant list).
+    With ``direction="head"`` (default) copies messages up to and including
+    ``at_message_index`` (the legacy behavior). With ``direction="tail"`` copies
+    only the messages after ``at_message_index``; the head is dropped.
     An optional ``prompt`` is returned so the frontend can send it.
 
-    Body: ``{ at_message_index?: number, prompt?: string }``
+    Body: ``{ at_message_index?: number, prompt?: string, mode?: string,
+    direction?: "head"|"tail" }``
     """
 
     state: DashboardState = request.app["state"]
@@ -86,6 +95,24 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     mode_override = body.get("mode")
     if mode_override is not None and mode_override not in ("", "orchestrator"):
         return web.json_response({"error": "mode must be '' or 'orchestrator'"}, status=400)
+    direction = body.get("direction", _FORK_DIRECTION_HEAD)
+    if direction not in _FORK_DIRECTIONS:
+        return web.json_response(
+            {"error": f"direction must be one of {list(_FORK_DIRECTIONS)}"}, status=400,
+        )
+    if direction == _FORK_DIRECTION_TAIL and not KiroCrewConfig.load().dashboard.tail_fork_enabled:
+        # B1 server-side gate (D1): tail-fork requested but disabled in config —
+        # fall back to a normal head-fork rather than reject the request outright.
+        # outcome="allowed" (not "denied"): the request still succeeds, just as a
+        # head-fork instead of the requested tail-fork; "denied" would misleadingly
+        # suggest the fork itself was rejected.
+        sel().log_api_access(
+            caller=request_app or "dashboard", operation="chat.slot_fork",
+            outcome="allowed", source="dashboard",
+            resources=f"slot={name},direction=tail",
+            error="tail_fork_enabled is False; falling back to head-fork",
+        )
+        direction = _FORK_DIRECTION_HEAD
     if prompt is not None and not isinstance(prompt, str):
         return web.json_response({"error": "prompt must be a string"}, status=400)
     prompt = (prompt or "").strip()
@@ -127,6 +154,20 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 {"error": f"at_message_index {at_index} out of range (have {len(visible)} visible messages)"},
                 status=400,
             )
+
+    head_messages: list[dict] = []
+    if direction == _FORK_DIRECTION_TAIL:
+        if at_index is None:
+            return web.json_response(
+                {"error": "at_message_index is required for a tail fork"}, status=400,
+            )
+        head_messages = visible[: at_index + 1]
+        visible = visible[at_index + 1:]
+        if not visible:
+            return web.json_response(
+                {"error": "no messages after the fork point"}, status=400,
+            )
+    elif at_index is not None:
         visible = visible[: at_index + 1]
 
     new_slot = state.get_or_create_slot(
@@ -144,7 +185,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     # Strip a leading marker from the parent so it never compounds on a
     # fork-of-a-fork.
     parent_title = parent_title.removeprefix(_FORK_TITLE_MARKER)
-    new_slot.title = f"{_FORK_TITLE_MARKER}Fork of {parent_title}"
+    fork_word = "Tail of" if direction == _FORK_DIRECTION_TAIL else "Fork of"
+    new_slot.title = f"{_FORK_TITLE_MARKER}{fork_word} {parent_title}"
     new_slot._titled = True
 
     try:
@@ -178,6 +220,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         resources=(
             f"from={slot.key},to={new_slot.key},messages={len(visible)},"
             f"at_index={at_index if at_index is not None else 'last'},"
+            f"direction={direction},"
+            f"head_count={len(head_messages)},"
             f"prompt_len={len(prompt)},mode={new_slot.mode}"
         ),
     )
@@ -186,5 +230,6 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     return web.json_response(
         {"ok": True, "key": new_slot.key, "title": new_slot.title,
          "messages": len(visible), "prompt": prompt,
-         "folder_id": new_slot.folder_id or None}
+         "folder_id": new_slot.folder_id or None,
+         "direction": direction}
     )
