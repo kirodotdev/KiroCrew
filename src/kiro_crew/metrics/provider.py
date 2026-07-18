@@ -26,15 +26,33 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from opentelemetry.sdk.metrics import Histogram, MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
-from opentelemetry.sdk.resources import Resource
-
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.local_exporter import JsonlMetricExporter
 from kiro_crew.metrics.recorder import MetricsRecorder
+
+# Mesh-2829: KiroCrew declares opentelemetry-sdk as a required dependency, so
+# this guard is defense-in-depth — not for a genuinely optional dep, but for a
+# partial / --no-deps / broken env-closure install where the SDK is absent. This
+# module is on the eager boot chain (cli.py -> dashboard -> ... -> history.py ->
+# skills.py -> get_recorder), so an unconditional top-level import here would
+# brick the ENTIRE gateway (and `kirocrew --version`) even though telemetry
+# defaults off. Degrade to the existing no-op MetricsRecorder(None) path instead
+# of crashing at import time.
+try:
+    from opentelemetry.sdk.metrics import Histogram, MeterProvider
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.metrics.view import (
+        ExplicitBucketHistogramAggregation,
+        View,
+    )
+    from opentelemetry.sdk.resources import Resource
+
+    _OTEL_AVAILABLE = True
+except ImportError:
+    Histogram = MeterProvider = PeriodicExportingMetricReader = None  # type: ignore[assignment,misc]
+    ExplicitBucketHistogramAggregation = View = Resource = None  # type: ignore[assignment,misc]
+    _OTEL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +74,7 @@ _LATENCY_BUCKETS_MS = [
 _lock = threading.Lock()
 _recorder: Optional[MetricsRecorder] = None
 _initialized = False
-_provider: Optional[MeterProvider] = None
+_provider: Optional["MeterProvider"] = None
 
 
 def _default_metrics_dir() -> Path:
@@ -66,6 +84,12 @@ def _default_metrics_dir() -> Path:
 def _build_recorder() -> MetricsRecorder:
     """Read config once and build a live or no-op recorder accordingly."""
     global _provider
+    if not _OTEL_AVAILABLE:
+        # Mesh-2829: opentelemetry missing from the env closure. Degrade to the
+        # no-op recorder instead of ever reaching this point via a crash.
+        logger.warning("opentelemetry not installed; telemetry disabled")
+        return MetricsRecorder(None)
+
     try:
         cfg = KiroCrewConfig.load().telemetry
     except Exception as exc:

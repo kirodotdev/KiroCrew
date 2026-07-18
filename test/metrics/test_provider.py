@@ -42,3 +42,20 @@ def test_recorder_is_cached(monkeypatch):
         assert get_recorder() is get_recorder()
     finally:
         reset_for_testing()
+
+
+def test_degrades_to_noop_when_otel_missing(monkeypatch):
+    """Mesh-2829: with opentelemetry absent from the env closure, the provider
+    must degrade to a no-op recorder instead of crashing the eager boot chain."""
+    import kiro_crew.metrics.provider as provider_mod
+
+    reset_for_testing()
+    _patch_config(monkeypatch, enabled=True, local_dir="/tmp/does-not-matter")
+    monkeypatch.setattr(provider_mod, "_OTEL_AVAILABLE", False)
+    try:
+        rec = get_recorder()
+        assert rec.enabled is False
+        # A histogram call on the no-op recorder must not raise.
+        rec.histogram("kirocrew.session.startup.duration", 1.0, unit="ms")
+    finally:
+        reset_for_testing()
