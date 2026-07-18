@@ -24,7 +24,6 @@ from kiro_crew.mcp_gateway.spill import (
     maybe_spill_response,
 )
 
-
 # --- (a) Response under limit passes untouched ---
 
 

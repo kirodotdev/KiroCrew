@@ -7,11 +7,11 @@ SKILL.md from the repo directly.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import logging
 import re
-import asyncio
-import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request

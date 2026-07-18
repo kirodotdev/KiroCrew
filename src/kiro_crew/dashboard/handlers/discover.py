@@ -17,12 +17,12 @@ import shutil
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import _get_skills
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
 from kiro_crew.skills import skills_dir as _skills_dir
-from kiro_crew.dashboard.handlers._shared import _get_skills
 
 logger = logging.getLogger(__name__)
 

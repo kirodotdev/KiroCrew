@@ -7,9 +7,9 @@ implements the ``SkillProvider`` protocol and registers itself in the
 """
 
 from kiro_crew.skill_providers.base import (
+    ProviderRegistry,
     SkillProvider,
     SkillSearchResult,
-    ProviderRegistry,
 )
 from kiro_crew.skill_providers.skillsh import SkillsShProvider
 

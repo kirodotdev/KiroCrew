@@ -24,13 +24,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
+from kiro_crew.executors import maintenance_executor
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
     CALLER_META_KEY,
     CallerContext,
     build_caller_meta,
 )
-from kiro_crew.executors import maintenance_executor
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
 from kiro_crew.mcp_gateway.spill import maybe_spill_response
 from kiro_crew.security import redact

@@ -810,8 +810,12 @@ def _ensure_run_dir() -> str:
     run_dir = os.path.join(os.path.expanduser("~"), ".kirocrew", "run")
     try:
         os.makedirs(run_dir, mode=0o700, exist_ok=True)
-        # exist_ok does not re-apply mode on existing dirs — enforce explicitly
-        os.chmod(run_dir, 0o700)
+        # exist_ok does not re-apply mode on existing dirs — enforce explicitly.
+        # 0o700 (owner-only rwx) is deliberately restrictive: this dir holds
+        # per-session sandbox launcher scripts and sockets that must NOT be
+        # world-readable. Semgrep's 0o644 suggestion is wrong for a directory
+        # (needs the execute/traverse bit) and would loosen, not tighten, access.
+        os.chmod(run_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
     except OSError:
         logger.warning("Cannot create %s; falling back to system tmpdir", run_dir)
         run_dir = tempfile.gettempdir()
