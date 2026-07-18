@@ -464,6 +464,19 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
     ],
 )
 
+# delete_message reads args["channel"] and args["ts"] by subscript. Without a
+# schema, a call omitting either key raised KeyError, which is NOT caught by
+# call_tool_with_logging (only ValidationError is) and propagated out of the
+# stdio loop, killing the whole kirocrew-core MCP server for the session.
+# Requiring both fields turns a missing key into a clean ValidationError string.
+DELETE_MESSAGE_SCHEMA = ToolSchema(
+    tool_name="delete_message",
+    fields=[
+        FieldSpec("channel", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("ts", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SKILL_SEARCH_SCHEMA = ToolSchema(
     tool_name="skill_search",
     fields=[
@@ -920,6 +933,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "register_hook": REGISTER_HOOK_SCHEMA,
     "file_send": FILE_SEND_SCHEMA,
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
+    "delete_message": DELETE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     "knowledge_dedup": KNOWLEDGE_DEDUP_SCHEMA,
     "search_chat_history": SEARCH_CHAT_HISTORY_SCHEMA,

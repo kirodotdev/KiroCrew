@@ -2778,8 +2778,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return "Notification delivered."
 
     if name == "delete_message":
-        channel = args["channel"]
-        msg_ts = args["ts"]
+        # Use .get() (not subscript) as defense-in-depth: _validate_args enforces
+        # both as required via DELETE_MESSAGE_SCHEMA, but a direct/unvalidated call
+        # must still degrade to a clean error string rather than a KeyError that
+        # would propagate out of the stdio loop and kill the whole MCP server.
+        channel = args.get("channel", "")
+        msg_ts = args.get("ts", "")
         if not CHANNEL_ID_RE.match(channel):
             sel().log_tool_invocation(
                 session_key=_resolve_session_key(),
