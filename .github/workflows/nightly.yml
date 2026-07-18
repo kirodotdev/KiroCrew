@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       nightly_version: ${{ steps.stamp.outputs.version }}
+      wheel_version: ${{ steps.stamp.outputs.wheel_version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,8 +37,16 @@ jobs:
         run: |
           DATE=$(date -u +%Y%m%d)
           BASE=$(grep -m1 '__version__' src/kiro_crew/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
+          # Desktop/Squirrel needs semver; the pip wheel needs PEP 440. Emit both:
+          #   nightly_version (semver):  <base>-nightly.<date>  -> Electron app + S3 build path
+          #   wheel_version   (PEP 440): <base>.dev<date>       -> pip wheel, unique/pinnable per day
+          # The old shared "-nightly.<date>" is invalid PEP 440, so setuptools normalized
+          # every nightly wheel down to the base version (all became 0.1.0). ".dev<date>"
+          # is valid PEP 440 and keeps nightly wheels uniquely versioned.
           echo "version=${BASE}-nightly.${DATE}" >> "$GITHUB_OUTPUT"
-          echo "Nightly version: ${BASE}-nightly.${DATE}"
+          echo "wheel_version=${BASE}.dev${DATE}" >> "$GITHUB_OUTPUT"
+          echo "Nightly (semver): ${BASE}-nightly.${DATE}"
+          echo "Wheel (PEP 440):  ${BASE}.dev${DATE}"
 
   build-wheel:
     name: Build Wheel (CLI)
@@ -57,9 +66,14 @@ jobs:
           cache: npm
           cache-dependency-path: website/package-lock.json
 
-      - name: Stamp nightly version
+      - name: Stamp wheel version (PEP 440)
         run: |
-          sed -i "s/__version__ = \".*\"/__version__ = \"${{ needs.version.outputs.nightly_version }}\"/" src/kiro_crew/__init__.py
+          # The wheel version is sourced from pyproject.toml [project].version
+          # (static), NOT src/kiro_crew/__init__.py — so stamp pyproject to make
+          # the built wheel uniquely versioned. Keep __init__.py in sync for the
+          # runtime --version string.
+          sed -i -E "s/^version = \".*\"/version = \"${{ needs.version.outputs.wheel_version }}\"/" pyproject.toml
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ needs.version.outputs.wheel_version }}\"/" src/kiro_crew/__init__.py
 
       - name: Build frontend
         working-directory: website
@@ -255,3 +269,20 @@ jobs:
           echo "**Signed:** ${{ env.HAS_CDSIGNER && env.APP_PATH != '' && 'Yes' || 'No (CDSigner not configured)' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Artifacts:**" >> "$GITHUB_STEP_SUMMARY"
           ls release/ | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+
+  # ── CLI channel publish ───────────────────────────────────────────────
+  # Publishes the built wheel to the nightly CLI channel (cli/ + latest-cli.json).
+  # Depends only on the wheel (not build-desktop or CDSigner), so a macOS signing
+  # failure never blocks the CLI release. See docs/RELEASE_AUTOMATION.md.
+  publish-cli:
+    name: Publish CLI (nightly channel)
+    needs: [version, build-wheel]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-cli.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      wheel_artifact: nightly-wheel
+    secrets: inherit

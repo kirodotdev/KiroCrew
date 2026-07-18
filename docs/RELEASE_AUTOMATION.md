@@ -320,10 +320,126 @@ Emergency:
   - Or cherry-pick fix → push to release branch → auto-publishes new beta
 ```
 
+## CLI (Linux / EC2) Distribution
+
+The channels above ship the **desktop** app (Squirrel `latest-mac.json`) and the Linux AppImage (`latest-linux.json`). The **CLI** — the `pip` wheel that runs the gateway headless on servers and EC2 — is not yet a first-class channel target; today `release.yml` publishes it only as a GitHub Release asset. This section makes the wheel a first-class target on the same three channels, so a Linux/EC2 host can track nightly, insider, or stable and self-update.
+
+Channel naming: the CLI uses the same pipeline channels — Nightly, Beta, Stable. The Beta channel is surfaced to users as **insider** (the same mapping `auto-update.js` uses for the desktop client), so `--channel insider` resolves to the `beta` feed prefix.
+
+### How it differs from the desktop path
+
+- **No notarization, but a signature is required.** Linux has no Gatekeeper, so the CLI never touches CDSigner or Apple. A `SHA256SUMS` beside the wheel is only a corruption check — whoever can overwrite the wheel in S3/CloudFront (or via compromised CI) can rewrite `SHA256SUMS` and the feed's `sha256` in the same breath. So the installer verifies a required signature over the manifest — Sigstore cosign (keyless, identity-pinned) or minisign with a public key pinned in the installer/repo — against a trust root that is not stored beside the artifact. That pinned-key signature, not the checksum, is the authenticity anchor.
+- **CI-direct feed, independent of signing.** There is no `signed/` step for the wheel, so there is no S3 PUT to trigger the Feed Lambda — the CLI publish writes `latest-cli.json` directly from CI. It depends only on the built wheel, so a macOS signing failure never blocks a CLI release.
+- **Build once, promote.** The wheel rides the existing workflows: `nightly.yml` publishes the nightly wheel; `beta-cut.yml` builds the release-branch wheel once and publishes it to the beta (insider) channel; `promote-stable.yml` copies that same wheel to stable — byte-identical, no rebuild.
+
+### Topology
+
+```mermaid
+flowchart TB
+    subgraph SRC["Build sources"]
+        NB["Nightly build — main HEAD, rebuilt nightly (rolling)"]
+        RC["beta-cut build — release/x.y.z, built ONCE"]
+    end
+
+    subgraph PUB["Publish — each build does BOTH targets"]
+        NMAC["mac: CDSigner sign + notarize"]
+        NCLI["cli: wheel + SHA256SUMS (CI-direct)"]
+        RMAC["mac: CDSigner sign + notarize"]
+        RCLI["cli: wheel + SHA256SUMS (CI-direct)"]
+    end
+
+    subgraph CH_N["Channel: nightly (rolling)"]
+        NMACF["feed/nightly/latest-mac.json"]
+        NCLIF["feed/nightly/latest-cli.json"]
+    end
+    subgraph CH_B["Channel: beta = insider (release candidate)"]
+        BMACF["feed/beta/latest-mac.json"]
+        BCLIF["feed/beta/latest-cli.json"]
+    end
+    subgraph CH_S["Channel: stable (promote — no rebuild)"]
+        SMACF["feed/stable/latest-mac.json"]
+        SCLIF["feed/stable/latest-cli.json"]
+    end
+
+    subgraph CLIENT["Clients"]
+        MACAPP["macOS app auto-update (Squirrel)"]
+        LINUX["Linux / EC2 CLI — cli.sh --channel X / kirocrew update"]
+    end
+
+    NB --> NMAC & NCLI
+    RC --> RMAC & RCLI
+    NMAC --> NMACF
+    NCLI --> NCLIF
+    RMAC --> BMACF
+    RCLI --> BCLIF
+    CH_B -. "promote-stable: same artifacts, no rebuild / re-sign" .-> CH_S
+    NMACF --> MACAPP
+    BMACF --> MACAPP
+    SMACF --> MACAPP
+    NCLIF --> LINUX
+    BCLIF --> LINUX
+    SCLIF --> LINUX
+```
+
+### S3 additions (same bucket)
+
+```
+cli/{channel}/{version}/
+  ├── kirocrew-{version}-py3-none-any.whl
+  └── SHA256SUMS
+feed/{channel}/latest-cli.json
+```
+
+`feed/{channel}/latest-cli.json`:
+
+```json
+{
+  "channel": "beta",
+  "version": "0.2.0",
+  "wheel_url": "https://updates.kirocrew.dev/cli/beta/0.2.0/kirocrew-0.2.0-py3-none-any.whl",
+  "sha256": "…",
+  "sig_url": "https://updates.kirocrew.dev/cli/beta/0.2.0/kirocrew-0.2.0-py3-none-any.whl.sig",
+  "python_requires": ">=3.9",
+  "pub_date": "2026-07-18T06:15:00Z"
+}
+```
+
+### Version scheme (PEP 440)
+
+The wheel version is read from `pyproject.toml` `[project].version`, so the nightly build stamps that field to a PEP 440 dev release (stamping `src/kiro_crew/__init__.py` alone has no effect — setuptools reads the version from `pyproject.toml`). Insider and stable carry the plain release version and ship one byte-identical wheel; the channel, not the version, conveys maturity:
+
+| Channel | Desktop display | CLI wheel version |
+|---------|-----------------|-------------------|
+| Nightly | `0.2.0-nightly.20260708` | `0.2.0.dev20260708` |
+| Beta (insider) | `0.2.0-beta.1` | `0.2.0` |
+| Stable | `0.2.0` | `0.2.0` |
+
+### Install and self-update (client)
+
+```bash
+# install, or switch channels
+curl -fsSL https://updates.kirocrew.dev/cli.sh | sh -s -- --channel {nightly|insider|stable}
+#   reads feed/{channel}/latest-cli.json -> downloads wheel -> verifies SHA256
+#   installs isolated via pipx (or uv tool) -> records channel in ~/.kirocrew/channel
+
+# self-update, staying on the recorded channel
+kirocrew update
+```
+
+This is a new download path, separate from the source-build `install.sh` (git clone + `pip install -e`, updated via `git pull`).
+
+### CI and infrastructure delta
+
+- Add a `publish-cli` step to `nightly.yml` and `beta-cut.yml` that uploads the wheel to `cli/{channel}/{version}/` and writes `feed/{channel}/latest-cli.json` + `SHA256SUMS` + a detached signature (cosign/minisign) over the manifest. Gate it on the wheel build only, never on CDSigner.
+- Extend `promote-stable.yml` to also copy the wheel and write `feed/stable/latest-cli.json`.
+- Grant the CI signing-invoker role `s3:PutObject` on `cli/*` and `feed/*` (the `feed/*` grant is currently missing).
+- Serve `cli.sh` from the existing CloudFront distribution alongside the feeds.
+
 ## Migration from Current State
 
 1. **Phase 1** — Add nightly workflow + S3 feed bucket (CDK). Wire `auto-update.js` to use the new feed URL once DNS is live.
 2. **Phase 2** — Add beta-cut + promote workflows. Test with internal users.
 3. **Phase 3** — Add rollback workflow + blocked-versions.json client check. Add Settings > Update Channel UI.
+4. **Phase 4** — Add the CLI channel feeds (`latest-cli.json`), the `publish-cli` step on nightly/beta-cut/promote-stable, the `cli/*` + `feed/*` PutObject grant, and publish `cli.sh` plus the `kirocrew update` self-update path.
 
-The existing `release.yml` (GitHub Releases on tag push) stays as-is for the pip wheel distribution. Desktop auto-update uses the S3 feed independently.
+The existing `release.yml` (GitHub Releases on tag push) remains an additional wheel distribution; channel-based CLI installs and self-update use the S3 feed described in **CLI (Linux / EC2) Distribution** above. Desktop auto-update uses the S3 feed independently.

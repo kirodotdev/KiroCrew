@@ -1,0 +1,122 @@
+name: Publish CLI (reusable)
+
+# Reusable workflow: publish an already-built CLI wheel to a release channel.
+# Called by nightly.yml today (and by beta-cut.yml / promote-stable.yml once
+# those exist). See docs/RELEASE_AUTOMATION.md -> "CLI (Linux / EC2) Distribution".
+#
+# Key properties:
+#   - CI-direct feed: writes feed/<channel>/latest-cli.json straight from CI.
+#   - Never gated on CDSigner/notarization (Linux has no Gatekeeper), so a macOS
+#     signing failure never blocks a CLI release.
+#   - Publishes the wheel exactly as built; the manifest version is parsed from
+#     the wheel filename so it always matches what pip will install.
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Release channel: nightly | beta | stable"
+        required: true
+        type: string
+      version:
+        description: "Human-readable version label (informational; the wheel's own version is authoritative)"
+        required: false
+        type: string
+        default: ""
+      wheel_artifact:
+        description: "Name of the uploaded artifact containing the wheel"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-cli:
+    name: Publish CLI wheel (${{ inputs.channel }})
+    runs-on: ubuntu-latest
+    env:
+      HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION_LABEL: ${{ inputs.version }}
+    steps:
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: cli-dist
+
+      - name: Locate wheel and compute checksum
+        id: wheel
+        run: |
+          set -euo pipefail
+          WHEEL=$(find cli-dist -name '*.whl' | head -1)
+          if [ -z "$WHEEL" ]; then
+            echo "::error::No .whl found in artifact '${{ inputs.wheel_artifact }}'"
+            exit 1
+          fi
+          WHEEL_DIR=$(dirname "$WHEEL")
+          WHEEL_NAME=$(basename "$WHEEL")
+          # PEP 427: wheel filename fields are '-'-separated and the distribution
+          # name contains no '-', so the version is always the second field. Using
+          # the wheel's own version keeps the manifest in sync with what pip installs.
+          WHEEL_VERSION=$(echo "$WHEEL_NAME" | awk -F- '{print $2}')
+          ( cd "$WHEEL_DIR" && sha256sum "$WHEEL_NAME" > SHA256SUMS )
+          SHA256=$(awk '{print $1}' "$WHEEL_DIR/SHA256SUMS")
+          {
+            echo "path=$WHEEL"
+            echo "name=$WHEEL_NAME"
+            echo "sumsdir=$WHEEL_DIR"
+            echo "version=$WHEEL_VERSION"
+            echo "sha256=$SHA256"
+          } >> "$GITHUB_OUTPUT"
+          echo "Wheel: $WHEEL_NAME (version $WHEEL_VERSION, label '${VERSION_LABEL}')"
+
+      - name: Configure AWS credentials
+        if: env.HAS_SIGNING_SECRETS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Publish wheel and channel manifest
+        if: env.HAS_SIGNING_SECRETS
+        env:
+          BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+          WHEEL_PATH: ${{ steps.wheel.outputs.path }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.name }}
+          SUMS_DIR: ${{ steps.wheel.outputs.sumsdir }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          SHA256: ${{ steps.wheel.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          PREFIX="cli/${CHANNEL}/${WHEEL_VERSION}"
+          aws s3 cp "$WHEEL_PATH" "s3://${BUCKET}/${PREFIX}/${WHEEL_NAME}"
+          aws s3 cp "${SUMS_DIR}/SHA256SUMS" "s3://${BUCKET}/${PREFIX}/SHA256SUMS"
+
+          WHEEL_URL="https://${BUCKET}.s3.us-west-2.amazonaws.com/${PREFIX}/${WHEEL_NAME}"
+          cat > /tmp/latest-cli.json <<EOF
+          {
+            "channel": "${CHANNEL}",
+            "version": "${WHEEL_VERSION}",
+            "wheel_url": "${WHEEL_URL}",
+            "sha256": "${SHA256}",
+            "python_requires": ">=3.10",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          aws s3 cp /tmp/latest-cli.json "s3://${BUCKET}/feed/${CHANNEL}/latest-cli.json" \
+            --content-type application/json
+
+          {
+            echo "## CLI Published (${CHANNEL})"
+            echo "- Wheel: \`${WHEEL_NAME}\`"
+            echo "- Version: \`${WHEEL_VERSION}\`"
+            echo "- Feed: \`feed/${CHANNEL}/latest-cli.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skipped (no signing secrets)
+        if: ${{ !env.HAS_SIGNING_SECRETS }}
+        run: |
+          echo "AWS_SIGNING_ROLE_ARN not set - skipping CLI publish (fork / feature-branch run)." >> "$GITHUB_STEP_SUMMARY"
