@@ -227,7 +227,17 @@ class TestSubprocessRegistry:
         assert "cancelme" not in _CANCELLED_PROC_JOBS  # flag consumed
 
     def test_run_command_without_job_id_not_registered(self) -> None:
-        result = run_command_sandboxed("echo hi", timeout=10)
+        # Patch the sandbox wrap to identity for the same reason as the mid-run
+        # test above: GH Actions blocks the namespace sandbox (unshare NEWNS),
+        # so the real launcher aborts with status "error". What's under test is
+        # that a job_id-less run is NOT added to the registry — mechanics that
+        # don't need the sandbox.
+        with patch(
+            "kiro_crew.cron_script.wrap_argv", side_effect=lambda argv, mode: (argv, None)
+        ), patch(
+            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
+        ):
+            result = run_command_sandboxed("echo hi", timeout=10)
         assert result["status"] == "ok"
         assert not _RUNNING_PROCS
 

@@ -34,12 +34,20 @@ pytestmark = pytest.mark.xdist_group("sandbox_pidns_e2e")
 
 
 def _pidns_available() -> bool:
-    """True when unprivileged user+pid namespaces work on this host."""
+    """True when the sandbox launcher's namespaces work on this host.
+
+    The launcher needs BOTH the user+pid namespace (for PID isolation) AND the
+    mount namespace (``unshare(NEWNS)`` — used to bind-mount over credential
+    dirs). GitHub Actions permits user+pid but blocks NEWNS (``errno 1``), so a
+    user+pid-only probe would let these e2e tests run and then fail when the
+    launcher aborts on NEWNS. Probe ``--mount`` too so we skip cleanly there —
+    mirrors the CI deselection of the other NEWNS-dependent sandbox suites.
+    """
     if sys.platform != "linux":
         return False
     try:
         r = subprocess.run(
-            ["unshare", "--user", "--pid", "--fork", "true"],
+            ["unshare", "--user", "--pid", "--mount", "--fork", "true"],
             capture_output=True,
             timeout=10,
         )
