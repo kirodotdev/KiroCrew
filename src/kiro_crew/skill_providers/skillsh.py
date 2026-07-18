@@ -181,7 +181,8 @@ def _github_raw_url(repo_url: str, file_path: str) -> str | None:
     if not match:
         return None
     user, repo = match.group(1), match.group(2)
-    # Try main branch first (most common), caller can retry with master
+    # Try the "main" default branch first (most common); caller can retry with
+    # the legacy default branch name if this 404s.
     return f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
 
 
