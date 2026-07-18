@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 from collections import defaultdict
 from datetime import datetime
 from uuid import uuid4
@@ -92,15 +93,38 @@ class SimpleDiGraph:
 
 class KnowledgeStore:
     def __init__(self, db_path: str):
-        self.db = sqlite3.connect(db_path, timeout=30, isolation_level=None)
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA busy_timeout=10000")
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.row_factory = sqlite3.Row
+        self._db_path = db_path
+        # One connection PER THREAD. sqlite3 connections carry
+        # thread affinity (check_same_thread=True by default), but callers
+        # like HybridRetriever.search() run on worker threads via
+        # run_in_embed_pool / asyncio.to_thread while the store is created
+        # on the event-loop thread. A shared connection raises
+        # sqlite3.ProgrammingError from those workers (HTTP 500 on
+        # /api/knowledge/search-for-context). WAL mode (below) supports
+        # concurrent readers alongside a single writer, and busy_timeout
+        # serializes rare cross-thread writes.
+        self._thread_local = threading.local()
         self.graph = SimpleDiGraph()
         self._init_schema()
         self._migrate()
         self._load_graph()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @property
+    def db(self) -> sqlite3.Connection:
+        """The calling thread's connection, created lazily on first use."""
+        conn = getattr(self._thread_local, "conn", None)
+        if conn is None:
+            conn = self._connect()
+            self._thread_local.conn = conn
+        return conn
 
     def _init_schema(self):
         self.db.executescript("""
@@ -772,4 +796,9 @@ class KnowledgeStore:
         return {"items_imported": items_imported, "entities_created": entities_created, "relations_rebuilt": relations_rebuilt}
 
     def close(self):
-        self.db.close()
+        """Close the calling thread's connection (other threads' connections
+        are released when their thread or the store is garbage-collected)."""
+        conn = getattr(self._thread_local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._thread_local.conn = None

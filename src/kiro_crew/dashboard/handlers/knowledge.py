@@ -1334,9 +1334,9 @@ async def search_for_context(request: web.Request) -> web.Response:
     embedder = request.app.get("knowledge_embedder")
     embed_fn = embedder.embed if embedder and await embedder.is_available_async() else None
     retriever = HybridRetriever(store, embedder=embed_fn)
-    # HybridRetriever.search attaches citation fields (source identity + the
-    # per-document locator) inside this executor call, so all sqlite access
-    # stays on the connection's thread. mc-embed bulkhead: the query embed
+    # HybridRetriever.search runs on an mc-embed worker thread; KnowledgeStore
+    # hands each thread its own sqlite connection, so all sqlite
+    # access is thread-safe here. mc-embed bulkhead: the query embed
     # blocks on Ollama.
     results = await run_in_embed_pool(retriever.search, q, limit=limit)
 
