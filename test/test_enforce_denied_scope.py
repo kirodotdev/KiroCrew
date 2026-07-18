@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from kiro_crew.agent import _denied_cmd_mtimes, _enforce_denied_commands
+from kiro_crew.agent import _denied_cmd_mtimes, _enforce_denied_commands, _load_json
+
+# Non-UTF-8 bytes (a macOS AppleDouble "._foo.json" stub) — exercises Mesh-2851.
+_APPLEDOUBLE_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X\xa3\xff\xfe" + b"\x00" * 32
 
 
 def _setup(tmp_path: Path, scope: str = "all"):
@@ -93,3 +96,39 @@ class TestEnforceDeniedScope:
         for name in ("kirocrew.json", "other-agent.json"):
             data = json.loads((agents_dir / name).read_text())
             assert "rm -rf /" in data["toolsSettings"]["execute_bash"]["deniedCommands"]
+
+    def test_non_utf8_agent_file_does_not_crash(self, tmp_path: Path):
+        """A non-UTF-8 *.json file (e.g. a macOS AppleDouble "._foo.json"
+        resource-fork stub) must be skipped, not crash gateway startup.
+
+        Regression for Mesh-2851: read_text raises UnicodeDecodeError (a
+        ValueError, not an OSError), which escaped the old
+        (json.JSONDecodeError, OSError) except clause.
+        """
+        bundled_dir, agents_dir, mock_cfg = _setup(tmp_path, "all")
+        # Drop a binary AppleDouble stub alongside the valid configs.
+        (agents_dir / "._kirocrew.json").write_bytes(_APPLEDOUBLE_BYTES)
+
+        with (
+            patch("kiro_crew.agent._BUNDLED_CFG_DIR", bundled_dir),
+            patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
+            patch("kiro_crew.config.KiroCrewConfig.load", return_value=mock_cfg),
+        ):
+            # Must not raise UnicodeDecodeError.
+            _enforce_denied_commands()
+
+        # The binary stub is left untouched (not rewritten as JSON).
+        assert (agents_dir / "._kirocrew.json").read_bytes() == _APPLEDOUBLE_BYTES
+        # Valid sibling configs are still enforced despite the bad file.
+        for name in ("kirocrew.json", "other-agent.json"):
+            data = json.loads((agents_dir / name).read_text())
+            assert "rm -rf /" in data["toolsSettings"]["execute_bash"]["deniedCommands"]
+
+    def test_load_json_returns_empty_on_non_utf8(self, tmp_path: Path):
+        """_load_json (the central loader used by _sanitize_agent_hooks and
+        many other startup-repair paths) returns {} for a non-UTF-8 file
+        instead of raising UnicodeDecodeError. Regression for Mesh-2851."""
+        bad = tmp_path / "._agent.json"
+        bad.write_bytes(_APPLEDOUBLE_BYTES)
+
+        assert _load_json(bad) == {}

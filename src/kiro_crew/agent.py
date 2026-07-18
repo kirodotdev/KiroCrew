@@ -464,7 +464,7 @@ def _load_json(path: Path) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
         return {}
     if not isinstance(data, dict):
@@ -2268,7 +2268,7 @@ def _enforce_denied_commands() -> None:
             if _denied_cmd_mtimes.get(str(f)) == mtime:
                 continue
             data = json.loads(f.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue
         ts = data.setdefault("toolsSettings", {})
         bash = ts.setdefault("execute_bash", {})
