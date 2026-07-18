@@ -86,7 +86,7 @@ Deterministic cron jobs that bypass the LLM entirely:
 - **Script mode**: `script` field specifies a Python callable path (`~/.kirocrew/crons/file.py:function`). The function receives a `ScriptContext` with `ctx.call_tool()` (MCP tool access), `ctx.notify()` (deliver message), `ctx.message` (arguments from the `message` field). Control flow via exceptions: `raise Skip()` to silently retry next tick, `raise Done()` to complete and remove the job, `raise Report("msg")` to deliver a message and keep running.
 - **Command mode**: `command` field specifies a shell command to run (mutually exclusive with `script`). Stdout captured as result.
 - **Timeout**: configurable per job (default 30s for scripts, 300s for commands).
-- **Safety**: scripts must live under `~/.kirocrew/crons/`. `is_sensitive_path()` blocks credential file access. SEL audit on every invocation. Auto-pause after 5 consecutive failures. Concurrent execution guard prevents double-fire.
+- **Safety**: scripts must live under `~/.kirocrew/crons/`. `is_sensitive_path()` blocks credential file access. SEL audit on every invocation. Auto-pause after 5 consecutive failures (`_AUTO_PAUSE_THRESHOLD`, single-sourced in `CronJob.record_failure`/`record_success`). The auto-pause is **persistent**: an execution-owned `auto_paused` flag (distinct from `user_paused`) is written by `_save`, propagated by `_merge_job_result`, and folded into the effective `enabled` derivation in `_load` — so a failing job stays paused across a daemon restart; `enable_job(True)` or a later success clears it (SEL-audited transitions). Concurrent execution guard prevents double-fire.
 - **Kind tag**: `cron_list` labels each job as `script`, `command`, or `agent` based on which mode is configured.
 
 ### Trigger Command

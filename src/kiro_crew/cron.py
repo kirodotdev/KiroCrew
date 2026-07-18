@@ -59,6 +59,7 @@ _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
 _TIMER_POLL_SECS = 30  # check for due cron-expr jobs
+_AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
 _MAX_SKIP_DATE_LOOKAHEAD = 52  # weekly cron × 1 year — cap iterations when advancing past skip_dates
@@ -93,6 +94,7 @@ class CronJob:
     thread_ts: str | None = None
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
+    auto_paused: bool = False  # True when paused by execution after repeated failures; cleared on re-enable/success
     last_run_ts: float | None = None
     last_status: str | None = None  # "ok" | "error"
     last_error: str | None = None
@@ -129,6 +131,52 @@ class CronJob:
     script: str = ""  # Python callable path (module:func or file.py:func); bypasses LLM dispatch
     command: str = ""  # Shell command for direct execution; bypasses LLM dispatch
     timeout: int = 0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
+
+    def _audit_pause_change(self, outcome: str) -> None:
+        """Emit a SEL audit event for an auto-pause permission transition.
+
+        Auto-pausing revokes a job's ability to execute (and clearing it restores
+        that ability), so the transition is a permission decision that must be
+        auditable per the security-controls guideline. Best-effort — an audit
+        write failure must never mask the failure/success bookkeeping that drives
+        the pause itself; the tool-invocation error paths already log the run
+        outcome separately."""
+        try:
+            sel.sel().log_tool_invocation(
+                session_key=f"cron:{self.id}",
+                tool_name=self.script or self.command or "cron_job",
+                tool_kind="cron_auto_pause",
+                outcome=outcome,
+                metadata={"job_id": self.id, "consecutive_failures": self.consecutive_failures},
+            )
+        except Exception:
+            logger.debug("SEL logging failed in cron auto-pause transition", exc_info=True)
+
+    def record_failure(self) -> None:
+        """Count one consecutive failure and auto-pause once the threshold is hit.
+
+        Auto-pause is execution-owned: it sets both `enabled` (so the in-memory
+        scheduler stops firing immediately) and `auto_paused` (the durable reason,
+        distinct from a user pause), so the pause survives a reload. Single-sourced
+        here so the many script/command failure branches can't drift on how a pause
+        is recorded — mirroring how the effective-enabled derivation reads it back.
+        """
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
+            self.enabled = False
+            self.auto_paused = True
+            self._audit_pause_change("auto_paused")
+
+    def record_success(self) -> None:
+        """Reset the failure counter and lift any execution auto-pause.
+
+        A recovered job clears `auto_paused`; `enabled` is intentionally NOT set
+        back to True here — a job the user paused (`user_paused`) must stay paused
+        across a success, and re-enabling is the user's action (`enable_job`)."""
+        self.consecutive_failures = 0
+        if self.auto_paused:
+            self.auto_paused = False
+            self._audit_pause_change("auto_pause_cleared")
 
 
 # ── Session-context helper (Mesh-1026) ──
@@ -828,6 +876,20 @@ class CronService:
                 if job.id == job_id:
                     job.user_paused = not enabled
                     job.enabled = enabled
+                    # Re-enabling clears an execution auto-pause; without this a
+                    # job auto-paused after failures would be re-derived as
+                    # disabled on the next reload despite the explicit resume.
+                    if enabled and job.auto_paused:
+                        job.auto_paused = False
+                        # Reset the counter too: the user re-enabled expecting a
+                        # fresh set of attempts. Left at the threshold, the very
+                        # next failure would immediately re-auto-pause the job
+                        # (consecutive_failures already >= threshold). Mirrors
+                        # record_success, which resets the counter on recovery.
+                        job.consecutive_failures = 0
+                        # A user resume that lifts an auto-pause restores execute
+                        # permission — audit it like the auto-pause transition.
+                        job._audit_pause_change("auto_pause_cleared")
                     self._save()
                     self._arm_timer()
                     logger.info("%s cron job %s", "Enabled" if enabled else "Disabled", job_id)
@@ -1222,6 +1284,14 @@ class CronService:
                 if job.schedule.kind == "at" and not job.delete_after_run:
                     by_id[job.id].enabled = job.enabled
                     by_id[job.id].user_paused = not job.enabled
+                # auto_paused is execution-owned (repeated-failure auto-pause and
+                # its reset on success), so propagate it for every job — unlike
+                # `enabled`, which must not be clobbered for recurring jobs. Also
+                # reflect it into the disk copy's derived `enabled` so the next
+                # reader sees the pause before a reload re-derives it.
+                by_id[job.id].auto_paused = job.auto_paused
+                if job.auto_paused and not by_id[job.id].user_paused:
+                    by_id[job.id].enabled = False
                 by_id[job.id].last_result = job.last_result
                 by_id[job.id].last_posted_hash = job.last_posted_hash
                 by_id[job.id].consecutive_dupes = job.consecutive_dupes
@@ -1284,8 +1354,18 @@ class CronService:
                     ),
                     channel=j.get("channel"),
                     thread_ts=j.get("thread_ts"),
-                    enabled=not j.get("user_paused", not j.get("enabled", True)),
+                    # Effective enabled is derived from the two "reasons a job is
+                    # off": an explicit user pause and an execution auto-pause
+                    # (repeated failures). Deriving it — rather than trusting the
+                    # stored `enabled` — is what makes an auto-pause survive a
+                    # restart: the failing run sets auto_paused=True, and a
+                    # recurring job's `enabled` is otherwise never persisted, so a
+                    # naive `enabled` read would resurrect the job on reload.
+                    # user_paused/auto_paused fall back to legacy !enabled for
+                    # stores written before either field existed.
+                    enabled=not j.get("user_paused", not j.get("enabled", True)) and not j.get("auto_paused", False),
                     user_paused=j.get("user_paused", not j.get("enabled", True)),
+                    auto_paused=j.get("auto_paused", False),
                     last_run_ts=j.get("last_run_ts"),
                     last_status=j.get("last_status"),
                     last_error=j.get("last_error"),
@@ -1348,6 +1428,7 @@ class CronService:
                     "thread_ts": j.thread_ts,
                     "enabled": j.enabled,
                     "user_paused": j.user_paused,
+                    "auto_paused": j.auto_paused,
                     "last_run_ts": j.last_run_ts,
                     "last_status": j.last_status,
                     "last_error": j.last_error,

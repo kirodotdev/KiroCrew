@@ -261,8 +261,13 @@ class TestAutoPause:
         for i in range(4):
             await _run_script_callback(gw, job, {"status": "error", "error": f"fail {i}"})
             assert job.enabled is True, f"Should not pause after {i+1} failures"
+            assert job.auto_paused is False
         await _run_script_callback(gw, job, {"status": "error", "error": "fail 4"})
         assert job.enabled is False
+        # auto_paused is the durable reason the pause survives a reload; without
+        # it, _load re-derives enabled=True (user_paused stays False) and the
+        # failing job resurrects on the next daemon restart.
+        assert job.auto_paused is True
         assert job.consecutive_failures == 5
 
     @pytest.mark.asyncio
@@ -274,6 +279,7 @@ class TestAutoPause:
             assert job.enabled is True
         await _run_command_callback(gw, job, {"status": "error", "output": "err 4", "exit_code": 1})
         assert job.enabled is False
+        assert job.auto_paused is True
         assert job.consecutive_failures == 5
 
     @pytest.mark.asyncio
@@ -286,6 +292,7 @@ class TestAutoPause:
         await _run_script_callback(gw, job, {"status": "ok"})
         assert job.consecutive_failures == 0
         assert job.enabled is True
+        assert job.auto_paused is False
 
 
 # ── Per-job model override: _acquire_with_model_fallback / _annotate_model_downgrade ──

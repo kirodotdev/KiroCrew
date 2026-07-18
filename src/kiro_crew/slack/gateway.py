@@ -1293,25 +1293,21 @@ class GatewayOrchestrator:
                         if result.get("status") == "ok":
                             job.last_status = "ok"
                             job.last_error = ""
-                            job.consecutive_failures = 0
+                            job.record_success()
                         else:
                             job.last_status = "error"
                             job.last_error = f"non-ok status with no output (status={result.get('status')})"
-                            job.consecutive_failures += 1
-                            if job.consecutive_failures >= 5:
-                                job.enabled = False
+                            job.record_failure()
                         return None  # no output = no delivery
                     job.last_result = redact(output)
                     job.last_error = ""
                     if result.get("status") == "ok":
                         job.last_status = "ok"
-                        job.consecutive_failures = 0
+                        job.record_success()
                     else:
                         job.last_status = "error"
                         job.last_error = f"command failed (exit_code={result.get('exit_code')})"
-                        job.consecutive_failures += 1
-                        if job.consecutive_failures >= 5:
-                            job.enabled = False
+                        job.record_failure()
                     try:
                         sel().log_tool_invocation(
                             session_key=f"cron:{job.id}", tool_name="cron_command_exec",
@@ -1323,9 +1319,7 @@ class GatewayOrchestrator:
                 except asyncio.TimeoutError:
                     job.last_error = f"timeout ({cmd_timeout + 5}s)"
                     job.last_status = "error"
-                    job.consecutive_failures += 1
-                    if job.consecutive_failures >= 5:
-                        job.enabled = False
+                    job.record_failure()
                     try:
                         sel().log_tool_invocation(
                             session_key=f"cron:{job.id}", tool_name="cron_command_exec",
@@ -1339,9 +1333,7 @@ class GatewayOrchestrator:
                     err_str = redact(str(exc))
                     job.last_error = err_str[:200]
                     job.last_status = "error"
-                    job.consecutive_failures += 1
-                    if job.consecutive_failures >= 5:
-                        job.enabled = False
+                    job.record_failure()
                     try:
                         sel().log_tool_invocation(
                             session_key=f"cron:{job.id}", tool_name="cron_command_exec",
@@ -1388,7 +1380,7 @@ class GatewayOrchestrator:
                         job.last_result = "ok"
                         job.last_error = ""
                         job.last_status = "ok"
-                        job.consecutive_failures = 0
+                        job.record_success()
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}", tool_name=job.script,
@@ -1411,7 +1403,7 @@ class GatewayOrchestrator:
                         job.last_result = redact(msg) if msg else ""
                         job.last_error = ""
                         job.last_status = "ok"
-                        job.consecutive_failures = 0
+                        job.record_success()
                         # Deliver Done message and remove job
                         await _deliver_script_result(job, job.last_result, remove=True)
                         try:
@@ -1427,7 +1419,7 @@ class GatewayOrchestrator:
                         job.last_result = redact(msg) if msg else ""
                         job.last_error = ""
                         job.last_status = "ok"
-                        job.consecutive_failures = 0
+                        job.record_success()
                         # Deliver Report message (keep job running)
                         await _deliver_script_result(job, job.last_result)
                         try:
@@ -1445,9 +1437,8 @@ class GatewayOrchestrator:
                     logger.warning("Script cron '%s' timed out after %ds", job.name, script_timeout + 5)
                     job.last_error = f"timeout ({script_timeout + 5}s)"
                     job.last_status = "error"
-                    job.consecutive_failures += 1
-                    if job.consecutive_failures >= 5:
-                        job.enabled = False
+                    job.record_failure()
+                    if job.auto_paused:
                         logger.warning("Script cron '%s' auto-paused after %d consecutive errors", job.name, job.consecutive_failures)
                     try:
                         sel().log_tool_invocation(
@@ -1462,9 +1453,8 @@ class GatewayOrchestrator:
                     err_str = redact(str(exc))
                     job.last_error = err_str
                     job.last_status = "error"
-                    job.consecutive_failures += 1
-                    if job.consecutive_failures >= 5:
-                        job.enabled = False
+                    job.record_failure()
+                    if job.auto_paused:
                         logger.warning("Script cron '%s' auto-paused after %d consecutive errors", job.name, job.consecutive_failures)
                     try:
                         sel().log_tool_invocation(
@@ -1638,7 +1628,7 @@ class GatewayOrchestrator:
                 # the job recovered — next failure should always alert fresh.
                 job.last_failure_hash = ""
                 job.last_failure_at = 0.0
-                job.consecutive_failures = 0
+                job.record_success()
 
                 if rh == job.last_posted_hash:
                     job.consecutive_dupes += 1
