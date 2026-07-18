@@ -932,7 +932,13 @@ async def api_models(request: web.Request) -> web.Response:
 
         kiro_bin = _resolve_kiro_bin()
         if not kiro_bin:
-            return web.json_response([])
+            # Degraded (binary not resolved yet), NOT a genuine "zero models"
+            # result. Return 503 so the client retries instead of caching an
+            # empty list — a cached [] renders an empty picker that only a
+            # manual page refresh recovers from.
+            return web.json_response(
+                {"error": "kiro binary not resolved"}, status=503
+            )
         argv = [kiro_bin, "chat", "--list-models", "--format", "json", "--no-interactive"]
         # Mirror AcpClient._spawn() sandbox: wrap_argv + env + process isolation.
         # Note: AcpClient._spawn() is for interactive ACP sessions (stdin/stdout
@@ -960,7 +966,16 @@ async def api_models(request: web.Request) -> web.Response:
                 except ProcessLookupError:
                     pass
                 await proc.communicate()
-                return web.json_response([])
+                # A cold CLI spawn exceeded the timeout. This is the common
+                # cause of the "picker is empty until I refresh" symptom: a
+                # slow first `--list-models` spawn used to return [] (HTTP 200),
+                # which the client cached as a successful empty result. Return
+                # 503 instead so React Query retries with backoff and the
+                # picker self-heals without a manual refresh.
+                logger.warning("api_models: --list-models timed out; returning 503")
+                return web.json_response(
+                    {"error": "model list timed out"}, status=503
+                )
         finally:
             if cleanup and callable(cleanup):
                 cleanup()
@@ -976,7 +991,10 @@ async def api_models(request: web.Request) -> web.Response:
             )
         return web.json_response(models)
     except Exception:
-        return web.json_response([])
+        # Spawn failure, JSON parse error, etc. — degraded, not "zero models".
+        # 503 so the client retries instead of caching an empty picker.
+        logger.warning("api_models failed; returning 503 for client retry", exc_info=True)
+        return web.json_response({"error": "model list unavailable"}, status=503)
 
 
 async def api_effort_levels(request: web.Request) -> web.Response:
