@@ -23,7 +23,7 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
-    sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 0, credits_covered: 3044, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04' } }),
+    sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 3044, credits_covered: 3044, credits_overage: 0, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04' } }),
     listApps: vi.fn().mockResolvedValue([]),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
@@ -671,18 +671,18 @@ describe('Kiro credits pill', () => {
 
   it('renders used/limit and percentage once loaded', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    // default mock: 3044 in-plan + 0 overage of 10000 = 30%
+    // default mock: 3044 total used of 10000 = 30%
     const pill = await screen.findByTitle(/Kiro credits: 3,044 \/ 10,000 \(30%\)/)
     expect(pill).toBeInTheDocument()
   })
 
-  it('sums in-plan (covered) and overage credits for the displayed total', async () => {
+  it('renders the true total (credits_used) including overage above the plan', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({
-      usage: { credits_covered: 10000, credits_used: 500, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER' },
+      usage: { credits_covered: 10000, credits_used: 10500, credits_overage: 500, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER' },
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    // 10000 covered + 500 overage = 10500 / 10000 = 105%
+    // credits_used=10500 total / 10000 plan = 105% (500 over plan)
     expect(await screen.findByTitle(/Kiro credits: 10,500 \/ 10,000 \(105%\)/)).toBeInTheDocument()
   })
 
@@ -722,7 +722,7 @@ describe('Kiro credits pill — edge cases', () => {
 
   it('defaults covered/overage to 0 and renders sub-1000 values without K suffix', async () => {
     const { api } = await import('../api/client')
-    // only credits_plan present -> credits_covered and credits_used fall back to 0
+    // only credits_plan present -> credits_used falls back to 0
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 500 } } as never)
     renderWithProviders(<App />, { route: '/chat' })
     const pill = await screen.findByTitle(/Kiro credits: 0 \/ 500 \(0%\)/)
