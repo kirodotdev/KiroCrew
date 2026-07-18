@@ -708,7 +708,13 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     except (OSError, ValueError):
         pass
     try:
-        candidates.add(str(Path(expanded).resolve()))
+        # Guarded false-positive: this resolve() is INSIDE is_sensitive_path — the
+        # sanitizer itself — building candidate forms to CHECK a path against the
+        # sensitive denylist. It performs no read/write. CodeQL surfaces
+        # py/path-injection here only because a new caller (artifact relocate)
+        # reaches it with user input; the function's whole purpose is to vet that
+        # input, so suppress the alert on the resolution step.
+        candidates.add(str(Path(expanded).resolve()))  # lgtm[py/path-injection]
     except (OSError, ValueError, RuntimeError):
         pass
     candidates.add(os.path.normpath(expanded))

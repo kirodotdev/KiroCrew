@@ -23,27 +23,51 @@ mutations — MCP tools and the CLI both go through here.
 from __future__ import annotations
 
 import asyncio
+import getpass
 import json
 import logging
+import os
 import re
 import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import publish_sync
 from kiro_crew import sel as _sel_mod
 from kiro_crew.artifacts import (
+    MAX_CONTENT_BYTES,
     ArtifactAlreadyExistsError,
+    ArtifactComment,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactValidationError,
     get_default_folder_store,
     get_default_store,
 )
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.publish_provider import (
+    Capability,
+    CommentAnchor,
+    KindSupport,
+    NotPublishedError,
+    PublishConflictError,
+    PublishError,
+    PublishUnavailableError,
+    get_provider,
+    list_providers,
+)
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 
 def sel():
@@ -55,9 +79,20 @@ def sel():
 logger = logging.getLogger(__name__)
 
 
-# Maximum size of an artifact create/update request body (bytes). The store
-# itself enforces a stricter content cap; this layer caps the JSON envelope.
-_MAX_BODY_BYTES = 2 * 1024 * 1024  # 2 MiB
+# Maximum size of an artifact create/update request body (bytes). Sized to the
+# store's content cap (MAX_CONTENT_BYTES = 25 MiB) PLUS headroom for JSON
+# envelope overhead (base64/escaping + the other body fields), so content the
+# store + validation accept (up to 25 MiB) is never rejected earlier at this
+# HTTP boundary. Previously pinned at 2 MiB, which silently became the effective
+# ceiling for dashboard/MCP artifact_save/update once the content cap was raised
+# 1 MiB -> 25 MiB (the "store enforces a stricter cap" assumption inverted).
+_MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB envelope headroom
+
+# Publish-provider name grammar. Upstream imports this from ``validation`` where
+# it also backs the MCP publish-tool FieldSpecs; the public fork's validation
+# module doesn't carry those tools, so the constraint lives here at the sole
+# HTTP boundary that accepts a provider name.
+_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}$")
 
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
@@ -68,14 +103,13 @@ def _err(message: str, status: int = 400) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
 
-def _notify_artifact_update(
-    state: Any, slug: str, version: int, *, deleted: bool = False
-) -> None:
+def _notify_artifact_update(state: Any, slug: str, version: int, *, deleted: bool = False) -> None:
     """Best-effort WS broadcast of an artifact content change (Mesh-2772).
 
     Called from the mutation funnel (create / content update / revert /
-    delete) — the same choke points as the SEL audit, so panel chat, other
-    dashboard sessions, Slack, and CLI mutations all emit. Fire-and-forget:
+    relocate / delete) — the same choke points as the SEL audit, so panel
+    chat, other dashboard sessions, Slack, and CLI mutations all emit.
+    Fire-and-forget:
     react-query's 30s staleness window remains the safety net if the broadcast
     fails or a client misses it. Known limitation (accepted): external edits to
     a file-backed artifact's source_path never pass through a handler, so those
@@ -106,6 +140,19 @@ async def _read_json_body(request: web.Request) -> dict[str, Any]:
 
 def _session_key(request: web.Request) -> str:
     return request.headers.get("X-Session-Key") or ""
+
+
+def _event_session_id(request: web.Request) -> str | None:
+    """Session key for activity-feed events, or None when not a real slot.
+
+    The dashboard's browser client sets X-Session-Key to the literal
+    ``dashboard:ui`` for every request — that is not a chat slot a user can
+    navigate to, so drop it (same rule as ``api_artifact_update``).
+    """
+    sk = request.headers.get("X-Session-Key")
+    if not sk or sk == "dashboard:ui":
+        return None
+    return sk
 
 
 def _audit(
@@ -154,6 +201,13 @@ def _serialize(art: Any, *, include_content: bool = False) -> dict[str, Any]:
         cleaned, _ = redact_exfiltration_urls(cleaned)
         cleaned, _ = redact_credentials(cleaned)
         out["content"] = cleaned
+    # Publication block (Artifactory) is structural — view_url is an internal
+    # CloudFront URL and aliases are user input — but ``last_error`` can echo
+    # an arbitrary upstream error string, so redact it like other surfaced
+    # text per AUTOSDE security-controls.
+    pub = out.get("publication")
+    if isinstance(pub, dict) and isinstance(pub.get("last_error"), str) and pub["last_error"]:
+        pub["last_error"] = _redact_text(pub["last_error"])
     return out
 
 
@@ -960,6 +1014,505 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     return _json_response({"slug": art.slug, "event": latest})
 
 
+# ── Publishing / sharing (Artifactory — Mesh-1880) ───────────────────────────
+
+_VALID_VISIBILITY = ("PRIVATE", "SHARED", "PUBLIC")
+
+
+def _validate_sharing_body(body: dict[str, Any]) -> tuple[str, list[str]]:
+    """Extract and validate (visibility, shared_with) from a request body.
+
+    Raises ``ArtifactValidationError`` (→ 400) on any problem.
+    """
+    visibility = body.get("visibility") or "PRIVATE"
+    if visibility not in _VALID_VISIBILITY:
+        raise ArtifactValidationError("visibility must be PRIVATE, SHARED, or PUBLIC")
+    shared_with = body.get("shared_with") or []
+    if not isinstance(shared_with, list) or not all(isinstance(a, str) for a in shared_with):
+        raise ArtifactValidationError("shared_with must be a list of alias strings")
+    if visibility == "SHARED" and not shared_with:
+        raise ArtifactValidationError(
+            "SHARED visibility requires at least one alias in shared_with"
+        )
+    return visibility, shared_with
+
+
+def _sync_error_response(
+    tool: str, request: web.Request, slug: str, exc: Exception
+) -> web.Response:
+    """Map an Artifactory sync exception to an audited HTTP error response."""
+    if isinstance(exc, ArtifactNotFoundError):
+        status, outcome = 404, "error"
+    elif isinstance(exc, ArtifactValidationError):
+        status, outcome = 400, "denied"
+    elif isinstance(exc, PublishUnavailableError):
+        status, outcome = 503, "error"
+    elif isinstance(exc, PublishConflictError):
+        status, outcome = 409, "error"
+    elif isinstance(exc, NotPublishedError):
+        status, outcome = 409, "denied"
+    elif isinstance(exc, PublishError):
+        status, outcome = 502, "error"
+    else:
+        status, outcome = 500, "error"
+    # The exception text can originate from untrusted Artifactory MCP responses
+    # — redact credentials / exfiltration URLs before it reaches the dashboard
+    # AND the SEL audit log (AUTOSDE security-controls).
+    safe_msg = _redact_text(str(exc))
+    _audit(tool=tool, request=request, outcome=outcome, error=safe_msg, extra={"slug": slug})
+    return _err(safe_msg, status=status)
+
+
+def _publish_governance_denied(request: web.Request, provider_name: str) -> str | None:
+    """Plane-C governance chokepoint for artifact publishing.
+
+    Publishing is a user-driven dashboard HTTP action ("NOT LLM tools"), so the
+    host PreToolUse gate never sees it — this is where the ``capabilities.publish``
+    ceiling is enforced. Returns a denial reason (caller → 403) or ``None`` to
+    permit. Enforces, tightest-wins:
+      1. governance ceiling ∩ profile — ``capabilities.publish`` gate AND its
+         inner ``destinations`` ruleset (item ``destinations:<provider>``);
+      2. the standalone operator's ``config.publish.allowed_destinations``
+         allowlist (default-open, narrow-only — cannot widen past the ceiling).
+    A ``PlatformCompositionError`` propagates (fail-closed CPP); any other
+    governance error fails CLOSED (DENY) — publishing is an authorization
+    decision (bytes leave the box), so unlike the messaging/cron chokepoints it
+    must NOT degrade-to-permit. The DENY is produced inside ``governance_permits``
+    (``fail_closed=True``), because that helper swallows its own internal errors —
+    the handler-level ``except`` here only catches errors raised OUTSIDE it.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    session_key = _session_key(request)
+    try:
+        from kiro_crew.platform.governance_profiles import governance_permits
+
+        decision = governance_permits(
+            "capabilities.publish",
+            f"destinations:{provider_name}",
+            session_key=session_key,
+            # Authorization chokepoint: a governance-evaluation error must DENY
+            # (bytes leave the box). governance_permits swallows its own internal
+            # errors, so the fail-closed DENY has to be produced INSIDE it — the
+            # handler-level ``except`` below only ever sees errors raised outside
+            # governance_permits (e.g. the audit call).
+            fail_closed=True,
+        )
+        # Default to DENY (permitted=False) if the Decision is malformed: this is
+        # an exfil authorization chokepoint documented as "must NOT
+        # degrade-to-permit", so a missing/odd attr must fail closed, not open.
+        if not getattr(decision, "permitted", False):
+            try:
+                sel().log_governance_decision(
+                    session_key=session_key,
+                    tool_name=f"artifact_publish:{provider_name}",
+                    scope="capabilities.publish",
+                    item=f"destinations:{provider_name}",
+                    outcome="denied",
+                    rule=getattr(decision, "rule", ""),
+                    layer=getattr(decision, "layer", ""),
+                    reason=getattr(decision, "reason", ""),
+                )
+            except Exception:
+                logger.debug("publish governance deny audit failed", exc_info=True)
+            return getattr(decision, "reason", "publishing not permitted by policy")
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        # Fail CLOSED: publishing is an authorization decision (bytes leave the
+        # box to an external destination), so an unexpected error must DENY
+        # rather than degrade-to-permit. governance_permits(fail_closed=True)
+        # already denies on ITS own internal errors; this branch is the belt-and-
+        # suspenders catch for anything raised OUTSIDE it (e.g. the deny-audit
+        # call above), keeping the whole helper deny-on-error.
+        try:
+            from kiro_crew.platform.governance_profiles import audit_governance_degraded
+
+            audit_governance_degraded(
+                "artifact_publish", session_key=session_key, scope="capabilities.publish"
+            )
+        except Exception:
+            logger.debug("publish governance degrade audit unavailable", exc_info=True)
+        return "publishing denied: governance could not be evaluated"
+
+    # Config allowlist (default-open, narrow-only). Empty list allows any
+    # registered destination; a non-empty list restricts to those provider ids.
+    # A config-read failure also fails CLOSED for the same reason as above.
+    try:
+        allowed = KiroCrewConfig.load().publish.allowed_destinations
+    except Exception:
+        logger.debug("publish config load failed; failing closed", exc_info=True)
+        return "publishing denied: publish config could not be loaded"
+    if allowed and provider_name not in allowed:
+        return f"publish destination {provider_name!r} is not in the operator allowlist"
+    return None
+
+
+async def api_artifact_publish(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/publish — publish (or re-publish) to a
+    registered publish destination.
+
+    Body: ``{visibility, shared_with[]}``. Returns the full serialized artifact
+    (now carrying the ``publication`` block). A side-panel file that isn't yet
+    an artifact is auto-saved first by the frontend (POST /api/artifacts), so
+    this endpoint is always slug-based.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_publish",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot publish artifacts", status=403)
+    slug = request.match_info.get("slug", "")
+    try:
+        body = await _read_json_body(request)
+        visibility, shared_with = _validate_sharing_body(body)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+    # Provider is validated generically (any registered provider); the share
+    # picker only offers providers whose kind_support() != UNSUPPORTED.
+    requested_provider = body.get("provider") if isinstance(body, dict) else None
+    provider_name = requested_provider or "artifactory"
+    if not isinstance(provider_name, str) or not _ARTIFACT_PROVIDER_RE.match(provider_name):
+        return _err("provider must match ^[a-z0-9-]{1,32}$")
+    # Resolve the EFFECTIVE destination BEFORE the governance gate. For an
+    # already-published artifact, publish_sync.publish() ignores provider_name
+    # and re-pushes to publication.provider — so the gate must evaluate THAT
+    # provider, not the (default) requested one, or a re-publish with no explicit
+    # provider would gate on "artifactory" and permit bytes to a DENIED existing
+    # destination. Mirrors api_artifact_update_sharing (which gates on the
+    # existing publication's provider).
+    try:
+        # ≤25 MiB store read — offload off the event loop.
+        existing_pub = (await _run_off_loop(lambda: get_default_store().get(slug))).publication
+    except ArtifactNotFoundError:
+        existing_pub = None
+    # nrb review #19: reject an explicit provider switch on an already-published
+    # artifact rather than silently ignoring it. publish() reuses the existing
+    # publication's provider, so honoring a switch here would leave the original
+    # remote orphaned — require an explicit unpublish first.
+    if (
+        requested_provider
+        and existing_pub is not None
+        and existing_pub.provider
+        and requested_provider != existing_pub.provider
+    ):
+        return _err(
+            f"artifact is already published to {existing_pub.provider!r}; "
+            f"unpublish it before publishing to {requested_provider!r}",
+            status=409,
+        )
+    # Effective provider: the existing publication's (re-publish dispatches to it)
+    # else the requested/default. This is the destination bytes actually go to.
+    effective_provider = (
+        existing_pub.provider if existing_pub and existing_pub.provider else provider_name
+    )
+    # Governance chokepoint (Plane-C): the capabilities.publish ceiling + the
+    # operator destination allowlist gate publishing here — the host PreToolUse
+    # gate never sees this HTTP action. Runs BEFORE any provider dispatch.
+    gov_denial = _publish_governance_denied(request, effective_provider)
+    if gov_denial is not None:
+        _audit(
+            tool="artifact_publish",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"slug": slug, "provider": effective_provider},
+        )
+        return _err(gov_denial, status=403)
+    is_mcp = request.headers.get("X-Internal-Secret") is not None
+    actor = "agent" if is_mcp else "user"
+    try:
+        await publish_sync.publish(
+            slug,
+            visibility=visibility,
+            shared_with=shared_with,
+            actor=actor,
+            provider_name=provider_name,
+        )
+        art = await _run_off_loop(lambda: get_default_store().get(slug))
+    except Exception as exc:
+        return _sync_error_response("artifact_publish", request, slug, exc)
+    _audit(
+        tool="artifact_publish",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "visibility": visibility, "provider": effective_provider},
+    )
+    return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_update_sharing(request: web.Request) -> web.Response:
+    """PATCH /api/artifacts/{slug}/sharing — change visibility / shared-with.
+
+    Body: ``{visibility, shared_with[]}``. No re-upload. Returns the serialized
+    artifact with the updated publication block.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_update_sharing",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot change artifact sharing", status=403)
+    slug = request.match_info.get("slug", "")
+    try:
+        body = await _read_json_body(request)
+        visibility, shared_with = _validate_sharing_body(body)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+    # Changing sharing (e.g. PRIVATE -> PUBLIC) is an outbound-publish mutation,
+    # so it MUST pass the same capabilities.publish governance gate as the
+    # initial publish — otherwise an already-published artifact could be widened
+    # to public after policy revocation. Gate on the existing publication's
+    # provider (default provider when the block hasn't loaded).
+    try:
+        existing_pub = (await _run_off_loop(lambda: get_default_store().get(slug))).publication
+    except ArtifactNotFoundError:
+        existing_pub = None
+    share_provider = (
+        existing_pub.provider if existing_pub and existing_pub.provider else "artifactory"
+    )
+    gov_denial = _publish_governance_denied(request, share_provider)
+    if gov_denial is not None:
+        _audit(
+            tool="artifact_update_sharing",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"slug": slug, "provider": share_provider},
+        )
+        return _err(gov_denial, status=403)
+    try:
+        await publish_sync.update_sharing(slug, visibility=visibility, shared_with=shared_with)
+        art = await _run_off_loop(lambda: get_default_store().get(slug))
+    except Exception as exc:
+        return _sync_error_response("artifact_update_sharing", request, slug, exc)
+    _audit(
+        tool="artifact_update_sharing",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "visibility": visibility},
+    )
+    return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_unpublish(request: web.Request) -> web.Response:
+    """DELETE /api/artifacts/{slug}/publish — remove from Artifactory.
+
+    Deletes the Artifactory artifact (best-effort) and clears the local
+    publication block. Returns the serialized artifact (now with
+    ``publication: null``).
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_unpublish",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot unpublish artifacts", status=403)
+    slug = request.match_info.get("slug", "")
+    try:
+        await publish_sync.unpublish(slug)
+        art = await _run_off_loop(lambda: get_default_store().get(slug))
+    except Exception as exc:
+        return _sync_error_response("artifact_unpublish", request, slug, exc)
+    _audit(
+        tool="artifact_unpublish",
+        request=request,
+        outcome="success",
+        extra={"slug": slug},
+    )
+    return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_refresh_sharing(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/publish/refresh — reconcile local sharing
+    state with the live destination.
+
+    Pulls the destination's current visibility / shared-with (e.g. after the
+    user changed them directly in the Artifactory UI) and updates the stored
+    publication so the dashboard reflects truth. Gated like other mutations
+    since it can update meta.json.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_refresh_sharing",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot refresh artifact sharing", status=403)
+    slug = request.match_info.get("slug", "")
+    try:
+        await publish_sync.refresh_publication(slug)
+        art = await _run_off_loop(lambda: get_default_store().get(slug))
+    except ArtifactNotFoundError as exc:
+        _audit(
+            tool="artifact_refresh_sharing",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:
+        _audit(
+            tool="artifact_refresh_sharing",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc))
+    except Exception as exc:  # pragma: no cover — refresh is best-effort
+        return _sync_error_response("artifact_refresh_sharing", request, slug, exc)
+    _audit(
+        tool="artifact_refresh_sharing",
+        request=request,
+        outcome="success",
+        extra={"slug": slug},
+    )
+    return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_relocate(request: web.Request) -> web.Response:
+    """PATCH /api/artifacts/{slug}/relocate — update source_path."""
+
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_relocate",
+            request=request,
+            outcome="denied",
+            error="restricted session",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot relocate artifacts", status=403)
+
+    slug = request.match_info.get("slug", "")
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+
+    source_path = body.get("source_path")
+    if source_path is None:
+        return _err("source_path is required")
+    if not isinstance(source_path, str):
+        return _err("source_path must be a string")
+
+    # Validate path. The user-controlled source_path is sanitized BEFORE any
+    # filesystem access, in this order (each proves the value safe before it is
+    # used in a path expression — this is also what CodeQL's path-injection taint
+    # tracker requires as a sanitizer):
+    #   1. ".." traversal guard on the raw request value;
+    #   2. FIXED-ROOT containment — the resolved path must live under the user's
+    #      home dir OR an operator-configured extra root (``publish.relocate_roots``);
+    #   3. the ``is_sensitive_path`` denylist inside every allowed root.
+    # The root confinement (2) is the barrier that turns relocate from an
+    # arbitrary-local-file read primitive (an agent could aim an artifact at
+    # /etc/passwd or another user's files, then exfiltrate via a later GET) into a
+    # home-confined one, closing the CodeQL alert and the agent-reachable read.
+    if source_path:  # non-empty = must exist and be a file
+        # Path traversal guard (on the raw request value, before resolution).
+        if ".." in Path(source_path).parts:
+            _audit(
+                tool="artifact_relocate",
+                request=request,
+                outcome="denied",
+                error="path traversal",
+                extra={"slug": slug, "source_path": source_path},
+            )
+            return _err("path traversal not allowed", status=403)
+        resolved_path = Path(os.path.expanduser(source_path)).resolve()
+        # Fixed-root containment: resolve the allowed roots (home + configured
+        # extras) and require the target to be inside one. is_relative_to on the
+        # resolved Paths is the sanitizer CodeQL recognizes.
+        allowed_roots = [Path.home().resolve()]
+        try:
+            for extra in KiroCrewConfig.load().publish.relocate_roots:
+                if isinstance(extra, str) and extra.strip():
+                    allowed_roots.append(Path(os.path.expanduser(extra)).resolve())
+        except Exception:
+            logger.debug("relocate roots config load failed; home-only", exc_info=True)
+        # Fixed-root containment barrier — inlined (NOT via a helper) so CodeQL's
+        # intra-procedural taint tracker sees the ``is_relative_to`` sanitizer
+        # guarding the SAME ``resolved_path`` that the stat calls below use.
+        within_root = False
+        for _root in allowed_roots:
+            try:
+                if resolved_path == _root or resolved_path.is_relative_to(_root):
+                    within_root = True
+                    break
+            except (ValueError, OSError):  # pragma: no cover — defensive
+                continue
+        if not within_root:
+            _audit(
+                tool="artifact_relocate",
+                request=request,
+                outcome="denied",
+                error="outside allowed roots",
+                extra={"slug": slug, "source_path": source_path},
+            )
+            return _err(
+                "source_path must be inside your home directory " "(or a configured relocate root)",
+                status=403,
+            )
+        # Sensitive-path denylist still applies inside the allowed roots (e.g.
+        # ~/.aws, ~/.ssh, ~/.kirocrew keystone).
+        if is_sensitive_path(str(resolved_path)):
+            _audit(
+                tool="artifact_relocate",
+                request=request,
+                outcome="denied",
+                error="sensitive path",
+                extra={"slug": slug, "source_path": source_path},
+            )
+            return _err("cannot point to a sensitive path", status=403)
+        # `resolved_path` is now proven under an allowed root AND not sensitive.
+        if not resolved_path.exists():
+            return _err(f"path does not exist: {source_path}", status=400)
+        if resolved_path.is_dir():
+            return _err("source_path must be a file, not a directory", status=400)
+        source_path = str(resolved_path)
+
+    store = get_default_store()
+    try:
+        # Blocking store read/write (meta.json + up to 25 MiB current.html) —
+        # offload off the event loop.
+        await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    await _run_off_loop(lambda: store.relocate(slug, source_path))
+    # Reload the full artifact (with content from the new source_path) so the
+    # response carries the live file bytes rather than content: null.
+    art = await _run_off_loop(lambda: store.get(slug))
+
+    _audit(
+        tool="artifact_relocate",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "source_path": source_path},
+    )
+    # A source_path swap changes what live reads return (Mesh-2772).
+    _notify_artifact_update(state, slug, art.version)
+    return _json_response(_serialize(art, include_content=True))
+
+
 # ── Folders (Mesh-2720) ─────────────────────────────────────────────────────
 
 
@@ -986,9 +1539,7 @@ async def api_artifact_folders(request: web.Request) -> web.Response:
         # scan). Offload it so the dashboard event loop stays responsive —
         # same pattern as api_chat_folders.
         loop = asyncio.get_running_loop()
-        folders = await loop.run_in_executor(
-            subprocess_executor(), fstore.list_with_counts, store
-        )
+        folders = await loop.run_in_executor(subprocess_executor(), fstore.list_with_counts, store)
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact folder list failed: %s", exc)
         return _err(str(exc), status=500)
@@ -1144,7 +1695,9 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
             extra={"folder_id": fid},
         )
         return _err(str(exc), status=500)
-    _audit(tool="artifact_folder_update", request=request, outcome="success", extra={"folder_id": fid})
+    _audit(
+        tool="artifact_folder_update", request=request, outcome="success", extra={"folder_id": fid}
+    )
     # A rename re-derives the emoji icon from the new name (chat-folder
     # parity) — unless this same request set an explicit icon, which wins.
     if "name" in body and "icon" not in body:
@@ -1292,3 +1845,784 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
         extra={"slug": slug, "folder_id": folder_id},
     )
     return _json_response(_serialize(art, include_content=True))
+
+
+# ── Comments ──────────────────────────────────────────────────────────────────
+
+
+async def api_artifact_comments(request: web.Request) -> web.Response:
+    """GET /api/artifacts/{slug}/comments — list durable local comments."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        return _err("restricted session", status=403)
+    slug = request.match_info["slug"]
+    store = get_default_store()
+
+    try:
+        # Existence check + sidecar read are blocking filesystem IO (store.get
+        # reads current.html up to MAX_CONTENT_BYTES = 25 MiB); offload off the
+        # event loop (no-blocking-call-on-event-loop).
+        await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    # Surfaced to the UI so a provider-side failure would be visible rather than
+    # silently dropped. Always None in the public fork (no remote comment sync).
+    remote_sync_error: str | None = None
+
+    comments = await _run_off_loop(lambda: store.list_comments(slug))
+    result = []
+    for c in comments:
+        entry: dict[str, Any] = {
+            "id": c.id,
+            "origin": c.origin,
+            "provider": c.provider,
+            "scope": c.scope,
+            "author": c.author,
+            "is_agent": c.is_agent,
+            "body": _redact_text(c.body),
+            "thread_id": c.thread_id,
+            "parent_id": c.parent_id,
+            "status": c.status,
+            "sync_state": c.sync_state,
+            "anchor_orphaned": c.anchor_orphaned,
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+        }
+        if c.anchor_quote:
+            entry["anchor"] = {
+                "quote": c.anchor_quote,
+                "prefix": c.anchor_prefix,
+                "suffix": c.anchor_suffix,
+                "start_offset": c.anchor_start_offset,
+                "end_offset": c.anchor_end_offset,
+                "version_number": c.anchor_version,
+            }
+        result.append(entry)
+    return _json_response({"comments": result, "remote_sync_error": remote_sync_error})
+
+
+async def api_artifact_post_comment(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/comments — create a new comment."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_post_comment",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session", status=403)
+
+    slug = request.match_info["slug"]
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    if len(text) > 10000:
+        return _err("text exceeds 10000 chars")
+
+    # Redact before storing/sending
+    text = _redact_text(text)
+
+    scope = str(body.get("scope") or "private")
+    if scope not in ("private", "shared"):
+        return _err("scope must be 'private' or 'shared'")
+
+    store = get_default_store()
+    try:
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    # Build anchor if provided
+    anchor_data = body.get("anchor")
+    anchor_quote = None
+    anchor_prefix = None
+    anchor_suffix = None
+    anchor_start = None
+    anchor_end = None
+    anchor_ver = None
+    if isinstance(anchor_data, dict):
+        # Anchor strings are LLM/agent-influenced (esp. on the MCP path) and are
+        # echoed back to the dashboard, so redact credentials/exfil-URLs and cap
+        # length — same treatment as the comment body (backend-security-controls).
+        def _anchor_str(v: object) -> str | None:
+            if not isinstance(v, str) or not v:
+                return None
+            return _redact_text(v[:2000])
+
+        anchor_quote = _anchor_str(anchor_data.get("quote"))
+        anchor_prefix = _anchor_str(anchor_data.get("prefix"))
+        anchor_suffix = _anchor_str(anchor_data.get("suffix"))
+        anchor_start = anchor_data.get("start_offset")
+        anchor_end = anchor_data.get("end_offset")
+        anchor_ver = anchor_data.get("version_number")
+
+    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    comment_id = str(uuid.uuid4())
+
+    # Determine if this is agent-authored
+    is_agent = bool(body.get("is_agent"))
+
+    # Author defaults to the dashboard user's alias (collaboration: comments
+    # show who left them, feedback #7). Agent comments keep their explicit
+    # author (or the agent badge). getpass.getuser() is the alias on dev desks.
+    # The author is LLM/agent-influenced on the MCP path and echoed to the
+    # dashboard, so redact + cap it like the body (backend-security-controls).
+    author = _redact_text(str(body.get("author") or "")[:256])
+    if not author and not is_agent:
+
+        try:
+            author = getpass.getuser()
+        except Exception:
+            author = ""
+
+    comment = ArtifactComment(
+        id=comment_id,
+        origin="local",
+        provider=None,
+        scope=scope,
+        author=author,
+        is_agent=is_agent,
+        body=text,
+        anchor_quote=anchor_quote,
+        anchor_prefix=anchor_prefix,
+        anchor_suffix=anchor_suffix,
+        anchor_start_offset=anchor_start,
+        anchor_end_offset=anchor_end,
+        anchor_version=anchor_ver,
+        thread_id=comment_id,
+        parent_id=None,
+        status="open",
+        target_provider=art.publication.provider if art.publication else None,
+        target_external_id=art.publication.artifact_id if art.publication else None,
+        sync_state="local_only",
+        created_at=now,
+        updated_at=now,
+    )
+
+    # If scope=shared and we have a target, post to provider — but only after
+    # the same capabilities.publish governance gate that guards artifact publish.
+    # A shared comment body is outbound egress (it leaves the box to the
+    # provider), so posting it to an existing publication after policy revocation
+    # must be denied too. Denial keeps the comment LOCAL (local_only) rather than
+    # 403-ing — the local comment store is unaffected.
+    gov_denied = (
+        _publish_governance_denied(request, comment.target_provider or "artifactory")
+        if scope == "shared" and comment.target_external_id
+        else "not shared"
+    )
+    if scope == "shared" and comment.target_external_id and gov_denied is None:
+        try:
+
+            provider = get_provider(comment.target_provider or "artifactory")
+            if Capability.COMMENTS_WRITE in provider.capabilities():
+                anchor_obj = None
+                if anchor_quote:
+                    anchor_obj = CommentAnchor(
+                        quote=anchor_quote,
+                        prefix=anchor_prefix,
+                        suffix=anchor_suffix,
+                        start_offset=anchor_start,
+                        end_offset=anchor_end,
+                        version_number=anchor_ver,
+                    )
+                rc = await provider.post_comment(
+                    external_id=comment.target_external_id,
+                    body=text,
+                    anchor=anchor_obj,
+                )
+                comment.origin = f"{comment.target_provider}:{rc.remote_id}"
+                comment.sync_state = "synced"
+        except Exception as exc:
+            logger.warning("post_comment to provider failed: %s", exc)
+            comment.sync_state = "push_failed"
+
+    await _run_off_loop(lambda: store.add_comment(slug, comment))
+    _audit(
+        tool="artifact_post_comment",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "scope": scope, "is_agent": is_agent},
+    )
+    return _json_response(
+        {"comment": {"id": comment_id, "sync_state": comment.sync_state}}, status=201
+    )
+
+
+async def api_artifact_reply_comment(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/comments/{id}/reply — reply to a thread."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_reply_comment",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session", status=403)
+
+    slug = request.match_info["slug"]
+    parent_id = request.match_info["comment_id"]
+
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        _audit(
+            tool="artifact_reply_comment",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug, "parent_id": parent_id},
+        )
+        return _err(str(exc))
+
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    if len(text) > 10000:
+        return _err("text exceeds 10000 chars")
+    text = _redact_text(text)
+
+    store = get_default_store()
+    try:
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    # Find parent comment
+    comments = await _run_off_loop(lambda: store.list_comments(slug))
+    parent = next((c for c in comments if c.id == parent_id), None)
+    if not parent:
+        return _err("parent comment not found", status=404)
+
+    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    reply_id = str(uuid.uuid4())
+    is_agent = bool(body.get("is_agent"))
+
+    # Author defaults to the dashboard user's alias (collaboration: replies show
+    # who left them), mirroring the create handler. Agent replies keep their
+    # explicit author. Without this, replies render as "Unknown". Redact + cap
+    # the LLM/agent-influenced author before it is echoed to the dashboard.
+    author = _redact_text(str(body.get("author") or "")[:256])
+    if not author and not is_agent:
+
+        try:
+            author = getpass.getuser()
+        except Exception:
+            author = ""
+
+    reply = ArtifactComment(
+        id=reply_id,
+        origin="local",
+        provider=parent.provider,
+        scope="shared" if parent.origin != "local" else "private",
+        author=author,
+        is_agent=is_agent,
+        body=text,
+        thread_id=parent.thread_id or parent_id,
+        parent_id=parent_id,
+        status=parent.status,
+        target_provider=parent.target_provider
+        or (art.publication.provider if art.publication else None),
+        target_external_id=parent.target_external_id
+        or (art.publication.artifact_id if art.publication else None),
+        sync_state="local_only",
+        created_at=now,
+        updated_at=now,
+    )
+
+    # If parent is provider-origin, reply back to provider — gated by the same
+    # capabilities.publish chokepoint as artifact publish (the reply body is
+    # outbound egress). A denial keeps the reply LOCAL (local_only) instead of
+    # pushing it to the provider.
+    if (
+        parent.origin
+        and parent.origin != "local"
+        and reply.target_external_id
+        and _publish_governance_denied(request, reply.target_provider or "artifactory") is None
+    ):
+        try:
+
+            provider = get_provider(reply.target_provider or "artifactory")
+            if Capability.COMMENTS_WRITE in provider.capabilities():
+                # Extract remote parent id from origin
+                remote_parent_id = (
+                    parent.origin.split(":", 1)[-1] if ":" in parent.origin else parent.id
+                )
+                rc = await provider.reply_comment(
+                    external_id=reply.target_external_id,
+                    parent_remote_id=remote_parent_id,
+                    body=text,
+                )
+                reply.origin = f"{reply.target_provider}:{rc.remote_id}"
+                reply.sync_state = "synced"
+        except Exception as exc:
+            logger.warning("reply_comment to provider failed: %s", exc)
+            reply.sync_state = "push_failed"
+
+    await _run_off_loop(lambda: store.add_comment(slug, reply))
+    _audit(
+        tool="artifact_reply_comment",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "parent_id": parent_id, "is_agent": is_agent},
+    )
+    return _json_response({"comment": {"id": reply_id, "sync_state": reply.sync_state}}, status=201)
+
+
+async def api_artifact_mark_review(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/comments/{id}/review — advance to REVIEW."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_mark_review",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session", status=403)
+
+    slug = request.match_info["slug"]
+    comment_id = request.match_info["comment_id"]
+
+    store = get_default_store()
+    try:
+        await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    comments = await _run_off_loop(lambda: store.list_comments(slug))
+    target = next((c for c in comments if c.id == comment_id), None)
+    if not target:
+        return _err("comment not found", status=404)
+
+    # If provider-origin, mark on provider too — gated by the same
+    # capabilities.publish chokepoint (a provider-side review mutation is an
+    # outbound state change). A denied policy keeps the review LOCAL.
+    if (
+        target.origin
+        and target.origin != "local"
+        and target.target_external_id
+        and _publish_governance_denied(request, target.target_provider or "artifactory") is None
+    ):
+        try:
+
+            provider = get_provider(target.target_provider or "artifactory")
+            if Capability.COMMENTS_WRITE in provider.capabilities():
+                remote_id = target.origin.split(":", 1)[-1]
+                await provider.mark_review(
+                    external_id=target.target_external_id, remote_id=remote_id
+                )
+        except Exception as exc:
+            logger.warning("mark_review on provider failed: %s", exc)
+
+    await _run_off_loop(lambda: store.update_comment(slug, comment_id, status="review"))
+    _audit(
+        tool="artifact_mark_review",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "comment_id": comment_id},
+    )
+    await _run_off_loop(
+        lambda: store.record_comment_event(
+            slug,
+            action="reviewed",
+            by="agent" if request.headers.get("X-Internal-Secret") is not None else "user",
+            session_id=_event_session_id(request),
+            comment_snippet=_redact_text(target.body)[:100],
+        )
+    )
+    return _json_response({"status": "review"})
+
+
+async def api_artifact_resolve_comment(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/comments/{id}/resolve — human-only resolve."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_resolve_comment",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session", status=403)
+
+    slug = request.match_info["slug"]
+    comment_id = request.match_info["comment_id"]
+
+    # Agent sessions cannot resolve. Actor is inferred from the auth path
+    # (X-Internal-Secret header = MCP/agent), same as api_artifact_update —
+    # the legacy ``is_agent`` body flag is kept as a defense-in-depth
+    # fallback but is no longer the only gate (a body field can be spoofed).
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+
+    if request.headers.get("X-Internal-Secret") is not None or body.get("is_agent"):
+        return _err("agents cannot resolve comments — human-only", status=403)
+
+    store = get_default_store()
+    try:
+        await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    resolved = await _run_off_loop(
+        lambda: store.update_comment(slug, comment_id, status="resolved")
+    )
+    if resolved is None:
+        return _err("comment not found", status=404)
+    _audit(
+        tool="artifact_resolve_comment",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "comment_id": comment_id},
+    )
+    await _run_off_loop(
+        lambda: store.record_comment_event(
+            slug,
+            action="resolved",
+            by="user",
+            session_id=_event_session_id(request),
+            comment_snippet=_redact_text(resolved.body)[:100],
+        )
+    )
+    return _json_response({"status": "resolved"})
+
+
+async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/comments/{id}/reopen — reopen a resolved
+    thread (set status back to open). Feedback #1: resolving was a one-way door.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_reopen_comment",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session", status=403)
+
+    slug = request.match_info["slug"]
+    comment_id = request.match_info["comment_id"]
+
+    store = get_default_store()
+    try:
+        await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    if await _run_off_loop(lambda: store.update_comment(slug, comment_id, status="open")) is None:
+        return _err("comment not found", status=404)
+    _audit(
+        tool="artifact_reopen_comment",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "comment_id": comment_id},
+    )
+    return _json_response({"status": "open"})
+
+
+async def api_artifact_delete_comment(request: web.Request) -> web.Response:
+    """DELETE /api/artifacts/{slug}/comments/{id} — delete a comment.
+
+    Actor is inferred from how the request was authed (X-Internal-Secret
+    header = MCP/agent; absent = dashboard/human) — never from a body flag,
+    which could be spoofed. Agent deletes carry extra contract:
+
+      * ``reason`` (body, required for agents) — the one-line justification
+        recorded in the SEL audit and the artifact's activity feed. The
+        disposition policy (artifacts skill): delete only comments that were
+        unambiguous directives fully applied; judgment calls go through
+        mark_review instead.
+      * provider-synced comments are refused (403) — provider reconciliation
+        would resurrect or desync them; the agent should mark REVIEW and let
+        the human act on the provider.
+
+    Human dashboard deletes are unchanged (no reason required, provider
+    cascade preserved).
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_delete_comment",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session", status=403)
+
+    slug = request.match_info["slug"]
+    comment_id = request.match_info["comment_id"]
+
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+    # Same auth-derived actor inference as api_artifact_update: MCP-originated
+    # calls carry X-Internal-Secret (validated upstream); browser calls don't.
+    is_agent = request.headers.get("X-Internal-Secret") is not None
+    # The delete reason is agent/LLM-supplied and lands in the SEL audit AND the
+    # artifact activity feed (dashboard), so redact credentials/exfil URLs before
+    # it is persisted or echoed (backend-security-controls) — same treatment as
+    # comment bodies / author / anchors.
+    reason = _redact_text(str(body.get("reason") or "").strip()[:500])
+
+    store = get_default_store()
+    try:
+        await _run_off_loop(lambda: store.get(slug))  # verify artifact exists
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    comments = await _run_off_loop(lambda: store.list_comments(slug))
+    target = next((c for c in comments if c.id == comment_id), None)
+    is_provider_origin = bool(target and target.origin and target.origin != "local")
+
+    if is_agent:
+        if not reason:
+            _audit(
+                tool="artifact_delete_comment",
+                request=request,
+                outcome="denied",
+                error="missing reason",
+                extra={"slug": slug, "comment_id": comment_id, "actor": "agent"},
+            )
+            return _err("agent deletes require a reason")
+        if is_provider_origin:
+            _audit(
+                tool="artifact_delete_comment",
+                request=request,
+                outcome="denied",
+                error="provider-synced comment",
+                extra={"slug": slug, "comment_id": comment_id, "actor": "agent"},
+            )
+            return _err(
+                "agents cannot delete provider-synced comments — "
+                "use artifact_mark_review instead",
+                status=403,
+            )
+
+    # If provider-origin, delete on provider (human dashboard path only —
+    # agent requests were refused above) — gated by the same capabilities.publish
+    # chokepoint (a provider-side delete is an outbound mutation). A denied policy
+    # deletes only the local copy.
+    if (
+        target
+        and is_provider_origin
+        and target.target_external_id
+        and _publish_governance_denied(request, target.target_provider or "artifactory") is None
+    ):
+        try:
+
+            provider = get_provider(target.target_provider or "artifactory")
+            if Capability.COMMENTS_WRITE in provider.capabilities():
+                remote_id = target.origin.split(":", 1)[-1]
+                await provider.delete_comment(
+                    external_id=target.target_external_id, remote_id=remote_id
+                )
+        except Exception as exc:
+            logger.warning("delete_comment on provider failed: %s", exc)
+
+    found = await _run_off_loop(lambda: store.delete_comment(slug, comment_id))
+    if not found:
+        return _err("comment not found", status=404)
+
+    snippet = _redact_text(target.body)[:100] if target else ""
+    actor = "agent" if is_agent else "user"
+    audit_extra: dict[str, Any] = {
+        "slug": slug,
+        "comment_id": comment_id,
+        "actor": actor,
+        "comment_snippet": snippet,
+    }
+    if reason:
+        audit_extra["reason"] = reason
+    _audit(
+        tool="artifact_delete_comment",
+        request=request,
+        outcome="success",
+        extra=audit_extra,
+    )
+    await _run_off_loop(
+        lambda: store.record_comment_event(
+            slug,
+            action="deleted",
+            by=actor,
+            session_id=_event_session_id(request),
+            comment_snippet=snippet,
+            reason=reason or None,
+        )
+    )
+    return _json_response({"deleted": True})
+
+
+async def api_artifact_edit_comment(request: web.Request) -> web.Response:
+    """PATCH /api/artifacts/{slug}/comments/{id} — edit a comment's body.
+
+    Local comments always edit in place (the store mutator patches ``body`` and
+    bumps ``updated_at``). For a provider-origin comment whose provider supports
+    in-place edit (``Capability.COMMENTS_EDIT`` — Chorus), the new body is also
+    pushed to the provider, preserving the remote id / thread / replies.
+    Providers without that capability (Artifactory / MarkBin / Pippin) edit
+    locally only; the response's ``remote_synced`` flag is False so the UI can
+    surface that the change stayed local rather than silently diverging.
+
+    Status (open/review/resolved) is untouched — that's what resolve/reopen/
+    review are for. Authorship (``author`` / ``is_agent``) is preserved.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_edit_comment",
+            request=request,
+            outcome="denied",
+            extra={"reason": "restricted_session"},
+        )
+        return _err("restricted session", status=403)
+
+    slug = request.match_info["slug"]
+    comment_id = request.match_info["comment_id"]
+
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    if len(text) > 10000:
+        return _err("text exceeds 10000 chars")
+    # Never trust the incoming body — redact before storing/sending, same as
+    # post/reply (AUTOSDE security-controls).
+    text = _redact_text(text)
+
+    store = get_default_store()
+    try:
+        await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    comments = await _run_off_loop(lambda: store.list_comments(slug))
+    target = next((c for c in comments if c.id == comment_id), None)
+    if target is None:
+        return _err("comment not found", status=404)
+
+    # Preserve the agent watermark: an edit must never strip the 🤖 mark from an
+    # agent-authored comment (artifact_post_comment prepends it on create).
+    # Centralized here so both the UI edit and the MCP artifact_update_comment
+    # tool keep the invariant regardless of what body they send.
+    if target.is_agent and not text.startswith("\U0001f916"):
+        text = f"\U0001f916 {text}"
+
+    # Push the edit to the provider in place when its origin provider supports
+    # it (Chorus). Others edit locally only. Gated by the same capabilities.publish
+    # chokepoint as artifact publish — the edited body is outbound egress, so a
+    # denied policy keeps the edit LOCAL (remote_synced stays False).
+    remote_synced = False
+    if (
+        target.origin
+        and target.origin != "local"
+        and target.target_external_id
+        and _publish_governance_denied(request, target.target_provider or "artifactory") is None
+    ):
+        try:
+            provider = get_provider(target.target_provider or "artifactory")
+            if Capability.COMMENTS_EDIT in provider.capabilities():
+                remote_id = target.origin.split(":", 1)[-1]
+                await provider.edit_comment(
+                    external_id=target.target_external_id,
+                    remote_id=remote_id,
+                    body=text,
+                )
+                remote_synced = True
+        except Exception as exc:
+            logger.warning("edit_comment on provider failed: %s", exc)
+
+    if await _run_off_loop(lambda: store.update_comment(slug, comment_id, body=text)) is None:
+        return _err("comment not found", status=404)
+
+    _audit(
+        tool="artifact_edit_comment",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "comment_id": comment_id, "remote_synced": remote_synced},
+    )
+    return _json_response({"comment": {"id": comment_id, "remote_synced": remote_synced}})
+
+
+# ── Provider negotiation (Mesh-2445) ─────────────────────────────────────────
+
+
+def _sharing_model_dict(sm: Any) -> dict[str, Any]:
+    return {
+        "supports_private": sm.supports_private,
+        "supports_shared": sm.supports_shared,
+        "supports_public": sm.supports_public,
+        "principal_kind": sm.principal_kind,
+        "supports_roles": sm.supports_roles,
+        "supports_expiration": sm.supports_expiration,
+        "programmable": sm.programmable,
+        "out_of_band_url": sm.out_of_band_url,
+    }
+
+
+async def api_artifact_publish_providers(request: web.Request) -> web.Response:
+    """GET /api/artifacts/publish-providers?kind=<kind> — available publishing
+    providers with per-kind support + sharing/sync/discovery descriptors.
+
+    Drives the share-panel picker: the FE shows a provider selector only when
+    >1 *available* provider can host the artifact's kind (``kind_support !=
+    unsupported``), and renders the right sharing controls per provider. Read-
+    only; no mutation, so no restricted-session gate (matches the list endpoint).
+    """
+    kind = request.query.get("kind") or "widget"
+    out: list[dict[str, Any]] = []
+    for p in list_providers():
+        try:
+            if not p.available():
+                continue
+            ks = p.kind_support(kind)
+            sm = p.sharing_model()
+            sy = p.sync_model()
+            dm = p.discovery_model()
+        except Exception as exc:  # pragma: no cover — a flaky provider must not break the picker
+            logger.warning("publish-providers: skipping %r: %s", getattr(p, "name", "?"), exc)
+            continue
+        out.append(
+            {
+                "name": p.name,
+                "display_name": p.display_name,
+                "capabilities": sorted(c.value for c in p.capabilities()),
+                "kind_support": ks.value,
+                "capable": ks != KindSupport.UNSUPPORTED,
+                "sharing_model": _sharing_model_dict(sm),
+                "sync_model": {
+                    "authority": sy.authority,
+                    "concurrency": sy.concurrency,
+                    "collab_mode": sy.collab_mode,
+                },
+                "discovery_model": {
+                    "list_mine": dm.list_mine,
+                    "list_shared_with_me": dm.list_shared_with_me,
+                    "list_public": dm.list_public,
+                    "full_text_search": dm.full_text_search,
+                    "pull_by_id": dm.pull_by_id,
+                },
+            }
+        )
+    return _json_response({"providers": out, "kind": kind})

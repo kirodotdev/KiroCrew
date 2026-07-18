@@ -141,8 +141,12 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
 
-POST/PATCH/DELETE require an unrestricted session. The body is capped at
-2 MiB; the store enforces a per-content cap of 1 MiB.
+POST/PATCH/DELETE require an unrestricted session. The HTTP body envelope is
+capped at 2 MiB; the store enforces a per-content cap of 25 MiB
+(`artifacts.MAX_CONTENT_BYTES`), large enough for cloned/pulled rich artifacts
+(HTML reports, CSVs). The MCP save/update field cap
+(`validation.ARTIFACT_CONTENT_MAX`) imports that same constant so the tool and
+store paths never disagree.
 
 **Folders (Mesh-2720):** `Artifact.folder_id` (`""` = unfiled) is an opaque,
 rename-safe membership id, tolerant-loaded for legacy meta.json.
@@ -182,7 +186,7 @@ in chat. Clicking prompts for a name and POSTs to `/api/artifacts`.
 | `name` | ≤ 200 chars, non-empty |
 | `description` | ≤ 2,000 chars |
 | `tags` | ≤ 16 tags; each ≤ 64 chars |
-| `content` | ≤ 1 MiB |
+| `content` | ≤ 25 MiB (`MAX_CONTENT_BYTES`) |
 | `kind` | one of `widget` / `html` / `markdown` / `svg` / `json` / `text` |
 | `source` | one of `chat` / `cron` / `subagent` / `manual` / `import` |
 | `MAX_VERSIONS` | 50 (oldest pruned beyond cap) |
@@ -194,6 +198,15 @@ in chat. Clicking prompts for a name and POSTs to `/api/artifacts`.
 - **Sensitive paths** — every read and write goes through
   `security.is_sensitive_path()`; the store refuses to instantiate at any
   sensitive root.
+- **Relocate root confinement** — `PATCH /relocate` (and the `artifact_move`
+  MCP tool) point a file-backed artifact at a `source_path`; a later GET reads
+  that file, so an unconfined relocate would be an agent-reachable
+  arbitrary-local-file read primitive. The target is therefore confined to the
+  user's home dir by default (an operator can widen to additional absolute roots
+  via `publish.relocate_roots`); the resolved path must be `is_relative_to` an
+  allowed root (a `..` guard runs first, and the `is_sensitive_path` denylist
+  still applies inside every root). The `is_relative_to` barrier is also the
+  sanitizer CodeQL's path-injection tracker requires.
 - **Restricted sessions** — POST/PATCH/DELETE are denied when the dashboard
   classifies the session as restricted (`_is_restricted_session`).
 - **SEL audit** — every mutation emits a `log_tool_invocation` event from the

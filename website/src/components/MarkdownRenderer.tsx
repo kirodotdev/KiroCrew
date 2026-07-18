@@ -33,6 +33,21 @@ import MonacoCodeBlock from './MonacoCodeBlock'
 import { SmoothResize } from './SmoothResize'
 import type { ContentBlock } from '../types'
 
+/** Extract the artifact slug from an `/artifacts/<slug>` href. Returns null
+ *  when the href isn't an artifact route. Handles a leading origin, a trailing
+ *  query/hash, and percent-encoded slugs (the agent emits an encoded slug
+ *  matching the canonical full-page artifact URL). */
+export function artifactSlugFromHref(href: string | null | undefined): string | null {
+  if (!href) return null
+  // Strip an optional origin so both relative (`/artifacts/x`) and absolute
+  // (`http://host/artifacts/x`) forms resolve identically.
+  let path = href
+  try { path = new URL(href, 'http://x').pathname } catch { /* keep raw */ }
+  const m = /^\/artifacts\/([^/?#]+)/.exec(path)
+  if (!m) return null
+  try { return decodeURIComponent(m[1]) } catch { return m[1] }
+}
+
 const PATH_RE = /^~?(?:\.{0,2}\/)?[\w.@~\/ -]*\/[\w.@~: -]*[\w.]$/
 
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
@@ -736,17 +751,31 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, rawMode = false, sourcePos = false, messageTs, glow = false, smooth, softBreaks = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, glow = false, smooth, softBreaks = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
   const blocks = useBlockAssembler(content, streaming)
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.target as HTMLElement
+    // e.target may be an inline child of the `/artifacts/<slug>` anchor (e.g.
+    // <em>/<code>), so walk up with closest(). preventDefault stops the
+    // relative href from navigating full-page instead of opening the panel.
+    if (onArtifactOpen && !e.shiftKey) {
+      const anchor = el.closest('a[href^="/artifacts/"]') as HTMLAnchorElement | null
+      if (anchor) {
+        const slug = artifactSlugFromHref(anchor.getAttribute('href'))
+        if (slug) {
+          e.preventDefault()
+          onArtifactOpen(slug)
+          return
+        }
+      }
+    }
     if (el.tagName === 'CODE' && PATH_RE.test(el.textContent || '')) {
       e.preventDefault()
       if (onFileOpen && !e.shiftKey) onFileOpen(el.textContent!.trim())
       else api.revealPath(el.textContent!.trim())
     }
-  }, [onFileOpen])
+  }, [onFileOpen, onArtifactOpen])
 
   // Pre-compute the widget index for each widget block (0-based ordinal of
   // widgets within this message). WidgetFrame uses (messageTs, widgetIndex)

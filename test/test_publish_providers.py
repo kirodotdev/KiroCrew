@@ -5,6 +5,7 @@ the pure aggregation core (`collect_publish_providers`), the filesystem-backed
 configured-check (`_provider_is_configured`), and the live
 `GET /api/publish-providers` endpoint.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,11 +36,17 @@ _PP = {
 
 # --- manifest parse / round-trip / propagation -----------------------------
 
+
 def test_manifest_publish_provider_round_trip():
-    m = AppManifest.from_dict({
-        "name": "deploy-web", "version": "1.0.0", "displayName": "Web Deploy",
-        "description": "x", "publishProvider": _PP,
-    })
+    m = AppManifest.from_dict(
+        {
+            "name": "deploy-web",
+            "version": "1.0.0",
+            "displayName": "Web Deploy",
+            "description": "x",
+            "publishProvider": _PP,
+        }
+    )
     assert m.publishProvider.id == "deploy-web-aws"
     assert m.publishProvider.endpoint == "/api/apps/deploy-web/deploy"
     assert m.publishProvider.configuredField == "profile"
@@ -51,23 +58,34 @@ def test_manifest_publish_provider_round_trip():
 
 
 def test_manifest_no_publish_provider_omits_key():
-    m = AppManifest.from_dict({
-        "name": "plain", "version": "1.0.0", "displayName": "Plain", "description": "x",
-    })
+    m = AppManifest.from_dict(
+        {
+            "name": "plain",
+            "version": "1.0.0",
+            "displayName": "Plain",
+            "description": "x",
+        }
+    )
     assert m.publishProvider.id == ""
     assert "publishProvider" not in m.to_dict()
 
 
 def test_discovery_propagates_publish_provider():
-    m = AppManifest.from_dict({
-        "name": "deploy-web", "version": "1.0.0", "displayName": "Web Deploy",
-        "description": "x", "publishProvider": _PP,
-    })
+    m = AppManifest.from_dict(
+        {
+            "name": "deploy-web",
+            "version": "1.0.0",
+            "displayName": "Web Deploy",
+            "description": "x",
+            "publishProvider": _PP,
+        }
+    )
     d = _manifest_to_builtin_dict(m)
     assert d["publishProvider"]["id"] == "deploy-web-aws"
 
 
 # --- pure aggregation -------------------------------------------------------
+
 
 def _app(name, enabled, pp):
     return {"name": name, "enabled": enabled, "manifest": ({"publishProvider": pp} if pp else {})}
@@ -100,6 +118,7 @@ def test_collect_skips_provider_without_id_or_endpoint():
 
 # --- filesystem configured-check -------------------------------------------
 
+
 def test_provider_is_configured_reads_app_config(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     data_dir = apps_dir() / "deploy-web" / "data"
@@ -128,6 +147,7 @@ def test_provider_is_configured_rejects_path_traversal(tmp_path, monkeypatch):
 
 # --- live endpoint ----------------------------------------------------------
 
+
 def _setup_env(tmp_path, monkeypatch):
     home = tmp_path / "kirocrew-home"
     home.mkdir()
@@ -135,8 +155,10 @@ def _setup_env(tmp_path, monkeypatch):
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
+
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
     import kiro_crew.apps.backend as bmod
+
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return home
@@ -146,9 +168,16 @@ def _make_provider_app_source(tmp_path, name="prov-app"):
     src = tmp_path / "source" / name
     src.mkdir(parents=True)
     manifest = {
-        "name": name, "version": "1.0.0", "displayName": "Provider App",
-        "description": "declares a publish provider", "author": "tester",
-        "publishProvider": {**_PP, "endpoint": f"/api/apps/{name}/deploy", "setupRoute": f"/{name}"},
+        "name": name,
+        "version": "1.0.0",
+        "displayName": "Provider App",
+        "description": "declares a publish provider",
+        "author": "tester",
+        "publishProvider": {
+            **_PP,
+            "endpoint": f"/api/apps/{name}/deploy",
+            "setupRoute": f"/{name}",
+        },
     }
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
     return src

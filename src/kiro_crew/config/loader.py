@@ -1055,6 +1055,56 @@ class SlackConfig:
 
 
 @dataclass
+class PublishConfig:
+    """Operator-facing controls for artifact publishing.
+
+    Publishing an artifact to an external destination is provided by a
+    ``publish_provider`` registered through the ``platform`` CPP seam
+    (``PublishRegistry``). The public edition registers NO provider, so
+    publishing is unavailable regardless of these settings; a companion edition
+    registers a concrete destination.
+
+    This ``allowed_destinations`` list is the STANDALONE operator's narrowing
+    knob (default-open, mirroring ``SlackConfig.allowed_enterprise_ids``): empty
+    means "allow every registered destination". It is enforced at the publish
+    handler chokepoint IN ADDITION TO the governance ceiling
+    (``capabilities.publish``) — like the Slack allowlist, config can only
+    NARROW, never widen: a destination denied by the enterprise policy cannot be
+    re-permitted here (the security policy is never merged from ``config.json``).
+    """
+
+    allowed_destinations: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Publish Destinations",
+            "Publish-provider ids the operator permits (e.g. 'artifactory'). "
+            "Empty list allows all registered destinations (default-open). "
+            "Cannot widen past the enterprise governance ceiling.",
+            tags=["publish"],
+        ),
+    )
+    #: Extra filesystem roots (beyond the user's home dir) that an artifact may
+    #: be relocated to point at (``artifact_relocate`` / the ``artifact_move`` MCP
+    #: tool). Relocate is confined to the user home by default so an agent cannot
+    #: aim an artifact at ``/etc/passwd`` or another user's files and exfiltrate
+    #: them via a later artifact GET; each entry here widens the allowed set to an
+    #: additional absolute root (e.g. a shared project dir). Paths are expanded +
+    #: realpath-resolved; a relocate target must resolve under the home dir OR one
+    #: of these roots (AND still pass the sensitive-path denylist).
+    relocate_roots: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Artifact Relocate Roots",
+            "Extra absolute filesystem roots an artifact may be relocated into, "
+            "beyond your home directory. Empty = home-only (the secure default). "
+            "The sensitive-path denylist (~/.aws, ~/.ssh, ~/.kirocrew, …) still "
+            "applies inside every allowed root.",
+            tags=["artifacts"],
+        ),
+    )
+
+
+@dataclass
 class DashboardConfig:
     url: str = field(
         default="",
@@ -1381,9 +1431,7 @@ class TelemetryConfig:
 
     def __post_init__(self) -> None:
         if self.export_interval_seconds < 1:
-            logger.warning(
-                "export_interval_seconds %d < 1, using 1", self.export_interval_seconds
-            )
+            logger.warning("export_interval_seconds %d < 1, using 1", self.export_interval_seconds)
             object.__setattr__(self, "export_interval_seconds", 1)
 
 
@@ -1438,9 +1486,7 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
 )
 
 
-def _log_config_clamp_event(
-    field: str, file_value: int, clamped: int, lo: int, hi: int
-) -> None:
+def _log_config_clamp_event(field: str, file_value: int, clamped: int, lo: int, hi: int) -> None:
     """Emit a best-effort SEL security event for a clamped (tampered) config value.
 
     Recorded so tampering is detectable after the fact even though the loader
@@ -1975,9 +2021,7 @@ class InstancesConfig:
                 _MAX_RECOVERY_CEILING,
                 _MAX_RECOVERY_CEILING,
             )
-            object.__setattr__(
-                self, "max_recovery_attempts", _MAX_RECOVERY_CEILING
-            )
+            object.__setattr__(self, "max_recovery_attempts", _MAX_RECOVERY_CEILING)
         if self.recover_backoff_max_secs <= 0:
             logger.warning(
                 "instances.recover_backoff_max_secs %s <= 0, using %s",
@@ -2303,14 +2347,18 @@ class KiroCrewConfig:
     )
     watchdog: WatchdogConfig = field(
         default_factory=WatchdogConfig,
-        metadata=_meta(
-            "Watchdog", "ACP per-session watchdog / liveness-oracle windows."
-        ),
+        metadata=_meta("Watchdog", "ACP per-session watchdog / liveness-oracle windows."),
     )
 
     slack: SlackConfig = field(
         default_factory=SlackConfig,
         metadata=_meta("Slack", "Slack integration settings.", tags=["slack"]),
+    )
+    publish: PublishConfig = field(
+        default_factory=PublishConfig,
+        metadata=_meta(
+            "Publish", "Artifact publishing controls (destinations allowlist).", tags=["publish"]
+        ),
     )
     wechat: WeComConfig = field(
         default_factory=WeComConfig,
@@ -2533,6 +2581,9 @@ class KiroCrewConfig:
         slack_data = data.get("slack", {})
         if not isinstance(slack_data, dict):
             slack_data = {}
+        publish_data = data.get("publish", {})
+        if not isinstance(publish_data, dict):
+            publish_data = {}
         wechat_data = data.get("wechat", {})
         if not isinstance(wechat_data, dict):
             wechat_data = {}
@@ -2624,9 +2675,7 @@ class KiroCrewConfig:
                 sandbox_allow_unsandboxed_exec=bool(
                     agent_data.get("sandbox_allow_unsandboxed_exec", False)
                 ),
-                apps_allow_third_party=bool(
-                    agent_data.get("apps_allow_third_party", True)
-                ),
+                apps_allow_third_party=bool(agent_data.get("apps_allow_third_party", True)),
                 jail=_normalize_jail(agent_data.get("jail", "auto")),
                 yolo=agent_data.get("yolo", False),
                 notify_override_expiry=agent_data.get("notify_override_expiry", True),
@@ -2647,9 +2696,7 @@ class KiroCrewConfig:
                     agent_data.get("completion_keep", "head")
                 ),
                 completion_keep_chars=int(agent_data.get("completion_keep_chars", 3000)),
-                subagent_result_ttl_secs=int(
-                    agent_data.get("subagent_result_ttl_secs", 3600)
-                ),
+                subagent_result_ttl_secs=int(agent_data.get("subagent_result_ttl_secs", 3600)),
                 subagent_cwd_allowed_roots=list(
                     agent_data.get(
                         "subagent_cwd_allowed_roots",
@@ -2698,9 +2745,7 @@ class KiroCrewConfig:
             telemetry=TelemetryConfig(
                 enabled=bool(telemetry_data.get("enabled", False)),
                 local_dir=str(telemetry_data.get("local_dir", "")),
-                export_interval_seconds=int(
-                    telemetry_data.get("export_interval_seconds", 60)
-                ),
+                export_interval_seconds=int(telemetry_data.get("export_interval_seconds", 60)),
             ),
             memory=MemoryConfig(
                 embedding_provider=memory_data.get("embedding_provider", "none"),
@@ -2722,9 +2767,7 @@ class KiroCrewConfig:
                 migrated=memory_data.get("migrated", False),
             ),
             knowledge=KnowledgeConfig(
-                auto_ingest_artifacts=bool(
-                    knowledge_data.get("auto_ingest_artifacts", True)
-                ),
+                auto_ingest_artifacts=bool(knowledge_data.get("auto_ingest_artifacts", True)),
                 auto_ingest_artifact_kinds=[
                     k
                     for k in knowledge_data.get(
@@ -2733,12 +2776,8 @@ class KiroCrewConfig:
                     )
                     if isinstance(k, str)
                 ],
-                embed_timeout_secs=float(
-                    knowledge_data.get("embed_timeout_secs", 10.0)
-                ),
-                embed_content_budget=int(
-                    knowledge_data.get("embed_content_budget", 0)
-                ),
+                embed_timeout_secs=float(knowledge_data.get("embed_timeout_secs", 10.0)),
+                embed_content_budget=int(knowledge_data.get("embed_content_budget", 0)),
             ),
             telegram=TelegramConfig(
                 enabled=bool(telegram_data.get("enabled", False)),
@@ -2778,6 +2817,18 @@ class KiroCrewConfig:
                 reactions_enabled=bool(slack_data.get("reactions_enabled", True)),
                 use_tunnel_url=bool(slack_data.get("use_tunnel_url", False)),
                 show_thinking=bool(slack_data.get("show_thinking", True)),
+            ),
+            publish=PublishConfig(
+                allowed_destinations=[
+                    d
+                    for d in publish_data.get("allowed_destinations", [])
+                    if isinstance(d, str) and d
+                ],
+                relocate_roots=[
+                    r
+                    for r in publish_data.get("relocate_roots", [])
+                    if isinstance(r, str) and r.strip()
+                ],
             ),
             wechat=WeComConfig(
                 enabled=bool(wechat_data.get("enabled", False)),
@@ -2962,6 +3013,7 @@ class KiroCrewConfig:
             "session": asdict(self.session),
             "memory": asdict(self.memory),
             "slack": asdict(self.slack),
+            "publish": asdict(self.publish),
             "telegram": asdict(self.telegram),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),

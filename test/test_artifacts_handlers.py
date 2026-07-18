@@ -18,6 +18,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     _MAX_BODY_BYTES,
     api_artifact_delete,
     api_artifact_detail,
+    api_artifact_relocate,
     api_artifact_update,
     api_artifact_version_detail,
     api_artifact_versions,
@@ -146,10 +147,14 @@ class TestList:
         assert [a["slug"] for a in _json_body(resp)["artifacts"]] == ["alpha"]
 
     @pytest.mark.asyncio
-    async def test_content_snippet_is_match_centered(self, isolated_store, patch_restricted) -> None:
+    async def test_content_snippet_is_match_centered(
+        self, isolated_store, patch_restricted
+    ) -> None:
         content = "line one\nline two\nHERE is the MATCH keyword\nline four\nline five\nline six"
         isolated_store.create(name="Doc", content=content, kind="markdown")
-        resp = await api_artifacts_list(_request(query={"q": "match", "content": "1", "snippet": "1"}))
+        resp = await api_artifacts_list(
+            _request(query={"q": "match", "content": "1", "snippet": "1"})
+        )
         snip = _json_body(resp)["artifacts"][0]["snippet"]
         lines = snip.split("\n")
         assert len(lines) <= 5
@@ -164,14 +169,18 @@ class TestList:
         assert [a["slug"] for a in _json_body(resp)["artifacts"]] == ["alpha"]
 
     @pytest.mark.asyncio
-    async def test_content_match_finds_by_description(self, isolated_store, patch_restricted) -> None:
+    async def test_content_match_finds_by_description(
+        self, isolated_store, patch_restricted
+    ) -> None:
         isolated_store.create(name="Alpha", content="x", description="review dashboard")
         isolated_store.create(name="Beta", content="x")
         resp = await api_artifacts_list(_request(query={"q": "dashboard", "content": "1"}))
         assert [a["slug"] for a in _json_body(resp)["artifacts"]] == ["alpha"]
 
     @pytest.mark.asyncio
-    async def test_q_without_content_flag_is_name_only(self, isolated_store, patch_restricted) -> None:
+    async def test_q_without_content_flag_is_name_only(
+        self, isolated_store, patch_restricted
+    ) -> None:
         # A content hit must NOT match unless ?content=1 is set.
         isolated_store.create(name="Alpha", content="the quick brown fox")
         resp = await api_artifacts_list(_request(query={"q": "brown"}))
@@ -802,3 +811,76 @@ class TestRecordEvent:
         assert post.content == original_content
         ref_events = [e for e in post.events if e.get("type") == "referenced"]
         assert len(ref_events) == 3
+
+
+# ── Relocate (fixed-root containment) ─────────────────────────────────────────
+
+
+class TestRelocate:
+    """api_artifact_relocate confines source_path to $HOME (+ configured roots),
+    so an agent cannot aim an artifact at /etc/passwd or another user's files
+    and exfiltrate them via a later GET (PR #14 nrb + CodeQL py/path-injection)."""
+
+    @pytest.mark.asyncio
+    async def test_home_file_allowed(self, isolated_store, patch_restricted, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        target = home / "notes.md"
+        target.write_text("# hi")
+        isolated_store.create(name="Doc", content="x", slug="doc", kind="markdown")
+        resp = await api_artifact_relocate(
+            _request(match={"slug": "doc"}, body={"source_path": str(target)})
+        )
+        assert resp.status == 200, _json_body(resp)
+        assert isolated_store.get("doc").source_path == str(target.resolve())
+
+    @pytest.mark.asyncio
+    async def test_outside_home_denied(
+        self, isolated_store, patch_restricted, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        # A file OUTSIDE home (sibling tmp dir) must be refused with 403.
+        outside = tmp_path / "outside" / "secret.txt"
+        outside.parent.mkdir()
+        outside.write_text("secret")
+        isolated_store.create(name="Doc", content="x", slug="doc", kind="markdown")
+        resp = await api_artifact_relocate(
+            _request(match={"slug": "doc"}, body={"source_path": str(outside)})
+        )
+        assert resp.status == 403
+        assert "home" in _json_body(resp)["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_configured_extra_root_allowed(
+        self, isolated_store, patch_restricted, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        extra = tmp_path / "shared"
+        extra.mkdir()
+        target = extra / "doc.md"
+        target.write_text("# shared")
+        # Configure the extra root via publish.relocate_roots.
+        from kiro_crew.config.loader import KiroCrewConfig, PublishConfig
+
+        cfg = KiroCrewConfig()
+        cfg.publish = PublishConfig(relocate_roots=[str(extra)])
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: cfg))
+        isolated_store.create(name="Doc", content="x", slug="doc", kind="markdown")
+        resp = await api_artifact_relocate(
+            _request(match={"slug": "doc"}, body={"source_path": str(target)})
+        )
+        assert resp.status == 200, _json_body(resp)
+
+    @pytest.mark.asyncio
+    async def test_traversal_denied(self, isolated_store, patch_restricted, monkeypatch):
+        isolated_store.create(name="Doc", content="x", slug="doc", kind="markdown")
+        resp = await api_artifact_relocate(
+            _request(match={"slug": "doc"}, body={"source_path": "../../etc/passwd"})
+        )
+        assert resp.status == 403
+        assert "traversal" in _json_body(resp)["error"].lower()

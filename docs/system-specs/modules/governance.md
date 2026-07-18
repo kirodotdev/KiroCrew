@@ -281,8 +281,39 @@ command body), `filesystem.read` / `filesystem.write` / `folders.*` and
 the messaging chokepoint), `apps` (app activation), `sandbox.min_level` (ordinal
 floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
-`capabilities.memory_writes`, `capabilities.script_hooks`. Only the live
+`capabilities.memory_writes`, `capabilities.script_hooks`, and
+`capabilities.publish` (artifact publish chokepoint — see below). Only the live
 `approval_mode` clamp remains reserved.
+
+`capabilities.publish` is a `CapabilityGate` (opt-in: `capability_default=False`)
+with an inner `destinations` `ScopedRuleset` (`identifier` matcher) bounding
+which publish-provider ids are allowed once the capability is on — the direct
+analogue of `capabilities.spawn`'s `agents` ruleset. It is enforced at a Plane-C
+out-of-band chokepoint in the artifact publish handler (`api_artifact_publish`),
+NOT at the host PreToolUse gate: publishing is a user-driven dashboard HTTP
+action ("NOT LLM tools"), so the title-gate never sees it. The chokepoint calls
+`governance_permits("capabilities.publish", "destinations:<provider_id>", …)`
+BEFORE dispatching to the provider, and additionally honours the standalone
+operator's `publish.allowed_destinations` config allowlist (default-open,
+narrow-only — config can never widen past the ceiling, mirroring the Slack
+enterprise allowlist). This scope is distinct from the `git push` deny FLOOR and
+from `network.egress`: `capabilities.publish.enabled: true` never re-enables git
+publish (the floor is ADD-only and unconditional) nor a fetch host. WHO
+implements a destination is the orthogonal CPP `PublishRegistry` seam; governance
+decides only WHETHER + to WHERE, and runs first.
+
+Unlike the messaging/cron chokepoints (which degrade-to-permit on a transient
+governance-evaluation error so a latent regression can't wedge the surface),
+publish is an **authorization** decision whose wrong-permit is a data
+exfiltration — so it fails **CLOSED**. Because `governance_permits` catches its
+OWN internal errors (and would otherwise return a permissive "no opinion"
+Decision), the handler passes `fail_closed=True`: an error raised *inside*
+`governance_permits` then returns a DENYING Decision (audited `failed_closed`),
+not a permit. The chokepoint also evaluates the **effective** destination — for
+an already-published artifact `publish_sync.publish` dispatches to the existing
+`publication.provider`, so the gate resolves that provider (not the requested/
+default one) before deciding, or a re-publish with no explicit provider could be
+gated against the wrong destination.
 
 ## Audit
 

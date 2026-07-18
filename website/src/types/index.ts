@@ -228,6 +228,63 @@ export interface TaskRunnerStatus {
 
 
 
+export interface ArtifactPublication {
+  /** Publishing-provider artifact UUID — stable across versions. */
+  artifact_id: string
+  /** Stable view URL: https://.../artifact/<id>. */
+  view_url: string
+  /** Publishing provider name ("artifactory" | "chorus" | …). */
+  provider?: string
+  /** Sync authority: 'mirror' (KiroCrew-authoritative) | 'live' (remote CRDT, e.g. Chorus). */
+  collab_mode?: 'mirror' | 'live'
+  visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC'
+  shared_with: string[]
+  auto_sync: boolean
+  last_synced_kirocrew_version: number
+  /** Maps KiroCrew version (as string) -> provider version number. */
+  version_map: Record<string, number>
+  published_at: string
+  published_by: string
+  /** Conflict / sync-failure message surfaced to the UI; empty when healthy. */
+  last_error: string
+}
+
+/** A publishing provider's self-described capabilities for a given artifact kind,
+ *  returned by GET /api/artifacts/publish-providers?kind=<kind> (Mesh-2445). */
+export interface PublishProviderDescriptor {
+  name: string
+  display_name: string
+  capabilities: string[]
+  kind_support: 'native' | 'converted' | 'degraded' | 'unsupported'
+  capable: boolean
+  sharing_model: {
+    supports_private: boolean
+    supports_shared: boolean
+    supports_public: boolean
+    principal_kind: string
+    supports_roles: boolean
+    supports_expiration: boolean
+    programmable: boolean
+    out_of_band_url: string
+  }
+  sync_model: { authority: string; concurrency: string; collab_mode: 'mirror' | 'live' }
+  discovery_model: {
+    list_mine: boolean
+    list_shared_with_me: boolean
+    list_public: boolean
+    full_text_search: boolean
+    pull_by_id: boolean
+  }
+}
+
+export interface ForkMetadata {
+  upstream_artifact_id: string
+  upstream_url: string
+  upstream_owner: string
+  upstream_version: number
+  forked_at: string
+}
+
 export interface Artifact {
   slug: string
   name: string
@@ -246,6 +303,11 @@ export interface Artifact {
    * file edits to source_path. Drives the "Snapshot Live" button
    * (Mesh-1654 round 6). */
   live_dirty?: boolean
+  /** Publication state (Mesh-1880). Absent/null until the artifact has been
+   * published to a sharing provider. */
+  publication?: ArtifactPublication | null
+  /** Fork provenance (Mesh-1880 P1). Absent/null if not a fork. */
+  fork_metadata?: ForkMetadata | null
   /** Short, markdown-stripped, redacted content preview — only present when the
    * list was requested with ?snippet=1 (used by the command palette's
    * Artifacts provider). For a ?content=1 query it is match-centered. */
@@ -277,11 +339,45 @@ export interface ArtifactFolder {
 
 export interface ArtifactEvent {
   ts: string
-  type: 'created' | 'edited' | 'iterated' | 'referenced' | 'reverted'
+  type: 'created' | 'edited' | 'iterated' | 'referenced' | 'reverted' | 'comment'
   by?: string
   session_id?: string
   version?: number
   /** For ``reverted`` events: the historical version whose content was
    * copied into the new current version. */
   from_version?: number
+  /** Event-type-specific extras. For ``comment`` events:
+   * ``action`` (deleted | reviewed | resolved), ``comment_snippet``
+   * (≤100-char excerpt of the affected comment), and ``reason``
+   * (agent's justification on deletes). */
+  metadata?: Record<string, string | number | boolean | null>
+}
+
+export interface CommentAnchor {
+  quote?: string
+  prefix?: string
+  suffix?: string
+  start_offset?: number
+  end_offset?: number
+  version_number?: number
+}
+
+export interface ArtifactComment {
+  id: string
+  origin: string
+  provider?: string | null
+  scope: 'private' | 'shared'
+  author: string
+  is_agent: boolean
+  body: string
+  anchor?: CommentAnchor | null
+  thread_id: string
+  parent_id?: string | null
+  status: 'open' | 'review' | 'resolved'
+  sync_state: string
+  /** True when the anchored text no longer exists in the artifact content
+   * (backend rescans anchors on every content write). */
+  anchor_orphaned?: boolean
+  created_at: string
+  updated_at: string
 }

@@ -193,6 +193,18 @@ if (typeof (globalThis as unknown as { WebGL2RenderingContext?: unknown }).WebGL
   }
 }
 
+// jsdom polyfill: URL.createObjectURL / revokeObjectURL. jsdom doesn't
+// implement object URLs, but ArtifactBodyIframe builds a Blob URL on mount and
+// revokes it on unmount. Without these stubs the iframe body throws
+// "URL.createObjectURL is not a function" — an uncaught commit-phase error that
+// only surfaces under some orderings (e.g. --coverage sharding on the fleet).
+if (typeof URL.createObjectURL !== 'function') {
+  URL.createObjectURL = (() => 'blob:mock') as typeof URL.createObjectURL
+}
+if (typeof URL.revokeObjectURL !== 'function') {
+  URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL
+}
+
 // Start MSW server before all tests
 beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }))
 
