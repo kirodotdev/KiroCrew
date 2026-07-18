@@ -32,7 +32,7 @@ from kiro_crew.dashboard.refresh_tokens import (
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
     _cookie_port_from_host,
-    extract_claims_from_token,
+    extract_numeric_claim,
     generate_token,
     revoke_access_cookie,
 )
@@ -220,11 +220,10 @@ async def api_auth_me(request: web.Request) -> web.Response:
     port = request.app.get("port", 7777)
     cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
     access_token = request.cookies.get(cookie_name, "")
-    claims = extract_claims_from_token(access_token, ("session_exp",))
-    try:
-        session_exp = float(claims.get("session_exp", "0"))
-    except (TypeError, ValueError):
-        session_exp = 0.0
+    # session_exp is a FLOAT claim; the string-only extract_claims_from_token
+    # silently drops it (always yielding 0.0 here), which disabled the
+    # frontend's proactive-refresh scheduler. Use the numeric extractor.
+    session_exp = extract_numeric_claim(access_token, "session_exp") or 0.0
 
     # Refresh-cookie expiry: best effort — if a refresh cookie is present,
     # we report its session_exp. The cookie is path-scoped to /api/auth/
@@ -341,7 +340,14 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         return resp
 
     # Happy path: mint a fresh access + refresh pair.
-    new_access_token = generate_token(user_id, ttl_seconds=MAX_SESSION_TTL_SECS)
+    # register_nonce=False: this is a cookie-only session token (validated on the
+    # cookie path via use_session_exp, never the one-time link path), so it must
+    # NOT be added to the bounded 50-slot nonce set — otherwise each refresh
+    # churns/evicts pending one-time link nonces (e.g. Slack challenge links).
+    # Mirrors the middleware's own link->session exchange in token_auth.py.
+    new_access_token = generate_token(
+        user_id, ttl_seconds=MAX_SESSION_TTL_SECS, register_nonce=False
+    )
     new_session_exp = now + MAX_SESSION_TTL_SECS
     new_refresh_token, _new_chain, _new_jti, new_refresh_exp = generate_refresh_token(
         user_id, chain_id=chain_id

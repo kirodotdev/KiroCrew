@@ -1786,3 +1786,76 @@ async def test_index_serves_guidance_when_bundle_missing(tmp_path, monkeypatch) 
     # Request-independent and secret-free (same contract as the served shell).
     assert resp_anon.text == resp_authed.text
     assert "someminted.token.value" not in body
+
+
+# -- extract_numeric_claim (round-2 bugfix: api_auth_me session_exp=0) ---------
+
+
+def test_extract_numeric_claim_returns_float_session_exp() -> None:
+    """session_exp is a float claim; the string-only extract_claims_from_token
+    dropped it (api_auth_me always saw 0.0, disabling frontend refresh). The
+    numeric extractor must return the real float."""
+    from kiro_crew.dashboard.token_auth import extract_numeric_claim
+
+    tok = generate_token("alice", ttl_seconds=3600)
+    exp = extract_numeric_claim(tok, "session_exp")
+    assert isinstance(exp, float)
+    assert exp > time.time()  # a real future epoch, not 0.0
+
+    # The string extractor still drops it (documents why the numeric one exists).
+    from kiro_crew.dashboard.token_auth import extract_claims_from_token
+
+    assert extract_claims_from_token(tok, ("session_exp",)) == {}
+
+
+def test_extract_numeric_claim_rejects_invalid_missing_and_bool() -> None:
+    from kiro_crew.dashboard.token_auth import extract_numeric_claim
+
+    tok = generate_token("bob", ttl_seconds=3600)
+    assert extract_numeric_claim("garbage.sig", "session_exp") is None  # invalid token
+    assert extract_numeric_claim(tok, "does_not_exist") is None  # missing claim
+
+
+# -- register_nonce=False for cookie-only session tokens (nonce-churn bugfix) --
+
+
+def test_cookie_session_mint_does_not_evict_link_nonce() -> None:
+    """A pending one-time LINK nonce must survive many cookie-only session-token
+    mints. api_auth_refresh mints generate_token(..., register_nonce=False) per
+    rotation; if it registered nonces it would churn/evict the bounded 50-slot
+    set and drop pending Slack-challenge links. Mint > the 50-slot bound and
+    assert the link token still validates on the link path."""
+    from kiro_crew.dashboard.token_auth import MAX_CONCURRENT_NONCES, validate_token
+
+    # A real one-time link token (registers a nonce, validated on the link path).
+    link = generate_token("carol", ttl_seconds=3600)
+    valid_before, _, _ = validate_token(link)
+    assert valid_before
+
+    # Mint well over the bound the way api_auth_refresh does — register_nonce=False.
+    for _ in range(MAX_CONCURRENT_NONCES + 10):
+        generate_token("carol", ttl_seconds=3600, register_nonce=False)
+
+    # The link nonce was NOT churned out: the link token still validates.
+    valid_after, _, _ = validate_token(link)
+    assert valid_after, "cookie-only mints must not evict the pending link nonce"
+
+    # Contrast (documents the bug): the OLD default register_nonce=True churns
+    # the bounded set and DOES evict the link nonce.
+    link2 = generate_token("dave", ttl_seconds=3600)
+    assert validate_token(link2)[0]
+    for _ in range(MAX_CONCURRENT_NONCES + 10):
+        generate_token("dave", ttl_seconds=3600)  # register_nonce=True (default)
+    assert not validate_token(link2)[0]
+
+
+def test_api_auth_refresh_mints_session_token_without_nonce_registration() -> None:
+    """Handler regression guard: api_auth_refresh must mint its cookie-only
+    session token with register_nonce=False (else it churns pending link
+    nonces). Asserts against the handler source so a revert is caught."""
+    import inspect
+
+    from kiro_crew.dashboard.handlers.auth_refresh import api_auth_refresh
+
+    src = inspect.getsource(api_auth_refresh)
+    assert "register_nonce=False" in src

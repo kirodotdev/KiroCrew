@@ -697,6 +697,42 @@ def extract_claims_from_token(token: str, keys: tuple[str, ...]) -> dict[str, st
     return out
 
 
+def extract_numeric_claim(token: str, key: str) -> float | None:
+    """Extract a single numeric (int/float) claim from a validated token.
+
+    ``extract_claims_from_token`` intentionally returns only STRING claims (it
+    serves the Slack-redirect channel/thread_ts recovery path), so it silently
+    drops numeric claims like ``session_exp``. Callers that need a numeric claim
+    (e.g. ``api_auth_me`` reporting the cookie's ``session_exp`` so the frontend
+    can schedule its proactive refresh) must use this instead. Validates the
+    token first (deny-by-default); returns ``None`` if the token is invalid, the
+    claim is absent, or it is not a real number (bool is rejected).
+
+    Validates against ``session_exp`` (use_session_exp=True), NOT the 5-minute
+    link window — matching ``extract_claims_from_token``: the cookies this reads
+    outlive the link window, survive restarts, and are minted with
+    ``register_nonce=False`` by both the middleware link->session exchange and
+    ``api_auth_refresh``, so link-path validation would return ``None`` for all
+    of them and the fix would be a runtime no-op.
+    """
+    valid, _user_id, _reason = validate_token(token, use_session_exp=True)
+    if not valid:
+        return None
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception as exc:
+        logger.warning(
+            "extract_numeric_claim: post-validation decode failed (%s)", type(exc).__name__
+        )
+        return None
+    v = data.get(key)
+    if isinstance(v, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
 def generate_app_secret() -> str:
     """Generate a random 64-char hex secret for app authentication."""
     return os.urandom(32).hex()
