@@ -50,7 +50,7 @@ registerBuiltinSurface({
 registerBuiltinSurface({
   navId: 'projects',
   route: '/projects',
-  label: 'Projects',
+  label: 'Task Runner',
   icon: <BookOpenText size={16} />,
   group: 'Apps',
   appOnly: true,

@@ -47,9 +47,25 @@ describe('ProjectsPage', () => {
 
   it('renders page header and mode toggle', () => {
     renderWithProviders(<ProjectsPage />)
-    expect(screen.getByText('Projects')).toBeInTheDocument()
+    expect(screen.getByText('Task Runner')).toBeInTheDocument()
     expect(screen.getByText(/Compose/)).toBeInTheDocument()
     expect(screen.getByText(/From Spec/)).toBeInTheDocument()
+  })
+
+  it('renders the New Task button (renamed from New Project) when runs exist', async () => {
+    const run: ProjectRun = {
+      task_id: 'run-x', name: 'Existing', running: false, status: 'completed',
+      steps: 1, completed: 1, failed: 0, skipped: 0, current_step: 1,
+      spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
+      task_details: [], started_at: 0, finished_at: 0,
+      work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
+      commits: 0, original_input: '', source: 'text', groups: [],
+    }
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [run] })
+    renderWithProviders(<ProjectsPage />)
+    await screen.findByText('Existing')
+    expect(screen.getByRole('button', { name: /New Task/ })).toBeInTheDocument()
   })
 
   it('renders compose textarea by default', () => {

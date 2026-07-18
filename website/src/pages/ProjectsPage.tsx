@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Hourglass, ClipboardList, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw } from 'lucide-react'
+import { Hourglass, ClipboardList, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
@@ -23,7 +23,7 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
       <textarea aria-label={placeholder} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={rows} placeholder={placeholder} value={text} onChange={e => setText(e.target.value)} disabled={disabled} />
       <div className="flex gap-2 items-center flex-wrap">
         <input type="file" aria-label="Upload a file" accept={accept} onChange={onUpload} disabled={disabled} className="text-sm text-muted file:mr-2 file:py-1 file:px-3 file:rounded-md file:border file:border-border file:bg-bg-elevated file:text-text file:text-sm file:cursor-pointer" />
-        <SendBtn onClick={onRun} disabled={!text.trim() || disabled}>▶ Run</SendBtn>
+        <SendBtn onClick={onRun} disabled={!text.trim() || disabled}><Play className="lucide-inline" /> Run</SendBtn>
         <Btn onClick={onPlan} disabled={!text.trim() || disabled}>{disabled ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} Plan</Btn>
       </div>
       {isPlanning && <PlanningBanner onCancel={onCancel} />}
@@ -254,7 +254,7 @@ export default function ProjectsPage() {
           <div className="flex gap-2 items-center">
             {!isRefining && <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={refine} disabled={!userInput.trim() || anyPlanning}><Sparkles className="lucide-inline" /> Refine into Spec</button>}
             {!isRefining && <button className={`px-4 h-9 rounded-md border border-accent bg-transparent text-accent text-sm font-semibold cursor-pointer font-body hover:bg-accent hover:text-accent-fg transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>{anyPlanning ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} Plan</button>}
-            {!isRefining && <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>▶ Run</button>}
+            {!isRefining && <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}><Play className="lucide-inline" /> Run</button>}
             {isRefining && <>
               <button className="px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.refineCancel(); setRefineStatus('cancelled') }}><Square className="lucide-inline" /> Cancel</button>
               <span className="text-accent text-[13px] animate-pulse">Refining…</span>
@@ -269,7 +269,7 @@ export default function ProjectsPage() {
               {!isRefining && refined && (
                 <div className="flex gap-2 mt-2">
                   <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(refined, 'spec')} disabled={anyPlanning}><ClipboardList className="lucide-inline" /> Plan from Spec</button>
-                  <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(refined, 'spec')} disabled={anyPlanning}>▶ Run</button>
+                  <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(refined, 'spec')} disabled={anyPlanning}><Play className="lucide-inline" /> Run</button>
                   <button className={`px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-text hover:border-border-strong transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => { setRefined(''); setRefineStatus('idle'); setRefineError('') }} disabled={anyPlanning}><X className="lucide-inline" /> Discard</button>
                 </div>
               )}
@@ -288,11 +288,11 @@ export default function ProjectsPage() {
   // Unified layout — sidebar always visible when runs exist
   return (
     <>
-      <PageHeader title="Projects" subtitle="Autonomous multi-step task execution" />
+      <PageHeader title="Task Runner" subtitle="Autonomous multi-step task execution" />
       <div className="flex-1 min-h-0 flex">
         {runs.length > 0 && (
           <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-3">
-            <button onClick={() => setSelectedRun(null)} className="w-full mb-3 px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20">＋ New Project</button>
+            <button onClick={() => setSelectedRun(null)} className="w-full mb-3 px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> New Task</button>
             {projectList}
           </div>
         )}
