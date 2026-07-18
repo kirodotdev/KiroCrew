@@ -87,6 +87,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     AcpPromptStats,
     JsonRpcMessage,
+    TurnUsage,
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -848,7 +849,7 @@ class AcpSessionHandle:
                             self._session_id, self._cancel_grace_secs,
                         )
                         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_STALE_RECOVER,
-                                       credits=self.last_prompt_stats.credits)
+                                       usage=TurnUsage(credits=self.last_prompt_stats.credits))
                         return
                     logger.warning(
                         "Cancel unacked after %.1fs on session %s — unblocking caller "
@@ -856,7 +857,7 @@ class AcpSessionHandle:
                         self._cancel_grace_secs, self._session_id,
                     )
                     yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="error: cancel unacked",
-                                   credits=self.last_prompt_stats.credits)
+                                   usage=TurnUsage(credits=self.last_prompt_stats.credits))
                     return
 
                 try:
@@ -980,7 +981,7 @@ class AcpSessionHandle:
                     self._tool_dispatched = False
                     self._turn_done.set()
                     yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=reason,
-                                   credits=self.last_prompt_stats.credits)
+                                   usage=TurnUsage(credits=self.last_prompt_stats.credits))
                     return
                 if msg.method is None and msg.id is not None:
                     # Response frame for a DIFFERENT req_id: a concurrent
@@ -1025,7 +1026,7 @@ class AcpSessionHandle:
                             self._tool_dispatched = False
                             self._turn_done.set()
                             yield AcpEvent(kind=EVENT_COMPLETE,
-                                           credits=self.last_prompt_stats.credits)
+                                           usage=TurnUsage(credits=self.last_prompt_stats.credits))
                             return
                 elif action == "steer":
                     # Mid-turn steer lifecycle echo from kiro-cli (_session/steer).
@@ -1161,7 +1162,7 @@ class AcpSessionHandle:
             # tell this apart from a normal turn end.
             self._turn_done.set()
             yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="timeout",
-                           credits=self.last_prompt_stats.credits)
+                           usage=TurnUsage(credits=self.last_prompt_stats.credits))
         finally:
             for _m in _buffered:
                 self._queue.put_nowait(_m)
@@ -1243,7 +1244,7 @@ class AcpSessionHandle:
             title=(tool.title if tool else ""),
             tool_input=(tool.command if tool else ""),
             text=f"verdict={verdict}; idle_secs={int(idle)}; {evidence}",
-            credits=self.last_prompt_stats.credits,
+            usage=TurnUsage(credits=self.last_prompt_stats.credits),
         )
 
     def _track_metadata(self, msg: JsonRpcMessage) -> None:

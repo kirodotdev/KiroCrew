@@ -19,6 +19,7 @@ from chat_test_helpers import (
     _make_state,
 )
 
+from kiro_crew.acp.types import TurnUsage
 from kiro_crew.dashboard.state import _MAX_SLOT_MESSAGES, DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 
@@ -2473,8 +2474,7 @@ class TestTokenPersistenceBackfill:
         events = [
             LLMEvent(
                 kind=EVENT_COMPLETE,
-                input_tokens=12,
-                output_tokens=34,
+                usage=TurnUsage(input_tokens=12, output_tokens=34),
             ),
         ]
 
@@ -2545,7 +2545,7 @@ class TestTokenPersistenceBackfill:
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
         events = [
-            LLMEvent(kind=EVENT_COMPLETE, input_tokens=5, output_tokens=7),
+            LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(input_tokens=5, output_tokens=7)),
         ]
 
         state = self._make_state_for_run_chat(tmp_path, monkeypatch)
@@ -2580,7 +2580,7 @@ class TestTokenPersistenceBackfill:
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
         events = [
-            LLMEvent(kind=EVENT_COMPLETE, input_tokens=1, output_tokens=2),
+            LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(input_tokens=1, output_tokens=2)),
         ]
 
         state = self._make_state_for_run_chat(tmp_path, monkeypatch)
@@ -2685,7 +2685,7 @@ class TestKiroBackfillProfileGuard:
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
-        events = [LLMEvent(kind=EVENT_COMPLETE, input_tokens=3, output_tokens=4)]
+        events = [LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(input_tokens=3, output_tokens=4))]
 
         state = TestTokenPersistenceBackfill._make_state_for_run_chat(
             tmp_path, monkeypatch

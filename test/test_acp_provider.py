@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent, TurnUsage
 from kiro_crew.providers.acp import AcpProvider
 
 
@@ -96,6 +96,30 @@ class TestToLlmEventFieldPropagation:
         assert ev.tool_output == "done"
         assert ev.sub_session_id == "sess-1"
         assert ev.subagents == [{"sessionId": "sess-1"}]
+
+    @pytest.mark.asyncio
+    async def test_stream_propagates_turn_usage(self):
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        src = AcpEvent(
+            kind="complete",
+            stop_reason="end_turn",
+            usage=TurnUsage(
+                input_tokens=11,
+                output_tokens=22,
+                cache_creation_tokens=33,
+                cache_read_tokens=44,
+            ),
+        )
+        provider._client.stream_events = MagicMock(return_value=_async_iter([src]))
+
+        events = await _drain(provider.stream("hi"))
+
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.usage.input_tokens == 11
+        assert ev.usage.output_tokens == 22
+        assert ev.usage.cache_creation_tokens == 33
+        assert ev.usage.cache_read_tokens == 44
 
 
 class TestCompactRouting:

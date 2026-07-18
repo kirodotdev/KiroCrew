@@ -740,6 +740,7 @@ class AcpProvider(LLMProvider):
             tool_input=e.tool_input,
             tool_output=e.tool_output,
             tool_final=e.tool_final,
+            usage=e.usage,
             raw_tool_params=e.raw_tool_params,
             server_name=e.server_name,
             oauth_url=e.oauth_url,

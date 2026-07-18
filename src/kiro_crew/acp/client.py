@@ -86,6 +86,7 @@ from kiro_crew.acp.types import (
     AcpPromptStats,
     JsonRpcMessage,
     JsonRpcRequest,
+    TurnUsage,
 )
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
@@ -2878,7 +2879,7 @@ class AcpClient:
                 self._tool_dispatched = False
                 self._last_stop_reason = reason
                 self._turn_done.set()
-                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=reason, credits=self.last_prompt_stats.credits)
+                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=reason, usage=TurnUsage(credits=self.last_prompt_stats.credits))
                 return
             if action == "error":
                 _raise_acp_error(msg.error)
@@ -2907,7 +2908,7 @@ class AcpClient:
                         got_complete = True
                         for tr_event in await asyncio.to_thread(self._read_new_tool_results_sync):
                             yield tr_event
-                        yield AcpEvent(kind=EVENT_COMPLETE, credits=self.last_prompt_stats.credits)
+                        yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=self.last_prompt_stats.credits))
                         return
                 tool_event = self._extract_tool_event(msg)
                 if tool_event:
@@ -3105,7 +3106,7 @@ class AcpClient:
                     "Synthesizing EVENT_COMPLETE after stale turn (chunks=%d)",
                     self.last_prompt_stats.text_chunks,
                 )
-                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN, credits=self.last_prompt_stats.credits)
+                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN, usage=TurnUsage(credits=self.last_prompt_stats.credits))
                 return
             raise AcpTimeoutError()
 

@@ -15,6 +15,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import model_registry
+from kiro_crew.acp.types import TurnUsage
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
@@ -88,10 +89,13 @@ def _build_token_record(
     slot_key: str, model: str, event: object, provider: str, now: datetime
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O)."""
-    # credits comes from kiro (AcpEvent.credits); coerce to float so the record
-    # stays JSON-serializable for non-AcpEvent / unset producers.
+    # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
+    # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
+    # credits is float-coerced so a non-numeric value can't break JSON serialization.
+    _u = getattr(event, "usage", None)
+    u = _u if isinstance(_u, TurnUsage) else event
     try:
-        credits = float(getattr(event, "credits", 0.0))
+        credits = float(getattr(u, "credits", 0.0))
     except (TypeError, ValueError):
         credits = 0.0
     return {
@@ -100,14 +104,14 @@ def _build_token_record(
         "slot": slot_key,
         "provider": provider or "",
         "model": model or "",
-        "input": getattr(event, "input_tokens", 0),
-        "output": getattr(event, "output_tokens", 0),
-        "cache_create": getattr(event, "cache_creation_tokens", 0),
-        "cache_read": getattr(event, "cache_read_tokens", 0),
-        "cost": getattr(event, "cost_usd", 0.0),
+        "input": getattr(u, "input_tokens", 0),
+        "output": getattr(u, "output_tokens", 0),
+        "cache_create": getattr(u, "cache_creation_tokens", 0),
+        "cache_read": getattr(u, "cache_read_tokens", 0),
+        "cost": getattr(u, "cost_usd", 0.0),
         "credits": credits,
-        "turns": getattr(event, "num_turns", 0),
-        "duration_ms": getattr(event, "duration_ms", 0),
+        "turns": getattr(u, "num_turns", 0),
+        "duration_ms": getattr(u, "duration_ms", 0),
     }
 
 

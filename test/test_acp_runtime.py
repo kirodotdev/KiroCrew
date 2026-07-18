@@ -1362,7 +1362,7 @@ async def test_dispatch_metadata_credits():
         assert handle.last_prompt_stats.credits == pytest.approx(1.23)
         assert handle.last_prompt_stats.context_pct == 12.5
         complete = [e for e in events if e.kind == EVENT_COMPLETE]
-        assert complete and complete[-1].credits == pytest.approx(1.23)
+        assert complete and complete[-1].usage.credits == pytest.approx(1.23)
     finally:
         await _stop_reader(task)
 

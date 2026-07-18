@@ -177,6 +177,25 @@ class JsonRpcMessage:
 
 
 @dataclass
+class TurnUsage:
+    """Per-turn usage/billing for one completed agent turn.
+
+    Carried on AcpEvent (EVENT_COMPLETE). Each provider fills the dimensions it
+    bills in and leaves the rest at 0: claude_code/bedrock fill token counts +
+    cost_usd, kiro (acp) fills credits. Consumers read whichever is non-zero.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    cost_usd: float = 0.0
+    credits: float = 0.0
+    num_turns: int = 0
+    duration_ms: int = 0
+
+
+@dataclass
 class AcpEvent:
     """Structured event from kiro-cli ACP stream."""
 
@@ -193,14 +212,7 @@ class AcpEvent:
     tool_input: str = ""
     tool_output: str = ""
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_creation_tokens: int = 0
-    cache_read_tokens: int = 0
-    cost_usd: float = 0.0
-    credits: float = 0.0
-    num_turns: int = 0
-    duration_ms: int = 0
+    usage: TurnUsage = field(default_factory=TurnUsage)
     raw_tool_params: dict | None = None  # original tool params before diff conversion (for file-chip snapshots)
     # MCP OAuth notification fields (EVENT_MCP_OAUTH_REQUEST):
     server_name: str = ""

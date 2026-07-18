@@ -3222,20 +3222,21 @@ async def _run_chat(
                 # running at turn end (in case a terminal status was missed),
                 # so cards don't stay stuck "running".
                 _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
-                if event.input_tokens or event.output_tokens or event.credits:
+                _u = event.usage
+                if _u.input_tokens or _u.output_tokens or _u.credits:
                     stats = Stats()
-                    stats.inc_input_tokens(event.input_tokens)
-                    stats.inc_output_tokens(event.output_tokens)
-                    if event.cache_creation_tokens:
-                        stats.inc_cache_creation_tokens(event.cache_creation_tokens)
-                    if event.cache_read_tokens:
-                        stats.inc_cache_read_tokens(event.cache_read_tokens)
-                    if event.cost_usd:
-                        stats.inc_cost_usd(event.cost_usd)
-                    if event.num_turns:
-                        stats.inc_turns(event.num_turns)
-                    if event.duration_ms:
-                        stats.inc_duration_ms(event.duration_ms)
+                    stats.inc_input_tokens(_u.input_tokens)
+                    stats.inc_output_tokens(_u.output_tokens)
+                    if _u.cache_creation_tokens:
+                        stats.inc_cache_creation_tokens(_u.cache_creation_tokens)
+                    if _u.cache_read_tokens:
+                        stats.inc_cache_read_tokens(_u.cache_read_tokens)
+                    if _u.cost_usd:
+                        stats.inc_cost_usd(_u.cost_usd)
+                    if _u.num_turns:
+                        stats.inc_turns(_u.num_turns)
+                    if _u.duration_ms:
+                        stats.inc_duration_ms(_u.duration_ms)
                     try:
                         _provider_name = cfg.agent.provider  # type: ignore[possibly-undefined]
                     except (NameError, AttributeError):
@@ -3257,7 +3258,7 @@ async def _run_chat(
                     )
                 # ── Turn-completion histogram (OTel M2) ──
                 # kirocrew.turn.duration → turn latency p50/p90 + fault rate.
-                _emit_turn_metric(event.duration_ms, event.stop_reason, slot.key)
+                _emit_turn_metric(event.usage.duration_ms, event.stop_reason, slot.key)
                 _stop_reason = event.stop_reason
                 if _stop_reason == STOP_REASON_TOOL_STALL:
                     _stall_tool_title = event.title
