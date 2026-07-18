@@ -2615,6 +2615,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     }
   }, [filteredSlots.length, sidebarPinned])
 
+  // Horizontal space (px) the detail panel must keep clear so it never grows
+  // past its flex row and collapses the chat pane: the open sidebar's width
+  // plus a usable chat-pane minimum. On mobile the panel is full-screen (no
+  // shared row), so no reserve applies.
+  const CHAT_PANE_MIN = 320
+  const panelReserve = isMobile ? undefined : (sidebarOpen ? sidebarWidth : 0) + CHAT_PANE_MIN
+
   return (
     <TagPopoverProvider>
     <div ref={chatContainerRef} className="flex flex-1 min-h-0 h-full overflow-hidden relative">
@@ -3371,6 +3378,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             onClose={search.close}
             initialWidth={400}
             minWidth={320}
+            reserveWidth={panelReserve}
             storageKey="mc-search-width"
             noPadding
           >
@@ -3403,6 +3411,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             }
             onClose={() => { diffPanel.closeDiff(); dispatch(openActivityToTab('files')) }}
             initialWidth={600}
+            reserveWidth={panelReserve}
             storageKey="mc-panel-width"
             noPadding
             headerClassName="diff-panel-header"
@@ -3417,10 +3426,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           </DetailPanel>
         )}
         {panel.isOpen && !diffPanel.isOpen && !search.isOpen && (
-          <MarkdownPanel key="md-panel" filePath={panel.filePath} content={panel.content} onContentChange={panel.setContent} onSave={handleFileSave} onClose={panel.closePanel} liveWatch onSubmitComments={submitComments} />
+          <MarkdownPanel key="md-panel" filePath={panel.filePath} content={panel.content} onContentChange={panel.setContent} onSave={handleFileSave} onClose={panel.closePanel} liveWatch onSubmitComments={submitComments} reserveWidth={panelReserve} />
         )}
         {activityOpen && !panel.isOpen && !diffPanel.isOpen && !search.isOpen && (
-          <DetailPanel key="activity-panel" title="Activity" onClose={toggleAct} initialWidth={420} storageKey="mc-activity-width">
+          <DetailPanel key="activity-panel" title="Activity" onClose={toggleAct} initialWidth={420} reserveWidth={panelReserve} storageKey="mc-activity-width">
             <ActivityViewer subagents={subagents} toolLog={toolLog} open={true} onToggle={toggleAct} slot={activeSlot || ''} files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource} projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving} />
           </DetailPanel>
         )}

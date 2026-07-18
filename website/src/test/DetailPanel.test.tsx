@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, act, fireEvent } from '@testing-library/react'
 import DetailPanel from '../components/DetailPanel'
+import { safeSetItem } from '../utils/safeStorage'
 
 // The panel's pixel width lives as an inline style on the inner div that also
 // carries the left border (`div.border-l`). Read it back to assert clamping.
@@ -12,6 +13,17 @@ function panelWidth(container: HTMLElement): number {
 
 const setViewport = (w: number) => {
   Object.defineProperty(window, 'innerWidth', { value: w, configurable: true, writable: true })
+}
+
+// jsdom does no layout, so getBoundingClientRect().width is 0 everywhere. Stub
+// it to a fixed value so DetailPanel can measure its flex row (the panel's
+// parent element) the way it does in a real browser. Returns a restore fn.
+function stubRowWidth(w: number) {
+  const orig = HTMLElement.prototype.getBoundingClientRect
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    return { width: w, height: 0, top: 0, left: 0, right: w, bottom: 0, x: 0, y: 0, toJSON: () => {} } as DOMRect
+  }
+  return () => { HTMLElement.prototype.getBoundingClientRect = orig }
 }
 
 // Regression for Mesh-2230: a persisted width sized on a wide monitor must not
@@ -82,5 +94,78 @@ describe('DetailPanel width clamp (Mesh-2230)', () => {
     act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
     expect(localStorage.getItem('mc-test-w')).toBe('1100')
     expect(panelWidth(container)).toBe(480)
+  })
+})
+
+// Regression for Mesh-2813: the width cap must be the panel's room in its flex
+// ROW (rowWidth − reserveWidth), not a fraction of the whole window. A window
+// fraction let the shrink-0 panel exceed its row, collapse the chat pane, and
+// overflow off-screen with content reflowing past the viewport edge. Here the
+// row is measured (stubbed) and always narrower than the 60% viewport bound, so
+// the row-minus-reserve cap is the one that binds.
+describe('DetailPanel row-aware width clamp (Mesh-2813)', () => {
+  const ORIG = window.innerWidth
+  let restoreRow: (() => void) | undefined
+  beforeEach(() => localStorage.clear())
+  afterEach(() => { cleanup(); setViewport(ORIG); restoreRow?.(); restoreRow = undefined })
+
+  it('caps a drag to rowWidth − reserveWidth, not innerWidth * 0.6', () => {
+    setViewport(2000)           // viewport-only cap would be 1200
+    restoreRow = stubRowWidth(1000) // row is only 1000 wide; reserve 400 → cap 600
+    const { container } = render(
+      <DetailPanel title="t" onClose={() => {}} initialWidth={480} minWidth={300} reserveWidth={400}>x</DetailPanel>,
+    )
+    const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
+    // Drag far left (start 900 → move to 0) would ask for 480 + 900 = 1380.
+    fireEvent.mouseDown(handle, { clientX: 900 })
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: 0 })) })
+    // Capped to row(1000) − reserve(400) = 600, NOT the viewport 1200.
+    expect(panelWidth(container)).toBe(600)
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
+  })
+
+  it('never lets the panel exceed rowWidth − reserveWidth however far you drag', () => {
+    setViewport(3000)
+    restoreRow = stubRowWidth(1200) // reserve 500 → cap 700
+    const { container } = render(
+      <DetailPanel title="t" onClose={() => {}} initialWidth={400} minWidth={300} reserveWidth={500}>x</DetailPanel>,
+    )
+    const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
+    fireEvent.mouseDown(handle, { clientX: 1000 })
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: -5000 })) }) // absurd overshoot
+    expect(panelWidth(container)).toBe(700)
+    expect(panelWidth(container)).toBeLessThanOrEqual(1200 - 500)
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
+  })
+
+  it('re-clamps a fitting width down when reserveWidth grows (sidebar widened)', () => {
+    setViewport(2000)
+    restoreRow = stubRowWidth(1000)
+    // reserve 200 → cap 800; a stored 700 fits.
+    safeSetItem('mc-test-w', '700')
+    const { container, rerender } = render(
+      <DetailPanel title="t" onClose={() => {}} storageKey="mc-test-w" minWidth={300} reserveWidth={200}>x</DetailPanel>,
+    )
+    expect(panelWidth(container)).toBe(700)
+    // Sidebar drags wider → reserve 500 → cap 500. No window resize fires, so the
+    // reserveWidth-change effect must re-clamp 700 down to 500.
+    rerender(
+      <DetailPanel title="t" onClose={() => {}} storageKey="mc-test-w" minWidth={300} reserveWidth={500}>x</DetailPanel>,
+    )
+    expect(panelWidth(container)).toBe(500)
+  })
+
+  it('ignores the row and keeps the viewport-only cap when reserveWidth is omitted (opt-in)', () => {
+    setViewport(2000)                // viewport-only cap = 1200
+    restoreRow = stubRowWidth(1000)  // row is measurable at 1000, but must NOT bind without a reserve
+    const { container } = render(
+      <DetailPanel title="t" onClose={() => {}} initialWidth={400} minWidth={300}>x</DetailPanel>,
+    )
+    const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
+    fireEvent.mouseDown(handle, { clientX: 1000 })
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: -3000 })) })
+    // No reserveWidth → row term drops out → capped at viewport 1200, not row(1000)-anything.
+    expect(panelWidth(container)).toBe(1200)
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
   })
 })

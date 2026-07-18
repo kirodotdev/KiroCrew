@@ -443,6 +443,10 @@ export default function SchedulePage() {
   )
 }
 
+// Room to keep clear for the job-list column so this panel can't grow past its
+// flex row and reflow content off-screen (mirrors DetailPanel's reserveWidth).
+const JOB_LIST_MIN = 360
+
 function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
   job?: CronJob; agents: KiroCrewAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
 }) {
@@ -474,7 +478,19 @@ function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
     setDragging(true)
     const startX = e.clientX; const startW = widthRef.current
     const onMove = (ev: MouseEvent) => {
-      setWidth(Math.max(300, Math.min(startW + (startX - ev.clientX), window.innerWidth * 0.6)))
+      // Cap to the panel's room in its flex row (row width minus the job-list
+      // minimum), not a fraction of the whole window: the panel is `shrink-0`
+      // in an `overflow-hidden` row, so a window-based cap lets it overflow the
+      // row and reflow content off-screen. Expected ancestor chain: panelRef div
+      // -> wrapping motion.div -> the flex row; if that nesting changes the
+      // optional chain silently falls back to the viewport (restoring the old
+      // over-cap), so keep the two levels in sync with the render tree below.
+      // Unlike DetailPanel this only re-caps during drag (width is ephemeral,
+      // not persisted, and there's no mount/resize re-clamp here) — a
+      // pre-existing gap left as-is to keep this fix scoped.
+      const rowW = panelRef.current?.parentElement?.parentElement?.getBoundingClientRect().width ?? window.innerWidth
+      const cap = Math.min(rowW - JOB_LIST_MIN, Math.round(window.innerWidth * 0.6))
+      setWidth(Math.max(300, Math.min(startW + (startX - ev.clientX), cap)))
     }
     const onUp = () => {
       setDragging(false)

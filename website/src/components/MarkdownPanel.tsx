@@ -153,6 +153,7 @@ interface Props {
   liveWatch?: boolean
   onSubmitComments?: (message: string) => void
   onRefresh?: (filePath: string) => Promise<void>
+  reserveWidth?: number
 }
 
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
@@ -520,7 +521,7 @@ const CommentOverlayBlock = memo(function CommentOverlayBlock({ popover, addComm
   )
 })
 
-export default memo(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh }: Props) {
+export default memo(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth }: Props) {
   const qc = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [diffMode, setDiffMode] = useState(false)
@@ -1169,6 +1170,7 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
       onClose={guardedClose}
       initialWidth={480}
       minWidth={420}
+      reserveWidth={reserveWidth}
       storageKey="mc-panel-width"
       headerActions={<>
         {/* Row 1: identity / view actions — refresh, TOC, fullscreen,
