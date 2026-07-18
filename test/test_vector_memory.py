@@ -1460,3 +1460,69 @@ class TestWriteEpisodicWithoutEmbedding:
             embedding=duplicate_vec,
         )
         mock_index.search.assert_called_once()
+
+
+class TestEpisodicGhostVectorDedup:
+    """Round-2 bugfix: a new episodic write that matches a TOMBSTONED (deleted)
+    vector still living in the FAISS index must NOT be rejected as a conflict.
+
+    Tombstone paths (merge, dashboard delete, cap eviction, stale retirement) set
+    is_deleted=1 but leave the vector in _faiss_index/_faiss_id_map. dedup then
+    matched that ghost, _get_episodic returned None (is_deleted=0 filter), and the
+    old code hit the else-branch `return False`, silently dropping the new memory.
+    """
+
+    def _seed_tombstoned_ghost(self, tmp_path: Path):
+        if not _HAS_NUMPY:
+            pytest.skip("numpy not available")
+        import numpy as np
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=8)
+        store.init()
+        # Fixed unit embedding so the mock index can report a high self-similarity.
+        vec = [1.0] + [0.0] * 7
+        store.embed_fn = lambda text: vec
+        # Seed one real episodic row, then tombstone it (leaving a FAISS ghost).
+        assert store.write_episodic("Team chose PostgreSQL for storage") is not False
+        row = store.db.execute(
+            "SELECT id FROM episodic_memories WHERE is_deleted = 0 LIMIT 1"
+        ).fetchone()
+        ghost_id = row["id"]
+        store.db.execute(
+            "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (ghost_id,)
+        )
+        store.db.commit()
+
+        # Mock FAISS so the next write's dedup search returns a >threshold hit that
+        # maps to the tombstoned ghost id.
+        class _MockIndex:
+            ntotal = 1
+
+            def search(self, q, k):
+                return np.array([[0.99]], dtype=np.float32), np.array([[0]])
+
+            def add(self, vec):
+                # Accept the post-dedup add of the new vector (bumps ntotal).
+                self.ntotal += 1
+
+        store._faiss_index = _MockIndex()
+        store._faiss_id_map = [ghost_id]
+        store._dedup_threshold = 0.88
+        return store, ghost_id
+
+    def test_write_matching_tombstoned_ghost_is_accepted(self, tmp_path: Path) -> None:
+        store, ghost_id = self._seed_tombstoned_ghost(tmp_path)
+        # New memory whose embedding matches the ghost above the dedup threshold.
+        result = store.write_episodic("We standardized on Postgres for the database layer")
+        # Must be stored, NOT rejected against a deleted memory.
+        assert result is not False
+        live = store.db.execute(
+            "SELECT text FROM episodic_memories WHERE is_deleted = 0"
+        ).fetchall()
+        assert any("standardized on Postgres" in r["text"] for r in live)
+        # And it must not have been logged as a conflict_skip against the ghost.
+        conflicts = [
+            e for e in store.get_events()
+            if e["event_type"] == "conflict_skip" and e.get("memory_key") == ghost_id
+        ]
+        assert conflicts == []

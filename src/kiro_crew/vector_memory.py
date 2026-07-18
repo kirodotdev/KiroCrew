@@ -955,7 +955,17 @@ class VectorMemoryStore:
                     if cosine_sim > self._dedup_threshold:
                         existing_id = self._faiss_id_map[int(idx)]
                         existing = self._get_episodic(existing_id)
-                        if existing and len(text) > len(existing["text"]) * 1.2:
+                        if existing is None:
+                            # The matched vector points to a tombstoned/deleted row
+                            # (a "ghost": tombstone paths set is_deleted=1 but never
+                            # remove the vector from _faiss_index/_faiss_id_map, so it
+                            # keeps matching). _get_episodic filters is_deleted=0, so it
+                            # is None here. Treating that as a conflict would REJECT the
+                            # new write against a deleted memory (data loss). Skip the
+                            # ghost and keep scanning, mirroring search_episodic's
+                            # `if not mem or mem["is_deleted"]: continue`.
+                            continue
+                        if len(text) > len(existing["text"]) * 1.2:
                             self._delete_episodic_row(existing_id)
                             self._log_event(
                                 "merge",
@@ -970,7 +980,7 @@ class VectorMemoryStore:
                             self._log_event(
                                 "conflict_skip",
                                 "episodic",
-                                existing_id if existing else "?",
+                                existing_id,
                                 "",
                                 text[:200],
                                 source,
