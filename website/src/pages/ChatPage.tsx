@@ -2314,11 +2314,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     const { txt } = prepareSendPayload(raw, files)
     const activePastes = pasteBlocksRef.current
     const llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
+    // Optimistically show the steered text immediately. Since steer became the
+    // default mid-turn action (split send button), pressing Enter while a turn
+    // is running routes here — which previously had NO optimistic bubble, so
+    // the message only appeared once the backend echoed it via the 'steer_push'
+    // WS event, making it look like nothing happened until the response resumed.
+    // Tagged meta.optimistic so the echo reconciles this bubble in place
+    // (appendSlotMessage) instead of rendering a duplicate.
+    dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true } }))
     steerMutation.mutate(llmTxt)
     setInput(''); setPendingFiles([]); setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, steerMutation, saveDrafts])
+  }, [activeSlot, steerMutation, saveDrafts, dispatch])
 
   const handleCancelQueued = useCallback((queueId: string) => {
     if (!activeSlot) return

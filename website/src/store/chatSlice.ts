@@ -601,6 +601,20 @@ const chatSlice = createSlice({
     appendSlotMessage(state, action: PayloadAction<{ slot: string; message: ChatMessage }>) {
       const { slot, message } = action.payload
       const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[slot] ??= [])
+      // Reconcile a steer echo (server 'steer_push', meta.steer, no optimistic
+      // flag) against the optimistic bubble that steer() added client-side
+      // (meta.optimistic). Update it in place rather than pushing a duplicate
+      // user message — mirrors the user-frame reconcile in applyMessageToArray.
+      if (message.role === 'user' && message.meta?.steer && !message.meta?.optimistic) {
+        const last = msgs[msgs.length - 1]
+        if (last?.role === 'user' && last.meta?.optimistic) {
+          if (message.content) last.content = message.content
+          if (message.ts) last.ts = message.ts
+          last.meta = { ...(last.meta || {}), ...(message.meta || {}) }
+          delete (last.meta as Record<string, unknown>).optimistic
+          return
+        }
+      }
       msgs.push(message)
     },
     updateStreamingMessage(state, action: PayloadAction<string>) {
@@ -1309,6 +1323,23 @@ const chatSlice = createSlice({
         ) {
           // WS chunks arrived during fetch — use fetched history + local streaming
           state.messages = [...preserved.filter(m => m.role !== 'streaming'), lastLocal]
+        } else if (
+          lastLocal
+          && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
+          && !!lastLocal.content && lastLocal.content.length > 0
+          && !preserved.some(m => m.role === 'assistant' && m.content === lastLocal.content)
+        ) {
+          // The HTTP fetch resolved with a history that predates the reply we
+          // already finalized locally (via applyNonActiveFrame while this slot
+          // was backgrounded). Blindly replacing with the server response here
+          // is the "switch away and back drops the latest response" regression.
+          // Keep the server history but re-attach the local trailing reply,
+          // finalizing a still-streaming one. Guarded by the content check above
+          // so we never duplicate a reply the server already returned.
+          const finalized: ChatMessage = lastLocal.role === 'streaming'
+            ? { ...lastLocal, role: 'assistant' }
+            : lastLocal
+          state.messages = [...preserved.filter(m => m.role !== 'streaming'), finalized]
         } else {
           state.messages = preserved
         }
