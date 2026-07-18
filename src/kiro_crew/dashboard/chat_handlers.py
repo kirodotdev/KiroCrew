@@ -727,11 +727,23 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         )
         return web.json_response({"ok": True})
 
-    # Already stopping or not running — no-op
+    # Already stopping or not running — no-op (idempotent repeat press guard)
     if slot._stop_state != "idle" or not slot.running:
         if not slot.running:
             logger.info("Stop: slot %s not running, ignoring", name)
-        return web.json_response({"ok": True})
+            _info = "not running"
+        else:
+            _info = "stop already in progress"
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_stop",
+            tool_kind="command",
+            outcome="noop",
+            metadata={"slot": name, "reason": _info},
+        )
+        return web.json_response({"ok": True, "info": _info})
 
     # First press: soft stop
     slot._stop_state = "soft_pending"
@@ -754,6 +766,10 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
                 resources=f"slot={slot.key}",
             )
         )
+
+    # Defensive stale-card sweep: resolve any orphaned stop card from a prior attempt
+    if slot._stop_event_id:
+        _resolve_stop_event(slot, "soft")
 
     # Insert stop_event message into transcript
     stop_id = f"stop-{uuid.uuid4().hex}"
@@ -800,6 +816,11 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     outcome = await state.sessions.stop_turn(
         _history_key_for(name), force=False, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard
     )
+    # Resolve orphaned card when provider reports no active turn
+    if outcome == "idle" and slot._stop_event_id:
+        _resolve_stop_event(slot, "soft")
+        slot._stop_state = "idle"
+        state.push_slots_update()
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
         agent=getattr(slot, "agent", "") or "kirocrew",
@@ -828,11 +849,39 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     if not slot.running:
         return web.json_response({"ok": True, "info": "not running"})
+    # Idempotent guard: interrupt already in progress. State alone decides —
+    # do NOT also require _stop_event_id: after the early soft_pending claim
+    # below, a concurrent request can arrive before the stop card is created
+    # (event id still None), and a compound condition would let it through.
+    if slot._stop_state != "idle":
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_interrupt",
+            tool_kind="command",
+            outcome="noop",
+            metadata={"slot": name, "reason": "stop already in progress"},
+        )
+        return web.json_response({"ok": True, "info": "stop already in progress"})
     if not slot._queue:
         return web.json_response({"error": "queue empty, use /stop instead"}, status=400)
 
+    # Claim the stop slot synchronously BEFORE the await below: the
+    # idempotency guard above is check-then-act, and a concurrent /interrupt
+    # arriving during `await request.json()` would otherwise still see
+    # _stop_state == "idle" and slip past the guard (double stop_turn +
+    # double SEL audit for one logical press). /stop is race-safe because it
+    # has no await between guard and claim; this makes /interrupt match.
+    slot._stop_state = "soft_pending"
+    slot._auto_run = False
+
     # Optionally promote a specific queue item to front
-    body = await request.json() if request.content_length else {}
+    try:
+        body = await request.json() if request.content_length else {}
+    except Exception:
+        slot._stop_state = "idle"
+        raise
     queue_id = body.get("queue_id")
     if queue_id:
         for i, item in enumerate(slot._queue):
@@ -855,8 +904,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         slot._stop_state = "idle"
         state.push_slots_update()
 
-    slot._stop_state = "soft_pending"
-    slot._auto_run = False
+    # (soft_pending already claimed above, before the request-body await)
+
+    # Defensive stale-card sweep
+    if slot._stop_event_id:
+        _resolve_stop_event(slot, "soft")
 
     # Insert stop_event for UI feedback
     stop_id = f"stop-{uuid.uuid4().hex}"
@@ -883,6 +935,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    # Resolve orphaned card when provider reports no active turn
+    if outcome == "idle" and slot._stop_event_id:
+        _resolve_stop_event(slot, "soft")
+        slot._stop_state = "idle"
+        state.push_slots_update()
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
         agent=getattr(slot, "agent", "") or "kirocrew",
