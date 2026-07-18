@@ -170,9 +170,21 @@ _PERMISSIONS_POLICY = (
     "clipboard-write=(self), clipboard-read=(self)"
 )
 
+# Content-hashed build output (Vite emits ``/assets/<name>-<hash>.<ext>``;
+# the URL changes whenever the content changes) is safe to cache forever.
+# Everything else — index.html, the SPA shell, /api — keeps the no-store
+# policy so upgrades are picked up immediately. Without this exemption the
+# ~6MB entry bundle is re-downloaded on every page load, and a reload right
+# after a gateway restart bets the whole page on that transfer succeeding
+# while the gateway is at cold-start peak (the "black screen until hard
+# refresh" failure mode). Deliberately excludes /vendor, /fonts and
+# /sprites: those use stable, un-hashed filenames.
+_IMMUTABLE_PATH_PREFIXES = ("/assets/",)
+_IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
 
 def _apply_security_headers(
-    resp: web.StreamResponse, app: web.Application
+    resp: web.StreamResponse, app: web.Application, path: str = ""
 ) -> None:
     """Apply cache-control and security headers to a dashboard response.
 
@@ -180,7 +192,9 @@ def _apply_security_headers(
     the ability to override):
 
     1. Cache-Control / Pragma / Expires — prevent Chrome from caching stale
-       assets across upgrades.
+       assets across upgrades. Content-hashed paths (``/assets/``) are the
+       exception: their URL *is* the version, so they are served as
+       ``immutable`` instead (see ``_IMMUTABLE_PATH_PREFIXES``).
     2. Content-Security-Policy — defense-in-depth against XSS. Primary XSS
        protection is rehypeSanitize (strips script/iframe/form/foreignObject
        at HAST level before rendering). CSP allows ``'unsafe-inline'``
@@ -196,11 +210,12 @@ def _apply_security_headers(
        on published artifacts fails with a permissions-policy violation
        (crbug.com/414348233).
     """
-    resp.headers.setdefault(
-        "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
-    )
-    resp.headers.setdefault("Pragma", "no-cache")
-    resp.headers.setdefault("Expires", "0")
+    if path.startswith(_IMMUTABLE_PATH_PREFIXES):
+        resp.headers.setdefault("Cache-Control", _IMMUTABLE_CACHE_CONTROL)
+    else:
+        resp.headers.setdefault("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        resp.headers.setdefault("Pragma", "no-cache")
+        resp.headers.setdefault("Expires", "0")
 
     state = app.get("state")
     instances_mgr = getattr(state, "instances_manager", None) if state else None
@@ -1455,7 +1470,7 @@ async def start_dashboard(
     ) -> web.StreamResponse:
         resp = await handler(request)  # type: ignore[operator]
         if hasattr(resp, "headers"):
-            _apply_security_headers(resp, request.app)
+            _apply_security_headers(resp, request.app, request.path)
         return resp  # type: ignore[return-value]
 
     # SPA fallback: serve index.html for client-side React Router paths.

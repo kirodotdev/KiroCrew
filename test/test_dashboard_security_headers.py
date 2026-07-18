@@ -43,6 +43,44 @@ class TestApplySecurityHeaders:
         assert resp.headers["Pragma"] == "no-cache"
         assert resp.headers["Expires"] == "0"
 
+    def test_hashed_assets_are_immutable_cached(self) -> None:
+        """Vite content-hashed bundles under /assets/ must be cacheable:
+        the URL is the version, so no-store would force a full multi-MB
+        re-download on every page load (and make post-restart reloads bet
+        on a 6MB transfer during gateway cold-start)."""
+        resp = _make_response()
+        _apply_security_headers(
+            resp, _make_app(), path="/assets/index-D9K94z8J.js"
+        )
+        cc = resp.headers["Cache-Control"]
+        assert "immutable" in cc
+        assert "max-age=31536000" in cc
+        assert "no-store" not in cc
+        # The no-cache companion headers must not undermine the cache
+        assert "Pragma" not in resp.headers
+        assert "Expires" not in resp.headers
+        # Security headers still applied on the immutable path
+        assert "Content-Security-Policy" in resp.headers
+        assert "Permissions-Policy" in resp.headers
+
+    def test_shell_and_api_paths_stay_no_store(self) -> None:
+        for path in ("/", "/index.html", "/api/health", "/apps/dev-fleet"):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=path)
+            assert "no-store" in resp.headers["Cache-Control"], path
+
+    def test_unhashed_static_prefixes_stay_no_store(self) -> None:
+        """/vendor, /fonts and /sprites use stable filenames — immutable
+        caching would pin stale content across upgrades."""
+        for path in (
+            "/vendor/react.js",
+            "/fonts/diatype.woff2",
+            "/sprites/icons.svg",
+        ):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=path)
+            assert "no-store" in resp.headers["Cache-Control"], path
+
     def test_csp_default_no_instances(self) -> None:
         resp = _make_response()
         _apply_security_headers(resp, _make_app(with_instances=False))
