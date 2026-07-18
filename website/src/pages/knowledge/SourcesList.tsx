@@ -342,6 +342,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     if (addType === 'local_folder') {
       const props: Record<string, unknown> = { recursive: addRecursive }
       if (addIgnorePatterns.trim()) props.ignore_patterns = addIgnorePatterns.split('\n').map(s => s.trim()).filter(Boolean)
+      if (uploadNamespace && uploadNamespace !== 'default') props.namespace = uploadNamespace
       body.properties = props
     }
     addMutation.mutate(body)
