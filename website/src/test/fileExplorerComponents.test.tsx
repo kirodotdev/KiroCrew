@@ -8,6 +8,8 @@
  * which transitively loads highlight.js + mermaid (5s timeout in vitest).
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+vi.mock('@radix-ui/react-context-menu', async () => await import('./__mocks__/@radix-ui/react-context-menu'))
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -105,7 +107,7 @@ describe('FileExplorerPage', () => {
 
     // Right-click the file to open the context menu, then click the chat row.
     fireEvent.contextMenu(screen.getByText('README.md'))
-    const rows = Array.from(document.querySelectorAll('.mc-fe-ctx-row'))
+    const rows = screen.getAllByRole('menuitem')
     const chatRow = rows.find(r => r.textContent?.includes('Chat about this'))
     expect(chatRow).toBeTruthy()
     fireEvent.click(chatRow!)

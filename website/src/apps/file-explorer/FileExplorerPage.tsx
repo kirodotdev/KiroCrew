@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../store'
 import { setPendingInput } from '../../store/chatSlice'
 import { Skeleton } from '../../components/ui'
-import Clickable from '../../components/Clickable'
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '../../components/ui/context-menu'
 import { fileExplorerApi } from './api'
 import { basename, dirname, loadState, saveState, isShortcut } from './utils'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -39,7 +39,7 @@ export default function FileExplorerPage() {
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [leftWidth, setLeftWidth] = useState(280)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: TreeEntry } | null>(null)
+  const [contextNode, setContextNode] = useState<TreeEntry | null>(null)
   const [initialized, setInitialized] = useState(false)
 
   const activeFolder = useMemo(() => folderTabs.find((t) => t.id === activeFolderId) || folderTabs[0] || null, [folderTabs, activeFolderId])
@@ -274,15 +274,7 @@ export default function FileExplorerPage() {
   }, [dispatch, navigate])
 
   // ── Context menu ──
-  const onTreeContextMenu = useCallback((e: React.MouseEvent, node: TreeEntry) => { setContextMenu({ x: e.clientX, y: e.clientY, node }) }, [])
-  useEffect(() => {
-    if (!contextMenu) return
-    const onDoc = () => setContextMenu(null)
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setContextMenu(null) }
-    document.addEventListener('mousedown', onDoc)
-    document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
-  }, [contextMenu])
+  const onTreeContextMenu = useCallback((_e: React.MouseEvent, node: TreeEntry) => { setContextNode(node) }, [])
 
   // ── Keyboard shortcuts ──
   useEffect(() => {
@@ -362,20 +354,47 @@ export default function FileExplorerPage() {
       <PathBar rootPath={activeFolder.rootPath} gitInfo={rootGitInfo} onChangeRoot={changeRoot} onNavigate={openMaybe} />
       <div className="mc-fe-split">
         <div className="mc-fe-left" style={{ width: leftWidth }}>
-          {treeRoot ? (
-            <div className="mc-fe-tree">
-              <TreeNode
-                node={treeRoot}
-                depth={0}
-                expanded={activeFolder.expanded}
-                toggleExpand={toggleExpand}
-                selectedPath={viewingFile?.path || ''}
-                onSelect={(n) => openFile(n.path)}
-                gitMap={tabGitMap}
-                onContextMenu={onTreeContextMenu}
-              />
-            </div>
-          ) : <div className="mc-fe-empty"><Skeleton className="h-full w-full" /></div>}
+          <ContextMenu onOpenChange={(open) => { if (!open) setContextNode(null) }}>
+            <ContextMenuTrigger asChild>
+              {treeRoot ? (
+                <div className="mc-fe-tree">
+                  <TreeNode
+                    node={treeRoot}
+                    depth={0}
+                    expanded={activeFolder.expanded}
+                    toggleExpand={toggleExpand}
+                    selectedPath={viewingFile?.path || ''}
+                    onSelect={(n) => openFile(n.path)}
+                    gitMap={tabGitMap}
+                    onContextMenu={onTreeContextMenu}
+                  />
+                </div>
+              ) : <div className="mc-fe-empty"><Skeleton className="h-full w-full" /></div>}
+            </ContextMenuTrigger>
+            {contextNode && (
+              <ContextMenuContent className="min-w-[200px]">
+                <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => chatAboutPath(contextNode.path, contextNode.type)}>
+                  <MessageSquare size={12} /> Chat about this {contextNode.type === 'dir' ? 'folder' : 'file'}
+                </ContextMenuItem>
+                {contextNode.type !== 'dir' && (
+                  <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => openFile(contextNode.path)}>
+                    <Eye size={12} /> Open
+                  </ContextMenuItem>
+                )}
+                {contextNode.type === 'dir' && (
+                  <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => changeRoot(contextNode.path)}>
+                    <CornerDownRight size={12} /> Open as workspace root
+                  </ContextMenuItem>
+                )}
+                <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => copyToClipboard(contextNode.path)}>
+                  <Copy size={12} /> Copy path
+                </ContextMenuItem>
+                <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => changeRoot(dirname(contextNode.path))}>
+                  <ArrowUpFromLine size={12} /> Reveal parent
+                </ContextMenuItem>
+              </ContextMenuContent>
+            )}
+          </ContextMenu>
         </div>
         {/* Pane splitter: mouse-drag-only resize affordance; role=separator is
             correct for a window splitter but is non-interactive per jsx-a11y. */}
@@ -401,24 +420,6 @@ export default function FileExplorerPage() {
           )}
         </div>
       </div>
-      {contextMenu && (
-        // role=menu + tabIndex makes this context menu a focusable, labelled
-        // interactive container; onMouseDown only stops propagation so a click
-        // inside does not trip the document dismiss handler.
-        <div className="mc-fe-ctx" role="menu" aria-label="File actions" tabIndex={-1} style={{ left: Math.min(contextMenu.x, window.innerWidth - 220), top: Math.min(contextMenu.y, window.innerHeight - 160) }} onMouseDown={(e) => e.stopPropagation()}>
-          <Clickable className="mc-fe-ctx-row" onClick={() => { chatAboutPath(contextMenu.node.path, contextMenu.node.type); setContextMenu(null) }}>
-            <MessageSquare size={12} /> Chat about this {contextMenu.node.type === 'dir' ? 'folder' : 'file'}
-          </Clickable>
-          {contextMenu.node.type !== 'dir' && (
-            <Clickable className="mc-fe-ctx-row" onClick={() => { openFile(contextMenu.node.path); setContextMenu(null) }}><Eye size={12} /> Open</Clickable>
-          )}
-          {contextMenu.node.type === 'dir' && (
-            <Clickable className="mc-fe-ctx-row" onClick={() => { changeRoot(contextMenu.node.path); setContextMenu(null) }}><CornerDownRight size={12} /> Open as workspace root</Clickable>
-          )}
-          <Clickable className="mc-fe-ctx-row" onClick={() => { copyToClipboard(contextMenu.node.path); setContextMenu(null) }}><Copy size={12} /> Copy path</Clickable>
-          <Clickable className="mc-fe-ctx-row" onClick={() => { changeRoot(dirname(contextMenu.node.path)); setContextMenu(null) }}><ArrowUpFromLine size={12} /> Reveal parent</Clickable>
-        </div>
-      )}
     </div>
   )
 }

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
+
+vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
+
 import { render, screen, fireEvent } from '@testing-library/react'
 import ApprovalCard from '../components/ApprovalCard'
 
@@ -42,7 +45,7 @@ describe('ApprovalCard', () => {
     render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
     expect(screen.getByText('Trust all tools')).toBeInTheDocument()
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(true)
   })
@@ -51,7 +54,7 @@ describe('ApprovalCard', () => {
     render(<ApprovalCard title="TaskeiGetTask" toolInput="" showButtons onApprove={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
     expect(screen.getByText('Trust all tools')).toBeInTheDocument()
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
   })
 
@@ -59,7 +62,7 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn()
     render(<ApprovalCard title="Running: grep -r foo ." toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     const cmdBtn = buttons.find(b => b.textContent?.includes('grep -r foo'))!
     fireEvent.click(cmdBtn)
     expect(onApprove).toHaveBeenCalledWith('trust_command', 'grep -r foo .')
@@ -69,7 +72,7 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn()
     render(<ApprovalCard title="Running: cat /etc/hosts" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     const baseBtn = buttons.find(b => b.textContent?.includes('commands'))!
     fireEvent.click(baseBtn)
     expect(onApprove).toHaveBeenCalledWith('trust_base', 'cat *')
@@ -105,7 +108,7 @@ describe('ApprovalCard', () => {
   it('shows trusted state for trust_command', () => {
     render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     const cmdBtn = buttons.find(b => b.textContent?.includes('ls /tmp'))!
     fireEvent.click(cmdBtn)
     expect(screen.getByText(/auto-approving future calls/)).toBeInTheDocument()

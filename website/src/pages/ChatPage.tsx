@@ -23,7 +23,7 @@ import { changeApprovalMode, sseSlotTitle } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
-import AutoNudgePopover, { type AutoNudgeLoop } from '../components/AutoNudgePopover'
+import { type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
 import { handleStopPress } from '../utils/stopDebounce'
@@ -633,7 +633,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const [reasoningEffortBtnRect, setReasoningEffortBtnRect] = useState<DOMRect | null>(null)
   const reasoningEffortDropdownRef = useRef<HTMLDivElement>(null)
   const [autoNudgeOpen, setAutoNudgeOpen] = useState(false)
-  const [autoNudgeBtnRect, setAutoNudgeBtnRect] = useState<DOMRect | null>(null)
   const [autoNudgeLoop, setAutoNudgeLoop] = useState<AutoNudgeLoop | null>(null)
   const approvalDropdownRef = useRef<HTMLDivElement>(null)
   const approvalMode = useAppSelector(s => s.dashboard.approvalMode)
@@ -3194,9 +3193,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               providerId={provider.id}
               reasoningEffort={currentSlot?.reasoning_effort || ''}
               onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
-              autoNudgeActive={!!autoNudgeLoop?.active}
-              autoNudgeCycleCount={autoNudgeLoop?.cycle_count || 0}
-              onAutoNudgeClick={(rect) => { setAutoNudgeBtnRect(rect); setAutoNudgeOpen(!autoNudgeOpen) }}
+              onAutoNudgeClick={setAutoNudgeOpen}
+              autoNudgeLoop={autoNudgeLoop}
+              autoNudgeOpen={autoNudgeOpen}
+              onAutoNudgeChange={setAutoNudgeLoop}
               browseMode={browseMode}
               onBrowseToggle={toggleBrowseMode}
               onOptimizeResult={handleOptimizeResult}
@@ -3296,17 +3296,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               anchorRect={projectBtnRect}
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
             />
-            {/* Auto-nudge popover — triggered from input bar */}
-            {autoNudgeOpen && autoNudgeBtnRect && activeSlot && createPortal(
-              <AutoNudgePopover
-                slotKey={activeSlot}
-                anchorRect={autoNudgeBtnRect}
-                loop={autoNudgeLoop}
-                onClose={() => setAutoNudgeOpen(false)}
-                onChange={setAutoNudgeLoop}
-              />,
-              document.body
-            )}
             {/* Approval mode dropdown portal — triggered from input bar */}
             {approvalDropdown && approvalBtnRect && createPortal(
               <div ref={approvalDropdownRef} className="fixed z-[9999] animate-slide-up flex items-end gap-2" style={(() => { const left = Math.max(8, Math.min(approvalBtnRect.left, window.innerWidth - 520)); return { bottom: window.innerHeight - approvalBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { flexDirection: 'column-reverse' as const, alignItems: 'flex-start', right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>

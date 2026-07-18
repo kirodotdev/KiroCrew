@@ -72,11 +72,10 @@ describe('CronTab Integration Tests', () => {
     const messageInput = screen.getByPlaceholderText(/message.*task/i)
     fireEvent.change(messageInput, { target: { value: 'Run system tests' } })
 
-    // Select interval input and set value to 5
+    // Select interval input and set value to 5 (fireEvent.change like the
+    // sibling tests -- user.keyboard select-all+type is flaky under load, see 3910ab5)
     const intervalInput = screen.getByDisplayValue('1') as HTMLInputElement
-    await user.click(intervalInput)
-    await user.keyboard('{Control>}a{/Control}') // Select all
-    await user.keyboard('5') // Type 5 to replace
+    fireEvent.change(intervalInput, { target: { value: '5' } })
 
     // Click Add button
     const addButton = screen.getByRole('button', { name: /^add$/i })

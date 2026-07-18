@@ -4,17 +4,15 @@ import AutoNudgePopover, { type AutoNudgeLoop } from '../components/AutoNudgePop
 import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
-const anchorRect = { left: 100, right: 140, top: 400, bottom: 432, width: 40, height: 32, x: 100, y: 400, toJSON: () => ({}) } as DOMRect
-
 const SLOT = 'chat-1-100'
 
 function renderPopover(loop: AutoNudgeLoop | null) {
   return render(
     <AutoNudgePopover
       slotKey={SLOT}
-      anchorRect={anchorRect}
       loop={loop}
-      onClose={() => {}}
+      open={true}
+      onOpenChange={() => {}}
       onChange={() => {}}
     />,
   )

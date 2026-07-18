@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -233,8 +233,7 @@ describe('HooksPage Integration Tests', () => {
 
     // Update the name
     const nameInput = screen.getByDisplayValue('Deploy Notifier')
-    await user.clear(nameInput)
-    await user.type(nameInput, 'Updated Deploy Hook')
+    fireEvent.change(nameInput, { target: { value: 'Updated Deploy Hook' } })
 
     // Click save
     const saveButton = screen.getByRole('button', { name: /^save$/i })
@@ -384,9 +383,7 @@ describe('HooksPage Integration Tests', () => {
     const timeoutInput = inputs.find(input => input.value === '30')
     expect(timeoutInput).toBeDefined()
 
-    await user.click(timeoutInput!)
-    await user.keyboard('{Control>}a{/Control}')
-    await user.keyboard('60')
+    fireEvent.change(timeoutInput!, { target: { value: '60' } })
     expect(timeoutInput).toHaveValue(60)
   })
 

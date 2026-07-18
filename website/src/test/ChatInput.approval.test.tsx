@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
+vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
+
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
@@ -108,7 +112,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     const cmdBtn = buttons.find(b => b.textContent?.includes('ls /tmp'))!
     fireEvent.click(cmdBtn)
     await waitFor(() => {
@@ -123,7 +127,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     const baseBtn = buttons.find(b => b.textContent?.includes('commands'))!
     fireEvent.click(baseBtn)
     await waitFor(() => {
@@ -226,7 +230,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     // Should show the full command from meta
     expect(buttons.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)
   })
@@ -235,7 +239,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('ls') && b.textContent?.includes('commands'))).toBe(true)
   })
 
@@ -244,7 +248,7 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
     // Should show base command option (only for shell)
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(true)
   })
 
@@ -258,7 +262,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('button')
+    const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
   })
 })

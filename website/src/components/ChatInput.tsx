@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, ShieldCheck, BookOpen, Handshake, Rocket, X, ClipboardList, CheckCircle, Ban, Sparkles, Goal, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, ShieldCheck, BookOpen, Handshake, Rocket, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import VoiceStatusBar from './VoiceStatusBar'
 import { createPortal } from 'react-dom'
@@ -18,6 +18,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import TrustDropdown from './TrustDropdown'
+import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
@@ -217,9 +218,10 @@ interface ChatInputProps {
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
   sentMessages?: string[]
   /** Auto-nudge loop state for this slot (if any) */
-  autoNudgeActive?: boolean
-  autoNudgeCycleCount?: number
-  onAutoNudgeClick?: (rect: DOMRect) => void
+  onAutoNudgeClick?: (open: boolean) => void
+  autoNudgeLoop?: AutoNudgeLoop | null
+  autoNudgeOpen?: boolean
+  onAutoNudgeChange?: (loop: AutoNudgeLoop | null) => void
   /** Send-key mode. Default 'enter'. */
   sendOnEnter?: SendMode
   /** Follow-up options from assistant message */
@@ -354,9 +356,10 @@ function ChatInput({
   memoryMode,
   cleanMode,
   sentMessages,
-  autoNudgeActive = false,
-  autoNudgeCycleCount = 0,
   onAutoNudgeClick,
+  autoNudgeLoop,
+  autoNudgeOpen,
+  onAutoNudgeChange,
   sendOnEnter = 'enter',
   followUpOptions,
   followUpPicked,
@@ -1865,19 +1868,13 @@ function ChatInput({
             <div className="flex items-center gap-0.5 min-w-0 overflow-x-auto flex-1">
 
               {onAutoNudgeClick && (
-                <button
-                  className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
-                    autoNudgeActive
-                      ? 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
-                      : 'text-muted hover:text-text hover:bg-bg-hover'
-                  }`}
-                  onClick={e => onAutoNudgeClick(e.currentTarget.getBoundingClientRect())}
-                  title={autoNudgeActive ? `Goal active (cycle ${autoNudgeCycleCount})` : 'Set a goal'}
-                  aria-label={autoNudgeActive ? `Goal active (cycle ${autoNudgeCycleCount})` : 'Set a goal'}
-                >
-                  <Goal size={16} className="shrink-0" />
-                  {autoNudgeActive && autoNudgeCycleCount > 0 ? autoNudgeCycleCount : null}
-                </button>
+                <AutoNudgePopover
+                  slotKey={slotId || ''}
+                  loop={autoNudgeLoop || null}
+                  open={autoNudgeOpen || false}
+                  onOpenChange={v => onAutoNudgeClick(v)}
+                  onChange={onAutoNudgeChange || (() => {})}
+                />
               )}
               {!isMobile && onApprovalClick && approvalMode && (() => {
                 const d = APPROVAL_DISPLAY[approvalMode] || APPROVAL_DISPLAY.normal

@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Goal, X } from 'lucide-react'
+import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
@@ -16,22 +17,18 @@ export interface AutoNudgeLoop {
 
 interface Props {
   slotKey: string
-  anchorRect: DOMRect
   loop: AutoNudgeLoop | null
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onChange: (loop: AutoNudgeLoop | null) => void
 }
 
 const DEFAULT_MSG = `Your north star is in north_star.md, roadmap in roadmap.md, tasks in tasks.md. Pick the single highest-leverage next step toward the goal and execute it. Update tasks.md. Post a blocker ONCE if genuinely stuck. To halt the loop, create {{STOP_FILE}}`
 
-export default function AutoNudgePopover({ slotKey, anchorRect, loop, onClose, onChange }: Props) {
-  const ref = useRef<HTMLDivElement>(null)
-  // Initial field values, resolved WITHOUT touching storage (the stored-draft
-  // tier is applied in a mount effect below, not here). When a loop is running
-  // its config is authoritative and the stored draft is never consulted. `||`
-  // (not `??`) is deliberate on the loop tier: it preserves the pre-fix
-  // fallback so a loop with idle_secs/max_cycles of 0 or an empty message still
-  // shows the 60 / 0 / default template rather than a bare 0 / "".
+export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange }: Props) {
+  // `||` (not `??`) is deliberate on the loop tier: it preserves the fallback
+  // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
+  // the 60 / 0 / default template rather than a bare 0 / "".
   const [message, setMessage] = useState(() => loop?.message || DEFAULT_MSG)
   const [idleSecs, setIdleSecs] = useState(() => loop?.idle_secs || 60)
   const [maxCycles, setMaxCycles] = useState(() => loop?.max_cycles || 0)
@@ -44,8 +41,8 @@ export default function AutoNudgePopover({ slotKey, anchorRect, loop, onClose, o
   // mirror a live loop's config into the user-draft store). `hasEdited` gates
   // the persist so it fires on real onChange edits only.
   const hasEdited = useRef(false)
-  // Latest field values, kept current every render so the unmount flush below
-  // (a stable cleanup that captures only mount-time values) can read them.
+  // Latest field values, kept current every render so the close-flush below
+  // (which runs from a stable handler) can read them.
   const latest = useRef({ slotKey, message, idleSecs, maxCycles, loop })
   latest.current = { slotKey, message, idleSecs, maxCycles, loop }
 
@@ -53,60 +50,57 @@ export default function AutoNudgePopover({ slotKey, anchorRect, loop, onClose, o
   // the slot: the blank / pristine-default case stores nothing so an emptied or
   // untouched popover never pins the template. (Only reached when no loop is
   // running — a live loop is authoritative and its config is never mirrored
-  // into the user-draft store; the effects below skip persistence entirely
-  // while a loop is present.)
+  // into the user-draft store; persistence is skipped entirely while a loop is
+  // present.)
   function draftToPersist(s: typeof latest.current): GoalDraft | null {
     const isPristineDefault = s.message === DEFAULT_MSG && s.idleSecs === 60 && s.maxCycles === 0
     return isPristineDefault ? null : { message: s.message, idleSecs: s.idleSecs, maxCycles: s.maxCycles }
   }
 
-  // Restore the last per-slot draft on open, but ONLY when no loop is running (a
-  // live loop is the authoritative source and must not be overwritten by, or
-  // seeded from, a stale draft). Runs once on mount in a layout effect — after
-  // render — so the render itself performs no storage read/write (React 18
-  // StrictMode double-invokes render-phase code, so a read there that persists
-  // its TTL prune would be a purity violation). One read seeds all three fields.
-  useLayoutEffect(() => {
-    if (loop) return
-    const remembered = loadGoalDraft(slotKey)
-    if (!remembered) return
-    setMessage(remembered.message)
-    setIdleSecs(remembered.idleSecs)
-    setMaxCycles(remembered.maxCycles)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only seed; the popover remounts per open so slotKey/loop are fixed for this instance
-  }, [])
-
-  // Persist edits per slot, debounced with the same DRAFT_SAVE_DEBOUNCE_MS as
-  // chat drafts so a long goal doesn't drive a synchronous localStorage write on
-  // every keystroke. Skips until the user actually edits a field (so opening the
-  // popover or the mount-restore setState above never writes).
+  // Seed/restore fields on each open (rising edge). A live loop is the
+  // authoritative source; otherwise the last per-slot draft is restored.
+  // One read seeds all three fields. Runs in an effect (not render) so the
+  // render itself performs no storage read/write.
   useEffect(() => {
-    if (!hasEdited.current || loop) return
-    const timer = setTimeout(() => saveGoalDraft(slotKey, draftToPersist(latest.current)), DRAFT_SAVE_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
-  }, [slotKey, message, idleSecs, maxCycles, loop])
+    if (!open) return
+    hasEdited.current = false
+    setError('')
+    if (loop) {
+      // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
+      // or an empty message shows the 60 / 0 / default template.
+      setMessage(loop.message || DEFAULT_MSG)
+      setIdleSecs(loop.idle_secs || 60)
+      setMaxCycles(loop.max_cycles || 0)
+    } else {
+      const remembered = loadGoalDraft(slotKey)
+      setMessage(remembered ? remembered.message : DEFAULT_MSG)
+      setIdleSecs(remembered ? remembered.idleSecs : 60)
+      setMaxCycles(remembered ? remembered.maxCycles : 0)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; loop/slotKey are read fresh each open
+  }, [open])
 
-  // Flush a pending debounced edit synchronously on unmount (popover close) so
-  // edits within the last DRAFT_SAVE_DEBOUNCE_MS window aren't lost. Stable
-  // cleanup (empty deps) reading the `latest` ref.
+  // Flush a pending debounced edit synchronously when the popover closes OR
+  // unmounts while open, so edits within the last DRAFT_SAVE_DEBOUNCE_MS
+  // window aren't lost. Effect cleanup covers both paths.
   useEffect(() => {
+    if (!open) return
     return () => {
       if (!hasEdited.current || latest.current.loop) return
       saveGoalDraft(latest.current.slotKey, draftToPersist(latest.current))
     }
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable cleanup reading the latest ref
+  }, [open])
 
+  // Persist edits per slot, debounced with the same DRAFT_SAVE_DEBOUNCE_MS as
+  // chat drafts so a long goal doesn't drive a synchronous localStorage write on
+  // every keystroke. Skips until the user actually edits a field (so opening the
+  // popover or the open-restore setState above never writes).
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && ref.current.contains(e.target as Node)) return
-      // Ignore clicks on the anchor (goal) button so its own onClick can toggle
-      // the popover closed — matches the approval/model dropdown behavior.
-      if (anchorRect && e.clientX >= anchorRect.left && e.clientX <= anchorRect.right && e.clientY >= anchorRect.top && e.clientY <= anchorRect.bottom) return
-      onClose()
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [onClose, anchorRect])
+    if (!open || !hasEdited.current || loop) return
+    const timer = setTimeout(() => saveGoalDraft(slotKey, draftToPersist(latest.current)), DRAFT_SAVE_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [open, slotKey, message, idleSecs, maxCycles, loop])
 
   async function save() {
     setSaving(true)
@@ -119,7 +113,7 @@ export default function AutoNudgePopover({ slotKey, anchorRect, loop, onClose, o
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
       onChange(data.loop)
-      onClose()
+      onOpenChange(false)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -139,7 +133,7 @@ export default function AutoNudgePopover({ slotKey, anchorRect, loop, onClose, o
         throw new Error(data.error || `HTTP ${resp.status}`)
       }
       onChange(null)
-      onClose()
+      onOpenChange(false)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -147,103 +141,98 @@ export default function AutoNudgePopover({ slotKey, anchorRect, loop, onClose, o
     }
   }
 
-  // Position: above the toolbar button, clamped to the viewport so the popover
-  // never spills off the screen. Horizontal: keep the 420px panel on screen.
-  // Vertical: it grows upward from just above the button, so cap its height to
-  // the space above and scroll internally to keep the top edge on screen.
-  const POPOVER_WIDTH = 420
-  const MARGIN = 8
-  const MIN_HEIGHT = 120
-  const left = Math.max(MARGIN, Math.min(anchorRect.left, window.innerWidth - POPOVER_WIDTH - MARGIN))
-  const style: React.CSSProperties = {
-    position: 'fixed',
-    left,
-    bottom: window.innerHeight - anchorRect.top + 6,
-    maxHeight: Math.max(MIN_HEIGHT, anchorRect.top - 6 - MARGIN),
-    overflowY: 'auto',
-    zIndex: 100,
-  }
-
   return (
-    <div
-      ref={ref}
-      style={style}
-      className="bg-bg-elevated border border-border rounded-xl shadow-xl p-4 w-[420px] text-[12px] animate-slide-up"
-    >
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2 font-medium text-text">
-          <Goal size={14} className={loop?.active ? 'text-accent' : 'text-muted'} />
-          Set a goal
-          {loop?.active && <span className="text-muted text-[11px]">· cycle {loop.cycle_count}</span>}
-        </div>
-        <button aria-label="Close" onClick={onClose} className="text-muted hover:text-text bg-transparent border-none cursor-pointer">
-          <X size={14} />
-        </button>
-      </div>
-      <p className="text-muted text-[11px] mb-3 leading-relaxed">Give the agent a goal and it will keep working toward it autonomously — nudging itself when idle until the goal is met or the cycle limit is reached.</p>
-
-      <div className="text-muted text-[11px] mb-1">Goal description</div>
-      <textarea
-        aria-label="Goal description"
-        value={message}
-        onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
-        rows={6}
-        className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
-        placeholder="Describe what you want the agent to accomplish…"
-      />
-
-      <div className="flex gap-3 mb-3">
-        <div className="flex-1">
-          <div className="text-muted text-[11px] mb-1">Idle seconds before nudge</div>
-          <input
-            type="number"
-            aria-label="Idle seconds before nudge"
-            min={15}
-            max={86400}
-            value={idleSecs}
-            onChange={e => { hasEdited.current = true; setIdleSecs(parseInt(e.target.value) || 60) }}
-            className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
-          />
-        </div>
-        <div className="flex-1">
-          <div className="text-muted text-[11px] mb-1">Max cycles (0 = ∞)</div>
-          <input
-            type="number"
-            aria-label="Max cycles (0 = infinite)"
-            min={0}
-            value={maxCycles}
-            onChange={e => { hasEdited.current = true; setMaxCycles(parseInt(e.target.value) || 0) }}
-            className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
-          />
-        </div>
-      </div>
-
-      {loop && (
-        <div className="text-muted text-[11px] mb-3">
-          Last fire: {loop.last_fire_ts ? new Date(loop.last_fire_ts * 1000).toLocaleTimeString() : 'never'}
-        </div>
-      )}
-
-      {error && <div className="text-danger text-[11px] mb-2">{error}</div>}
-
-      <div className="flex gap-2 justify-end">
-        {loop && (
-          <button
-            onClick={stop}
-            disabled={saving}
-            className="px-3 py-1 rounded border border-border text-muted hover:text-danger hover:border-danger bg-transparent cursor-pointer disabled:opacity-50"
-          >
-            Stop loop
-          </button>
-        )}
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
         <button
-          onClick={save}
-          disabled={saving || !message.trim()}
-          className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
+          className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
+            loop?.active
+              ? 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
+              : 'text-muted hover:text-text hover:bg-bg-hover'
+          }`}
+          title={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : 'Set a goal'}
+          aria-label={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : 'Set a goal'}
         >
-          {loop ? 'Save' : 'Start loop'}
+          <Goal size={16} className="shrink-0" />
+          {loop?.active && loop.cycle_count > 0 ? loop.cycle_count : null}
         </button>
-      </div>
-    </div>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-[420px] p-4 text-[12px]">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2 font-medium text-text">
+            <Goal size={14} className={loop?.active ? 'text-accent' : 'text-muted'} />
+            Set a goal
+            {loop?.active && <span className="text-muted text-[11px]">· cycle {loop.cycle_count}</span>}
+          </div>
+          <button aria-label="Close" onClick={() => onOpenChange(false)} className="text-muted hover:text-text bg-transparent border-none cursor-pointer">
+            <X size={14} />
+          </button>
+        </div>
+        <p className="text-muted text-[11px] mb-3 leading-relaxed">Give the agent a goal and it will keep working toward it autonomously — nudging itself when idle until the goal is met or the cycle limit is reached.</p>
+
+        <div className="text-muted text-[11px] mb-1">Goal description</div>
+        <textarea
+          aria-label="Goal description"
+          value={message}
+          onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
+          rows={6}
+          className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
+          placeholder="Describe what you want the agent to accomplish…"
+        />
+
+        <div className="flex gap-3 mb-3">
+          <div className="flex-1">
+            <div className="text-muted text-[11px] mb-1">Idle seconds before nudge</div>
+            <input
+              type="number"
+              aria-label="Idle seconds before nudge"
+              min={15}
+              max={86400}
+              value={idleSecs}
+              onChange={e => { hasEdited.current = true; setIdleSecs(parseInt(e.target.value) || 60) }}
+              className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
+            />
+          </div>
+          <div className="flex-1">
+            <div className="text-muted text-[11px] mb-1">Max cycles (0 = ∞)</div>
+            <input
+              type="number"
+              aria-label="Max cycles (0 = infinite)"
+              min={0}
+              value={maxCycles}
+              onChange={e => { hasEdited.current = true; setMaxCycles(parseInt(e.target.value) || 0) }}
+              className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
+            />
+          </div>
+        </div>
+
+        {loop && (
+          <div className="text-muted text-[11px] mb-3">
+            Last fire: {loop.last_fire_ts ? new Date(loop.last_fire_ts * 1000).toLocaleTimeString() : 'never'}
+          </div>
+        )}
+
+        {error && <div className="text-danger text-[11px] mb-2">{error}</div>}
+
+        <div className="flex gap-2 justify-end">
+          {loop && (
+            <button
+              onClick={stop}
+              disabled={saving}
+              className="px-3 py-1 rounded border border-border text-muted hover:text-danger hover:border-danger bg-transparent cursor-pointer disabled:opacity-50"
+            >
+              Stop loop
+            </button>
+          )}
+          <button
+            onClick={save}
+            disabled={saving || !message.trim()}
+            className="px-3 py-1 rounded bg-accent text-white border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
+          >
+            {loop ? 'Save' : 'Start loop'}
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
