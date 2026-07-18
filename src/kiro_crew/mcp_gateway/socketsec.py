@@ -107,6 +107,36 @@ def socket_owner_only(path: Path) -> bool:
     return mode & 0o077 == 0
 
 
+def get_peer_pid(transport_or_sock: Any) -> int | None:
+    """Extract the peer's PID from ``SO_PEERCRED``.
+
+    Returns the peer process ID as seen in the receiver's PID namespace (i.e.
+    the REAL pid when gatewayd runs outside the namespace), or ``None`` when the
+    pid cannot be read (non-Linux, non-AF_UNIX, getsockopt failure).
+
+    Used by the PID-namespace identity resolution path: when a stub registers
+    with an empty session_key (it runs inside a PID namespace and cannot walk
+    /proc to find the gateway-written session_pid file), gatewayd uses this pid
+    to perform the ancestry walk in its own (real) namespace.
+    """
+    sock = _resolve_socket(transport_or_sock)
+    if sock is None:
+        return None
+    if _SO_PEERCRED is None:
+        return None
+    if sock.family != _socket.AF_UNIX:
+        return None
+    try:
+        raw = sock.getsockopt(_socket.SOL_SOCKET, _SO_PEERCRED, _UCRED_SIZE)
+    except OSError:
+        return None
+    try:
+        pid, _uid, _gid = struct.unpack(_UCRED_FMT, raw)
+    except struct.error:  # pragma: no cover
+        return None
+    return pid if pid > 0 else None
+
+
 def check_peer_uid(transport_or_sock: Any, expected_uid: int) -> PeerCredResult:
     """Positively verify the connecting peer's uid via ``SO_PEERCRED``.
 

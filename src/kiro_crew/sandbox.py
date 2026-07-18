@@ -40,6 +40,11 @@ from kiro_crew.platform import current_context
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+try:
+    from kiro_crew.config.loader import KiroCrewConfig as _KiroCrewConfig
+except ImportError:  # pragma: no cover - keeps sandbox.py usable standalone
+    _KiroCrewConfig = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
 
 # Launcher scripts and seatbelt profiles are read exactly once at child exec.
@@ -400,6 +405,7 @@ def _build_launcher_script(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
+    pid_namespace: bool = True,
 ) -> str:
     """Build a Python launcher script for the Linux namespace sandbox.
 
@@ -449,6 +455,7 @@ def _build_launcher_script(
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
+    pid_namespace_flag = "True" if pid_namespace else "False"
     strict_host_key_opt = (
         " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
     )
@@ -470,10 +477,12 @@ sys.path[:] = [p for p in sys.path if p not in ("", sys.path[0])]
 import ctypes
 import ctypes.util
 import os
+import signal
 import tempfile
 
 _CLONE_NEWUSER = 0x10000000
 _CLONE_NEWNS   = 0x00020000
+_CLONE_NEWPID  = 0x20000000
 _MS_BIND       = 4096
 _MS_REC        = 16384
 _MS_PRIVATE    = 1 << 18
@@ -500,6 +509,7 @@ ENV_PREFIXES = {env_prefixes_json}
 SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
+PID_NAMESPACE = {pid_namespace_flag}
 
 def main():
     argv = sys.argv[1:]
@@ -650,6 +660,42 @@ def main():
                 "{strict_host_key_opt}"
             )
 
+        # ── Step 3: PID namespace — SIGNAL isolation (2026-07-15 incident) ──
+        # Inside a PID ns, kill(-1)/killpg can only reach ns-local processes:
+        # the gateway, the systemd --user manager and other sessions are
+        # unreachable by construction (a test's stray killpg(1, SIGKILL) ==
+        # kill(-1) wiped the whole login session). unshare(NEWPID) does not
+        # move US — the NEXT fork's child becomes PID 1 of the new namespace.
+        #
+        # ORDERING: this MUST run before the seccomp filter below — the filter
+        # denies unshare and mount, and seccomp is inherited across fork, so
+        # both the namespace creation and the ns-local /proc remount have to
+        # happen first. The payload still inherits every hardening step.
+        _in_pid_ns = False
+        if PID_NAMESPACE:
+            if _libc.unshare(_CLONE_NEWPID) != 0:
+                sys.stderr.write(
+                    f"sandbox: unshare(NEWPID) failed: errno {{ctypes.get_errno()}}"
+                    " — continuing WITHOUT pid isolation\\n"
+                )
+            else:
+                init_pid = os.fork()
+                if init_pid > 0:
+                    # Outer waiter (original pid ns): propagate ns exit status.
+                    while True:
+                        try:
+                            _, st = os.waitpid(init_pid, 0)
+                            break
+                        except InterruptedError:
+                            continue
+                    if os.WIFEXITED(st):
+                        sys.exit(os.WEXITSTATUS(st))
+                    sys.exit(128 + os.WTERMSIG(st) if os.WIFSIGNALED(st) else 1)
+                # ns PID 1: remount /proc NOW — mount is denied once the
+                # seccomp filter below installs.
+                _libc.mount(b"proc", b"/proc", b"proc", 0, None)
+                _in_pid_ns = True
+
         # ── Step 5: Drop capabilities + set NO_NEW_PRIVS (P472042955) ──
         # Inside the user namespace, the child has CAP_SYS_ADMIN (owner of the
         # NS) which lets it umount the credential bind-mounts. Drop ALL
@@ -798,6 +844,48 @@ def main():
                     f"inodes: {{_dangerous_links[:5]}}. Remove them before running."
                 )
 
+
+        if _in_pid_ns:
+            # ── ns PID 1: mini-init (reaps orphans; kernel SIGKILLs every
+            # remaining ns process when PID 1 exits — no leaks possible).
+            # Runs AFTER the hardening above so the payload fork inherits
+            # NO_NEW_PRIVS, the dropped bounding set, and the seccomp filter. ──
+            payload = os.fork()
+            if payload == 0:
+                try:
+                    os.execvp(argv[0], argv)
+                except Exception as e:
+                    # Post-fork child: skip atexit/stdio-flush hazards; 127 is
+                    # the conventional "command not found" exit code.
+                    sys.stderr.write("sandbox: exec failed: %s\\n" % (e,))
+                    os._exit(127)
+
+            def _fwd(signum, _frame):
+                try:
+                    os.kill(payload, signum)
+                except OSError:
+                    pass
+
+            signal.signal(signal.SIGTERM, _fwd)
+            signal.signal(signal.SIGINT, _fwd)
+            exit_code = 1
+            while True:
+                try:
+                    rpid, st = os.waitpid(-1, 0)
+                except ChildProcessError:
+                    break
+                except InterruptedError:
+                    continue
+                if rpid == payload:
+                    if os.WIFEXITED(st):
+                        exit_code = os.WEXITSTATUS(st)
+                    elif os.WIFSIGNALED(st):
+                        exit_code = 128 + os.WTERMSIG(st)
+                    break
+            # Forked child: skip atexit/stdio-flush post-fork hazards (same
+            # rationale as the payload exec-failure path above).
+            os._exit(exit_code)
+
         os.execvp(argv[0], argv)
 
 if __name__ == "__main__":
@@ -827,6 +915,7 @@ def namespace_argv(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
+    pid_namespace: bool = True,
 ) -> list[str]:
     """Wrap *argv* via the Python namespace launcher.
 
@@ -838,7 +927,9 @@ def namespace_argv(
     if real_argv:
         real_argv[0] = _resolve_real_kiro_bin(real_argv[0])
 
-    script = _build_launcher_script(sandbox_level, strip_python_env=strip_python_env)
+    script = _build_launcher_script(
+        sandbox_level, strip_python_env=strip_python_env, pid_namespace=pid_namespace
+    )
     run_dir = _ensure_run_dir()
     fd, path = tempfile.mkstemp(suffix=".py", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir)
     os.write(fd, script.encode())
@@ -1221,6 +1312,7 @@ def wrap_argv(
     mode: str = "auto",
     *,
     strip_python_env: bool = False,
+    pid_namespace: bool | None = None,
 ) -> tuple[list[str], str | None]:
     """Wrap a command argv with OS-level sandbox if available.
 
@@ -1264,7 +1356,18 @@ def wrap_argv(
     backend = detect_backend(config_mode=mode)
 
     if backend == "namespace":
-        wrapped = namespace_argv(argv, sandbox_level, strip_python_env=strip_python_env)
+        if pid_namespace is None:
+            # Global kill-switch: agent.sandbox_pid_namespace (default True).
+            # Config load is mtime-cached so this is cheap at spawn time.
+            try:
+                if _KiroCrewConfig is None:
+                    raise RuntimeError("config loader unavailable")
+                pid_namespace = bool(_KiroCrewConfig.load().agent.sandbox_pid_namespace)
+            except Exception:
+                pid_namespace = True  # fail-safe: isolation ON
+        wrapped = namespace_argv(
+            argv, sandbox_level, strip_python_env=strip_python_env, pid_namespace=pid_namespace
+        )
         # The launcher script is argv[1] — caller should clean it up
         return wrapped, wrapped[1]
     if backend == "sandbox-exec":
