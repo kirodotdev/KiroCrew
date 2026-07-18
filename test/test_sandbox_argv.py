@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -215,6 +216,37 @@ class TestBuildLauncherScript:
         assert script.index("sys.path[:]") < script.index("import ctypes")
         # sys must be imported first (it is a builtin and cannot be shadowed).
         assert script.index("import sys") < script.index("sys.path[:]")
+
+    def test_launcher_has_no_unimportable_kiro_crew_refs(self):
+        """The launcher runs as a standalone ~/.kirocrew/run script with the
+        launcher dir scrubbed from sys.path, so it CANNOT import kiro_crew.
+        Referencing a module-level helper like ``platform_compat`` NameErrors at
+        runtime and crashed every command cron. Guard: chmod is inlined, the
+        script stays syntactically valid, and there is no module-qualified
+        RUNTIME reference to any host-only module the isolated launcher can't
+        import.
+
+        The naive ``"platform_compat" not in script`` string check that upstream
+        also carries is DELETED here: the fork's launcher COMMENT intentionally
+        names platform_compat (explaining why the inline os.chmod must NOT use
+        it), so a substring check false-positives. The AST guard below proves
+        there is no runtime module-qualified reference, which is the correct
+        behavioral check.
+        """
+        for level in ("strict", "standard", "cc"):
+            script = _build_launcher_script(level)
+            assert "os.chmod(dest, 0o444)" in script, f"{level}: inline chmod missing"
+            compile(script, "<launcher>", "exec")
+            # AST-based so mentions in comments/strings (e.g. the fork's own
+            # explanatory comment naming platform_compat/kiro_crew) don't
+            # false-positive — only module-qualified attribute access counts.
+            used_modules = {
+                node.value.id
+                for node in ast.walk(ast.parse(script))
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            }
+            forbidden = used_modules & {"platform_compat", "kiro_crew", "logger", "logging"}
+            assert not forbidden, f"{level}: launcher references un-importable module(s) {forbidden}"
 
 
 class TestLauncherStdlibShadowing:
