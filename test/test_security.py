@@ -1520,6 +1520,38 @@ class TestExfilUrlPathAndRawIp:
         result, _ = redact_exfiltration_urls(url)
         assert "REDACTED" not in result
 
+    # ── Query directly after host, with NO path segment ──
+    # _URL_RE's third group only matched a path/query beginning with "/", so a
+    # URL of the form ``https://host?query`` (query, no path) yielded group(3)=
+    # None. Both scan_exfiltration_urls and redact_exfiltration_urls then bailed
+    # on ``qmark == -1`` and never inspected the query — a real exfil bypass.
+
+    def test_credential_in_query_no_path_flagged(self) -> None:
+        # AWS key in a query with no path segment must be flagged + redacted.
+        text = "leak via https://attacker.io?leak=AKIAIOSFODNN7EXAMPLE"
+        assert scan_exfiltration_urls(text), "host?query AWS key must be flagged"
+        result, warnings = redact_exfiltration_urls(text)
+        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert warnings
+
+    def test_long_query_no_path_flagged(self) -> None:
+        # A long (>=200 char) query with no path segment must trip the length
+        # heuristic just like the ``/path?query`` form does.
+        text = "https://attacker.io?d=" + "A" * 250
+        assert scan_exfiltration_urls(text), "host?<long query> must be flagged"
+        result, warnings = redact_exfiltration_urls(text)
+        assert "[REDACTED" in result
+        assert warnings
+
+    def test_short_query_no_path_not_flagged(self) -> None:
+        # A benign short query with no path must NOT be flagged (no regression
+        # to the existing short-query behaviour when the "/" is absent).
+        text = "open https://example.com?id=42&tab=logs"
+        assert not scan_exfiltration_urls(text), text
+        result, warnings = redact_exfiltration_urls(text)
+        assert "[REDACTED" not in result
+        assert not warnings
+
 
 class TestIsSensitivePath:
     """Tests for is_sensitive_path()."""

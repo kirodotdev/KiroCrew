@@ -986,7 +986,13 @@ _URL_RE = re.compile(
     r"[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}"  # DNS name with a letter TLD
     r"|\d{1,3}(?:\.\d{1,3}){3}"  # raw IPv4 literal
     r"|\[[0-9A-Fa-f:.]+\]"  # bracketed IPv6 literal (incl. IPv4-mapped ::ffff:d.d.d.d)
-    r")(:\d+)?(/[^\s)\"'>]*)?"
+    # Group 3 = path AND/OR query. It must start with ``/`` (path) OR ``?``
+    # (a query attached directly to the host, no path segment). The prior
+    # ``/[...]*`` required a leading slash, so ``https://host?leak=<secret>``
+    # yielded group(3)=None and both scan/redact bailed on ``qmark == -1``,
+    # never inspecting the query — a real exfil bypass. ``[/?]`` admits both;
+    # the ``path_and_query.find("?")`` split at the call sites is unchanged.
+    r")(:\d+)?([/?][^\s)\"'>]*)?"
 )
 
 # Query string length threshold — normal URLs rarely exceed this
