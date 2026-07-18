@@ -4,6 +4,7 @@ import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
+import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from './notificationEvent'
 import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentDone, sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard } from '../store/chatSlice'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
@@ -258,9 +259,21 @@ export function useWebSocket() {
           case 'slot_title':
             dispatch(sseSlotTitle(data as { key: string; title: string }))
             break
-          case 'notification':
-            dispatch(addNotification(data as Notification))
+          case 'notification': {
+            const n = data as Notification
+            dispatch(addNotification(n))
+            // Also fire MC_NOTIFICATION_EVENT so useNotificationSound plays the
+            // configured sound. The WS transport previously only dispatched the
+            // Redux action (toast/badge), so notification sounds never played —
+            // only the now-unmounted useSSE fired this event. Mirror useSSE.
+            try {
+              const detail: McNotificationDetail = { kind: n.kind }
+              window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
+            } catch (err) {
+              console.warn('mc-notification listener error', err)
+            }
             break
+          }
           case 'notification_ack':
             dispatch(ackNotificationByTs(data.ts))
             break
