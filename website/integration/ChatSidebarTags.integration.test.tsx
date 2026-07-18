@@ -285,12 +285,38 @@ describe('ChatSidebar tag/column UI', () => {
     await waitFor(() => {
       expect(screen.getByTestId('tag-row-todo')).toBeInTheDocument()
     })
-    // Click the swatch (it's the first interactive element inside the row)
-    const todoSwatch = within(screen.getByTestId('tag-row-todo')).getByRole('menuitemcheckbox')
+    // Click the swatch (a role=checkbox toggle; first interactive element in the row)
+    const todoSwatch = within(screen.getByTestId('tag-row-todo')).getByRole('checkbox')
     await user.click(todoSwatch)
     await waitFor(() => {
       expect(backend.state.columns[0].tag_ids).toContain('todo')
     })
+  })
+
+  it('renders the column filter popover as a labelled dialog', async () => {
+    const user = userEvent.setup()
+    backend.state.columns = [{ id: 'c1', name: 'Launch', tag_ids: [], mode: 'any', order: 0, include_untagged: false }]
+    renderBoard()
+    await waitFor(() => expect(screen.getByTestId('column-c1')).toBeInTheDocument())
+    await user.click(screen.getByTestId('column-edit-c1'))
+    // WAI-ARIA dialog with a per-column accessible name (keyboard/SR operable overlay)
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /Filter tags: Launch/i })).toBeInTheDocument())
+    // The tag rows are grouped for assistive tech
+    expect(screen.getByRole('group', { name: /Filter by tag/i })).toBeInTheDocument()
+  })
+
+  it('Escape closes the column filter popover and returns focus to its trigger', async () => {
+    const user = userEvent.setup()
+    backend.state.columns = [{ id: 'c1', name: '', tag_ids: [], mode: 'any', order: 0, include_untagged: false }]
+    renderBoard()
+    await waitFor(() => expect(screen.getByTestId('column-c1')).toBeInTheDocument())
+    const trigger = screen.getByTestId('column-edit-c1')
+    await user.click(trigger)
+    const dialog = await screen.findByRole('dialog', { name: /Filter tags/i })
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Filter tags/i })).not.toBeInTheDocument())
+    // focus returns to the trigger (requestAnimationFrame-deferred)
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
   it('clicking ⚡ status icon flips the tag.status flag via PATCH', async () => {

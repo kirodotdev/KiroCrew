@@ -31,6 +31,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { safeSetItem } from '../utils/safeStorage'
 import { resolveFolderAgent } from '../utils/folderAgent'
 import SessionActionsMenu from '../components/SessionActionsMenu'
+import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { collectFolderSubtreeIds } from '../utils/folderTree'
 import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SubagentActivity } from '../types'
@@ -701,6 +702,7 @@ function ChatSidebar({
     document.body.style.userSelect = 'none'
   }, [historyHeight])
   const [cleanupOpen, setCleanupOpen] = useState(false)
+  const [manageTagsOpen, setManageTagsOpen] = useState(false)  // header ⋮ → "Manage tags…" panel (list-view tag CRUD)
   const [filterSortOpen, setFilterSortOpen] = useState(false)
   const [cleanupDays, setCleanupDays] = useState(3)
   const [cleanupExpanded, setCleanupExpanded] = useState(false)
@@ -917,6 +919,16 @@ function ChatSidebar({
   }, [rawColumns, tagColumnsEnabled])
   const [columnEditId, setColumnEditId] = useState<string | null>(null)  // column whose popover is open
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null)
+  // The column-filter popover is portaled to <body>, so it is outside the trigger's
+  // DOM tab-order and never receives focus on open. columnPopoverRef + the effect
+  // below move focus into it, and closeColumnPopover returns focus to the trigger —
+  // together with the onKeyDown (Escape + Tab-trap) on the popover, this makes the
+  // portaled overlay fully keyboard-operable.
+  const columnPopoverRef = useRef<HTMLDivElement>(null)
+  const closeColumnPopover = useCallback((colId: string) => {
+    setColumnEditId(null)
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-testid="column-edit-${colId}"]`)?.focus())
+  }, [])
   // Anchor the popover to the edit button's bounding rect so it stays put even
   // though it renders in a portal outside the (overflow-hidden) column ancestor.
   useEffect(() => {
@@ -949,6 +961,20 @@ function ChatSidebar({
     const id = setTimeout(() => document.addEventListener('mousedown', handler), 0)
     return () => { clearTimeout(id); document.removeEventListener('mousedown', handler) }
   }, [columnEditId])
+  // Move focus into the portaled column-filter popover once it is positioned. We
+  // focus the dialog container itself (tabIndex=-1) — not its first control — so the
+  // screen reader announces the dialog and Tab then walks its fields in order; this
+  // avoids landing on the Close button (first in DOM) or stealing focus into a text field.
+  useEffect(() => {
+    if (!columnEditId || !popoverPos) return
+    // Focus only on initial open. popoverPos gets a fresh object on every
+    // resize/scroll reflow, re-running this effect — so bail if focus is already
+    // inside the popover (e.g. the user is typing in the rename input) to avoid
+    // yanking it back to the container.
+    if (columnPopoverRef.current?.contains(document.activeElement)) return
+    const raf = requestAnimationFrame(() => columnPopoverRef.current?.focus())
+    return () => cancelAnimationFrame(raf)
+  }, [columnEditId, popoverPos])
 
   // Close filter/sort popover on outside click
   useEffect(() => {
@@ -962,22 +988,6 @@ function ChatSidebar({
     return () => { clearTimeout(id3); document.removeEventListener('mousedown', handler) }
   }, [filterSortOpen])
 
-  const createTagMutation = useMutation({
-    mutationFn: ({ name, color, status }: { name: string; color?: string; status?: boolean }) => api.createChatTag(name, color, status),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-tags'] }),
-  })
-  const updateTagMutation = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: { name?: string; color?: string; status?: boolean } }) => api.updateChatTag(id, body),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-tags'] }),
-  })
-  const deleteTagMutation = useMutation({
-    mutationFn: (id: string) => api.deleteChatTag(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chat-tags'] })
-      queryClient.invalidateQueries({ queryKey: ['tag-columns'] })
-      queryClient.invalidateQueries({ queryKey: ['chat-slots'] })
-    },
-  })
   const createColumnMutation = useMutation({
     mutationFn: (body: { name?: string; tag_ids?: string[]; mode?: TagColumnMode }) => api.createTagColumn(body),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
@@ -1567,7 +1577,7 @@ function ChatSidebar({
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
-            {tagColumnsEnabled && s.tags && s.tags.length > 0 && (
+            {s.tags && s.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">
                 {s.tags.map(tid => {
                   const t = tagById[tid]
@@ -1828,6 +1838,10 @@ function ChatSidebar({
                 <Cpu size={14} className="text-muted" />
                 Switch all to model…
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setManageTagsOpen(o => !o)}>
+                <TagIcon size={14} className="text-muted" />
+                Manage tags…
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Split create-button: main segment = one-click New chat; caret
@@ -1977,6 +1991,20 @@ function ChatSidebar({
             <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') }}>Cancel</Btn>
             <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModel || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModel, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? 'Switching…' : `Switch ${bulkAffectedCount} session${bulkAffectedCount !== 1 ? 's' : ''}`}</Btn>
           </div>
+        </div>
+      )}
+
+      {/* Manage-tags panel — mirrors the Clean Up / Switch All panels. Renders
+       *  the shared TagManagerList in 'manage' mode (no column context), so tag
+       *  CRUD is reachable in list view too, not only from a board column. */}
+      {manageTagsOpen && (
+        <div data-testid="manage-tags-panel" className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-medium text-text-strong"><TagIcon size={14} className="lucide-inline" /> Manage Tags</div>
+            <button type="button" className="text-muted hover:text-text bg-transparent border-none cursor-pointer p-0 leading-none" onClick={() => setManageTagsOpen(false)} aria-label="Close"><X size={13} /></button>
+          </div>
+          <div className="text-muted text-[12px] mb-2">Rename, flag as status, or delete tags. Changes apply everywhere tags are shown.</div>
+          <TagManagerList mode="manage" />
         </div>
       )}
 
@@ -2240,13 +2268,30 @@ function ChatSidebar({
                       overflow-hidden ancestor cannot clip it; viewport-anchored
                       to the edit button via popoverPos. */}
                   {columnEditId === col.id && popoverPos && createPortal(
-                    <div role="presentation" data-column-popover={col.id}
-                      className="fixed z-[9100] bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px]"
+                    /* Non-modal disclosure: role=dialog + a Tab-trap contains keyboard
+                       focus, but we deliberately omit aria-modal — the popover has no
+                       backdrop and is outside-click-dismissible, so claiming the rest of
+                       the page is inert would mislead screen readers. */
+                    <div ref={columnPopoverRef} role="dialog" aria-label={`Filter tags: ${col.name || 'column'}`} tabIndex={-1} data-column-popover={col.id}
+                      className="fixed z-[9100] bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px] outline-none"
                       style={{ top: popoverPos.top, left: popoverPos.left }}
-                      onClick={e => e.stopPropagation()}>
+                      onClick={e => e.stopPropagation()}
+                      onKeyDown={e => {
+                        if (e.key === 'Escape') { e.stopPropagation(); closeColumnPopover(col.id); return }
+                        if (e.key !== 'Tab') return
+                        // Trap Tab within the dialog — portal content sits at the end of
+                        // <body>, so without this Tab would jump into unrelated page chrome.
+                        const root = columnPopoverRef.current
+                        if (!root) return
+                        const f = Array.from(root.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])'))
+                        if (f.length === 0) return
+                        const first = f[0], last = f[f.length - 1]
+                        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+                        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+                      }}>
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Column filter</span>
-                        <button className="text-muted hover:text-text bg-transparent border-none cursor-pointer p-0" onClick={() => setColumnEditId(null)} aria-label="Close"><X size={13} /></button>
+                        <button className="text-muted hover:text-text bg-transparent border-none cursor-pointer p-0" onClick={() => closeColumnPopover(col.id)} aria-label="Close"><X size={13} /></button>
                       </div>
                       <Input className="w-full py-1 text-[12px] mb-2" placeholder="Column name (optional)" defaultValue={col.name} onBlur={e => { const v = e.target.value.trim(); if (v !== col.name) updateColumnMutation.mutate({ id: col.id, body: { name: v } }) }} />
                       <div className="flex items-center gap-1 mb-2" role="radiogroup" aria-label="Match mode">
@@ -2266,72 +2311,12 @@ function ChatSidebar({
                         />
                         Include untagged sessions
                       </label>
-                      <div className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto">
-                        {[...tags].sort((a, b) => a.order - b.order).map(t => {
-                          const on = col.tag_ids.includes(t.id)
-                          const nextIds = on ? col.tag_ids.filter(x => x !== t.id) : [...col.tag_ids, t.id]
-                          return (
-                            <div key={t.id} data-testid={`tag-row-${t.id}`} className={`group/tag flex items-center gap-1.5 px-1.5 py-1 rounded transition-all ${on ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`}>
-                              {/* Filter toggle — the color swatch is the click target */}
-                              <button type="button" role="menuitemcheckbox" aria-checked={on} aria-label={`${on ? 'Remove' : 'Include'} ${t.name} from filter`}
-                                className="w-4 h-4 rounded-sm border border-border shrink-0 cursor-pointer relative"
-                                style={{ background: t.color }}
-                                onClick={() => updateColumnMutation.mutate({ id: col.id, body: { tag_ids: nextIds } })}>
-                                {on && <span className="absolute inset-0 flex items-center justify-center" style={{ color: t.color === '#ffffff' ? '#000' : '#fff' }}><Check size={10} /></span>}
-                              </button>
-                              {/* Inline rename */}
-                              <input
-                                type="text"
-                                data-testid={`tag-name-${t.id}`}
-                                aria-label={`Rename tag ${t.name}`}
-                                defaultValue={t.name}
-                                className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 rounded focus:bg-bg-elevated focus:border focus:border-accent/50"
-                                onBlur={e => { const v = e.target.value.trim(); if (v && v !== t.name) updateTagMutation.mutate({ id: t.id, body: { name: v } }) }}
-                                onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); else if (e.key === 'Escape') (e.currentTarget as HTMLInputElement).blur() }}
-                                onClick={e => e.stopPropagation()}
-                              />
-                              {/* Status lightning — filled for status tags, muted ghost for non-status on hover */}
-                              <button type="button" data-testid={`tag-status-${t.id}`}
-                                className={`shrink-0 cursor-pointer bg-transparent border-none p-[2px] transition-all ${t.status ? 'text-accent hover:text-accent-hover' : 'text-transparent group-hover/tag:text-muted hover:!text-text'}`}
-                                title={t.status ? 'Status tag (mutually exclusive on cards) — click to make regular' : 'Make status tag'}
-                                aria-pressed={!!t.status}
-                                aria-label={t.status ? `Remove status flag from ${t.name}` : `Make ${t.name} a status tag`}
-                                onClick={() => updateTagMutation.mutate({ id: t.id, body: { status: !t.status } })}>
-                                <Zap size={11} fill={t.status ? 'currentColor' : 'none'} />
-                              </button>
-                              {/* Delete */}
-                              <button type="button" data-testid={`tag-delete-${t.id}`}
-                                className="shrink-0 cursor-pointer bg-transparent border-none p-[2px] text-transparent group-hover/tag:text-muted hover:!text-danger transition-all"
-                                title={`Delete tag "${t.name}"`}
-                                aria-label={`Delete tag ${t.name}`}
-                                onClick={() => { if (confirm(`Delete tag "${t.name}"?`)) deleteTagMutation.mutate(t.id) }}>
-                                <X size={11} />
-                              </button>
-                            </div>
-                          )
-                        })}
-                      </div>
-                      {/* Create new tag */}
-                      <div className="mt-2 border-t border-border pt-2 flex items-center gap-1.5">
-                        <span className="w-4 h-4 rounded-sm border border-dashed border-border shrink-0 flex items-center justify-center text-muted"><Plus size={10} /></span>
-                        <input
-                          type="text"
-                          data-testid={`tag-create-${col.id}`}
-                          aria-label="New tag name"
-                          placeholder="New tag… ↵"
-                          className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60"
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') {
-                              const el = e.currentTarget as HTMLInputElement
-                              const v = el.value.trim()
-                              if (!v) return
-                              createTagMutation.mutate({ name: v })
-                              el.value = ''
-                            }
-                          }}
-                          onClick={e => e.stopPropagation()}
-                        />
-                      </div>
+                      <TagManagerList
+                        mode="column-filter"
+                        selectedIds={col.tag_ids}
+                        onToggleTag={(_tagId, nextIds) => updateColumnMutation.mutate({ id: col.id, body: { tag_ids: nextIds } })}
+                        createTestId={`tag-create-${col.id}`}
+                      />
                       <div className="mt-2 flex justify-end">
                         <button className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer" onClick={() => { updateColumnMutation.mutate({ id: col.id, body: { tag_ids: [] } }) }}>Clear filter</button>
                       </div>

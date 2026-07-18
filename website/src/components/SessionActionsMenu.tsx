@@ -12,7 +12,6 @@ import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
-import { loadChatConfig } from '../pages/chat/ChatSettings'
 
 export interface SessionActionsMenuProps {
   /** Chooses the Radix primitive family; must match the enclosing menu. */
@@ -72,7 +71,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * Canonical order, five groups (each renders only if it has surviving items,
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
- *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · Move to folder ▸ · Tags… (board view)
+ *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · Move to folder ▸ · Tags…
  *   [nav / access]   Reveal in sidebar (header only) · Copy link · Send to Slack
  *   [colour]         colour swatches
  *   [close]          Close session
@@ -94,8 +93,6 @@ export default function SessionActionsMenu({
   const selfPopout = isSelfPopout(slotKey)
   const poppedOut = !selfPopout && isPoppedOut(slotKey)
   const { open: openTagPopover } = useTagPopover()
-  // Tags is a board-view feature; the item shows only when board view is enabled.
-  const tagColumnsEnabled = loadChatConfig().tagColumnsEnabled
 
   // Store-derived per-slot state: the canonical live source, matching exactly
   // what the action handlers read at call time (so a label never drifts from
@@ -141,11 +138,9 @@ export default function SessionActionsMenu({
           label="Move to folder…"
         />
       ),
-      tagColumnsEnabled && (
-        <Item key="tags" onSelect={() => openTagPopover(slotKey)}>
-          <TagIcon size={13} className="shrink-0 text-muted" /> Tags…
-        </Item>
-      ),
+      <Item key="tags" onSelect={() => openTagPopover(slotKey)}>
+        <TagIcon size={13} className="shrink-0 text-muted" /> Tags…
+      </Item>,
     ],
     // Navigation / access
     [
