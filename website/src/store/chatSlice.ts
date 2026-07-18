@@ -612,13 +612,33 @@ const chatSlice = createSlice({
       // flag) against the optimistic bubble that steer() added client-side
       // (meta.optimistic). Update it in place rather than pushing a duplicate
       // user message — mirrors the user-frame reconcile in applyMessageToArray.
+      //
+      // The optimistic bubble is NOT necessarily the last message: a steer is
+      // by definition sent mid-turn, so streaming/thinking/tool messages keep
+      // landing between the optimistic append and the WS echo. A tail-only
+      // check loses that race and renders a duplicate "Steered into the
+      // running turn" card. Scan backwards (bounded) over optimistic STEER
+      // bubbles only (a plain optimistic user message with coincidentally
+      // identical text must never be consumed): prefer exactly matching
+      // content (handles rapid back-to-back steers in order), else fall back
+      // to the most recent one (server-side redaction can alter the echoed
+      // content, so an exact match isn't guaranteed).
       if (message.role === 'user' && message.meta?.steer && !message.meta?.optimistic) {
-        const last = msgs[msgs.length - 1]
-        if (last?.role === 'user' && last.meta?.optimistic) {
-          if (message.content) last.content = message.content
-          if (message.ts) last.ts = message.ts
-          last.meta = { ...(last.meta || {}), ...(message.meta || {}) }
-          delete (last.meta as Record<string, unknown>).optimistic
+        const floor = Math.max(0, msgs.length - 50)
+        let target: ChatMessage | undefined
+        let fallback: ChatMessage | undefined
+        for (let i = msgs.length - 1; i >= floor; i--) {
+          const m = msgs[i]
+          if (m.role !== 'user' || !m.meta?.optimistic || !m.meta?.steer) continue
+          if (message.content && m.content === message.content) { target = m; break }
+          if (!fallback) fallback = m
+        }
+        const bubble = target ?? fallback
+        if (bubble) {
+          if (message.content) bubble.content = message.content
+          if (message.ts) bubble.ts = message.ts
+          bubble.meta = { ...(bubble.meta || {}), ...(message.meta || {}) }
+          delete (bubble.meta as Record<string, unknown>).optimistic
           return
         }
       }

@@ -465,6 +465,75 @@ describe('appendSlotMessage steer reconcile', () => {
     state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'assistant', content: 'reply', cls: 'msg msg-a' } }))
     expect(state.messages).toHaveLength(2)
   })
+
+  it('reconciles even when streaming/thinking messages landed after the optimistic bubble (mid-turn race)', () => {
+    // Real-world duplicate: steer is by definition sent mid-turn, so chunks
+    // keep streaming in. The optimistic bubble is NOT the last message when
+    // the echo arrives — a tail-only check rendered two steer cards.
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'u should rebase from remote beta', cls: 'msg msg-u', ts: 't1', meta: { steer: true, optimistic: true } }))
+    // Streaming content lands between optimistic append and steer_push echo.
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'thinking', content: '', cls: '' } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'streaming', content: 'checking builds…', cls: 'msg msg-a' } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'u should rebase from remote beta', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
+    const users = state.messages.filter(m => m.role === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0].ts).toBe('t2')
+    expect(users[0].meta?.optimistic).toBeUndefined()
+    expect(users[0].meta?.steer).toBe(true)
+  })
+
+  it('reconciles by most-recent optimistic steer bubble when redaction altered the echoed content', () => {
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'raw with secret AKIA123', cls: 'msg msg-u', ts: 't1', meta: { steer: true, optimistic: true } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'streaming', content: 'working…', cls: 'msg msg-a' } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'raw with secret [REDACTED]', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
+    const users = state.messages.filter(m => m.role === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0].content).toBe('raw with secret [REDACTED]')
+    expect(users[0].meta?.optimistic).toBeUndefined()
+  })
+
+  it('matches the correct bubble for rapid back-to-back steers', () => {
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'first steer', cls: 'msg msg-u', ts: 'o1', meta: { steer: true, optimistic: true } }))
+    state = reducer(state, appendMessage({ role: 'user', content: 'second steer', cls: 'msg msg-u', ts: 'o2', meta: { steer: true, optimistic: true } }))
+    // Echo for the FIRST steer arrives after both optimistic bubbles exist.
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'first steer', cls: 'msg msg-u', ts: 'e1', meta: { steer: true } } }))
+    const users = state.messages.filter(m => m.role === 'user')
+    expect(users).toHaveLength(2)
+    expect(users[0].ts).toBe('e1')
+    expect(users[0].meta?.optimistic).toBeUndefined()
+    // Second bubble untouched, still optimistic pending its own echo.
+    expect(users[1].meta?.optimistic).toBe(true)
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'second steer', cls: 'msg msg-u', ts: 'e2', meta: { steer: true } } }))
+    expect(state.messages.filter(m => m.role === 'user')).toHaveLength(2)
+    expect(state.messages.filter(m => m.role === 'user')[1].meta?.optimistic).toBeUndefined()
+  })
+
+  it('does not reconcile into an unrelated non-steer optimistic user message', () => {
+    // A plain queued/optimistic user message (no meta.steer) with different
+    // content must NOT swallow a steer echo — the echo appends instead.
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'normal message', cls: 'msg msg-u', ts: 't1', meta: { optimistic: true } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'a steer', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
+    expect(state.messages.filter(m => m.role === 'user')).toHaveLength(2)
+  })
+
+  it('does not consume a non-steer optimistic message even when content matches the echo exactly', () => {
+    // AutoSDE CR-290147649 finding: the exact-content-match path must also
+    // require meta.steer — a plain optimistic user message that happens to
+    // have identical text to the steer echo is a different message and must
+    // keep its own bubble.
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'same text', cls: 'msg msg-u', ts: 't1', meta: { optimistic: true } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'same text', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
+    const users = state.messages.filter(m => m.role === 'user')
+    expect(users).toHaveLength(2)
+    // The original optimistic bubble is untouched.
+    expect(users[0].meta?.optimistic).toBe(true)
+    expect(users[0].meta?.steer).toBeUndefined()
+  })
 })
 
 describe('sseChatMessage', () => {
