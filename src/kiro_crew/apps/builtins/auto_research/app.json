@@ -13,5 +13,8 @@
     "pages": [
       {"route": "/auto-research", "label": "Research Lab", "icon": "FlaskConical"}
     ]
-  }
+  },
+  "iconUrl": "/app-assets/auto-research/icon.svg",
+  "heroImage": "/app-assets/auto-research/hero-light.svg",
+  "heroImageDark": "/app-assets/auto-research/hero-dark.svg"
 }

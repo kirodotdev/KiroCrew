@@ -65,14 +65,66 @@ def test_fonts_route_skipped_when_fonts_dir_absent(tmp_path) -> None:
 
 
 def test_optional_subdirs_registered_only_when_present(tmp_path) -> None:
-    """sprites/ and vendor/ mount only when they exist; /assets is always on."""
-    dist = _make_dist(tmp_path, "assets", "sprites", "fonts", "vendor")
+    """sprites/, vendor/ and app-assets/ mount only when they exist; /assets is always on."""
+    dist = _make_dist(tmp_path, "assets", "sprites", "fonts", "vendor", "app-assets")
     app = web.Application()
 
     _register_dist_static_routes(app, dist)
 
     prefixes = _registered_prefixes(app)
-    assert {"/assets", "/sprites", "/fonts", "/vendor"} <= prefixes
+    assert {"/assets", "/sprites", "/fonts", "/vendor", "/app-assets"} <= prefixes
+
+
+def test_app_assets_route_registered_when_dir_present(tmp_path) -> None:
+    """A dist/ with an app-assets/ subdir gets an /app-assets static route.
+
+    Regression: builtin app.json files reference brand art via absolute
+    ``url('/app-assets/...')`` (iconUrl / heroImage / heroImageDark). Without
+    this mount the request falls through to the SPA fallback (index.html) and
+    the App Store <img> tags load HTML as an image, tripping their onError
+    placeholder (generic lucide icon / "KIROCREW" hero).
+    """
+    dist = _make_dist(tmp_path, "assets", "app-assets")
+    app = web.Application()
+
+    _register_dist_static_routes(app, dist)
+
+    assert "/app-assets" in _registered_prefixes(app)
+
+
+def test_app_assets_route_skipped_when_dir_absent(tmp_path) -> None:
+    """No app-assets/ subdir -> no /app-assets route (only the always-on /assets)."""
+    dist = _make_dist(tmp_path, "assets")
+    app = web.Application()
+
+    _register_dist_static_routes(app, dist)
+
+    prefixes = _registered_prefixes(app)
+    assert "/app-assets" not in prefixes
+    assert "/assets" in prefixes
+
+
+@pytest.mark.asyncio
+async def test_app_assets_svg_served_not_spa_shell(tmp_path: Path) -> None:
+    """An SVG under /app-assets is served verbatim (the file, not index.html).
+
+    Proves the builtin icon/hero art is reachable through the gateway once the
+    build's dist/app-assets/ is mounted — the exact failure mode that made the
+    "recently added" colorful icons and hero images not render.
+    """
+    dist = _make_dist(tmp_path, "assets", "app-assets")
+    (dist / "app-assets" / "auto-research").mkdir()
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><circle r="1"/></svg>'
+    (dist / "app-assets" / "auto-research" / "icon.svg").write_bytes(svg)
+
+    app = web.Application()
+    _register_dist_static_routes(app, dist)
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/app-assets/auto-research/icon.svg")
+        assert resp.status == 200
+        assert (await resp.read()) == svg
+        assert resp.content_type == "image/svg+xml"
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Sun, Moon, Monitor, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, Activity, TerminalSquare, ClipboardCheck, Keyboard, Brain, FolderTree, ChevronUp, MoreHorizontal, Coins, Contact } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Sun, Moon, Monitor, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, Activity, TerminalSquare, ClipboardCheck, Keyboard, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -89,6 +89,7 @@ interface AppListEntry {
   origin?: string
   orphaned?: boolean
   manifest?: {
+    iconUrl?: string
     ui?: {
       entry?: string
       pages?: Array<{ route: string; icon?: string; iconUrl?: string; label?: string }>
@@ -135,6 +136,8 @@ const BUILTIN_ICONS: Record<string, React.ReactElement> = {
   BookOpenText: <BookOpenText size={16} />,
   Brain: <Brain size={16} />,
   FolderTree: <FolderTree size={16} />,
+  FlaskConical: <FlaskConical size={16} />,
+  ScanSearch: <ScanSearch size={16} />,
   Contact: <Contact size={16} />,
 }
 
@@ -818,11 +821,19 @@ export default function App() {
               ? `/apps/migrate/${a.name}`
               : dynamicApp ? `/apps/${a.name}` : page.route
             const iconName = page.icon || ''
-            const baseIcon = isBuiltin && BUILTIN_ICONS[iconName]
-              ? BUILTIN_ICONS[iconName]
+            // Prefer the app's custom top-level iconUrl (an absolute
+            // /app-assets/... path — the same source the App Store card renders
+            // via AppIcon) so builtin colorful SVG icons also show in the left
+            // nav. Fall back to a page-relative ui/ icon (installed apps), then
+            // the builtin lucide glyph, then the generic package icon.
+            const customIconUrl = a.manifest?.iconUrl || ''
+            const baseIcon = customIconUrl
+              ? <img src={customIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
               : page.iconUrl
                 ? <img src={'/apps/' + a.name + '/ui/' + page.iconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
-                : <Package size={16} />
+                : isBuiltin && BUILTIN_ICONS[iconName]
+                  ? BUILTIN_ICONS[iconName]
+                  : <Package size={16} />
             // Orphaned apps get a warn-colored icon to signal migration needed
             const icon = isOrphaned
               ? <span className="text-warn">{baseIcon}</span>

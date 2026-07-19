@@ -1011,6 +1011,9 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "author": "kirocrew",
         "tags": ["visualization", "agents"],
         "defaultEnabled": False,
+        "iconUrl": "/app-assets/worlds/icon.svg",
+        "heroImage": "/app-assets/worlds/hero-light.svg",
+        "heroImageDark": "/app-assets/worlds/hero-dark.svg",
         "ui": {
             "pages": [{"route": "/worlds", "label": "Worlds", "icon": "Gamepad2"}],
         },
@@ -1042,8 +1045,11 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "author": "kirocrew",
         "tags": ["tasks", "autonomy", "execution"],
         "defaultEnabled": False,
+        "iconUrl": "/app-assets/projects/icon.svg",
+        "heroImage": "/app-assets/projects/hero-light.svg",
+        "heroImageDark": "/app-assets/projects/hero-dark.svg",
         "ui": {
-            "pages": [{"route": "/projects", "label": "Task Runner", "icon": "BookOpenText"}],
+            "pages": [{"route": "/projects", "label": "Task Runner", "icon": "ClipboardCheck"}],
         },
     },
     # -------------------------------------------------------------------------

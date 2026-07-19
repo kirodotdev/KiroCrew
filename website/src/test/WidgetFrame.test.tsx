@@ -517,10 +517,10 @@ describe('WidgetFrame unmount safety on bookmark actions', () => {
 
     // Wait for probe to settle so bookmark becomes clickable.
     await waitFor(() => {
-      expect(container.querySelector('[aria-label="Save as artifact"]')).not.toBeNull()
+      expect(container.querySelector('[aria-label="Star as artifact"]')).not.toBeNull()
     })
 
-    const bookmarkBtn = container.querySelector('[aria-label="Save as artifact"]') as HTMLButtonElement
+    const bookmarkBtn = container.querySelector('[aria-label="Star as artifact"]') as HTMLButtonElement
     expect(bookmarkBtn).not.toBeNull()
 
     // Trigger the async save. createArtifact returns a promise that won't
@@ -550,7 +550,7 @@ describe('WidgetFrame unmount safety on bookmark actions', () => {
     // that would be a memory leak / zombie state, but the only observable
     // signal is exception/warning behavior. We've covered both above
     // (no throw, microtask flush completes).
-    expect(container.querySelector('[aria-label="Save as artifact"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Star as artifact"]')).toBeNull()
     expect(container.querySelector('[aria-label^="Remove artifact"]')).toBeNull()
   })
 })
@@ -570,7 +570,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
     })
 
     // Bookmark should be empty (unfilled)
-    const bookmarkBtn = container.querySelector('[aria-label="Save as artifact"]')
+    const bookmarkBtn = container.querySelector('[aria-label="Star as artifact"]')
     expect(bookmarkBtn).not.toBeNull()
     const removeBtn = container.querySelector('[aria-label^="Remove artifact"]')
     expect(removeBtn).toBeNull()
@@ -622,6 +622,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
       Object.assign(new ApiError('Not found', 404), { status: 404 }),
     )
     vi.spyOn(api, 'createArtifact').mockResolvedValue({ slug: 'msg-1779995123-456789-0', name: 'T' })
+    vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
 
     const { container } = wrap(
       <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
@@ -629,11 +630,11 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
 
     // Wait for probe to resolve
     await waitFor(() => {
-      expect(container.querySelector('[aria-label="Save as artifact"]')).not.toBeNull()
+      expect(container.querySelector('[aria-label="Star as artifact"]')).not.toBeNull()
     })
 
     // Click save
-    const bookmarkBtn = container.querySelector('[aria-label="Save as artifact"]') as HTMLButtonElement
+    const bookmarkBtn = container.querySelector('[aria-label="Star as artifact"]') as HTMLButtonElement
     await act(async () => {
       bookmarkBtn.click()
     })
@@ -651,6 +652,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
       Object.assign(new ApiError('Not found', 404), { status: 404 }),
     )
     vi.spyOn(api, 'createArtifact').mockReturnValue(createPromise as Promise<unknown>)
+    vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
 
     const { container, unmount } = wrap(
       <WidgetFrame html="<p>hi</p>" title="T" messageTs="1779995123.456789" widgetIndex={0} />,
@@ -658,11 +660,11 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
 
     // Wait for probe to resolve (404 -> unsaved)
     await waitFor(() => {
-      expect(container.querySelector('[aria-label="Save as artifact"]')).not.toBeNull()
+      expect(container.querySelector('[aria-label="Star as artifact"]')).not.toBeNull()
     })
 
     // Click save — starts createArtifact (deferred)
-    const bookmarkBtn = container.querySelector('[aria-label="Save as artifact"]') as HTMLButtonElement
+    const bookmarkBtn = container.querySelector('[aria-label="Star as artifact"]') as HTMLButtonElement
     await act(async () => { bookmarkBtn.click() })
 
     // Unmount before createArtifact resolves

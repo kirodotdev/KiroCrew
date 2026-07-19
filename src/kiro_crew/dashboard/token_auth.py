@@ -380,6 +380,7 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/sprites/",
     "/vendor/",
     "/fonts/",
+    "/app-assets/",
 )
 
 # Regex that matches /apps/{name} sub-namespace paths that have real server-side

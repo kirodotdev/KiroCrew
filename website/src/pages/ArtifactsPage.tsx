@@ -2,14 +2,14 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, ExternalLink, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2 } from 'lucide-react'
+import { AlertTriangle, Bookmark, ExternalLink, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
 import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
-import { PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
+import { PageHeader, Btn, Badge, SearchInput, EmptyState, Input, StatCard } from '../components/ui'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
@@ -23,7 +23,7 @@ import { sanitize } from '../api/helpers'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
-import type { Artifact, ArtifactFolder } from '../types'
+import type { Artifact, ArtifactFolder, SessionDoc } from '../types'
 
 /** Read the current computed theme CSS vars (capped to the known set, each
  * value sanitized) so a sandboxed preview iframe matches the dashboard theme.
@@ -57,6 +57,14 @@ function isoToTs(iso: string): number {
   if (!iso) return 0
   const t = Date.parse(iso)
   return Number.isFinite(t) ? Math.floor(t / 1000) : 0
+}
+
+/** Infer an artifact `kind` for a session document from its extension.
+ * Mirrors the backend's DOC_EXTENSIONS (.md/.markdown/.mdx → markdown;
+ * .txt/.rst → text). */
+function docFileType(path: string): Artifact['kind'] {
+  const ext = path.split('.').pop()?.toLowerCase() || ''
+  return ext === 'txt' || ext === 'rst' ? 'text' : 'markdown'
 }
 
 // ── Masonry library ──────────────────────────────────────────────────────
@@ -734,9 +742,11 @@ function LibraryTableHead() {
   return (
     <thead>
       <tr>
+        <th className={`${th} w-[40px] text-center`} aria-label="Starred"></th>
         <th className={`${th} min-w-[160px]`}>Name</th>
         <th className={`${th} w-[180px]`}>Slug</th>
         <th className={`${th} w-[100px]`}>Kind</th>
+        <th className={`${th} w-[110px]`}>Source</th>
         <th className={`${th} w-[60px]`}>Ver</th>
         <th className={`${th} min-w-[160px]`}>Tags</th>
         <th className={`${th} w-[110px]`}>Updated</th>
@@ -748,11 +758,15 @@ function LibraryTableHead() {
 
 /** One artifact row, shared by the flat table and the folder tree. Draggable
  * onto folder rows / the Unfiled lane (indent nests it under its folder). */
-function ArtifactRow({ a, onOpen, onDelete, deletingSlug, indent = 0, dropFolderId, dropHighlight = false }: {
+function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug = null, indent = 0, dropFolderId, dropHighlight = false }: {
   a: Artifact
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
+  /** Toggle the artifact's pin/favorite mark. */
+  onTogglePin: (a: Artifact) => void
+  /** Slug whose pin toggle is in flight (disables its star to avoid double-fire). */
+  pinningSlug?: string | null
   indent?: number
   /** When set, the row also accepts drops, filing the dragged item into this
    * folder (''=unfile) — so dropping anywhere over an expanded folder's
@@ -777,6 +791,19 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, indent = 0, dropFolder
             }
           }}
         >
+          <td className="px-2.5 py-2 border-b border-border text-center">
+            <button
+              type="button"
+              disabled={pinningSlug === a.slug}
+              onClick={(e) => { e.stopPropagation(); onTogglePin(a) }}
+              className={`p-0.5 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted/40 hover:text-accent'}`}
+              title={a.pinned ? 'Starred — click to unstar' : 'Star (save to library)'}
+              aria-label={a.pinned ? 'Remove star from artifact' : 'Star artifact'}
+              aria-pressed={!!a.pinned}
+            >
+              <Star size={14} className={a.pinned ? 'fill-current' : ''} />
+            </button>
+          </td>
           <td className="px-2.5 py-2 border-b border-border" style={indent > 0 ? { paddingLeft: `${10 + indent * 20}px` } : undefined}>
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-text-strong font-medium">{a.name}</span>
@@ -796,6 +823,7 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, indent = 0, dropFolder
           <td className="px-2.5 py-2 border-b border-border">
             <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
           </td>
+          <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted truncate max-w-[180px]" title={a.session_title || a.source}>{a.session_title || a.source}</td>
           <td className="px-2.5 py-2 border-b border-border text-sm text-muted">v{a.version}</td>
           <td className="px-2.5 py-2 border-b border-border">
             <div className="flex flex-wrap gap-1">
@@ -840,6 +868,44 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, indent = 0, dropFolder
   )
 }
 
+/** A single unsaved session-document row (from "your chats"). Leading star
+ * materializes it into a real, starred artifact. Shares the same columns as
+ * ArtifactRow so both live in one unified table. */
+function SessionDocRow({ d, busy, onMaterialize }: { d: SessionDoc; busy: boolean; onMaterialize: (path: string, sessionKey?: string) => void }) {
+  const ftype = docFileType(d.path)
+  return (
+    <tr className="transition-colors hover:bg-bg-hover">
+      <td className="px-2.5 py-2 border-b border-border text-center">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onMaterialize(d.path, d.session_key)}
+          className="p-0.5 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default text-muted/40 hover:text-accent"
+          title="Star (creates a starred artifact from this document)"
+          aria-label="Star document"
+          aria-pressed={false}
+        >
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Star size={14} />}
+        </button>
+      </td>
+      <td className="px-2.5 py-2 border-b border-border">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <FileText size={13} className="text-emerald-400 shrink-0" />
+          <span className="text-sm text-text-strong font-medium truncate">{d.name}</span>
+        </div>
+        <div className="text-[11px] text-muted truncate max-w-[420px]">{d.path}</div>
+      </td>
+      <td className="px-2.5 py-2 border-b border-border"><code className="text-[12px] text-muted">—</code></td>
+      <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted">{ftype}</td>
+      <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted truncate max-w-[180px]" title={d.session_title}>{d.session_title}</td>
+      <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted">—</td>
+      <td className="px-2.5 py-2 border-b border-border"></td>
+      <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted whitespace-nowrap">{_timeAgo(isoToTs(d.updated_at))}</td>
+      <td className="px-2.5 py-2 border-b border-border"></td>
+    </tr>
+  )
+}
+
 /** The original compact table view of the local artifact library (flat —
  * rendered while any filter is active, when folder scoping is bypassed). */
 function LibraryTable({
@@ -847,11 +913,21 @@ function LibraryTable({
   onOpen,
   onDelete,
   deletingSlug,
+  onTogglePin,
+  pinningSlug,
+  sessionDocs = [],
+  onMaterialize,
+  materializingPath = null,
 }: {
   items: Artifact[]
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
+  onTogglePin: (a: Artifact) => void
+  pinningSlug: string | null
+  sessionDocs?: SessionDoc[]
+  onMaterialize?: (path: string, sessionKey?: string) => void
+  materializingPath?: string | null
 }) {
   return (
     <div className="overflow-x-auto">
@@ -859,7 +935,10 @@ function LibraryTable({
         <LibraryTableHead />
         <tbody>
           {items.map((a) => (
-            <ArtifactRow key={a.slug} a={a} onOpen={onOpen} onDelete={onDelete} deletingSlug={deletingSlug} />
+            <ArtifactRow key={a.slug} a={a} onOpen={onOpen} onDelete={onDelete} deletingSlug={deletingSlug} onTogglePin={onTogglePin} pinningSlug={pinningSlug} />
+          ))}
+          {onMaterialize && sessionDocs.map((d) => (
+            <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} />
           ))}
         </tbody>
       </table>
@@ -896,7 +975,7 @@ function FolderRow({ folder, folders, depth, expanded, onToggle, actions, dropHi
               className={`group cursor-pointer transition-colors ${isOver || dropHighlight ? 'bg-accent/15' : 'hover:bg-bg-hover'}`}
               aria-expanded={expanded}
             >
-              <td colSpan={7} className="px-2.5 py-1.5 border-b border-border" style={depth > 0 ? { paddingLeft: `${10 + depth * 20}px` } : undefined}>
+              <td colSpan={9} className="px-2.5 py-1.5 border-b border-border" style={depth > 0 ? { paddingLeft: `${10 + depth * 20}px` } : undefined}>
                 <div className={`flex items-center gap-1.5 rounded transition-shadow ${isOver || dropHighlight ? 'ring-2 ring-inset ring-accent/50 px-1 -mx-1' : ''}`}>
                   <Chevron size={13} className="text-muted shrink-0" />
                   <FolderGlyph folder={folder} size={14} open={expanded} />
@@ -931,7 +1010,7 @@ function FolderRow({ folder, folders, depth, expanded, onToggle, actions, dropHi
 /** Nested, collapsible tree table (browse mode): folders in pre-order with
  * their artifacts indented beneath, Unfiled at the end. Collapsed by default —
  * expansion is client-local (localStorage), by design (Mesh-2720 §2.5). */
-function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, overFolderId, dragActive }: {
+function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, materializingPath = null }: {
   items: Artifact[]
   folders: ArtifactFolder[]
   expandedIds: ReadonlySet<string>
@@ -940,10 +1019,15 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
+  onTogglePin: (a: Artifact) => void
+  pinningSlug: string | null
   /** Folder the active drag currently hovers (''=Unfiled, null=none). */
   overFolderId: string | null
   /** True while any library drag is in flight. */
   dragActive: boolean
+  sessionDocs?: SessionDoc[]
+  onMaterialize?: (path: string, sessionKey?: string) => void
+  materializingPath?: string | null
 }) {
   const folderIds = new Set(folders.map(f => f.id))
   const byFolder = new Map<string, Artifact[]>()
@@ -981,6 +1065,8 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
               onOpen={onOpen}
               onDelete={onDelete}
               deletingSlug={deletingSlug}
+              onTogglePin={onTogglePin}
+              pinningSlug={pinningSlug}
               indent={depth + 1}
               dropFolderId={f.id}
               dropHighlight={overFolderId === f.id}
@@ -1004,7 +1090,7 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
             <DndDroppable id="unfiled-lane" data={{ type: 'folder-drop', folderId: '' }}>
               {({ setNodeRef, isOver }) => (
                 <tr ref={setNodeRef} className={`transition-colors ${isOver || unfiledHot ? 'bg-accent/15' : ''}`}>
-                  <td colSpan={7} className="px-2.5 border-b border-border" style={{ paddingTop: dragActive ? 10 : 6, paddingBottom: dragActive ? 10 : 6 }}>
+                  <td colSpan={9} className="px-2.5 border-b border-border" style={{ paddingTop: dragActive ? 10 : 6, paddingBottom: dragActive ? 10 : 6 }}>
                     <div className={`flex items-center gap-2 rounded transition-all ${
                       dragActive ? `border border-dashed px-2 py-1.5 ${isOver || unfiledHot ? 'border-accent text-text' : 'border-border text-muted'}` : ''
                     }`}>
@@ -1027,9 +1113,14 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
               onOpen={onOpen}
               onDelete={onDelete}
               deletingSlug={deletingSlug}
+              onTogglePin={onTogglePin}
+              pinningSlug={pinningSlug}
               dropFolderId={folders.length > 0 ? '' : undefined}
               dropHighlight={unfiledHot}
             />
+          ))}
+          {onMaterialize && sessionDocs.map((d) => (
+            <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} />
           ))}
         </tbody>
       </table>
@@ -1042,6 +1133,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [filter, setFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<string>('')
+  const [pinnedOnly, setPinnedOnly] = useState(true)
   const [view, setView] = useState<'grid' | 'table'>(
     () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
   )
@@ -1056,7 +1148,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     setSearchParams(folderId ? { folder: folderId } : {}, { replace: false })
   }, [setSearchParams])
   const { folders } = useArtifactFolders()
-  const filtersActive = !!(filter || tagFilter || kindFilter)
+  const filtersActive = !!(filter || tagFilter || kindFilter || pinnedOnly)
   // If the URL points at a deleted/unknown folder, treat it as root rather
   // than showing a phantom empty view.
   const scopeFolderId = folders.some(f => f.id === currentFolderId) ? currentFolderId : ''
@@ -1240,16 +1332,18 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   }, [allTagsData])
 
   const visible = useMemo(() => {
-    const list = artifacts
+    let list = artifacts
+    if (pinnedOnly) list = list.filter((a) => a.pinned)
     if (!filter) return list
     const q = filter.toLowerCase()
     return list.filter(
       (a) =>
         a.name.toLowerCase().includes(q) ||
         a.slug.toLowerCase().includes(q) ||
-        (a.description || '').toLowerCase().includes(q),
+        (a.description || '').toLowerCase().includes(q) ||
+        (a.session_title || '').toLowerCase().includes(q),
     )
-  }, [artifacts, filter])
+  }, [artifacts, filter, pinnedOnly])
 
   // Browse-mode gallery scoping: no filters → only artifacts filed in the open
   // folder (a dangling folder_id degrades to unfiled). Any filter active →
@@ -1293,6 +1387,43 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     onSuccess: () => qc.invalidateQueries({ queryKey: ['artifacts'] }),
   })
 
+  const pinMut = useMutation({
+    mutationFn: ({ slug, pinned }: { slug: string; pinned: boolean }) => api.setArtifactPinned(slug, pinned),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['artifacts'] }),
+  })
+  const handleTogglePin = useCallback((a: Artifact) => {
+    pinMut.mutate({ slug: a.slug, pinned: !a.pinned })
+  }, [pinMut])
+  const pinningSlug = pinMut.isPending ? (pinMut.variables as { slug: string }).slug : null
+
+  // "All" view firehose: non-code docs produced across all sessions. Only
+  // fetched when All is active (Starred is the default, so this stays idle then).
+  const sessionDocsQ = useQuery<{ docs: SessionDoc[] }>({
+    queryKey: ['artifact-session-docs'],
+    queryFn: () => api.artifactSessionDocs(),
+    enabled: !pinnedOnly,
+    staleTime: 30_000,
+  })
+  const materializeMut = useMutation({
+    mutationFn: ({ path, sessionKey }: { path: string; sessionKey?: string }) => api.materializeArtifact(path, sessionKey),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
+      qc.invalidateQueries({ queryKey: ['artifact-session-docs'] })
+    },
+  })
+  const sessionDocs = useMemo(() => {
+    let docs = (sessionDocsQ.data?.docs || []).filter((d) => !d.saved)
+    if (kindFilter) docs = docs.filter((d) => docFileType(d.path) === kindFilter)
+    if (filter) {
+      const q = filter.toLowerCase()
+      docs = docs.filter((d) =>
+        d.name.toLowerCase().includes(q) ||
+        d.path.toLowerCase().includes(q) ||
+        (d.session_title || '').toLowerCase().includes(q))
+    }
+    return docs
+  }, [sessionDocsQ.data, filter, kindFilter])
+
   const handleOpen = useCallback((slug: string) => navigate(`/artifacts/${slug}`), [navigate])
 
   const gridEntries = useMemo<GridEntry[]>(
@@ -1324,6 +1455,12 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     <>
       <PageHeader title="Artifacts" subtitle="Widgets, files, and snippets — live-tracked with version history" />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+        <div className="grid gap-3 grid-cols-2 sm:grid-cols-4 mb-4">
+          <StatCard label="Total" value={artifacts.length} accent />
+          <StatCard label="Starred" value={artifacts.filter(a => a.pinned).length} />
+          <StatCard label="Folders" value={folders.length} />
+          <StatCard label="Kinds" value={new Set(artifacts.map(a => a.kind)).size} />
+        </div>
         {(errMessage || mutErr) && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>
@@ -1373,6 +1510,24 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 </option>
               ))}
             </select>
+            <div className="ml-auto inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label="Filter starred">
+              <button
+                type="button"
+                onClick={() => setPinnedOnly(true)}
+                aria-pressed={pinnedOnly}
+                className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none inline-flex items-center gap-1 ${pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
+              >
+                <Star size={12} className={pinnedOnly ? 'fill-current' : ''} /> Starred
+              </button>
+              <button
+                type="button"
+                onClick={() => setPinnedOnly(false)}
+                aria-pressed={!pinnedOnly}
+                className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none ${!pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
+              >
+                All
+              </button>
+            </div>
           </div>
 
           {/* One DndContext spans breadcrumb + folder cards + gallery/table so
@@ -1469,6 +1624,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 onOpen={handleOpen}
                 onDelete={handleDelete}
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
+                onTogglePin={handleTogglePin}
+                pinningSlug={pinningSlug}
+                sessionDocs={pinnedOnly ? [] : sessionDocs}
+                onMaterialize={pinnedOnly ? undefined : (path, sessionKey) => materializeMut.mutate({ path, sessionKey })}
+                materializingPath={materializeMut.isPending ? ((materializeMut.variables as { path: string } | undefined)?.path ?? null) : null}
               />
             ) : (
               <LibraryTree
@@ -1480,8 +1640,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 onOpen={handleOpen}
                 onDelete={handleDelete}
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
+                onTogglePin={handleTogglePin}
+                pinningSlug={pinningSlug}
                 overFolderId={overFolderId}
                 dragActive={!!activeDrag}
+                sessionDocs={pinnedOnly ? [] : sessionDocs}
+                onMaterialize={pinnedOnly ? undefined : (path, sessionKey) => materializeMut.mutate({ path, sessionKey })}
+                materializingPath={materializeMut.isPending ? ((materializeMut.variables as { path: string } | undefined)?.path ?? null) : null}
               />
             )}
 

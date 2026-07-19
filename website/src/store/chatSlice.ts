@@ -83,11 +83,11 @@ interface ChatState {
    *  `workflow_run_event` WS broadcasts; consumed by WorkflowProgressBar. */
   workflowRuns: Record<string, WorkflowRunProgress>
   activityOpen: boolean
-  activityTab: 'subagents' | 'workflows' | 'logs' | 'files' | 'side'
+  activityTab: 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
    *  consumed (cleared) once the matching ToolCallLine has expanded itself. */
   focusToolCallId: string | null
-  slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'subagents' | 'workflows' | 'logs' | 'files' | 'side' }>
+  slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts' }>
   slotSide: Record<string, SideState>
   slotSideClosed: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
@@ -750,7 +750,7 @@ const chatSlice = createSlice({
     setVoicePlaying(state, action: PayloadAction<boolean>) { state.voicePlaying = action.payload },
     setVoiceAudio(state, action: PayloadAction<string | null>) { state.voiceAudio = action.payload },
     toggleActivity(state) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null },
-    openActivityToTab(state, action: PayloadAction<'subagents' | 'workflows' | 'logs' | 'files' | 'side'>) { state.activityOpen = true; state.activityTab = action.payload; state.focusToolCallId = null },
+    openActivityToTab(state, action: PayloadAction<'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.focusToolCallId = null },
     /** Tools tab is deprecated — tool details now expand inline in the chat. This action
      *  signals the matching ToolCallLine pill to auto-expand and scroll into view. */
     openActivityToTool(state, action: PayloadAction<string>) { state.focusToolCallId = action.payload },
@@ -1377,10 +1377,19 @@ const chatSlice = createSlice({
           // already finalized locally (via applyNonActiveFrame while this slot
           // was backgrounded). Blindly replacing with the server response here
           // is the "switch away and back drops the latest response" regression.
-          // Keep the server history but re-attach the local trailing reply,
-          // finalizing a still-streaming one. Guarded by the content check above
-          // so we never duplicate a reply the server already returned.
-          const finalized: ChatMessage = lastLocal.role === 'streaming'
+          // Keep the server history but re-attach the local trailing reply.
+          // Guarded by the content check above so we never duplicate a reply
+          // the server already returned.
+          //
+          // Only finalize a still-'streaming' partial to 'assistant' when the
+          // turn is NOT still running. If the slot is still streaming
+          // (running=true — e.g. switching back to a background slot whose
+          // reply is mid-flight), coercing to 'assistant' freezes the partial:
+          // the resuming `chunk` handler finds no trailing 'streaming' message
+          // and pushes a NEW one, splitting the single reply across two bubbles
+          // until chat_done heals it. Keep it 'streaming' so the stream resumes
+          // into the same bubble.
+          const finalized: ChatMessage = (lastLocal.role === 'streaming' && !running)
             ? { ...lastLocal, role: 'assistant' }
             : lastLocal
           state.messages = [...preserved.filter(m => m.role !== 'streaming'), finalized]

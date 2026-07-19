@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { Bookmark } from 'lucide-react'
+import { LayoutGrid } from 'lucide-react'
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -55,7 +55,7 @@ export interface ArtifactsProviderDeps {
 }
 
 function artifactIcon() {
-  return createElement(Bookmark, { className: 'lucide-inline' })
+  return createElement(LayoutGrid, { className: 'lucide-inline' })
 }
 
 /**

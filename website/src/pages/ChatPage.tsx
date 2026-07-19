@@ -1192,6 +1192,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       }))
     } catch { /* ignore */ }
     if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
+    // Brand-new file (no prior content): a diff would render as one big green
+    // all-additions block, which hurts readability. Open the normal readable
+    // file view instead — there's no meaningful "before" to compare against.
+    if (!original || !original.trim()) { handleFileOpen(filePath); return }
     panel.closePanel()
     if (activityOpen) dispatch(toggleActivity())
     diffPanel.openDiff(filePath, modified, original)
@@ -1202,7 +1206,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // handleFileOpen above) — avoids recreating this callback on search-state
     // changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [panel, activityOpen, dispatch, diffPanel, search.close])
+  }, [panel, activityOpen, dispatch, diffPanel, search.close, handleFileOpen])
+
+  // Save a document chip from chat into the artifact library (materialize +
+  // pin). Fire-and-forget; the artifact library refetches on its own.
+  const handleSaveDoc = useCallback((path: string) => {
+    // Return the promise (and rethrow) so the DocChip can revert its optimistic
+    // "Starred" state if the materialize fails, rather than claiming success.
+    return api.materializeArtifact(path, activeSlotRef.current ?? undefined).catch((e) => {
+      // eslint-disable-next-line no-console -- surface save failures to the dev console
+      console.warn('save document to library failed', e)
+      throw e
+    })
+  }, [])
 
   // Auto-surface files modified by the agent (carried in m.meta.file_changes)
   // into the activity Files tab so the user sees a unified list. Skip files
@@ -2543,7 +2559,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onQuote={handleQuote} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} showFooter={(() => {
+              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onQuote={handleQuote} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} onOpenDiff={handleOpenDiff} onSaveDoc={handleSaveDoc} fileChipStyle={chatConfig.fileChipStyle} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -2575,7 +2591,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handleSaveDoc, handlePlanFromHere, navigate, planTaskId])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
@@ -2725,21 +2741,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           />
         )}
         {uploadError && (
-          <div className="mx-4 mt-2 mb-0 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
-            <span className="text-sm text-danger flex-1">{uploadError}</span>
-            <button onClick={() => setUploadError('')} className="text-danger/60 hover:text-danger text-lg leading-none">&times;</button>
+          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--danger) 45%, transparent)' }}>
+            <span className="text-sm text-text flex-1">{uploadError}</span>
+            <button onClick={() => setUploadError('')} aria-label="Dismiss upload error" className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
         )}
         {uploadNotice && (
-          <div className="mx-4 mt-2 mb-0 bg-info/10 border border-info/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
-            <span className="text-sm text-info flex-1">{uploadNotice}</span>
-            <button onClick={() => setUploadNotice('')} className="text-info/60 hover:text-info text-lg leading-none">&times;</button>
+          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--info) 45%, transparent)' }}>
+            <span className="text-sm text-text flex-1">{uploadNotice}</span>
+            <button onClick={() => setUploadNotice('')} aria-label="Dismiss notice" className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
         )}
         {sidError && (
-          <div className="mx-4 mt-2 mb-0 bg-warn/10 border border-warn/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
-            <span className="text-sm text-warn flex-1">{sidError}</span>
-            <button onClick={() => setSidError('')} className="text-warn/60 hover:text-warn text-lg leading-none">&times;</button>
+          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+            <span className="text-sm text-text flex-1">{sidError}</span>
+            <button onClick={() => setSidError('')} aria-label="Dismiss error" className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
         )}
         {isMobile && !sidebarOpen && !(activeSlot && (messages.length > 0 || slotRunning)) && (
@@ -2843,20 +2859,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               <div className="absolute top-16 inset-x-0 z-10 pointer-events-none flex justify-center">
                 <button
                   type="button"
-                  className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 text-text/85 hover:text-text hover:scale-[1.06] active:scale-95 active:duration-75"
-                  style={{
-                    background: 'linear-gradient(145deg, rgba(255,255,255,0.24), rgba(255,255,255,0.06)), rgba(0,0,0,0.06)',
-                    backdropFilter: 'blur(24px) saturate(180%)',
-                    WebkitBackdropFilter: 'blur(24px) saturate(180%)',
-                    boxShadow: [
-                      'inset 0 1px 1.5px rgba(255,255,255,0.45)',
-                      'inset 0 -1px 1.5px rgba(0,0,0,0.18)',
-                      'inset 1px 0 1px rgba(255,255,255,0.12)',
-                      'inset -1px 0 1px rgba(0,0,0,0.08)',
-                      '0 8px 24px -6px rgba(0,0,0,0.28)',
-                      '0 2px 6px rgba(0,0,0,0.12)',
-                    ].join(', '),
-                  }}
+                  className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
                   onClick={scrollToPrevUserMessage}
                   aria-label="Scroll to previous user message"
                   title="Scroll to previous user message"
@@ -3026,20 +3029,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               {!isAtBottom && messages.length > 0 && (
                 <div className="absolute -top-10 inset-x-0 z-10 pointer-events-none flex justify-center">
                   <button
-                    className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 text-text/85 hover:text-text hover:scale-[1.06] active:scale-95 active:duration-75"
-                    style={{
-                      background: 'linear-gradient(145deg, rgba(255,255,255,0.24), rgba(255,255,255,0.06)), rgba(0,0,0,0.06)',
-                      backdropFilter: 'blur(24px) saturate(180%)',
-                      WebkitBackdropFilter: 'blur(24px) saturate(180%)',
-                      boxShadow: [
-                        'inset 0 1px 1.5px rgba(255,255,255,0.45)',  // top highlight
-                        'inset 0 -1px 1.5px rgba(0,0,0,0.18)',        // bottom shadow
-                        'inset 1px 0 1px rgba(255,255,255,0.12)',     // left edge
-                        'inset -1px 0 1px rgba(0,0,0,0.08)',          // right edge
-                        '0 8px 24px -6px rgba(0,0,0,0.28)',           // ambient lift
-                        '0 2px 6px rgba(0,0,0,0.12)',                 // close shadow
-                      ].join(', '),
-                    }}
+                    className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
                     onClick={() => { isAtBottomRef.current = true; scrollBottom(true) }}
                     aria-label="Scroll to bottom"
                   ><ArrowDown size={14} strokeWidth={2.5} /></button>

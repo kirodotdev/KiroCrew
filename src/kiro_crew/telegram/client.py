@@ -249,6 +249,24 @@ class TelegramClient:
         """Delete a message (e.g. remove stale inline keyboards)."""
         await self._api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
+    async def set_message_reaction(
+        self, chat_id: int, message_id: int, emoji: str
+    ) -> None:
+        """Set a single emoji reaction on a message (Bot API 7.0+ ``setMessageReaction``).
+
+        Used as an instant, no-extra-bubble acknowledgement that a mid-turn steer
+        was received. ``emoji`` must be one of Telegram's allowed reaction emojis
+        (e.g. "🫡"). Best-effort: callers should treat failures as non-fatal.
+        """
+        await self._api(
+            "setMessageReaction",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reaction": [{"type": "emoji", "emoji": emoji}],
+            },
+        )
+
     # ── Polling loop ──
 
     async def _polling_loop(self) -> None:

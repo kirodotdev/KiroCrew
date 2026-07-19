@@ -406,6 +406,31 @@ describe('switchSlot.pending', () => {
     expect(state.messages.filter(m => m.role === 'assistant' && m.content === 'the latest reply')).toHaveLength(1)
     expect(state.messages).toHaveLength(2)
   })
+  it('fulfilled keeps a still-streaming partial as streaming when the slot is still running (no frozen split bubble)', () => {
+    // Switch back to slot B while B is STILL streaming its reply: its cache
+    // holds a role:'streaming' partial (from applyNonActiveFrame), and the HTTP
+    // fetch returns running:true with history that predates the partial.
+    const bCache = [
+      { role: 'user' as const, content: 'question', cls: '' },
+      { role: 'streaming' as const, content: 'partial repl', cls: 'msg msg-a' },
+    ]
+    let state = { ...initial, activeSlot: 'A',
+      messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],
+      slotMessages: { 'B': bCache } }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'B', requestId: 'r1', requestStatus: 'pending' } })
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled',
+      meta: { arg: 'B', requestId: 'r1', requestStatus: 'fulfilled' },
+      payload: { key: 'B', messages: [{ role: 'user', content: 'question', cls: '' }], running: true, stopping: false, hasMore: false, total: 1, queue: [] },
+    })
+    // The partial must stay 'streaming' (NOT frozen to 'assistant'), so the
+    // resuming chunk handler continues into the SAME bubble instead of pushing
+    // a second one. Pre-fix it was coerced to 'assistant' regardless of running.
+    const tail = state.messages[state.messages.length - 1]
+    expect(tail.role).toBe('streaming')
+    expect(tail.content).toBe('partial repl')
+    expect(state.messages.filter(m => m.role === 'streaming')).toHaveLength(1)
+  })
   it('pending restores cached messages instantly without loading', () => {
     let state = { ...initial, activeSlot: 'A',
       messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],

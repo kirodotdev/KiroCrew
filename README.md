@@ -32,40 +32,6 @@ dashboard (built with `npm`). Memory and the knowledge library use a local
 > thin-client bootstrapper for `kirocrew cloud`, which runs the gateway on a
 > Linux EC2 box — not the native Windows path.)
 
-### Fastest: one-line install (prebuilt wheel)
-
-Installs the prebuilt, SHA-256-verified wheel from the release CDN — no clone,
-no `npm`, no build step (macOS / Linux / EC2):
-
-```bash
-# nightly channel (stable/insider channels open once their first release cuts)
-curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh -s -- --channel nightly
-
-# pin an exact version
-curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh -s -- --channel nightly --version 0.1.0.dev20260718
-```
-
-The installer resolves the channel feed, verifies the wheel's SHA-256 against
-the published manifest (refusing to install on mismatch), installs via `pipx`
-when available (else a managed venv at `~/.kirocrew/venv`), and records your
-channel to `~/.kirocrew/channel`.
-
-Prefer plain `pip`? Install from the wheel's direct URL with its SHA-256 hash
-(both values come from the channel feed, `feed/<channel>/latest-cli.json`).
-pip verifies the hash fail-closed, and no package index is consulted for
-`kirocrew` itself — so an identically named or versioned package on PyPI can
-never be selected. Dependencies still resolve from PyPI:
-
-```bash
-pip install "https://d28nxu9if70cmc.cloudfront.net/cli/nightly/0.1.0.dev20260718/kirocrew-0.1.0.dev20260718-py3-none-any.whl#sha256=2109dd186da999a1f135b4d6da2b36110d6a943e0af229ec259c25f72b73e570"
-```
-
-The `cli.sh` installer above does exactly this resolution for you (reads the
-feed, verifies the hash, installs) — it is the recommended path.
-
-To build from source instead (contributors, Windows native), follow the steps
-below.
-
 ### 1. Install the backend (pip)
 
 ```bash

@@ -26,6 +26,7 @@ const mkArtifact = (slug: string, overrides: Partial<Artifact> = {}): Artifact =
   name: slug.replace(/-/g, ' '),
   kind: 'widget',
   source: 'chat',
+  pinned: true,
   description: '',
   tags: [],
   version: 1,
@@ -37,6 +38,7 @@ const mkArtifact = (slug: string, overrides: Partial<Artifact> = {}): Artifact =
 describe('ArtifactsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.removeItem('mc-artifacts-view')
   })
 
   it('shows empty state when no artifacts', async () => {
@@ -59,6 +61,57 @@ describe('ArtifactsPage', () => {
     expect(screen.getByText(/v3/)).toBeInTheDocument()
   })
 
+  it('renders Starred/All filter toggle', async () => {
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('cr-queue')],
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+    // Starred/All toggle group is present (identified by its aria-label)
+    const group = screen.getByRole('group', { name: /Filter starred/i })
+    expect(group).toBeInTheDocument()
+    expect(group.querySelector('button')).toBeInTheDocument()
+  })
+
+  it('renders Source column in the table view', async () => {
+    localStorage.setItem('mc-artifacts-view', 'table')
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('cr-queue', { source: 'dashboard', session_title: 'My Session' })],
+    })
+    vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({ docs: [] })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+    // Source column header exists in table view
+    expect(screen.getByText('Source')).toBeInTheDocument()
+    // Source value renders session_title when available
+    expect(screen.getByText('My Session')).toBeInTheDocument()
+  })
+
+  it('renders star toggle buttons for each artifact', async () => {
+    localStorage.setItem('mc-artifacts-view', 'table')
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('cr-queue', { pinned: true })],
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+    const starBtn = screen.getByLabelText('Remove star from artifact')
+    expect(starBtn).toBeInTheDocument()
+    expect(starBtn).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('renders StatCard summary row', async () => {
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [
+        mkArtifact('cr-queue', { pinned: true }),
+        mkArtifact('another', { pinned: false }),
+      ],
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('Total')).toBeInTheDocument())
+    // StatCard labels (check they're in the stat card grid)
+    expect(screen.getByText('Folders')).toBeInTheDocument()
+    expect(screen.getByText('Kinds')).toBeInTheDocument()
+  })
 
   it('filters by name search', async () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({

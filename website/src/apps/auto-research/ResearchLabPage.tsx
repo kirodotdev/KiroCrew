@@ -596,7 +596,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
         <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}>Continue</button>
       </div>
     </div>}
-    {campaign.status === 'needs_input' && <div className="p-3 rounded-md mb-4 border border-info bg-info/10">
+    {campaign.status === 'needs_input' && <div className="p-3 rounded-md mb-4 border bg-bg-elevated" style={{ borderColor: 'color-mix(in srgb, var(--info) 45%, transparent)' }}>
       <div className="text-sm font-medium text-info flex items-center gap-1"><MessageCircle size={14} /> Agent needs input</div>
       <div className="text-sm mt-1">{campaign.pending_question || 'The agent is waiting for your direction.'}</div>
       <textarea aria-label="Your answer" className="w-full p-2 mt-2 rounded text-sm bg-bg border border-border resize-y" rows={2} value={answerText} onChange={e => setAnswerText(e.target.value)} placeholder="Your answer..." />

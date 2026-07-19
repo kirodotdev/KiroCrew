@@ -30,5 +30,8 @@
     "entryPoint": "kiro_crew.apps.builtins.file_explorer.server",
     "port": "auto",
     "healthCheck": "/health"
-  }
+  },
+  "iconUrl": "/app-assets/file-explorer/icon.svg",
+  "heroImage": "/app-assets/file-explorer/hero-light.svg",
+  "heroImageDark": "/app-assets/file-explorer/hero-dark.svg"
 }
