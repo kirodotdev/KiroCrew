@@ -266,8 +266,17 @@ class WeComDispatcher:
             return
         provider = self.sessions.get_provider(session_key)
         steer = getattr(provider, "steer", None)
+        # ``is_busy`` stays True through post-turn bookkeeping (all await
+        # points), so it alone can't tell a live turn from one that just
+        # finished. Gate steer on ``has_active_turn`` (parity with Telegram):
+        # steering a prompt that already ended is silently swallowed and would
+        # falsely acknowledge a merge. When no turn is live, fall through to the
+        # resend prompt instead.
+        has_active = getattr(provider, "has_active_turn", None)
+        live = has_active is None or bool(has_active())
         steered = bool(
-            getattr(provider, "supports_steer", False)
+            live
+            and getattr(provider, "supports_steer", False)
             and steer is not None
             and await steer(inbound.text)
         )
@@ -359,14 +368,28 @@ class WeComDispatcher:
         """In-place ACP ``/compact`` on the user's current session."""
         assert self.client is not None
         session_key = self._session_key(inbound.userid)
-        provider = self.sessions.get_provider(session_key)
-        if provider is None:
-            await self.client.send_reply(inbound.response_url, "ℹ️ 当前没有可压缩的对话。")
+        # Serialize compaction against the turn semaphore: compacting while a
+        # turn is mutating the same session races the transcript. Distinguish a
+        # busy session (ask the user to retry) from an absent one (nothing to
+        # compact), and always release what we acquired.
+        if not await self.sessions.try_acquire(session_key):
+            if self.sessions.has_session(session_key):
+                await self.client.send_reply(
+                    inbound.response_url, "⏳ 正在处理上一条消息，请稍后再试 /compact。"
+                )
+            else:
+                await self.client.send_reply(inbound.response_url, "ℹ️ 当前没有可压缩的对话。")
             return
         try:
+            provider = self.sessions.get_provider(session_key)
+            if provider is None:
+                await self.client.send_reply(inbound.response_url, "ℹ️ 当前没有可压缩的对话。")
+                return
             await provider.compact()
             await provider.wait_for_compaction(timeout=120.0)
             await self.client.send_reply(inbound.response_url, "🗜️ 已压缩上下文。")
         except Exception:
             logger.exception("WeCom /compact failed for %s", session_key)
             await self.client.send_reply(inbound.response_url, "⚠️ 压缩失败，请重试。")
+        finally:
+            self.sessions.release(session_key)

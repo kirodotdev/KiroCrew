@@ -25,6 +25,10 @@ class FakeProvider:
         self.rejected: list = []
         self.compacted = False
         self.steered: list = []
+        self.active_turn = True
+
+    def has_active_turn(self) -> bool:
+        return self.active_turn
 
     async def steer(self, text: str) -> bool:
         self.steered.append(text)
@@ -48,11 +52,23 @@ class FakeProvider:
 
 
 class FakeSessions:
-    def __init__(self, provider, *, is_new=True, raise_on_get=None, ctx_pct=0.0) -> None:
+    def __init__(
+        self,
+        provider,
+        *,
+        is_new=True,
+        raise_on_get=None,
+        ctx_pct=0.0,
+        acquire=True,
+        has_session=None,
+    ) -> None:
         self._p = provider
         self._is_new = is_new
         self._raise = raise_on_get
         self._ctx_pct = ctx_pct
+        self._acquire = acquire
+        self._has_session = provider is not None if has_session is None else has_session
+        self.acquired: list = []
         self.released: list = []
         self.successes: list = []
         self.failures: list = []
@@ -82,6 +98,13 @@ class FakeSessions:
 
     def get_provider(self, key):
         return self._p
+
+    async def try_acquire(self, key) -> bool:
+        self.acquired.append(key)
+        return self._acquire
+
+    def has_session(self, key) -> bool:
+        return self._has_session
 
     def is_busy(self, key) -> bool:
         return getattr(self, "_busy", False)
@@ -265,8 +288,35 @@ class TestCommands:
 
         await d.handle_message(_inbound("/compact"))
 
+        key = d._session_key("Wei")
         assert provider.compacted is True
+        assert sessions.acquired == [key]
+        assert sessions.released == [key]
         assert client.replies == [("https://r", "🗜️ 已压缩上下文。")]
+
+    @pytest.mark.asyncio
+    async def test_compact_refused_while_turn_busy(self) -> None:
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider, acquire=False, has_session=True)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is False
+        assert sessions.released == []
+        assert client.replies == [("https://r", "⏳ 正在处理上一条消息，请稍后再试 /compact。")]
+
+    @pytest.mark.asyncio
+    async def test_compact_without_active_session(self) -> None:
+        sessions = FakeSessions(None, acquire=False, has_session=False)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert sessions.released == []
+        assert client.replies == [("https://r", "ℹ️ 当前没有可压缩的对话。")]
 
     @pytest.mark.asyncio
     async def test_link_rejected_on_wecom(self) -> None:
@@ -341,5 +391,24 @@ class TestWeComMidTurn:
 
         await d._handle_busy(_inbound("later"), d._session_key("Wei"))
 
+        assert any("重发" in content for _url, content in client.replies)
+        assert sessions.successes == []
+
+    @pytest.mark.asyncio
+    async def test_busy_no_active_turn_does_not_steer(self) -> None:
+        # Semaphore held (post-turn bookkeeping) but no turn is live: steer must
+        # not be attempted and must not falsely acknowledge a merge -- fall
+        # through to the resend prompt instead.
+        provider = FakeProvider([])
+        provider.active_turn = False
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d._handle_busy(_inbound("later"), d._session_key("Wei"))
+
+        assert provider.steered == []
+        assert not any("合并" in content for _url, content in client.replies)
         assert any("重发" in content for _url, content in client.replies)
         assert sessions.successes == []
