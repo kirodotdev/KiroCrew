@@ -30,7 +30,11 @@ frontend:
 	cp -R website/dist src/kiro_crew/static/dist
 
 backend:
-	test -x $(VENV)/bin/python || $(PY) -m venv $(VENV)
+	bash ensure-python.sh || true
+	PY="$$(cat $$HOME/.kirocrew/python-bin 2>/dev/null)"; [ -n "$$PY" ] || PY="$(PY)"; \
+	  if [ -x $(VENV)/bin/python ] && ! $(VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then \
+	    echo "  → recreating $(VENV) (existing interpreter < 3.10)"; rm -rf $(VENV); fi; \
+	  test -x $(VENV)/bin/python || "$$PY" -m venv $(VENV)
 	$(PIP) install --upgrade pip setuptools wheel
 	KIROCREW_SKIP_FRONTEND=1 $(PIP) install -e ".[dev]"
 	bash packaging/resign-macos-libs.sh $(VENV)/bin/python

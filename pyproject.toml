@@ -7,11 +7,11 @@ name = "kirocrew"
 version = "0.1.0"
 description = "Personal AI agent that runs locally — chat via CLI, dashboard, Slack, or desktop app"
 readme = "README.md"
-# macOS (x86_64 + arm64) and Linux (x86_64 + aarch64), CPython 3.9-3.13.
+# macOS (x86_64 + arm64) and Linux (x86_64 + aarch64), CPython 3.10-3.13.
 # Must be declared in this [project] table: when it exists, setuptools reads
 # requires-python from here (not setup.cfg), and an absent value makes the
 # build backend raise SpecifierSet(None) -> TypeError during wheel builds.
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dynamic = ["dependencies"]
 
 [project.urls]

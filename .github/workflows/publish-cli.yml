@@ -110,7 +110,7 @@ jobs:
           # Requires-Python straight from the wheel metadata so the manifest never drifts.
           PYREQ=$(unzip -p "$WHEEL_PATH" '*.dist-info/METADATA' 2>/dev/null \
             | awk -F': ' 'tolower($1)=="requires-python"{print $2; exit}' | tr -d '\r')
-          PYREQ="${PYREQ:->=3.9}"
+          PYREQ="${PYREQ:->=3.10}"
 
           cat > /tmp/latest-cli.json <<EOF
           {
