@@ -89,6 +89,7 @@ interface AppListEntry {
   origin?: string
   orphaned?: boolean
   manifest?: {
+    iconUrl?: string
     ui?: {
       entry?: string
       pages?: Array<{ route: string; icon?: string; iconUrl?: string; label?: string }>
@@ -820,11 +821,19 @@ export default function App() {
               ? `/apps/migrate/${a.name}`
               : dynamicApp ? `/apps/${a.name}` : page.route
             const iconName = page.icon || ''
-            const baseIcon = isBuiltin && BUILTIN_ICONS[iconName]
-              ? BUILTIN_ICONS[iconName]
+            // Prefer the app's custom top-level iconUrl (an absolute
+            // /app-assets/... path — the same source the App Store card renders
+            // via AppIcon) so builtin colorful SVG icons also show in the left
+            // nav. Fall back to a page-relative ui/ icon (installed apps), then
+            // the builtin lucide glyph, then the generic package icon.
+            const customIconUrl = a.manifest?.iconUrl || ''
+            const baseIcon = customIconUrl
+              ? <img src={customIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
               : page.iconUrl
                 ? <img src={'/apps/' + a.name + '/ui/' + page.iconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
-                : <Package size={16} />
+                : isBuiltin && BUILTIN_ICONS[iconName]
+                  ? BUILTIN_ICONS[iconName]
+                  : <Package size={16} />
             // Orphaned apps get a warn-colored icon to signal migration needed
             const icon = isOrphaned
               ? <span className="text-warn">{baseIcon}</span>

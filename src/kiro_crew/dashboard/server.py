@@ -328,6 +328,17 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
             show_index=False,
             append_version=False,  # stable URLs, no cache-busting
         )
+    # App Store brand assets — builtin app icons + hero images live at
+    # dist/app-assets/ and are referenced by absolute url('/app-assets/...')
+    # from each builtin's app.json (iconUrl / heroImage / heroImageDark).
+    # These resolve in the Vite dev server (public/ served at root) but, once
+    # the gateway serves the built dist/, they need an explicit mount: without
+    # it the request falls through to the SPA fallback (index.html) and the
+    # App Store <img> tags try to parse HTML as an image → onError placeholder
+    # (generic lucide icon / "KIROCREW" hero). Stable, un-hashed filenames, so
+    # no append_version cache-busting.
+    if (dist_dir / "app-assets").is_dir():
+        app.router.add_static("/app-assets", dist_dir / "app-assets", show_index=False)
     logger.info("Serving React build from %s", dist_dir)
 
 

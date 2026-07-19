@@ -11,6 +11,7 @@
     "agents"
   ],
   "defaultEnabled": false,
+  "hidden": true,
   "permissions": {
     "api": [
       "/apps/workflows/api"

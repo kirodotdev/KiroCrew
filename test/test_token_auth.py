@@ -527,6 +527,35 @@ def test_apps_sub_paths_are_not_spa_shell(path: str) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/app-assets/auto-research/icon.svg",
+        "/app-assets/workflows/hero-light.svg",
+        "/app-assets/auto-research/hero-dark.svg",
+    ],
+)
+def test_app_assets_paths_are_not_spa_shell(path: str) -> None:
+    """/app-assets/* are static brand files (builtin icons + hero images), not
+    SPA navigation. They MUST be excluded from the SPA shell fallback so a
+    request resolves against the /app-assets static mount (or 404s cleanly,
+    letting the <img onError> fallback run) instead of being answered with
+    index.html.
+
+    Regression for: recently added colorful builtin icons / hero images did not
+    render because /app-assets/ had no static route AND was not in
+    SPA_FALLBACK_EXCLUDED_PREFIXES, so the SVG requests were served index.html
+    (HTML) and every <img> tripped its placeholder fallback.
+    """
+    import kiro_crew.dashboard.token_auth as ta
+
+    assert "/app-assets/" in ta.SPA_FALLBACK_EXCLUDED_PREFIXES
+    req = _make_request(path=path, method="GET")
+    assert not ta._is_spa_shell_request(req), (
+        f"GET {path} should NOT be a SPA shell request (static brand asset)"
+    )
+
+
 # -- Property 9: Loopback no longer bypasses auth (port-forward fix) --
 
 

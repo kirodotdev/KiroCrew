@@ -1011,6 +1011,9 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "author": "kirocrew",
         "tags": ["visualization", "agents"],
         "defaultEnabled": False,
+        "iconUrl": "/app-assets/worlds/icon.svg",
+        "heroImage": "/app-assets/worlds/hero-light.svg",
+        "heroImageDark": "/app-assets/worlds/hero-dark.svg",
         "ui": {
             "pages": [{"route": "/worlds", "label": "Worlds", "icon": "Gamepad2"}],
         },
