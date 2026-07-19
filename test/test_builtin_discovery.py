@@ -202,3 +202,37 @@ class TestBuiltinClassification:
         app = apps[0]
         assert app["backend"]["hooks"]["routes"] == "backend.routes:register_routes"
         assert app["backend"]["hooks"]["on_startup"] == "backend.hooks:startup"
+
+
+# ---------------------------------------------------------------------------
+# Store visibility: hidden builtins stay installed but drop out of Browse
+# ---------------------------------------------------------------------------
+
+
+class TestHiddenBuiltins:
+    """The `hidden` manifest flag hides a builtin from the App Store Browse grid
+    (filter at website AppsPage) while keeping it installed, routable, and on the
+    Installed tab. `hidden` is not a _KNOWN_FIELDS key, so it must survive as an
+    ``extra`` field through discovery and reach the frontend as manifest.hidden.
+    """
+
+    def test_hidden_flag_preserved_through_discovery(self, tmp_path: Path) -> None:
+        """A `hidden: true` manifest field is preserved in discovery output."""
+        manifest = _valid_manifest("hidden-app")
+        manifest["hidden"] = True
+        _write_manifest(tmp_path / "hidden-app", manifest)
+
+        apps = discover_builtin_apps(tmp_path)
+        assert len(apps) == 1
+        assert apps[0]["hidden"] is True
+
+    def test_shipped_workflows_and_deploy_web_are_hidden(self) -> None:
+        """The shipped `workflows` and `deploy-web` builtins ship hidden from the
+        store. Regression: these two must not appear in the Browse grid."""
+        shipped = {a["name"]: a for a in discover_builtin_apps()}
+        for name in ("workflows", "deploy-web"):
+            assert name in shipped, f"{name} builtin not discovered"
+            assert shipped[name].get("hidden") is True, (
+                f"{name} must ship with hidden=True so it is excluded from the "
+                f"App Store Browse grid (got {shipped[name].get('hidden')!r})"
+            )

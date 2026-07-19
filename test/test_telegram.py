@@ -24,7 +24,11 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.telegram.client import TELEGRAM_CHUNK_LIMIT, TelegramInbound
-from kiro_crew.telegram.commands import ConversationState, parse_command
+from kiro_crew.telegram.commands import (
+    ConversationState,
+    parse_command,
+    parse_mid_turn_override,
+)
 from kiro_crew.telegram.renderer import (
     TelegramApprovalDecider,
     TelegramRenderer,
@@ -32,10 +36,15 @@ from kiro_crew.telegram.renderer import (
     _md_to_telegram_html,
     _split_markdown,
     _split_text,
+    _strip_steering,
     build_inline_keyboard,
 )
-from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramTransport
-from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
+from kiro_crew.telegram.transport import (
+    TELEGRAM_CAPABILITIES,
+    TelegramInboundMessage,
+    TelegramTransport,
+)
+from kiro_crew.telegram.transport_dispatch import _STEER_ACK_EMOJI, TelegramDispatcher
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
 
@@ -50,6 +59,7 @@ class FakeClient:
         self.markup_edits: list[tuple[int, Any]] = []
         self.answered: list[str] = []
         self.reply_targets: list[Any] = []
+        self.reactions: list[tuple[int, str]] = []
         self._mid = 100
 
     async def send_typing(self, chat_id: int) -> None:
@@ -87,6 +97,23 @@ class FakeClient:
 
     async def answer_callback(self, callback_query_id: str, text: str = "") -> None:
         self.answered.append(callback_query_id)
+
+    async def set_message_reaction(
+        self, chat_id: int, message_id: int, emoji: str
+    ) -> None:
+        self.reactions.append((message_id, emoji))
+
+    def final_text(self) -> Any:
+        """Text the user ultimately sees on the live message: the last edit if it
+        was edited (edit-streaming), else the last send."""
+        if self.edits:
+            return self.edits[-1][1]
+        return self.sent[-1][0] if self.sent else None
+
+    def final_markup(self) -> Any:
+        if self.edits:
+            return self.edits[-1][2]
+        return self.sent[-1][1] if self.sent else None
 
 
 class _Ev:
@@ -285,6 +312,22 @@ class TestParseCommand:
     def test_unknown_slash_is_not_a_command(self) -> None:
         assert parse_command("/frobnicate") is None
 
+    def test_mid_turn_override_queue(self) -> None:
+        assert parse_mid_turn_override("/queue do this after") == ("queue", "do this after")
+
+    def test_mid_turn_override_steer(self) -> None:
+        assert parse_mid_turn_override("/steer stop now") == ("steer", "stop now")
+
+    def test_mid_turn_override_case_insensitive_and_leading_space(self) -> None:
+        assert parse_mid_turn_override("  /QUEUE later") == ("queue", "later")
+
+    def test_mid_turn_override_none_for_plain_text(self) -> None:
+        assert parse_mid_turn_override("hello there") == (None, "hello there")
+
+    def test_mid_turn_override_none_without_body(self) -> None:
+        # A bare directive with no message body is not an override.
+        assert parse_mid_turn_override("/queue") == (None, "/queue")
+
 
 class TestConversationState:
     def test_gen_starts_at_zero_and_bumps(self) -> None:
@@ -470,6 +513,16 @@ class TestTransportReceive:
 
 
 class TestRenderer:
+    def test_strip_steering_complete_and_unclosed(self) -> None:
+        # Complete marker is removed anywhere in the text.
+        out = _strip_steering("BANANA [STEERING steer-x: rephrase] tail")
+        assert "STEERING" not in out and out.startswith("BANANA") and out.endswith("tail")
+        # UNCLOSED trailing marker (still streaming, no closing "]") is also
+        # removed, so the live draft never previews text that on_done strips.
+        assert _strip_steering("BANANA\n\n[STEERING steer-abc: interpreted as wanting") == "BANANA"
+        # No marker -> unchanged.
+        assert _strip_steering("just text") == "just text"
+
     def _drive(self, events: list[OutputEvent]) -> FakeClient:
         cli = FakeClient()
         r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
@@ -491,17 +544,18 @@ class TestRenderer:
                 OutputEvent(kind=DONE, stop_reason=""),
             ]
         )
-        # Block streaming: no placeholder edit-stream; the finished answer is
-        # sent as one block with the [OPTIONS:] keyboard attached.
-        final_text, final_kb = cli.sent[-1]
+        # Edit-streaming: the finished answer is the last edit, carrying the
+        # [OPTIONS:] keyboard; the raw [OPTIONS:] directive is stripped from text.
+        final_text = cli.final_text()
+        final_kb = cli.final_markup()
         assert final_text == "Hello. Pick."  # [OPTIONS:] stripped
         labels = [b["text"] for row in final_kb["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
 
-    def test_streams_via_drafts_and_persists_once_without_edits(self) -> None:
-        # The core of the fix: growing text streams as native animated drafts,
-        # the finished answer is persisted with ONE sendMessage, and
-        # editMessageText is never used (no reflow stutter).
+    def test_streams_live_via_send_then_edit(self) -> None:
+        # Edit-streaming (OpenClaw-style): send one real message, then edit it in
+        # place as text arrives. No draft (the ghost/vanish source). The final
+        # formatted content is the last edit; the initial send seeds the bubble.
         cli = self._drive(
             [
                 OutputEvent(kind=TEXT_CHUNK, text="one "),
@@ -510,14 +564,47 @@ class TestRenderer:
                 OutputEvent(kind=DONE, stop_reason=""),
             ]
         )
-        assert cli.edits == []  # never edits -> no reflow stutter
-        assert cli.drafts  # streamed as native animated drafts
-        assert len(cli.sent) == 1  # one persisted block
-        assert cli.sent[-1][0] == "one two three"
+        assert cli.drafts == []  # no draft preview -> no ghost bubble
+        assert cli.sent  # a real message was sent (live seed)
+        assert cli.final_text() == "one two three"  # final formatted content
+
+    def test_tool_footer_surfaces_immediately_on_tool_call(self) -> None:
+        # A mid-turn tool call surfaces a transient "🔧 {tool}…" footer on the
+        # live bubble immediately (force bypasses the edit throttle), so long
+        # agentic turns show activity instead of a dead typing indicator.
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text="Checking the logs. "),
+                OutputEvent(kind=TOOL_CALL, tool_call_id="t1", title="grep"),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        frames = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
+        assert any("🔧 grep…" in f for f in frames)  # footer shown live
+
+    def test_tool_footer_cleared_by_text_and_absent_from_final(self) -> None:
+        # The footer is transient: cleared the moment text resumes, and never
+        # part of the sealed/final message (seals read _segment_text, which the
+        # footer is deliberately kept out of).
+        cli = self._drive(
+            [
+                OutputEvent(kind=TOOL_CALL, tool_call_id="t1", title="fs_read"),
+                OutputEvent(kind=TEXT_CHUNK, text="Found it. "),
+                OutputEvent(kind=TOOL_CALL, tool_call_id="t2", title="shell"),
+                OutputEvent(kind=TEXT_CHUNK, text="All done."),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        frames = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
+        assert any("🔧 fs_read…" in f for f in frames)
+        assert any("🔧 shell…" in f for f in frames)
+        assert "🔧" not in cli.final_text()  # final is clean
+        assert cli.final_text() == "Found it. All done."
 
     def test_strips_steering_marker_from_output(self) -> None:
-        # kiro-cli's inline "[STEERING steer-<id>: …]" ack marker must not leak
-        # into the posted message (block renderer posts the final via sendMessage).
+        # kiro-cli's inline "[STEERING steer-<id>: …]" ack marker must never leak
+        # raw into any posted message. An end-of-stream marker (no continuation
+        # text after it) produces NO extra message — just the sealed answer.
         cli = self._drive(
             [
                 OutputEvent(kind=TEXT_CHUNK, text="UTC is 09:03. BANANA\n\n"),
@@ -529,63 +616,324 @@ class TestRenderer:
                 OutputEvent(kind=DONE, stop_reason=""),
             ]
         )
-        final_text = cli.sent[-1][0]
-        assert "STEERING" not in final_text and "steer-f078" not in final_text
-        assert final_text == "UTC is 09:03. BANANA"
+        texts = [t for t, _ in cli.sent]
+        assert texts == ["UTC is 09:03. BANANA"]  # sealed clean, no ack tail
+        assert "STEERING" not in " ".join(texts)
 
-    def test_steer_consumed_splits_into_two_messages(self) -> None:
-        # On steer-consumed, on_done posts the pre-steer output and the steered
-        # continuation as SEPARATE messages (block renderer splits at on_done).
-        cli = self._drive(
-            [
-                OutputEvent(kind=TEXT_CHUNK, text="Running date. UTC is 09:03."),
-                OutputEvent(kind=STEER_CONSUMED),
-                OutputEvent(kind=TEXT_CHUNK, text="BANANA"),
-                OutputEvent(kind=DONE, stop_reason=""),
-            ]
-        )
-        assert len(cli.sent) == 2
-        assert "UTC is 09:03." in cli.sent[0][0] and "BANANA" not in cli.sent[0][0]
-        assert cli.sent[-1][0] == "BANANA"
-
-    def test_steer_consumed_threads_reply_to_steer_message(self) -> None:
-        # M1: the steered-continuation message replies to the user's steer
-        # message (set_steer_reply_to); the pre-steer message does not.
+    def test_steer_seals_at_marker_into_new_bubble(self) -> None:
+        # Seal-on-steer: the [STEERING] marker (kiro-cli's in-stream injection
+        # point) seals the pre-steer text as its own message; the steered
+        # continuation opens a FRESH message headed by a chip. The chip prefers
+        # the SUMMARY embedded in the marker (dashboard parity) over the user's
+        # own words — those are already on screen as the user's message.
         cli = FakeClient()
         r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
-        r.set_steer_reply_to(4242)  # the user's steer message id
+        r.note_steer("stop and say BANANA")  # the dispatcher records the user's words
 
         async def _go() -> None:
             await r.on_turn_start()
-            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="date answer"))
-            await r.dispatch(OutputEvent(kind=STEER_CONSUMED))
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="Root at 86% used. "))
+            await r.dispatch(
+                OutputEvent(kind=TEXT_CHUNK, text="[STEERING steer-abc: stop]")
+            )
+            await r.dispatch(OutputEvent(kind=STEER_CONSUMED))  # event: render no-op
             await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="BANANA"))
             await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
 
         asyncio.run(_go())
-        # Two posted messages: pre-steer (reply_to=None), steered (reply_to=4242).
-        assert cli.reply_targets == [None, 4242]
+        texts = [t for t, _ in cli.sent]
+        assert len(texts) == 2  # pre-steer bubble sealed + steered continuation
+        assert texts[0] == "Root at 86% used."  # frozen pre-steer bubble
+        assert "STEERING" not in texts[0] and "STEERING" not in texts[1]
+        # The chip heads the new bubble with the MARKER's summary (not the quote).
+        assert texts[1].startswith("<blockquote>↪️ stop</blockquote>")
+        assert "BANANA" in texts[1] and "used.BANANA" not in texts[1]  # no leak
 
-    def test_multi_steer_reply_targets_first_steer_message(self) -> None:
-        # First-steer-wins: on a rapid multi-steer burst the dispatcher calls
-        # set_steer_reply_to for every steer, but the split is recorded at the
-        # first boundary, so the reply target must stay on the FIRST steer id
-        # (100), not the last (200) -- keeping cause->effect consistent.
+    def test_end_of_stream_marker_posts_no_tail_bubble(self) -> None:
+        # Marker at the very END of the stream (kiri-cli folded the steer but
+        # emitted no post-steer text): NO tail message at all. The answer already
+        # covered the steer and the user's message carries the reaction receipt —
+        # any trailing ack bubble (quote OR summary) is pure noise. Regression
+        # for the trailing bubbles seen live on 2026-07-19.
         cli = FakeClient()
         r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
-        r.set_steer_reply_to(100)  # first steer
-        r.set_steer_reply_to(200)  # second steer (same turn) -- ignored
+        r.note_steer("顺便看看今天悉尼什么天气")
 
         async def _go() -> None:
             await r.on_turn_start()
-            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="pre"))
-            await r.dispatch(OutputEvent(kind=STEER_CONSUMED))
-            await r.dispatch(OutputEvent(kind=STEER_CONSUMED))  # second consume
-            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="post"))
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="目录总结。天气:多云。"))
+            await r.dispatch(
+                OutputEvent(
+                    kind=TEXT_CHUNK,
+                    text="\n\n[STEERING steer-a180ae7f: 已并行查询悉尼天气,一并答复。]",
+                )
+            )
             await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
 
         asyncio.run(_go())
-        assert cli.reply_targets == [None, 100]
+        texts = [t for t, _ in cli.sent]
+        assert len(texts) == 1  # only the sealed answer — no ack tail
+        assert "STEERING" not in texts[0]
+        assert "已并行查询" not in texts[0] and "顺便看看" not in texts[0]
+
+    def test_options_keyboard_survives_length_rotation(self) -> None:
+        # Codex finding: [OPTIONS:] must be extracted BEFORE length rotation.
+        # A body long enough to rotate must still attach the keyboard to the
+        # FINAL message — not strand the options text in a sealed segment and
+        # fall into the "…" placeholder branch.
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text=("line\n" * 1200)),  # > limit
+                OutputEvent(kind=TEXT_CHUNK, text="Pick one.\n\n[OPTIONS: A | B]"),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        kb = cli.final_markup()
+        assert kb is not None
+        labels = [b["text"] for row in kb["inline_keyboard"] for b in row]
+        assert labels == ["A", "B"]
+        # The options directive never leaks into any posted text.
+        all_text = " ".join(t for t, _ in cli.sent) + " ".join(
+            t for _, t, _ in cli.edits
+        )
+        assert "[OPTIONS" not in all_text
+
+    def test_tool_only_message_not_orphaned_at_steer_boundary(self) -> None:
+        # Codex finding: a tool call BEFORE any assistant text creates a live
+        # "🔧 tool…" message. If a steer marker then arrives with no pre-marker
+        # text, nothing is sealed — the renderer must KEEP that message id so
+        # the steered continuation replaces the transient footer in place,
+        # instead of orphaning a permanent tool-footer bubble.
+        cli = self._drive(
+            [
+                OutputEvent(kind=TOOL_CALL, tool_call_id="t1", title="grep"),
+                OutputEvent(
+                    kind=TEXT_CHUNK,
+                    text="[STEERING steer-abc123: checked] steered answer.",
+                ),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        # Exactly ONE message ever sent (the tool-footer one, reused).
+        assert len(cli.sent) == 1
+        assert cli.final_text() is not None
+        assert "steered answer" in cli.final_text()
+        assert "🔧" not in cli.final_text()
+
+    def test_options_only_response_keeps_keyboard(self) -> None:
+        # Codex finding: a response that is ONLY "[OPTIONS: A | B]" leaves an
+        # empty body after extraction — the placeholder must still carry the
+        # keyboard, not silently drop the user's choices.
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text="[OPTIONS: A | B]"),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        markups = [m for _, m in cli.sent if m] + [m for _, _, m in cli.edits if m]
+        assert len(markups) == 1
+        labels = [
+            b["text"] for row in markups[0]["inline_keyboard"] for b in row
+        ]
+        assert labels == ["A", "B"]
+
+    def test_complete_options_straddling_length_cut_stays_intact(self) -> None:
+        # Codex finding: a COMPLETE trailing [OPTIONS: A | B] whose text
+        # crosses the length-rotation boundary must be detached whole before
+        # _split_markdown — a bare split would put "[OPTIO" in one message and
+        # "NS: A | B]" in the next, leaking protocol text and losing the
+        # keyboard. Body sized so the directive itself straddles the cut.
+        body = "x" * 3730  # just under the ~3840 limit; directive crosses it
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text=body),
+                OutputEvent(
+                    kind=TEXT_CHUNK,
+                    text="\n\nPick one below please.\n\n[OPTIONS: A | B]",
+                ),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        # The final segment never live-streamed (rotation happened at the very
+        # end), so the seal SENDS a fresh message — find the keyboard across
+        # both sends and edits rather than via final_markup().
+        markups = [m for _, m in cli.sent if m] + [m for _, _, m in cli.edits if m]
+        assert len(markups) == 1
+        labels = [
+            b["text"] for row in markups[0]["inline_keyboard"] for b in row
+        ]
+        assert labels == ["A", "B"]
+        # The options directive never leaks — whole or split — into any text.
+        all_text = " ".join(t for t, _ in cli.sent) + " ".join(
+            t for _, t, _ in cli.edits
+        )
+        assert "[OPTIO" not in all_text and "NS: A | B]" not in all_text
+
+    def test_double_marker_chunk_keeps_first_chip(self) -> None:
+        # Codex finding: one chunk carrying TWO complete [STEERING] markers must
+        # not overwrite the first steer's chip — its continuation seals WITH the
+        # chip before the second rotation.
+        cli = self._drive(
+            [
+                OutputEvent(
+                    kind=TEXT_CHUNK,
+                    text=(
+                        "base answer. "
+                        "[STEERING steer-aaa111: first ack] first continuation. "
+                        "[STEERING steer-bbb222: second ack] second continuation."
+                    ),
+                ),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        texts = [t for t, _ in cli.sent]
+        assert len(texts) == 3  # base + two steered continuations
+        assert "first ack" in texts[1] and "first continuation" in texts[1]
+        assert "second ack" in texts[2] and "second continuation" in texts[2]
+        assert "STEERING" not in " ".join(texts)
+
+    def test_hr_inside_code_fence_preserved(self) -> None:
+        # Codex finding: _strip_hr must not delete a standalone "---" INSIDE a
+        # fenced code block (e.g. a YAML document separator).
+        cli = self._drive(
+            [
+                OutputEvent(
+                    kind=TEXT_CHUNK,
+                    text="Config:\n```yaml\na: 1\n---\nb: 2\n```\ndone",
+                ),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        assert "---" in cli.final_text()  # YAML separator survives
+        # A bare HR OUTSIDE a fence is still stripped.
+        cli2 = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text="above\n\n---\n\nbelow"),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        assert "---" not in cli2.final_text()
+
+    def test_live_frames_never_leak_options_markup(self) -> None:
+        # Codex finding: a live frame streamed from a chunk that already carries
+        # the complete [OPTIONS:] directive must hold it back, not show it.
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text="Pick one.\n\n[OPTIONS: A | B]"),
+                OutputEvent(kind=TEXT_CHUNK, text=""),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        frames = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
+        assert all("[OPTIONS" not in f for f in frames)
+        labels = [
+            b["text"] for row in cli.final_markup()["inline_keyboard"] for b in row
+        ]
+        assert labels == ["A", "B"]
+
+    def test_length_rotation_keeps_fences_balanced(self) -> None:
+        # Codex finding: length rotation must not cut a fenced code block in
+        # half — every sealed message carries balanced fences (via
+        # _split_markdown's close-and-reopen).
+        big_code = "```python\n" + ("x = 1\n" * 1500) + "```"
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text=big_code),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        assert len(cli.sent) >= 2  # rotated at least once
+        # Sealed HTML frames render the code as <pre> (fence recognized), and
+        # no posted frame carries an odd number of literal fences.
+        finals = [t for t, _ in cli.sent]
+        assert any("<pre>" in t for t in finals)
+        for t in finals:
+            assert t.count("```") % 2 == 0
+
+    def test_steer_summary_respects_transport_limit(self) -> None:
+        # Codex finding: the no-marker steer summary is prepended BEFORE length
+        # rotation, so the final message can never exceed Telegram's cap.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        for i in range(10):
+            r.note_steer(f"steer number {i} " + "y" * 100)
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="body " * 780))
+            await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
+
+        asyncio.run(_go())
+        for t, _ in cli.sent:
+            assert len(t) <= 4096
+        for _, t, _ in cli.edits:
+            assert len(t) <= 4096
+
+    def test_oversized_pre_marker_segment_rotates_before_seal(self) -> None:
+        # Codex finding: a chunk can deliver over-limit text AND a complete
+        # [STEERING] marker together. The pre-marker segment must length-rotate
+        # before sealing, or the client truncates it at Telegram's cap.
+        big = "word " * 1300  # ~6500 chars > limit
+        cli = self._drive(
+            [
+                OutputEvent(
+                    kind=TEXT_CHUNK,
+                    text=big + "[STEERING steer-abc123: ack] tail answer.",
+                ),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        finals = [t for t, _ in cli.sent]
+        assert len(finals) >= 3  # pre-marker rotated into >=2 + continuation
+        for t in finals:
+            assert len(t) <= 4096  # nothing exceeds the transport cap
+        joined = " ".join(finals)
+        assert joined.count("word") >= 1290  # no pre-marker content lost
+        assert "tail answer" in finals[-1]
+
+    def test_partial_directive_never_split_by_length_rotation(self) -> None:
+        # Codex finding: an INCOMPLETE trailing directive crossing the length
+        # limit must be detached before splitting and reattached to the tail —
+        # never cut in half (which would leak fragments and lose the rotation).
+        big = "text " * 1300
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text=big + "[STEERING steer-ddd444: par"),
+                OutputEvent(kind=TEXT_CHUNK, text="tial ack] steered tail."),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        finals = [t for t, _ in cli.sent]
+        joined = " ".join(finals)
+        assert "STEERING" not in joined  # directive never leaked, whole or split
+        assert "steered tail" in joined  # rotation still happened
+        frames = [t for _, t, _ in cli.edits]
+        assert all("[STEERING" not in f for f in frames)  # nor on live frames
+
+    def test_seal_resends_when_live_message_deleted(self) -> None:
+        # Codex finding: if the user deletes the streamed message mid-turn,
+        # both seal edits fail — the final answer (and keyboard) must be
+        # re-SENT as a fresh message, never silently lost.
+        class _EditsFailClient(FakeClient):
+            async def edit_message(self, *a: Any, **kw: Any) -> bool:
+                await super().edit_message(*a, **kw)
+                return False  # message gone — every edit fails
+
+        cli = _EditsFailClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="final answer"))
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="\n\n[OPTIONS: A | B]"))
+            await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
+
+        asyncio.run(_go())
+        # Last SENT message carries the final content + keyboard.
+        final_text, final_kb = cli.sent[-1]
+        assert "final answer" in final_text
+        labels = [b["text"] for row in final_kb["inline_keyboard"] for b in row]
+        assert labels == ["A", "B"]
 
     def test_error_done_renders_error_when_no_text(self) -> None:
         cli = self._drive([OutputEvent(kind=DONE, stop_reason="error")])
@@ -637,7 +985,7 @@ class TestDispatcher:
             )
 
         asyncio.run(_go())
-        assert cli.sent[-1][0] == "Answer: hello world"
+        assert cli.final_text() == "Answer: hello world"
         assert sess.successes == ["telegram:kirocrew:direct:7"]
         assert sess.released == ["telegram:kirocrew:direct:7"]
 
@@ -743,9 +1091,9 @@ class TestDispatcher:
         # overwriting its text, echoes the picked choice as its own block, then
         # re-dispatches the choice so the answer arrives as a NEW message.
         assert cli.markup_edits[-1] == (99, {"inline_keyboard": []})
-        assert cli.edits == []  # original answer text is never clobbered
+        assert all(mid != 99 for mid, _, _ in cli.edits)  # original text never clobbered
         assert "Say Hi" in cli.sent[0][0]  # choice echoed as its own block first
-        assert cli.sent[-1][0] == "Answer: Say Hi"  # answer arrives as a new message
+        assert cli.final_text() == "Answer: Say Hi"  # answer streamed as a NEW message
 
     def test_callback_approval_resolves_decider(self) -> None:
         d, cli, _ = _dispatcher({7})
@@ -934,6 +1282,68 @@ class TestTelegramMidTurn:
         # Not steered (dead turn); preserved via the queue path instead of lost.
         assert sess._gp.steered == []
         assert [text for _ts, text, _ in sess.queued] == ["landed after turn"]
+
+    def test_busy_steer_reacts_to_user_message(self) -> None:
+        # Instant ack: a mid-turn steer reacts to the user's message (no extra
+        # bubble) so it isn't silent while it waits for the next generation
+        # boundary (the steered continuation only posts at turn end).
+        d, cli, sess = _dispatcher({7})
+        sess._busy = True
+
+        async def _go() -> None:
+            await d.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="stop, only banana",
+                    message_id=4242,
+                )
+            )
+
+        asyncio.run(_go())
+        assert sess._gp.steered == ["stop, only banana"]  # steered
+        assert cli.reactions == [(4242, _STEER_ACK_EMOJI)]  # reacted on the user's steer msg
+        # No extra receipt/steer bubble is posted (the ack is the reaction only).
+        assert not any("Steered" in t or "Queued" in t for t, _ in cli.sent)
+
+    def test_queue_override_forces_queue_in_steer_mode(self) -> None:
+        # "/queue …" holds the message even though the global mode is steer;
+        # the directive is stripped from the queued text.
+        d, cli, sess = _dispatcher({7})
+        sess._busy = True  # global queue_mode defaults to "steer"
+
+        async def _go() -> None:
+            await d.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7",
+                    text="/queue check disk after", message_id=11,
+                )
+            )
+
+        asyncio.run(_go())
+        assert sess._gp.steered == []  # NOT steered
+        assert [t for _ts, t, _ in sess.queued] == ["check disk after"]  # queued, stripped
+
+    def test_steer_override_forces_steer_in_queue_mode(self) -> None:
+        # "/steer …" folds into the running turn even though the global mode is
+        # queue; the directive is stripped from the steered text.
+        d, cli, sess = _dispatcher({7})
+        sess._busy = True
+        d.cfg.messaging.queue_mode = "queue"
+
+        async def _go() -> None:
+            await d.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7",
+                    text="/steer stop now", message_id=12,
+                )
+            )
+
+        asyncio.run(_go())
+        assert sess._gp.steered == ["stop now"]  # steered, stripped
+        assert sess.queued == []  # NOT queued
+        assert cli.reactions == [(12, _STEER_ACK_EMOJI)]  # steer-ack on the steer message
 
     def test_busy_queue_mode_enqueues(self) -> None:
         d, cli, sess = _dispatcher({7})

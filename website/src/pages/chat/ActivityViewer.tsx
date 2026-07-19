@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, FolderOpen, ChevronLeft, ChevronRight, MessageSquare, ArrowUp, ArrowDown, Workflow } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component } from 'lucide-react'
 import { api } from '../../api/client'
-import { timeAgo } from '../../utils/timeAgo'
-import { useSortableTable, applySort, type Comparators } from '../../hooks/useSortableTable'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
-import type { SubagentActivity, ToolActivity } from '../../types'
+import Clickable from '../../components/Clickable'
+import type { SubagentActivity, ToolActivity, SessionDoc } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -122,9 +121,8 @@ function SubagentPane({ a, onClick }: { a: SubagentActivity; onClick: () => void
   return (
     // Card-level mouse convenience that selects the subagent; it wraps its own
     // interactive controls (Cancel, collapse header) which carry the real
-    // keyboard/AT semantics, so the card itself is not a focus stop.
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
-    <div className={`mx-2 mb-3 rounded-lg border bg-card overflow-hidden shadow-sm transition-all animate-scale-in ${isRunning || isPending ? 'border-border-strong' : 'border-border opacity-60'}`} onClick={onClick}>
+    // keyboard/AT semantics.
+    <Clickable className={`mx-2 mb-3 rounded-lg border bg-card overflow-hidden shadow-sm transition-all animate-scale-in ${isRunning || isPending ? 'border-border-strong' : 'border-border opacity-60'}`} onClick={onClick}>
       {/* Header — collapse toggle when the subagent is done */}
       <div
         className={`flex items-center gap-2 px-3 py-2.5${isDone ? ' cursor-pointer select-none hover:bg-bg-hover transition-colors' : ''}`}
@@ -181,7 +179,7 @@ function SubagentPane({ a, onClick }: { a: SubagentActivity; onClick: () => void
       )}
       </>
       )}
-    </div>
+    </Clickable>
   )
 }
 
@@ -300,163 +298,68 @@ function FileTile({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?
   )
 }
 
-/* ── FileBrowser: inline filesystem browser body, rendered inside the Files tab card. ── */
-function FileBrowser({ onFileOpen, initialPath = '' }: { onFileOpen?: (path: string) => void; initialPath?: string }) {
-  // Empty string targets the user's home dir (server expands ~). Tracking
-  // path as state keeps React Query's cache key in sync — revisiting a
-  // directory is instant on cache hit.
-  const [path, setPath] = useState<string>(initialPath)
-  // Sync with initialPath changes (e.g. folder switch)
-  const prevInit = useRef(initialPath)
-  useEffect(() => {
-    if (initialPath !== prevInit.current) {
-      setPath(initialPath)
-      prevInit.current = initialPath
-      historyRef.current = []
-      forwardRef.current = []
-      tickNav()
-    }
-  }, [initialPath])
-  const [search, setSearch] = useState('')
-  // Browser-style nav stack: history (Back) and forward (Forward). Mutated
-  // in place so cross-render closures stay stable; we tick `force` to push
-  // the disabled state of the buttons through.
-  const historyRef = useRef<string[]>([])
-  const forwardRef = useRef<string[]>([])
-  const [, force] = useState(0)
-  const tickNav = () => force(n => n + 1)
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['browse-files', path],
-    queryFn: () => api.browseFiles(path || undefined),
-    staleTime: 30_000, // a directory listing rarely changes within 30s — avoid refetching on remount
+/* ── SessionArtifactsTab: in-session document artifacts with save/unsave. ── */
+function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: (path: string) => void }) {
+  const qc = useQueryClient()
+  const { data, isFetching } = useQuery<{ docs: SessionDoc[] }>({
+    queryKey: ['session-artifacts', slot],
+    queryFn: () => api.artifactSessionDocs(slot),
+    enabled: !!slot,
   })
-
-  const dirs = data?.dirs ?? []
-  const files = data?.files ?? []
-  const resolvedPath = data?.path ?? path
-
-  const navigate = useCallback((target: string) => {
-    historyRef.current.push(resolvedPath)
-    forwardRef.current = []
-    setPath(target)
-    setSearch('')
-    tickNav()
-  }, [resolvedPath])
-
-  const goBack = useCallback(() => {
-    const prev = historyRef.current.pop()
-    if (prev !== undefined) {
-      forwardRef.current.push(resolvedPath)
-      setPath(prev)
-      setSearch('')
-      tickNav()
-    }
-  }, [resolvedPath])
-
-  const goForward = useCallback(() => {
-    const next = forwardRef.current.pop()
-    if (next !== undefined) {
-      historyRef.current.push(resolvedPath)
-      setPath(next)
-      setSearch('')
-      tickNav()
-    }
-  }, [resolvedPath])
-
-  const q = search.trim().toLowerCase()
-  const filteredDirs = q ? dirs.filter(d => d.name.toLowerCase().includes(q)) : dirs
-  const filteredFiles = q ? files.filter(f => f.name.toLowerCase().includes(q)) : files
-  // Sorting is driven by the shared useSortableTable hook (same model used by
-  // the Hooks/Cron/MCP/Memory tables), so the file browser gets the app's
-  // standard column-header toggle and per-table persistence for free. Name
-  // sorts case-insensitively; Date sorts by the mtime epoch seconds from the
-  // browse-files API and opens newest-first. `bidirectional` makes every
-  // column flip plainly between asc and desc (so Date reaches oldest-first
-  // too) rather than the tri-state reset the data tables use. Dirs and files
-  // are sorted as two groups (dirs always above files) that share one sort
-  // model — the hook sorts the dirs, applySort reuses the same model for files.
-  const sortComparators = useMemo<Comparators<{ name: string; mtime?: number }>>(() => ({
-    name: (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-    date: (a, b) => (a.mtime ?? 0) - (b.mtime ?? 0),
-  }), [])
-  const { sorted: sortedDirs, sort, toggle } = useSortableTable(
-    filteredDirs, 'activity-file-browser', sortComparators, { key: 'name', dir: 'asc' },
-    { initialDirs: { date: 'desc' }, bidirectional: true },
-  )
-  const sortedFiles = useMemo(
-    () => applySort(filteredFiles, sort, sortComparators),
-    [filteredFiles, sort, sortComparators],
-  )
-
-  // Compact modified-time for the right edge of each row. Reuses the shared
-  // timeAgo util (unix seconds) so relative-time formatting stays consistent
-  // with the rest of the dashboard. Empty when mtime is missing.
-  const fmtMtime = (sec?: number) => (sec ? timeAgo(sec) : '')
+  const docs = data?.docs || []
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['session-artifacts', slot] })
+    qc.invalidateQueries({ queryKey: ['artifacts'] })
+    qc.invalidateQueries({ queryKey: ['artifact-session-docs'] })
+  }
+  const saveMut = useMutation({ mutationFn: (path: string) => api.materializeArtifact(path, slot), onSuccess: invalidate })
+  const unsaveMut = useMutation({ mutationFn: (slug: string) => api.setArtifactPinned(slug, false), onSuccess: invalidate })
+  const busyPath = saveMut.isPending ? (saveMut.variables as string) : null
+  const busySlug = unsaveMut.isPending ? (unsaveMut.variables as string) : null
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
-      <div className="flex items-center gap-1.5 px-3 py-2 shrink-0 border-t border-border">
-        <button onClick={goBack} disabled={historyRef.current.length === 0} className="p-1 text-muted hover:text-text rounded-md hover:bg-bg-hover shrink-0 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-default" title="Back" aria-label="Back"><ChevronLeft size={14} /></button>
-        <button onClick={goForward} disabled={forwardRef.current.length === 0} className="p-1 text-muted hover:text-text rounded-md hover:bg-bg-hover shrink-0 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-default" title="Forward" aria-label="Forward"><ChevronRight size={14} /></button>
-        <input
-          type="text"
-          aria-label="Search or enter a path"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && search.trim()) navigate(search.trim()); else if (e.key === 'Escape') setSearch('') }}
-          placeholder={resolvedPath || 'Search…'}
-          className="flex-1 bg-bg border border-border rounded-md px-2.5 py-1.5 text-[11px] font-mono text-text placeholder:text-muted/50 focus:outline-none focus:border-accent min-w-0"
-        />
-      </div>
-      {(sortedDirs.length > 0 || sortedFiles.length > 0) && (
-        <div className="flex items-center gap-2.5 px-3 py-1 shrink-0 border-t border-border/30 select-none text-[10px] uppercase tracking-wider text-muted/60">
-          <button
-            onClick={() => toggle('name')}
-            className={`flex items-center gap-1 flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0 hover:text-text transition-colors ${sort.key === 'name' ? 'text-text' : ''}`}
-            aria-label="Sort by name"
-          >
-            Name
-            {sort.key === 'name' && (sort.dir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
-          </button>
-          <button
-            onClick={() => toggle('date')}
-            className={`flex items-center gap-1 shrink-0 cursor-pointer bg-transparent border-none p-0 hover:text-text transition-colors ${sort.key === 'date' ? 'text-text' : ''}`}
-            aria-label="Sort by date modified"
-          >
-            Date
-            {sort.key === 'date' && (sort.dir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
-          </button>
+    <div className="flex-1 overflow-y-auto py-2">
+      {docs.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{isFetching ? 'Loading…' : 'No documents in this session'}</div>
+      ) : (
+        <div className="px-3 flex flex-col gap-0.5">
+          {docs.map(d => {
+            const busy = busyPath === d.path || (!!d.slug && busySlug === d.slug)
+            return (
+              <div key={d.path} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-bg-hover transition-colors">
+                <button
+                  type="button"
+                  onClick={() => onFileOpen?.(d.path)}
+                  className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-none cursor-pointer p-0"
+                  title="Open in side panel"
+                >
+                  <FileText size={14} className="text-emerald-400 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] text-text truncate">{d.name}</span>
+                    <span className="block text-[11px] text-muted truncate">{d.path}</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => { if (d.saved && d.slug) unsaveMut.mutate(d.slug); else saveMut.mutate(d.path) }}
+                  className={`shrink-0 p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:cursor-default ${d.saved ? 'text-accent' : 'text-muted/50 hover:text-accent'}`}
+                  title={d.saved ? 'Remove star' : 'Star'}
+                  aria-label={d.saved ? 'Unstar document' : 'Star document'}
+                  aria-pressed={d.saved}
+                >
+                  {busy ? <LoaderIcon size={13} className="animate-spin" /> : <Star size={13} className={d.saved ? 'fill-current' : ''} />}
+                </button>
+              </div>
+            )
+          })}
         </div>
       )}
-      <div className="flex-1 overflow-y-auto px-1.5 py-1">
-        {isLoading && <div className="px-3 py-2 text-[12px] text-muted">Loading…</div>}
-        {!isLoading && filteredDirs.length === 0 && filteredFiles.length === 0 && (
-          <div className="px-3 py-6 text-[12px] text-muted text-center">{q ? 'No matches' : 'Empty directory'}</div>
-        )}
-        {sortedDirs.map(d => (
-          <button key={d.path} className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 cursor-pointer hover:bg-bg-hover rounded-lg transition-colors bg-transparent border-none text-[13px]" onClick={() => navigate(d.path)} title={d.path}>
-            <FolderOpen size={14} className="text-accent shrink-0" />
-            <span className="text-text truncate flex-1 min-w-0">{d.name}</span>
-            <span className="shrink-0 ml-2 text-[10px] text-muted tabular-nums">{fmtMtime(d.mtime)}</span>
-          </button>
-        ))}
-        {sortedFiles.map(f => {
-          const Icon = fileIcon(f.path)
-          return (
-            <button key={f.path} className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 cursor-pointer hover:bg-bg-hover rounded-lg transition-colors bg-transparent border-none text-[13px]" onClick={() => onFileOpen?.(f.path)} title={f.path}>
-              <Icon size={14} className={`${colorForExt(f.path)} shrink-0`} />
-              <span className="text-text truncate flex-1 min-w-0">{f.name}</span>
-              <span className="shrink-0 ml-2 text-[10px] text-muted tabular-nums">{fmtMtime(f.mtime)}</span>
-            </button>
-          )
-        })}
-      </div>
     </div>
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, onFilesClear, projectDir, navLinks, navResolving }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
@@ -465,11 +368,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
   const reduxTab = useAppSelector(s => s.chat.activityTab)
-  // Files-tab inline browser state
-  const [browserOpen, setBrowserOpen] = useState(!!projectDir)
-  const [browserHeight, setBrowserHeight] = useState(320)
-  const [browserDragging, setBrowserDragging] = useState(false)
-  const [tab, setTab] = useState<'subagents' | 'workflows' | 'logs' | 'files' | 'side'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
+  const [tab, setTab] = useState<'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
   const explicitTab = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const ids = Object.keys(subagents)
@@ -516,6 +415,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
   const TABS: { key: typeof tab; label: string; icon: ReactNode; count?: number }[] = [
     { key: 'files', label: 'Files', icon: <FileText size={13} />, count: files?.length || 0 },
+    { key: 'artifacts', label: 'Artifacts', icon: <Component size={13} /> },
     { key: 'subagents', label: 'Subagents', icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
     { key: 'workflows', label: 'Workflows', icon: <Workflow size={13} />, count: wfRunningCount },
     { key: 'logs', label: 'Logs', icon: <ScrollText size={13} /> },
@@ -578,67 +478,22 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
       {/* Files tab */}
       {tab === 'files' && (() => {
-        const suggested = (files || []).filter(f => f.source === 'tool')
-        const history = (files || []).filter(f => f.source === 'history')
+        const changed = (files || []).filter(f => f.source === 'tool')
         return (
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Top expandable file browser */}
-            <div className={`shrink-0 mx-2 mt-2 rounded-xl border border-border bg-bg-elevated overflow-hidden shadow-sm flex flex-col ${browserDragging ? '' : 'transition-all duration-200'}`} style={{ height: browserOpen ? browserHeight : 36 }}>
-              <div className="shrink-0">
-                <button
-                  className="flex items-center justify-between px-3.5 h-9 shrink-0 cursor-pointer bg-transparent hover:bg-bg-hover border-none w-full text-left transition-colors rounded-t-xl"
-                  onClick={() => setBrowserOpen(v => !v)}
-                  title={browserOpen ? 'Hide file browser' : 'Browse files'}
-                  aria-label={browserOpen ? 'Hide file browser' : 'Browse files'}
-                >
-                  <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted"><FolderOpen size={13} /> Browse files</span>
-                  <ChevronLeft size={12} className={`text-muted transition-transform duration-200 ${browserOpen ? 'rotate-90' : '-rotate-90'}`} />
-                </button>
-              </div>
-              {browserOpen && <FileBrowser onFileOpen={onFileOpen} initialPath={projectDir} />}
-              {browserOpen && (
-                // Resize splitter for the file browser height; role=separator is the
-                // correct semantic but jsx-a11y treats it as non-interactive while the
-                // mousedown drag is intrinsic to a resize handle.
-                // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-                <div
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="Resize file browser"
-                  className="relative shrink-0 h-1.5 cursor-row-resize z-10 group/drag"
-                  onMouseDown={e => {
-                    e.preventDefault()
-                    setBrowserDragging(true)
-                    const startY = e.clientY; const startH = browserHeight
-                    const onMove = (ev: MouseEvent) => setBrowserHeight(Math.max(120, Math.min(startH + (ev.clientY - startY), 500)))
-                    const onUp = () => {
-                      setBrowserDragging(false)
-                      document.removeEventListener('mousemove', onMove)
-                      document.removeEventListener('mouseup', onUp)
-                    }
-                    document.addEventListener('mousemove', onMove)
-                    document.addEventListener('mouseup', onUp)
-                  }}
-                  title="Drag to resize"
-                >
-                  <div className="mx-auto w-8 h-0.5 rounded-full bg-border group-hover/drag:bg-accent mt-0.5" />
-                </div>
-              )}
-            </div>
             <div className="flex-1 overflow-y-auto py-2">
-              {(suggested.length === 0 && history.length === 0 && (!navLinks || navLinks.length === 0)) ? (
-                <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">No files yet</div>
+              {(changed.length === 0 && (!navLinks || navLinks.length === 0)) ? (
+                <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">No files changed yet</div>
               ) : (
                 <>
-                  {suggested.length > 0 && (
+                  {changed.length > 0 && (
                     <div className="px-3 mb-4">
                       <div className="flex items-center gap-2 my-2">
-                        <span className="text-[14px] font-semibold text-muted">Suggested</span>
+                        <span className="text-[14px] font-semibold text-muted">Changed files</span>
                         <span className="flex-1 h-px bg-border" />
-                        <button className="text-[10px] text-muted hover:text-danger cursor-pointer bg-transparent border-none" onClick={() => onFilesClear?.('tool')} title="Clear suggested files">Clear</button>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {suggested.map(f => <FileTile key={f.path} f={f} onFileOpen={onFileOpen} onFileRemove={onFileRemove} />)}
+                        {changed.map(f => <FileTile key={f.path} f={f} onFileOpen={onFileOpen} onFileRemove={onFileRemove} />)}
                       </div>
                     </div>
                   )}
@@ -669,24 +524,15 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                       </div>
                     </div>
                   )}
-                  {history.length > 0 && (
-                    <div className="px-3 mb-4">
-                      <div className="flex items-center gap-2 my-2">
-                        <span className="text-[14px] font-semibold text-muted">History</span>
-                        <span className="flex-1 h-px bg-border" />
-                        <button className="text-[10px] text-muted hover:text-danger cursor-pointer bg-transparent border-none" onClick={() => onFilesClear?.('history')} title="Clear opened-file history">Clear</button>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {history.map(f => <FileTile key={f.path} f={f} onFileOpen={onFileOpen} onFileRemove={onFileRemove} />)}
-                      </div>
-                    </div>
-                  )}
                 </>
               )}
             </div>
           </div>
         )
       })()}
+
+      {/* Artifacts tab (in-session documents) */}
+      {tab === 'artifacts' && <SessionArtifactsTab slot={slot} onFileOpen={onFileOpen} />}
 
       {/* Side tab */}
       {tab === 'side' && <SideChat slot={slot} />}

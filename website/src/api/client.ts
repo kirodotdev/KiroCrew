@@ -1,6 +1,6 @@
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
-import type { McpApplyChange, PublishProviderDescriptor } from '../types'
+import type { McpApplyChange, SessionDoc, PublishProviderDescriptor } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { queryClient } from './queryClient'
 
@@ -846,7 +846,7 @@ export const api = {
     get(`/api/artifacts/${encodeURIComponent(slug)}/versions`).then(j),
   artifactEvents: (slug: string) =>
     get(`/api/artifacts/${encodeURIComponent(slug)}/events`).then(j),
-  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string }) =>
+  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string }) =>
     post('/api/artifacts', body).then(j),
   updateArtifact: (slug: string, body: { content?: string; name?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),
@@ -862,6 +862,17 @@ export const api = {
   /** Move an artifact into a folder ("" = unfile to root). Metadata-only — no version bump. */
   setArtifactFolder: (slug: string, folderId: string) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/folder`, { folder_id: folderId }).then(j),
+  /** Pin/unpin (favorite) an artifact. Metadata-only — no version bump. */
+  setArtifactPinned: (slug: string, pinned: boolean) =>
+    patch(`/api/artifacts/${encodeURIComponent(slug)}/pin`, { pinned }).then(j),
+  /** Virtual list of non-code documents from chat sessions. Pass `session`
+   * (a slot key) to scope to a single session. */
+  artifactSessionDocs: (session?: string) =>
+    get(`/api/artifacts/session-docs${session ? `?session=${encodeURIComponent(session)}` : ''}`).then(j) as Promise<{ docs: SessionDoc[] }>,
+  /** Turn a session document path into a real, saved (pinned) file-backed artifact.
+   * `originSessionKey` records which chat session saved it (for the Source column). */
+  materializeArtifact: (path: string, originSessionKey?: string) =>
+    post('/api/artifacts/materialize', { path, ...(originSessionKey ? { origin_session_key: originSessionKey } : {}) }).then(j),
   // Artifact publishing / sharing (Mesh-1880). Local publish/sharing management
   // only — remote-browse / clone / fork surfaces are not part of this edition.
   publishArtifact: (slug: string, body: { visibility?: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[]; provider?: string }) =>

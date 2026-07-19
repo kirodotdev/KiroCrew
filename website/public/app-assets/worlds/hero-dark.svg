@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" fill="none">
+  <rect width="480" height="270" fill="#0f172a"/>
+  <!-- Stars -->
+  <circle cx="50" cy="30" r="1" fill="#e2e8f0" opacity="0.7"/>
+  <circle cx="120" cy="50" r="0.8" fill="#e2e8f0" opacity="0.5"/>
+  <circle cx="200" cy="25" r="1.2" fill="#e2e8f0" opacity="0.6"/>
+  <circle cx="300" cy="40" r="0.8" fill="#e2e8f0" opacity="0.5"/>
+  <circle cx="380" cy="20" r="1" fill="#e2e8f0" opacity="0.7"/>
+  <circle cx="430" cy="55" r="0.8" fill="#e2e8f0" opacity="0.4"/>
+  <circle cx="80" cy="80" r="0.6" fill="#e2e8f0" opacity="0.4"/>
+  <circle cx="350" cy="70" r="1" fill="#e2e8f0" opacity="0.5"/>
+  <circle cx="150" cy="90" r="0.7" fill="#e2e8f0" opacity="0.3"/>
+  <circle cx="450" cy="90" r="0.8" fill="#e2e8f0" opacity="0.5"/>
+  <!-- Moon -->
+  <circle cx="380" cy="60" r="22" fill="#fde68a" opacity="0.9"/>
+  <circle cx="372" cy="55" r="18" fill="#0f172a"/>
+  <!-- Moon glow -->
+  <circle cx="380" cy="60" r="30" fill="#fde68a" opacity="0.05"/>
+  <!-- Ground -->
+  <rect x="0" y="200" width="480" height="70" fill="#064e3b" opacity="0.6"/>
+  <rect x="0" y="195" width="480" height="8" rx="4" fill="#059669" opacity="0.3"/>
+  <!-- Pixel character 1 -->
+  <rect x="140" y="170" width="20" height="20" rx="2" fill="#4ade80" opacity="0.8"/>
+  <rect x="144" y="174" width="4" height="4" rx="1" fill="#0f172a"/>
+  <rect x="152" y="174" width="4" height="4" rx="1" fill="#0f172a"/>
+  <rect x="146" y="182" width="8" height="2" rx="1" fill="#0f172a"/>
+  <!-- Glow around char 1 -->
+  <rect x="138" y="168" width="24" height="24" rx="3" stroke="#4ade80" stroke-width="1" fill="none" opacity="0.3"/>
+  <!-- Pixel character 2 -->
+  <rect x="240" y="165" width="22" height="22" rx="2" fill="#60a5fa" opacity="0.8"/>
+  <rect x="245" y="170" width="4" height="4" rx="1" fill="#0f172a"/>
+  <rect x="253" y="170" width="4" height="4" rx="1" fill="#0f172a"/>
+  <rect x="247" y="178" width="8" height="2" rx="1" fill="#0f172a"/>
+  <!-- Glow around char 2 -->
+  <rect x="238" y="163" width="26" height="26" rx="3" stroke="#60a5fa" stroke-width="1" fill="none" opacity="0.3"/>
+  <!-- Pixel character 3 -->
+  <rect x="330" y="172" width="18" height="18" rx="2" fill="#f472b6" opacity="0.8"/>
+  <rect x="334" y="176" width="3" height="3" rx="1" fill="#0f172a"/>
+  <rect x="341" y="176" width="3" height="3" rx="1" fill="#0f172a"/>
+  <rect x="335" y="183" width="7" height="2" rx="1" fill="#0f172a"/>
+  <!-- Glow around char 3 -->
+  <rect x="328" y="170" width="22" height="22" rx="3" stroke="#f472b6" stroke-width="1" fill="none" opacity="0.3"/>
+  <!-- Pixel trees -->
+  <rect x="80" y="180" width="6" height="15" fill="#065f46" opacity="0.7"/>
+  <polygon points="83,155 70,180 96,180" fill="#059669" opacity="0.6"/>
+  <rect x="400" y="178" width="5" height="17" fill="#065f46" opacity="0.7"/>
+  <polygon points="402,153 391,178 414,178" fill="#059669" opacity="0.6"/>
+</svg>

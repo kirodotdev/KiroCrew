@@ -84,7 +84,7 @@ export function SecurityPanel() {
   return (
     <>
       {/* ── Data Classification Warning ── */}
-      <div className="mb-5 bg-warn-subtle/50 border border-warn/30 rounded-lg p-4 flex items-start gap-3 animate-rise">
+      <div className="mb-5 bg-bg-elevated border rounded-lg p-4 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
         <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
         <div>
           <div className="text-[13px] font-semibold text-text-strong">Data Classification Notice</div>

@@ -3,6 +3,9 @@
  *
  * Renders an image from iconUrl (with fallback on error) or a lucide-react
  * icon from the ICON_MAP.  Falls back to the Package icon.
+ *
+ * Builtin apps declare `iconUrl` in their manifest pointing to static SVGs
+ * in /app-assets/ — no special mapping needed here.
  */
 import { useState } from 'react'
 import {
@@ -16,10 +19,6 @@ const ICON_MAP: Record<string, typeof Shield> = {
 export default function AppIcon({ icon, iconUrl, size = 20 }: { icon?: string; iconUrl?: string; size?: number }) {
   const [imgFailed, setImgFailed] = useState(false)
   if (iconUrl && !imgFailed) {
-    // onError is an image-load lifecycle handler (fallback to a lucide icon),
-    // not a user interaction; the rule flags onError but there is nothing to
-    // make keyboard/focus-accessible here.
-    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
     return <img src={iconUrl} alt="" className="rounded-lg object-contain" style={{ width: size, height: size }} onError={() => setImgFailed(true)} />
   }
   const Icon = icon && ICON_MAP[icon] ? ICON_MAP[icon] : Package

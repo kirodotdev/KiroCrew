@@ -63,6 +63,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_folder_update,
     api_artifact_folders,
     api_artifact_mark_review,
+    api_artifact_materialize,
     api_artifact_post_comment,
     api_artifact_publish,
     api_artifact_publish_providers,
@@ -72,7 +73,9 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_reopen_comment,
     api_artifact_reply_comment,
     api_artifact_resolve_comment,
+    api_artifact_session_docs,
     api_artifact_set_folder,
+    api_artifact_set_pinned,
     api_artifact_unpublish,
     api_artifact_update,
     api_artifact_update_sharing,
@@ -328,6 +331,17 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
             show_index=False,
             append_version=False,  # stable URLs, no cache-busting
         )
+    # App Store brand assets — builtin app icons + hero images live at
+    # dist/app-assets/ and are referenced by absolute url('/app-assets/...')
+    # from each builtin's app.json (iconUrl / heroImage / heroImageDark).
+    # These resolve in the Vite dev server (public/ served at root) but, once
+    # the gateway serves the built dist/, they need an explicit mount: without
+    # it the request falls through to the SPA fallback (index.html) and the
+    # App Store <img> tags try to parse HTML as an image → onError placeholder
+    # (generic lucide icon / "KIROCREW" hero). Stable, un-hashed filenames, so
+    # no append_version cache-busting.
+    if (dist_dir / "app-assets").is_dir():
+        app.router.add_static("/app-assets", dist_dir / "app-assets", show_index=False)
     logger.info("Serving React build from %s", dist_dir)
 
 
@@ -471,8 +485,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     # Artifacts — persistent, versioned LLM-generated UI
     app.router.add_get("/api/artifacts", api_artifacts_list)
     app.router.add_post("/api/artifacts", api_artifacts_create)
-    # Literal route MUST precede the dynamic /api/artifacts/{slug} GET below so
-    # "publish-providers" isn't captured as a slug (aiohttp matches in order).
+    # Static sub-paths MUST precede the ``/{slug}`` dynamic route below, else
+    # "session-docs" / "materialize" / "publish-providers" would be captured as
+    # a slug (aiohttp matches routes in registration order).
+    app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
+    app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)
     app.router.add_get("/api/artifacts/{slug}", api_artifact_detail)
     app.router.add_patch("/api/artifacts/{slug}", api_artifact_update)
@@ -495,6 +512,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_patch("/api/artifact-folders/{id}", api_artifact_folder_update)
     app.router.add_delete("/api/artifact-folders/{id}", api_artifact_folder_delete)
     app.router.add_patch("/api/artifacts/{slug}/folder", api_artifact_set_folder)
+    app.router.add_patch("/api/artifacts/{slug}/pin", api_artifact_set_pinned)
     # Artifact comments (durable local store)
     app.router.add_get("/api/artifacts/{slug}/comments", api_artifact_comments)
     app.router.add_post("/api/artifacts/{slug}/comments", api_artifact_post_comment)
