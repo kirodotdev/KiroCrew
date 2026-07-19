@@ -1377,10 +1377,19 @@ const chatSlice = createSlice({
           // already finalized locally (via applyNonActiveFrame while this slot
           // was backgrounded). Blindly replacing with the server response here
           // is the "switch away and back drops the latest response" regression.
-          // Keep the server history but re-attach the local trailing reply,
-          // finalizing a still-streaming one. Guarded by the content check above
-          // so we never duplicate a reply the server already returned.
-          const finalized: ChatMessage = lastLocal.role === 'streaming'
+          // Keep the server history but re-attach the local trailing reply.
+          // Guarded by the content check above so we never duplicate a reply
+          // the server already returned.
+          //
+          // Only finalize a still-'streaming' partial to 'assistant' when the
+          // turn is NOT still running. If the slot is still streaming
+          // (running=true — e.g. switching back to a background slot whose
+          // reply is mid-flight), coercing to 'assistant' freezes the partial:
+          // the resuming `chunk` handler finds no trailing 'streaming' message
+          // and pushes a NEW one, splitting the single reply across two bubbles
+          // until chat_done heals it. Keep it 'streaming' so the stream resumes
+          // into the same bubble.
+          const finalized: ChatMessage = (lastLocal.role === 'streaming' && !running)
             ? { ...lastLocal, role: 'assistant' }
             : lastLocal
           state.messages = [...preserved.filter(m => m.role !== 'streaming'), finalized]
