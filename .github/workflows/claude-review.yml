@@ -25,7 +25,7 @@ jobs:
     name: Claude Review
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
@@ -40,14 +40,14 @@ jobs:
           git show "$BASE_SHA:AUTOSDE.yaml" > .review-base-rules/AUTOSDE.yaml 2>/dev/null || echo "# (no backend AUTOSDE rules on base)" > .review-base-rules/AUTOSDE.yaml
           git show "$BASE_SHA:website/AUTOSDE.yaml" > .review-base-rules/website-AUTOSDE.yaml 2>/dev/null || echo "# (no frontend AUTOSDE rules on base)" > .review-base-rules/website-AUTOSDE.yaml
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
       - name: Claude review
         id: review
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"

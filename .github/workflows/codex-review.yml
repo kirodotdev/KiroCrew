@@ -34,7 +34,7 @@ jobs:
       # reviewer could read it from untrusted PR content and leak a PR-write
       # token. `git diff` still works (history is already fetched via depth 0);
       # the posting step uses its own scoped GH_TOKEN.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -197,7 +197,7 @@ jobs:
       # exist in the job environment. Uses a DEDICATED least-privilege role
       # (GPT/Mantle only, pull_request-scoped) so a leaked token can't reach
       # Claude's model access or anything else -- blast radius is ~1h of GPT.
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1

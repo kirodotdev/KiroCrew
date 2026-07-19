@@ -42,7 +42,7 @@ jobs:
       VERSION_LABEL: ${{ inputs.version }}
     steps:
       - name: Download wheel artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ inputs.wheel_artifact }}
           path: cli-dist
@@ -75,7 +75,7 @@ jobs:
 
       - name: Configure AWS credentials
         if: env.HAS_SIGNING_SECRETS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           aws-region: us-west-2
