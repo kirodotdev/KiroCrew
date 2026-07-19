@@ -1,8 +1,8 @@
 """Tests for deploy_web render_standalone + pre-publish scan."""
 from __future__ import annotations
 
-from kiro_crew.apps.builtins.deploy_web.render import render_standalone
-from kiro_crew.apps.builtins.deploy_web.scan import scan_content, summarize
+from kiro_crew.deploy.render import render_standalone
+from kiro_crew.deploy.scan import scan_content, summarize
 
 # --- render ---------------------------------------------------------------
 
@@ -81,3 +81,20 @@ def test_summarize_reports_line_numbers():
     s = summarize(scan_content(text))
     assert "line 2" in s
     assert "credential" in s
+
+
+def test_scan_credential_snippet_is_masked():
+    """Credential snippets MUST NOT contain the raw matched text (security)."""
+    findings = scan_content("key AKIAABCDEFGHIJKLMNOP here")
+    cred = [f for f in findings if f.kind == "credential"][0]
+    # Must be a masked fingerprint: first 4 chars + length
+    assert cred.snippet == "AKIA…(20 chars)"
+    # Must NOT contain the full key
+    assert "ABCDEFGHIJKLMNOP" not in cred.snippet
+
+
+def test_scan_internal_host_snippet_is_unmasked():
+    """internal-host and aws-arn are NOT secrets — their snippets are raw."""
+    findings = scan_content("see https://w.amazon.com/bin/foo")
+    host = [f for f in findings if f.kind == "internal-host"][0]
+    assert host.snippet == "w.amazon.com"

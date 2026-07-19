@@ -226,13 +226,13 @@ class TestHiddenBuiltins:
         assert len(apps) == 1
         assert apps[0]["hidden"] is True
 
-    def test_shipped_workflows_and_deploy_web_are_hidden(self) -> None:
-        """The shipped `workflows` and `deploy-web` builtins ship hidden from the
-        store. Regression: these two must not appear in the Browse grid."""
+    def test_shipped_workflows_is_hidden_and_deploy_web_is_gone(self) -> None:
+        """`workflows` ships hidden; `deploy-web` was DELETED in the Artifact
+        Deploy fold-in (capability lives in src/kiro_crew/deploy/ + /deploy
+        console) and must not be discovered as a builtin at all."""
         shipped = {a["name"]: a for a in discover_builtin_apps()}
-        for name in ("workflows", "deploy-web"):
-            assert name in shipped, f"{name} builtin not discovered"
-            assert shipped[name].get("hidden") is True, (
-                f"{name} must ship with hidden=True so it is excluded from the "
-                f"App Store Browse grid (got {shipped[name].get('hidden')!r})"
-            )
+        assert "workflows" in shipped, "workflows builtin not discovered"
+        assert shipped["workflows"].get("hidden") is True
+        assert "deploy-web" not in shipped, (
+            "deploy-web builtin should no longer exist — folded into Artifacts core"
+        )

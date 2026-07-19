@@ -946,3 +946,207 @@ class TestRelocate:
         )
         assert resp.status == 403
         assert "traversal" in _json_body(resp)["error"].lower()
+
+
+# ── Teardown ────────────────────────────────────────────────────────────────
+
+
+class TestTeardown:
+    """Tests for _handle_teardown restricted-session deny + confirm gate."""
+
+    @pytest.fixture(autouse=True)
+    def patch_deploy_restricted(self, monkeypatch):
+        """Patch _is_restricted_session at the import point used by deploy handlers."""
+        from kiro_crew.dashboard.handlers import _shared
+
+        def _stub(_state, req) -> bool:
+            return req.app.get("_restricted_session", False)
+
+        monkeypatch.setattr(_shared, "_is_restricted_session", _stub)
+
+    @pytest.mark.asyncio
+    async def test_restricted_session_denied(self, isolated_store, patch_restricted) -> None:
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        req = _request(match={"slug": "x"}, body={"confirm": True}, restricted=True)
+        resp = await _handle_teardown(req)
+        assert resp.status == 403
+        assert "restricted session" in json.loads(resp.body)["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_confirm_returns_400(self, isolated_store, patch_restricted) -> None:
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        req = _request(match={"slug": "x"}, body={})
+        resp = await _handle_teardown(req)
+        assert resp.status == 400
+        assert "confirm" in json.loads(resp.body)["error"]
+
+    @pytest.mark.asyncio
+    async def test_confirm_false_returns_400(self, isolated_store, patch_restricted) -> None:
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        req = _request(match={"slug": "x"}, body={"confirm": False})
+        resp = await _handle_teardown(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_not_found_returns_404(self, isolated_store, patch_restricted) -> None:
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        req = _request(match={"slug": "nonexistent"}, body={"confirm": True})
+        resp = await _handle_teardown(req)
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_success_includes_infra_note(self, isolated_store, patch_restricted) -> None:
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        # Create a webapp artifact to tear down
+        isolated_store.create(
+            name="My App", content="<h1>App</h1>", slug="my-app", kind="webapp",
+            webapp_metadata={"lifecycle": {"status": "deployed"}, "deploy_target": {"public_url": "https://x.cloudfront.net/my-app/"}},
+        )
+        req = _request(match={"slug": "my-app"}, body={"confirm": True})
+        resp = await _handle_teardown(req)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body["ok"] is True
+        # R39 F2: this fixture records no deploy profile, so there is no
+        # manifest to expire — "skipped" (a true write failure is now a
+        # retryable 502, never a silent success).
+        assert body["manifest"] == "skipped"
+        assert "reaper" in body["note"]
+
+    @pytest.mark.asyncio
+    async def test_manifest_expiry_success(self, isolated_store, patch_restricted, monkeypatch) -> None:
+        """When engine.run_aws succeeds, manifest field should be 'expired-now'."""
+        from kiro_crew.deploy import engine
+        from kiro_crew.deploy import profiles as profiles_mod
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        # Register the profile so _expire_manifest_best_effort passes the registry check.
+        reg = profiles_mod.load_registry()
+        reg["profiles"].append(profiles_mod.make_entry("test-profile", "us-west-2"))
+        reg["default"] = "test-profile"
+        profiles_mod.save_registry(reg)
+
+        isolated_store.create(
+            name="Expire App", content="<h1>App</h1>", slug="expire-app", kind="webapp",
+            webapp_metadata={
+                "lifecycle": {"status": "deployed", "created_at": "2026-01-01T00:00:00Z"},
+                # R17 F1: fail-closed identity check requires BOTH the metadata
+                # and the existing manifest to carry a matching distribution_id.
+                "deploy_target": {"profile": "test-profile", "region": "us-west-2",
+                                  "distribution_id": "EDEPLOY1"},
+                "slug": "expire-app",
+            },
+        )
+
+        calls: list[tuple] = []
+
+        def mock_run_aws(args, profile, timeout=30):
+            calls.append((args, profile))
+            import json as _j
+            if "describe-stacks" in args:
+                outputs = [
+                    {"OutputKey": "BucketName", "OutputValue": "test-bucket"},
+                    {"OutputKey": "DistributionId", "OutputValue": "E123"},
+                    {"OutputKey": "DistributionDomainName", "OutputValue": "d.cloudfront.net"},
+                ]
+                return (0, _j.dumps(outputs), "")
+            if "s3" in args and "cp" in args:
+                if "-" in args:  # manifest READ (download to stdout)
+                    return (0, _j.dumps({"slug": "expire-app",
+                                         "distribution_id": "EDEPLOY1",
+                                         "arch": "engine"}), "")
+                return (0, "", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(engine, "run_aws", mock_run_aws)
+        req = _request(match={"slug": "expire-app"}, body={"confirm": True})
+        resp = await _handle_teardown(req)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body["manifest"] == "expired-now"
+        # R12 F2: manifest expiry now READS the existing manifest first, then
+        # WRITES the patched one — two s3 cp calls, both on the same key.
+        s3_calls = [c for c in calls if "s3" in c[0] and "cp" in c[0]]
+        assert len(s3_calls) == 2
+        for call in s3_calls:
+            assert any("expire-app/.kirocrew-deploy.json" in a for a in call[0])
+
+    @pytest.mark.asyncio
+    async def test_teardown_fail_closed_when_aws_unreachable(self, isolated_store, patch_restricted, monkeypatch) -> None:
+        """When engine.run_aws fails, the reaper check cannot be confirmed —
+        teardown must fail closed (409, NO tombstone) rather than expiring the
+        manifest into the void (round-18: reaper-not-installed guard)."""
+        from kiro_crew.deploy import engine
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        isolated_store.create(
+            name="Fail App", content="<h1>App</h1>", slug="fail-app", kind="webapp",
+            webapp_metadata={
+                "lifecycle": {"status": "deployed"},
+                "deploy_target": {"profile": "bad-profile", "region": "us-west-2"},
+                "slug": "fail-app",
+            },
+        )
+
+        def mock_run_aws(args, profile, timeout=30):
+            return (1, "", "AccessDenied")
+
+        monkeypatch.setattr(engine, "run_aws", mock_run_aws)
+        # F2 (r4): register the profile so this test exercises the
+        # AWS-unreachable path, not the unregistered-profile 409.
+        from kiro_crew.deploy import profiles as _profiles_mod
+        monkeypatch.setattr(_profiles_mod, "load_registry", lambda: {
+            "version": 2,
+            "profiles": [{"name": "bad-profile", "region": "us-west-2"}],
+            "default": "bad-profile",
+        })
+        req = _request(match={"slug": "fail-app"}, body={"confirm": True})
+        resp = await _handle_teardown(req)
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert "reaper" in body.get("error", "").lower()
+        # Artifact must NOT be tombstoned — teardown did not actually happen.
+        art = isolated_store.get("fail-app")
+        assert art.webapp_metadata.lifecycle.status != "expired"
+
+
+class TestUpdateWebappMetadata:
+    """artifact_update accepts validated webapp_metadata (round-15)."""
+
+    @pytest.mark.asyncio
+    async def test_update_sets_webapp_metadata(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="app", content="draft app", slug="app", kind="webapp")
+        resp = await api_artifact_update(
+            _request(
+                body={"webapp_metadata": {
+                    "deploy_target": {"provider": "aws", "profile": "deploy-mvp",
+                                      "public_url": "https://d.cloudfront.net/app/"},
+                    "lifecycle": {"status": "live"},
+                }},
+                match={"slug": "app"},
+            )
+        )
+        assert resp.status == 200
+        art = isolated_store.get("app")
+        assert art.webapp_metadata is not None
+        assert art.webapp_metadata.deploy_target.profile == "deploy-mvp"
+        assert art.webapp_metadata.lifecycle.status == "live"
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_invalid_metadata_url(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="app2", content="draft", slug="app2", kind="webapp")
+        resp = await api_artifact_update(
+            _request(
+                body={"webapp_metadata": {
+                    "deploy_target": {"public_url": "javascript:alert(1)"},
+                }},
+                match={"slug": "app2"},
+            )
+        )
+        # Bounded validator rejects non-http(s) URLs.
+        assert resp.status == 400

@@ -1,14 +1,14 @@
-# Web Deploy (deploy-web)
+# Artifact Deploy (deploy-web)
 
 Publish a KiroCrew artifact (HTML / Markdown / widget) to a public HTTPS URL on
 **your own AWS account** — private S3 + CloudFront + Origin Access Control (OAC).
 KiroCrew stores only your AWS **profile name**; it never sees, stores, or manages
 your credentials.
 
-Web Deploy is a built-in app, **opt-in / disabled by default**. Enable it from
+Artifact Deploy is a built-in app, **opt-in / disabled by default**. Enable it from
 Settings → Apps (or `kirocrew app enable deploy-web`).
 
-- The **Web Deploy page** is a management console: AWS setup, health check, and
+- The **Artifact Deploy page** is a management console: AWS setup, health check, and
   site management (Recall / Destroy).
 - **Publishing** happens from an artifact's own page: **Publish → "Publish to
   public web (your AWS)"**.
@@ -17,12 +17,12 @@ Settings → Apps (or `kirocrew app enable deploy-web`).
 
 ## 1. One-time AWS setup
 
-You need an AWS account you control. Setup is once; every later publish is
-~30 seconds.
+You need an AWS account you control (Amazon-internal iam-identity or an external AWS
+account both work). Setup is once; every later publish is ~30 seconds.
 
 ### 1.1 Where the profile must live (important)
 
-Web Deploy shells out to the `aws` CLI **from the gateway process**. The AWS
+Artifact Deploy shells out to the `aws` CLI **from the gateway process**. The AWS
 profile must therefore be configured on the **machine running the KiroCrew
 gateway** (your dev desktop / host), **not** on your laptop if the gateway runs
 elsewhere. Running `aws configure sso` on a different machine does not help.
@@ -48,7 +48,7 @@ Fix:
 
 > Tip: if a long-running gateway still resolves v1, symlink v2 into a directory
 > that already precedes `/usr/bin` in the gateway's `PATH` (e.g.
-> `ln -sf ~/.local/bin/aws /usr/local/bin/aws`) — `execvp` re-resolves per call,
+> `ln -sf ~/.local/bin/aws ~/.toolbox/bin/aws`) — `execvp` re-resolves per call,
 > so the fix takes effect without a restart.
 
 ### 1.3 Authenticate
@@ -63,12 +63,12 @@ aws configure --profile myweb      # or a long-lived named profile
 For `aws configure sso`, the account is bound at the **account selection** step;
 the profile stores a profile name only, not an account number.
 
-**Auto-refreshing credentials:** if your org uses an SSO or credential helper,
-a `credential_process` entry in `~/.aws/config` lets the CLI auto-refresh tokens.
+**Amazon-internal:** use `ada credentials update` / `ada profile add` as usual.
+A `credential_process` entry in `~/.aws/config` lets the CLI auto-refresh tokens.
 
-### 1.4 Configure Web Deploy
+### 1.4 Configure Artifact Deploy
 
-On the Web Deploy page:
+On the Artifact Deploy page:
 
 1. Enter the **profile name** and **region**, click **Save**.
 2. Click **Verify access** — a **read-only reachability** check
@@ -94,14 +94,14 @@ A **first** deploy of a new site provisions a fresh CloudFront distribution. The
 distribution must finish its first global deployment (`In Progress → Deployed`)
 before the URL works — **typically up to ~15 minutes**. Until then the link
 returns a DNS / "site can't be reached" error. **This is expected, not a
-failure.** Watch the live status on the Web Deploy page's **My Sites** console;
+failure.** Watch the live status on the Artifact Deploy page's **Static Sites** console;
 re-deploys to an existing site go live in seconds.
 
 ---
 
 ## 3. Security model
 
-Web Deploy is designed to keep KiroCrew **out of credential and account
+Artifact Deploy is designed to keep KiroCrew **out of credential and account
 management** entirely, and to serve content from a bucket that is never itself
 public.
 
@@ -171,7 +171,7 @@ requested.
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| URL shows "site can't be reached" / DNS error right after publishing | New distribution still `In Progress`; wait up to ~15 min for first deploy. Check **My Sites** status. |
+| URL shows "site can't be reached" / DNS error right after publishing | New distribution still `In Progress`; wait up to ~15 min for first deploy. Check **Static Sites** status. |
 | Verify fails with `missing ... sso_start_url, sso_region` | Gateway resolved AWS CLI **v1**. Install v2 and put it ahead of `/usr/bin` in the gateway's PATH (§1.2). |
 | Verify shows `s3_reachable: false` with a correct policy | Ensure the policy includes `s3:ListAllMyBuckets` in the `DiscoveryAndIdentity` statement. |
 | First deploy returns `AccessDenied` | The error names the exact missing IAM statement — add it to your policy and re-run (deploys are idempotent). |

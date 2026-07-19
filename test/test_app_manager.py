@@ -836,3 +836,81 @@ class TestAppResult:
         d = r.to_dict()
         assert d["ok"] is False
         assert d["error"] == "bad"
+
+
+# --- item #5: cleanup_migrated_builtin matches by name, no migratedTo needed ---
+
+class TestCleanupMigratedBuiltin:
+    """cleanup_migrated_builtin must handle pre-existing installs without migratedTo."""
+
+    def test_no_migrated_to_still_cleaned_up(self, tmp_path, monkeypatch):
+        """Old deploy_web install with origin=builtin but NO migratedTo -> still removed."""
+        from kiro_crew.apps import manager
+        from kiro_crew.apps.manager import (
+            INSTALLED_META_FILENAME,
+            cleanup_migrated_builtin,
+        )
+
+        monkeypatch.setattr(manager, "app_dir", lambda name: tmp_path / name)
+
+        # Create a fake deploy_web installed.json with origin=builtin, no migratedTo
+        app_path = tmp_path / "deploy_web"
+        app_path.mkdir()
+        installed = {
+            "name": "deploy_web",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "enabled": True,
+        }
+        (app_path / INSTALLED_META_FILENAME).write_text(json.dumps(installed))
+        (app_path / "app.json").write_text(json.dumps({"name": "deploy_web"}))
+        # Also create a data/ dir that must be PRESERVED
+        (app_path / "data").mkdir()
+        (app_path / "data" / "user-file.txt").write_text("keep me")
+
+        result = cleanup_migrated_builtin("deploy_web")
+        assert result.ok is True
+        assert "cleaned up" in result.message
+
+        # Metadata removed
+        assert not (app_path / INSTALLED_META_FILENAME).exists()
+        assert not (app_path / "app.json").exists()
+        # Data preserved
+        assert (app_path / "data" / "user-file.txt").exists()
+
+    def test_idempotent_already_gone(self, tmp_path, monkeypatch):
+        """If app was never installed, returns ok=True (idempotent)."""
+        from kiro_crew.apps import manager
+        from kiro_crew.apps.manager import cleanup_migrated_builtin
+
+        monkeypatch.setattr(manager, "app_dir", lambda name: tmp_path / name)
+
+        result = cleanup_migrated_builtin("deploy_web")
+        assert result.ok is True
+        assert "nothing to clean up" in result.message
+
+    def test_standalone_origin_not_touched(self, tmp_path, monkeypatch):
+        """If origin is not 'builtin', no cleanup (standalone owns the slot)."""
+        from kiro_crew.apps import manager
+        from kiro_crew.apps.manager import (
+            INSTALLED_META_FILENAME,
+            cleanup_migrated_builtin,
+        )
+
+        monkeypatch.setattr(manager, "app_dir", lambda name: tmp_path / name)
+
+        app_path = tmp_path / "deploy_web"
+        app_path.mkdir()
+        installed = {
+            "name": "deploy_web",
+            "version": "2.0.0",
+            "origin": "registry",
+            "enabled": True,
+        }
+        (app_path / INSTALLED_META_FILENAME).write_text(json.dumps(installed))
+
+        result = cleanup_migrated_builtin("deploy_web")
+        assert result.ok is True
+        assert "already migrated" in result.message
+        # File was NOT deleted
+        assert (app_path / INSTALLED_META_FILENAME).exists()

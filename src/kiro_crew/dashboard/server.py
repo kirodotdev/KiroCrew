@@ -24,7 +24,7 @@ from kiro_crew.apps.hooks_integration import (
     on_gateway_shutdown,
     on_gateway_startup,
 )
-from kiro_crew.apps.manager import register_builtin_apps
+from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.browser.setup import (
     get_extension_token,
     has_playwright_extension,
@@ -116,6 +116,8 @@ from kiro_crew.dashboard.token_auth import (
     _is_spa_shell_request,
     token_auth_middleware,
 )
+from kiro_crew.deploy import _register_core_skills as _register_deploy_skills
+from kiro_crew.deploy.handlers import register_routes as _register_deploy_routes
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances.registry import InstancesRegistry
@@ -213,6 +215,7 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # cookie auth and fail with "Token required".
         "/api/artifact-folders",
         "/api/workflows",  # DW engine: MCP tools + Workflows tab polling
+        "/api/deploy",  # MCP deploy_artifact tool — server enforces preview-only (confirm/override_scan stripped for internal-secret callers)
         "/v1/chat/completions",  # OpenAI-compat API
     }
 )
@@ -1492,6 +1495,32 @@ async def start_dashboard(
     # Register built-in apps (idempotent — surfaces baked-in features in App Store)
     register_builtin_apps()
 
+    # One-time migration: disable stale deploy_web builtin installs (now core module).
+    # Idempotent — logs once and silently succeeds if already gone.
+    # R34 F1: the cleanup reads/deletes files under the data dir — run it off
+    # the event loop so wedged filesystem I/O cannot block gateway startup.
+    from kiro_crew.apps.builtins import _MIGRATED_BUILTINS
+
+    def _run_migrated_cleanup() -> None:
+        for _migrated in _MIGRATED_BUILTINS:
+            try:
+                _result = cleanup_migrated_builtin(_migrated)
+                if not _result.ok:
+                    logger.warning("migrated builtin cleanup failed for %s: %s", _migrated, _result.error)
+                elif _result.message and "cleaned up" in _result.message:
+                    logger.info("migrated builtin cleanup: %s — %s", _migrated, _result.message)
+            except Exception:  # noqa: BLE001
+                logger.debug("migrated builtin cleanup skipped for %s", _migrated)
+
+    await asyncio.to_thread(_run_migrated_cleanup)
+
+    # Core deploy module routes (folded from deploy_web app)
+    _register_deploy_routes(app)
+
+    # Core deploy skills — symlink into <home>/skills/ so the agent can load them.
+    # Offloaded: copytree/rmtree/stat are blocking filesystem calls.
+    await asyncio.to_thread(_register_deploy_skills)
+
     # Knowledge Library
     setup_knowledge_routes(app)
 
@@ -2165,6 +2194,10 @@ async def start_api_server(
     ]
 
     _register_mcp_routes(app)
+
+    # R16 F6: Deploy routes must be registered in api-only mode too, otherwise
+    # the deploy_artifact MCP tool 404s in Slack-only/headless mode.
+    _register_deploy_routes(app)
 
     runner = web.AppRunner(app)
     await runner.setup()

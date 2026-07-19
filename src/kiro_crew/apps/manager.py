@@ -1404,27 +1404,31 @@ def invalidate_orphan_cache() -> None:
 
 
 def cleanup_migrated_builtin(name: str) -> AppResult:
-    """Remove orphaned builtin metadata after standalone replacement is installed.
+    """Remove orphaned builtin metadata after its functionality was folded into core.
 
-    For same-name migrations (recommended pattern), the standalone installer
-    overwrites installed.json automatically — this endpoint is a no-op since
-    the builtin metadata is already gone.
-
-    For the edge case where manual cleanup is needed, validates:
-    1. Target app has origin=builtin and is not in _BUILTIN_APPS (orphaned)
-    2. The standalone replacement is installed (origin != builtin)
+    Matches by app NAME (not migratedTo metadata) — existing installs from before
+    the migration mechanism won't have migratedTo set. The presence of `name` in
+    _MIGRATED_BUILTINS is the authoritative signal.
 
     Preserves data/ directory. Removes installed.json and app.json only.
+    Idempotent: returns ok=True if already cleaned up.
     """
+    from kiro_crew.apps.builtins import _MIGRATED_BUILTINS
+
+    if name not in _MIGRATED_BUILTINS:
+        return AppResult(ok=False, name=name, error="not a migrated builtin")
+
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
 
     meta = _read_installed(name)
     if not meta:
-        return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+        # Already cleaned up or was never installed — success (idempotent).
+        logger.debug("cleanup_migrated_builtin: %s not installed (already clean)", name)
+        return AppResult(ok=True, name=name, message="not installed — nothing to clean up")
 
-    # For same-name migration: if the installed.json already has origin != builtin,
-    # the standalone installer has already replaced it — nothing to clean up.
+    # If the install has origin != builtin, a standalone replacement already took
+    # over — nothing to clean up.
     if meta.origin != "builtin":
         return AppResult(
             ok=True,
@@ -1432,64 +1436,7 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
             message="already migrated — standalone version is in place",
         )
 
-    # Must be an orphaned builtin (origin=builtin but not in _BUILTIN_APPS)
-    builtin_names = {app["name"] for app in _BUILTIN_APPS}
-    if name in builtin_names:
-        return AppResult(
-            ok=False,
-            name=name,
-            error=f"app {name!r} is not an orphaned builtin (still in _BUILTIN_APPS)",
-            error_code="not_orphaned",
-        )
-
-    # Parse the standalone replacement name from migratedTo
-    migrated_to = meta.migratedTo
-    if not migrated_to:
-        return AppResult(
-            ok=False,
-            name=name,
-            error=f"app {name!r} has no migratedTo target",
-        )
-
-    # Extract target name (format: "registry:{name}" or "standalone:{name}")
-    parts = migrated_to.split(":", 1)
-    if len(parts) != 2:
-        return AppResult(
-            ok=False,
-            name=name,
-            error=f"invalid migratedTo format: {migrated_to!r}",
-        )
-    target_name = parts[1]
-
-    # Path safety check on target_name (deny-by-default — don't trust persisted data)
-    if not _check_path_safety(target_name):
-        return AppResult(
-            ok=False, name=name, error=f"unsafe target name in migratedTo: {target_name!r}"
-        )
-
-    # For same-name migration (target_name == name): the standalone hasn't
-    # installed yet (we'd have returned "already migrated" above). Tell user.
-    if target_name == name:
-        return AppResult(
-            ok=False,
-            name=name,
-            error=f"standalone replacement {target_name!r} is not installed",
-            error_code="replacement_missing",
-        )
-
-    # For different-name migration: check that the standalone is installed
-    replacement = _read_installed(target_name)
-    if not replacement or replacement.origin == "builtin":
-        return AppResult(
-            ok=False,
-            name=name,
-            error=f"standalone replacement {target_name!r} is not installed",
-            error_code="replacement_missing",
-        )
-
     # Perform cleanup — remove metadata files, preserve data/
-    # Delete app.json first (regenerable), then installed.json (source of truth).
-    # If app.json deletion fails, installed.json is untouched → consistent state.
     dest = app_dir(name)
     installed_path = dest / INSTALLED_META_FILENAME
     manifest_path = dest / APP_MANIFEST_FILENAME
@@ -1500,6 +1447,7 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
         if installed_path.is_file():
             installed_path.unlink()
     except OSError as exc:
+        logger.error("cleanup_migrated_builtin: failed to clean up %s: %s", name, exc)
         return AppResult(
             ok=False,
             name=name,
@@ -1510,9 +1458,9 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     # Invalidate orphan cache since we removed an orphaned entry
     invalidate_orphan_cache()
 
-    logger.info("Cleaned up orphaned builtin %s (data preserved)", name)
+    logger.info("Cleaned up migrated builtin %s (data preserved)", name)
     return AppResult(
         ok=True,
         name=name,
-        message="cleaned up orphaned builtin entry, data preserved",
+        message="cleaned up migrated builtin entry, data preserved",
     )

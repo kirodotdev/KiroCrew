@@ -1,8 +1,9 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, Camera, ExternalLink, Download, Pencil, X, AlertCircle, RotateCcw, Plus, Sparkles, Link2, MessageSquare, Monitor, Undo2, Folder as FolderIcon } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, Camera, ExternalLink, Download, Pencil, X, AlertCircle, RotateCcw, Plus, Sparkles, Link2, MessageSquare, Monitor, Undo2, Upload, Folder as FolderIcon } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch } from '../store'
@@ -28,6 +29,7 @@ import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
 import { writePrefill } from '../utils/navIntent'
 import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCommentsSync'
+import { PublishHub } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor } from '../types'
 
 // Artifact "Iterate" affordances are hidden pending an artifact redesign
@@ -275,6 +277,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const [editedContent, setEditedContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [showPublish, setShowPublish] = useState(false)
   // Tag editing (Mesh-1654 round 4): tags shown in the header are editable
   // inline. Adding a tag posts metadata-only (no version bump). Removing a
   // tag works the same way.
@@ -1108,7 +1111,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 out. Not shown inside the popout window itself (the frame's
                 Return button handles closing). */}
             {!popout && <ArtifactPopoutControl slug={slug} name={artifact.name} />}
-            <button
+            {/* Publish action — shown for non-webapp publishable kinds */}
+            {artifact.kind !== 'webapp' && (
+              <Btn
+                type="button"
+                onClick={() => setShowPublish(v => !v)}
+                className="p-1.5 rounded"
+                title="Publish"
+                aria-label="Publish"
+              >
+                <Upload size={13} />
+              </Btn>
+            )}
+            <Btn
               type="button"
               onClick={downloadAsHtml}
               className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
@@ -1116,7 +1131,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               aria-label="Download"
             >
               <Download size={13} />
-            </button>
+            </Btn>
           </span>
         </div>
 
@@ -1151,6 +1166,16 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           />
         )}
 
+        {/* Publish panel — toggled by the Upload toolbar button */}
+        {showPublish && artifact.kind !== 'webapp' && (
+          <div className="mb-3">
+            <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />
+          </div>
+        )}
+
+        {artifact.kind === 'webapp' ? (
+          <WebAppArtifactCard artifact={artifact} />
+        ) : (
         <div className="flex gap-4 items-start">
           <div className="flex-1 min-w-0">
             {usesIframe ? (
@@ -1231,6 +1256,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             />
           )}
         </div>
+        )}
 
         <div className="mt-3 text-[12px] text-muted">
           Created {artifact.created_at} &middot; Updated {artifact.updated_at} &middot;{' '}

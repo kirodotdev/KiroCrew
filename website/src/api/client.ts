@@ -928,15 +928,32 @@ export const api = {
   researchReport: (id: string) => get("/api/apps/auto-research/campaigns/" + id + "/report").then(j),
   researchDelete: (id: string) => del("/api/apps/auto-research/campaigns/" + id).then(j),
 
-  // Web Deploy (deploy-web). deploy/recall/destroy are status-aware: the backend
-  // uses 200+requires_confirm (confirm-gate) and 409 (pre-publish scan-block) as
-  // normal control flow, so we surface {status, data} instead of throwing via j().
-  deployWebConfig: () => get('/api/apps/deploy-web/config').then(j) as Promise<{ profile: string; region: string }>,
-  deployWebSaveConfig: (body: { profile: string; region: string }) => put('/api/apps/deploy-web/config', body).then(j) as Promise<{ profile: string; region: string }>,
-  deployWebIamPolicy: (customDomain = false) => get('/api/apps/deploy-web/iam-policy' + (customDomain ? '?custom_domain=1' : '')).then(j) as Promise<{ policy: string }>,
-  deployWebVerify: () => post('/api/apps/deploy-web/verify', {}).then(async r => ({ status: r.status, data: await r.json() })),
-  deployWebSites: () => get('/api/apps/deploy-web/sites').then(j) as Promise<{ sites: Array<{ site_id: string; bucket: string; distribution_id: string }>; configured: boolean }>,
-  deployWebDeploy: (body: object) => post('/api/apps/deploy-web/deploy', body).then(async r => ({ status: r.status, data: await r.json() })),
-  deployWebRecall: (body: object) => post('/api/apps/deploy-web/recall', body).then(async r => ({ status: r.status, data: await r.json() })),
-  deployWebDestroy: (body: object) => post('/api/apps/deploy-web/destroy', body).then(async r => ({ status: r.status, data: await r.json() })),
+  artifactTeardown: (slug: string) => post(`/api/deploy/teardown/${slug}`, { confirm: true }).then(j),
+  publishProviders: () => get('/api/publish-providers').then(j) as Promise<{ providers: AppPublishProvider[] }>,
+  publishToProvider: async (slug: string, providerId: string, provider?: AppPublishProvider, ttlHours?: number) => {
+    // Route to the provider's declared endpoint with the payload shape
+    // that _do_deploy expects (site_id + artifact_slug). ttl_hours is sent on
+    // BOTH preview and confirm so the previewed TTL matches what is deployed
+    // (R12 F3 — omitting it here made preview use the backend 72h default).
+    const endpoint = provider?.endpoint || '/api/deploy/deploy'
+    const payload: Record<string, unknown> = { site_id: slug, artifact_slug: slug, provider_id: providerId }
+    if (ttlHours !== undefined) payload.ttl_hours = ttlHours
+    const r = await post(endpoint, payload)
+    checkSessionExpired(r)
+    if (r.ok) { removeAuthBanner(); return r.json() }
+    // 409 = scan blocked — parse body so PublishHub can render findings panel
+    if (r.status === 409) { return r.json() }
+    const errText = await r.text()
+    throw new ApiError(r.status, errText || `HTTP ${r.status}`)
+  },
+}
+
+export interface AppPublishProvider {
+  id: string
+  label: string
+  icon: string
+  kinds: string[]
+  configured: boolean
+  setupRoute: string
+  endpoint: string
 }

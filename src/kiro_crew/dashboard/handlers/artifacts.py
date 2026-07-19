@@ -48,6 +48,7 @@ from kiro_crew.artifacts import (
     get_default_folder_store,
     get_default_store,
     is_document_path,
+    webapp_metadata_from_dict,
 )
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
@@ -283,6 +284,8 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     pub = out.get("publication")
     if isinstance(pub, dict) and isinstance(pub.get("last_error"), str) and pub["last_error"]:
         pub["last_error"] = _redact_text(pub["last_error"])
+    if isinstance(out.get("webapp_metadata"), dict):
+        out["webapp_metadata"] = _redact_webapp_metadata(out["webapp_metadata"])
     return out
 
 
@@ -290,6 +293,44 @@ def _redact_text(text: str) -> str:
     cleaned, _ = redact_exfiltration_urls(text)
     cleaned, _ = redact_credentials(cleaned)
     return cleaned
+
+
+def _validate_inbound_webapp_metadata(body: dict[str, Any]) -> str | None:
+    """Run the bounded webapp_metadata validation at the HTTP boundary.
+
+    The MCP boundary already validates via ARTIFACT_SAVE/UPDATE_SCHEMA's
+    custom validator; the HTTP handlers must apply the same gate so a
+    dashboard/API caller cannot store what the MCP path would reject
+    (e.g. a javascript: public_url). Returns an error message or None.
+    """
+    if body.get("webapp_metadata") is None:
+        return None
+    from kiro_crew.validation import ValidationError, _validate_artifact_save
+    try:
+        _validate_artifact_save({"webapp_metadata": body["webapp_metadata"]})
+    except ValidationError as exc:
+        return str(exc)
+    return None
+
+
+def _redact_webapp_metadata(obj: Any) -> Any:
+    """Recursively redact every string leaf in a webapp_metadata sub-tree.
+
+    webapp_metadata (deploy target, architecture, resource ids, cost note,
+    teardown handle, origin session) is LLM-set like name / description,
+    so it must pass the same exfiltration + credential redaction before reaching
+    the dashboard surface.
+    """
+    if isinstance(obj, str):
+        return _redact_text(obj)
+    if isinstance(obj, dict):
+        return {
+            (_redact_text(k) if isinstance(k, str) else k): _redact_webapp_metadata(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_webapp_metadata(v) for v in obj]
+    return obj
 
 
 #: Max length of a content preview snippet returned by the list endpoint when
@@ -783,6 +824,39 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             logger.warning("source_path lookup failed: %s", exc)
             existing = None
         if existing is not None:
+            # R19 F5: run the SAME validation as the normal save path before
+            # the dedup update — the dedup branch previously skipped validation
+            # and silently dropped supplied fields.
+            merr = _validate_inbound_webapp_metadata(body)
+            if merr:
+                _audit(
+                    tool="artifact_save",
+                    request=request,
+                    outcome="denied",
+                    error=merr,
+                    extra={"slug": existing.slug, "source_path": source_path},
+                )
+                return _err(merr)
+
+            # R19 F5: kind conflict — if caller supplies a different kind than
+            # the existing artifact, that's a dedup conflict, not a silent update.
+            supplied_kind = body.get("kind")
+            if supplied_kind and supplied_kind != existing.kind:
+                _audit(
+                    tool="artifact_save",
+                    request=request,
+                    outcome="denied",
+                    error="dedup kind conflict",
+                    extra={"slug": existing.slug, "source_path": source_path,
+                           "existing_kind": existing.kind, "supplied_kind": supplied_kind},
+                )
+                return _err(
+                    f"source_path dedup conflict: existing artifact '{existing.slug}' "
+                    f"has kind='{existing.kind}' but request supplies kind='{supplied_kind}'. "
+                    f"Use artifact_update to change kind explicitly.",
+                    status=409,
+                )
+
             # Same auth-based actor inference as api_artifact_update — if the
             # caller is MCP (X-Internal-Secret header), the lifecycle event
             # gets tagged 'iterated' (agent), not 'edited' (user). Without
@@ -790,13 +864,24 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             # activity timeline.
             is_mcp = request.headers.get("X-Internal-Secret") is not None
             actor = "agent" if is_mcp else "user"
+
+            # R19 F5: pass through ALL supported fields (not just content).
+            update_kwargs: dict[str, Any] = {
+                "content": body.get("content"),
+                "actor": actor,
+                "snapshot": True,
+            }
+            if body.get("name"):
+                update_kwargs["name"] = body["name"]
+            if body.get("tags") is not None:
+                update_kwargs["tags"] = body["tags"]
+            if body.get("description") is not None:
+                update_kwargs["description"] = body["description"]
+            wm = body.get("webapp_metadata")
+            if wm is not None:
+                update_kwargs["webapp_metadata"] = webapp_metadata_from_dict(wm)
             try:
-                art = store.update(
-                    existing.slug,
-                    content=body.get("content"),
-                    actor=actor,
-                    snapshot=True,
-                )
+                art = store.update(existing.slug, **update_kwargs)
             except ArtifactValidationError as exc:
                 _audit(
                     tool="artifact_save",
@@ -832,6 +917,10 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # Resolve an optional folder placement (id or human path; mkdir -p missing
     # segments) so a save can file the artifact in one call (Mesh-2720). Off the
     # event loop — mkdir -p may persist new folders (blocking fsync).
+    merr = _validate_inbound_webapp_metadata(body)
+    if merr:
+        _audit(tool="artifact_save", request=request, outcome="denied", error=merr)
+        return _err(merr)
     folder_id, ferr = await _resolve_folder_ref_off_loop(body.get("folder"), create_missing=True)
     if ferr:
         _audit(tool="artifact_save", request=request, outcome="denied", error=ferr)
@@ -855,6 +944,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             # prevent attribution spoofing / metadata poisoning); anything else
             # collapses to "".
             session_key=_clean_origin_session_key(body.get("origin_session_key")),
+            webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
         )
     except ArtifactValidationError as exc:
         _audit(
@@ -959,6 +1049,10 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             snapshot = is_mcp  # MCP defaults to True; dashboard defaults to False.
         else:
             snapshot = bool(raw_snapshot)
+        merr = _validate_inbound_webapp_metadata(body)
+        if merr:
+            _audit(tool="artifact_update", request=request, outcome="denied", error=merr)
+            return _err(merr)
         # event_type / from_version overrides — used by the revert flow to
         # mark its update as ``reverted`` (with the source version pinned)
         # rather than the default ``edited``. Validation lives in
@@ -980,6 +1074,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             description=body.get("description"),
             tags=body.get("tags"),
             name=body.get("name"),
+            webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
             actor=actor,
             session_id=session_id_hdr,
             event_type=event_type,

@@ -1888,3 +1888,35 @@ def test_api_auth_refresh_mints_session_token_without_nonce_registration() -> No
 
     src = inspect.getsource(api_auth_refresh)
     assert "register_nonce=False" in src
+
+
+# --- item #2: /api/deploy reachable via X-Internal-Secret (MCP tool path) ---
+
+@pytest.mark.asyncio
+async def test_deploy_path_accessible_via_internal_secret() -> None:
+    """/api/deploy/deploy must be reachable with X-Internal-Secret (mixed_internal_paths).
+
+    Regression test: the deploy_artifact MCP tool posts to /api/deploy/deploy with
+    X-Internal-Secret. Without /api/deploy in mixed_internal_paths, this falls through
+    to cookie auth and the tool NEVER works.
+    """
+    secret = "deploy-secret-xyz"
+    mw = token_auth_middleware(
+        mixed_internal_paths=frozenset({"/api/deploy"}), internal_secret=secret
+    )
+    req = _make_request(path="/api/deploy/deploy", headers={"X-Internal-Secret": secret})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_deploy_path_prefix_matching() -> None:
+    """All /api/deploy/* sub-routes are covered by the prefix entry."""
+    secret = "deploy-secret-xyz"
+    mw = token_auth_middleware(
+        mixed_internal_paths=frozenset({"/api/deploy"}), internal_secret=secret
+    )
+    for path in ("/api/deploy/deploy", "/api/deploy/list", "/api/deploy/profiles"):
+        req = _make_request(path=path, headers={"X-Internal-Secret": secret})
+        resp = await mw(req, _ok_handler)
+        assert resp.status == 200, f"expected 200 for {path}, got {resp.status}"

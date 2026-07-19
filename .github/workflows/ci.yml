@@ -122,6 +122,22 @@ jobs:
         working-directory: website
         run: npx jscpd .
 
+  cfn-lint:
+    name: CloudFormation Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint deploy templates
+        run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
+
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest

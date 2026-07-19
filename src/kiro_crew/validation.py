@@ -15,6 +15,7 @@ Implements: SDO-183 (Tool Input and Response Validation)
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -552,7 +553,7 @@ WORKFLOW_RERUN_SCHEMA = ToolSchema(
 # Artifact tools — slug pattern matches kiro_crew.artifacts._SLUG_RE.
 _ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
 _ARTIFACT_TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}$")
-_ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image)$")
+_ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image|webapp)$")
 
 # Model identifiers passed to kiro-cli ``--model`` (AcpRuntime). First char
 # must be alphanumeric so a value can never be parsed as a CLI flag, and the
@@ -564,7 +565,153 @@ _ARTIFACT_SOURCE_RE = re.compile(r"^(chat|cron|subagent|manual|import)$")
 # (or vice-versa). Import the store constant rather than re-declaring it.
 from kiro_crew.artifacts import MAX_CONTENT_BYTES as ARTIFACT_CONTENT_MAX  # noqa: E402
 
+ARTIFACT_WEBAPP_METADATA_MAX_BYTES = 16_384
+
+
+def _validate_artifact_save(cleaned: dict) -> None:
+    """Reject an oversized or structurally invalid webapp_metadata blob before disk write."""
+    am = cleaned.get("webapp_metadata")
+    if am is None:
+        return
+    if not isinstance(am, dict):
+        raise ValidationError("webapp_metadata", "must be a dict")
+    try:
+        size = len(json.dumps(am, default=str))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("webapp_metadata", "is not JSON-serializable") from exc
+    if size > ARTIFACT_WEBAPP_METADATA_MAX_BYTES:
+        raise ValidationError(
+            "webapp_metadata",
+            f"serialized webapp_metadata exceeds {ARTIFACT_WEBAPP_METADATA_MAX_BYTES} bytes (got {size})",
+        )
+    # ── Bounded structural validation (input shape at MCP/HTTP boundary) ──
+    _validate_webapp_metadata_shape(am)
+
+
+# Shared slug pattern (matches _ARTIFACT_SLUG_RE + deploy slug validation).
+_WM_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_WM_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_WM_URL_RE = re.compile(r"^https?://.{1,2048}$")
+_WM_LIFECYCLE_STATUSES = {"draft", "deploying", "live", "error", "expired"}
+_WM_LIST_CAP = 50
+
+
+def _validate_webapp_metadata_shape(am: dict) -> None:
+    """Validate webapp_metadata nested structure — tolerant for absent fields."""
+    # deploy_target.public_url
+    dt = am.get("deploy_target")
+    if dt is not None:
+        if not isinstance(dt, dict):
+            raise ValidationError("webapp_metadata.deploy_target", "must be a dict")
+        pub_url = dt.get("public_url")
+        if pub_url is not None:
+            if not isinstance(pub_url, str):
+                raise ValidationError(
+                    "webapp_metadata.deploy_target.public_url",
+                    "must be a valid http(s) URL (max 2048 chars)")
+            # Empty string is allowed (documented draft state — URL not yet assigned).
+            if pub_url != "" and not _WM_URL_RE.match(pub_url):
+                raise ValidationError(
+                    "webapp_metadata.deploy_target.public_url",
+                    "must be a valid http(s) URL (max 2048 chars)")
+            # R21 F2: reject Basic-auth userinfo (https://user:pass@host) —
+            # the regex above accepts it, and a credential-bearing URL would
+            # be surfaced/linked by the dashboard, transmitting the embedded
+            # credentials to the host when opened.
+            if pub_url != "":
+                from urllib.parse import urlsplit
+                try:
+                    parts = urlsplit(pub_url)
+                except ValueError:
+                    raise ValidationError(
+                        "webapp_metadata.deploy_target.public_url",
+                        "must be a valid http(s) URL (max 2048 chars)")
+                if parts.username or parts.password:
+                    raise ValidationError(
+                        "webapp_metadata.deploy_target.public_url",
+                        "must not contain userinfo (user:password@) credentials")
+        # profile/region/slug — string-typed with existing regex patterns.
+        for key, pattern, label in (
+            ("profile", _WM_PROFILE_RE, "profile"),
+            # Mirrors deploy/profiles.py _REGION_RE so a region the deploy path
+            # accepted (incl. GovCloud us-gov-west-1) is never rejected here.
+            ("region", re.compile(r"^[a-z]{2}(-[a-z]+)+-\d+$"), "region"),
+            ("slug", _WM_SLUG_RE, "slug"),
+        ):
+            val = dt.get(key)
+            if val is not None:
+                if not isinstance(val, str) or len(val) > 128:
+                    raise ValidationError(
+                        f"webapp_metadata.deploy_target.{key}",
+                        "must be a string (max 128 chars)")
+                if val and not pattern.match(val):
+                    raise ValidationError(
+                        f"webapp_metadata.deploy_target.{key}",
+                        f"invalid {label} format")
+
+    # lifecycle.status enum
+    lc = am.get("lifecycle")
+    if lc is not None:
+        if not isinstance(lc, dict):
+            raise ValidationError("webapp_metadata.lifecycle", "must be a dict")
+        status = lc.get("status")
+        # R17 F3: require a string BEFORE the enum membership test — an
+        # unhashable value (list/dict) raises TypeError inside `in` and
+        # turns artifact save/update into a 500.
+        if status is not None and not isinstance(status, str):
+            raise ValidationError(
+                "webapp_metadata.lifecycle.status", "must be a string")
+        if status is not None and status not in _WM_LIFECYCLE_STATUSES:
+            raise ValidationError(
+                "webapp_metadata.lifecycle.status",
+                f"must be one of {sorted(_WM_LIFECYCLE_STATUSES)}")
+        # persistent: strict bool — the string "false" is truthy and would
+        # silently flip expiry/teardown behavior downstream.
+        pers = lc.get("persistent")
+        if pers is not None and not isinstance(pers, bool):
+            raise ValidationError(
+                "webapp_metadata.lifecycle.persistent", "must be a boolean")
+        # ttl_hours: strict int (bool excluded — bool subclasses int), 0-8760.
+        ttl = lc.get("ttl_hours")
+        if ttl is not None:
+            if isinstance(ttl, bool) or not isinstance(ttl, int):
+                raise ValidationError(
+                    "webapp_metadata.lifecycle.ttl_hours", "must be an integer")
+            if not (0 <= ttl <= 8760):
+                raise ValidationError(
+                    "webapp_metadata.lifecycle.ttl_hours", "must be 0-8760")
+        # expires_at ISO-8601 parseable
+        exp = lc.get("expires_at")
+        if exp is not None and exp != "":
+            if not isinstance(exp, str):
+                raise ValidationError("webapp_metadata.lifecycle.expires_at", "must be a string")
+            from datetime import datetime, timezone
+            try:
+                datetime.strptime(exp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                raise ValidationError(
+                    "webapp_metadata.lifecycle.expires_at",
+                    "must be ISO-8601 UTC (YYYY-MM-DDTHH:MM:SSZ)")
+
+    # cost and architecture lists capped
+    for key in ("cost", "architecture"):
+        val = am.get(key)
+        if val is not None:
+            if isinstance(val, dict):
+                # architecture.resources or cost.items may be lists inside
+                for sub_key, sub_val in val.items():
+                    if isinstance(sub_val, list) and len(sub_val) > _WM_LIST_CAP:
+                        raise ValidationError(
+                            f"webapp_metadata.{key}.{sub_key}",
+                            f"list exceeds {_WM_LIST_CAP} entries")
+            elif isinstance(val, list) and len(val) > _WM_LIST_CAP:
+                raise ValidationError(
+                    f"webapp_metadata.{key}",
+                    f"list exceeds {_WM_LIST_CAP} entries")
+
+
 ARTIFACT_SAVE_SCHEMA = ToolSchema(
+    custom_validator=_validate_artifact_save,
     tool_name="artifact_save",
     fields=[
         FieldSpec("name", str, required=True, max_len=200),
@@ -582,6 +729,7 @@ ARTIFACT_SAVE_SCHEMA = ToolSchema(
             max_items=16,
         ),
         FieldSpec("folder", str, max_len=4096),
+        FieldSpec("webapp_metadata", dict),
     ],
 )
 
@@ -594,6 +742,7 @@ ARTIFACT_GET_SCHEMA = ToolSchema(
 )
 
 ARTIFACT_UPDATE_SCHEMA = ToolSchema(
+    custom_validator=_validate_artifact_save,
     tool_name="artifact_update",
     fields=[
         FieldSpec("slug", str, required=True, max_len=80, pattern=_ARTIFACT_SLUG_RE),
@@ -608,6 +757,7 @@ ARTIFACT_UPDATE_SCHEMA = ToolSchema(
             item_pattern=_ARTIFACT_TAG_RE,
             max_items=16,
         ),
+        FieldSpec("webapp_metadata", dict),
     ],
 )
 
@@ -690,6 +840,17 @@ ARTIFACT_MOVE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("slug", str, required=True, max_len=80, pattern=_ARTIFACT_SLUG_RE),
         FieldSpec("folder", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
+DEPLOY_ARTIFACT_SCHEMA = ToolSchema(
+    tool_name="deploy_artifact",
+    fields=[
+        FieldSpec("site_id", str, required=True, max_len=64),
+        FieldSpec("artifact_slug", str, max_len=80, pattern=_ARTIFACT_SLUG_RE),
+        FieldSpec("local_dir", str, max_len=4096),
+        FieldSpec("profile", str, max_len=64),
+        FieldSpec("ttl_hours", int, min_val=0, max_val=8760),
     ],
 )
 
@@ -955,6 +1116,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "artifact_folder_move": ARTIFACT_FOLDER_MOVE_SCHEMA,
     "artifact_folder_delete": ARTIFACT_FOLDER_DELETE_SCHEMA,
     "artifact_move": ARTIFACT_MOVE_SCHEMA,
+    "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
 }
 
 MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {

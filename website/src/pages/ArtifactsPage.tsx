@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, ExternalLink, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
+import { AlertTriangle, Bookmark, ExternalLink, Globe, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
@@ -42,7 +42,7 @@ function readThemeVars(): Record<string, string> {
 const sel =
   'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
 
-const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text'] as const
+const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp'] as const
 
 const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   widget: 'aim',
@@ -51,6 +51,7 @@ const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   svg: 'warn',
   json: 'ok',
   text: 'ok',
+  webapp: 'aim',
 }
 
 function isoToTs(iso: string): number {
@@ -1510,7 +1511,10 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 </option>
               ))}
             </select>
-            <div className="ml-auto inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label="Filter starred">
+            <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title="Artifact Deploy — AWS profiles and published sites">
+              <Globe size={13} /> Artifact Deploy
+            </Btn>
+            <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label="Filter starred">
               <button
                 type="button"
                 onClick={() => setPinnedOnly(true)}

@@ -48,6 +48,15 @@ from typing import Any, Callable, Iterator
 from typing import List as _List
 
 from kiro_crew.config.loader import config_dir
+from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
+    WebAppArchitecture,
+    WebAppCost,
+    WebAppDeployTarget,
+    WebAppLifecycle,
+    WebAppMetadata,
+    WebAppTeardown,
+    webapp_metadata_from_dict,
+)
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
@@ -84,6 +93,7 @@ ALLOWED_KINDS = frozenset(
         "json",  # structured data
         "text",  # plain text
         "image",  # generated image (source_path points to PNG/JPEG)
+        "webapp",  # a deployed web application; rendered as an infra control card
     }
 )
 
@@ -336,6 +346,10 @@ class Artifact:
     #: between the last snapshot and now (Mesh-1654 round 6, requested
     #: by nrb). Not persisted; set by ``get()``.
     live_dirty: bool = False
+    #: Structured metadata for ``kind="webapp"`` artifacts — a deployed application
+    #: (deploy target, architecture, lifecycle/TTL, cost estimate, teardown handle).
+    #: ``None`` for every other kind. Tolerant-loaded from meta.json.
+    webapp_metadata: "WebAppMetadata | None" = None
 
     def to_dict(self, *, include_content: bool = False, persist: bool = False) -> dict[str, Any]:
         """Render as a JSON-friendly dict, optionally including the content blob.
@@ -628,6 +642,7 @@ class ArtifactStore:
         source_path: str = "",
         folder_id: str = "",
         session_key: str = "",
+        webapp_metadata: "WebAppMetadata | None" = None,
     ) -> Artifact:
         """Persist a new artifact and return it.
 
@@ -675,6 +690,7 @@ class ArtifactStore:
                 folder_id=folder_id or "",
                 session_key=session_key[:256] if session_key else "",
                 version_kinds={"1": kind},
+                webapp_metadata=webapp_metadata,
             )
             # Lifecycle: emit `created` event. New artifacts are tagged
             # `events_backfilled=True` because their history starts here —
@@ -886,6 +902,7 @@ class ArtifactStore:
         tags: list[str] | None = None,
         name: str | None = None,
         kind: str | None = None,
+        webapp_metadata: "WebAppMetadata | None" = None,
         actor: str = "user",
         session_id: str | None = None,
         event_type: str | None = None,
@@ -934,6 +951,8 @@ class ArtifactStore:
                 # alone does not bump the version; the per-version kind is
                 # recorded in the snapshot branch below when content changes.
                 art.kind = _validate_kind(kind)
+            if webapp_metadata is not None:
+                art.webapp_metadata = webapp_metadata
             art.updated_at = _now_iso()
 
             # Snapshot of current live state (no new content provided).
@@ -1053,6 +1072,49 @@ class ArtifactStore:
             self._write_meta(art)
             logger.info("artifact pin set: slug=%s pinned=%s", slug, art.pinned)
             return art
+
+    def mark_webapp_expired(self, slug: str) -> Artifact:
+        """Tombstone a kind="webapp" artifact: set lifecycle.status to "expired".
+
+        Used by the human-triggered teardown path. FU-6: also clears
+        ``lifecycle.expires_at`` and ``deploy_target.public_url`` so the card
+        cannot render a live-looking countdown or a dead public link next to
+        the Expired badge. Deploy history stays in the artifact's event feed.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            if art.kind != "webapp" or art.webapp_metadata is None:
+                raise ArtifactValidationError(
+                    f"artifact {slug!r} is not a webapp artifact; teardown does not apply"
+                )
+            art.webapp_metadata.lifecycle.status = "expired"
+            art.webapp_metadata.lifecycle.expires_at = None
+            if art.webapp_metadata.deploy_target is not None:
+                art.webapp_metadata.deploy_target.public_url = ""
+            art.updated_at = _now_iso()
+            self._write_meta(art)
+        self._fire_change("upsert", slug)
+        return art
+
+    def unmark_webapp_expired(self, slug: str) -> Artifact:
+        """Reverse a tombstone: restore lifecycle.status from "expired" to "live".
+
+        Used when teardown manifest-expiry fails for persistent deployments and
+        we need to keep the card's Tear down button available for retry.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            if art.kind != "webapp" or art.webapp_metadata is None:
+                raise ArtifactValidationError(
+                    f"artifact {slug!r} is not a webapp artifact"
+                )
+            art.webapp_metadata.lifecycle.status = "live"
+            art.updated_at = _now_iso()
+            self._write_meta(art)
+        self._fire_change("upsert", slug)
+        return art
 
     def delete(self, slug: str) -> None:
         """Permanently delete an artifact and all of its versions."""
@@ -1932,6 +1994,7 @@ class ArtifactStore:
             publication=publication,
             fork_metadata=fork_metadata,
             version_kinds=version_kinds,
+            webapp_metadata=webapp_metadata_from_dict(raw.get("webapp_metadata")),
         )
 
     @staticmethod

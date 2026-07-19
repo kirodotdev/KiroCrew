@@ -13,9 +13,11 @@ import json
 import logging
 import mimetypes
 import os
+import posixpath
 import re
 import shutil
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -273,6 +275,11 @@ def collect_publish_providers(
     flag so the artifact page can render the publish action when configured or a
     "set it up" link otherwise. Built-in providers (e.g. Artifactory) are registered
     on the frontend; this function contributes only the app-declared ones.
+
+    Endpoint allowlist (§9.3 security): app-declared provider endpoints MUST match
+    ``/api/apps/<that-app>/`` — an app cannot declare an endpoint that routes to
+    another app's namespace or to a core API. Non-conforming endpoints are dropped
+    with a warning log.
     """
     resolver = configured_resolver or _provider_is_configured
     providers: list[dict[str, Any]] = []
@@ -284,11 +291,31 @@ def collect_publish_providers(
         if not isinstance(pp, dict) or not pp.get("id") or not pp.get("endpoint"):
             continue
         app_name = str(app.get("name", ""))
+        endpoint = str(pp["endpoint"])
+        # Endpoint allowlist: must route within the app's own namespace.
+        # Normalize BEFORE checking to prevent dot-segment traversal
+        # (e.g. "/api/apps/foo/../../shutdown" bypassing prefix check).
+        decoded_endpoint = urllib.parse.unquote(endpoint)
+        normalized_endpoint = posixpath.normpath(decoded_endpoint)
+        allowed_prefix = f"/api/apps/{app_name}/"
+        if (
+            ".." in decoded_endpoint
+            or normalized_endpoint != decoded_endpoint.rstrip("/")
+            # Boundary-safe prefix check: appending "/" prevents a sibling-app
+            # collision ("/api/apps/foobar/x" passing app "foo"'s allowlist).
+            or not (normalized_endpoint + "/").startswith(allowed_prefix)
+        ):
+            logger.warning(
+                "publish provider for app %r declares non-conforming endpoint %r "
+                "(must start with %r, no traversal) — dropping",
+                app_name, endpoint, allowed_prefix,
+            )
+            continue
         providers.append({
             "id": str(pp["id"]),
             "label": str(pp.get("label", pp["id"])),
             "icon": str(pp.get("icon", "")),
-            "endpoint": str(pp["endpoint"]),
+            "endpoint": endpoint,
             "kinds": [str(k) for k in pp.get("kinds", []) if k],
             "setupRoute": str(pp.get("setupRoute", "")),
             "app": app_name,
@@ -299,14 +326,33 @@ def collect_publish_providers(
 
 
 async def handle_publish_providers(request: web.Request) -> web.Response:
-    """GET /api/publish-providers — app-declared publish destinations (Route B, §1.3).
+    """GET /api/publish-providers — publish destinations (app-declared + core deploy).
 
-    Returns enabled apps' publish providers, each with a ``configured`` flag. Core
-    imports no app code and holds no AWS/credential logic: it only reads manifest
-    declarations + each app's persisted config field. Built-in providers (Artifactory)
-    are registered frontend-side and are not returned here.
+    Returns enabled apps' publish providers plus the core deploy provider (folded
+    from the former deploy_web app), each with a ``configured`` flag. Built-in
+    providers (Artifactory) are registered frontend-side and are not returned here.
     """
     providers = collect_publish_providers(list_apps())
+    # Core deploy provider (always present, regardless of any app install state)
+    try:
+        from kiro_crew.deploy import profiles as _deploy_profiles
+
+        # Align with deploy/handlers.py: registry reads go through to_thread.
+        reg = await asyncio.to_thread(_deploy_profiles.load_registry)
+        configured = bool(reg["profiles"])
+    except Exception:
+        configured = False
+    providers.append({
+        "id": "deploy-web-aws",
+        "label": "Publish to public web (your AWS)",
+        "icon": "Globe",
+        "endpoint": "/api/deploy/deploy",
+        "kinds": ["widget", "html", "markdown"],
+        "setupRoute": "/artifacts/deploy",
+        "app": "",
+        "origin": "core",
+        "configured": configured,
+    })
     return web.json_response({"providers": providers})
 
 
@@ -315,6 +361,11 @@ async def handle_get_app(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
+        # Compat: migrated deploy-web requests hit this generic handler before
+        # the deploy module's /api/apps/deploy-web/{tail} redirect (aiohttp
+        # matches in registration order). Redirect to the canonical endpoint.
+        if name == "deploy-web":
+            raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
     return web.json_response(info)
 
@@ -324,6 +375,9 @@ async def handle_get_manifest(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     manifest = get_app_manifest(name)
     if not manifest:
+        # Compat: migrated deploy-web — redirect to canonical endpoint.
+        if name == "deploy-web":
+            raise web.HTTPTemporaryRedirect(location="/api/deploy/config")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
     return web.json_response(manifest.to_dict())
 
@@ -1175,6 +1229,9 @@ async def handle_app_config(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
+        # Compat: migrated deploy-web — redirect to canonical deploy config endpoint.
+        if name == "deploy-web":
+            raise web.HTTPTemporaryRedirect(location="/api/deploy/config")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
     from kiro_crew.apps.manager import app_data_dir

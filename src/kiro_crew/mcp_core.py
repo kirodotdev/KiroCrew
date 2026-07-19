@@ -683,7 +683,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["widget", "html", "markdown", "svg", "json", "text"],
+                        "enum": ["widget", "html", "markdown", "svg", "json", "text", "webapp"],
                         "description": (
                             "Artifact kind. Optional — inferred from the content "
                             "when omitted (HTML-ish body -> widget, markdown text "
@@ -713,6 +713,17 @@ def _list_tools() -> list[dict[str, Any]]:
                             "Missing path segments are auto-created (mkdir -p). "
                             "Omit or pass 'root' to leave it unfiled."
                         ),
+                    },
+                    "webapp_metadata": {
+                        "type": "object",
+                        "description": (
+                            "For kind='webapp' only — metadata for the app-artifact "
+                            "control card. Shape: {slug, origin_session, "
+                            "deploy_target:{provider,account,region,public_url}, "
+                            "architecture, lifecycle, cost, teardown}. "
+                            "For draft apps: set lifecycle.status='draft'"
+                        ),
+                        "additionalProperties": True,
                     },
                 },
                 "required": ["name", "content"],
@@ -776,6 +787,14 @@ def _list_tools() -> list[dict[str, Any]]:
                         "items": {"type": "string"},
                         "description": "Replacement tag list (optional).",
                     },
+                    "webapp_metadata": {
+                        "type": "object",
+                        "description": (
+                            "Webapp deployment metadata (optional). Used to "
+                            "transition an artifact between draft and live "
+                            "deployment states."
+                        ),
+                    },
                 },
                 "required": ["slug"],
             },
@@ -823,7 +842,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     "tag": {"type": "string", "description": "Filter by tag."},
                     "kind": {
                         "type": "string",
-                        "enum": ["widget", "html", "markdown", "svg", "json", "text"],
+                        "enum": ["widget", "html", "markdown", "svg", "json", "text", "webapp"],
                         "description": "Filter by kind.",
                     },
                     "q": {
@@ -972,6 +991,54 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["slug"],
+            },
+        },
+        {
+            "name": "deploy_artifact",
+            "description": (
+                "Preview a deploy of a webapp artifact or local directory to a "
+                "public URL on the user's AWS account. This tool is PREVIEW-ONLY: "
+                "it returns scan status and deploy details but never executes. "
+                "Final confirmation happens in the dashboard Artifact Deploy page. "
+                "Restricted-session guard and SEL audit apply identically to the "
+                "HTTP endpoint."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "site_id": {
+                        "type": "string",
+                        "description": "Deploy slot name (e.g. 'my-app').",
+                    },
+                    "artifact_slug": {
+                        "type": "string",
+                        "description": (
+                            "Slug of a static artifact (widget/html/markdown) "
+                            "to deploy — its content is rendered as a page. "
+                            "kind=webapp artifacts are rejected (their content "
+                            "is an app summary, not deployable HTML — deploy "
+                            "the app's built directory via local_dir instead). "
+                            "Mutually exclusive with local_dir."
+                        ),
+                    },
+                    "local_dir": {
+                        "type": "string",
+                        "description": (
+                            "Validated absolute path to a static directory "
+                            "(e.g. fullstack app's public/ root). Mutually "
+                            "exclusive with artifact_slug."
+                        ),
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "AWS profile override (default: registry default).",
+                    },
+                    "ttl_hours": {
+                        "type": "integer",
+                        "description": "Hours until auto-cleanup, 0-8760 (default: 72; 0 = persistent).",
+                    },
+                },
+                "required": ["site_id"],
             },
         },
         {
@@ -2952,7 +3019,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             "name": args["name"],
             "content": args["content"],
         }
-        for k in ("slug", "kind", "source", "description", "tags", "folder"):
+        for k in ("slug", "kind", "source", "description", "tags", "folder", "webapp_metadata"):
             if k in args and args[k] is not None:
                 save_body[k] = args[k]
         # Pre-save dedup probe: when saving a chat-source widget, check for
@@ -3347,6 +3414,88 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         moved_fid = d.get("folder_id", "")
         return f"Moved artifact `{slug}` to " + (
             f"folder id={moved_fid}." if moved_fid else "the library root (unfiled)."
+        )
+
+    if name == "deploy_artifact":
+        # Schema validation already handled by _validate_args via MCP_CORE_SCHEMAS.
+        # PREVIEW-ONLY: the MCP tool never passes confirm or override_scan.
+        # Human confirmation happens in the dashboard UI (Artifact Deploy page).
+        # This prevents an LLM caller from self-confirming destructive deploys.
+        # F4: enforce mutual exclusion of artifact_slug / local_dir at the MCP tool layer too.
+        has_slug = bool(args.get("artifact_slug"))
+        has_dir = bool(args.get("local_dir"))
+        if has_slug and has_dir:
+            return "Error: provide exactly one of artifact_slug or local_dir"
+        if not has_slug and not has_dir:
+            return "Error: provide artifact_slug or local_dir"
+        deploy_body: dict[str, Any] = {"site_id": args["site_id"]}
+        if args.get("artifact_slug"):
+            deploy_body["artifact_slug"] = args["artifact_slug"]
+        if args.get("local_dir"):
+            deploy_body["local_dir"] = args["local_dir"]
+        if args.get("profile"):
+            deploy_body["profile"] = args["profile"]
+        if args.get("ttl_hours") is not None:
+            deploy_body["ttl_hours"] = args["ttl_hours"]
+        d = _post("/api/deploy/deploy", deploy_body)
+        # R18 F4: everything textual returned to the LLM goes through the
+        # canonical credential redaction -- error/scan/message fields can
+        # carry file content.
+        from kiro_crew.deploy.handlers import _redact_text as _deploy_redact
+        if d.get("error"):
+            return f"Error: {_deploy_redact(str(d['error']))}"
+        if d.get("blocked"):
+            findings = _deploy_redact(str(d.get("findings", "")))
+            if d.get("credential"):
+                # Credential-class findings are a HARD block — never pending.
+                return (f"Deploy BLOCKED by scan ({d.get('count', '?')} finding(s)):\n"
+                        f"{findings}")
+            # R24: non-credential findings are documented as human-overridable.
+            # Persist a pending entry flagged override_scan_required so the
+            # dashboard can present the explicit "deploy anyway" action —
+            # previously these previews silently never reached the pending list.
+            from kiro_crew.deploy.pending import add_pending
+            add_pending({
+                "site_id": args["site_id"],
+                "artifact_slug": args.get("artifact_slug", ""),
+                "local_dir": args.get("local_dir", ""),
+                "profile": d.get("profile", args.get("profile", "")),
+                "region": d.get("region", ""),
+                "ttl_hours": args.get("ttl_hours", 72),
+                "scan_summary": findings,
+                "content_digest": d.get("content_digest", ""),
+                "override_scan_required": True,
+            })
+            return (
+                f"Deploy blocked by scan ({d.get('count', '?')} non-credential "
+                f"finding(s)):\n{findings}\n\n"
+                f"These findings are overridable by a HUMAN: the deploy now "
+                f"appears under \"Pending confirmations\" on the Artifact "
+                f"Deploy page, where the user can review the findings and "
+                f"explicitly deploy anyway (or dismiss)."
+            )
+        # Preview response (requires_confirm is always true for the tool path)
+        # Persist as a pending confirmation so the dashboard UI can execute it.
+        from kiro_crew.deploy.pending import add_pending
+        pending_params = {
+            "site_id": args["site_id"],
+            "artifact_slug": args.get("artifact_slug", ""),
+            "local_dir": args.get("local_dir", ""),
+            "profile": d.get("profile", args.get("profile", "")),
+            "region": d.get("region", deploy_body.get("region", "")),
+            "ttl_hours": args.get("ttl_hours", 72),
+            "scan_summary": d.get("scan", "clean"),
+            "content_digest": d.get("content_digest", ""),
+        }
+        add_pending(pending_params)
+        return (
+            f"Deploy preview for site '{args['site_id']}':\n"
+            f"  Public: {d.get('public', True)}\n"
+            f"  Size: {d.get('bytes', '?')} bytes\n"
+            f"  Scan: {_deploy_redact(str(d.get('scan', 'clean')))}\n"
+            f"  TTL: {args.get('ttl_hours', 72)} hours\n"
+            f"\nThis deploy now appears under \"Pending confirmations\" on the "
+            f"Artifact Deploy page in the dashboard. Open it to confirm or dismiss."
         )
 
     if name == "autonudge_stop":

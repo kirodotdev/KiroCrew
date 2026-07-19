@@ -49,3 +49,11 @@ CHANGELOG.md
 # This script and its allowlist
 scripts/scrub-lint.sh
 scripts/scrub-allowlist.txt
+
+# Deploy scan module (detects internal content - the regex IS the feature)
+src/kiro_crew/deploy/scan.py
+
+# Deploy tests use AWS example account 123456789012 (well-known placeholder)
+test/test_deploy_web_profiles.py
+test/test_deploy_web_handlers.py
+test/test_deploy_web_iam.py

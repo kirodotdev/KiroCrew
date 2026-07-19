@@ -145,6 +145,8 @@ export interface McpApplyChange {
 
 export interface ChatSlot {
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null
+  /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
+  webapp_metadata?: WebAppMetadata
   // Board fields
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean
   // Soft-stop state machine
@@ -332,7 +334,7 @@ export interface ForkMetadata {
 export interface Artifact {
   slug: string
   name: string
-  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text'
+  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp'
   /** Provenance/origin bucket. Historically chat|cron|subagent|manual|import;
    * now also carries the actual session origin (dashboard|slack|cli|task-runner|
    * unknown), so treated as an open string. */
@@ -370,6 +372,8 @@ export interface Artifact {
   /** User pin/favorite mark. Metadata-only (no version bump). Drives the
    * All | Pinned filter on the Artifacts page. */
   pinned?: boolean
+  /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
+  webapp_metadata?: WebAppMetadata
 }
 
 /** A non-code document produced during a chat session — the virtual entries
@@ -452,4 +456,54 @@ export interface ArtifactComment {
   anchor_orphaned?: boolean
   created_at: string
   updated_at: string
+}
+
+// ── WebApp Artifact types (kind="webapp") ────────────────────────────────────
+
+export interface WebAppDeployTarget {
+  provider: string;
+  account: string;
+  region: string;
+  public_url: string;
+  profile: string;
+}
+
+export interface WebAppArchitecture {
+  tier: string;
+  frontend: string;
+  backend: string;
+  state: string;
+  resources: Array<{ type: string; id: string }>;
+}
+
+export interface WebAppLifecycle {
+  created_at: string;
+  expires_at: string | null;
+  persistent: boolean;
+  ttl_hours: number;
+  status: string;
+}
+
+export interface WebAppCost {
+  model: string;
+  window_hours: number;
+  estimates: Array<{ views: number; usd: number }>;
+  idle_usd: number;
+  note: string;
+}
+
+export interface WebAppTeardown {
+  method: string;
+  handle: string;
+  reversible: boolean;
+}
+
+export interface WebAppMetadata {
+  slug: string;
+  origin_session: string;
+  deploy_target: WebAppDeployTarget;
+  architecture: WebAppArchitecture;
+  lifecycle: WebAppLifecycle;
+  cost: WebAppCost;
+  teardown: WebAppTeardown;
 }

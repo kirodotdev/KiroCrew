@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  KiroCrew One-Click Deploy - shared per-account base stack. One PRIVATE S3
+  bucket (origin) + one global CloudFront distribution that serves many demos
+  under /<slug>/ prefixes. Created once per account; individual deploys are just
+  S3 uploads under a slug prefix + an invalidation.
+
+Parameters:
+  PriceClass:
+    Type: String
+    Default: PriceClass_All
+    AllowedValues: [PriceClass_All, PriceClass_200, PriceClass_100]
+    Description: >
+      CloudFront edge coverage. PriceClass_All = maximum global reach
+      (Vercel-like). Lower tiers are cheaper but use fewer edge locations.
+
+Resources:
+
+  # Private origin bucket. Retained on stack delete so a teardown never nukes
+  # live demos by accident.
+  OriginBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'kirocrew-deploy-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - { Key: 'kirocrew:managed', Value: 'true' }
+
+  # OAC lets CloudFront read the private bucket without making it public.
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'kirocrew-deploy-oac-${AWS::AccountId}-${AWS::Region}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Append index.html for directory-style URIs so /<slug>/ resolves.
+  IndexRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub 'kirocrew-deploy-index-rewrite-${AWS::AccountId}-${AWS::Region}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Append index.html for directory-style URIs.
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.endsWith('/')) {
+            request.uri = uri + 'index.html';
+          } else if (!uri.split('/').pop().includes('.')) {
+            request.uri = uri + '/index.html';
+          }
+          return request;
+        }
+
+  # BSC12 security headers on every response.
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub 'kirocrew-deploy-secheaders-${AWS::AccountId}-${AWS::Region}'
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: SAMEORIGIN
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Override: true
+          # Permissive by design: demos are arbitrary user apps that need inline
+          # scripts to run. Override:false lets an app set its own stricter CSP.
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; frame-ancestors 'self'"
+            Override: false
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: KiroCrew One-Click Deploy shared distribution
+        PriceClass: !Ref PriceClass
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: s3origin
+            DomainName: !GetAtt OriginBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: s3origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # Managed-CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt IndexRewriteFunction.FunctionMetadata.FunctionARN
+      Tags:
+        - { Key: 'kirocrew:managed', Value: 'true' }
+
+  # Grant only THIS distribution read access to the private bucket.
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref OriginBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${OriginBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution.Id}'
+          # R40 F2: deny CloudFront the per-slug control manifests and the
+          # quarantine prefix — without this Deny every deploy's
+          # .kirocrew-deploy.json is world-readable through the shared
+          # distribution (leaks local username + infra ids). The reaper reads
+          # manifests via the S3 API (IAM role), unaffected by this
+          # service-principal Deny.
+          - Sid: DenyCloudFrontControlManifests
+            Effect: Deny
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource:
+              - !Sub '${OriginBucket.Arn}/*/.kirocrew-deploy.json'
+              - !Sub '${OriginBucket.Arn}/_quarantine/*'
+
+Outputs:
+  BucketName:
+    Description: Origin bucket for all deploys.
+    Value: !Ref OriginBucket
+  DistributionId:
+    Description: Shared CloudFront distribution id.
+    Value: !Ref Distribution
+  DistributionDomainName:
+    Description: Public CloudFront domain (link base).
+    Value: !GetAtt Distribution.DomainName
