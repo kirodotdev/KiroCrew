@@ -1,9 +1,12 @@
 # KiroCrew Code Owners
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 #
-# Owners are auto-requested for review. Branch protection enforces approval.
-# General code review: any team member can approve (via branch protection rule).
-# Frontend: requires @CrysisDeu approval specifically.
+# Owners are auto-requested for review on every PR. Branch protection can
+# additionally enforce approval ("Require review from Code Owners").
+#
+# All components are owned by the kirocrew-team. Enable review
+# auto-assignment on the team (Org -> Teams -> kirocrew-team -> Settings ->
+# Code review, round-robin or load-balance) so each PR's team request
+# resolves to individual members instead of notifying the whole team.
 
-# ── Frontend (dashboard, Electron shell, UI components) ──────────────
-website/                            @CrysisDeu
+*                                   @kirodotdev/kirocrew-team
