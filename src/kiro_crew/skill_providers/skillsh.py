@@ -138,7 +138,10 @@ class SkillsShProvider:
         Returns a list of (relative_path, content) tuples, or None on failure.
         Uses GET /api/download/{id} which returns all skill files.
         """
-        url = f"{self._config.api_base}/download/{skill_id}"
+        # Percent-encode the id (safe="") so a crafted value can't smuggle
+        # path segments or a query string into the URL — same treatment
+        # search() gives its query parameter.
+        url = f"{self._config.api_base}/download/{urllib.parse.quote(skill_id, safe='')}"
         data = await _fetch_json(url)
         if data is None:
             return None
@@ -286,27 +289,57 @@ def _is_internal_url(url: str) -> bool:
             pass  # not a literal IP — it's a hostname
 
         # For hostnames: we cannot resolve DNS here (blocking call, and DNS
-        # rebinding would defeat it anyway). Allow non-IP hostnames through —
-        # the allowlist approach (only raw.githubusercontent.com and skills.sh
-        # are fetched) provides the primary control. This check catches the
-        # redirect-to-internal-IP vector.
+        # rebinding would defeat it anyway). Non-IP hostnames pass THIS check;
+        # the redirect handler below additionally enforces _ALLOWED_HOSTS, so a
+        # redirect to an arbitrary DNS name that resolves to a private address
+        # is blocked by allowlist rather than by resolution.
         return False
     except Exception:
         return True  # parse failure = suspicious, block
 
 
-class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect handler that blocks redirects to internal/private IPs.
+# Hosts a fetch may start at or be redirected to. Everything this module
+# requests lives on skills.sh or GitHub raw content; GitHub serves raw file
+# redirects via its media/objects CDN hosts. A redirect to ANY other host —
+# including an internal DNS name that would resolve to a private address
+# (DNS-rebinding style SSRF) — is refused. Keep this list tight: add hosts
+# only for a concrete, observed redirect target.
+_ALLOWED_HOSTS = frozenset(
+    {
+        "skills.sh",
+        "www.skills.sh",
+        "github.com",
+        "raw.githubusercontent.com",
+        "objects.githubusercontent.com",
+        "media.githubusercontent.com",
+        "codeload.github.com",
+    }
+)
 
-    Prevents SSRF via 302 → internal-IP chains. Checks each redirect
-    location BEFORE following it, so no TCP connection is made to
-    internal hosts.
+
+def _is_allowed_host(url: str) -> bool:
+    """True iff *url* is HTTPS on an explicitly allowlisted host."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return parsed.scheme == "https" and (parsed.hostname or "") in _ALLOWED_HOSTS
+    except Exception:
+        return False
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that only follows redirects to allowlisted HTTPS hosts.
+
+    Prevents SSRF via 30x chains two ways: internal/private IP literals are
+    rejected (_is_internal_url), and — because a hostname can't be safely
+    resolved here (DNS rebinding) — any host outside _ALLOWED_HOSTS is
+    rejected outright. Checks run BEFORE following, so no TCP connection is
+    ever made to a disallowed target.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if _is_internal_url(newurl):
+        if _is_internal_url(newurl) or not _is_allowed_host(newurl):
             raise urllib.error.URLError(
-                f"Blocked redirect to internal URL: {newurl[:80]}"
+                f"Blocked redirect to disallowed URL: {newurl[:80]}"
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 

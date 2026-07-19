@@ -168,6 +168,39 @@ class TestDiscoverInstall:
         finally:
             await client.close()
 
+    async def test_install_overwrite_replaces_symlinked_skill_dir(
+        self, fake_home, reset_registry, tmp_path
+    ):
+        # Security regression: a pre-planted symlink at the skill dir must be
+        # REMOVED, never followed — otherwise the bundle (incl. nested paths
+        # whose not-yet-existing parents dodge the parent-symlink guard) would
+        # be written outside the skills root at the symlink target.
+        client, skills_dir = await self._client(fake_home)
+        try:
+            outside = tmp_path / "outside-target"
+            outside.mkdir()
+            provider_dir = skills_dir / "fakeprov"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            link = provider_dir / "fake-skill"
+            link.symlink_to(outside, target_is_directory=True)
+
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={
+                    "provider": "fakeprov",
+                    "skill_id": "fake-skill",
+                    "overwrite": True,
+                },
+            )
+            assert resp.status == 200
+            # The symlink was replaced by a real directory...
+            assert not link.is_symlink()
+            assert (link / "SKILL.md").exists()
+            # ...and NOTHING landed at the old symlink target.
+            assert list(outside.iterdir()) == []
+        finally:
+            await client.close()
+
 
 @pytest.mark.asyncio
 class TestDiscoverPreview:

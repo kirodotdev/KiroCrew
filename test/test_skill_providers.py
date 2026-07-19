@@ -12,6 +12,8 @@ from kiro_crew.skill_providers.skillsh import (
     SkillsShConfig,
     SkillsShProvider,
     _github_raw_url,
+    _is_allowed_host,
+    _is_internal_url,
 )
 
 
@@ -223,3 +225,38 @@ def test_slugify_repo_name():
     """Verify the skillsh module doesn't export _slugify_repo_name (it's in skill_sync.py)."""
     # Our discover handler has its own _slugify — test the github URL helper instead
     assert _github_raw_url("https://github.com/my-org/my-repo", "SKILL.md") is not None
+
+
+class TestRedirectHostAllowlist:
+    """SSRF defense: redirects may only target allowlisted HTTPS hosts.
+
+    _is_internal_url alone can't stop a redirect to an arbitrary DNS name
+    that resolves to a private address (DNS rebinding) — the allowlist is
+    the control that closes that gap.
+    """
+
+    def test_allowed_hosts_pass(self):
+        assert _is_allowed_host("https://skills.sh/api/download/x")
+        assert _is_allowed_host("https://raw.githubusercontent.com/u/r/main/SKILL.md")
+        assert _is_allowed_host("https://objects.githubusercontent.com/blob/x")
+
+    def test_arbitrary_dns_name_blocked(self):
+        # A hostname the attacker controls (could resolve to 169.254.x/10.x).
+        assert not _is_allowed_host("https://internal.attacker.example/steal")
+        assert not _is_allowed_host("https://metadata.google.internal/computeMetadata")
+
+    def test_non_https_blocked(self):
+        assert not _is_allowed_host("http://skills.sh/api")  # plain HTTP
+        assert not _is_allowed_host("ftp://raw.githubusercontent.com/x")
+
+    def test_ip_literals_blocked_by_both_layers(self):
+        # IP literals are caught by _is_internal_url AND fail the allowlist.
+        assert _is_internal_url("https://169.254.169.254/latest/meta-data/")
+        assert not _is_allowed_host("https://169.254.169.254/latest/meta-data/")
+        assert _is_internal_url("https://127.0.0.1/x")
+        assert not _is_allowed_host("https://8.8.8.8/x")  # public IP, still not allowlisted
+
+    def test_lookalike_subdomain_blocked(self):
+        # Suffix tricks must not pass (exact-host match, not endswith).
+        assert not _is_allowed_host("https://skills.sh.evil.example/api")
+        assert not _is_allowed_host("https://evilskills.sh/api")

@@ -297,13 +297,33 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         skill_dir = _skills_dir() / key
 
         def _write_bundle() -> int:
+            skills_root = _skills_dir().resolve()
+            # Symlink defense: if the skill dir itself is a symlink, every
+            # containment check below resolves against the symlink TARGET, so
+            # a pre-planted link would redirect the whole bundle write outside
+            # the skills root (nested rel_paths traverse it via mkdir, and the
+            # parent-symlink guard below misses not-yet-existing parents).
+            # Remove the link itself — never follow it.
+            if skill_dir.is_symlink():
+                logger.warning("Replacing symlinked skill dir: %s", skill_dir)
+                skill_dir.unlink()
             # Overwrite semantics: clear the previous install first so stale
             # files from an older bundle version don't linger. The user
             # explicitly consented via the 409 -> overwrite flow.
-            if overwrite and skill_dir.exists() and not skill_dir.is_symlink():
+            if overwrite and skill_dir.exists():
                 shutil.rmtree(skill_dir)
             skill_dir.mkdir(parents=True, exist_ok=True)
             resolved_root = skill_dir.resolve()
+            # The (now symlink-free) skill dir must itself land under the
+            # canonical skills root — catches a symlinked PARENT (provider)
+            # directory redirecting the install elsewhere.
+            try:
+                resolved_root.relative_to(skills_root)
+            except ValueError:
+                logger.warning(
+                    "Refusing bundle write outside skills root: %s", skill_dir
+                )
+                return 0
             written = 0
             for rel_path, file_content in bundle:
                 if ".." in rel_path or rel_path.startswith("/") or rel_path.startswith("./.."):
