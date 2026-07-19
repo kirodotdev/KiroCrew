@@ -85,7 +85,7 @@ export function IconButtonGroup({ reveal, className, children }: { reveal?: bool
     <div
       className={twMerge(
         'flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm transition-all',
-        reveal ? 'opacity-0 group-hover:opacity-100 focus-within:opacity-100' : '',
+        reveal ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100' : '',
         className,
       )}
     >

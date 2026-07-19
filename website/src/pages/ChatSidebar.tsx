@@ -1502,7 +1502,7 @@ function ChatSidebar({
           )}
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {!(editingId === folder.id && editScope === columnId) && (
-          <span className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
+          <span className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5">
             <select className="text-[10px] text-muted bg-transparent border-none cursor-pointer outline-none max-w-[60px]" title="Default agent" value={folder.default_agent || ''} onClick={e => e.stopPropagation()} onChange={e => { e.stopPropagation(); updateFolderMutation.mutate({ id: folder.id, body: { default_agent: e.target.value } }) }}>
               <option value="">agent…</option>
               {installedAgents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
@@ -1607,16 +1607,35 @@ function ChatSidebar({
           {({ setNodeRef, listeners, isDragging }) => (
         <ContextMenu>
           <ContextMenuTrigger asChild>
-        {/* Session row: a dnd-kit draggable node wrapped by a ContextMenuTrigger;
-            adding tabIndex/keyboard here fights the DnD keyboard sensor and the
-            context-menu trigger, so scope-disable the interaction/click rules. */}
-        {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
         <div ref={scope === 'list' ? setNodeRef : undefined} {...(scope === 'list' ? listeners : {})}
           data-draggable={(renamingSlot !== s.key).toString()}
           className={`session-row group relative flex items-start gap-2.5 px-4 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
+          role="button"
+          tabIndex={0}
+          aria-current={isActive ? 'true' : undefined}
+          aria-disabled={!connected}
+          onKeyDown={e => {
+            // WCAG 2.1.1: session rows must be operable via keyboard.
+            // Enter/Space activates the row (same as click). Other keys are
+            // forwarded to dnd-kit's listener (this prop appears after the
+            // {...listeners} spread, so last-prop-wins would otherwise clobber
+            // it) — useful for continuing a pointer-initiated drag via arrow
+            // keys. Note: keyboard-initiated drag pickup was never functional
+            // for these rows (plain useDraggable without SortableContext), so
+            // consuming Enter/Space here does not regress it.
+            if (e.key !== 'Enter' && e.key !== ' ') {
+              if (scope === 'list') (listeners as Record<string, (e: React.KeyboardEvent) => void> | undefined)?.onKeyDown?.(e)
+              return
+            }
+            if ((e.target as HTMLElement) !== e.currentTarget) return // don't hijack inner buttons
+            e.preventDefault()
+            if (!connected) return
+            dispatch(switchSlot(s.key))
+            onSelectSlot?.(s.key)
+          }}
           onDragStart={scope !== 'list' && scope !== 'flat' ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move' }) : undefined}
           onClick={e => {
             if ((e.target as HTMLElement).closest?.('[data-fork]')) { sessionActions.duplicate(s.key); return }
@@ -1800,7 +1819,7 @@ function ChatSidebar({
         <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
         {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={`Default agent: ${folder.default_agent}`}>{folder.default_agent}</span>}
         {!(editingId === folder.id && editScope === 'list') && (
-        <div className="absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm">
+        <div className="absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm">
           <select className="text-[10px] text-muted bg-transparent border-none cursor-pointer outline-none max-w-[70px]" title="Default agent for new chats" value={folder.default_agent || ''} onClick={e => e.stopPropagation()} onChange={e => { e.stopPropagation(); updateFolderMutation.mutate({ id: folder.id, body: { default_agent: e.target.value } }) }}>
             <option value="">agent…</option>
             {installedAgents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
@@ -2778,10 +2797,22 @@ function ChatSidebar({
                   const agentColor = agentColorFor(agentName)
                   const isDashboard = s.key.startsWith('dashboard')
                   return (
-                    /* History row uses onMouseDown (preventDefault) to resume/delete
-                       without stealing focus from the transcript; scope-disable the rule. */
-                    /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
-                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} onMouseDown={e => {
+                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
+                      // WCAG 2.1.1: history rows must be resumable via keyboard.
+                      if (e.key !== 'Enter' && e.key !== ' ') return
+                      if ((e.target as HTMLElement) !== e.currentTarget) return
+                      e.preventDefault()
+                      if (!connected) return
+                      dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
+                    }} onMouseDown={e => {
+                      // NOTE: pointer activation lives on onMouseDown (not onClick). For a
+                      // div[role="button"], browsers do NOT synthesize a click from Enter
+                      // (that only happens for native buttons/links — hence the onKeyDown
+                      // handler above), and AT activation (e.g. VoiceOver VO+Space)
+                      // synthesizes a click INSTEAD of key events. So each path activates
+                      // exactly once. Do NOT add an e.detail === 0 guard here or in any
+                      // future onClick: AT-synthesized clicks have detail 0 and would be
+                      // silently dropped, breaking screen-reader activation.
                       e.preventDefault()
                       if ((e.target as HTMLElement).closest?.('[data-close]')) { if (confirm('Are you sure you want to delete this history session?')) dispatch(deleteHistorySession(s.key)); return }
                       if (!connected) return
@@ -2808,7 +2839,7 @@ function ChatSidebar({
                         <div className="text-[13px] leading-snug line-clamp-2 break-words">{s.title || s.key}</div>
                       </div>
                       {/* Floating hover button group — matches session-row pattern */}
-                      <div className="absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm">
+                      <div className="absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm">
                         <button type="button" title="Delete history session" aria-label="Delete history session" className="text-[12px] text-muted cursor-pointer p-[4px] rounded hover:text-danger hover:bg-danger-subtle transition-all bg-transparent border-none" onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); if (confirm('Are you sure you want to delete this history session?')) dispatch(deleteHistorySession(s.key)) }}><X size={12} /></button>
                       </div>
                     </div>
