@@ -8,6 +8,19 @@ import type { Artifact } from '../types'
 
 vi.mock('../api/client')
 
+// VirtuosoMasonry virtualizes against real layout, which jsdom lacks, so it
+// renders zero items in tests. Mock it to a plain map through ItemContent so
+// the card content + handlers are exercised.
+vi.mock('@virtuoso.dev/masonry', () => ({
+  VirtuosoMasonry: ({ data, context, ItemContent }: any) => (
+    <div data-testid="masonry">
+      {data.map((d: any, i: number) => (
+        <ItemContent key={i} data={d} index={i} context={context} />
+      ))}
+    </div>
+  ),
+}))
+
 const mkArtifact = (slug: string, overrides: Partial<Artifact> = {}): Artifact => ({
   slug,
   name: slug.replace(/-/g, ' '),
@@ -43,21 +56,9 @@ describe('ArtifactsPage', () => {
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     expect(screen.getByText('pipeline health')).toBeInTheDocument()
     expect(screen.getByText('cr-queue')).toBeInTheDocument()
-    expect(screen.getByText('v3')).toBeInTheDocument()
+    expect(screen.getByText(/v3/)).toBeInTheDocument()
   })
 
-  it('displays summary stats', async () => {
-    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
-      artifacts: [
-        mkArtifact('a', { tags: ['x', 'y'], version: 2 }),
-        mkArtifact('b', { tags: ['x'], kind: 'markdown', version: 1 }),
-      ],
-    })
-    renderWithProviders(<ArtifactsPage />)
-    await waitFor(() => expect(screen.getByText('Total')).toBeInTheDocument())
-    // 2 total, 1 widget, 2 unique tags, 3 total versions
-    expect(screen.getAllByText('2').length).toBeGreaterThan(0)
-  })
 
   it('filters by name search', async () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({

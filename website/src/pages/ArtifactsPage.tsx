@@ -1,22 +1,43 @@
-import { useState, useMemo, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { safeSetItem } from '../utils/safeStorage'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, ExternalLink, X, Loader2, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2 } from 'lucide-react'
-import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
+import { AlertTriangle, Bookmark, ExternalLink, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
+import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
+import type { ItemContent } from '@virtuoso.dev/masonry'
+import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
+import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
-import { Card, CardTitle, PageHeader, StatCard, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
+import { PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
-import InfoTip from '../components/InfoTip'
+import { timeAgo as _timeAgo } from '../utils/timeAgo'
+import MarkdownRenderer from '../components/MarkdownRenderer'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import ArtifactFolderDeleteDialog from '../components/ArtifactFolderDeleteDialog'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
-import { childFolders, isDescendantFolder, folderSubtreeStats } from '../utils/artifactFolderTree'
-import { safeSetItem } from '../utils/safeStorage'
-import { timeAgo as _timeAgo } from '../utils/timeAgo'
+import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
+import { sanitize } from '../api/helpers'
+import { useTheme } from '../hooks/useTheme'
+import { sanitizeCssValue } from '../lib/cssSanitize'
+import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import type { Artifact, ArtifactFolder } from '../types'
+
+/** Read the current computed theme CSS vars (capped to the known set, each
+ * value sanitized) so a sandboxed preview iframe matches the dashboard theme.
+ * Mirrors the helper in ArtifactDetailPage. */
+function readThemeVars(): Record<string, string> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
+  const computed = getComputedStyle(document.documentElement)
+  const out: Record<string, string> = {}
+  for (const name of THEME_VAR_NAMES) {
+    const v = sanitizeCssValue(computed.getPropertyValue(name))
+    if (v) out[name] = v
+  }
+  return out
+}
 
 const sel =
   'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
@@ -38,12 +59,179 @@ function isoToTs(iso: string): number {
   return Number.isFinite(t) ? Math.floor(t / 1000) : 0
 }
 
+// ── Masonry library ──────────────────────────────────────────────────────
+// The Library renders as a virtualized masonry (瀑布流) via VirtuosoMasonry.
+// Widget/html artifacts get a live sandboxed preview thumbnail that self-sizes
+// (height reporter), giving the waterfall its natural varying heights; other
+// kinds get a content snippet. Virtualization means only on-screen previews
+// mount, so N sandboxed iframes stay cheap.
+
+/** A cell in the "Your Artifacts" grid — a local artifact. */
+type GridEntry = { kind: 'local'; key: string; art: Artifact }
+
+type LibCtx = {
+  onOpen: (slug: string) => void
+  onDelete: (a: Artifact) => void
+  deletingSlug: string | null
+}
+
+/** Responsive column count from the container width (~300px target column). */
+function useColumnCount(minColWidth = 300): readonly [React.RefObject<HTMLDivElement>, number] {
+  const ref = useRef<HTMLDivElement>(null)
+  const [cols, setCols] = useState(2)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const measure = () => setCols(Math.max(1, Math.floor(el.clientWidth / minColWidth)))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [minColWidth])
+  return [ref, cols] as const
+}
+
+/** Live preview of a widget/html artifact, rendered as a scaled-down
+ * thumbnail: the iframe lays out at a fixed desktop width (BASE_W) so the
+ * widget looks normal, then the whole frame is CSS-scaled to fit the column —
+ * a minified webpage, not a cramped narrow render. */
+function WidgetThumb({ content, slug }: { content: string; slug: string }) {
+  const BASE_W = 900
+  // Fixed iframe viewport height (in BASE_W space). The iframe NEVER grows past
+  // this — it only shrinks for genuinely short flow-content. This makes
+  // viewport-sized content (height:100vh / 100%, e.g. slide decks) impossible to
+  // ratchet: the reported height is clamped to the viewport, so 100vh can't feed
+  // itself taller. Tall flow-content (dashboards) is clipped to the viewport top.
+  const VIEWPORT_H = 560
+  const { theme, colorTheme, themeVersion } = useTheme()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
+  const srcdoc = useMemo(
+    () => (content ? buildSrcdoc({ html: content, themeVars, mode: theme, includeHeightReporter: true }) : null),
+    [content, themeVars, theme],
+  )
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [contentH, setContentH] = useState(VIEWPORT_H) // iframe height at BASE_W (≤ VIEWPORT_H)
+  const [colW, setColW] = useState(320) // measured column/preview width
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const measure = () => setColW(el.clientWidth || 320)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  useEffect(() => {
+    if (!srcdoc) return
+    const blob = new Blob([srcdoc], { type: 'text/html;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    setBlobUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [srcdoc])
+
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return
+      if (e.data?.type === 'mc-widget-height' && typeof e.data.height === 'number') {
+        setContentH((prev) => {
+          // Clamp to the viewport ceiling so viewport-sized content (100vh) can
+          // never grow the iframe — and thus can never grow itself. Only shrinks.
+          const next = Math.min(VIEWPORT_H, Math.max(80, Math.round(e.data.height)))
+          return next === prev ? prev : next
+        })
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [])
+
+  const scale = colW / BASE_W
+  // contentH is already clamped to VIEWPORT_H in the reporter, so the iframe
+  // never grows past the fixed viewport — no feedback loop is possible.
+  const renderH = contentH
+  const scaledH = Math.round(renderH * scale)
+
+  return (
+    <div
+      ref={wrapRef}
+      className="relative w-full overflow-hidden bg-card"
+      style={{ height: blobUrl ? scaledH : 140 }}
+    >
+      {blobUrl ? (
+        <iframe
+          ref={iframeRef}
+          src={blobUrl}
+          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+          title={`Preview: ${slug}`}
+          tabIndex={-1}
+          className="border-none bg-card block"
+          style={{
+            width: BASE_W,
+            height: renderH,
+            transform: `scale(${scale})`,
+            transformOrigin: 'top left',
+          }}
+        />
+      ) : (
+        <div className="h-full bg-bg-elevated animate-pulse" />
+      )}
+    </div>
+  )
+}
+
+/** Kind-aware preview for non-iframe artifacts: markdown is rendered, SVG is
+ * drawn (sanitized), JSON is pretty-printed, everything else is a raw snippet.
+ * All paths are height-capped so cards stay tidy. */
+function ContentThumb({ content, kind }: { content: string; kind: Artifact['kind'] }) {
+  if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
+
+  if (kind === 'markdown') {
+    return (
+      <div className="px-3 py-2 max-h-[300px] overflow-hidden bg-card msg-content text-[12px] leading-relaxed">
+        <MarkdownRenderer content={content.slice(0, 4000)} />
+      </div>
+    )
+  }
+
+  if (kind === 'svg') {
+    const clean = sanitize(content)
+    return (
+      <div
+        className="px-3 py-3 max-h-[300px] overflow-hidden bg-card flex items-center justify-center [&>svg]:max-w-full [&>svg]:max-h-[280px] [&>svg]:h-auto"
+        dangerouslySetInnerHTML={{ __html: clean }}
+      />
+    )
+  }
+
+  let body = content
+  if (kind === 'json') {
+    try { body = JSON.stringify(JSON.parse(content), null, 2) } catch { /* keep raw on parse failure */ }
+  }
+  return (
+    <pre className="m-0 px-3 py-2 text-[11px] leading-snug text-muted font-mono whitespace-pre-wrap break-words max-h-[260px] overflow-hidden bg-bg-elevated">
+      {body.slice(0, 1200)}
+    </pre>
+  )
+}
+
+// ── Folders (Mesh-2720) ──────────────────────────────────────────────────
+// The library's DnD has only `folder-drop` droppables (folder cards/rows,
+// breadcrumb segments, the Unfiled lane), so pointer containment is the whole
+// story: a drop target is "over" only while the cursor is inside it. No
+// closest-fallback — that would keep the nearest folder permanently
+// highlighted during any drag, even with the cursor nowhere near it.
 const artifactLibraryCollision: CollisionDetection = (args) => pointerWithin(args)
 
 // Center the DragOverlay ghost on the cursor. Without this the overlay spawns
-// at the dragged element's top-left — grabbing a tall row near its bottom
-// leaves the ghost pixels above the pointer. (Inline port of
-// @dnd-kit/modifiers' snapCenterToCursor; the package isn't a dependency.)
+// at the dragged element's top-left — grabbing a tall masonry card near its
+// bottom leaves the ghost hundreds of pixels above the pointer. (Inline port
+// of @dnd-kit/modifiers' snapCenterToCursor; the package isn't a dependency.)
 const snapOverlayToCursor: Modifier = ({ activatorEvent, draggingNodeRect, transform }) => {
   if (draggingNodeRect && activatorEvent && 'clientX' in activatorEvent && 'clientY' in activatorEvent) {
     const evt = activatorEvent as PointerEvent
@@ -58,7 +246,7 @@ const snapOverlayToCursor: Modifier = ({ activatorEvent, draggingNodeRect, trans
   return transform
 }
 
-/** Payload carried by draggable rows; routes the drop in handleDragEnd. */
+/** Payload carried by draggable cards/rows; routes the drop in handleDragEnd. */
 type LibraryDrag =
   | { type: 'artifact'; slug: string; name: string; folderId: string }
   | { type: 'folder'; id: string; name: string }
@@ -69,7 +257,7 @@ type FolderActions = {
   onMove: (f: ArtifactFolder, newParentId: string) => void
   onDelete: (f: ArtifactFolder) => void
   onSetColor: (f: ArtifactFolder, color: string) => void
-  /** Folder currently in inline-rename mode (its row swaps the name for an input). */
+  /** Folder currently in inline-rename mode (its card/row swaps the name for an input). */
   renamingId: string | null
   onRenameSubmit: (f: ArtifactFolder, name: string) => void
   onRenameCancel: () => void
@@ -177,8 +365,8 @@ function FolderNameInput({ initial = '', placeholder = 'Folder name', onCommit, 
   )
 }
 
-/** Shared "…" menu for a folder row. The move submenu excludes the folder's
- * own subtree — a folder can't become its own descendant. */
+/** Shared "…" menu for a folder (gallery card + table row). The move submenu
+ * excludes the folder's own subtree — a folder can't become its own descendant. */
 function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; folders: ArtifactFolder[]; actions: FolderActions }) {
   const moveTargets = folders.filter(f => !isDescendantFolder(folders, folder.id, f.id))
   return (
@@ -220,6 +408,327 @@ function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; fold
   )
 }
 
+/** Mini preview tile inside a gallery folder card — the same lazy full-fetch
+ * the masonry cards use (shared ['artifact', slug] cache), clipped to a small
+ * fixed-height tile so the folder reads as "a glimpse of what's inside". */
+function FolderMiniThumb({ a }: { a: Artifact }) {
+  const { data: full } = useQuery<Artifact>({
+    queryKey: ['artifact', a.slug],
+    queryFn: () => api.artifact(a.slug),
+    staleTime: 60_000,
+    enabled: !!a.slug,
+  })
+  const hasPreview = a.kind === 'widget' || a.kind === 'html'
+  const content = full?.content || ''
+  return (
+    <div className="h-[84px] rounded-md border border-border overflow-hidden bg-bg-elevated pointer-events-none" title={a.name}>
+      {hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+    </div>
+  )
+}
+
+/** Gallery folder card: click to enter, draggable (nest via drop on another
+ * folder card / breadcrumb), droppable (receives artifacts and folders).
+ * Carries the same mr-3/mb-3 gutters the masonry cards use so folder cards
+ * line up column-for-column with the gallery below. */
+function FolderCard({ folder, folders, previewArtifacts, actions }: {
+  folder: ArtifactFolder
+  folders: ArtifactFolder[]
+  previewArtifacts: Artifact[]
+  actions: FolderActions
+}) {
+  const stats = folderSubtreeStats(folders, folder.id)
+  const renaming = actions.renamingId === folder.id
+  const preview = previewArtifacts.slice(0, 3)
+  return (
+    <DndDroppable id={`folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
+      {({ setNodeRef: setDropRef, isOver }) => (
+        <DndDraggable id={`folder:${folder.id}`} data={{ type: 'folder', id: folder.id, name: folder.name } satisfies LibraryDrag}>
+          {({ setNodeRef: setDragRef, listeners, isDragging }) => (
+            <div
+              ref={(el) => { setDropRef(el); setDragRef(el) }}
+              {...(renaming ? {} : listeners)}
+              onClick={() => { if (!renaming) actions.onOpen(folder.id) }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (!renaming && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); actions.onOpen(folder.id) } }}
+              aria-label={`Open folder ${folder.name}`}
+              className={`group mr-3 mb-3 rounded-lg border bg-card p-3 cursor-pointer transition-all hover:border-border-strong hover:shadow-md ${
+                isOver ? 'border-accent ring-2 ring-accent/40 bg-accent/5' : 'border-border'
+              }`}
+              style={{
+                opacity: isDragging ? 0.4 : 1,
+                ...(folder.color && !isOver ? { borderLeft: `3px solid ${folder.color}` } : {}),
+              }}
+            >
+              {/* Content glimpse: up to three mini previews of what's inside. */}
+              <div className={`grid gap-1.5 mb-2.5 ${preview.length === 3 ? 'grid-cols-3' : preview.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                {preview.length > 0 ? (
+                  preview.map((a) => <FolderMiniThumb key={a.slug} a={a} />)
+                ) : (
+                  <div className="h-[84px] rounded-md border border-dashed border-border flex items-center justify-center text-muted">
+                    <FolderOpen size={22} className="opacity-50" />
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <FolderGlyph folder={folder} size={17} />
+                <div className="min-w-0 flex-1">
+                  {renaming ? (
+                    <FolderNameInput
+                      initial={folder.name}
+                      placeholder="Rename folder"
+                      onCommit={(name) => actions.onRenameSubmit(folder, name)}
+                      onCancel={actions.onRenameCancel}
+                    />
+                  ) : (
+                    <div className="text-[15px] leading-tight text-text-strong font-semibold truncate">{folder.name}</div>
+                  )}
+                  <div className="text-[11px] text-muted mt-0.5">
+                    {stats.artifactCount} artifact{stats.artifactCount === 1 ? '' : 's'}
+                    {stats.subfolderCount > 0 ? ` · ${stats.subfolderCount} folder${stats.subfolderCount === 1 ? '' : 's'}` : ''}
+                  </div>
+                </div>
+                <div className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  <FolderMenu folder={folder} folders={folders} actions={actions} />
+                </div>
+              </div>
+            </div>
+          )}
+        </DndDraggable>
+      )}
+    </DndDroppable>
+  )
+}
+
+/** Grid for folder cards using the same measurement + gutter scheme as
+ * LibraryMasonry (-mr-3 container, cards carry mr-3/mb-3, identical 300px
+ * min column width) so folder cards align column-for-column with the
+ * masonry gallery below. */
+function FolderCardGrid({ children }: { children: React.ReactNode }) {
+  const [ref, cols] = useColumnCount(300)
+  return (
+    <div ref={ref} className="-mr-3">
+      <div className="grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/** Gallery breadcrumb: "All Artifacts › Parent › Current". Non-current
+ * segments navigate on click and accept drops (move the dragged item up to
+ * that level; the root segment unfiles). */
+function FolderBreadcrumbBar({ folders, currentFolderId, onNavigate }: {
+  folders: ArtifactFolder[]
+  currentFolderId: string
+  onNavigate: (folderId: string) => void
+}) {
+  const chain = folderBreadcrumb(folders, currentFolderId)
+  const segment = (label: string, folderId: string, isCurrent: boolean) => (
+    <DndDroppable key={folderId || 'root'} id={`crumb-drop:${folderId || 'root'}`} data={{ type: 'folder-drop', folderId }}>
+      {({ setNodeRef, isOver }) => (
+        <button
+          ref={setNodeRef}
+          type="button"
+          disabled={isCurrent}
+          onClick={() => onNavigate(folderId)}
+          className={`px-1.5 py-0.5 rounded text-sm bg-transparent border-none transition-colors ${
+            isCurrent
+              ? 'text-text-strong font-medium cursor-default'
+              : 'text-muted hover:text-text cursor-pointer'
+          } ${isOver ? 'ring-2 ring-accent/40 text-text' : ''}`}
+        >
+          {label}
+        </button>
+      )}
+    </DndDroppable>
+  )
+  return (
+    <nav aria-label="Folder breadcrumb" className="flex items-center flex-wrap gap-0.5 mb-3">
+      {segment('All Artifacts', '', chain.length === 0)}
+      {chain.map((f, i) => (
+        <span key={f.id} className="flex items-center gap-0.5">
+          <ChevronRight size={12} className="text-muted" />
+          {segment(f.name, f.id, i === chain.length - 1)}
+        </span>
+      ))}
+    </nav>
+  )
+}
+
+/** A single masonry card. Rendered by VirtuosoMasonry for each artifact. */
+function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
+  const { onOpen, onDelete, deletingSlug } = context
+  // The list payload omits `content` (metadata only). Fetch the full artifact
+  // lazily so the preview can render — virtualization means only on-screen
+  // cards fetch, and the ['artifact', slug] key shares cache with the detail page.
+  const { data: full } = useQuery<Artifact>({
+    queryKey: ['artifact', a.slug],
+    queryFn: () => api.artifact(a.slug),
+    staleTime: 60_000,
+    enabled: !!a.slug,
+  })
+  const deleting = deletingSlug === a.slug
+  const hasPreview = a.kind === 'widget' || a.kind === 'html'
+  const content = full?.content || ''
+  // Author affordance: an imported artifact shows whose copy it came from; a
+  // locally-authored artifact shows nothing (implicitly me).
+  const author = a.source === 'import'
+    ? (a.fork_metadata?.upstream_owner || a.publication?.published_by || '')
+    : ''
+  return (
+    // Draggable onto folder cards / breadcrumb segments / table folder rows
+    // (Mesh-2720). PointerSensor's activation distance keeps plain clicks
+    // opening the card.
+    <DndDraggable id={`artifact:${a.slug}`} data={{ type: 'artifact', slug: a.slug, name: a.name, folderId: a.folder_id || '' } satisfies LibraryDrag}>
+      {({ setNodeRef, listeners, isDragging }) => (
+    <div
+      ref={setNodeRef}
+      {...listeners}
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(a.slug)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen(a.slug)
+        }
+      }}
+      style={{ opacity: isDragging ? 0.4 : 1 }}
+      className="mb-3 mr-3 rounded-lg border border-border bg-card overflow-hidden hover:border-border-strong hover:shadow-md transition-all cursor-pointer"
+    >
+      {/* Preview is non-interactive so clicks fall through to the card's onClick. */}
+      <div className="pointer-events-none">
+        {hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+      </div>
+      <div className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm text-text-strong font-medium truncate">{a.name}</span>
+              {a.publication && (
+                <Share2
+                  size={12}
+                  className={a.publication.last_error ? 'text-danger shrink-0' : 'text-ok shrink-0'}
+                  aria-label={a.publication.last_error ? 'Published (sync issue)' : `Published (${a.publication.visibility.toLowerCase()})`}
+                />
+              )}
+            </div>
+            <code className="text-[11px] text-muted">{a.slug}</code>
+            {author && <span className="block text-[11px] text-muted mt-0.5">by {author}</span>}
+          </div>
+          <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
+        </div>
+        {a.description && <div className="text-[12px] text-muted mt-1 line-clamp-2">{a.description}</div>}
+        {a.tags && a.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {a.tags.map((t) => (
+              <span key={t} className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-border text-muted">{t}</span>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center justify-between mt-2">
+          <span className="text-[11px] text-muted">v{a.version} · {_timeAgo(isoToTs(a.updated_at))}</span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openPopout(a.slug, a.name) }}
+              className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
+              title="Pop out into its own window"
+              aria-label="Pop out to window"
+            >
+              <ExternalLink size={13} />
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={(e) => { e.stopPropagation(); onDelete(a) }}
+              className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
+              title="Remove from library"
+              aria-label="Remove from artifacts library"
+            >
+              {deleting ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+      )}
+    </DndDraggable>
+  )
+}
+
+const GridCard: ItemContent<GridEntry, LibCtx> = ({ data: entry, context }) => {
+  // VirtuosoMasonry can pass an out-of-range (undefined) entry for one tick
+  // while its internal list catches up to a shrunk data array; bail before any
+  // field access (this is the black-screen bug guard the local card had).
+  if (!entry) return null
+  return <LocalCardBody a={entry.art} context={context} />
+}
+
+/** The "Your Artifacts" grid of local artifacts. */
+function LibraryMasonry({
+  entries,
+  onOpen,
+  onDelete,
+  deletingSlug,
+}: {
+  entries: GridEntry[]
+  onOpen: (slug: string) => void
+  onDelete: (a: Artifact) => void
+  deletingSlug: string | null
+}) {
+  const [ref, cols] = useColumnCount(300)
+  const context = useMemo<LibCtx>(
+    () => ({ onOpen, onDelete, deletingSlug }),
+    [onOpen, onDelete, deletingSlug],
+  )
+  // Below this count, render a content-sized CSS-columns masonry so the
+  // gallery takes only the height its cards need — no reserved blank space.
+  // At or above it, fall back to the virtualized masonry (fixed height +
+  // internal scroll) so a large library of iframe-preview cards stays
+  // performant.
+  const VIRTUALIZE_AT = 30
+  return (
+    // -mr-3 offsets each card's own mr-3 so the trailing column's gutter
+    // doesn't add page width; cards carry mr-3 (gutter) + mb-3 (row gap).
+    <div ref={ref} className="-mr-3">
+      {entries.length >= VIRTUALIZE_AT ? (
+        <VirtuosoMasonry
+          key={cols}
+          columnCount={cols}
+          data={entries}
+          context={context}
+          ItemContent={GridCard}
+          style={{ height: 'min(72vh, 1000px)' }}
+        />
+      ) : (
+        <div style={{ columnCount: cols, columnGap: 0 }}>
+          {entries.map((e, i) => (
+            <MasonryGridItem key={e.key} data={e} context={context} index={i} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Non-virtualized wrapper so small galleries use a content-sized CSS-columns
+// layout (no reserved blank height) while reusing the exact same card renderer
+// the virtualized masonry uses. break-inside-avoid keeps a card whole within a
+// column. GridCard is an ItemContent (FC|ComponentClass union), so it must be
+// rendered as a JSX element, not called.
+const MasonryCard = GridCard
+function MasonryGridItem({ data, context, index }: { data: GridEntry; context: LibCtx; index: number }) {
+  return (
+    <div className="break-inside-avoid">
+      <MasonryCard data={data} context={context} index={index} />
+    </div>
+  )
+}
+
+/** Column headers shared by the flat table and the folder tree table. */
 function LibraryTableHead() {
   const th = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium'
   return (
@@ -271,6 +780,13 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, indent = 0, dropFolder
           <td className="px-2.5 py-2 border-b border-border" style={indent > 0 ? { paddingLeft: `${10 + indent * 20}px` } : undefined}>
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-text-strong font-medium">{a.name}</span>
+              {a.publication && (
+                <Share2
+                  size={12}
+                  className={a.publication.last_error ? 'text-danger' : 'text-ok'}
+                  aria-label={a.publication.last_error ? 'Published (sync issue)' : `Published (${a.publication.visibility.toLowerCase()})`}
+                />
+              )}
             </div>
             {a.description && <div className="text-[12px] text-muted truncate max-w-[400px]">{a.description}</div>}
           </td>
@@ -305,7 +821,7 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, indent = 0, dropFolder
                 disabled={deletingSlug === a.slug}
                 onClick={(e) => { e.stopPropagation(); onDelete(a) }}
                 className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
-                title="Remove from artifacts library (does not delete the source file or widget)"
+                title="Remove from library"
                 aria-label="Remove from artifacts library"
               >
                 {deletingSlug === a.slug ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
@@ -324,8 +840,8 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, indent = 0, dropFolder
   )
 }
 
-/** The original compact flat table of the local artifact library (rendered
- * while any filter is active, when folder scoping is bypassed). */
+/** The original compact table view of the local artifact library (flat —
+ * rendered while any filter is active, when folder scoping is bypassed). */
 function LibraryTable({
   items,
   onOpen,
@@ -521,21 +1037,32 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
   )
 }
 
-export default function ArtifactsPage() {
-  const navigate = useNavigate()
+export default function ArtifactsPage() {  const navigate = useNavigate()
   const qc = useQueryClient()
   const [filter, setFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<string>('')
+  const [view, setView] = useState<'grid' | 'table'>(
+    () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
+  )
 
-  // ── Library folders (Mesh-2720) ──────────────────────────────────────────
-  // Any active filter bypasses folder scoping entirely — matches show flat
-  // across all folders in the original table.
+  // ── Folder browse scope (Mesh-2720) ──────────────────────────────────────
+  // The open folder rides the URL (?folder=<id>) so gallery navigation is
+  // back-button-friendly and linkable. Any active filter bypasses folder
+  // scoping entirely — matches show flat across all folders.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const currentFolderId = searchParams.get('folder') || ''
+  const openFolder = useCallback((folderId: string) => {
+    setSearchParams(folderId ? { folder: folderId } : {}, { replace: false })
+  }, [setSearchParams])
   const { folders } = useArtifactFolders()
   const filtersActive = !!(filter || tagFilter || kindFilter)
+  // If the URL points at a deleted/unknown folder, treat it as root rather
+  // than showing a phantom empty view.
+  const scopeFolderId = folders.some(f => f.id === currentFolderId) ? currentFolderId : ''
 
-  // Tree expansion — client-local by design (§2.5): collapsed by default,
-  // expanded ids persisted per browser.
+  // Tree expansion for the table view — client-local by design (§2.5):
+  // collapsed by default, expanded ids persisted per browser.
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => {
     try {
       const raw = JSON.parse(localStorage.getItem('mc-artifact-folders-expanded') || '[]')
@@ -551,22 +1078,13 @@ export default function ArtifactsPage() {
       return next
     })
   }, [])
-  const expandFolder = useCallback((id: string) => {
-    setExpandedIds(prev => {
-      if (prev.has(id)) return prev
-      const next = new Set(prev)
-      next.add(id)
-      safeSetItem('mc-artifact-folders-expanded', JSON.stringify([...next]))
-      return next
-    })
-  }, [])
 
   const invalidateFolders = useCallback(() => {
     qc.invalidateQueries({ queryKey: ['artifact-folders'] })
     qc.invalidateQueries({ queryKey: ['artifacts'] })
   }, [qc])
   const createFolderMut = useMutation({
-    mutationFn: (body: { name: string; parent_id?: string; color?: string }) => api.createArtifactFolder(body),
+    mutationFn: (body: { name: string; parent_id?: string }) => api.createArtifactFolder(body),
     onSuccess: invalidateFolders,
   })
   const updateFolderMut = useMutation({
@@ -591,18 +1109,19 @@ export default function ArtifactsPage() {
   const handleNewFolder = useCallback(() => { setNewFolderColor(''); setCreatingFolder(true) }, [])
   const commitNewFolder = useCallback((name: string) => {
     setCreatingFolder(false)
-    // The table view creates at root (nest afterwards via drag or the menu).
+    // In the gallery, create inside the folder being browsed; the tree view
+    // creates at root (nest afterwards via drag or the folder menu).
+    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
     createFolderMut.mutate({
       name,
+      ...(parent ? { parent_id: parent } : {}),
       ...(newFolderColor ? { color: newFolderColor } : {}),
     })
     scheduleIconRefetch()
-  }, [createFolderMut, newFolderColor, scheduleIconRefetch])
+  }, [createFolderMut, view, filtersActive, scopeFolderId, newFolderColor, scheduleIconRefetch])
 
   const folderActions = useMemo<FolderActions>(() => ({
-    // The table-only library has no gallery navigation — "opening" a folder
-    // expands it in the tree.
-    onOpen: expandFolder,
+    onOpen: openFolder,
     onRename: (f) => setRenamingFolderId(f.id),
     onMove: (f, newParentId) => {
       if (isDescendantFolder(folders, f.id, newParentId)) return
@@ -613,7 +1132,12 @@ export default function ArtifactsPage() {
       // has nothing at stake — delete it immediately, no choice dialog.
       const stats = folderSubtreeStats(folders, f.id)
       if (stats.artifactCount === 0 && stats.subfolderCount === 0) {
-        api.deleteArtifactFolder(f.id, false).finally(invalidateFolders)
+        api.deleteArtifactFolder(f.id, false).finally(() => {
+          if (scopeFolderId && isDescendantFolder(folders, f.id, scopeFolderId)) {
+            openFolder(f.parent_id || '')
+          }
+          invalidateFolders()
+        })
         return
       }
       setDeletingFolder(f)
@@ -630,7 +1154,7 @@ export default function ArtifactsPage() {
       }
     },
     onRenameCancel: () => setRenamingFolderId(null),
-  }), [expandFolder, updateFolderMut, folders, renamingFolderId, scheduleIconRefetch, invalidateFolders])
+  }), [openFolder, updateFolderMut, folders, renamingFolderId, scheduleIconRefetch, scopeFolderId, invalidateFolders])
 
   const confirmDeleteFolder = useCallback(async (deleteContents: boolean) => {
     if (!deletingFolder) return
@@ -638,12 +1162,16 @@ export default function ArtifactsPage() {
       await api.deleteArtifactFolder(deletingFolder.id, deleteContents)
     } finally {
       setDeletingFolder(null)
+      // If we were inside the deleted subtree, pop back to its parent.
+      if (scopeFolderId && isDescendantFolder(folders, deletingFolder.id, scopeFolderId)) {
+        openFolder(deletingFolder.parent_id || '')
+      }
       invalidateFolders()
     }
-  }, [deletingFolder, invalidateFolders])
+  }, [deletingFolder, folders, scopeFolderId, openFolder, invalidateFolders])
 
   // ── Library drag-and-drop ─────────────────────────────────────────────────
-  // One DndContext covers the table. Artifact → folder-drop moves it; folder
+  // One DndContext covers both views. Artifact → folder-drop moves it; folder
   // → folder-drop nests it into the target, cycle-guarded. (Folders sort
   // alphabetically, so there is no manual sibling reorder.) The activation
   // distance keeps clicks working.
@@ -704,7 +1232,7 @@ export default function ArtifactsPage() {
     queryFn: () => api.artifacts({}),
   })
 
-  const artifacts = useMemo(() => data?.artifacts || [], [data])
+  const artifacts = data?.artifacts || []
   const allTags = useMemo(() => {
     const s = new Set<string>()
     for (const a of allTagsData?.artifacts || []) for (const t of a.tags || []) s.add(t)
@@ -712,9 +1240,10 @@ export default function ArtifactsPage() {
   }, [allTagsData])
 
   const visible = useMemo(() => {
-    if (!filter) return artifacts
+    const list = artifacts
+    if (!filter) return list
     const q = filter.toLowerCase()
-    return artifacts.filter(
+    return list.filter(
       (a) =>
         a.name.toLowerCase().includes(q) ||
         a.slug.toLowerCase().includes(q) ||
@@ -722,8 +1251,42 @@ export default function ArtifactsPage() {
     )
   }, [artifacts, filter])
 
-  const totalVersions = artifacts.reduce((sum, a) => sum + (a.version || 1), 0)
-  const widgetCount = artifacts.filter((a) => a.kind === 'widget').length
+  // Browse-mode gallery scoping: no filters → only artifacts filed in the open
+  // folder (a dangling folder_id degrades to unfiled). Any filter active →
+  // flat matches across all folders (§2.6). The tree table buckets for itself.
+  const scopedVisible = useMemo(() => {
+    if (filtersActive) return visible
+    const ids = new Set(folders.map(f => f.id))
+    return visible.filter(a => {
+      const fid = a.folder_id && ids.has(a.folder_id) ? a.folder_id : ''
+      return fid === scopeFolderId
+    })
+  }, [visible, filtersActive, folders, scopeFolderId])
+
+  // Subfolder cards shown above the gallery masonry (browse mode only).
+  const subfolders = useMemo(
+    () => (filtersActive ? [] : childFolders(folders, scopeFolderId)),
+    [filtersActive, folders, scopeFolderId],
+  )
+
+  // Up to three preview artifacts per subfolder card — direct children first,
+  // then deeper descendants, so every folder card gives a visual glimpse of
+  // what's filed inside it.
+  const folderPreviews = useMemo(() => {
+    const map = new Map<string, Artifact[]>()
+    for (const f of subfolders) {
+      const direct = artifacts.filter((a) => (a.folder_id || '') === f.id)
+      let pool = direct
+      if (direct.length < 3) {
+        const deeper = artifacts.filter(
+          (a) => a.folder_id && a.folder_id !== f.id && isDescendantFolder(folders, f.id, a.folder_id),
+        )
+        pool = [...direct, ...deeper]
+      }
+      map.set(f.id, pool.slice(0, 3))
+    }
+    return map
+  }, [subfolders, artifacts, folders])
 
   const deleteMut = useMutation({
     mutationFn: (slug: string) => api.deleteArtifact(slug),
@@ -731,6 +1294,11 @@ export default function ArtifactsPage() {
   })
 
   const handleOpen = useCallback((slug: string) => navigate(`/artifacts/${slug}`), [navigate])
+
+  const gridEntries = useMemo<GridEntry[]>(
+    () => scopedVisible.map((a) => ({ kind: 'local' as const, key: a.slug, art: a })),
+    [scopedVisible],
+  )
 
   const handleDelete = useCallback((a: Artifact) => {
     if (window.confirm(
@@ -756,13 +1324,6 @@ export default function ArtifactsPage() {
     <>
       <PageHeader title="Artifacts" subtitle="Widgets, files, and snippets — live-tracked with version history" />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-        <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
-          <StatCard label="Total" value={artifacts.length} accent />
-          <StatCard label="Widgets" value={widgetCount} delay={60} />
-          <StatCard label="Tags" value={allTags.length} delay={120} />
-          <StatCard label="Total Versions" value={totalVersions} delay={180} />
-        </div>
-
         {(errMessage || mutErr) && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>
@@ -774,12 +1335,24 @@ export default function ArtifactsPage() {
           </div>
         )}
 
-        <Card>
-          <CardTitle>
-            Library{' '}
-            <InfoTip text="Artifacts are persistent, versioned widgets. Save one from any rendered <mcwidget> in chat (Bookmark icon), or have the agent call artifact_save. Iterate later via 'iterate on artifact <slug>'." />
-          </CardTitle>
-          <div className="flex flex-wrap gap-2 items-center mb-3">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h3 className="text-sm font-semibold text-text-strong">Your Artifacts</h3>
+          <div className="flex items-center gap-2">
+            <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title="Create a folder to organize your artifacts">
+              <FolderPlus size={13} /> New folder
+            </Btn>
+            <SegmentedControl
+              segments={[
+                { key: 'grid', label: 'Gallery', icon: <LayoutDashboard size={13} />, tooltip: 'Masonry preview gallery' },
+                { key: 'table', label: 'Table', icon: <TableIcon size={13} />, tooltip: 'Compact table' },
+              ]}
+              value={view}
+              onChange={(v) => { setView(v); safeSetItem('mc-artifacts-view', v) }}
+              layoutId="artifact-view"
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 items-center mb-3">
             <SearchInput
               placeholder="Filter by name, slug, description…"
               value={filter}
@@ -800,31 +1373,10 @@ export default function ArtifactsPage() {
                 </option>
               ))}
             </select>
-            <Btn onClick={handleNewFolder} className="flex items-center gap-1.5 ml-auto" title="Create a folder to organize your artifacts">
-              <FolderPlus size={13} /> New folder
-            </Btn>
           </div>
 
-          {creatingFolder && (
-            <div className="mb-2 max-w-[360px]">
-              <div className="flex items-center gap-2">
-                <FolderPlus size={15} className="shrink-0" style={{ color: newFolderColor || 'var(--accent)' }} />
-                <div className="min-w-0 flex-1">
-                  <FolderNameInput
-                    placeholder="New folder name"
-                    onCommit={commitNewFolder}
-                    onCancel={() => setCreatingFolder(false)}
-                  />
-                </div>
-              </div>
-              <div className="mt-1.5 ml-6">
-                <FolderColorSwatches size={13} value={newFolderColor} onPick={setNewFolderColor} />
-              </div>
-            </div>
-          )}
-
-          {/* One DndContext spans the table so artifacts and folders can be
-              dragged between folder rows and the Unfiled lane. */}
+          {/* One DndContext spans breadcrumb + folder cards + gallery/table so
+              artifacts and folders can be dragged between all of them. */}
           <DndContext
             sensors={dndSensors}
             collisionDetection={artifactLibraryCollision}
@@ -834,23 +1386,90 @@ export default function ArtifactsPage() {
             onDragEnd={handleDragEnd}
             onDragCancel={handleDragCancel}
           >
-            {artifacts.length === 0 && folders.length === 0 && !creatingFolder ? (
-              <EmptyState
-                icon={<Bookmark className="lucide-inline" />}
-                title="No artifacts yet"
-                subtitle="Click the bookmark icon on any rendered widget in chat to save it here."
+            {view === 'grid' && !filtersActive && scopeFolderId && (
+              <FolderBreadcrumbBar folders={folders} currentFolderId={scopeFolderId} onNavigate={openFolder} />
+            )}
+            {view === 'grid' && (subfolders.length > 0 || (creatingFolder && !filtersActive)) && (
+              <FolderCardGrid>
+                {creatingFolder && !filtersActive && (
+                  <div className="mr-3 mb-3 rounded-lg border border-accent bg-card p-3" style={newFolderColor ? { borderLeft: `3px solid ${newFolderColor}` } : undefined}>
+                    <div className="h-[84px] rounded-md border border-dashed border-border flex items-center justify-center text-muted mb-2.5">
+                      <FolderPlus size={22} className="opacity-50" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <FolderIcon size={17} className="shrink-0" style={{ color: newFolderColor || 'var(--accent)' }} />
+                      <div className="min-w-0 flex-1">
+                        <FolderNameInput
+                          placeholder="New folder name"
+                          onCommit={commitNewFolder}
+                          onCancel={() => setCreatingFolder(false)}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-2">
+                      <FolderColorSwatches size={14} value={newFolderColor} onPick={setNewFolderColor} />
+                    </div>
+                  </div>
+                )}
+                {subfolders.map((f) => (
+                  <FolderCard
+                    key={f.id}
+                    folder={f}
+                    folders={folders}
+                    previewArtifacts={folderPreviews.get(f.id) ?? []}
+                    actions={folderActions}
+                  />
+                ))}
+              </FolderCardGrid>
+            )}
+            {(view !== 'grid' || filtersActive) && creatingFolder && (
+              <div className="mb-2 max-w-[360px]">
+                <div className="flex items-center gap-2">
+                  <FolderPlus size={15} className="shrink-0" style={{ color: newFolderColor || 'var(--accent)' }} />
+                  <div className="min-w-0 flex-1">
+                    <FolderNameInput
+                      placeholder="New folder name"
+                      onCommit={commitNewFolder}
+                      onCancel={() => setCreatingFolder(false)}
+                    />
+                  </div>
+                </div>
+                <div className="mt-1.5 ml-6">
+                  <FolderColorSwatches size={13} value={newFolderColor} onPick={setNewFolderColor} />
+                </div>
+              </div>
+            )}
+
+            {gridEntries.length === 0 && (view === 'grid' || filtersActive) ? (
+              (artifacts.length === 0 && folders.length === 0) ? (
+                <EmptyState
+                  icon={<Bookmark className="lucide-inline" />}
+                  title="No artifacts yet"
+                  subtitle="Click the bookmark icon on any rendered widget in chat to save it here."
+                />
+              ) : (
+                <div className="text-muted italic px-2.5 py-3.5 text-sm">
+                  {filtersActive
+                    ? 'No artifacts match your filters.'
+                    : scopeFolderId
+                      ? (subfolders.length ? 'No artifacts directly in this folder.' : 'This folder is empty. Drag artifacts onto it to file them here.')
+                      : 'No unfiled artifacts — everything is filed in folders.'}
+                </div>
+              )
+            ) : view === 'grid' ? (
+              <LibraryMasonry
+                entries={gridEntries}
+                onOpen={handleOpen}
+                onDelete={handleDelete}
+                deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
               />
             ) : filtersActive ? (
-              visible.length === 0 ? (
-                <div className="text-muted italic px-2.5 py-3.5 text-sm">No artifacts match your filters.</div>
-              ) : (
-                <LibraryTable
-                  items={visible}
-                  onOpen={handleOpen}
-                  onDelete={handleDelete}
-                  deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
-                />
-              )
+              <LibraryTable
+                items={visible}
+                onOpen={handleOpen}
+                onDelete={handleDelete}
+                deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
+              />
             ) : (
               <LibraryTree
                 items={visible}
@@ -891,8 +1510,8 @@ export default function ArtifactsPage() {
             onConfirm={confirmDeleteFolder}
             onClose={() => setDeletingFolder(null)}
           />
-        </Card>
       </div>
     </>
   )
 }
+

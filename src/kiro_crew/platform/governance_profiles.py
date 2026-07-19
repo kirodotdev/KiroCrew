@@ -375,6 +375,7 @@ def governance_permits(
     agent: str = "",
     app: str = "",
     log_warning: bool = True,
+    fail_closed: bool = False,
 ) -> "object":
     """One-call chokepoint helper: is *item* permitted in *scope* right now?
 
@@ -403,6 +404,15 @@ def governance_permits(
     *into this call* from a stdio site so the degrade WARNING (whose stderr is
     shared with the JSON-RPC stream) is suppressed at the point it is emitted; the
     file-backed ``governance_degraded`` SEL is still written either way.
+
+    ``fail_closed=True`` (AVP-23427) inverts the degrade disposition for an
+    AUTHORIZATION chokepoint whose wrong-permit is an exfiltration (artifact
+    publish): a governance-evaluation error then returns a DENYING
+    ``Decision(False, ...)`` and audits ``failed_closed=True`` (ERROR + critical
+    SEL), instead of the default permissive "no opinion".  This is required
+    because the degrade is caught HERE — a caller that wraps this in its own
+    ``except`` to fail closed can never see the error (it is swallowed), so the
+    DENY must be produced at the point the exception is actually caught.
     """
     from kiro_crew.platform.context import (
         PlatformCompositionError,
@@ -420,10 +430,19 @@ def governance_permits(
         raise
     except Exception:
         audit_governance_degraded(
-            "governance_permits", session_key=session_key, scope=scope, log_warning=log_warning
+            "governance_permits",
+            session_key=session_key,
+            scope=scope,
+            log_warning=log_warning,
+            failed_closed=fail_closed,
         )
         from kiro_crew.platform.governance import Decision as _D
 
+        if fail_closed:
+            # Authorization chokepoint (e.g. artifact publish): a degraded
+            # evaluation must DENY, not degrade-to-permit — the blast radius of a
+            # wrong permit is data exfiltration.
+            return _D(False, "governance error; denied (fail-closed)", rule="default")
         return _D(True, "governance error; no opinion", rule="default")
 
 

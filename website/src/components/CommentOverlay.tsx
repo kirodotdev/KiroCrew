@@ -262,5 +262,59 @@ export function formatCommentsMessage(filePath: string, comments: InlineComment[
   return lines.join('\n')
 }
 
+/** Minimal shape of a durable artifact comment for chat-submission formatting.
+ *  Projected from `ArtifactComment` so this formatter is independent of the
+ *  full type and testable in isolation. */
+export interface ArtifactCommentForChat {
+  /** The comment text (durable comments store this in `body`). */
+  body: string
+  /** Anchor quote the comment was attached to, if any. */
+  anchor?: { quote?: string } | null
+  /** Whether the comment was authored by an agent. NEVER submitted to chat. */
+  is_agent?: boolean
+}
+
+/** Format durable artifact comments into a structured USER message for the
+ *  originating chat session. Mirrors the local-file `formatCommentsMessage`,
+ *  including the hardened `esc()` (escapes `\`, `"`, `\n`, `\r`) so a comment
+ *  body cannot inject a fake prompt block (NFR-1); keys each comment by its
+ *  anchor quote rather than file line/col.
+ *
+ *  Agent-authored comments are filtered out structurally (FR-5) — the caller
+ *  also gates the affordance, so this is defense in depth. */
+export function formatArtifactCommentsMessage(
+  slug: string,
+  name: string,
+  comments: ArtifactCommentForChat[],
+  extraPrompt?: string,
+): string {
+  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')
+  // Human-only: never submit agent comments to chat.
+  const human = comments.filter(c => !c.is_agent)
+  // esc() the header too (NFR-1): name/slug are interpolated into the
+  // submitted message, so an unescaped `"`/newline here could inject a fake
+  // prompt block just like a comment body could.
+  const label = name ? `${esc(name)} (${esc(slug)})` : esc(slug)
+  const lines = [`[Artifact feedback on ${label} — ${human.length} comment${human.length === 1 ? '' : 's'}]`]
+  const instruction = extraPrompt?.trim()
+  if (instruction) {
+    lines.push(
+      '',
+      `>>> OVERALL INSTRUCTION (applies to all ${human.length} comment${human.length === 1 ? '' : 's'} below; read first):`,
+      esc(instruction),
+      '<<<',
+    )
+  }
+  lines.push('')
+  human.forEach((c, i) => {
+    const quote = c.anchor?.quote ?? ''
+    const trimmed = quote.length > 80 ? quote.slice(0, 80) + '…' : quote
+    const anchorPart = trimmed ? `"${esc(trimmed)}": ` : ''
+    lines.push(`${i + 1}. ${anchorPart}"${esc(c.body)}"`)
+  })
+  if (instruction) lines.push('', `>>> REMINDER — overall instruction: ${esc(instruction)}`)
+  return lines.join('\n')
+}
+
 export { CommentPopover, CommentList }
 export type { InlineComment as Comment }

@@ -1002,9 +1002,11 @@ export default function App() {
 
   // Kiro CLI monthly credit usage. /api/sessions/usage TRIGGERS the background
   // `kiro-cli /usage` fetch AND returns the cached result, so the pill is
-  // self-sufficient on any page. Month-to-date = credits_covered (in-plan) +
-  // credits_used (the OVERAGE field, not total consumption), matching the % bar
-  // `kiro-cli /usage` prints. Returns null until the background cache warms.
+  // self-sufficient on any page. Month-to-date total = credits_used, which the
+  // backend already sets to the TRUE total (covered + overage). Do NOT add
+  // credits_covered on top — that double-counts the in-plan portion and is the
+  // bug that rendered a capped 10K plan as "20.0K". Returns null until the
+  // background cache warms.
   const { data: kiroUsage } = useQuery({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
@@ -1012,9 +1014,13 @@ export default function App() {
       // Kiro credit plan (internal) — the only usage this pill surfaces.
       // Number.isFinite guards against a stray NaN ever rendering as "NaN / NaN".
       if (Number.isFinite(u.credits_plan)) {
-        const covered = Number.isFinite(u.credits_covered) ? u.credits_covered : 0
-        const overage = Number.isFinite(u.credits_used) ? u.credits_used : 0
-        return { used: Math.round(covered + overage), limit: Math.round(u.credits_plan), resets: u.resets, plan: u.plan, overage, costUsd: u.cost_usd, overageRate: u.overage_rate }
+        const limit = Math.round(u.credits_plan)
+        // credits_used is the real total (backend sets it to covered + overage);
+        // fall back to 0 (not the limit) when the source omits it, so a partial
+        // payload never implies a maxed plan.
+        const used = Number.isFinite(u.credits_used) ? Math.round(u.credits_used) : 0
+        const overage = Number.isFinite(u.credits_overage) ? u.credits_overage : Math.max(0, used - limit)
+        return { used, limit, overage, resets: u.resets, plan: u.plan, costUsd: u.cost_usd, overageRate: u.overage_rate }
       }
       // Non-Kiro provider (kiro-cli absent) -> hide. Empty cache (Kiro warming) -> spinner.
       if (u.available === false) return 'none' as const

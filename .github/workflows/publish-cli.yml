@@ -83,7 +83,8 @@ jobs:
       - name: Publish wheel and channel manifest
         if: env.HAS_SIGNING_SECRETS
         env:
-          BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+          BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
           WHEEL_PATH: ${{ steps.wheel.outputs.path }}
           WHEEL_NAME: ${{ steps.wheel.outputs.name }}
           SUMS_DIR: ${{ steps.wheel.outputs.sumsdir }}
@@ -91,23 +92,38 @@ jobs:
           SHA256: ${{ steps.wheel.outputs.sha256 }}
         run: |
           set -euo pipefail
+          # The origin bucket is private (OAC), so the raw S3 URL is not publicly
+          # reachable. Publish only when both the dist bucket and the CloudFront
+          # base are configured, and never emit a manifest that points at private
+          # S3. Fail closed (before any upload) otherwise.
+          if [ -z "${BUCKET}" ] || [ -z "${CDN_BASE}" ]; then
+            echo "::error::CLI_DIST_BUCKET and CLI_CDN_BASE repo variables must be set (bucket='${BUCKET}', cdn='${CDN_BASE}')."
+            exit 1
+          fi
+          CDN_BASE="${CDN_BASE%/}"
           PREFIX="cli/${CHANNEL}/${WHEEL_VERSION}"
           aws s3 cp "$WHEEL_PATH" "s3://${BUCKET}/${PREFIX}/${WHEEL_NAME}"
           aws s3 cp "${SUMS_DIR}/SHA256SUMS" "s3://${BUCKET}/${PREFIX}/SHA256SUMS"
 
-          WHEEL_URL="https://${BUCKET}.s3.us-west-2.amazonaws.com/${PREFIX}/${WHEEL_NAME}"
+          WHEEL_URL="${CDN_BASE}/${PREFIX}/${WHEEL_NAME}"
+
+          # Requires-Python straight from the wheel metadata so the manifest never drifts.
+          PYREQ=$(unzip -p "$WHEEL_PATH" '*.dist-info/METADATA' 2>/dev/null \
+            | awk -F': ' 'tolower($1)=="requires-python"{print $2; exit}' | tr -d '\r')
+          PYREQ="${PYREQ:->=3.9}"
+
           cat > /tmp/latest-cli.json <<EOF
           {
             "channel": "${CHANNEL}",
             "version": "${WHEEL_VERSION}",
             "wheel_url": "${WHEEL_URL}",
             "sha256": "${SHA256}",
-            "python_requires": ">=3.10",
+            "python_requires": "${PYREQ}",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
           aws s3 cp /tmp/latest-cli.json "s3://${BUCKET}/feed/${CHANNEL}/latest-cli.json" \
-            --content-type application/json
+            --content-type application/json --cache-control no-cache
 
           {
             echo "## CLI Published (${CHANNEL})"
@@ -115,6 +131,64 @@ jobs:
             echo "- Version: \`${WHEEL_VERSION}\`"
             echo "- Feed: \`feed/${CHANNEL}/latest-cli.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish PEP 503 simple index
+        if: env.HAS_SIGNING_SECRETS
+        env:
+          BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.name }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          SHA256: ${{ steps.wheel.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          # PEP 503 static "simple" index per channel, so pip/uv can install
+          # natively (verified invocation; --index-url alone would cut off PyPI
+          # and fail on dependencies):
+          #   pip install --pre kirocrew --extra-index-url ${CDN_BASE}/feed/<channel>/simple/
+          # pip verifies the #sha256= fragment on each link, giving the same
+          # fail-closed integrity as the feed. Lives under feed/ because that
+          # prefix is CI-writable and CloudFront serves it no-cache.
+          CDN_BASE="${CDN_BASE%/}"
+          SIMPLE="feed/${CHANNEL}/simple"
+          PROJ_URL="${CDN_BASE}/${SIMPLE}/kirocrew/"
+          NEW_LINK="<a href=\"${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}#sha256=${SHA256}\">${WHEEL_NAME}</a><br/>"
+
+          # Merge with the existing (public) project page so prior versions
+          # stay installable; replace any stale entry for the same wheel name.
+          # Fail-closed on transient fetch errors: only a clean 200 (merge) or
+          # an absent page (403/404 -- S3 behind CloudFront returns 403 for
+          # missing keys) may proceed. Anything else (5xx, timeout, DNS) aborts
+          # the step and leaves the published index untouched, so a CDN blip
+          # can never truncate the version history.
+          STATUS=$(curl -sS --max-time 15 -o existing.html -w '%{http_code}' "$PROJ_URL") || STATUS=000
+          case "$STATUS" in
+            200) ;;
+            403|404) : > existing.html ;;
+            *) echo "::error::Fetching existing index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
+          esac
+          { grep -oE '<a href="[^"]+">[^<]+</a><br/>' existing.html || true; } \
+            | { grep -v ">${WHEEL_NAME}<" || true; } > links.txt
+          echo "$NEW_LINK" >> links.txt
+
+          {
+            echo '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>kirocrew</title></head><body><h1>kirocrew</h1>'
+            cat links.txt
+            echo '</body></html>'
+          } > project.html
+          printf '%s' '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>Simple index</title></head><body><a href="kirocrew/">kirocrew</a><br/></body></html>' > root.html
+
+          # CloudFront+OAC does NOT resolve directory indexes (no S3-website
+          # hosting), so ALSO upload the literal trailing-slash keys pip hits.
+          for DEST in "${SIMPLE}/kirocrew/index.html" "${SIMPLE}/kirocrew/"; do
+            aws s3 cp project.html "s3://${BUCKET}/${DEST}" \
+              --content-type "text/html" --cache-control no-cache
+          done
+          for DEST in "${SIMPLE}/index.html" "${SIMPLE}/"; do
+            aws s3 cp root.html "s3://${BUCKET}/${DEST}" \
+              --content-type "text/html" --cache-control no-cache
+          done
+          echo "- Simple index: \`${CDN_BASE}/${SIMPLE}/\` ($(wc -l < links.txt) version(s))" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Skipped (no signing secrets)
         if: ${{ !env.HAS_SIGNING_SECRETS }}

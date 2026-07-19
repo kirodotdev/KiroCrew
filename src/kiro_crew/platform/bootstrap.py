@@ -35,6 +35,7 @@ from kiro_crew.platform.defaults import (
     DefaultMcpToolingProvider,
     DefaultPackageManager,
     DefaultProviderRegistry,
+    DefaultPublishRegistry,
     DefaultSandboxPolicy,
     DefaultSlackEnterpriseGate,
     DefaultTelemetryProvider,
@@ -117,6 +118,7 @@ def build_default_context(
         profile=profile,
         cfg=cfg,
         providers=DefaultProviderRegistry(),
+        publish=DefaultPublishRegistry(),
         agent_runtime=DefaultAgentRuntime(),
         sandbox=DefaultSandboxPolicy(),
         credentials=DefaultCredentialPolicy(),
@@ -204,5 +206,16 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
         ctx.providers.register_acp_backends()
     except Exception:
         logger.warning("register_acp_backends failed; continuing", exc_info=True)
+
+    # Register any edition-contributed artifact-publish providers now that the
+    # context is installed.  The Default PublishRegistry.register_publish_providers()
+    # is a no-op (the public edition ships no publish destination), so the
+    # publish_provider registry stays empty and get_provider() → 503; the Amazon
+    # companion registers its concrete providers here.  Best-effort — a
+    # registration failure must not abort boot (publish just stays unavailable).
+    try:
+        ctx.publish.register_publish_providers()
+    except Exception:
+        logger.warning("register_publish_providers failed; continuing", exc_info=True)
 
     return ctx

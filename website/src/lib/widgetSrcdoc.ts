@@ -105,28 +105,6 @@ const HEIGHT_REPORT_SHRINK_MS = 200
  * continuously animating widget (lava lamp, starry night) reports its height
  * once and then stops posting, instead of feeding a per-frame resize loop back
  * to the parent. */
-/** Guards against the "unsafe centering" clip: artifacts that lay out with
- * `body { display:flex; align-items:center }` (or grid `place-items:center`)
- * clip the TOP of their content — unreachable by scrolling — whenever the
- * content is taller than the iframe viewport (common in shorter windows, e.g.
- * an artifact popout). CSS solves this with `safe center`: identical to
- * `center` when the content fits, falls back to start-alignment when it
- * overflows. Applied only when the body actually uses a centering flex/grid
- * layout, so non-centered artifacts are untouched. Re-checked on resize since
- * the overflow condition depends on the viewport. */
-const SAFE_CENTER_GUARD_BODY = `(function(){
-  function apply(){
-    var cs = getComputedStyle(document.body);
-    if(cs.display!=='flex' && cs.display!=='grid' && cs.display!=='inline-flex' && cs.display!=='inline-grid') return;
-    if(cs.alignItems==='center') document.body.style.alignItems='safe center';
-    if(cs.justifyContent==='center') document.body.style.justifyContent='safe center';
-    if(cs.alignContent==='center') document.body.style.alignContent='safe center';
-  }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply);
-  else apply();
-  window.addEventListener('resize', apply);
-})();`
-
 const HEIGHT_REPORTER_BODY = `(function(){
   var EPS = ${HEIGHT_REPORT_EPSILON_PX};
   var SHRINK_MS = ${HEIGHT_REPORT_SHRINK_MS};
@@ -230,6 +208,251 @@ const HEIGHT_REPORTER_BODY = `(function(){
 const TAILWIND_V4_DIRECTIVES =
   '@custom-variant dark (&:where(.dark, .dark *));'
 
+/** Highlight + bubble CSS for anchored comments rendered inside the iframe. */
+const COMMENT_HIGHLIGHT_CSS =
+  ".mc-cmt-hl{background:var(--warn-subtle,rgba(255,196,0,.28));" +
+  "border-bottom:2px solid var(--warn,#e0a000);border-radius:2px;cursor:pointer;" +
+  "box-shadow:0 2px 6px rgba(0,0,0,.38)}" +
+  ".mc-cmt-hl.mc-cmt-flash{background:var(--accent-subtle,rgba(80,140,255,.5));" +
+  "border-bottom-color:var(--accent,#5a8cff);transition:background .25s ease}" +
+  ".mc-cmt-hl.mc-cmt-active{background:var(--accent-subtle,rgba(80,140,255,.5));" +
+  "border-bottom-color:var(--accent,#5a8cff);box-shadow:0 3px 12px rgba(0,0,0,.45)}" +
+  ".mc-cmt-bubble.mc-cmt-active{background:var(--accent,#5a8cff);color:var(--accent-fg,#fff);border-color:var(--accent,#5a8cff)}" +
+  ".mc-cmt-bubble{position:absolute;z-index:2147483646;width:19px;height:19px;" +
+  "display:flex;align-items:center;justify-content:center;font:700 10px/1 sans-serif;" +
+  "color:var(--warn,#e0a000);background:var(--card,#1c1c1c);border:1.5px solid var(--warn,#e0a000);" +
+  "border-radius:10px 10px 10px 2px;box-shadow:0 1px 3px rgba(0,0,0,.35);cursor:pointer}" +
+  ".mc-cmt-bubble.unread{background:var(--warn,#e0a000);color:var(--warn-fg,#1a1a1a)}"
+
+/** In-iframe comment bridge (items #4/#5). Vanilla JS string — no LLM/user
+ * interpolation (no `${}`), set via textContent and re-parsed by the iframe.
+ * Brings anchored commenting + highlights into the sandboxed HTML render that
+ * the parent cannot reach directly:
+ *   - mouseup with a text selection -> postMessage 'mc-comment-select'
+ *     {quote, prefix, suffix, rect} so the parent opens the comment popover;
+ *   - 'mc-comment-highlights' {anchors:[{id,quote,prefix,suffix}]} -> wrap each
+ *     matched run in <mark.mc-cmt-hl data-cid> (click -> 'mc-comment-highlight-click');
+ *   - 'mc-comment-scroll-to' {id} -> scroll the mark into view + flash it;
+ *   - posts 'mc-comment-ready' once so the parent pushes the initial set. */
+/** Guards against the "unsafe centering" clip: artifacts that lay out with
+ * `body { display:flex; align-items:center }` (or grid `place-items:center`)
+ * clip the TOP of their content — unreachable by scrolling — whenever the
+ * content is taller than the iframe viewport (common in shorter windows, e.g.
+ * an artifact popout). CSS solves this with `safe center`: identical to
+ * `center` when the content fits, falls back to start-alignment when it
+ * overflows. Applied only when the body actually uses a centering flex/grid
+ * layout, so non-centered artifacts are untouched. Re-checked on resize since
+ * the overflow condition depends on the viewport. */
+const SAFE_CENTER_GUARD_BODY = `(function(){
+  function apply(){
+    var cs = getComputedStyle(document.body);
+    if(cs.display!=='flex' && cs.display!=='grid' && cs.display!=='inline-flex' && cs.display!=='inline-grid') return;
+    if(cs.alignItems==='center') document.body.style.alignItems='safe center';
+    if(cs.justifyContent==='center') document.body.style.justifyContent='safe center';
+    if(cs.alignContent==='center') document.body.style.alignContent='safe center';
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply);
+  else apply();
+  window.addEventListener('resize', apply);
+})();`
+
+const COMMENT_BRIDGE_BODY = `(function(){
+  var PFX = 32;
+  function selectionContext(){
+    var sel = window.getSelection();
+    if(!sel || sel.isCollapsed || sel.rangeCount===0) return null;
+    var quote = sel.toString();
+    if(!quote || !quote.trim()) return null;
+    var range = sel.getRangeAt(0);
+    // Derive the selection offset from the Range, NOT body.indexOf(quote):
+    // indexOf returns the FIRST occurrence, so selecting a later repeat of the
+    // same text (e.g. a single common word) stored prefix/suffix and
+    // startOffset/endOffset for the wrong spot, making the highlight teleport to
+    // the first occurrence on re-render (Mesh-2468). Range.toString() over the
+    // body contents and the pre-selection slice keeps the offset space
+    // consistent and mirrors the matcher (findRange) which works off text-node
+    // textContent; innerText would insert block newlines Range.toString omits.
+    var fullRange = document.createRange();
+    fullRange.selectNodeContents(document.body);
+    var full = fullRange.toString();
+    var idx = full.indexOf(quote);
+    try{
+      var preRange = document.createRange();
+      preRange.selectNodeContents(document.body);
+      preRange.setEnd(range.startContainer, range.startOffset);
+      idx = preRange.toString().length;
+    }catch(x){ /* fall back to indexOf result */ }
+    if(idx < 0) idx = 0;
+    var prefix = full.slice(Math.max(0, idx-PFX), idx);
+    var suffix = full.slice(idx+quote.length, idx+quote.length+PFX);
+    var r = range.getBoundingClientRect();
+    // Char offsets of the selection within the body text. The provider's
+    // create_comment anchor schema REQUIRES startOffset/endOffset/versionNumber;
+    // without them the remote post is rejected and the comment silently vanishes.
+    var startOffset = idx;
+    var endOffset = idx+quote.length;
+    return {quote:quote, prefix:prefix, suffix:suffix, startOffset:startOffset, endOffset:endOffset, rect:{x:r.left, y:r.bottom, w:r.width, h:r.height}};
+  }
+  document.addEventListener('mouseup', function(){
+    setTimeout(function(){
+      var c = selectionContext();
+      if(c){ c.type='mc-comment-select'; parent.postMessage(c, '*'); }
+    }, 0);
+  });
+  var HL='mc-cmt-hl';
+  function clearHighlights(){
+    var marks = document.querySelectorAll('.'+HL);
+    for(var i=0;i<marks.length;i++){
+      var m=marks[i], p=m.parentNode; if(!p) continue;
+      while(m.firstChild) p.insertBefore(m.firstChild, m);
+      p.removeChild(m); p.normalize();
+    }
+  }
+  var BUB='mc-cmt-bubble';
+  function clearBubbles(){
+    var bs=document.querySelectorAll('.'+BUB);
+    for(var i=0;i<bs.length;i++){ if(bs[i].parentNode) bs[i].parentNode.removeChild(bs[i]); }
+  }
+  function rectOf(el){ var r=el.getBoundingClientRect(); return {x:r.left, y:r.top, w:r.width, h:r.height}; }
+  function postOpen(id, el){ parent.postMessage({type:'mc-comment-highlight-click', id:id, rect:rectOf(el)}, '*'); }
+  function findRange(quote, prefix, suffix){
+    if(!quote) return null;
+    var walker=document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    var nodes=[], text='', n;
+    while((n=walker.nextNode())){ nodes.push({node:n, start:text.length}); text+=n.nodeValue; }
+    // Match in whitespace-NORMALIZED space, then map back to raw offsets. The
+    // quote/prefix/suffix are captured from rendered text (innerText: collapsed
+    // whitespace plus block newlines) while text is the raw concatenated
+    // nodeValue (source whitespace, no block newlines). Normalizing both sides
+    // lets the quote match AND lets prefix/suffix disambiguate the correct
+    // occurrence when the same quote appears multiple times (e.g. RESOLVED as a
+    // heading vs in body text). Regex is avoided: this is embedded in a template
+    // literal where backslashes are unsafe; WS is detected by char code.
+    // text-transform (uppercase/capitalize) makes the rendered/selected text
+    // differ in CASE from the raw nodeValue (e.g. source "Resolved" shown as
+    // "RESOLVED"), so match case-insensitively too. norm is lowercased per char
+    // (1:1 with map, with a guard for the rare multi-char lowercase) so offsets
+    // still map back to the original-case raw text.
+    var isWs=function(ch){ var k=ch.charCodeAt(0); return k===32||k===9||k===10||k===13||k===12||k===160; };
+    var norm='', map=[], pw=false, c, ch;
+    for(c=0;c<text.length;c++){
+      ch=text.charAt(c);
+      if(isWs(ch)){ if(!pw){ norm+=' '; map.push(c); pw=true; } }
+      else { var lc=ch.toLowerCase(); norm+=(lc.length===1?lc:ch); map.push(c); pw=false; }
+    }
+    map.push(text.length);
+    var nrm=function(str){
+      var o='', p=false, x, k; for(x=0;x<str.length;x++){ k=str.charAt(x);
+        if(isWs(k)){ if(!p && o){ o+=' '; p=true; } } else { o+=k; p=false; } }
+      while(o.length && o.charAt(0)===' ') o=o.slice(1);
+      while(o.length && o.charAt(o.length-1)===' ') o=o.slice(0,-1);
+      return o.toLowerCase();
+    };
+    var nq=nrm(quote); if(!nq) return null;
+    var npre=prefix?nrm(prefix):'', nsuf=suffix?nrm(suffix):'';
+    var from=0, best=-1, bestScore=-1;
+    while(true){
+      var i=norm.indexOf(nq, from); if(i<0) break;
+      var pre=norm.slice(Math.max(0, i-npre.length), i);
+      var suf=norm.slice(i+nq.length, i+nq.length+nsuf.length);
+      var score=0; if(npre && pre.indexOf(npre)>=0) score++; if(nsuf && suf.indexOf(nsuf)>=0) score++;
+      if(score>bestScore){ bestScore=score; best=i; }
+      from=i+1;
+      if(bestScore===2) break;
+    }
+    if(best<0) return null;
+    var bestStart=map[best], bestEnd=map[best+nq.length];
+    function locate(off){ for(var k=0;k<nodes.length;k++){ var nd=nodes[k]; if(off<=nd.start+nd.node.nodeValue.length) return {node:nd.node, offset:off-nd.start}; } return null; }
+    var s=locate(bestStart), e=locate(bestEnd);
+    if(!s||!e) return null;
+    var rng=document.createRange();
+    try{ rng.setStart(s.node, s.offset); rng.setEnd(e.node, e.offset); }catch(x){ return null; }
+    return rng;
+  }
+  function wrapRange(rng, className, cid){
+    var nodes=[];
+    var cac=rng.commonAncestorContainer;
+    if(cac.nodeType===3){
+      // Range lies entirely within ONE text node. A TreeWalker rooted at a text
+      // node yields nothing (it only visits descendants, and text nodes have
+      // none), so collect it directly. Without this, any match contained in a
+      // single text node produces zero marks and the highlight never renders.
+      nodes.push(cac);
+    } else {
+      var walker=document.createTreeWalker(cac, NodeFilter.SHOW_TEXT, null);
+      var t;
+      while((t=walker.nextNode())){ if(rng.intersectsNode(t)) nodes.push(t); }
+    }
+    var marks=[];
+    nodes.forEach(function(tn){
+      var start=(tn===rng.startContainer)?rng.startOffset:0;
+      var end=(tn===rng.endContainer)?rng.endOffset:tn.nodeValue.length;
+      if(start>=end) return;
+      var sub=document.createRange();
+      try{ sub.setStart(tn, start); sub.setEnd(tn, end); }catch(x){ return; }
+      var mark=document.createElement('mark');
+      mark.className=className; mark.setAttribute('data-cid', cid);
+      try{ sub.surroundContents(mark); marks.push(mark); }catch(x){}
+    });
+    return marks;
+  }
+  var lastAnchors = null;
+  function renderHighlights(anchors){
+    lastAnchors = anchors || null;
+    clearHighlights(); clearBubbles();
+    (anchors||[]).forEach(function(a){
+      var rng=findRange(a.quote, a.prefix, a.suffix); if(!rng) return;
+      try{
+        var marks=wrapRange(rng, HL, a.id);
+        if(!marks.length) return;
+        var first=marks[0];
+        marks.forEach(function(m){ m.addEventListener('click', function(ev){ ev.stopPropagation(); postOpen(a.id, first); }); });
+        // Gutter comment-count bubble at the anchor start (count + unread).
+        var r=first.getBoundingClientRect();
+        var bub=document.createElement('div');
+        bub.className=BUB+(a.unread?' unread':'');
+        bub.setAttribute('data-cid', a.id);
+        bub.textContent=String(a.count||1);
+        bub.style.top=(r.top+window.scrollY-1)+'px';
+        bub.style.left=Math.max(0,(r.left+window.scrollX-24))+'px';
+        bub.addEventListener('click', function(ev){ ev.stopPropagation(); postOpen(a.id, bub); });
+        document.body.appendChild(bub);
+      }catch(x){}
+    });
+  }
+  function scrollTo(id){
+    var sel='.'+HL+'[data-cid="'+String(id||'').replace(/"/g,'')+'"]';
+    var m=document.querySelector(sel); if(!m) return;
+    m.scrollIntoView({behavior:'smooth', block:'center'});
+    m.classList.add('mc-cmt-flash');
+    setTimeout(function(){ m.classList.remove('mc-cmt-flash'); }, 1200);
+    // Let the scroll settle, then post the rect so the parent can open the
+    // thread popover over the iframe (sidebar → popover for HTML artifacts).
+    setTimeout(function(){ postOpen(id, m); }, 80);
+  }
+  function setActive(id){
+    var cur=document.querySelectorAll('.mc-cmt-active');
+    for(var i=0;i<cur.length;i++) cur[i].classList.remove('mc-cmt-active');
+    var s=String(id||'').replace(/"/g,''); if(!s) return;
+    var els=document.querySelectorAll('[data-cid="'+s+'"]');
+    for(var j=0;j<els.length;j++) els[j].classList.add('mc-cmt-active');
+  }
+  window.addEventListener('message', function(e){
+    var d=e.data||{};
+    if(d.type==='mc-comment-highlights') renderHighlights(d.anchors);
+    else if(d.type==='mc-comment-scroll-to') scrollTo(d.id);
+    else if(d.type==='mc-comment-active') setActive(d.id);
+  });
+  // The initial highlight push can land while the artifact's own scripts
+  // (Tailwind JIT, chart renders) are still rebuilding the DOM — marks get
+  // wiped or their text nodes replaced, and nothing re-renders them. Re-apply
+  // the retained set once everything has loaded and again after a settle
+  // delay, so anchors survive late layout work (no-op when nothing anchored).
+  function reapply(){ if(lastAnchors && lastAnchors.length && !document.querySelector('.'+HL)) renderHighlights(lastAnchors); }
+  window.addEventListener('load', function(){ reapply(); setTimeout(reapply, 400); });
+  parent.postMessage({type:'mc-comment-ready'}, '*');
+})();`
+
 function buildThemeCss(vars: Record<string, string>, mode: 'dark' | 'light'): string {
   const rootBody = Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')
   if (!rootBody) return ''
@@ -264,6 +487,10 @@ interface BuildSrcdocOptions {
    * that auto-size to content). Standalone full-screen views set this false
    * since they use a fixed iframe height. */
   includeHeightReporter?: boolean
+  /** Inject the anchored-comment bridge (selection capture + highlight render
+   * + scroll/flash) so the parent can offer commenting inside the HTML render
+   * (items #4/#5). Off by default. */
+  enableComments?: boolean
 }
 
 /** Build the srcdoc HTML for a sandboxed widget iframe. The LLM `html`
@@ -275,6 +502,7 @@ export function buildSrcdoc({
   themeVars,
   mode,
   includeHeightReporter = false,
+  enableComments = false,
 }: BuildSrcdocOptions): string {
   // SSR / unit-test fallback: when there's no DOM (Node.js, vitest before
   // jsdom is set up), fall back to a minimal string-builder that does NOT
@@ -358,6 +586,17 @@ export function buildSrcdoc({
   const safeCenter = doc.createElement('script')
   safeCenter.textContent = SAFE_CENTER_GUARD_BODY
   body.appendChild(safeCenter)
+
+  // Anchored-comment bridge (items #4/#5): highlight CSS + selection/highlight
+  // script. textContent assignment only — no LLM/user content interpolated.
+  if (enableComments) {
+    const hlStyle = doc.createElement('style')
+    hlStyle.textContent = COMMENT_HIGHLIGHT_CSS
+    head.appendChild(hlStyle)
+    const bridge = doc.createElement('script')
+    bridge.textContent = COMMENT_BRIDGE_BODY
+    body.appendChild(bridge)
+  }
 
   // Serialize the DOM-built document. The remaining template literal here
   // contains only the static DOCTYPE prefix and the *serialized* DOM tree

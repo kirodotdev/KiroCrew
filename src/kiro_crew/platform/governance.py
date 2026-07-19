@@ -811,6 +811,19 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.script_hooks": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),
+    # Publishing an artifact's bytes to an external destination is an
+    # exfil/external-side-effect surface (like messaging), so it is opt-in
+    # (capability_default=False): when a policy governs capabilities.* but omits
+    # publish, publishing is denied.  When NO policy is present the standalone
+    # default still permits everything.  The inner ``destinations`` ruleset
+    # bounds WHICH publish-provider ids are allowed once the capability is on
+    # (the direct analogue of capabilities.spawn's ``agents`` ruleset).  WHO
+    # implements a destination is the orthogonal CPP PublishRegistry seam; this
+    # gate only decides WHETHER + to WHERE.  Not a lever over ``git push`` (deny
+    # floor) or ``network.egress`` (fetch host) — those are separate planes.
+    "capabilities.publish": ScopeSpec(
+        CAPABILITY, capability_default=False, scope_matchers={"destinations": "identifier"}
+    ),
 }
 
 
@@ -1093,9 +1106,7 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
     # name is a schema-invalid profile → the loader turns this raise into the
     # most-restrictive deny-all built-in (Validation rule 5), never the ceiling.
     if not _PROFILE_NAME_RE.match(name):
-        raise PlatformCompositionError(
-            f"profile name {name!r} must match ^[a-z0-9][a-z0-9-]*$"
-        )
+        raise PlatformCompositionError(f"profile name {name!r} must match ^[a-z0-9][a-z0-9-]*$")
     bind: Optional[Bind] = None
     raw_bind = data.get("bind")
     if isinstance(raw_bind, dict):

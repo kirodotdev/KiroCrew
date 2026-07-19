@@ -35,6 +35,7 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `profile` | carrier (str) | `"standalone"` | `"amazon"` |
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
 | `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers Claude Code |
+| `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers Harmony Artifactory / Chorus providers |
 | `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + Bedrock env |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | `.midway`/`.ada`/`.krb5` dirs |
 | `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction) | internal token regexes |
@@ -76,6 +77,8 @@ installs the context. `bootstrap_context`:
 2. If profile != standalone: `discover_companion_context` (fail-closed).
 3. Validate `contract_version` and the security floor; `set_context`.
 4. `ctx.providers.register_acp_backends()` once (Default no-op).
+5. `ctx.publish.register_publish_providers()` once (Default no-op → the
+   `publish_provider` registry stays empty and publishing is unavailable).
 
 ## Profile resolution
 

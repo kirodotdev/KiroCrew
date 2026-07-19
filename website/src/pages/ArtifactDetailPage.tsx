@@ -1,10 +1,10 @@
+import { safeSetItem } from '../utils/safeStorage'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import DOMPurify from 'dompurify'
-import hljs from 'highlight.js'
-import { useNavigate, useParams } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, Camera, ExternalLink, Download, Pencil, X, AlertCircle, RotateCcw, Plus, Sparkles, Monitor, Undo2, Folder as FolderIcon } from 'lucide-react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { ArrowLeft, AlertTriangle, Camera, ExternalLink, Download, Pencil, X, AlertCircle, RotateCcw, Plus, Sparkles, Link2, MessageSquare, Monitor, Undo2, Folder as FolderIcon } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
+import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -12,26 +12,34 @@ import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { PageHeader, Card, Badge, Btn } from '../components/ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
-import { ContentRenderer, langFor, wrapCode } from '../components/ContentRenderer'
+import { ArtifactSharePanel } from '../components/ArtifactSharePanel'
 import ReadingWidthToggle from '../components/ReadingWidthToggle'
 import { useReadingWidth } from '../hooks/useReadingWidth'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { FolderPickerItems } from '../components/FolderMoveSubmenu'
 import { folderBreadcrumb } from '../utils/artifactFolderTree'
-import { CommentPopover, CommentList, formatCommentsMessage, type InlineComment } from '../components/CommentOverlay'
+import { CommentPopover } from '../components/CommentOverlay'
+import { CommentsSidebar } from '../components/CommentsSidebar'
+import { CommentThreadPopover } from '../components/CommentThreadPopover'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
+// Artifact body renderers, extracted here so the chat side panel shares them.
+import { ArtifactBodyNative, ArtifactBodyIframe, isEditableKind } from '../components/ArtifactBody'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
 import { writePrefill } from '../utils/navIntent'
-import type { FileType } from '../components/FileRenderers'
-import type { Artifact, ArtifactEvent } from '../types'
+import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCommentsSync'
+import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor } from '../types'
 
 // Artifact "Iterate" affordances are hidden pending an artifact redesign
 // (task P472753393). This gates every user-facing entry point into the
-// iterate flow — the header button, the pending-comments "Submit All" action,
-// and the "click Iterate" tips — while leaving iterateWithAgent /
-// buildPromptForChat and the agent-driven `iterated` lifecycle event fully
-// intact. Flip to `true` (or delete the gate) when the redesign lands.
+// iterate flow — the header Sparkles button, the anchored-comment creation
+// path (`commentable`), the CommentsSidebar "Ask agent" action, and the
+// "click Iterate" tips — while leaving iterateWithAgent / buildPromptForChat
+// and the agent-driven `iterated` lifecycle event fully intact. The durable
+// comment stack (view / doc-level add / reply / resolve / review) stays fully
+// available; only the iterate round-trip and the anchored-selection creation
+// (which existed only to feed iterate in the fork) are hidden. Flip to `true`
+// (or delete the gate) when the redesign lands.
 // NOTE (MeshClaw sync): the upstream keeps these visible — do NOT let a sync
 // re-show them; see skills/meshclaw-sync/SKILL.md → "Fork-initiated UX
 // divergences" (verdict SKIP_FORKUX).
@@ -48,37 +56,7 @@ function readThemeVars(): Record<string, string> {
   return out
 }
 
-/** Map an artifact `kind` to the FileType the ContentRenderer expects.
- * Only used for non-iframe kinds (widget/html still go through the iframe). */
-function fileTypeForKind(kind: Artifact['kind']): FileType {
-  switch (kind) {
-    case 'markdown': return 'markdown'
-    case 'json':     return 'json'
-    case 'svg':      return 'svg'
-    case 'text':     return 'code'
-    // widget / html shouldn't reach here, but fall back to markdown rather
-    // than throwing — keeps the page survivable for unexpected enum values.
-    default:         return 'markdown'
-  }
-}
-
-/** Pseudo-extension used when rendering text artifacts as code. */
-function extForKind(kind: Artifact['kind']): string {
-  switch (kind) {
-    case 'json': return '.json'
-    case 'svg':  return '.svg'
-    case 'text': return '.txt'
-    default:     return '.md'
-  }
-}
-
-/** Whether this artifact kind supports inline editing in the detail page.
- * Widget / html are agent-managed (raw HTML editing has too many edge cases —
- * see Mesh-1654 design discussion); markdown / text / json / svg are
- * editable text formats. */
-export function isEditableKind(kind: Artifact['kind']): boolean {
-  return kind === 'markdown' || kind === 'text' || kind === 'json' || kind === 'svg'
-}
+export { isEditableKind }
 
 /**
  * Header folder chip (Mesh-2720): shows where the artifact is filed and opens
@@ -147,13 +125,19 @@ const ActivityTimeline = memo(function ActivityTimeline({
   }
   // Render newest first so the most recent activity is at the top.
   const ordered = [...events].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
-  const verb = (t: ArtifactEvent['type']) => ({
-    created: 'Created',
-    edited: 'Edited',
-    iterated: 'Iterated',
-    referenced: 'Referenced',
-    reverted: 'Reverted',
-  }[t] ?? t)
+  const verb = (t: ArtifactEvent['type'], md?: ArtifactEvent['metadata']) => {
+    if (t === 'comment') {
+      const action = typeof md?.action === 'string' ? md.action : ''
+      return { deleted: 'Comment removed', reviewed: 'Comment marked for review', resolved: 'Comment resolved' }[action] ?? 'Comment'
+    }
+    return {
+      created: 'Created',
+      edited: 'Edited',
+      iterated: 'Iterated',
+      referenced: 'Referenced',
+      reverted: 'Reverted',
+    }[t] ?? t
+  }
   // Distinct hues per type so created/edited/iterated don't visually blur
   // together (nrb feedback). reverted uses warn (orange) to flag its
   // 'undo-style' semantics; iterated uses info (cyan) so agent-driven
@@ -164,6 +148,7 @@ const ActivityTimeline = memo(function ActivityTimeline({
     iterated: 'var(--info)',
     referenced: 'var(--muted)',
     reverted: 'var(--warn)',
+    comment: 'var(--muted)',
   }[t] ?? 'var(--muted)')
   // Some session_id values are markers, not real chat slots — skip the
   // 'from session …' link for those so users don't get sent to the wrong
@@ -183,15 +168,24 @@ const ActivityTimeline = memo(function ActivityTimeline({
           />
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-baseline gap-x-2">
-              <span className="font-medium text-text">{verb(ev.type)}</span>
+              <span className="font-medium text-text">{verb(ev.type, ev.metadata)}</span>
               {ev.by && <span className="text-muted">by {ev.by}</span>}
-              {ev.type === 'reverted' && ev.from_version != null ? (
+              {ev.type === 'comment' ? null : ev.type === 'reverted' && ev.from_version != null ? (
                 <span className="text-muted">v{ev.from_version} → v{ev.version}</span>
               ) : (
                 ev.version != null && <span className="text-muted">→ v{ev.version}</span>
               )}
               <span className="text-muted ml-auto">{formatEventTs(ev.ts)}</span>
             </div>
+            {/* Comment events carry a snippet of the affected comment (and the
+                agent's reason on deletes) so the timeline stays readable after
+                the comment itself is gone. */}
+            {ev.type === 'comment' && typeof ev.metadata?.comment_snippet === 'string' && ev.metadata.comment_snippet ? (
+              <div className="text-[11px] text-muted mt-0.5 truncate" title={String(ev.metadata.comment_snippet)}>
+                “{ev.metadata.comment_snippet}”
+                {typeof ev.metadata.reason === 'string' && ev.metadata.reason ? ` — ${ev.metadata.reason}` : ''}
+              </div>
+            ) : null}
             {/* Source qualifier under the headline. For real chat slots this
                 is a clickable link; for dashboard / cron / unknown markers
                 it's plain muted text so users don't think it's actionable. */}
@@ -218,93 +212,6 @@ const ActivityTimeline = memo(function ActivityTimeline({
   )
 })
 
-/** Renders a non-iframe artifact body — markdown / text / json / svg.
- * Theme vars are inherited naturally because we're not in a sandboxed
- * iframe; nothing to inject. When `editing` is true, swaps the preview
- * for a Monaco code editor. The `previewRef` is owned by the parent so
- * the detail page can attach selection-to-comment handlers above it. */
-const ArtifactBodyNative = memo(function ArtifactBodyNative({
-  kind, content, editing, onChange, previewRef,
-}: {
-  kind: Artifact['kind']
-  content: string
-  editing: boolean
-  onChange: (v: string) => void
-  previewRef: React.RefObject<HTMLDivElement | null>
-}) {
-  const fileType = fileTypeForKind(kind)
-  const ext = extForKind(kind)
-  const isRichType = fileType === 'json' || fileType === 'svg' || fileType === 'html' || fileType === 'image' || fileType === 'csv' || fileType === 'pdf'
-  const isMarkdown = fileType === 'markdown'
-  const lang = langFor(ext)
-  const displayContent = isMarkdown ? content : wrapCode(content, ext)
-  const highlightedHtml = useMemo(() => {
-    if (isMarkdown || editing || isRichType) return ''
-    try { return DOMPurify.sanitize(hljs.highlight(content, { language: lang }).value) + '\n' }
-    catch { return DOMPurify.sanitize(hljs.highlightAuto(content).value) + '\n' }
-  }, [content, lang, isMarkdown, editing, isRichType])
-  return (
-    <div
-      className="rounded-xl border border-border bg-card overflow-auto"
-      style={{ minHeight: 480, height: 'calc(100vh - 240px)' }}
-    >
-      <div className="p-5 h-full">
-        <ContentRenderer
-          isRichType={isRichType}
-          fileType={fileType}
-          content={content}
-          editing={editing}
-          lang={lang}
-          lineNums={true}
-          wordWrap={true}
-          autocomplete={false}
-          onChange={onChange}
-          previewRef={previewRef}
-          displayContent={displayContent}
-          isMarkdown={isMarkdown}
-          highlightedHtml={highlightedHtml}
-          markdownClassName="msg-content text-sm leading-relaxed"
-        />
-      </div>
-    </div>
-  )
-})
-
-/** Renders widget / html artifacts in a sandboxed iframe with theme-var
- * injection — the existing path, untouched by Phase 2. */
-const ArtifactBodyIframe = memo(function ArtifactBodyIframe({ artifact, slug, previewStyle }: { artifact: Artifact; slug: string; previewStyle?: React.CSSProperties }) {
-  const { theme, colorTheme, themeVersion } = useTheme()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
-  const srcdoc = useMemo(
-    () => artifact.content ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme }) : null,
-    [artifact.content, themeVars, theme],
-  )
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  useEffect(() => {
-    if (!srcdoc) return
-    const blob = new Blob([srcdoc], { type: 'text/html;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    setBlobUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [srcdoc])
-  return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden" style={{ minHeight: 480, ...previewStyle }}>
-      {blobUrl ? (
-        <iframe
-          src={blobUrl}
-          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
-          className="w-full border-none bg-card"
-          style={{ height: 'calc(100vh - 240px)', minHeight: 480 }}
-          title={`Artifact: ${slug}`}
-        />
-      ) : (
-        <div className="p-6 text-muted">Rendering…</div>
-      )}
-    </div>
-  )
-})
-
 /**
  * The pop-out control in the artifact detail toolbar. Opens the artifact in its
  * own browser window and, once it's out, swaps to Focus + Bring-back (mirrors
@@ -320,7 +227,7 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
         <button
           type="button"
           onClick={() => focus(slug)}
-          className="p-1.5 rounded text-accent transition-colors cursor-pointer bg-transparent border border-accent"
+          className="p-1.5 rounded-md border border-accent text-accent bg-accent-subtle cursor-pointer transition-all"
           title="Focus the popped-out window"
           aria-label="Focus popped-out window"
         >
@@ -329,7 +236,7 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
         <button
           type="button"
           onClick={() => bringBack(slug)}
-          className="p-1.5 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border border-border"
+          className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
           title="Bring the artifact back into this window"
           aria-label="Bring artifact back to this window"
         >
@@ -342,7 +249,7 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
     <button
       type="button"
       onClick={() => open(slug, name)}
-      className="p-1.5 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border border-border"
+      className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
       title="Pop out into its own window"
       aria-label="Pop out to window"
     >
@@ -372,13 +279,60 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // inline. Adding a tag posts metadata-only (no version bump). Removing a
   // tag works the same way.
   const [addingTag, setAddingTag] = useState(false)
+  const [searchParams] = useSearchParams()
+  const [showShare, setShowShare] = useState(() => searchParams.get('share') === '1')
+  // Tracks the publication error the user explicitly dismissed, so the
+  // auto-opened error panel can be closed (AutoSDE) yet re-opens when a *new*
+  // (different) error appears. Comparing the value — not a bool — gives the
+  // reset-on-new-error behaviour without a TDZ-prone effect over `artifact`.
+  const [dismissedError, setDismissedError] = useState<string | null>(null)
   const [newTag, setNewTag] = useState('')
-  // ── Inline-comment state (Phase 4) ────────────────────────────────────────
-  // Comments are session-only here — there's no per-slug draft persistence
-  // (file-viewer comments persist via `commentDrafts` keyed on filePath; for
-  // artifacts the lifecycle log captures real history once Phase 5 lands).
-  const [comments, setComments] = useState<InlineComment[]>([])
-  const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; line?: number; column?: number } | null>(null)
+  // ── Inline-comment state (durable via /api/artifacts/:slug/comments) ──
+  const commentsQuery = useQuery<{ comments: ArtifactComment[]; remote_sync_error?: string | null }>({
+    queryKey: ['artifact-comments', slug],
+    queryFn: () => api.artifactComments(slug),
+    enabled: !!slug,
+    staleTime: 30_000,
+  })
+  const durableComments = commentsQuery.data?.comments ?? []
+  const commentCount = durableComments.length
+  const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
+  // Comments live in a collapsible right-hand sidebar. It stays collapsed by
+  // default — an empty comment panel is just wasted space on a dashboard or
+  // infographic — and auto-reveals only once the artifact has at least one
+  // comment (see the effect below). A manual show/hide applies to the current
+  // view only; we intentionally do NOT persist it, so every artifact
+  // independently does the right thing instead of a global pin re-opening
+  // empty panels everywhere.
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  // Flipped once the user manually toggles, so the comment-driven auto-reveal
+  // below stops overriding an explicit choice — but only for the current
+  // artifact (cleared on navigation; see the effect).
+  const sidebarUserToggledRef = useRef(false)
+  const toggleSidebar = useCallback(() => {
+    sidebarUserToggledRef.current = true
+    setSidebarOpen(v => !v)
+  }, [])
+  // Auto-reveal the sidebar when the artifact has comments; collapse it when it
+  // has none. Reacts to commentCount so adding the first comment reveals the
+  // panel and removing the last collapses it — unless the user has taken manual
+  // control via the toggle. React Router reuses this component across the
+  // parameterized route, so navigating to a different artifact clears the
+  // manual-toggle override, giving every artifact the comment-driven default.
+  const sidebarNavRef = useRef(slug)
+  useEffect(() => {
+    if (sidebarNavRef.current !== slug) {
+      sidebarNavRef.current = slug
+      sidebarUserToggledRef.current = false
+    }
+    if (sidebarUserToggledRef.current) return
+    setSidebarOpen(commentCount > 0)
+  }, [slug, commentCount])
+  const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
+  // Bidirectional anchor↔comment linking (item #5): flash a sidebar row when
+  // its in-iframe highlight is clicked; scroll the iframe highlight when a
+  // sidebar comment is clicked. Nonce forces a re-trigger on repeat clicks.
+  const [iframeScrollTarget, setIframeScrollTarget] = useState<{ id: string; nonce: number } | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const selectingRef = useRef(false)
@@ -393,7 +347,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setEditing(false)
     setEditedContent('')
     setSaveError(null)
-    setComments([])
     setPopover(null)
     setAddingTag(false)
     setNewTag('')
@@ -434,6 +387,23 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const artifact = isCurrent ? detailQuery.data : versionQuery.data
   const editable = !!artifact && isEditableKind(artifact.kind) && isCurrent
   const dirty = editing && !!artifact && editedContent !== (artifact.content ?? '')
+
+  // Reconcile sharing/version drift made directly at the publishing provider
+  // when the detail page opens (#4): external visibility changes and pointer
+  // rollbacks surface here. Fires once per slug; the invalidate-driven refetch
+  // keeps the stable artifact_id so this effect won't re-trigger into a loop.
+  const refreshedSlugRef = useRef<string | null>(null)
+  const refreshSharingMut = useMutation({
+    mutationFn: () => api.refreshArtifactSharing(slug),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['artifact', slug] }),
+  })
+  const triggerRefresh = refreshSharingMut.mutate
+  useEffect(() => {
+    const pubId = artifact?.publication?.artifact_id
+    if (!pubId || refreshedSlugRef.current === slug) return
+    refreshedSlugRef.current = slug
+    triggerRefresh()
+  }, [artifact?.publication?.artifact_id, slug, triggerRefresh])
 
   // ── Tag editing handlers (Mesh-1654 round 4) ────────────────────────────
   const updateTagsMut = useCallback(async (newTags: string[]) => {
@@ -595,15 +565,15 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     return () => window.removeEventListener('beforeunload', handler)
   }, [dirty])
 
-  // ── Inline-comment handlers (Phase 4) ────────────────────────────────────
+  // ── Inline-comment handlers ──────────────────────────────────────────────
   // Comments only make sense for kinds where text→source coords resolve
   // cleanly: markdown (via data-sourcepos) and text (rendered === source).
   // JSON / SVG selection produces noisy anchors; revisit when there's a real
   // user demand.
-  // Inline commenting exists solely to feed the Iterate flow (its only submit
-  // path is `onSubmitAll={iterateWithAgent}`). While the Iterate affordances are
-  // hidden pending redesign (P472753393), gate comment creation on the same flag
-  // so users can't add comments that have nowhere to go.
+  // Anchored (selection-driven) comment creation existed in the fork solely to
+  // feed the Iterate flow, so it is gated behind SHOW_ARTIFACT_ITERATE with the
+  // rest of the iterate affordances. Doc-level comments via the CommentsSidebar
+  // remain available for all kinds regardless of this flag.
   const commentable = SHOW_ARTIFACT_ITERATE && !!artifact && !editing && isCurrent && (
     artifact.kind === 'markdown' || artifact.kind === 'text'
   )
@@ -627,30 +597,124 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const coords = isMarkdown
       ? (resolveSourcePos(range, root, sourceContent) ?? findCoords(sourceContent, raw) ?? findCoords(sourceContent, anchor))
       : (findCoords(sourceContent, raw) ?? findCoords(sourceContent, anchor))
-    setPopover({ x: rect.left, y: rect.bottom, anchor, line: coords?.line, column: coords?.column })
+    // Rendered-text offset of the selection start, in the same space the
+    // highlighter's indexTextNodes/rangeForAnchor use — pins the highlight to
+    // THIS occurrence when the quote repeats (line/col drive the agent prompt;
+    // the offset drives the visual anchor).
+    const preRange = document.createRange()
+    preRange.setStart(root, 0)
+    preRange.setEnd(range.startContainer, range.startOffset)
+    const startOffset = preRange.toString().length + (raw.length - raw.trimStart().length)
+    setPopover({ x: rect.left, y: rect.bottom, anchor, line: coords?.line, column: coords?.column, startOffset, endOffset: startOffset + anchor.length })
   }, [commentable, isMarkdown, sourceContent])
 
+  const invalidateComments = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['artifact-comments', slug] })
+  }, [queryClient, slug])
+
+  // Cross-window mirroring: a popout and the main window are separate JS
+  // contexts with separate query caches, so a comment posted in one wouldn't
+  // show in the other until staleness (~30s). Announce every local mutation
+  // and refetch on announcements from other windows — comments mirror
+  // immediately in both directions.
+  const invalidateAndAnnounce = useCallback(() => {
+    invalidateComments()
+    announceCommentsChanged(slug)
+  }, [invalidateComments, slug])
+  useEffect(() => {
+    if (!slug) return
+    return onCommentsChanged(slug, invalidateComments)
+  }, [slug, invalidateComments])
+
+  // Writes go through useMutation (use-react-query guideline): errors surface
+  // instead of being swallowed and cache invalidation is centralized. Errors
+  // invalidate locally only (safety-net refetch) — a failed mutation didn't
+  // change server state, so there's nothing for other windows to sync.
+  const onMutErr = useCallback(() => invalidateComments(), [invalidateComments])
+  const postCommentMut = useMutation({
+    mutationFn: (vars: { text: string; scope?: string; anchor?: object }) => api.postArtifactComment(slug, vars),
+    onSuccess: invalidateAndAnnounce, onError: onMutErr,
+  })
+  const replyCommentMut = useMutation({
+    mutationFn: (vars: { parentId: string; text: string }) => api.replyArtifactComment(slug, vars.parentId, { text: vars.text }),
+    onSuccess: (_d: unknown, vars: { parentId: string; text: string }) => {
+      // The reply itself succeeded — announce it immediately so other windows
+      // mirror it, regardless of what the follow-up reopen does.
+      invalidateAndAnnounce()
+      // Replying to a resolved thread auto-reopens it (feedback #10). A second
+      // announce picks up the status change; a reopen failure only refetches
+      // locally (the reply was already announced above).
+      const parent = durableComments.find(c => c.id === vars.parentId)
+      if (parent && parent.status === 'resolved') {
+        api.reopenComment(slug, vars.parentId).then(invalidateAndAnnounce).catch(onMutErr)
+      }
+    },
+    onError: onMutErr,
+  })
+  const resolveCommentMut = useMutation({ mutationFn: (id: string) => api.resolveComment(slug, id), onSuccess: invalidateAndAnnounce, onError: onMutErr })
+  const markReviewCommentMut = useMutation({ mutationFn: (id: string) => api.markCommentReview(slug, id), onSuccess: invalidateAndAnnounce, onError: onMutErr })
+  const reopenCommentMut = useMutation({ mutationFn: (id: string) => api.reopenComment(slug, id), onSuccess: invalidateAndAnnounce, onError: onMutErr })
+  const removeCommentMut = useMutation({ mutationFn: (id: string) => api.deleteArtifactComment(slug, id), onSuccess: invalidateAndAnnounce, onError: onMutErr })
+  const editCommentMut = useMutation({ mutationFn: (vars: { id: string; text: string }) => api.editArtifactComment(slug, vars.id, { text: vars.text }), onSuccess: invalidateAndAnnounce, onError: onMutErr })
+
+  // Anchored add (from the inline selection popover, markdown/text only).
   const addComment = useCallback((text: string) => {
     if (!popover) return
-    const newComment: InlineComment = {
-      id: Math.random().toString(36).substring(2),
-      anchor: popover.anchor,
-      text,
-      line: popover.line,
-      column: popover.column,
+    let anchor: CommentAnchor | undefined
+    if (popover.anchor) {
+      anchor = { quote: popover.anchor, prefix: popover.prefix, suffix: popover.suffix }
+      // Native text selections carry an offset; iframe selections omit it.
+      if (popover.startOffset != null) {
+        anchor.start_offset = popover.startOffset
+        anchor.end_offset = popover.endOffset ?? popover.startOffset + popover.anchor.length
+      }
     }
-    setComments(prev => [...prev, newComment])
+    postCommentMut.mutate({
+      text,
+      scope: 'private',
+      anchor,
+    })
+    // Adding a comment hands control back to the comment-driven default: reveal
+    // the panel now, and clear the manual override so the auto effect can
+    // collapse it again if every comment is later removed.
+    sidebarUserToggledRef.current = false
+    setSidebarOpen(true)
     setPopover(null)
     window.getSelection()?.removeAllRanges()
-  }, [popover])
+  }, [popover, postCommentMut])
 
-  const removeComment = useCallback((id: string) => {
-    setComments(prev => prev.filter(c => c.id !== id))
-  }, [])
+  // Doc-level add (from the sidebar) — works for ALL kinds, including
+  // HTML/widget where in-iframe text selection isn't reachable.
+  const addDocComment = useCallback((text: string) => {
+    postCommentMut.mutate({ text, scope: 'private' })
+  }, [postCommentMut])
 
-  const editComment = useCallback((id: string, text: string) => {
-    setComments(prev => prev.map(c => c.id === id ? { ...c, text } : c))
-  }, [])
+  const replyComment = useCallback((parentId: string, text: string) => {
+    replyCommentMut.mutate({ parentId, text })
+  }, [replyCommentMut])
+
+  const resolveComment = useCallback((id: string) => { resolveCommentMut.mutate(id) }, [resolveCommentMut])
+
+  const markReviewComment = useCallback((id: string) => { markReviewCommentMut.mutate(id) }, [markReviewCommentMut])
+
+  const reopenComment = useCallback((id: string) => { reopenCommentMut.mutate(id) }, [reopenCommentMut])
+
+  const removeComment = useCallback((id: string) => { removeCommentMut.mutate(id) }, [removeCommentMut])
+  const editComment = useCallback((id: string, text: string) => { editCommentMut.mutate({ id, text }) }, [editCommentMut])
+
+  // Build the chat-injection prompt. Comments are durable and the agent reads
+  // them itself via `artifact_get_comments`, so we NEVER dump comment text into
+  // the prompt anymore — `addressComments` just nudges the agent to read+act on
+  // the open ones. The plain header is the generic "discuss this" entry point
+  // for ALL kinds (including widgets that can't be edited inline).
+  const buildPromptForChat = useCallback((addressComments = false): string => {
+    if (!artifact) return ''
+    const header = `Iterate on artifact \`${artifact.slug}\` (${artifact.name})`
+    if (addressComments && commentCount > 0) {
+      return header + `: please review and address the ${commentCount} open comment${commentCount === 1 ? '' : 's'} on this artifact (use the artifact_get_comments tool to read them).`
+    }
+    return header + ': '
+  }, [artifact, commentCount])
 
   /**
    * Single navigation dispatcher for every affordance that leaves the artifact
@@ -667,18 +731,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     navigate(intent.path)
   }, [popout, dispatch, navigate])
 
-  // Build the chat-injection prompt: prefix with `Iterate on artifact <slug>:`
-  // so the agent knows the subject. If pending comments exist, attach the
-  // structured comment block; otherwise emit just the prefix and let the
-  // user type their request after the colon.
-  const buildPromptForChat = useCallback((): string => {
-    if (!artifact) return ''
-    const header = `Iterate on artifact \`${artifact.slug}\` (${artifact.name})`
-    if (comments.length === 0) return header + ': '
-    return header + ' with these comments:\n\n' +
-      formatCommentsMessage(`artifact:${artifact.slug}`, comments, sourceContent)
-  }, [artifact, comments, sourceContent])
-
   /** Open a fresh chat slot pre-loaded with this artifact in the input.
    * Always creates a NEW session so historical context from unrelated
    * conversations doesn't contaminate the iterate loop. The user reviews
@@ -690,12 +742,11 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
    * entry point and is available for ALL artifact kinds (including
    * widgets that can't be edited inline).
    */
-  const iterateWithAgent = useCallback(async () => {
+  const iterateWithAgent = useCallback(async (addressComments = false) => {
     if (!artifact) return
-    const prompt = buildPromptForChat()
+    const prompt = buildPromptForChat(addressComments)
     try {
       const res = await api.createChatSlot(`Artifact: ${artifact.name}`)
-      setComments([])
       sendNav({ path: '/chat', slotKey: res.key, prefill: { slotKey: res.key, prompt } })
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err))
@@ -716,6 +767,58 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       : null,
     [artifact?.content, themeVars, theme, usesIframe],
   )
+
+  // Persistent active comment (feedback #4); NO transitory flash (feedback #5).
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null)
+  const [bodyScrollNonce, setBodyScrollNonce] = useState(0)
+  // Read/unread tracking (feedback #9): a per-artifact set of seen comment ids
+  // in localStorage; a thread is unread if any of its comments is unseen.
+  const readKey = `mc-cmt-read:${slug}`
+  const [readIds, setReadIds] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    try { setReadIds(new Set(JSON.parse(localStorage.getItem(readKey) || '[]'))) }
+    catch { setReadIds(new Set()) }
+  }, [readKey])
+  const rootIdOf = useCallback(
+    (c: ArtifactComment) => (c.parent_id && durableComments.some(x => x.id === c.parent_id) ? c.parent_id : c.id),
+    [durableComments],
+  )
+  const unreadRootIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const c of durableComments) if (!readIds.has(c.id)) s.add(rootIdOf(c))
+    return s
+  }, [durableComments, readIds, rootIdOf])
+  const markThreadRead = useCallback((rootId: string) => {
+    const ids = durableComments.filter(c => c.id === rootId || c.parent_id === rootId).map(c => c.id)
+    setReadIds(prev => {
+      const next = new Set(prev)
+      ids.forEach(i => next.add(i))
+      try { safeSetItem(readKey, JSON.stringify([...next])) } catch { /* quota */ }
+      return next
+    })
+  }, [durableComments, readKey])
+  // Opening a thread (bubble/highlight click, or the iframe bridge) → activate,
+  // mark read, and open the floating thread popover. Markdown finds its anchor
+  // via data-mc-cid; the iframe passes a viewport rect.
+  const [openThread, setOpenThread] = useState<{ rootId: string; rect?: { x: number; y: number; w: number; h: number } } | null>(null)
+  const openThreadHandler = useCallback((id: string, rect?: { x: number; y: number; w: number; h: number }) => {
+    setActiveCommentId(id)
+    markThreadRead(id)
+    setOpenThread({ rootId: id, rect })
+  }, [markThreadRead])
+  // Sidebar comment clicked → activate, scroll the doc to the anchor, open popover.
+  const activateFromSidebar = useCallback((id: string) => {
+    setActiveCommentId(id)
+    markThreadRead(id)
+    if (usesIframe) {
+      // The bridge scrolls the iframe, then posts the anchor rect → onOpenThread
+      // opens the popover over the iframe.
+      setIframeScrollTarget({ id, nonce: Date.now() })
+    } else {
+      setBodyScrollNonce(n => n + 1)
+      setOpenThread({ rootId: id })
+    }
+  }, [markThreadRead, usesIframe])
 
   const downloadAsHtml = () => {
     if (!artifact) return
@@ -770,7 +873,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   if (!artifact) return <div className="p-6 text-muted">Not found.</div>
 
   const sel =
-    'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
+    'bg-bg-elevated border border-border rounded-md px-2 py-1 text-text text-[12px] font-body outline-none cursor-pointer transition-colors focus-ring'
 
   // Cron-source warning shown only while editing — surface the foot-gun
   // (next cron run will create a newer version) without noisy chrome on
@@ -840,105 +943,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               <Plus size={10} /> tag
             </button>
           )}
-          <span className="ml-auto flex items-center gap-2 text-[13px] text-muted">
-            {/* Iterate button — primary action for all artifact kinds.
-                Available even when comments are empty: opens the current
-                chat with `Iterate on artifact <slug>:` pre-filled so the
-                user can finish the prompt themselves. For widgets (which
-                can't be edited inline) this is the ONLY way to ask the
-                agent to change the artifact. */}
-            {SHOW_ARTIFACT_ITERATE && !editing && !popout && (
-              <button
-                type="button"
-                onClick={iterateWithAgent}
-                className="px-2 py-1 rounded-md text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)] transition-all"
-                title={comments.length > 0
-                  ? `Discuss with agent (${comments.length} comment${comments.length === 1 ? '' : 's'} attached)`
-                  : 'Discuss this artifact with the agent'}
-              >
-                <span className="inline-flex items-center gap-1">
-                  <Sparkles size={12} /> Iterate
-                  {comments.length > 0 && (
-                    <span className="ml-1 px-1 rounded bg-accent-fg/20 text-[10px]">
-                      {comments.length}
-                    </span>
-                  )}
-                </span>
-              </button>
-            )}
-            {/* Editing controls — Save / Snapshot / Cancel only when editing; Edit otherwise */}
-            {editing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => handleSave(false)}
-                  disabled={!dirty || saving}
-                  className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
-                  title="Save to Live (Cmd+S) — updates the live state without versioning"
-                >
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSave(true)}
-                  disabled={!dirty || saving}
-                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  title="Snapshot (Cmd+Shift+S) — save and create a new version"
-                >
-                  <span className="inline-flex items-center gap-1"><Camera size={12} /> Snapshot</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelEditing}
-                  disabled={saving}
-                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  title="Cancel (Esc)"
-                >
-                  <span className="inline-flex items-center gap-1"><X size={12} /> Cancel</span>
-                </button>
-                {/* Preview toggle (round 8): peek at the rendered output of
-                    the edit buffer without leaving edit mode. Mirrors the
-                    side panel's Edit/Preview toggle. */}
-                <button
-                  type="button"
-                  onClick={() => setPreviewDuringEdit(p => !p)}
-                  disabled={saving}
-                  className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all disabled:opacity-40 ${previewDuringEdit ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-                  title={previewDuringEdit ? 'Back to editor' : 'Preview rendered output of current edits'}
-                >
-                  {previewDuringEdit ? 'Edit' : 'Preview'}
-                </button>
-              </>
-            ) : (
-              <>
-                {/* Snapshot: only shown when live differs from the
-                    latest numbered version (Mesh-1654 round 6). Enabled
-                    even without an active edit because silent saves and
-                    external file edits drift live ahead of history. */}
-                {isCurrent && artifact.live_dirty && (
-                  <button
-                    type="button"
-                    onClick={handleSnapshotLive}
-                    disabled={saving}
-                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                    title="Snapshot — capture the current state as a new version"
-                  >
-                    <span className="inline-flex items-center gap-1"><Camera size={12} /> Snapshot</span>
-                  </button>
-                )}
-                {editable && (
-                  <button
-                    type="button"
-                    onClick={startEditing}
-                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-                    title="Edit content"
-                  >
-                    <span className="inline-flex items-center gap-1"><Pencil size={12} /> Edit</span>
-                  </button>
-                )}
-              </>
-            )}
-
+          <span className="mc-art-toolbar ml-auto flex items-center gap-2 text-[13px] text-muted">
             <span>Version</span>
             <select
               className={sel}
@@ -974,17 +979,130 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 type="button"
                 onClick={handleRevert}
                 disabled={saving}
-                className="p-1.5 rounded text-warn hover:text-warn transition-colors cursor-pointer bg-transparent border border-warn/40 disabled:opacity-40"
+                className="px-2 py-1 rounded-md text-[12px] font-medium border border-warn/40 text-warn hover:border-warn cursor-pointer transition-all disabled:opacity-40"
                 title={`Revert to v${selectedVersion}`}
                 aria-label={`Revert to v${selectedVersion}`}
               >
-                <RotateCcw size={13} />
+                <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> Revert</span>
               </button>
+            )}
+
+            {/* Editing controls (Save / Snapshot / Cancel / Preview) when
+                editing; otherwise Edit + Iterate. Bar order: version, edit,
+                iterate, publish, full screen, download. */}
+            {editing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleSave(false)}
+                  disabled={!dirty || saving}
+                  className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
+                  title="Save to Live (Cmd+S) — updates the live state without versioning"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSave(true)}
+                  disabled={!dirty || saving}
+                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
+                  title="Snapshot (Cmd+Shift+S) — save and create a new version"
+                >
+                  <span className="inline-flex items-center gap-1"><Camera size={13} /> Snapshot</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelEditing}
+                  disabled={saving}
+                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
+                  title="Cancel (Esc)"
+                >
+                  <span className="inline-flex items-center gap-1"><X size={13} /> Cancel</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewDuringEdit(p => !p)}
+                  disabled={saving}
+                  className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all disabled:opacity-40 ${previewDuringEdit ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+                  title={previewDuringEdit ? 'Back to editor' : 'Preview rendered output of current edits'}
+                >
+                  {previewDuringEdit ? 'Edit' : 'Preview'}
+                </button>
+              </>
+            ) : (
+              <>
+                {isCurrent && artifact.live_dirty && (
+                  <button
+                    type="button"
+                    onClick={handleSnapshotLive}
+                    disabled={saving}
+                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
+                    title="Snapshot — capture the current state as a new version"
+                  >
+                    <span className="inline-flex items-center gap-1"><Camera size={13} /> Snapshot</span>
+                  </button>
+                )}
+                {editable && (
+                  <button
+                    type="button"
+                    onClick={startEditing}
+                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
+                    title="Edit content"
+                    aria-label="Edit content"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                )}
+                {/* Iterate — primary "discuss with agent" action for all kinds;
+                    for widgets it is the only way to ask the agent to change the
+                    artifact. Comments are durable and read by the agent via
+                    artifact_get_comments, so this no longer bundles them. Hidden
+                    in a popout window since it navigates away to a new chat — you
+                    iterate from the main dashboard, alongside the popped-out view.
+                    Also hidden while the fork keeps Iterate off (SHOW_ARTIFACT_ITERATE). */}
+                {SHOW_ARTIFACT_ITERATE && !popout && (
+                  <button
+                    type="button"
+                    onClick={() => iterateWithAgent()}
+                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)] transition-all"
+                    title="Iterate — discuss this artifact with the agent"
+                    aria-label="Iterate"
+                  >
+                    <Sparkles size={13} />
+                  </button>
+                )}
+              </>
             )}
 
             {(!editing || previewDuringEdit) && (
               <ReadingWidthToggle value={readingWidth} onToggle={toggleReadingWidth} />
             )}
+            {/* Comments toggle, Publish, Full screen, Download — icon-only to
+                keep the top-right bar compact; labels live in tooltips. */}
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className={`p-1.5 rounded-md border cursor-pointer transition-all ${sidebarOpen ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+              title={sidebarOpen ? 'Hide comments' : 'Show comments'}
+              aria-label="Toggle comments"
+              aria-pressed={sidebarOpen}
+            >
+              <span className="inline-flex items-center gap-1">
+                <MessageSquare size={13} />
+                {commentCount > 0 && (
+                  <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{commentCount}</span>
+                )}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowShare((s) => !s)}
+              className={`p-1.5 rounded-md border cursor-pointer transition-all ${artifact.publication ? 'border-ok/40 text-ok hover:border-ok' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+              title={artifact.publication ? 'Published — manage sharing' : 'Publish or share this artifact'}
+              aria-label="Publish"
+            >
+              <Link2 size={13} />
+            </button>
             {/* Pop out — opens the artifact in its own live browser window
                 (was a throwaway blob: tab). Swaps to Focus + Bring-back once
                 out. Not shown inside the popout window itself (the frame's
@@ -993,7 +1111,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             <button
               type="button"
               onClick={downloadAsHtml}
-              className="p-1.5 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border border-border"
+              className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
               title="Download"
               aria-label="Download"
             >
@@ -1021,57 +1139,98 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           </div>
         )}
 
-        {usesIframe ? (
-          <ArtifactBodyIframe artifact={artifact} slug={slug} previewStyle={mdPreviewStyle} />
-        ) : (
-          // Selection-tracking container: onMouseDown/Up detect a text selection
-          // to anchor the comment popover. This is an inherently pointer-only
-          // gesture (highlighting text), so there is no keyboard equivalent.
-          // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-          <div
-            ref={bodyRef}
-            className="relative"
-            style={mdPreviewStyle}
-            onMouseDown={() => { selectingRef.current = true }}
-            onMouseUp={() => { selectingRef.current = false; handleMouseUp() }}
-          >
-            <ArtifactBodyNative
-              kind={artifact.kind}
-              content={editing ? editedContent : (artifact.content ?? '')}
-              editing={editing && !previewDuringEdit}
-              onChange={setEditedContent}
-              previewRef={previewRef}
-            />
-            {popover && (
-              <CommentPopover
-                x={popover.x}
-                y={popover.y}
-                onSubmit={addComment}
-                onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
-                containerRef={bodyRef}
-              />
-            )}
-          </div>
+        {(showShare ||
+          (!!artifact.publication?.last_error &&
+            dismissedError !== artifact.publication?.last_error)) && (
+          <ArtifactSharePanel
+            artifact={artifact}
+            onClose={() => {
+              setShowShare(false)
+              setDismissedError(artifact.publication?.last_error ?? null)
+            }}
+          />
         )}
 
-        {/* Pending comments list. The 'Iterate' button in the header is
-            the primary submit affordance — these only show as a list of
-            what's pending. Mesh-1654 Phase 4. */}
-        {commentable && comments.length > 0 && (
-          <div className="mt-3 space-y-2">
-            <CommentList
-              comments={comments}
-              onEdit={editComment}
-              onRemove={removeComment}
-              onSubmitAll={iterateWithAgent}
-            />
-            <div className="text-[12px] text-muted">
-              {comments.length} pending comment{comments.length === 1 ? '' : 's'} —
-              use the <strong>Iterate</strong> button above to send them to a
-              fresh chat session.
-            </div>
+        <div className="flex gap-4 items-start">
+          <div className="flex-1 min-w-0">
+            {usesIframe ? (
+              <>
+                <ArtifactBodyIframe
+                  artifact={artifact}
+                  slug={slug}
+                  previewStyle={mdPreviewStyle}
+                  comments={durableComments}
+                  onSelect={(sel: IframeSelection) => setPopover({ x: sel.x, y: sel.y, anchor: sel.quote, prefix: sel.prefix, suffix: sel.suffix })}
+                  onOpenThread={(id: string, rect) => openThreadHandler(id, rect)}
+                  scrollToCommentId={iframeScrollTarget}
+                  activeId={activeCommentId}
+                  unreadRootIds={unreadRootIds}
+                />
+                {popover && (
+                  <CommentPopover
+                    x={popover.x}
+                    y={popover.y}
+                    onSubmit={addComment}
+                    onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
+                  />
+                )}
+              </>
+            ) : (
+              <div
+                ref={bodyRef}
+                className="relative"
+                style={mdPreviewStyle}
+                onMouseDown={() => { selectingRef.current = true }}
+                onMouseUp={() => { selectingRef.current = false; handleMouseUp() }}
+              >
+                <ArtifactBodyNative
+                  kind={artifact.kind}
+                  content={editing ? editedContent : (artifact.content ?? '')}
+                  editing={editing && !previewDuringEdit}
+                  onChange={setEditedContent}
+                  previewRef={previewRef}
+                  comments={durableComments}
+                  activeCommentId={activeCommentId}
+                  scrollNonce={bodyScrollNonce}
+                  onActivateComment={openThreadHandler}
+                  unreadRootIds={unreadRootIds}
+                />
+                {popover && (
+                  <CommentPopover
+                    x={popover.x}
+                    y={popover.y}
+                    onSubmit={addComment}
+                    onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
+                    containerRef={bodyRef}
+                  />
+                )}
+              </div>
+            )}
           </div>
-        )}
+
+          {/* Collapsible right-hand comment sidebar. Durable, threaded, works
+              for ALL kinds (doc-level add for HTML/widget; anchored add for
+              markdown/text via the inline popover above). */}
+          {sidebarOpen && (
+            <CommentsSidebar
+              comments={durableComments}
+              loading={commentsQuery.isFetching}
+              remoteSyncError={remoteSyncError}
+              onAdd={addDocComment}
+              onReply={replyComment}
+              onResolve={resolveComment}
+              onMarkReview={markReviewComment}
+              onReopen={reopenComment}
+              onDelete={removeComment}
+              onRefresh={invalidateComments}
+              onAskAgent={SHOW_ARTIFACT_ITERATE && commentCount > 0 ? () => iterateWithAgent(true) : undefined}
+              onClose={toggleSidebar}
+              onCommentClick={activateFromSidebar}
+              onEditComment={editComment}
+              activeCommentId={activeCommentId}
+            />
+          )}
+        </div>
 
         <div className="mt-3 text-[12px] text-muted">
           Created {artifact.created_at} &middot; Updated {artifact.updated_at} &middot;{' '}
@@ -1083,14 +1242,32 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             : `Showing v${effectiveVersion} (historical)`}
           {dirty && <span className="ml-2 text-warn">• unsaved changes</span>}
           {/* `commentable` already implies SHOW_ARTIFACT_ITERATE (see its definition). */}
-          {commentable && comments.length === 0 && (
-            <span className="ml-2 text-muted/80">Tip: select text to add inline comments, or click <strong>Iterate</strong> to chat with the agent.</span>
+          {commentable && commentCount === 0 && (
+            <span className="ml-2 text-muted/80">Tip: select text to anchor a comment, or use the <strong>Comments</strong> panel to add one.</span>
           )}
-          {/* This tip's guard is load-bearing: `!commentable` is true when the flag is off. */}
-          {SHOW_ARTIFACT_ITERATE && !commentable && !editing && isCurrent && (
-            <span className="ml-2 text-muted/80">Tip: click <strong>Iterate</strong> to chat with the agent about this artifact.</span>
+          {/* The Comments panel is always available; the Iterate mention is gated. */}
+          {!commentable && !editing && isCurrent && (
+            <span className="ml-2 text-muted/80">
+              Tip: use the <strong>Comments</strong> panel to comment
+              {SHOW_ARTIFACT_ITERATE ? <>, or <strong>Iterate</strong> to chat with the agent</> : null}.
+            </span>
           )}
         </div>
+
+        {openThread && (
+          <CommentThreadPopover
+            comments={durableComments}
+            rootId={openThread.rootId}
+            rect={openThread.rect}
+            onClose={() => setOpenThread(null)}
+            onReply={replyComment}
+            onResolve={resolveComment}
+            onMarkReview={markReviewComment}
+            onReopen={reopenComment}
+            onDelete={removeComment}
+            onEditComment={editComment}
+          />
+        )}
 
         {/* Phase 5 (Mesh-1654): lifecycle event log + activity timeline. */}
         <div className="mt-6">
@@ -1104,3 +1281,4 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     </>
   )
 }
+
