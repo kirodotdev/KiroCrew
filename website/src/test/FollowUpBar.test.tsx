@@ -155,6 +155,63 @@ describe('FollowUpBar', () => {
     })
   })
 
+  // ─── Split-button "send now" segment (Mesh-2676) ─────────────────────────
+  // Discoverable form of the double-click-to-send gesture: a distinct
+  // lightning-bolt segment next to the chip body that sends immediately.
+  describe('send-now split segment', () => {
+    it('renders a distinct "Send" button alongside the chip when onSend is provided', () => {
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
+      expect(screen.getByRole('button', { name: 'Go' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Send "Go" now' })).toBeInTheDocument()
+    })
+
+    it('does not render the send segment without onSend (legacy callers)', () => {
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} />)
+      expect(screen.queryByRole('button', { name: 'Send "Go" now' })).not.toBeInTheDocument()
+    })
+
+    it('clicking the send segment calls onSend(option) directly and skips onSelect', () => {
+      const onSelect = vi.fn()
+      const onSend = vi.fn()
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={onSelect} onSend={onSend} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Send "Go" now' }))
+      expect(onSend).toHaveBeenCalledTimes(1)
+      expect(onSend).toHaveBeenCalledWith('Go')
+      expect(onSelect).not.toHaveBeenCalled()
+    })
+
+    it('clicking the send segment on a picked chip calls onSend(undefined) — uses current input', () => {
+      const onSelect = vi.fn()
+      const onSend = vi.fn()
+      render(<FollowUpBar options={['Go']} picked={new Set(['Go'])} onSelect={onSelect} onSend={onSend} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Send "Go" now' }))
+      expect(onSend).toHaveBeenCalledWith(undefined)
+    })
+
+    it('clicking the send segment cancels a pending debounced onSelect from the main chip', () => {
+      vi.useFakeTimers()
+      const onSelect = vi.fn()
+      const onSend = vi.fn()
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={onSelect} onSend={onSend} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Go' }), { detail: 1 })
+      fireEvent.click(screen.getByRole('button', { name: 'Send "Go" now' }))
+      act(() => { vi.advanceTimersByTime(250) })
+      expect(onSend).toHaveBeenCalledTimes(1)
+      expect(onSelect).not.toHaveBeenCalled()
+      vi.useRealTimers()
+    })
+
+    it('suppresses the send segment in quickSend instant-send state (single click already sends)', () => {
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} onSend={() => {}} quickSend />)
+      expect(screen.queryByRole('button', { name: 'Send "Go" now' })).not.toBeInTheDocument()
+    })
+
+    it('shows the send segment once a pick exists even with quickSend on (debounced path)', () => {
+      render(<FollowUpBar options={['Go']} picked={new Set(['First'])} onSelect={() => {}} onSend={() => {}} quickSend />)
+      expect(screen.getByRole('button', { name: 'Send "Go" now' })).toBeInTheDocument()
+    })
+  })
+
   // ─── Quick-send instant-send state preserves no-lag UX ───────────────────
   describe('with onSend + quickSend (instant-send state)', () => {
     beforeEach(() => { vi.useFakeTimers() })

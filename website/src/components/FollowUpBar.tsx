@@ -1,5 +1,5 @@
 import { memo, useRef, useState, useEffect, useCallback } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Zap } from 'lucide-react'
 
 export type FollowUpLayout = 'multiline' | 'scroll'
 
@@ -19,6 +19,14 @@ function chipClassName(isPicked: boolean, extra: string = '') {
     isPicked
       ? 'border-solid border-accent text-accent bg-accent-subtle'
       : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg-elevated'
+  }`
+}
+/** Right-hand "send now" segment class — same palette as the chip body, divided by a border. */
+function sendSegmentClassName(isPicked: boolean) {
+  return `px-1.5 py-1.5 rounded-r-lg cursor-pointer transition-all border border-l-0 ${
+    isPicked
+      ? 'border-solid border-accent text-accent bg-accent-subtle hover:bg-accent/20'
+      : 'border-border text-muted hover:text-accent hover:border-accent/40 bg-bg-elevated'
   }`
 }
 
@@ -56,6 +64,12 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
 
   const useDebouncedClick = !!onSend && !(quickSend && !isPicked && picked.size === 0)
   const title = chipTitle(isPicked, quickSend, picked, !!onSend)
+  // The visible "send now" segment is the discoverable form of the existing
+  // double-click-to-send gesture. Redundant (and hidden) in the quickSend
+  // instant-send state, where a single click on an unpicked chip already
+  // sends — so it's suppressed there to avoid two controls doing the same
+  // thing side by side.
+  const showSendSegment = useDebouncedClick
 
   if (!useDebouncedClick) {
     return (
@@ -92,7 +106,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
     onSend?.(isPicked ? undefined : option)
   }
 
-  return (
+  const mainChip = (
     <button
       type="button"
       // Keep keyboard focus in the textarea on click. Without this the chip
@@ -102,11 +116,29 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       onMouseDown={(e) => e.preventDefault()}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
-      className={className}
+      className={showSendSegment ? className.replace('rounded-lg', 'rounded-l-lg') : className}
       title={title}
     >
       {option}
     </button>
+  )
+
+  if (!showSendSegment) return mainChip
+
+  return (
+    <span className="inline-flex items-stretch shrink-0">
+      {mainChip}
+      <button
+        type="button"
+        aria-label={`Send "${option}" now`}
+        title={`Send "${option}" now`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={(e) => { e.stopPropagation(); if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }; onSend?.(isPicked ? undefined : option) }}
+        className={sendSegmentClassName(isPicked)}
+      >
+        <Zap size={13} />
+      </button>
+    </span>
   )
 }
 
