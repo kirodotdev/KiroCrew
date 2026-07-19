@@ -116,11 +116,12 @@ export function SearchInput({ className = '', ...props }: React.InputHTMLAttribu
   )
 }
 
-export function Badge({ variant, children, className, ...rest }: { variant: 'ok' | 'err' | 'warn' | 'aim' } & Omit<React.ComponentPropsWithoutRef<'span'>, 'children' | 'dangerouslySetInnerHTML'> & { children: React.ReactNode }) {
+export function Badge({ variant, children, className, ...rest }: { variant: 'ok' | 'err' | 'warn' | 'aim' | 'muted' } & Omit<React.ComponentPropsWithoutRef<'span'>, 'children' | 'dangerouslySetInnerHTML'> & { children: React.ReactNode }) {
   const cls =
     variant === 'ok' ? 'bg-ok-subtle text-ok'
     : variant === 'err' ? 'bg-danger-subtle text-danger'
     : variant === 'aim' ? 'bg-aim-subtle text-aim'
+    : variant === 'muted' ? 'bg-[var(--bg-hover)] text-[var(--muted)]'
     : 'bg-warn-subtle text-warn'
   return (
     <span className={twMerge(`inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono whitespace-nowrap hover:scale-105 transition-transform ${cls}`, className)} {...rest}>
@@ -510,3 +511,34 @@ export function Slider({
     </div>
   )
 }
+
+/** Shared styled <select> — use instead of raw <select> in pages (page-layout-pattern). */
+export const Checkbox = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
+  ({ style, ...rest }, ref) => (
+    <input
+      ref={ref}
+      type="checkbox"
+      style={{ margin: 0, accentColor: 'var(--accent)', cursor: 'pointer', ...style }}
+      {...rest}
+    />
+  ),
+)
+Checkbox.displayName = 'Checkbox'
+
+export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement>>(
+  ({ className, style, children, ...rest }, ref) => (
+    <select
+      ref={ref}
+      className={className}
+      style={{
+        background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
+        padding: '9px 8px', fontSize: 12.5, color: 'var(--text)', outline: 'none',
+        cursor: 'pointer', flexShrink: 0, ...style,
+      }}
+      {...rest}
+    >
+      {children}
+    </select>
+  )
+)
+Select.displayName = 'Select'

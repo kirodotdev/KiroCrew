@@ -1538,8 +1538,12 @@ async def start_dashboard(
     # App token exchange (App Kit §5.1 — must be before auth middleware bypass)
     app.router.add_post("/api/apps/{name}/token", handlers.api_app_token)
 
-    # Register built-in apps (idempotent — surfaces baked-in features in App Store)
-    register_builtin_apps()
+    # Register built-in apps (idempotent — surfaces baked-in features in App Store).
+    # Runs on the executor: escalation cleanup can traverse/delete legacy app
+    # dirs, which must not block the event loop during startup.
+    await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), register_builtin_apps
+    )
 
     # One-time migration: disable stale deploy_web builtin installs (now core module).
     # Idempotent — logs once and silently succeeds if already gone.

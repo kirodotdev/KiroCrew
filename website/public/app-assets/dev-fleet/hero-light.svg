@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200">
+  <defs>
+    <linearGradient id="gl" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f1f5f9"/>
+      <stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="200" fill="url(#gl)" rx="8"/>
+  <text x="200" y="105" text-anchor="middle" fill="#475569" font-family="system-ui" font-size="16" font-weight="500">Dev Fleet</text>
+</svg>
