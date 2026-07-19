@@ -23,19 +23,24 @@ def _make_app(state):
 
 
 def _make_state(existing_ids):
-    """Fake state whose crons.remove_job returns True only for known ids."""
+    """Fake state whose crons.remove_jobs removes only the known ids."""
     known = set(existing_ids)
     state = MagicMock()
     state.crons = MagicMock()
 
-    def remove_job(job_id):
-        # Mirror CronService.remove_job: True when the job existed and was removed.
-        if job_id in known:
-            known.discard(job_id)
-            return True
-        return False
+    def remove_jobs(job_ids):
+        # Mirror CronService.remove_jobs: one batch call returning
+        # (removed_ids, missing_ids) in input order.
+        removed, missing = [], []
+        for jid in job_ids:
+            if jid in known:
+                known.discard(jid)
+                removed.append(jid)
+            else:
+                missing.append(jid)
+        return removed, missing
 
-    state.crons.remove_job = MagicMock(side_effect=remove_job)
+    state.crons.remove_jobs = MagicMock(side_effect=remove_jobs)
     state.crons.get_history.return_value.delete_job_history = AsyncMock()
     state.push_refresh = MagicMock()
     return state
@@ -61,7 +66,7 @@ class TestApiCronBatchDelete:
             assert data["ok"] is True
             assert sorted(data["deleted"]) == ["a", "b", "c"]
             assert data["failed"] == []
-        assert state.crons.remove_job.call_count == 3
+        state.crons.remove_jobs.assert_called_once_with(["a", "b", "c"])
         assert state.crons.get_history().delete_job_history.await_count == 3
         # One refresh for the whole batch, not one per id.
         state.push_refresh.assert_called_once_with("crons")
@@ -99,8 +104,8 @@ class TestApiCronBatchDelete:
             assert resp.status == 200
             data = await resp.json()
             assert sorted(data["deleted"]) == ["a", "b"]
-        # remove_job invoked once per unique id, not once per occurrence
-        assert state.crons.remove_job.call_count == 2
+        # remove_jobs invoked ONCE with the deduplicated id list
+        state.crons.remove_jobs.assert_called_once_with(["a", "b"])
 
     @pytest.mark.asyncio
     async def test_empty_ids_is_400(self):
@@ -108,7 +113,7 @@ class TestApiCronBatchDelete:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/crons", json={"ids": []})
             assert resp.status == 400
-        state.crons.remove_job.assert_not_called()
+        state.crons.remove_jobs.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_missing_ids_key_is_400(self):
@@ -123,7 +128,7 @@ class TestApiCronBatchDelete:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/crons", json={"ids": [1, 2, 3]})
             assert resp.status == 400
-        state.crons.remove_job.assert_not_called()
+        state.crons.remove_jobs.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_over_limit_is_400(self):
@@ -132,7 +137,7 @@ class TestApiCronBatchDelete:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/crons", json={"ids": too_many})
             assert resp.status == 400
-        state.crons.remove_job.assert_not_called()
+        state.crons.remove_jobs.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalid_json_is_400(self):
@@ -146,7 +151,7 @@ class TestApiCronBatchDelete:
 
     @pytest.mark.asyncio
     async def test_history_cleanup_failure_still_counts_as_deleted(self):
-        # If remove_job succeeds but delete_job_history raises, the job is
+        # If remove_jobs succeeds but delete_job_history raises, the job is
         # already gone -> it MUST be reported as deleted (not failed), the batch
         # must continue, and the refresh must still fire.
         state = _make_state(["a", "b"])
@@ -163,7 +168,7 @@ class TestApiCronBatchDelete:
             data = await resp.json()
             assert sorted(data["deleted"]) == ["a", "b"]
             assert data["failed"] == []
-        assert state.crons.remove_job.call_count == 2
+        state.crons.remove_jobs.assert_called_once()
         state.push_refresh.assert_called_once_with("crons")
 
     @pytest.mark.asyncio

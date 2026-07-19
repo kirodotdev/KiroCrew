@@ -345,32 +345,27 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         )
     deleted: list[str] = []
     failed: list[str] = []
-    for job_id in unique_ids:
-        try:
-            # remove_job MUST run on the event-loop thread: after saving to disk it
-            # calls _arm_timer() -> asyncio.create_task(), which raises
-            # "RuntimeError: no running event loop" in a worker thread. Offloading it
-            # to run_in_executor therefore raised AFTER the on-disk delete completed,
-            # so the job was gone yet the id was reported as `failed` (offering a
-            # retry that can never succeed) and the scheduler's timer was left
-            # cancelled — killing all future cron runs. Every other caller
-            # (single-delete handler, mcp_cron, slack, apps, CLI) invokes remove_job
-            # directly on the loop; do the same here. The file I/O is a fast,
-            # bounded (<= _MAX_BATCH_DELETE) sync save under a lock.
-            removed = state.crons.remove_job(job_id)
-        except Exception:
-            # remove_job itself raised (unexpected) — record and keep going.
-            logger.warning("Batch delete failed for cron %s", job_id, exc_info=True)
-            failed.append(job_id)
-            continue
-        if not removed:
-            failed.append(job_id)
-            continue
+    try:
+        # remove_jobs runs the WHOLE batch under one file lock with one
+        # reload/serialize/save and one _arm_timer(), instead of paying that
+        # cost per id (up to _MAX_BATCH_DELETE times) — looping remove_job on
+        # the event loop starved every other gateway task on slow storage.
+        # It MUST still run on the event-loop thread: _arm_timer() ->
+        # asyncio.create_task() raises "no running event loop" in a worker
+        # thread, and an executor offload would raise AFTER the on-disk delete
+        # (job gone yet reported failed + scheduler timer left cancelled).
+        # One bounded sync save on the loop matches every other cron mutation.
+        deleted, failed = state.crons.remove_jobs(unique_ids)
+    except Exception:
+        # The batch itself raised (unexpected) — report everything as failed.
+        logger.warning("Batch delete failed", exc_info=True)
+        failed = unique_ids
+        deleted = []
+    for job_id in deleted:
         # The job is gone now, so it is unconditionally a successful delete.
         # History cleanup is best-effort: a failure there must NOT reclassify a
         # completed delete as "failed" — that would make the UI offer a retry
         # that can never succeed (the job no longer exists).
-        deleted.append(job_id)
         try:
             await state.crons.get_history().delete_job_history(job_id)
         except Exception:

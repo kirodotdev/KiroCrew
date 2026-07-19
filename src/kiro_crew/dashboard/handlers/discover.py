@@ -174,6 +174,17 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Shape validation: valid JSON like `[]` has no .get(), and a non-string
+    # field ({"provider": 1}) has no .strip() — either would 500. 400 instead.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "Request body must be a JSON object"}, status=400
+        )
+    for _field in ("provider", "skill_id", "name"):
+        if not isinstance(body.get(_field, ""), str) and body.get(_field) is not None:
+            return web.json_response(
+                {"error": f"'{_field}' must be a string"}, status=400
+            )
 
     provider_name = (body.get("provider") or "").strip()
     skill_id = (body.get("skill_id") or "").strip()

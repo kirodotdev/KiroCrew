@@ -868,6 +868,36 @@ class CronService:
                 return True
         return False
 
+    def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Remove many jobs under ONE lock/reload/save/re-arm.
+
+        Returns ``(removed_ids, missing_ids)`` preserving input order. The
+        batch-delete API previously looped :meth:`remove_job`, paying the
+        file-lock + reload + full-serialize + atomic-write cost PER id on the
+        event loop — with up to 500 ids that starves every other gateway task.
+        One lock and one save bounds the loop work to a single mutation,
+        matching what any other single cron mutation costs. Must run on the
+        event-loop thread (``_arm_timer`` creates an asyncio task).
+        """
+        removed: list[str] = []
+        missing: list[str] = []
+        with self._file_lock():
+            self._sync()
+            present = {j.id for j in self._jobs}
+            targets = set()
+            for jid in job_ids:
+                if jid in present:
+                    removed.append(jid)
+                    targets.add(jid)
+                else:
+                    missing.append(jid)
+            if targets:
+                self._jobs = [j for j in self._jobs if j.id not in targets]
+                self._save()
+                self._arm_timer()
+                logger.info("Removed %d cron job(s) in batch", len(targets))
+        return removed, missing
+
     def enable_job(self, job_id: str, enabled: bool = True) -> bool:
         """Enable or disable a job by ID."""
         with self._file_lock():

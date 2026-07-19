@@ -135,6 +135,39 @@ class TestDiscoverInstall:
         finally:
             await client.close()
 
+    async def test_install_non_object_body_is_400(self, fake_home, reset_registry):
+        # Valid JSON like [] has no .get() — must be a 400, not a 500.
+        client, _ = await self._client(fake_home)
+        try:
+            resp = await client.post("/api/skills/-/discover/install", json=[])
+            assert resp.status == 400
+        finally:
+            await client.close()
+
+    async def test_install_non_string_field_is_400(self, fake_home, reset_registry):
+        # {"provider": 1} has no .strip() — must be a 400, not a 500.
+        client, _ = await self._client(fake_home)
+        try:
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={"provider": 1, "skill_id": "x"},
+            )
+            assert resp.status == 400
+        finally:
+            await client.close()
+
+    async def test_install_non_bool_overwrite_is_400(self, fake_home, reset_registry):
+        # bool("false") is True — a destructive overwrite demands a real bool.
+        client, _ = await self._client(fake_home)
+        try:
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={"provider": "fakeprov", "skill_id": "fake-skill", "overwrite": "false"},
+            )
+            assert resp.status == 400
+        finally:
+            await client.close()
+
     async def test_install_conflict_returns_409(self, fake_home, reset_registry):
         client, skills_dir = await self._client(fake_home)
         try:
