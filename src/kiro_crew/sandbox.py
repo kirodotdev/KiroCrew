@@ -125,16 +125,19 @@ _PYTHON_ENV_PREFIXES: list[str] = [
     "PYTHONHOME",
 ]
 
-# Additional credential names scrubbed only in cc/strict modes (LLM-controlled
-# agent subprocesses). Mirrors the file-level deny list for ~/.kirocrew/.env:
-# config/loader.py seeds these into os.environ so trusted children (gateway,
-# MCP servers, cron) inherit them, but a sandboxed Claude Code agent must not
-# see them via env any more than via the bind-mounted file. Use exact-name
-# matches by virtue of the prefix iteration's startswith check.
+# Gateway-owned credentials must never reach agent-influenced subprocesses.
+# This list feeds the cc/strict launcher scrub, the always-on ``scrub_env``
+# parent scrub, and ``scrub_agent_denied_env`` — the parent-level scrub the ACP
+# spawn paths apply on EVERY tier (incl. the default auto/standard tier, whose
+# launcher does not strip these keys). Loader coverage is pinned by regression
+# test.
 _AGENT_DENIED_ENV_KEYS: list[str] = [
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
     "SLACK_USER_TOKEN",
+    "WECOM_BOT_ID",
+    "WECOM_SECRET",
+    "TELEGRAM_BOT_TOKEN",
     "KIROCREW_OWNER_ID",
 ]
 
@@ -1341,6 +1344,37 @@ def scrub_env(
     prefixes = _SPAWN_SCRUB_ENV_PREFIXES + (extra_prefixes or [])
     src = os.environ if env is None else env
     return {k: v for k, v in src.items() if not any(k.startswith(p) for p in prefixes)}
+
+
+def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
+    """Return a copy of *env* with gateway-owned channel credentials removed.
+
+    Drops every key matching ``_AGENT_DENIED_ENV_KEYS`` — the Slack/WeCom/
+    Telegram tokens and owner id that ``config/loader.load_credentials()`` seeds
+    into ``os.environ`` for trusted children only.
+
+    This is the PARENT-level complement to the OS-sandbox launcher scrub. The
+    launcher (``namespace_argv`` / ``sandbox_exec_argv``) only strips these keys
+    for the ``cc``/``strict`` tiers; on the default ``auto``/``standard`` tier
+    they are left in place. The production ACP spawn paths
+    (:meth:`AcpRuntime._spawn` / :meth:`AcpClient._spawn`) copy a raw
+    ``os.environ`` and call :func:`wrap_argv` directly (not
+    :func:`sandboxed_spawn_argv`), so without this scrub the channel credentials
+    would be inherited by the agent subprocess on the default tier — reachable
+    via ``env`` / ``os.environ`` and usable to control those channel identities
+    outside KiroCrew.
+
+    Unlike :func:`scrub_env`, this deliberately does NOT strip
+    ``_SENSITIVE_ENV_PREFIXES`` (AWS/SSH/GPG): the ``standard`` sandbox is
+    designed to leave git-over-SSH, the AWS CLI and kubectl usable, so those
+    vars must survive the parent scrub. Prefix match via ``startswith`` mirrors
+    the launcher's ENV_PREFIXES check.
+    """
+    return {
+        k: v
+        for k, v in env.items()
+        if not any(k.startswith(p) for p in _AGENT_DENIED_ENV_KEYS)
+    }
 
 
 def sandboxed_spawn_argv(
