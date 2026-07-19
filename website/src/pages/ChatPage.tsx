@@ -90,7 +90,6 @@ import TypewriterText from '../components/TypewriterText'
 import ActivityViewer from './chat/ActivityViewer'
 import { useChatNavigation } from '../hooks/useChatNavigation'
 import SubagentProgressBar from './chat/SubagentProgressBar'
-import ChatProgressTrack from './chat/ChatProgressTrack'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
@@ -1415,7 +1414,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // "Scroll to previous user message" pill — tracks topmost visible item
   const topmostIdxRef = useRef(0)
   const [hasUserMsgAbove, setHasUserMsgAbove] = useState(false)
-  const [currentSectionIdx, setCurrentSectionIdx] = useState(0)
   const displayItemsRef = useRef<DisplayItem[]>([])
   // Update topmost index from scroll position (replaces Virtuoso rangeChanged)
   const updateTopmostIdx = useCallback(() => {
@@ -1434,13 +1432,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
         const idx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
         topmostIdxRef.current = idx
         setHasUserMsgAbove(findPrevUserMsgDisplayIdx(displayItemsRef.current, idx) >= 0)
-        // Compute which nav section is current (last section whose displayIdx <= topmost)
-        const secs = chatNavSectionsRef.current
-        let secIdx = 0
-        for (let s = secs.length - 1; s >= 0; s--) {
-          if (secs[s].displayIdx <= idx) { secIdx = s; break }
-        }
-        setCurrentSectionIdx(secIdx)
         break
       }
     }
@@ -2368,12 +2359,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   }, [displayItems])
 
   const chatNav = useChatNavigation(messages, messageToDisplayIdx)
-  const chatNavSectionsRef = useRef(chatNav.sections)
-  chatNavSectionsRef.current = chatNav.sections
-
-  const scrollToNavSection = useCallback((displayIdx: number) => {
-    navToDisplayIndex(displayIdx, { behavior: 'smooth', align: 'start', offset: -72 })
-  }, [navToDisplayIndex])
 
   // Track the timestamp of the previous search-nav step so we can tell "user is
   // holding Enter through many matches" apart from "user landed on one match".
@@ -2936,7 +2921,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 />
               </motion.div>
             ) : (
-            <div className="relative flex flex-col flex-1 min-h-0">
             <div
               ref={scrollerRef}
               style={{
@@ -3035,14 +3019,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               {/* Footer */}
               <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} regenerating={regenerating} stopState={currentSlot?.stop_state} />
               <div style={{height: '2vh'}} />
-            </div>
-            {!isWelcomeState && chatNav.sections.length >= 2 && (
-              <ChatProgressTrack
-                sections={chatNav.sections}
-                currentIdx={currentSectionIdx}
-                onScrollToSection={scrollToNavSection}
-              />
-            )}
             </div>
             )}
             <div className="h-6 bg-gradient-to-t from-bg to-transparent pointer-events-none -mt-6 relative z-[1]" />
