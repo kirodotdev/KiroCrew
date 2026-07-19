@@ -47,13 +47,13 @@ logger = logging.getLogger(__name__)
 # renderer -- the shared messaging event stream (and Slack/WeCom) is untouched.
 #
 # Telegram's "typing" chat action lasts ~5s, so refresh it just under that
-# (used only as the fallback when native draft streaming is unavailable).
+# for the duration of a turn (shown while we accumulate before posting).
 _TYPING_REFRESH_S = 4.0
 
-# How often to push an animated draft update while streaming. Drafts animate in
-# place and are cheap, so a brisk cadence stays smooth; the client's 429
-# backstop covers the rare long turn.
-_DRAFT_THROTTLE_S = 0.5
+# Min seconds between live streaming edits to one message. Telegram rate-limits
+# edits (~this cadence), so we coalesce chunks and edit the message in place at
+# most this often. The final formatted edit always lands regardless of throttle.
+_EDIT_THROTTLE_S = 1.0
 
 # Interactive approval wait; deny-by-default when it elapses with no press.
 _APPROVAL_TIMEOUT_S = 300.0
@@ -78,17 +78,62 @@ def _extract_options(text: str) -> tuple[str, list[str]]:
 
 # kiro-cli emits an inline "[STEERING steer-<id>: …]" ack marker when it folds a
 # mid-turn steer at a boundary. The dashboard parses it into a chip; Telegram has
-# no parser, so strip it — the user's own steer message (which the steered reply
-# threads under, see on_steer_consumed) already shows the instruction, so the raw
-# inline marker is redundant noise in the bubble.
+# no parser, so strip it — the user's own steer message already shows the
+# instruction (and gets a steer-ack reaction), so the raw inline marker is just
+# redundant noise in the bubble.
 _STEER_MARKER_RE = re.compile(r"\[STEERING\b[^\]]*\]", re.IGNORECASE)
+# Same marker, capturing the ack SUMMARY kiro-cli embeds after "steer-<id>:".
+# The dashboard renders this summary as its "Steered — …" chip; we prefer it
+# for the Telegram chip too (the user's own words are already on screen as
+# their message — the summary is the only NEW information).
+_STEER_SUMMARY_RE = re.compile(
+    r"\[STEERING\s+steer-[0-9a-f]+\s*:\s*([^\]]*)\]", re.IGNORECASE
+)
 
 
 def _strip_steering(text: str) -> str:
-    """Remove kiro-cli's inline ``[STEERING …]`` steer-ack marker from output."""
-    cleaned = _STEER_MARKER_RE.sub("", text)
+    """Remove kiro-cli's inline ``[STEERING …]`` steer-ack marker from output.
+
+    Also strips an UNCLOSED trailing ``[STEERING …`` (still streaming, no closing
+    ``]`` yet): otherwise the marker's long rephrase streams into the live draft
+    and then vanishes when ``on_done`` finally strips the completed marker — a
+    jarring show-then-vanish. Stripping the partial marker keeps the draft in
+    sync with the final message.
+    """
+    cleaned = _STEER_MARKER_RE.sub("", text)  # complete markers anywhere
+    cleaned = re.sub(r"\[STEERING\b[^\]]*$", "", cleaned)  # unclosed, still streaming
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)  # collapse gaps left behind
     return cleaned.strip()
+
+
+def _neutralize_md(raw: str) -> str:
+    """Collapse whitespace, cap length, and strip Markdown control chars from a
+    steer's text so the chip renders literally (inside a blockquote) and can't
+    perturb surrounding formatting."""
+    t = " ".join((raw or "").split())[:120]
+    return re.sub(r"[*_`\[\]()]", "", t)
+
+
+def _strip_hr(text: str) -> str:
+    """Drop Markdown horizontal rules (``---`` / ``***`` / ``___`` on their own
+    line) — they render as literal dashes on Telegram and just add noise.
+    Fenced code blocks are stashed first so a standalone ``---`` INSIDE a code
+    block (e.g. a YAML document separator) is never touched. An unclosed fence
+    mid-stream isn't stashed, but live frames are throttled previews — the
+    final seal sees the closed fence and preserves its content."""
+    stash: list[str] = []
+
+    def _keep(fragment: str) -> str:
+        stash.append(fragment)
+        return f"\x00H{len(stash) - 1}\x00"
+
+    text = _FENCE_RE.sub(lambda m: _keep(m.group(0)), text)
+    # Max 3 leading spaces (markdown HR rule) — a 4-space-indented "---" is
+    # indented CODE (e.g. a YAML separator) and must survive.
+    out = re.sub(r"(?m)^[ ]{0,3}([-*_])\1{2,}[ \t]*$", "", text)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    out = re.sub(r"\x00H(\d+)\x00", lambda m: stash[int(m.group(1))], out)
+    return out.strip()
 
 
 def build_inline_keyboard(options: list[str]) -> dict | None:
@@ -198,6 +243,17 @@ def _md_to_telegram_html(text: str) -> str:
     text = _ITALIC_USCORE_RE.sub(lambda m: f"<i>{m.group(1)}</i>", text)
     text = _LINK_RE.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', text)
     text = _BULLET_RE.sub(lambda m: f"{m.group(1)}\u2022 ", text)
+    # Group consecutive "> " lines (escaped to "&gt; ") into a native Telegram
+    # <blockquote> — the ▎ quote bar. Runs after inline formatting so bold/italic
+    # inside a quote still work; before un-stashing so code/pre placeholders ride
+    # through untouched.
+    text = re.sub(
+        r"(?m)^&gt;[ \t]?.*(?:\n&gt;[ \t]?.*)*",
+        lambda m: "<blockquote>"
+        + re.sub(r"(?m)^&gt;[ \t]?", "", m.group(0)).rstrip("\n")
+        + "</blockquote>",
+        text,
+    )
     text = re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
     return text
 
@@ -273,47 +329,42 @@ class TelegramRenderer(Renderer):
         self._session_key = session_key
         self._buf: list[str] = []
         self._last_tool = ""
+        # Transient tool-activity footer ("🔧 {tool}…") shown ONLY on live
+        # streaming frames — never stored in _buf, so seals/finals stay clean.
+        # Set by on_tool_call, cleared when text resumes (on_text_chunk).
+        self._tool = ""
         self._finalized = False
         self._closed = False
         self._typing_task: "asyncio.Task[None] | None" = None
-        # Native draft streaming (smooth, no editMessageText reflow). draft_id
-        # must be non-zero and stable across the turn so updates animate in
-        # place. _draft_ok: None=untried, True=streaming, False=fell back.
-        self._draft_id = abs(id(self)) % 1_000_000_000 + 1
-        self._draft_ok: bool | None = None
-        self._last_draft = 0.0
-        # Mid-turn steer (M1): the user's steer message id (reply target) and the
-        # pre/post-steer split offset in _buf, so on_done renders the steered
-        # continuation as its own message threaded under the user's message.
-        self._steer_reply_to: int | None = None
-        self._steer_split_at: int | None = None
-
-    def set_steer_reply_to(self, message_id: int) -> None:
-        """Dispatcher hook: record the user's steer message id so the post-steer
-        continuation threads under it (M1 reply-linkage).
-
-        First-steer-wins: on a rapid multi-steer burst the dispatcher calls this
-        for every steer, but ``on_steer_consumed`` records the split only at the
-        first consumed boundary. Keeping the *first* steer's id here aligns the
-        reply target with that split so the cause->effect link stays consistent.
-        """
-        if self._steer_reply_to is None:
-            self._steer_reply_to = message_id or None
+        # Live edit-streaming (send one real message, edit it in place as text
+        # arrives — no draft, which fails for bots / ghosts). On a steer boundary
+        # we STOP editing the current message and open a fresh one for the
+        # steered continuation ("rotate"). _stream_mid = the message being edited
+        # (None -> next render sends a new one). _shown = last text pushed (skip
+        # no-op edits). _last_edit throttles edits. _buf = the CURRENT segment's
+        # text; a rotation seals _buf into its message and starts _buf fresh.
+        self._stream_mid: int | None = None
+        self._shown = ""
+        self._last_edit = 0.0
+        self._seal_count = 0  # rotations so far == index into _steer_texts for chips
+        # Chip pending from the last rotation, NOT yet in _buf. It materializes
+        # (prepends to the segment) only when real post-steer text arrives — so
+        # an end-of-stream marker (no continuation text) never posts a chip-only
+        # ack bubble: the answer already covered the steer and the user's
+        # message carries the reaction receipt.
+        self._pending_chip = ""
+        # User's own mid-turn steer texts (in order), recorded by the dispatcher
+        # via note_steer. Each rotation seeds the new segment with that steer's
+        # chip; a no-rotation turn shows them as one summary chip at on_done.
+        self._steer_texts: list[str] = []
 
     # -- lifecycle ----------------------------------------------------------
     async def on_turn_start(self) -> None:
-        # Prefer native draft streaming (smooth, animated, no edit reflow). An
-        # empty draft renders a "Thinking…" placeholder. If drafts are rejected
-        # (e.g. Forum Topic Mode off), fall back to a live "typing…" indicator.
-        # Idempotent (dispatch + driver both call this).
-        if self._draft_ok is not None or self._closed:
+        # Typing indicator only — no draft preview. Idempotent (dispatch + driver
+        # both call this).
+        if self._typing_task is not None or self._closed:
             return
-        self._draft_ok = await self._client.send_message_draft(
-            self._chat_id, self._draft_id, ""
-        )
-        self._last_draft = time.monotonic()
-        if not self._draft_ok and self._typing_task is None:
-            self._typing_task = asyncio.create_task(self._typing_loop())
+        self._typing_task = asyncio.create_task(self._typing_loop())
 
     async def _typing_loop(self) -> None:
         """Keep the 'typing…' chat action alive (it expires after ~5s) for the
@@ -336,23 +387,179 @@ class TelegramRenderer(Renderer):
 
     async def on_text_chunk(self, text: str) -> None:
         self._buf.append(text)
-        # Stream the growing answer as an animated draft (plaintext, so partial
-        # markdown never 400s). The finished, formatted message is posted in
-        # on_done. If a draft update is rejected mid-turn, fall back to typing.
-        if not self._draft_ok:
+        self._tool = ""  # text resumed -> drop the transient tool footer
+        # 1) Rotate to a fresh message at each COMPLETE [STEERING …] marker
+        #    (kiro-cli's in-stream steer injection point). Text before the marker
+        #    seals into the current message; the steered continuation opens a new
+        #    message headed by the steer chip. Splitting at the marker's real
+        #    position — not the racy STEER_CONSUMED offset — avoids the
+        #    "used.BANANA" leak.
+        await self._rotate_at_markers()
+        # 1b) Materialize the pending chip once real post-steer text exists.
+        self._materialize_chip()
+        # 2) Rotate when a segment would exceed one Telegram message.
+        await self._rotate_on_length()
+        # 3) Live-stream the current segment: edit the message in place (throttled).
+        await self._stream_live()
+
+    def _materialize_chip(self) -> None:
+        """Prepend the pending steer chip to the segment — but only when the
+        segment carries real text. Keeps an end-of-stream marker from ever
+        posting a chip-only ack bubble."""
+        if self._pending_chip and self._segment_text().strip():
+            body = "".join(self._buf).lstrip("\n")
+            self._buf = [f"{self._pending_chip}\n\n{body}"]
+            self._pending_chip = ""
+
+    async def _rotate_at_markers(self) -> None:
+        while True:
+            # A chip pending from a PREVIOUS marker materializes now if this
+            # segment carries real text — so a single chunk containing two
+            # markers can't overwrite the first steer's chip (its continuation
+            # seals WITH the chip below). A chip with no continuation text stays
+            # pending and is deliberately dropped on overwrite (no-tail design).
+            self._materialize_chip()
+            raw = "".join(self._buf)
+            m = _STEER_MARKER_RE.search(raw)  # first COMPLETE marker only
+            if m is None:
+                return
+            self._buf = [raw[: m.start()]]
+            # Length-rotate the pre-marker segment BEFORE sealing: a chunk can
+            # deliver oversized text and the marker together, and sealing an
+            # over-limit segment would silently truncate it at Telegram's cap.
+            await self._rotate_on_length()
+            sealed = bool(self._segment_text().strip())
+            await self._seal_current()  # freeze the pre-steer message as-is
+            # Chip: prefer the SUMMARY embedded in the marker itself (what the
+            # dashboard shows as its "Steered — …" chip) — the user's own words
+            # are already on screen as their message, so the summary is the only
+            # new information. Fall back to the recorded user text.
+            sm = _STEER_SUMMARY_RE.match(raw, m.start())
+            summary = _neutralize_md(sm.group(1)) if sm else ""
+            if summary:
+                chip: str | None = f"> ↪️ {summary}"
+            else:
+                chip = self._chip_for_seal(self._seal_count)
+            self._seal_count += 1
+            # Hold the chip as PENDING — it prepends only when real post-steer
+            # text arrives (see on_text_chunk). An end-of-stream marker thus
+            # produces no chip-only ack bubble.
+            self._pending_chip = chip or ""
+            self._buf = [raw[m.end():]]  # new segment: steered continuation only
+            if sealed:
+                self._open_new_message()
+            # else: the pre-marker segment was empty (e.g. a tool-only live
+            # "🔧 …" message) — nothing was sealed, so KEEP _stream_mid and let
+            # the steered continuation replace the transient footer in place
+            # instead of orphaning it as a permanent tool-footer bubble.
+
+    async def _rotate_on_length(self) -> None:
+        """Rotate when the segment exceeds one Telegram message. Uses
+        ``_split_markdown`` so a fenced code block spanning a cut is rebalanced
+        (fence closed at the seal, reopened in the next segment) instead of
+        leaving literal backticks in both messages. A trailing protocol
+        directive — a COMPLETE ``[OPTIONS: …]`` block or a still-streaming
+        ``[STEERING …`` / ``[OPTIONS …`` fragment — is detached first and
+        reattached to the surviving tail, so length splitting can never cut a
+        directive in half (which would leak protocol fragments and lose the
+        steer rotation / options keyboard)."""
+        limit = self._limit()
+        raw = "".join(self._buf)
+        if len(raw) <= limit:
             return
+        partial = ""
+        cm = _OPTIONS_RE.search(raw)
+        if cm:
+            # Complete trailing [OPTIONS: …] — keep it intact on the tail so
+            # finalization can extract the inline keyboard (a bare split would
+            # leak "NS: A | B]" as raw text and lose the keyboard).
+            raw, partial = raw[: cm.start()], raw[cm.start():]
+        else:
+            idx = max(raw.rfind("[STEERING"), raw.rfind("[OPTIONS"))
+            if idx != -1 and "]" not in raw[idx:]:
+                raw, partial = raw[:idx], raw[idx:]
+        chunks = _split_markdown(raw, limit)
+        for ch in chunks[:-1]:
+            self._buf = [ch]
+            await self._seal_current()
+            self._open_new_message()
+        self._buf = [(chunks[-1] if chunks else "") + partial]
+
+    def _open_new_message(self) -> None:
+        """Next render creates a fresh message instead of editing the old one."""
+        self._stream_mid = None
+        self._shown = ""
+
+    def _segment_text(self) -> str:
+        """Current segment's markdown source (chip already seeded into _buf),
+        with the steer marker and horizontal-rule noise stripped."""
+        return _strip_hr(_strip_steering("".join(self._buf)))
+
+    async def _stream_live(self, *, force: bool = False) -> None:
+        """Throttled in-place edit of the current segment (plaintext, so partial
+        markdown never 400s). Sends the message on first render. The transient
+        ``🔧 {tool}…`` footer is appended ONLY here (live frames) — seals and
+        the final render read ``_segment_text`` and never carry it. ``force``
+        bypasses the throttle so a tool-call event surfaces immediately."""
         now = time.monotonic()
-        if now - self._last_draft < _DRAFT_THROTTLE_S:
+        if not force and now - self._last_edit < _EDIT_THROTTLE_S:
             return
-        self._last_draft = now
-        body = _strip_md(self._text())
-        if not body:
+        # Hold back trailing [OPTIONS:] markup (complete or still-streaming
+        # partial) from live frames — it is an internal directive, extracted
+        # into the inline keyboard at finalization.
+        seg, _ = _extract_options(self._segment_text())
+        body = _strip_md(seg)
+        footer = f"🔧 {self._tool}…" if self._tool else ""
+        if footer:
+            # Keep the footer visible even when it must displace body tail chars.
+            room = self._limit() - len(footer) - 2
+            text = f"{body[:room]}\n\n{footer}".strip() if room > 0 else footer
+        else:
+            text = body[: self._limit()]
+        if not text or text == self._shown:
             return
-        ok = await self._client.send_message_draft(self._chat_id, self._draft_id, body)
-        if not ok:
-            self._draft_ok = False
-            if self._typing_task is None and not self._closed:
-                self._typing_task = asyncio.create_task(self._typing_loop())
+        self._last_edit = now
+        self._shown = text
+        if self._stream_mid is None:
+            mid = await self._client.send_message(self._chat_id, text)
+            if mid is not None:
+                self._stream_mid = mid
+        else:
+            await self._client.edit_message(self._chat_id, self._stream_mid, text)
+
+    async def _seal_current(self, *, keyboard: dict | None = None) -> None:
+        """Finalize the current segment: replace its live plaintext with the
+        formatted HTML (and optional keyboard). Edits the streamed message in
+        place, or sends one if the segment never streamed (e.g. throttled out).
+        Empty segments are skipped so a bare steer doesn't post a blank bubble."""
+        text = self._segment_text().strip()
+        if not text:
+            return
+        html_text = _md_to_telegram_html(text)
+        if self._stream_mid is not None:
+            ok = await self._client.edit_message(
+                self._chat_id, self._stream_mid, html_text,
+                parse_mode="HTML", reply_markup=keyboard, retry_plain=False,
+            )
+            if not ok:  # malformed HTML -> clean plaintext, never raw tags
+                ok = await self._client.edit_message(
+                    self._chat_id, self._stream_mid, _strip_md(text),
+                    reply_markup=keyboard,
+                )
+            if ok:
+                return
+            # Both edits failed — the live message is gone (e.g. the user
+            # deleted it mid-turn). Fall through and SEND the final content so
+            # the completed answer (and its keyboard) is never silently lost.
+            self._stream_mid = None
+        mid = await self._client.send_message(
+            self._chat_id, html_text, parse_mode="HTML",
+            reply_markup=keyboard, retry_plain=False,
+        )
+        if mid is None:
+            await self._client.send_message(
+                self._chat_id, _strip_md(text), reply_markup=keyboard,
+            )
 
     async def on_thinking(self, text: str) -> None:
         # Telegram does not surface reasoning inline (parity with prior behavior).
@@ -361,9 +568,16 @@ class TelegramRenderer(Renderer):
     async def on_tool_call(
         self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
     ) -> None:
-        # Remember the tool for a possible approval prompt; the live typing
-        # indicator already signals "working", so nothing is posted here.
+        # Surface mid-turn tool activity as a transient "🔧 {tool}…" footer on
+        # the live bubble (force=True so it shows immediately, not throttled).
+        # We deliberately do NOT seal a message here: models interleave tool
+        # calls mid-sentence, so sealing at a tool boundary chops a sentence
+        # into broken bare messages on a channel with no tool cards (proven on
+        # Telegram). The footer lives only on live frames — on_text_chunk clears
+        # it and seals/finals never carry it.
         self._last_tool = title or tool_kind or "tool"
+        self._tool = self._last_tool
+        await self._stream_live(force=True)
 
     async def on_prompt_choice(
         self, options: list[dict[str, Any]], request_id: str | int
@@ -392,73 +606,78 @@ class TelegramRenderer(Renderer):
         except Exception:
             logger.debug("Telegram: compaction notice send failed", exc_info=True)
 
+    def note_steer(self, text: str) -> None:
+        """Record the user's own mid-turn steer text (their typed words, NOT the
+        redacted backend echo). Called by the dispatcher when a steer is actually
+        injected; rendered as an inline "↪️ steered: …" chip in on_done. Capped to
+        avoid unbounded growth on a pathological steer burst."""
+        t = (text or "").strip()
+        if t and len(self._steer_texts) < 50:
+            self._steer_texts.append(t)
+
     async def on_done(self, stop_reason: str = "") -> None:
         if self._finalized:
             return
         self._finalized = True
         self._stop_typing()
         ok = stop_reason != "error"
+        # Flush any trailing rotation, then finalize the current segment: replace
+        # its live plaintext with formatted HTML + the [OPTIONS:] keyboard. Each
+        # mid-turn steer already rotated its own message; this seals the last one.
+        await self._rotate_at_markers()
+        self._materialize_chip()  # chip lands only if real post-steer text exists
+        # Extract the trailing [OPTIONS:] BEFORE length rotation: if the body
+        # overflows, rotation would otherwise seal the options text into an
+        # earlier message and the keyboard would never attach.
+        body_raw, opts = _extract_options("".join(self._buf))
+        self._buf = [body_raw]
+        keyboard = build_inline_keyboard(opts) if opts else None
+        # No-rotation fallback: steers were injected but kiro-cli emitted no
+        # marker to rotate at — prepend one summary chip so they're still shown.
+        # This happens BEFORE length rotation so the summary counts against the
+        # transport limit and can never push the final segment past it.
+        if self._seal_count == 0 and self._steer_texts:
+            quoted = [q for q in (_neutralize_md(t) for t in self._steer_texts) if q]
+            if quoted:
+                body = self._segment_text().strip()
+                summary = "> " + " · ".join(quoted)
+                self._buf = [summary + ("\n\n" + body if body else "")]
+        await self._rotate_on_length()
+        if not self._segment_text().strip():
+            # Nothing to post. Earlier rotated segments carried the turn -> stay
+            # silent; otherwise show a placeholder. An extracted keyboard (an
+            # options-only body) is user-facing content and must ALWAYS reach
+            # the user — attach it to the placeholder instead of dropping it.
+            if self._seal_count > 0 and keyboard is None:
+                return
+            placeholder = "…" if ok else "⚠️ Error — please try again"
+            if self._stream_mid is not None:
+                await self._client.edit_message(
+                    self._chat_id, self._stream_mid, placeholder,
+                    reply_markup=keyboard,
+                )
+            else:
+                await self._client.send_message(
+                    self._chat_id, placeholder, reply_markup=keyboard
+                )
+            return
+        await self._seal_current(keyboard=keyboard)
+
+    def _limit(self) -> int:
         # Leave headroom below the char cap for the HTML tags we add, so a
         # formatted chunk can't overflow Telegram's 4096 limit and get cut
         # mid-tag.
         cap = self.capabilities.max_message_chars or 4000
-        limit = max(500, cap - 256)
+        return max(500, cap - 256)
 
-        # Mid-turn steer split (M1): render the pre-steer output and the steered
-        # continuation as SEPARATE messages, with the continuation threaded under
-        # the user's steer message. Split the RAW buffer at the boundary recorded
-        # by on_steer_consumed (real messages are only posted here, in on_done).
-        raw = "".join(self._buf)
-        split = self._steer_split_at
-        if split is not None and 0 < split < len(raw.rstrip()):
-            pre = _strip_steering(_extract_options(raw[:split].strip())[0])
-            post_body, opts = _extract_options(raw[split:].strip())
-            post = _strip_steering(post_body)
-            keyboard = build_inline_keyboard(opts) if opts else None
-            if pre:
-                await self._send_blocks(pre, limit, keyboard=None, reply_to=None)
-            await self._send_blocks(
-                post or "…", limit, keyboard=keyboard, reply_to=self._steer_reply_to
-            )
-            return
-
-        body = self._text()
-        full = body or ("…" if ok else "⚠️ Error — please try again")
-        opts = self._options()
-        keyboard = build_inline_keyboard(opts) if opts else None
-        await self._send_blocks(full, limit, keyboard=keyboard, reply_to=None)
-
-    async def _send_blocks(
-        self, text: str, limit: int, *, keyboard: dict | None, reply_to: int | None
-    ) -> None:
-        """Post ``text`` as one or more Telegram HTML blocks. The RAW markdown is
-        split into <=limit chunks with fenced code kept balanced (_split_markdown)
-        then each chunk is formatted -- so a fence never straddles a chunk edge and
-        leaks a literal ``` / unescaped body. Keyboard on the last chunk only;
-        reply threading on the first chunk only."""
-        chunks = _split_markdown(text, limit) or [text]
-        last = len(chunks) - 1
-        for i, chunk in enumerate(chunks):
-            kb = keyboard if i == last else None
-            rt = reply_to if i == 0 else None
-            html_chunk = _md_to_telegram_html(chunk)
-            mid = await self._client.send_message(
-                self._chat_id, html_chunk, parse_mode="HTML",
-                reply_markup=kb, reply_to_message_id=rt, retry_plain=False,
-            )
-            if mid is None:  # malformed HTML -> clean plaintext, never raw tags
-                await self._client.send_message(
-                    self._chat_id, _strip_md(chunk),
-                    reply_markup=kb, reply_to_message_id=rt,
-                )
-
-    async def on_steer_consumed(self) -> None:
-        """Record the pre/post-steer boundary in _buf so on_done renders the
-        steered continuation as its own message, threaded under the user's steer.
-        (Block streaming: real messages are only posted in on_done, so we mark
-        the split offset here rather than sealing a live message.)"""
-        if self._steer_split_at is None:  # first steer marks the split
-            self._steer_split_at = len("".join(self._buf))
+    def _chip_for_seal(self, i: int) -> str | None:
+        """The steer chip (a "> quote" blockquote of the USER's own words) that
+        heads the segment opened by the i-th rotation. None when we have no
+        recorded text for that rotation (chip is simply omitted)."""
+        if 0 <= i < len(self._steer_texts):
+            t = _neutralize_md(self._steer_texts[i])
+            return f"> {t}" if t else None
+        return None
 
     async def close(self) -> None:
         """Idempotent teardown: stop the typing indicator and finalize the turn
@@ -468,11 +687,6 @@ class TelegramRenderer(Renderer):
             await self.on_done(stop_reason="error")
 
     # -- helpers ------------------------------------------------------------
-    def _text(self) -> str:
-        raw = "".join(self._buf).strip()
-        body, _ = _extract_options(raw)
-        return _strip_steering(body)
-
     def _options(self) -> list[str]:
         raw = "".join(self._buf).strip()
         _, opts = _extract_options(raw)

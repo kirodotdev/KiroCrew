@@ -88,7 +88,13 @@ ALLOWED_KINDS = frozenset(
 )
 
 #: Allowed source markers (provenance).
-ALLOWED_SOURCES = frozenset({"chat", "cron", "subagent", "manual", "import"})
+ALLOWED_SOURCES = frozenset({
+    # Provenance/creation buckets (back-compat) + actual session origins from
+    # ``infer_use_case`` so an artifact's source can reflect WHERE the saving
+    # session came from rather than a generic "manual".
+    "chat", "cron", "subagent", "manual", "import",
+    "dashboard", "slack", "cli", "task-runner", "unknown",
+})
 
 #: Allowed lifecycle event types. ``referenced`` is reserved for chat-mention
 #: scanning (added in a follow-up CR); the in-line save/update path emits
@@ -293,6 +299,18 @@ class Artifact:
     #: unfiled). Only local artifacts carry a folder; remote/shared artifacts
     #: have no local record to hang one on.
     folder_id: str = ""
+    #: User "pin"/favorite mark (Mesh — artifact pinning). Metadata-only,
+    #: persisted to meta.json; toggling it does NOT bump the version or emit a
+    #: lifecycle event (same class as retag/rename/set_folder). Tolerant-loaded
+    #: for legacy meta.json (defaults to unpinned). Lets the library UI filter
+    #: to pinned-only vs all.
+    pinned: bool = False
+    #: Session key of the chat/session that saved this artifact (Mesh — artifact
+    #: session provenance). Persisted; the dashboard live-resolves it to the
+    #: session's current title for the Source column (falling back to
+    #: "(deleted session)" when the session no longer exists). Empty for
+    #: non-session origins (bulk import, older artifacts).
+    session_key: str = ""
     #: Artifactory publication state (Mesh-1880). ``None`` until the artifact
     #: is published; carries the stable Artifactory id/URL, visibility,
     #: shared-with aliases, and version-sync bookkeeping once published.
@@ -410,6 +428,20 @@ _HTML_SNIFF_MARKERS = (
 
 #: A leading markdown ATX heading (``#`` .. ``######`` followed by whitespace).
 _MD_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+
+#: Text document extensions used by the "session docs" feature (virtual All
+#: list + materialize-on-save). Deliberately text-only: binary docs (.pdf,
+#: .docx) don't fit the content-backed artifact model without extraction, so
+#: they're excluded here for now.
+DOC_EXTENSIONS = frozenset({".md", ".markdown", ".mdx", ".txt", ".rst"})
+
+
+def is_document_path(path: str) -> bool:
+    """True when ``path`` looks like a (text) document, not code/config/binary."""
+    if not path:
+        return False
+    return os.path.splitext(path)[1].lower() in DOC_EXTENSIONS
 
 
 def _infer_kind(content: str, source_path: str = "", explicit: str | None = None) -> str:
@@ -595,6 +627,7 @@ class ArtifactStore:
         tags: list[str] | None = None,
         source_path: str = "",
         folder_id: str = "",
+        session_key: str = "",
     ) -> Artifact:
         """Persist a new artifact and return it.
 
@@ -640,6 +673,7 @@ class ArtifactStore:
                 content=content,
                 source_path=source_path[:512] if source_path else "",
                 folder_id=folder_id or "",
+                session_key=session_key[:256] if session_key else "",
                 version_kinds={"1": kind},
             )
             # Lifecycle: emit `created` event. New artifacts are tagged
@@ -1004,6 +1038,21 @@ class ArtifactStore:
         elif fire_rename:
             self._fire_change("rename", slug)
         return art
+
+    def set_pinned(self, slug: str, pinned: bool) -> Artifact:
+        """Set an artifact's pin/favorite mark — metadata-only.
+
+        Like :meth:`set_folder`, toggling ``pinned`` is a pure metadata
+        mutation: it does NOT bump the version, write a snapshot, or emit a
+        lifecycle event.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            art.pinned = bool(pinned)
+            self._write_meta(art)
+            logger.info("artifact pin set: slug=%s pinned=%s", slug, art.pinned)
+            return art
 
     def delete(self, slug: str) -> None:
         """Permanently delete an artifact and all of its versions."""
@@ -1878,6 +1927,8 @@ class ArtifactStore:
             events_backfilled=bool(raw.get("events_backfilled", False)),
             source_path=str(raw.get("source_path", "")),
             folder_id=str(raw.get("folder_id") or ""),
+            pinned=bool(raw.get("pinned", False)),
+            session_key=str(raw.get("session_key", "")),
             publication=publication,
             fork_metadata=fork_metadata,
             version_kinds=version_kinds,

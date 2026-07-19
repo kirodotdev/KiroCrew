@@ -19,7 +19,10 @@ all: test
 build: frontend backend
 
 frontend:
+	bash ensure-node.sh || true
 	cd website && \
+	  NBD="$$(cat $$HOME/.kirocrew/node-bin-dir 2>/dev/null)" && \
+	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; } && \
 	  if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi && \
 	  npm run build
 	rm -rf src/kiro_crew/static/dist

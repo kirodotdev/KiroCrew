@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" fill="none">
+  <rect width="480" height="270" fill="#1a1b26"/>
+  <!-- Connection lines -->
+  <line x1="120" y1="135" x2="195" y2="95" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="120" y1="135" x2="195" y2="175" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="225" y1="95" x2="300" y2="135" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="225" y1="175" x2="300" y2="135" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <line x1="330" y1="135" x2="380" y2="135" stroke="#6366f1" stroke-width="1.5" opacity="0.6"/>
+  <!-- Glow effects -->
+  <circle cx="120" cy="135" r="25" fill="#6366f1" opacity="0.08"/>
+  <circle cx="210" cy="95" r="20" fill="#818cf8" opacity="0.08"/>
+  <circle cx="210" cy="175" r="20" fill="#818cf8" opacity="0.08"/>
+  <circle cx="315" cy="135" r="22" fill="#a78bfa" opacity="0.08"/>
+  <circle cx="395" cy="135" r="20" fill="#c084fc" opacity="0.08"/>
+  <!-- Nodes -->
+  <circle cx="120" cy="135" r="15" stroke="#6366f1" stroke-width="2" fill="#1e1b4b" />
+  <circle cx="120" cy="135" r="5" fill="#818cf8" opacity="0.8"/>
+  <circle cx="210" cy="95" r="13" stroke="#818cf8" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="210" cy="95" r="4" fill="#a5b4fc" opacity="0.8"/>
+  <circle cx="210" cy="175" r="13" stroke="#818cf8" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="210" cy="175" r="4" fill="#a5b4fc" opacity="0.8"/>
+  <circle cx="315" cy="135" r="14" stroke="#a78bfa" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="315" cy="135" r="5" fill="#c4b5fd" opacity="0.8"/>
+  <!-- End node (diamond) -->
+  <polygon points="395,120 410,135 395,150 380,135" stroke="#c084fc" stroke-width="2" fill="#1e1b4b"/>
+  <circle cx="395" cy="135" r="4" fill="#e9d5ff" opacity="0.8"/>
+  <!-- Pulse rings -->
+  <circle cx="120" cy="135" r="20" stroke="#6366f1" stroke-width="0.5" fill="none" opacity="0.3"/>
+  <circle cx="315" cy="135" r="19" stroke="#a78bfa" stroke-width="0.5" fill="none" opacity="0.3"/>
+  <!-- Accent dots -->
+  <circle cx="60" cy="60" r="1.5" fill="#6366f1" opacity="0.4"/>
+  <circle cx="440" cy="50" r="1.5" fill="#a78bfa" opacity="0.3"/>
+  <circle cx="70" cy="220" r="1" fill="#818cf8" opacity="0.3"/>
+  <circle cx="420" cy="230" r="1.5" fill="#c084fc" opacity="0.3"/>
+</svg>

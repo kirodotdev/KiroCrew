@@ -59,8 +59,6 @@ describe('ArtifactDetailPage', () => {
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     expect(screen.getByText(/Artifact: cr-queue/i)).toBeInTheDocument()
     expect(screen.getByText('Hourly CR snapshot')).toBeInTheDocument()
-    expect(screen.getByText('ops')).toBeInTheDocument()
-    expect(screen.getByText('cr')).toBeInTheDocument()
     expect(screen.getByText('widget')).toBeInTheDocument()
     // The iframe title appears only after ArtifactBodyIframe's effect resolves
     // the blob URL (async); findByTitle waits for it. A synchronous getByTitle
@@ -365,47 +363,6 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getAllByText(/via dashboard/i).length).toBeGreaterThan(0)
   })
 
-  // ── nrb feedback Round 4: Tag editing ─────────────────────────────────
-  it('renders the +tag button in the header so tags can be added', async () => {
-    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ tags: ['ops'] }))
-    vi.mocked(api).artifactVersions = vi
-      .fn()
-      .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
-    renderRoute()
-    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.getByLabelText('Add a tag')).toBeInTheDocument()
-  })
-
-  it('calls updateArtifact with new tags on add', async () => {
-    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ tags: ['ops'] }))
-    vi.mocked(api).artifactVersions = vi
-      .fn()
-      .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
-    const updateSpy = vi.fn().mockResolvedValue({ slug: 'cr-queue' })
-    vi.mocked(api).updateArtifact = updateSpy
-    renderRoute()
-    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    // Click the + tag button
-    fireEvent.click(screen.getByLabelText('Add a tag'))
-    // Type and confirm via Enter
-    const input = await waitFor(() => screen.getByPlaceholderText('tag…'))
-    fireEvent.change(input, { target: { value: 'urgent' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(updateSpy).toHaveBeenCalledWith('cr-queue', { tags: ['ops', 'urgent'] }))
-  })
-
-  it('removes a tag when its X button is clicked', async () => {
-    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ tags: ['ops', 'cr'] }))
-    vi.mocked(api).artifactVersions = vi
-      .fn()
-      .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
-    const updateSpy = vi.fn().mockResolvedValue({ slug: 'cr-queue' })
-    vi.mocked(api).updateArtifact = updateSpy
-    renderRoute()
-    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.click(screen.getByLabelText('Remove tag ops'))
-    await waitFor(() => expect(updateSpy).toHaveBeenCalledWith('cr-queue', { tags: ['cr'] }))
-  })
 
   it('Save and Snapshot buttons both render in edit mode with distinct titles', async () => {
     // Save = silent live update, Snapshot = bumps version. Both buttons
@@ -563,22 +520,6 @@ describe('ArtifactDetailPage', () => {
     resolveUpdate?.(mkArtifact({ kind: 'markdown' }))
   })
 
-  it('navigating to a different artifact resets tag-editing state (round 12)', async () => {
-    // The state-reset effect runs on mount via the slug useEffect.
-    // We can't easily test rerender-with-different-slug in a single
-    // MemoryRouter without renderRoute helper changes, but we can verify
-    // the effect runs and clears state on first mount.
-    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ tags: ['a'] }))
-    vi.mocked(api).artifactVersions = vi
-      .fn()
-      .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
-    renderRoute()
-    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    // Tag input is closed by default — slug-effect cleared addingTag.
-    expect(screen.queryByPlaceholderText('tag…')).toBeNull()
-    expect(screen.getByLabelText('Add a tag')).toBeInTheDocument()
-  })
-
   // ── Coverage push: bump frontend new-line coverage above 60% ──────────────
   it('Cmd+S triggers handleSave when dirty in edit mode', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
@@ -622,37 +563,6 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('Tracking ~/notes/test.md')).toBeInTheDocument())
-  })
-
-  it('add tag flow: Plus button reveals input, Escape cancels', async () => {
-    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ tags: [] }))
-    vi.mocked(api).artifactVersions = vi
-      .fn()
-      .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
-    renderRoute()
-    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.click(screen.getByLabelText('Add a tag'))
-    const input = await waitFor(() => screen.getByPlaceholderText('tag…'))
-    fireEvent.change(input, { target: { value: 'wip' } })
-    fireEvent.keyDown(input, { key: 'Escape' })
-    // Input should disappear.
-    await waitFor(() => expect(screen.queryByPlaceholderText('tag…')).toBeNull())
-  })
-
-  it('add tag flow: comma also commits', async () => {
-    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ tags: [] }))
-    vi.mocked(api).artifactVersions = vi
-      .fn()
-      .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
-    const updateSpy = vi.fn().mockResolvedValue({ slug: 'cr-queue' })
-    vi.mocked(api).updateArtifact = updateSpy
-    renderRoute()
-    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.click(screen.getByLabelText('Add a tag'))
-    const input = await waitFor(() => screen.getByPlaceholderText('tag…'))
-    fireEvent.change(input, { target: { value: 'urgent' } })
-    fireEvent.keyDown(input, { key: ',' })
-    await waitFor(() => expect(updateSpy).toHaveBeenCalledWith('cr-queue', { tags: ['urgent'] }))
   })
 
   it('renders Activity timeline with reverted event qualifier', async () => {

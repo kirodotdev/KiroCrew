@@ -18,7 +18,10 @@ from kiro_crew.dashboard.handlers.artifacts import (
     _MAX_BODY_BYTES,
     api_artifact_delete,
     api_artifact_detail,
+    api_artifact_materialize,
     api_artifact_relocate,
+    api_artifact_session_docs,
+    api_artifact_set_pinned,
     api_artifact_update,
     api_artifact_version_detail,
     api_artifact_versions,
@@ -811,6 +814,65 @@ class TestRecordEvent:
         assert post.content == original_content
         ref_events = [e for e in post.events if e.get("type") == "referenced"]
         assert len(ref_events) == 3
+
+
+# ── Denial audit (SEL) for new pin / materialize / session-doc routes ─────────
+
+
+class TestDenialAudit:
+    """Every denial/error exit on the new routes must emit a SEL audit event."""
+
+    def _capture_sel(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.handlers import artifacts as art_handlers
+
+        sel_stub = MagicMock()
+        monkeypatch.setattr(art_handlers, "sel", lambda: sel_stub)
+        return sel_stub
+
+    @pytest.mark.asyncio
+    async def test_materialize_non_string_path_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        sel_stub = self._capture_sel(monkeypatch)
+        resp = await api_artifact_materialize(_request(body={"path": 123}))
+        assert resp.status == 400
+        sel_stub.log_tool_invocation.assert_called_once()
+        kwargs = sel_stub.log_tool_invocation.call_args.kwargs
+        assert kwargs["tool_name"] == "artifact_materialize"
+        assert kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_materialize_restricted_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        sel_stub = self._capture_sel(monkeypatch)
+        resp = await api_artifact_materialize(_request(body={"path": "/x.md"}, restricted=True))
+        assert resp.status == 403
+        assert sel_stub.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_set_pinned_non_bool_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        sel_stub = self._capture_sel(monkeypatch)
+        resp = await api_artifact_set_pinned(_request(match={"slug": "x"}, body={"pinned": "yes"}))
+        assert resp.status == 400
+        kwargs = sel_stub.log_tool_invocation.call_args.kwargs
+        assert kwargs["tool_name"] == "artifact_set_pinned"
+        assert kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_session_docs_restricted_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        sel_stub = self._capture_sel(monkeypatch)
+        resp = await api_artifact_session_docs(_request(restricted=True))
+        assert resp.status == 403
+        kwargs = sel_stub.log_tool_invocation.call_args.kwargs
+        assert kwargs["tool_name"] == "artifact_session_docs"
+        assert kwargs["outcome"] == "denied"
 
 
 # ── Relocate (fixed-root containment) ─────────────────────────────────────────

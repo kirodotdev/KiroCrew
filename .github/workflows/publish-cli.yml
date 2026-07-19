@@ -180,13 +180,16 @@ jobs:
 
           # CloudFront+OAC does NOT resolve directory indexes (no S3-website
           # hosting), so ALSO upload the literal trailing-slash keys pip hits.
+          # Must use `s3api put-object` (writes the EXACT key): `s3 cp` treats a
+          # trailing-slash destination as a directory prefix and would silently
+          # write .../kirocrew/project.html instead of the .../kirocrew/ key.
           for DEST in "${SIMPLE}/kirocrew/index.html" "${SIMPLE}/kirocrew/"; do
-            aws s3 cp project.html "s3://${BUCKET}/${DEST}" \
-              --content-type "text/html" --cache-control no-cache
+            aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body project.html \
+              --content-type "text/html" --cache-control no-cache > /dev/null
           done
           for DEST in "${SIMPLE}/index.html" "${SIMPLE}/"; do
-            aws s3 cp root.html "s3://${BUCKET}/${DEST}" \
-              --content-type "text/html" --cache-control no-cache
+            aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body root.html \
+              --content-type "text/html" --cache-control no-cache > /dev/null
           done
           echo "- Simple index: \`${CDN_BASE}/${SIMPLE}/\` ($(wc -l < links.txt) version(s))" >> "$GITHUB_STEP_SUMMARY"
 

@@ -56,6 +56,10 @@ log.
 
 - `/new` (or `/start`) — start a fresh conversation
 - `/compact` — free up room when the context fills
+- `/steer <msg>` — while a reply is generating, fold this message into it
+  (overrides `queue_mode` for this message)
+- `/queue <msg>` — while a reply is generating, hold this message and answer
+  it after the current turn (overrides `queue_mode` for this message)
 - `/help` — list the commands
 
 ## Settings & reference

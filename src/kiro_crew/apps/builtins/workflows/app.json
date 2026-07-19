@@ -11,6 +11,7 @@
     "agents"
   ],
   "defaultEnabled": false,
+  "hidden": true,
   "permissions": {
     "api": [
       "/apps/workflows/api"
@@ -33,6 +34,6 @@
     "port": "auto",
     "healthCheck": "/health"
   },
-  "heroImage": "/apps/workflows/ui/hero-light.svg",
-  "heroImageDark": "/apps/workflows/ui/hero-dark.svg"
+  "heroImage": "/app-assets/workflows/hero-light.svg",
+  "heroImageDark": "/app-assets/workflows/hero-dark.svg"
 }

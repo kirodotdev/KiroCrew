@@ -143,6 +143,44 @@ Session keys are namespaced as `f"{channel_type}:{conversation_id}"` (`session_k
 
 `MessagingConfig.use_transport` (`config/loader.py`, default `True` in KiroCrew; exposed in `config.json` under `messaging`) is the single switch. `slack/events.py::_route_message` checks `orch._cfg.messaging.use_transport`; when `True` it creates a task on `handle_message_transport` and skips the native `handle_message` monolith. (There is no challenge-redirect in this fork — Slack messages are processed inline.) Approval mode is resolved by `_resolve_approval_mode(orch)` (respects configured mode + operator YOLO/SafetyOverride TTL), and the per-channel `slack.channels.<id>.agent` override is passed through.
 
+## Mid-turn routing & per-message overrides (Telegram)
+
+A message arriving while a turn is in flight is routed by
+`messaging.queue_mode` (default `steer`):
+
+- **`steer`** — inject into the running turn via kiro-cli `_session/steer`.
+  kiro-cli folds it at its next generation boundary and emits an inline
+  `[STEERING steer-<id>: <ack summary>]` marker at the fold point. The user's
+  steer message receives an emoji **reaction** (`setMessageReaction`;
+  `TELEGRAM_CAPABILITIES.reactions=True`) as the delivery receipt.
+- **`queue`** — hold the message; a single in-place "⏳ Queued (N)" receipt
+  tracks the burst. When the turn ends, queued texts collapse into ONE combined
+  follow-up turn (order preserved).
+
+**Per-message overrides:** a `/steer <msg>` or `/queue <msg>` prefix forces
+that message down the corresponding path, overriding `queue_mode` for that
+message only. The prefix is only recognized when the original text is not
+itself a command; the payload after the prefix is **turn content, never a
+command** — `/queue /new` queues the literal text `/new`. Bare `/steer` /
+`/queue` (no body) are treated as normal messages.
+
+**Drain semantics:** the queue-drain replay calls `handle_message(...,
+interpret_commands=False)`; drained payloads bypass both the command intercept
+and override parsing, so queued command-lookalike text reaches the model as
+literal content instead of executing on drain.
+
+**Telegram rendering contract:** turns stream live via one real message edited
+in place (throttled plaintext frames; transient `🔧 {tool}…` footer during tool
+calls; trailing `[OPTIONS:]` markup held back from live frames). Segments seal
+to Telegram-HTML at rotation points: each complete `[STEERING]` marker (the
+pre-steer output seals; the continuation opens a fresh message headed by a
+`↪️ <ack summary>` chip, lazily materialized only when real continuation text
+follows — an end-of-stream marker posts no tail message) and length overflow
+(fence-balanced via `_split_markdown`; a trailing incomplete directive is
+detached before splitting). If sealing edits fail because the live message was
+deleted, the final content is re-sent as a fresh message. See
+`docs/mid-turn-queue-and-cancel.md` for the full behavioral walkthrough.
+
 ## Slack reference implementation
 
 ### `SlackTransport` (`slack/transport.py`)

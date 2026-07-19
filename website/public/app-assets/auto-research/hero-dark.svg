@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" fill="none">
+  <rect width="480" height="270" fill="#1a1b26"/>
+  <!-- Subtle grid lines -->
+  <line x1="0" y1="135" x2="480" y2="135" stroke="#2a2b3d" stroke-width="0.5"/>
+  <line x1="240" y1="0" x2="240" y2="270" stroke="#2a2b3d" stroke-width="0.5"/>
+  <!-- Glow backdrop -->
+  <circle cx="240" cy="160" r="90" fill="#7c3aed" opacity="0.08"/>
+  <circle cx="240" cy="160" r="60" fill="#a855f7" opacity="0.1"/>
+  <!-- Flask body -->
+  <path d="M220 80 L220 140 L195 200 Q190 215 205 215 L275 215 Q290 215 285 200 L260 140 L260 80" stroke="#a855f7" stroke-width="2.5" fill="#7c3aed" fill-opacity="0.15"/>
+  <!-- Flask neck -->
+  <rect x="218" y="65" width="44" height="18" rx="3" stroke="#a855f7" stroke-width="2" fill="none"/>
+  <!-- Liquid -->
+  <path d="M200 185 Q215 175 240 180 Q265 185 280 178 L275 215 Q290 215 285 200 L195 200 Q190 215 205 215 L200 185Z" fill="#7c3aed" opacity="0.5"/>
+  <!-- Bubbles -->
+  <circle cx="225" cy="190" r="4" fill="#c084fc" opacity="0.8"/>
+  <circle cx="250" cy="175" r="3" fill="#e9d5ff" opacity="0.7"/>
+  <circle cx="235" cy="165" r="2.5" fill="#a855f7" opacity="0.9"/>
+  <circle cx="260" cy="155" r="3.5" fill="#c084fc" opacity="0.6"/>
+  <circle cx="228" cy="145" r="2" fill="#e9d5ff" opacity="0.8"/>
+  <circle cx="255" cy="135" r="2.5" fill="#a855f7" opacity="0.7"/>
+  <!-- Rising particles -->
+  <circle cx="232" cy="110" r="1.5" fill="#e9d5ff" opacity="0.5"/>
+  <circle cx="248" cy="100" r="1" fill="#c084fc" opacity="0.4"/>
+  <circle cx="240" cy="55" r="1.5" fill="#a855f7" opacity="0.3"/>
+  <!-- Accent dots -->
+  <circle cx="140" cy="90" r="2" fill="#7c3aed" opacity="0.4"/>
+  <circle cx="340" cy="100" r="1.5" fill="#a855f7" opacity="0.3"/>
+  <circle cx="160" cy="210" r="1.5" fill="#c084fc" opacity="0.3"/>
+  <circle cx="320" cy="220" r="2" fill="#7c3aed" opacity="0.35"/>
+</svg>

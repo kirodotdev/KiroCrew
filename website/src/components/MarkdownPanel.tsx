@@ -1,8 +1,7 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
-import { useNavigate } from 'react-router-dom'
-import { RefreshCw, ExternalLink, MoreVertical, Hash, WrapText, Zap, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, BookmarkPlus, Camera, Check, X, GitBranch, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
+import { RefreshCw, MoreVertical, Hash, WrapText, Zap, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, Star, Camera, X, FileDiff, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import hljs from 'highlight.js'
 import DOMPurify from 'dompurify'
@@ -12,6 +11,7 @@ import { CommentPopover, CommentList, formatCommentsMessage, type InlineComment 
 import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
 import MarkdownOutlineRail from './MarkdownToc'
 import { useFileWatch } from '../hooks/useFileWatch'
+import { store } from '../store'
 import { findBestOccurrence } from '../hooks/useMarkdownCommentHighlights'
 import { detectFileType } from './FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
@@ -19,8 +19,6 @@ import { api } from '../api/client'
 import { fileReadUrl, fileDownloadUrl } from '../utils/fileReadUrl'
 import { loadCommentDrafts, saveCommentDrafts, setCommentsForFile } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
-import { useReadingWidth } from '../hooks/useReadingWidth'
-import ReadingWidthToggle from './ReadingWidthToggle'
 
 // ── CSS Custom Highlight API accessors ───────────────────────────────────────
 // Preview find highlights matches via the browser-native CSS Custom Highlight
@@ -169,12 +167,15 @@ const MonacoDiffEditor = lazy(async () => {
 /** Comment hint banner — shown once per session for markdown files */
 function CommentHint({ onDismiss }: { onDismiss: () => void }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-accent-subtle border border-accent/30 rounded-md text-[12px] text-accent animate-scale-in mx-1 mb-2">
-      <span><MessageSquare className="lucide-inline" /></span>
-      <span className="flex-1">
-        <strong>Tip:</strong> Select any text to add inline comments, then submit them all to the chat.
+    <div
+      className="flex items-center gap-2.5 px-3 py-2.5 bg-bg-elevated border rounded-lg text-[12px] animate-scale-in mx-1 mb-2"
+      style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}
+    >
+      <span className="text-muted shrink-0"><MessageSquare className="lucide-inline" /></span>
+      <span className="flex-1 text-text">
+        <strong className="text-text-strong font-semibold">Tip:</strong> Select any text to add inline comments, then submit them all to the chat.
       </span>
-      <button className="text-accent hover:text-accent-fg cursor-pointer bg-transparent border-none text-[11px] font-medium shrink-0" onClick={onDismiss}>Got it</button>
+      <button className="text-accent hover:text-accent-hover cursor-pointer bg-transparent border-none text-[11px] font-medium shrink-0" onClick={onDismiss}>Got it</button>
     </div>
   )
 }
@@ -202,33 +203,21 @@ async function downloadFile(filePath: string) {
 }
 
 /**
- * Round 8 row-2 icon: artifact toggle. When the file is already saved
- * as an artifact, clicking navigates to the detail page. When not, it
- * triggers the add-to-artifacts mutation directly (no modal — matches
- * the bookmark widget pattern).
+ * Row-2 icon: artifact star/unstar toggle. A filled accent star means the
+ * file is starred (pinned) to the artifact library; clicking toggles it in place
+ * — no navigation, stay in the current view. Consistent with the star
+ * save control used across the Artifacts tab/page.
  */
-function ArtifactToggleIconButton({ state, onNavigate }: { state: ReturnType<typeof useFileArtifactState>; onNavigate: () => void }) {
-  if (state.existing) {
-    return (
-      <button
-        className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-        onClick={onNavigate}
-        title={`In Artifacts — open ${state.existing.slug}`}
-        aria-label={`In Artifacts — open ${state.existing.slug}`}
-      >
-        <BookmarkPlus size={14} style={{ color: 'var(--ok)' }} />
-      </button>
-    )
-  }
+function ArtifactToggleIconButton({ state }: { state: ReturnType<typeof useFileArtifactState> }) {
   return (
     <button
       className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-50"
-      onClick={() => state.add()}
-      disabled={state.adding}
-      title="Add to artifacts (versioned, persistent)"
-      aria-label="Add to artifacts"
+      onClick={() => state.toggleSave()}
+      disabled={state.toggling}
+      title={state.saved ? 'Remove star' : 'Star'}
+      aria-label={state.saved ? 'Remove star' : 'Star'}
     >
-      <BookmarkPlus size={14} className={state.added ? 'lucide-inline' : ''} style={state.added ? { color: 'var(--ok)' } : undefined} />
+      <Star size={14} className={state.saved ? 'fill-current' : ''} style={state.saved ? { color: 'var(--accent)' } : undefined} />
     </button>
   )
 }
@@ -266,34 +255,12 @@ function KnowledgeToggleIconButton({ state }: { state: ReturnType<typeof useFile
 export function OverflowMenu({ filePath, content, revealOrCopy }: { filePath: string; content: string; revealOrCopy: (path: string, action: 'open' | 'reveal') => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => { clearTimeout(closeTimerRef.current) }, [])
-  const navigate = useNavigate()
-  const knowledge = useFileKnowledgeState(filePath)
-  const artifact = useFileArtifactState(filePath, content)
-  const delayedClose = () => { closeTimerRef.current = setTimeout(() => setOpen(false), 800) }
-  useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current) }, [])
-  // Reset the per-mutation success flags whenever the menu closes so the
-  // 'Added!' / 'Snapshotted!' acknowledgement doesn't bleed into the next
-  // open if the user closed quickly. Destructure the callbacks so the dep
-  // array stays stable across renders (AutoSDE round 13: object refs from
-  // hooks change every render, causing the effect to re-fire constantly).
-  const knowledgeReset = knowledge.reset
-  const artifactResetAdd = artifact.resetAdd
-  useEffect(() => {
-    if (!open) {
-      knowledgeReset()
-      artifactResetAdd()
-    }
-  }, [open, knowledgeReset, artifactResetAdd])
   useEffect(() => {
     if (!open) return
     const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
-  const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
-  const canAddToKnowledge = knowledge.formats && knowledge.formats.includes(ext)
   return (
     <div ref={ref} className="relative">
       <button aria-label="More options" className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setOpen(!open)}>
@@ -304,6 +271,9 @@ export function OverflowMenu({ filePath, content, revealOrCopy }: { filePath: st
           <button className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover" onClick={() => { revealOrCopy(filePath, 'reveal'); setOpen(false) }}>
             Reveal in Finder
           </button>
+          <button className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover" onClick={() => { revealOrCopy(filePath, 'open'); setOpen(false) }}>
+            Open with default app
+          </button>
           <button className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover" onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             Copy path
           </button>
@@ -313,39 +283,6 @@ export function OverflowMenu({ filePath, content, revealOrCopy }: { filePath: st
           <button className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover" onClick={() => { downloadFile(filePath); setOpen(false) }}>
             Download
           </button>
-          {artifact.existing ? (
-            <button
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover"
-              onClick={() => { navigate(`/artifacts/${encodeURIComponent(artifact.existing!.slug)}`); setOpen(false) }}
-              title={`Open artifact ${artifact.existing.slug}`}
-            >
-              <BookmarkPlus size={14} className="lucide-inline" style={{ color: 'var(--ok)' }} /> In Artifacts <Check size={14} className="lucide-inline" />
-            </button>
-          ) : (
-            <button
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover disabled:opacity-50"
-              onClick={() => artifact.add(undefined, { onSuccess: delayedClose })}
-              disabled={artifact.adding}
-              title="Save this file as an artifact (versioned, persistent, comment-able)"
-            >
-              {artifact.added
-                ? <><BookmarkPlus size={14} className="lucide-inline" style={{ color: 'var(--ok)' }} /> Added!</>
-                : artifact.adding
-                  ? 'Adding…'
-                  : <><BookmarkPlus size={14} className="lucide-inline" /> Add to artifacts</>}
-            </button>
-          )}
-          {canAddToKnowledge && (
-            knowledge.alreadyAdded ? (
-              <span className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-muted">
-                <BookOpen size={14} className="lucide-inline" /> In Library <Check size={14} className="lucide-inline" />
-              </span>
-            ) : (
-              <button className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover" onClick={() => knowledge.add(undefined, { onSuccess: delayedClose })} disabled={knowledge.adding}>
-                {knowledge.added ? <><BookOpen size={14} className="lucide-inline" style={{color: 'var(--ok)'}} /> {knowledge.addResult === 'exists' ? 'Already in Library' : 'Added!'}</> : knowledge.adding ? 'Adding...' : <><BookOpen size={14} className="lucide-inline" /> Add to Knowledge</>}
-              </button>
-            )
-          )}
         </div>
       )}
     </div>
@@ -411,9 +348,9 @@ function useFileArtifactState(filePath: string, content: string) {
       if (list.length === 0) return null
       try {
         const full = await api.artifact(list[0].slug)
-        return { slug: list[0].slug, name: list[0].name, live_dirty: !!full.live_dirty }
+        return { slug: list[0].slug, name: list[0].name, live_dirty: !!full.live_dirty, pinned: !!full.pinned }
       } catch {
-        return { slug: list[0].slug, name: list[0].name, live_dirty: false }
+        return { slug: list[0].slug, name: list[0].name, live_dirty: false, pinned: false }
       }
     },
   })
@@ -432,9 +369,9 @@ function useFileArtifactState(filePath: string, content: string) {
         name,
         content,
         kind,
-        source: 'manual',
         source_path: filePath,
         description: `Tracking ${filePath}`,
+        origin_session_key: store.getState().chat.activeSlot || undefined,
       })
       return created as { slug: string; version: number }
     },
@@ -457,7 +394,36 @@ function useFileArtifactState(filePath: string, content: string) {
     },
     onError: (err) => alert((err as Error).message),
   })
-  return { existing, add, adding, added, resetAdd, snapshot, snapshotting, snapshotted }
+  const { mutate: toggleSave, isPending: toggling } = useMutation({
+    mutationFn: async () => {
+      // Saved == pinned (consistent with the Artifacts tab/page + chat bookmark).
+      if (existing) {
+        await api.setArtifactPinned(existing.slug, !existing.pinned)
+        return
+      }
+      // Not yet an artifact — create (file-backed), then pin. createArtifact
+      // dedups on source_path server-side, so this stays idempotent.
+      const name = filePath.split('/').pop() || filePath
+      const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
+      const kind: 'markdown' | 'json' | 'svg' | 'html' | 'text' =
+        ext === '.md' || ext === '.markdown' || ext === '.mdx' ? 'markdown'
+        : ext === '.json' || ext === '.jsonl' ? 'json'
+        : ext === '.svg' ? 'svg'
+        : ext === '.html' || ext === '.htm' ? 'html'
+        : 'text'
+      const created = await api.createArtifact({
+        name, content, kind, source_path: filePath, description: `Tracking ${filePath}`, origin_session_key: store.getState().chat.activeSlot || undefined,
+      }) as { slug: string }
+      await api.setArtifactPinned(created.slug, true)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['artifact-by-source-path', filePath] })
+      queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+    },
+    onError: (err) => alert((err as Error).message),
+  })
+  const saved = !!existing?.pinned
+  return { existing, add, adding, added, resetAdd, snapshot, snapshotting, snapshotted, toggleSave, toggling, saved }
 }
 
 let diffThemesRegistered = false
@@ -536,7 +502,10 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
   const [lineNums, setLineNums] = useState(true)
   const [wordWrap, setWordWrap] = useState(true)
   const [autocomplete, setAutocomplete] = useState(true)
-  const { readingWidth, toggle: toggleReadingWidth, previewStyle: mdPreviewStyle } = useReadingWidth()
+  // Reading-width toggle removed — the side panel renders markdown at a fixed
+  // default width (centered, capped at --mc-content-width), matching the
+  // artifact detail page. No M/F toggle.
+  const mdPreviewStyle: React.CSSProperties = { maxWidth: 'var(--mc-content-width, 900px)', margin: '0 auto' }
   // Hydrate pending draft comments for this file from localStorage so they
   // survive panel close, refresh, and crash. Submitting clears them.
   const draftsRef = useRef<ReturnType<typeof loadCommentDrafts>>(null!)
@@ -602,7 +571,6 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
   // across the two views and the button states are coherent.
   const knowledge = useFileKnowledgeState(filePath)
   const artifactState = useFileArtifactState(filePath, content)
-  const navigate = useNavigate()
   const previewRef = useRef<HTMLDivElement>(null)
   const sidePanelScrollRef = useRef<HTMLDivElement>(null)
   const fullscreenPreviewRef = useRef<HTMLDivElement>(null)
@@ -795,10 +763,14 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
     staleTime: 10_000,
   })
   const originalContent = diffData?.original ?? ''
-  // Auto-open diff mode on first load if file has changes; don't override user toggle on refetch
+  // Auto-open diff mode on first load only for a genuine edit (an existing
+  // tracked file that was modified). For a brand-new / untracked file there's
+  // no prior HEAD content, so every line is an addition and the whole document
+  // renders green — that hurts readability while conveying little. Skip
+  // auto-diff there; the git-diff toggle in the header stays available.
   if (diffData && diffInitFileRef.current !== filePath) {
     diffInitFileRef.current = filePath
-    if (diffData.diff) setDiffMode(true)
+    if (diffData.diff && diffData.status === 'modified') setDiffMode(true)
   }
 
   const revealOrCopy = useCallback(async (path: string, action: 'open' | 'reveal') => {
@@ -1144,21 +1116,21 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
 
   const editorToolbarButtons = (<>
     {!isRichType && (
-      <button className={`p-1.5 rounded-md border cursor-pointer ${diffMode ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { setDiffMode(!diffMode) }} title="Toggle git diff" aria-label="Toggle git diff"><GitBranch size={14} /></button>
+      <button className={`p-1.5 rounded-md border cursor-pointer ${diffMode ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { setDiffMode(!diffMode) }} title="Toggle diff view" aria-label="Toggle diff view"><FileDiff size={14} /></button>
     )}
-    {!isRichType && (
+    {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${wordWrap ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setWordWrap(!wordWrap)} title="Toggle word wrap" aria-label="Toggle word wrap"><WrapText size={14} /></button>
     )}
-    {!isRichType && (
+    {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${autocomplete ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setAutocomplete(!autocomplete)} title="Toggle autocomplete" aria-label="Toggle autocomplete"><Zap size={14} /></button>
     )}
-    {!isRichType && (
+    {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${lineNums ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setLineNums(!lineNums)} title="Toggle line numbers" aria-label="Toggle line numbers"><Hash size={14} /></button>
     )}
     {!isRichType && (
       <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { setEditing(!editing) }}>{editing ? 'Preview' : 'Edit'}</button>
     )}
-    {!isRichType && (
+    {!isRichType && editing && (
       <button className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`} disabled={saving || !dirty} onClick={handleSave}>{saving ? 'Saving…' : 'Save'}</button>
     )}
   </>)
@@ -1189,12 +1161,6 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
           title={fullscreen ? 'Exit full screen (Esc)' : 'Full screen'}
           aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}
         >{fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
-        <button
-          className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-          onClick={() => revealOrCopy(filePath, 'open')}
-          title="Open with default application"
-          aria-label="Open with default application"
-        ><ExternalLink size={14} /></button>
         <OverflowMenu filePath={filePath} content={content} revealOrCopy={revealOrCopy} />
       </>}
       secondaryHeaderActions={!isRichType ? (
@@ -1204,21 +1170,16 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
         // where there's no editor surface to configure.
         <>
           <div className="flex items-center gap-1.5">
-            {!editing && (
-              // Round 8: file-level lifecycle shortcuts (Add to artifacts /
-              // Knowledge) live on the left of row 2 when in preview mode
-              // — fast access without opening the overflow ⋮. Hidden in
-              // edit mode so the user focuses on save/cancel/snapshot.
-              <>
-                <ArtifactToggleIconButton state={artifactState} onNavigate={() => navigate(`/artifacts/${encodeURIComponent(artifactState.existing!.slug)}`)} />
-                {(() => {
-                  const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
-                  const canK = knowledge.formats && knowledge.formats.includes(ext)
-                  if (!canK) return null
-                  return <KnowledgeToggleIconButton state={knowledge} />
-                })()}
-              </>
-            )}
+            {/* File-level library actions (star / knowledge) stay available in
+                both preview and edit mode so they're never lost. In edit mode
+                the formatting toggles follow them. */}
+            <ArtifactToggleIconButton state={artifactState} />
+            {(() => {
+              const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
+              const canK = knowledge.formats && knowledge.formats.includes(ext)
+              if (!canK) return null
+              return <KnowledgeToggleIconButton state={knowledge} />
+            })()}
             {editing && (
               <>
                 <button
@@ -1285,10 +1246,10 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
             <button
               className={`p-1.5 rounded-md border cursor-pointer transition-all ${diffMode ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
               onClick={() => setDiffMode(!diffMode)}
-              title="Toggle git diff"
-              aria-label="Toggle git diff"
+              title="Toggle diff view"
+              aria-label="Toggle diff view"
               aria-pressed={diffMode}
-            ><GitBranch size={14} /></button>
+            ><FileDiff size={14} /></button>
             <button
               className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
               onClick={() => setEditing(!editing)}
@@ -1340,9 +1301,15 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
           <span className="text-base font-semibold text-text-strong truncate">{fileName}</span>
           <div className="flex items-center gap-1.5">
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? 'Save or discard changes first' : 'Refresh file'} aria-label="Refresh file"><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
-            <OverflowMenu filePath={filePath} content={content} revealOrCopy={revealOrCopy} />
-            {!editing && <ReadingWidthToggle value={readingWidth} onToggle={toggleReadingWidth} />}
+            <ArtifactToggleIconButton state={artifactState} />
+            {(() => {
+              const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
+              const canK = knowledge.formats && knowledge.formats.includes(ext)
+              if (!canK) return null
+              return <KnowledgeToggleIconButton state={knowledge} />
+            })()}
             {editorToolbarButtons}
+            <OverflowMenu filePath={filePath} content={content} revealOrCopy={revealOrCopy} />
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setFullscreen(false)} title="Exit full screen (Esc)" aria-label="Exit full screen"><Minimize2 size={14} /></button>
           </div>
         </div>

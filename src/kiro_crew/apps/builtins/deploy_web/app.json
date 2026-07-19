@@ -6,6 +6,7 @@
   "author": "zejiangg",
   "tags": ["aws", "publish", "deploy", "artifacts"],
   "defaultEnabled": false,
+  "hidden": true,
   "skills": ["skills/deploy-web"],
   "permissions": {
     "api": ["/api/apps/deploy-web", "/api/apps/deploy-web/*"]

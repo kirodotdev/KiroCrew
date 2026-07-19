@@ -42,6 +42,7 @@ The dashboard provides a `/artifacts` library page for browse/search and a
 | `name` | string | Human-readable display name |
 | `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)) |
 | `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import` |
+| `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `description` | string | Optional, ≤ 2,000 chars |
 | `tags` | string[] | ≤ 16 tags, alphanumeric / `_`, `:`, `.`, `-` |
 | `version` | int | Latest version number; bumps on every content change |
@@ -133,6 +134,9 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `GET` | `/api/artifacts/{slug}` | Returns full artifact + content |
 | `PATCH` | `/api/artifacts/{slug}` | Partial update; `content` bumps version; optional `folder` key (metadata-only) |
 | `DELETE` | `/api/artifacts/{slug}` | Permanent delete |
+| `PATCH` | `/api/artifacts/{slug}/pin` | Star/unstar — body `{pinned: bool}` (strictly boolean; non-booleans rejected). Metadata-only, no version bump |
+| `GET` | `/api/artifacts/session-docs` | Virtual, read-only list of non-code documents produced across chat sessions (the "All" firehose). `?session=<slot>` scopes to one session. Creates nothing; each entry carries `saved` (pinned) + `slug`. Registered before the `/{slug}` dynamic route |
+| `POST` | `/api/artifacts/materialize` | Turn a recorded chat document into a real, pinned file-backed artifact — body `{path}`. The path MUST be a document recorded in chat `file_changes` (authorization allowlist); the read goes through `hooks.safe_read_file_bytes` (is_sensitive_path + `O_NOFOLLOW` + `MAX_FILE_BYTES` cap). Idempotent by `source_path` |
 | `GET` | `/api/artifacts/{slug}/versions` | `{slug, versions: [int]}` |
 | `GET` | `/api/artifacts/{slug}/versions/{n}` | Specific version content |
 | `GET` | `/api/artifact-folders` | Folder tree with `item_count` + breadcrumb `path` |
@@ -177,6 +181,27 @@ via the `"/api/artifacts"` entry. Guarded by a regression test in
 
 A small "Save as artifact" button is overlaid on every rendered `<mcwidget>`
 in chat. Clicking prompts for a name and POSTs to `/api/artifacts`.
+
+## Starred & Session Documents
+
+The Artifacts page is a single unified, searchable table with two conceptual
+inputs, distinguished by the leading **star** column:
+
+- **Starred artifacts** — real, saved artifacts with `pinned=true`. The
+  **Starred** view (default) shows only these; the star toggles `pinned` via
+  `PATCH /api/artifacts/{slug}/pin` (metadata-only, no version bump).
+- **Session documents** — a *virtual* firehose of non-code documents the agent
+  produced across chats (from message `file_changes`), surfaced only in the
+  **All** view via `GET /api/artifacts/session-docs`. Nothing is written to disk
+  for these until the user stars one, which **materializes** it into a real,
+  pinned, file-backed artifact via `POST /api/artifacts/materialize`
+  ("Virtual All + materialize-on-save"). Search matches name/source (incl. the
+  originating session title); the file-type filter applies to both inputs.
+
+Materialization is authorization-gated: the requested path must appear in the
+recorded chat `file_changes` (never an arbitrary client path), and the read is
+routed through the `hooks.safe_read_file_bytes` keystone. `source` is recorded
+as `chat` for materialized documents.
 
 ## Validation & Limits
 

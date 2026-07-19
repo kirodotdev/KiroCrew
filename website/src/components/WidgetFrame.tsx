@@ -1,6 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Maximize2, Minimize2, ExternalLink, Download, Bookmark } from 'lucide-react'
+import { Maximize2, Minimize2, ExternalLink, Download, Star } from 'lucide-react'
 import { IconButton, IconButtonGroup } from './ui'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -363,8 +363,11 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
     queryKey: ['artifact-saved', effectiveSlug],
     queryFn: async () => {
       try {
-        await api.artifact(effectiveSlug!)
-        return true
+        // "Saved" means STARRED (pinned) — not merely existing. A widget
+        // artifact can exist unpinned (e.g. created then unstarred), which
+        // must render as not-in-library.
+        const a = await api.artifact(effectiveSlug!)
+        return !!(a && (a as { pinned?: boolean }).pinned)
       } catch (e) {
         if (e instanceof ApiError && e.status === 404) return false
         throw e
@@ -411,21 +414,23 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
     setSaving(true)
     setSaveError(null)
     try {
-      await api.createArtifact({
-        name,
-        content: html,
-        kind: 'widget',
-        source: 'chat',
-        slug: effectiveSlug,
-      })
+      // Create the artifact if it doesn't exist yet (409 = already there),
+      // then PIN it so it shows in the Starred library — "star" = create + pin.
+      try {
+        await api.createArtifact({
+          name,
+          content: html,
+          kind: 'widget',
+          source: 'chat',
+          slug: effectiveSlug,
+        })
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) throw e
+      }
+      await api.setArtifactPinned(effectiveSlug, true)
       queryClient.setQueryData(['artifact-saved', effectiveSlug], true)
     } catch (e) {
-      // 409 conflict → artifact already exists at this slug, treat as
-      // already-saved (covers double-click races + cross-tab saves where
-      // the verify-on-mount hasn't reconciled yet).
-      if (e instanceof ApiError && e.status === 409) {
-        queryClient.setQueryData(['artifact-saved', effectiveSlug], true)
-      } else if (mountedRef.current) {
+      if (mountedRef.current) {
         setSaveError(e instanceof Error ? e.message : String(e))
       }
     } finally {
@@ -435,19 +440,15 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
 
   const removeArtifact = useCallback(async () => {
     if (saving || !savedSlug) return
-    // Atomic un-bookmark — no confirm. Mirrors the one-click save: clicking
-    // the bookmark again removes the artifact. If the user wants the heavier
-    // "are you sure" prompt, they can use the Delete button on the Artifacts
-    // library page (/artifacts), which keeps a confirm because it's an
-    // explicit destructive action far from the save context.
+    // Un-star = unpin (metadata-only), NOT delete — preserves the artifact and
+    // its version history. The Artifacts library page handles permanent delete.
     setSaving(true)
     setSaveError(null)
     try {
-      await api.deleteArtifact(savedSlug)
+      await api.setArtifactPinned(savedSlug, false)
       queryClient.setQueryData(['artifact-saved', effectiveSlug], false)
     } catch (e) {
-      // 404 → already gone (deleted from another tab / library page).
-      // Reconcile to the empty state silently.
+      // 404 → already gone; reconcile to the empty state silently.
       if (e instanceof ApiError && e.status === 404) {
         queryClient.setQueryData(['artifact-saved', effectiveSlug], false)
       } else if (mountedRef.current) {
@@ -500,14 +501,14 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
             className={saving ? 'cursor-wait' : ''}
             title={
               !effectiveSlug
-                ? 'Cannot save: widget has no slug or message context'
+                ? 'Cannot star: widget has no slug or message context'
                 : savedSlug
-                  ? `Saved as "${savedSlug}" — click to remove`
-                  : 'Save as artifact'
+                  ? `Starred as "${savedSlug}" — click to remove`
+                  : 'Star as artifact'
             }
-            aria-label={savedSlug ? `Remove artifact ${savedSlug} from library` : 'Save as artifact'}
+            aria-label={savedSlug ? `Remove artifact ${savedSlug} from library` : 'Star as artifact'}
           >
-            <Bookmark size={12} fill={savedSlug ? 'currentColor' : 'none'} />
+            <Star size={12} fill={savedSlug ? 'currentColor' : 'none'} />
           </IconButton>
           <IconButton onClick={downloadAsHtml} title="Download as HTML" aria-label="Download as HTML">
             <Download size={12} />

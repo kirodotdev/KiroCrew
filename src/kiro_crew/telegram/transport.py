@@ -49,12 +49,13 @@ class TelegramInboundMessage(InboundMessage):
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
 # Telegram's capabilities: edit-based streaming, a 4096-char cap (we chunk at
-# 4000 for headroom), ~8 inline buttons/row, and no threads/reactions in a
-# bot DM. Single source of truth for the renderer's degradation decisions.
+# 4000 for headroom), ~8 inline buttons/row, emoji reactions (setMessageReaction,
+# used for steer-ack receipts), and no threads in a bot DM. Single source of
+# truth for the renderer's degradation decisions.
 TELEGRAM_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
-    reactions=False,
+    reactions=True,  # setMessageReaction — used for the steer-ack receipt
     files=False,
     rich_blocks=False,
     threads=False,

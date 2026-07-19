@@ -47,11 +47,13 @@ from kiro_crew.artifacts import (
     ArtifactValidationError,
     get_default_folder_store,
     get_default_store,
+    is_document_path,
 )
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_with_identity, stat_identity
 from kiro_crew.publish_provider import (
     Capability,
     CommentAnchor,
@@ -68,6 +70,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.validation import infer_use_case
 
 
 def sel():
@@ -142,6 +145,70 @@ def _session_key(request: web.Request) -> str:
     return request.headers.get("X-Session-Key") or ""
 
 
+# The artifact ``source`` should reflect WHERE the saving session came from.
+# ``infer_use_case`` already classifies a session_key into its origin
+# (dashboard / slack / cli / cron / subagent / task-runner / unknown), so we use
+# that value directly rather than collapsing everything to a generic "manual".
+def _artifact_source_for_request(request: web.Request) -> str:
+    """Actual origin of the session saving the artifact (never 'manual')."""
+    return infer_use_case(_session_key(request))
+
+
+#: Safe grammar for a client-supplied originating session key. Session keys are
+#: opaque handles like ``chat-2`` / ``dashboard:chat-2`` / ``cron:foo`` / a Slack
+#: ``ts``; restrict to that charset so a malformed or hostile value (e.g. a JSON
+#: list, or injected markup) can neither poison persisted metadata nor reach the
+#: dashboard surface unsanitized.
+_SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9:_.\-]{1,128}$")
+
+
+def _clean_origin_session_key(raw: Any) -> str:
+    """Validate a client-supplied ``origin_session_key``.
+
+    Returns the value only when it is a string matching the permitted grammar;
+    anything else (non-string, empty, too long, illegal chars) collapses to
+    ``""`` so it's simply treated as "no originating session".
+    """
+    if isinstance(raw, str) and _SESSION_KEY_RE.match(raw):
+        return raw
+    return ""
+
+
+#: Shown in the Source column when an artifact's originating session no longer
+#: exists (the artifact itself is kept — sessions and artifacts have independent
+#: lifecycles).
+_DELETED_SESSION_LABEL = "(deleted session)"
+
+
+def _resolve_session_title(state: Any, session_key: str) -> str:
+    """Live-resolve a session_key to its current chat title for the Source column.
+
+    Returns the session's current display title while it exists (so renames are
+    reflected), ``"(deleted session)"`` when the key referenced a session that
+    is now gone, and ``""`` when there is no originating session at all (e.g. a
+    non-chat origin or a legacy artifact) — the caller falls back to the origin
+    label in that case.
+    """
+    if not session_key:
+        return ""
+    # Only chat (dashboard) sessions have a slot/title. Non-chat origins
+    # (cron / subagent / slack / cli / task-runner) have no chat title — return
+    # "" so the caller falls back to the origin label rather than mislabeling
+    # them "(deleted session)".
+    if infer_use_case(session_key) != "dashboard":
+        return ""
+    # Slots are keyed by the bare name; the frontend/session key may carry a
+    # "dashboard:" prefix.
+    name = session_key.split(":", 1)[1] if session_key.startswith("dashboard:") else session_key
+    slot = state.get_slot(name) if state is not None else None
+    if slot is None:
+        return _DELETED_SESSION_LABEL
+    try:
+        return slot.display_title
+    except Exception:  # pragma: no cover — never let title resolution break a list
+        return _DELETED_SESSION_LABEL
+
+
 def _event_session_id(request: web.Request) -> str | None:
     """Session key for activity-feed events, or None when not a real slot.
 
@@ -176,7 +243,7 @@ def _audit(
         logger.debug("SEL audit failed for %s", tool, exc_info=True)
 
 
-def _serialize(art: Any, *, include_content: bool = False) -> dict[str, Any]:
+def _serialize(art: Any, *, include_content: bool = False, state: Any = None) -> dict[str, Any]:
     """Serialize an Artifact for response.
 
     All LLM-originated string fields (``name``, ``description``, ``tags``,
@@ -201,6 +268,14 @@ def _serialize(art: Any, *, include_content: bool = False) -> dict[str, Any]:
         cleaned, _ = redact_exfiltration_urls(cleaned)
         cleaned, _ = redact_credentials(cleaned)
         out["content"] = cleaned
+    # Live-resolve the originating session's current title for the Source column.
+    # Only set when we can resolve (session present, or gone -> "(deleted
+    # session)"); when there's no originating session the key is absent and the
+    # frontend falls back to the origin label.
+    if state is not None:
+        title = _resolve_session_title(state, out.get("session_key") or "")
+        if title:
+            out["session_title"] = _redact_text(title)
     # Publication block (Artifactory) is structural — view_url is an internal
     # CloudFront URL and aliases are user input — but ``last_error`` can echo
     # an arbitrary upstream error string, so redact it like other surfaced
@@ -351,6 +426,193 @@ def _set_folder_and_reload(slug: str, folder_id: str) -> Any:
     return store.get(slug)
 
 
+def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
+    """Set an artifact's pin mark and return the reloaded record (blocking)."""
+    store = get_default_store()
+    store.set_pinned(slug, pinned)
+    return store.get(slug)
+
+
+def _scan_session_docs(conversation_log: Any, saved_map: dict[str, str], session_key: str | None = None) -> list[dict[str, Any]]:
+    """Scan ALL sessions for non-code document file-changes (blocking).
+
+    Returns one entry per distinct document path (latest session wins), each
+    ``{path, name, updated_at, session_key, message_ts, saved}``. ``saved`` is
+    True when the path already backs a real (materialized) artifact. Sorted
+    newest-first. Runs OFF the event loop — reads every session's jsonl.
+    """
+    best: dict[str, dict[str, Any]] = {}
+    try:
+        sessions = conversation_log.list_sessions()
+    except Exception as exc:  # noqa: BLE001 — a corrupt history dir must not 500 the page
+        logger.warning("session-docs: list_sessions failed: %s", exc)
+        return []
+    for sess in sessions:
+        if not isinstance(sess, dict):
+            continue  # malformed session entry — skip, never crash the scan
+        key = sess.get("key")
+        if not key:
+            continue
+        # When scoping to one session, dashboard slots map to the history key
+        # ``dashboard_{slot}`` (see state.py) — accept either form.
+        if session_key and key not in (session_key, f"dashboard_{session_key}"):
+            continue
+        # Untrusted history: coerce the timestamp defensively — a non-numeric or
+        # non-finite ``modified`` must not crash the whole scan (it only orders
+        # "latest session wins"), so fall back to 0.0.
+        try:
+            modified = float(sess.get("modified") or 0.0)
+        except (TypeError, ValueError):
+            modified = 0.0
+        if modified != modified or modified in (float("inf"), float("-inf")):  # NaN / inf
+            modified = 0.0
+        session_title = sess.get("title") or key
+        try:
+            msgs = conversation_log.read_messages(key)
+        except Exception:  # noqa: BLE001 — skip an unreadable session, keep scanning
+            continue
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue  # malformed message — skip
+            meta = m.get("meta")
+            if not isinstance(meta, dict):
+                continue  # meta absent or wrong shape — nothing to scan
+            file_changes = meta.get("file_changes")
+            if not isinstance(file_changes, list):
+                continue  # file_changes absent or wrong shape
+            for fc in file_changes:
+                if not isinstance(fc, dict):
+                    continue  # malformed file-change entry — skip
+                raw_p = fc.get("path")
+                p = (raw_p if isinstance(raw_p, str) else "").strip()
+                if not p or not is_document_path(p):
+                    continue
+                prev = best.get(p)
+                if prev is None or modified >= prev["_mtime"]:
+                    best[p] = {
+                        "path": p,
+                        "name": os.path.basename(p) or p,
+                        "session_key": key,
+                        "session_title": session_title,
+                        "message_ts": m.get("ts") or "",
+                        "_mtime": modified,
+                    }
+
+    out: list[dict[str, Any]] = []
+
+    def _redact(text: str) -> str:
+        cleaned, _ = redact_credentials(text or "")
+        cleaned, _ = redact_exfiltration_urls(cleaned)
+        return cleaned
+
+    for e in sorted(best.values(), key=lambda d: d["_mtime"], reverse=True):
+        mt = e.pop("_mtime")
+        raw_path = e["path"]
+        e["updated_at"] = datetime.fromtimestamp(mt).isoformat() if mt else ""
+        # Compute saved/slug against the RAW path (saved_map is keyed by the
+        # real source_path) BEFORE redacting the display fields below.
+        e["saved"] = raw_path in saved_map
+        e["slug"] = saved_map.get(raw_path, "")
+        # Redact every display field per the credential/exfiltration blocking
+        # rule. Redaction is identity for normal content, so ordinary paths
+        # still round-trip through /materialize; a path that actually contains
+        # a secret becomes intentionally unmatchable (safe to refuse).
+        e["path"] = _redact(raw_path)
+        e["name"] = _redact(e["name"])
+        e["session_title"] = _redact(e["session_title"])
+        out.append(e)
+    return out
+
+
+def _recorded_doc_identities(conversation_log: Any) -> set[tuple[int, int]]:
+    """``(st_dev, st_ino)`` identities of documents recorded in ``file_changes``.
+
+    Authorization allowlist for ``/materialize``: only documents the agent
+    produced in a chat may be materialized. Matching the ``fstat`` of the
+    *opened* descriptor against these identities (rather than re-resolving the
+    request path a second time) proves the file actually read is the very inode
+    an allowlisted document resolves to right now. A symlink- or directory-swap
+    slipped in between ``realpath`` and ``open`` cannot smuggle in a different
+    (unauthorized) file, because that file's ``(dev, ino)`` is not in this set —
+    the authorized target and the read target are guaranteed identical.
+
+    Identities are resolved through ``hooks.stat_identity`` — the centralized
+    sensitive-path gate — so a recorded path that resolves into ``~/.aws`` etc.
+    is refused rather than ``stat``'d directly. Only absolute recorded paths are
+    trustworthy; a relative path would resolve against the gateway CWD (not the
+    session's project) and could match an unrelated same-named file, so relative
+    entries are skipped.
+    """
+    out: set[tuple[int, int]] = set()
+    for e in _scan_session_docs(conversation_log, {}):
+        expanded = os.path.expanduser(e["path"])
+        if not os.path.isabs(expanded):
+            continue
+        ident = stat_identity(expanded)
+        if ident is not None:
+            out.add(ident)
+    return out
+
+
+def _materialize_and_pin(path: str, conversation_log: Any, source: str = "chat", session_key: str = "") -> Any:
+    """Create (or reuse) a file-backed artifact from ``path`` and mark it saved.
+
+    Idempotent: if an artifact already backs this path, just pin it. Otherwise
+    the file is AUTHORIZED and READ through a single ``O_NOFOLLOW`` descriptor in
+    the centralized ``hooks`` chokepoint
+    (:func:`hooks.safe_read_file_bytes_with_identity`): the opened inode's
+    ``fstat`` identity ``(st_dev, st_ino)`` MUST match a document recorded in the
+    chat history's ``file_changes`` (:func:`_recorded_doc_identities`).
+    Authorizing the opened descriptor — rather than re-resolving the path a
+    second time for the read — closes the symlink/dir-swap TOCTOU window: the
+    file we authorize is exactly the inode we read (AWS-33). Sensitive resolved
+    targets (``~/.aws`` …) and non-documents are refused up front. Blocking;
+    call via ``_run_off_loop``.
+    """
+    store = get_default_store()
+    expanded = os.path.expanduser(path)
+    # Reject relative paths — they'd resolve against the gateway CWD rather than
+    # the session's project dir, so a same-named unrelated file could satisfy the
+    # allowlist. Recorded document paths are absolute; require it.
+    if not os.path.isabs(expanded):
+        raise ArtifactValidationError("document path must be absolute")
+    canonical = os.path.realpath(expanded)
+    existing = store.find_by_source_path(path) or store.find_by_source_path(canonical)
+    if existing is not None:
+        return store.set_pinned(existing.slug, True)
+    if not is_document_path(canonical):
+        raise ArtifactValidationError("only document files can be saved this way")
+    # Defense in depth: a resolved target under a sensitive dir is never a chat
+    # document — refuse before opening.
+    if is_sensitive_path(canonical):
+        raise ArtifactValidationError("path is not a document from your chat history")
+    # Authorize AND read through the centralized hooks chokepoint: the helper
+    # opens the file ONCE with O_NOFOLLOW and only returns bytes if the opened
+    # inode's identity is in the recorded-documents allowlist, so a symlink/dir
+    # swap between realpath() and open() cannot substitute an unauthorized file.
+    try:
+        data = safe_read_file_bytes_with_identity(canonical, _recorded_doc_identities(conversation_log))
+    except PermissionError as exc:
+        raise ArtifactValidationError("path is not a document from your chat history") from exc
+    except FileTooLargeError as exc:
+        raise ArtifactValidationError(str(exc)) from exc
+    if data is None:
+        raise ArtifactError("cannot read file")
+    # Enforce the artifact content cap up front (store also rejects > 1 MiB) so
+    # a large document doesn't waste memory/executor time before create().
+    if len(data) > MAX_CONTENT_BYTES:
+        raise ArtifactValidationError(f"document exceeds {MAX_CONTENT_BYTES} bytes")
+    content = data.decode("utf-8", errors="replace")
+    art = store.create(
+        name=os.path.basename(canonical) or canonical,
+        content=content,
+        source=source,
+        source_path=canonical,
+        session_key=session_key,
+    )
+    return store.set_pinned(art.slug, True)
+
+
 # ── List / Create ─────────────────────────────────────────────────────────────
 
 
@@ -476,6 +738,15 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     out = await asyncio.get_running_loop().run_in_executor(
         None, _scan_artifacts, store, items, q_lower, want_snippet, do_content
     )
+    # Live-resolve each artifact's originating-session title for the Source
+    # column (done here, on the event loop, where dashboard ``state`` is
+    # available — the off-loop scan is stateless).
+    state = request.app.get("state")
+    if state is not None:
+        for d in out:
+            title = _resolve_session_title(state, d.get("session_key") or "")
+            if title:
+                d["session_title"] = _redact_text(title)
     return _json_response({"artifacts": out})
 
 
@@ -571,11 +842,19 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             content=body.get("content", ""),
             slug=body.get("slug"),
             kind=body.get("kind"),
-            source=body.get("source", "chat"),
+            # Honor an explicitly-supplied source (MCP tool / import path); for
+            # UI saves that omit it, derive the ACTUAL session origin
+            # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
+            source=(body.get("source") or _artifact_source_for_request(request)),
             description=body.get("description", ""),
             tags=body.get("tags") or [],
             source_path=body.get("source_path", ""),
             folder_id=folder_id,
+            # Originating chat session for the Source column. Only a real slot
+            # key that passes the permitted grammar is stored (validated to
+            # prevent attribution spoofing / metadata poisoning); anything else
+            # collapses to "".
+            session_key=_clean_origin_session_key(body.get("origin_session_key")),
         )
     except ArtifactValidationError as exc:
         _audit(
@@ -633,7 +912,7 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
-    return _json_response(_serialize(art, include_content=True))
+    return _json_response(_serialize(art, include_content=True, state=request.app.get("state")))
 
 
 async def api_artifact_update(request: web.Request) -> web.Response:
@@ -1844,6 +2123,166 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
         outcome="success",
         extra={"slug": slug, "folder_id": folder_id},
     )
+    return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_set_pinned(request: web.Request) -> web.Response:
+    """PATCH /api/artifacts/{slug}/pin — set/clear an artifact's pin mark.
+
+    Body: ``{"pinned": true|false}``. Metadata-only — no version bump.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_set_pinned",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot pin artifacts", status=403)
+    slug = request.match_info.get("slug", "")
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        _audit(tool="artifact_set_pinned", request=request, outcome="denied", error=str(exc), extra={"slug": slug})
+        return _err(str(exc))
+    raw_pinned = body.get("pinned")
+    if not isinstance(raw_pinned, bool):
+        _audit(
+            tool="artifact_set_pinned",
+            request=request,
+            outcome="denied",
+            error="'pinned' must be a boolean",
+            extra={"slug": slug},
+        )
+        return _err("'pinned' must be a boolean (true or false)")
+    pinned = raw_pinned
+    try:
+        art = await _run_off_loop(lambda: _set_pinned_and_reload(slug, pinned))
+    except ArtifactNotFoundError as exc:
+        _audit(
+            tool="artifact_set_pinned",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=404)
+    except ArtifactError as exc:
+        _audit(
+            tool="artifact_set_pinned",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=500)
+    _audit(
+        tool="artifact_set_pinned",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "pinned": pinned},
+    )
+    return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_session_docs(request: web.Request) -> web.Response:
+    """GET /api/artifacts/session-docs — virtual list of non-code documents
+    produced across all chat sessions (the "All" firehose). Read-only; creates
+    no artifact records."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_session_docs",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+        )
+        return _err("restricted session cannot list session docs", status=403)
+    clog = getattr(state, "conversation_log", None)
+    if clog is None:
+        _audit(
+            tool="artifact_session_docs",
+            request=request,
+            outcome="success",
+            extra={"count": 0},
+        )
+        return _json_response({"docs": []})
+    store = get_default_store()
+    session = request.query.get("session") or None
+
+    def work() -> list[dict[str, Any]]:
+        # Map pinned artifacts by their backing file path → slug, so each
+        # session doc can report saved-status and a slug to unsave against.
+        saved_map = {
+            a.source_path: a.slug
+            for a in store.list()
+            if getattr(a, "source_path", "") and getattr(a, "pinned", False)
+        }
+        return _scan_session_docs(clog, saved_map, session)
+
+    try:
+        docs = await _run_off_loop(work)
+    except Exception as exc:  # noqa: BLE001 — audit + redacted 500 on any scan/list failure
+        _rc, _ = redact_credentials(str(exc))
+        safe_err, _ = redact_exfiltration_urls(_rc)
+        _audit(
+            tool="artifact_session_docs",
+            request=request,
+            outcome="error",
+            error=safe_err,
+        )
+        return _err("failed to list session documents", status=500)
+    _audit(
+        tool="artifact_session_docs",
+        request=request,
+        outcome="success",
+        extra={"count": len(docs)},
+    )
+    return _json_response({"docs": docs})
+
+
+async def api_artifact_materialize(request: web.Request) -> web.Response:
+    """POST /api/artifacts/materialize — turn a session document path into a
+    real, saved (pinned) file-backed artifact. Body: ``{"path": "..."}``.
+    Idempotent by source_path."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_materialize",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+        )
+        return _err("restricted session cannot save artifacts", status=403)
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        _audit(tool="artifact_materialize", request=request, outcome="denied", error=str(exc))
+        return _err(str(exc))
+    path = body.get("path")
+    if not isinstance(path, str) or not path.strip():
+        _audit(tool="artifact_materialize", request=request, outcome="denied", error="path required (must be a string)")
+        return _err("path required (must be a string)")
+    path = path.strip()
+    # Redacted copy for audit/error metadata — never emit a raw (LLM-influenced)
+    # path into the SEL audit log (credential/exfiltration redaction rule).
+    _rc, _ = redact_credentials(path)
+    audit_path, _ = redact_exfiltration_urls(_rc)
+    clog = getattr(state, "conversation_log", None)
+    if clog is None:
+        _audit(tool="artifact_materialize", request=request, outcome="error", error="conversation log unavailable", extra={"path": audit_path})
+        return _err("conversation log unavailable", status=500)
+    try:
+        art = await _run_off_loop(lambda: _materialize_and_pin(path, clog, _artifact_source_for_request(request), _clean_origin_session_key(body.get("origin_session_key"))))
+    except ArtifactValidationError as exc:
+        _audit(tool="artifact_materialize", request=request, outcome="denied", error=str(exc), extra={"path": audit_path})
+        return _err(str(exc))
+    except ArtifactError as exc:
+        _audit(tool="artifact_materialize", request=request, outcome="error", error=str(exc), extra={"path": audit_path})
+        return _err(str(exc), status=500)
+    _audit(tool="artifact_materialize", request=request, outcome="success", extra={"path": audit_path, "slug": art.slug})
     return _json_response(_serialize(art, include_content=True))
 
 
