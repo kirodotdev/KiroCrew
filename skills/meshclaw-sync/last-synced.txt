@@ -16,6 +16,84 @@
 #                so frontend sync is by CONTENT within the post-snapshot window, not a
 #                clean SHA range. This SHA records the upstream tip last triaged.
 
+# --- Batch-40 (dual-repo beta sync 2026-07-18) --------------------------------
+# Branch sync/beta-2026-07-18 (same open PR #18), one fix per commit, all
+# decided by DIFF against fork content (not SHA). Tally: 11 backend PORTED
+# (076a7a43 PARTIAL among them) + test-only PARTIAL f93e2f07 + test-hygiene
+# PARTIAL 3eaa7df1 + 7 frontend PORTED; 1 SKIP_NONKIROACP; 2
+# ALREADY_PRESENT; 1 DEFER; plus a fork-side review-fix commit.
+# BOTH upstream REVERTS in the window were processed:
+# 14fb9442 (byte-clean revert of 24c320f6 pid-namespace isolation) PORTED —
+# the fork had ported the feature in batch-39, so the revert had to land or
+# the fork would ship a feature upstream pulled; ce65b67a (revert of the
+# 40965431 mcp-gateway Midway blue-green cutover) ALREADY_PRESENT/no-op —
+# the fork never ported 40965431 (batch-39 SKIP_INTERNAL), so fork state
+# already equals the post-revert state. The two batch-39 stragglers got
+# explicit verdicts: 9f685806 (Skill browser modal, FE half of 31b8a10b)
+# KEEP/PORTED; 08e28b8a (Electron shell redesign) DEFER — blocked on open
+# fork PR #14 (SidePanel hard-imports its ArtifactPanel), recorded in
+# left-out.md's human-decision table.
+#
+# Backend PORTED (11): 1a18a5d7 vector_memory episodic dedup skips
+# tombstoned ghost vectors (silent write drop); 325fb1b9 security IMDS deny
+# closes inet_aton 2-/3-part short-form IP encodings (SSRF bypass);
+# e39edcb4 cron _execute no longer masks callback-reported failures as ok;
+# a1933a4b subagent queue drain preserves spawn params + _force_reap drains
+# the queue; 38f9ce84 mcp_core delete_message schema-gated (missing arg no
+# longer kills the stdio server); efb0110b dashboard cron batch-delete runs
+# remove_job on the event loop (off-loop create_task crash); 63b22b3a
+# dashboard-auth reports real session_exp (numeric claim) + refresh stops
+# churning link nonces (adapted: fork validates via use_session_exp=True);
+# a5cf36ff cron auto-pause persisted across restarts (auto_paused field +
+# record_failure/record_success + SEL); 14fb9442 revert of pid-namespace
+# isolation (see above; cron-cancel work untouched); 19fa9ee8 knowledge
+# namespace validate+fold in add_source + non-dict-properties 400 +
+# TestWatchdog sandbox-passthrough deflake; 076a7a43 PARTIAL stop/kill
+# reaches pooled MCP backends (abort.py + quarantine + runtime_info +
+# stop_turn abort push; DROPPED the ClaudeCodeProvider _send_abort fallback
+# hunk — provider deleted — and the absent test_mcp_gateway_pool_race.py
+# hunk). Test-only PARTIAL: f93e2f07 prose-push regression tests ported
+# (fork's diverged verb-anchored _git_push_args already immune — production
+# hunk N/A). 3eaa7df1 PARTIAL test hygiene: base.py configurable timeout,
+# _SHUTDOWN_TIMEOUT_SECS patch target fix, TestCleanupLoop sweep stubs,
+# Darwin kern.maxprocperuid fold, spawn-audit scan cache (DROPPED the
+# brazil-build/AGENTS.md/setup.py invariant-check + _isolate_aim_cli hunks
+# — internal build machinery absent/stubbed in fork).
+#
+# Frontend PORTED (7): 38dfc2e9 useWebSocket dispatches
+# MC_NOTIFICATION_EVENT so notification sounds play on WS frames; 964d92c9
+# useSmoothStream snaps emit cursors on non-streaming content growth
+# (post-completion truncation); 52a6c57b batched frames no longer fabricate
+# missed-chunk markers in applyNonActiveFrame; 7ddd1b5e steer echo
+# reconcile scans optimistic bubbles (duplicate steer card mid-turn);
+# 5147f023 SourcesList sends uploadNamespace for local_folder; 5a51c71c
+# stop-button force-stop affordance + 15s killing-state escape hatch
+# (adapted: dropped the secretarySlice import — subsystem absent); 9f685806
+# Skill browser modal + discover API client methods (batch-38 straggler,
+# pairs with the ported skill_providers backend).
+#
+# SKIP (4): d80b1430 SKIP_NONKIROACP (BedrockProvider user-first history
+# trim — provider deleted, no shared chokepoint touched); 4fe1de2b
+# ALREADY_PRESENT (slack events session_key bound function-level at fork
+# events.py:2167; regression covered by test_channel_activation.py);
+# ce65b67a ALREADY_PRESENT (blue-green revert — never ported, see above);
+# 08e28b8a DEFER (Electron shell redesign — blocked on PR #14, see above).
+#
+# Fork-side (not an upstream port): fix(review) commit addressing PR #18
+# review findings — sandbox.py cleanup sweep os.kill(pid,0) →
+# platform_compat.pid_exists (fork Windows platform rule); AutoNudgePopover
+# text-white → text-accent-fg (restores upstream's own 15b1f9c token,
+# regressed in 729e09d); TagManagerList inline-rename aria-label. Rationale
+# recorded in left-out.md.
+#
+# Verify: per-commit — touched pytest files green (sandbox 80, cron, memory,
+# subagent, mcp_core, auth, knowledge, security suites); CI-parity flake8
+# (bare 7.1.0) + isort (6.0.0) + mypy (1.14.1) clean; frontend tsc -b clean
+# + touched vitest specs green. Boundary advances: beta → 3eaa7df1 (the
+# current beta-braveheart tip), frontend-beta → 5a51c71c (newest PORTED;
+# 9f685806/08e28b8a triaged by content), mainline unchanged.
+#
+# ── Prior batch ──────────────────────────────────────────────────────────────
 # --- Batch-39 (2026-07-18 follow-up) -----------------------------------------
 # The batch-38 DEFER set (commits that landed AFTER batch-38's target set was
 # fixed) triaged and ported onto the SAME branch sync/beta-2026-07-18 (PR #18),
@@ -371,9 +449,9 @@
 #   + builder-mcp test-fixture string only). Verify: per-commit pytest (touched files) + flake8 +
 #   isort all green; frontend tsc -b clean + touched vitest green.
 
-beta 4075a006786d4d9128fe8834ae1e625b7496cc2c      # 2026-07-18 MeshClaw backend triaged/ported tip (batch-39 follow-up, branch sync/beta-2026-07-18). Window 670922ac..4075a006 triaged: 4 backend PORTED (4075a006 AWS-CLI deny, 9d4360d7 knowledge sqlite, 24c320f6 PID-ns, ed2f65b0 cron-cancel) + 1 SKIP_INTERNAL (40965431 Midway blue-green cutover — Midway stubbed in fork) — see batch-39 note above. Boundary advances PAST 40965431 to the newest PORTED SHA 4075a006 (the batch-38 beta tip). Still-untriaged batch-38 DEFER remainder (1d8f9a4c toolbox-shim, 25cfdce3 CRS-test-mypy, 8c8d085d system-monitor, 081c7b47 docs-sync) predate 4075a006 in the batch-38 window and were verdicted SKIP/N-A there; the next run re-scans 4075a006..beta. PRIOR: 670922ac 2026-07-18 backend triaged/ported tip (batch-38, branch sync/beta-2026-07-18). Window 5d1961ef..670922ac: 19 backend PORTED — see batch-38 note above. PRIOR: 5d1961ef 2026-07-17 backend triaged tip (batch-37, branch sync/beta-2026-07-17). Window f9b37d8c..5d1961ef triaged by content; 11 backend PORTED (+1 prereq 90f5c3f1) — see batch-37 note above. PRIOR: f9b37d8c 2026-07-16 backend triaged tip (batch-36 addendum, folded into PR #92; advanced from batch-35 3cae0aad). Window 3cae0aad..f9b37d8c (9 commits): 7 PORTED + 2 SKIP_INTERNAL — see batch-36 note above. Window 84d8abf3..d757fd9d triaged by content; 5 backend KEEP ported (36527cd3 Heimdall pentest security.py hardening, 7cc8217d Talos redaction/SSRF/XPIA follow-ups, 82560fb7 exfil-URL path/raw-IP + bash-egress gate, 56fbb774 mcp-gateway claim-push caller identity, 0917c9aa queue chat during sub-agent runs). 791c0cb5 (Board removal / Channels hide) ALREADY_PRESENT (merged fork PR #78). SKIP: cdb2d135 (CC deny union-merge — SKIP_NONKIROACP, confined to deleted cc_agent.py), d757fd9d (brazil ws-create timeout — SKIP_INTERNAL, Brazil installer path absent from fork). DEFER: ed984a05 (Talos legacy-HTML-dashboard removal — KEEP-worthy generic-core XSS-surface reduction, but a 16-file behavior-changing removal that landed after the batch verdicts were verified; held for the next verified batch — see left-out.md).
-frontend-beta ec0c619b09d9d1fbde85b8d3a4537dd43d3bd261  # 2026-07-18 MeshClawWebsite triaged/ported tip (batch-39 follow-up). Window fdd8734..ec0c619 triaged by content: ec0c619 (cron-cancel UI — pairs with backend ed2f65b0) PORTED — see batch-39 note above. Boundary advances to ec0c619. Still-untriaged: 9f68580 (Skill browser modal — FE half of 31b8a10b) predates ec0c619 in the batch-38 DEFER set; 08e28b8 (Electron shell redesign) postdates it — both re-scanned by content next run. PRIOR: fdd8734 2026-07-18 MeshClawWebsite triaged/ported tip (batch-38). Window 7665cc8e..fdd8734: 12 frontend PORTED — see batch-38 note above. PRIOR: 7665cc8e 2026-07-17 MeshClawWebsite triaged tip (batch-37). Window e7c1de9..7665cc8e triaged by content; 4 frontend PORTED (7665cc8e throttle-retry, fe9137b5 steer split-send, abfe9692 Schedule running badge, 08e6d08b ChatSidebar deflake) — see batch-37 note above. PRIOR: e7c1de9 2026-07-16 (batch-36 addendum; advanced from batch-35 340cfa9). Window 340cfa9..e7c1de9 (3 commits): 273cb0e playwright load-stability PORTED, c0fb568 Slack panel + conversation-map ALREADY_PRESENT (fork PR #65/#84), e7c1de9 registry regen no-op. Window 4b9d6255..340cfa9 (4 commits) all PORTED (store cache-evict/notif-cap, semantic-memory render cap, sidebar folder drag-move, command-palette Settings provider). See batch-35 note above. Window ab0d8d2c..4b9d6255 triaged by content; 1 frontend KEEP ported (4b9d6255 reflect sub-agent runs in composer busy state — selectComposerBusy/selectSlotSubagentsActive). c64af69 (Board removal frontend) ALREADY_PRESENT (merged fork PR #78). No frontend SKIP/DEFER this batch.
-mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainline tip (upstream), unchanged since batch-27 (batch-33 re-confirmed). No NEW mainline-only content to port (all in-window candidates reached the fork via beta-braveheart; every mainline-only delta is a release-merge or already triaged via beta).
+beta 3eaa7df181a768f3df6111ffd98bd0fef16380ed      # 2026-07-18 MeshClaw backend triaged/ported tip (batch-40, branch sync/beta-2026-07-18). Window 4075a006..3eaa7df1 triaged by content: 11 backend PORTED (incl. the 14fb9442 revert of 24c320f6 pid-ns and two PARTIALs 076a7a43/3eaa7df1) + test-only PARTIAL f93e2f07 + 1 SKIP_NONKIROACP (d80b1430 Bedrock history trim) + 2 ALREADY_PRESENT (4fe1de2b session_key binding, ce65b67a blue-green revert no-op) — see batch-40 note above. Boundary = the current beta-braveheart tip. PRIOR: 4075a006 2026-07-18 backend triaged/ported tip (batch-39 follow-up, branch sync/beta-2026-07-18). Window 670922ac..4075a006 triaged: 4 backend PORTED (4075a006 AWS-CLI deny, 9d4360d7 knowledge sqlite, 24c320f6 PID-ns, ed2f65b0 cron-cancel) + 1 SKIP_INTERNAL (40965431 Midway blue-green cutover — Midway stubbed in fork) — see batch-39 note above. Boundary advances PAST 40965431 to the newest PORTED SHA 4075a006 (the batch-38 beta tip). Still-untriaged batch-38 DEFER remainder (1d8f9a4c toolbox-shim, 25cfdce3 CRS-test-mypy, 8c8d085d system-monitor, 081c7b47 docs-sync) predate 4075a006 in the batch-38 window and were verdicted SKIP/N-A there; the next run re-scans 4075a006..beta. PRIOR: 670922ac 2026-07-18 backend triaged/ported tip (batch-38, branch sync/beta-2026-07-18). Window 5d1961ef..670922ac: 19 backend PORTED — see batch-38 note above. PRIOR: 5d1961ef 2026-07-17 backend triaged tip (batch-37, branch sync/beta-2026-07-17). Window f9b37d8c..5d1961ef triaged by content; 11 backend PORTED (+1 prereq 90f5c3f1) — see batch-37 note above. PRIOR: f9b37d8c 2026-07-16 backend triaged tip (batch-36 addendum, folded into PR #92; advanced from batch-35 3cae0aad). Window 3cae0aad..f9b37d8c (9 commits): 7 PORTED + 2 SKIP_INTERNAL — see batch-36 note above. Window 84d8abf3..d757fd9d triaged by content; 5 backend KEEP ported (36527cd3 Heimdall pentest security.py hardening, 7cc8217d Talos redaction/SSRF/XPIA follow-ups, 82560fb7 exfil-URL path/raw-IP + bash-egress gate, 56fbb774 mcp-gateway claim-push caller identity, 0917c9aa queue chat during sub-agent runs). 791c0cb5 (Board removal / Channels hide) ALREADY_PRESENT (merged fork PR #78). SKIP: cdb2d135 (CC deny union-merge — SKIP_NONKIROACP, confined to deleted cc_agent.py), d757fd9d (brazil ws-create timeout — SKIP_INTERNAL, Brazil installer path absent from fork). DEFER: ed984a05 (Talos legacy-HTML-dashboard removal — KEEP-worthy generic-core XSS-surface reduction, but a 16-file behavior-changing removal that landed after the batch verdicts were verified; held for the next verified batch — see left-out.md).
+frontend-beta 5a51c71c9ac822f21c2a63a8da8377f2f65e6b61  # 2026-07-18 MeshClawWebsite triaged/ported tip (batch-40). Window ec0c619..5a51c71c + the two batch-39 stragglers triaged by content: 7 frontend PORTED (38dfc2e9 WS notification event, 964d92c9 smooth-stream cursor snap, 52a6c57b batched-frame marker guard, 7ddd1b5e steer-echo reconcile, 5147f023 SourcesList namespace, 5a51c71c stop-button escalation, 9f685806 Skill browser modal straggler) + 08e28b8a Electron shell redesign DEFER (blocked on open fork PR #14 — see left-out.md human-decision table) — see batch-40 note above. PRIOR: ec0c619 2026-07-18 MeshClawWebsite triaged/ported tip (batch-39 follow-up). Window fdd8734..ec0c619 triaged by content: ec0c619 (cron-cancel UI — pairs with backend ed2f65b0) PORTED — see batch-39 note above. Boundary advances to ec0c619. Still-untriaged: 9f68580 (Skill browser modal — FE half of 31b8a10b) predates ec0c619 in the batch-38 DEFER set; 08e28b8 (Electron shell redesign) postdates it — both re-scanned by content next run. PRIOR: fdd8734 2026-07-18 MeshClawWebsite triaged/ported tip (batch-38). Window 7665cc8e..fdd8734: 12 frontend PORTED — see batch-38 note above. PRIOR: 7665cc8e 2026-07-17 MeshClawWebsite triaged tip (batch-37). Window e7c1de9..7665cc8e triaged by content; 4 frontend PORTED (7665cc8e throttle-retry, fe9137b5 steer split-send, abfe9692 Schedule running badge, 08e6d08b ChatSidebar deflake) — see batch-37 note above. PRIOR: e7c1de9 2026-07-16 (batch-36 addendum; advanced from batch-35 340cfa9). Window 340cfa9..e7c1de9 (3 commits): 273cb0e playwright load-stability PORTED, c0fb568 Slack panel + conversation-map ALREADY_PRESENT (fork PR #65/#84), e7c1de9 registry regen no-op. Window 4b9d6255..340cfa9 (4 commits) all PORTED (store cache-evict/notif-cap, semantic-memory render cap, sidebar folder drag-move, command-palette Settings provider). See batch-35 note above. Window ab0d8d2c..4b9d6255 triaged by content; 1 frontend KEEP ported (4b9d6255 reflect sub-agent runs in composer busy state — selectComposerBusy/selectSlotSubagentsActive). c64af69 (Board removal frontend) ALREADY_PRESENT (merged fork PR #78). No frontend SKIP/DEFER this batch.
+mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainline tip (upstream), unchanged since batch-27 (batch-33 re-confirmed; batch-40 re-confirmed unchanged). No NEW mainline-only content to port (all in-window candidates reached the fork via beta-braveheart; every mainline-only delta is a release-merge or already triaged via beta).
 # NOTE: this 'mainline' SHA is the UPSTREAM MeshClaw mainline tip (for the mainline-only
 # candidate check), NOT the fork's mainline — batch-12 mistakenly recorded the fork SHA
 # (796e21c5) here, which broke the `$MAIN..origin/mainline` scan. Corrected in batch-13.
