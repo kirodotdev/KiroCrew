@@ -1022,9 +1022,13 @@ def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
             pid_str = middle.split("_", 1)[0]
             if not pid_str.isdigit():
                 continue
+            # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
+            # TERMINATES the target process on Windows (see platform_compat).
             try:
-                os.kill(int(pid_str), 0)
-            except (OSError, OverflowError, ValueError):
+                alive = platform_compat.pid_exists(int(pid_str))
+            except OverflowError:
+                alive = False  # absurd PID digits from a corrupt filename — stale
+            if not alive:
                 try:
                     os.remove(filepath)
                     removed += 1

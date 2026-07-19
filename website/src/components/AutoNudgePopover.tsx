@@ -227,7 +227,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           <button
             onClick={save}
             disabled={saving || !message.trim()}
-            className="px-3 py-1 rounded bg-accent text-white border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
+            className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
           >
             {loop ? 'Save' : 'Start loop'}
           </button>

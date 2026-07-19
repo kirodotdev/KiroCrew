@@ -707,7 +707,9 @@ class TestCleanupStaleSandboxProfiles:
         stale_file.write_text("(version 1)")
 
         with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
-            with patch("kiro_crew.sandbox.os.kill", side_effect=OSError("No such process")):
+            with patch(
+                "kiro_crew.sandbox.platform_compat.pid_exists", return_value=False
+            ):
                 removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
 
         assert not stale_file.exists()
