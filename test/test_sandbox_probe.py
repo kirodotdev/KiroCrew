@@ -15,25 +15,25 @@ def test_non_darwin_returns_false(mock_sys):
 
 
 @patch("kiro_crew.sandbox.sys")
-@patch("kiro_crew.sandbox.shutil.which", return_value=None)
-def test_which_not_found_returns_false(mock_which, mock_sys):
+@patch("kiro_crew.sandbox.os.path.exists", return_value=False)
+def test_sandbox_exec_not_found_returns_false(mock_exists, mock_sys):
     mock_sys.platform = "darwin"
     assert _probe_sandbox_exec() is False
 
 
 @patch("kiro_crew.sandbox.sys")
-@patch("kiro_crew.sandbox.shutil.which", return_value="/usr/bin/sandbox-exec")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=True)
 @patch("kiro_crew.sandbox.subprocess.run")
-def test_sandbox_exec_works(mock_run, mock_which, mock_sys):
+def test_sandbox_exec_works(mock_run, mock_exists, mock_sys):
     mock_sys.platform = "darwin"
     mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
     assert _probe_sandbox_exec() is True
 
 
 @patch("kiro_crew.sandbox.sys")
-@patch("kiro_crew.sandbox.shutil.which", return_value="/usr/bin/sandbox-exec")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=True)
 @patch("kiro_crew.sandbox.subprocess.run")
-def test_sandbox_exec_works_on_macos_26(mock_run, mock_which, mock_sys):
+def test_sandbox_exec_works_on_macos_26(mock_run, mock_exists, mock_sys):
     """macOS 26 (Tahoe) is NOT hard-blocked: sandbox-exec + the Seatbelt kernel
     subsystem still work there, so the probe decides empirically. A passing probe
     returns True regardless of OS version — the old ``major >= 26 -> return False``
@@ -45,17 +45,28 @@ def test_sandbox_exec_works_on_macos_26(mock_run, mock_which, mock_sys):
 
 
 @patch("kiro_crew.sandbox.sys")
-@patch("kiro_crew.sandbox.shutil.which", return_value="/usr/bin/sandbox-exec")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=True)
 @patch("kiro_crew.sandbox.subprocess.run")
-def test_sandbox_exec_fails_returns_false(mock_run, mock_which, mock_sys):
+def test_sandbox_exec_fails_returns_false(mock_run, mock_exists, mock_sys):
     mock_sys.platform = "darwin"
     mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1)
     assert _probe_sandbox_exec() is False
 
 
 @patch("kiro_crew.sandbox.sys")
-@patch("kiro_crew.sandbox.shutil.which", return_value="/usr/bin/sandbox-exec")
+@patch("kiro_crew.sandbox.os.path.exists", side_effect=[True, False])
+@patch("kiro_crew.sandbox.subprocess.run")
+def test_missing_trusted_probe_binary_fails_closed(mock_run, mock_exists, mock_sys):
+    mock_sys.platform = "darwin"
+
+    assert _probe_sandbox_exec() is False
+    mock_run.assert_not_called()
+    assert mock_exists.call_count == 2
+
+
+@patch("kiro_crew.sandbox.sys")
+@patch("kiro_crew.sandbox.os.path.exists", return_value=True)
 @patch("kiro_crew.sandbox.subprocess.run", side_effect=OSError("timeout"))
-def test_subprocess_exception_returns_false(mock_run, mock_which, mock_sys):
+def test_subprocess_exception_returns_false(mock_run, mock_exists, mock_sys):
     mock_sys.platform = "darwin"
     assert _probe_sandbox_exec() is False

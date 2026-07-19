@@ -170,10 +170,10 @@ def _probe_unshare() -> bool:
 def _probe_sandbox_exec() -> bool:
     """Return True if macOS ``sandbox-exec`` actually works.
 
-    Uses a file-based profile and targets kiro-cli (or /usr/bin/true as
-    fallback) to match the real sandbox_exec_argv() invocation.  The probe
-    tests with an ``(allow default)`` profile and a representative binary
-    to detect any kernel-level rejection (not just sandbox-exec presence).
+    Uses a file-based profile with fixed system paths for both
+    ``sandbox-exec`` and its ``/usr/bin/true`` target. The probe tests with an
+    ``(allow default)`` profile to detect kernel-level rejection, not merely
+    executable presence.
     """
     if sys.platform != "darwin":
         return False
@@ -189,8 +189,8 @@ def _probe_sandbox_exec() -> bool:
     # deprecated — it's the same enforcement layer that backs App Sandbox and
     # iOS. All major AI CLIs (Claude Code, Codex, Gemini) rely on it.
     # Rather than hard-coding version checks, we probe empirically below.
-    sb = shutil.which("sandbox-exec")
-    if sb is None:
+    sb = "/usr/bin/sandbox-exec"
+    if not os.path.exists(sb):
         return False
     # Probe with a file-based (allow default) profile against a TRUSTED, fixed
     # system binary. We deliberately do NOT probe the (user-writable) kiro-cli
@@ -200,7 +200,7 @@ def _probe_sandbox_exec() -> bool:
     # accepts sandbox_apply, which /usr/bin/true validates safely.
     target = "/usr/bin/true"
     if not os.path.exists(target):
-        target = shutil.which("true") or target
+        return False
     fd, profile_path = tempfile.mkstemp(suffix=".sb", prefix="kirocrew_probe_")
     try:
         os.write(fd, b"(version 1)(allow default)")
