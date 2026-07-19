@@ -778,6 +778,35 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     home_real = os.path.realpath(home)
     if home_real.casefold() != home.casefold():
         sensitive_targets |= {os.path.join(home_real, d).casefold() for d in home_dirs}
+    # When KIROCREW_HOME points to a non-default path, the keystone secrets
+    # (token_signing.key, refresh_chains.json, .local_secret, sel_hmac.key,
+    # security_policy.json etc.) live there — NOT under ~/.kirocrew. Without
+    # this expansion any ".kirocrew/X" entry in the home_dirs list would miss
+    # the real file location, letting the agent read/write its own signing key
+    # or governance ceiling via the custom KIROCREW_HOME. Expand each entry
+    # prefixed with ".kirocrew" using the env-override root ADDITIONALLY (the
+    # ~/~ root stays so both locations are always covered).
+    kiro_home_env = os.environ.get("KIROCREW_HOME")
+    if kiro_home_env:
+        try:
+            kiro_home = str(Path(kiro_home_env).expanduser().resolve())
+        except (OSError, ValueError):
+            kiro_home = os.path.abspath(os.path.expanduser(kiro_home_env))
+        _kiro_prefix = ".kirocrew" + os.sep
+        for d in home_dirs:
+            if d.startswith(_kiro_prefix) or d == ".kirocrew":
+                tail = d[len(".kirocrew"):]  # includes leading / or is ""
+                full = (
+                    os.path.join(kiro_home, tail.lstrip(os.sep))
+                    if tail else kiro_home
+                )
+                sensitive_targets.add(full.casefold())
+                # Also add the resolved form in case the env value itself has
+                # symlinks (matches the home/home_real duality above).
+                try:
+                    sensitive_targets.add(os.path.realpath(full).casefold())
+                except (OSError, ValueError):
+                    pass
 
     # Case-fold both sides for the membership test.  On a case-insensitive
     # filesystem (macOS APFS/HFS+ default — a supported platform) the OS opens
