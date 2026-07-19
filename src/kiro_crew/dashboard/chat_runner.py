@@ -80,6 +80,8 @@ from kiro_crew.dashboard.state import (
     REFUSAL_RECOVERY_PREFIX,
     STALE_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_SYNTHESIS_PREFIX,
+    SUBAGENT_SYNTHESIS_PROMPT,
     TOOL_STALL_RECOVERY_PREFIX,
     DashboardState,
     _ChatSlot,
@@ -1655,6 +1657,10 @@ async def _run_chat(
     # True when this turn IS an automatic refusal-recovery continuation. Used to
     # keep the synthetic prompt out of the linked-Slack user-message mirror.
     _is_recovery = message.startswith(REFUSAL_RECOVERY_PREFIX)
+    # The post-fan-out synthesis prompt is a synthetic continuation too: never
+    # mirror it to linked surfaces (Slack/Telegram) as if the user typed it —
+    # only its assistant reply is delivered.
+    _is_synthetic = _is_recovery or message.startswith(SUBAGENT_SYNTHESIS_PREFIX)
 
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
@@ -2180,7 +2186,7 @@ async def _run_chat(
         )
 
         # ── Bidirectional sync: mirror user message to linked Slack thread ──
-        if state.slack_client and not is_slash and not _is_recovery:
+        if state.slack_client and not is_slash and not _is_synthetic:
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
                 try:
@@ -2201,7 +2207,7 @@ async def _run_chat(
         # Channel-neutral leg: mirror the user message to a linked non-Slack
         # proactive channel (e.g. Telegram) so the remote conversation reads
         # coherently (question then reply), matching the Slack echo above.
-        if not is_slash and not _is_recovery:
+        if not is_slash and not _is_synthetic:
             await _deliver_cross_surface_user_message(
                 state, session_key, _user_msg_for_mirror
             )
@@ -4040,6 +4046,10 @@ async def _run_chat(
                 or next_msg.startswith(STALE_RECOVERY_PREFIX)
                 or next_msg.startswith(TOOL_STALL_RECOVERY_PREFIX)
             )
+            # User took over: a plain user message draining cancels any armed
+            # post-fan-out synthesis (the user has redirected the conversation).
+            if not (is_cron or is_subagent or is_recovery):
+                slot._pending_synthesis = False
             _m = CRON_NOTIFY_RE.match(next_msg) if is_cron else None
             cron_label = _m.group(1) if _m else "cron"
             cron_label, _ = redact_exfiltration_urls(cron_label)
@@ -4070,19 +4080,46 @@ async def _run_chat(
             # reset notice fires on the turn that finally processes them.
             if not slot._queue:
                 slot._stopping = False
-            # Send "done" (queue empty, or only held user messages) — keeps SSE reader alive
-            slot.append("done", "", "done")
-            # Clear task reference BEFORE pushing slot update so that
-            # slot.running returns False immediately.  Without this,
-            # push_slots_update() reports running=True because the task
-            # (this coroutine) hasn't finished its finally block yet.
-            slot.task = None
-            # Push updated running state (now idle) + history refresh to SSE clients
-            state.push_slots_update()
-            state.broadcast_ws("chat_done", {"slot": slot.key})
-            state.push_refresh("history")
-            # Auto-title: fire in background so it doesn't block the response
-            if not slot._titled:
-                t = asyncio.create_task(_maybe_auto_title(state, slot))
-                state._background_tasks.add(t)
-                t.add_done_callback(state._background_tasks.discard)
+            # ── Fix 2 (B1): one-shot post-fan-out synthesis turn ──
+            # Every completion for this fan-out has now been processed in its own
+            # turn and the queue is drained. If synthesis was armed (last agent
+            # done) and no agents remain, run ONE dedicated synthesis turn whose
+            # visible reply is the consolidated summary + next steps. Clear the
+            # flag FIRST so it fires exactly once and the synthesis turn itself
+            # can't re-arm it.
+            if (
+                slot._pending_synthesis
+                and state.subagents is not None
+                and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
+                and slot._subagent_deliveries_inflight == 0
+            ):
+                slot._pending_synthesis = False
+                _syn = SUBAGENT_SYNTHESIS_PROMPT
+                slot.append("inject", _syn, "msg msg-inject")
+                task = asyncio.create_task(
+                    asyncio.wait_for(_run_chat(state, slot, _syn), timeout=CHAT_TURN_TIMEOUT)
+                )
+                slot.task = task
+                state._background_tasks.add(task)
+                task.add_done_callback(state._background_tasks.discard)
+                state.push_slots_update()
+            else:
+                # Queue empty and no synthesis to fire (either not armed, or a
+                # newer fan-out is still running — in which case the arm persists
+                # and fires after that batch drains). Go idle.
+                # Send "done" (queue empty, or only held user messages) — keeps SSE reader alive
+                slot.append("done", "", "done")
+                # Clear task reference BEFORE pushing slot update so that
+                # slot.running returns False immediately.  Without this,
+                # push_slots_update() reports running=True because the task
+                # (this coroutine) hasn't finished its finally block yet.
+                slot.task = None
+                # Push updated running state (now idle) + history refresh to SSE clients
+                state.push_slots_update()
+                state.broadcast_ws("chat_done", {"slot": slot.key})
+                state.push_refresh("history")
+                # Auto-title: fire in background so it doesn't block the response
+                if not slot._titled:
+                    t = asyncio.create_task(_maybe_auto_title(state, slot))
+                    state._background_tasks.add(t)
+                    t.add_done_callback(state._background_tasks.discard)

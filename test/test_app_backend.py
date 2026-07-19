@@ -386,6 +386,7 @@ class TestBackendLifecycle:
         assert result is None
         assert any("Refusing to spawn third-party app" in r.message for r in caplog.records)
 
+    @_needs_sandbox_spawn
     def test_immediate_exit_is_not_reported_as_started(self, tmp_path, app_env, monkeypatch):
         # A backend that dies right away (e.g. EADDRINUSE port collision) must NOT be
         # reported as started — otherwise the gateway proxies to a dead port (502) and

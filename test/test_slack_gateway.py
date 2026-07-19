@@ -1232,6 +1232,62 @@ class TestInitSubagents:
         assert orch.dashboard_state.push_slots_update.call_count == 0
 
 
+class TestSubagentFinalSummaryDirective:
+    """Fix 2 (B1): the LAST sub-agent completion ARMS a one-shot synthesis turn
+    (slot._pending_synthesis) in chat mode; earlier completions do not."""
+
+    def _capture_on_done(self, orch):
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
+            with patch("kiro_crew.slack.gateway.SubagentManager") as mock_sm:
+                mock_sm_inst = MagicMock()
+                mock_sm_inst.start_reaper = MagicMock()
+                mock_sm.return_value = mock_sm_inst
+                orch._init_subagents()
+                return mock_sm.call_args.kwargs["on_done"]
+
+    async def _done_slot(self, running_agents_for_return):
+        """Fire the on_done callback through a chat-mode dashboard slot and return
+        the slot so the caller can inspect _pending_synthesis."""
+        from kiro_crew.subagent import SubagentInfo
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        ds = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.running = False
+        slot.key = "s1"
+        slot.mode = "chat"  # non-orchestrator → _is_orchestrator is False
+        slot.task = None
+        slot._pending_synthesis = False  # explicit start (not a MagicMock auto-attr)
+        slot._subagent_deliveries_inflight = 0  # real int so the gateway counter works
+        ds.get_slot = MagicMock(return_value=slot)
+        orch.dashboard_state = ds
+        on_done = self._capture_on_done(orch)
+        orch.subagent_mgr.running_agents_for = MagicMock(return_value=running_agents_for_return)
+
+        info = SubagentInfo(id="a1", task="do X", parent_session_key="dashboard:s1")
+        with patch("kiro_crew.slack.gateway._run_chat", new=AsyncMock()):
+            await on_done(info)
+            await asyncio.sleep(0.05)  # let the injection task settle
+        return slot
+
+    @pytest.mark.asyncio
+    async def test_last_completion_arms_synthesis(self):
+        """No sub-agents left running → the slot is armed for a synthesis turn."""
+        slot = await self._done_slot([])
+        assert slot._pending_synthesis is True
+        # Delivery counter must be balanced back to 0 (no leak → gate not stuck).
+        assert slot._subagent_deliveries_inflight == 0
+
+    @pytest.mark.asyncio
+    async def test_pending_completion_does_not_arm(self):
+        """Another sub-agent still running → synthesis is not armed yet."""
+        slot = await self._done_slot([{"id": "a2"}])
+        assert slot._pending_synthesis is False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _init_heartbeat
 # ═══════════════════════════════════════════════════════════════════════════

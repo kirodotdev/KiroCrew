@@ -2229,7 +2229,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 spawn_lines.append(f"  - {e}")
         if agent_ids:
             spawn_lines.append(
-                "\nWait for [Subagent completion event] messages before responding to the user."
+                "\n⚠️ END YOUR TURN NOW — do no further work this turn."
+                " Wait for the [Subagent completion event] messages, which will resume you."
             )
         else:
             spawn_lines.append("All tasks queued — results will arrive as completion events.")
