@@ -766,6 +766,32 @@ describe('subagent reducers', () => {
     expect(state.subagents['late1'].task).toBe('late task')
   })
 
+  it('sseSubagentSpawn copies task onto pending card (empty approval-derived task)', () => {
+    // Pending card created from a spawn-approval event whose title carried no
+    // task text — the later spawn event holds the authoritative task.
+    let state = reducer(withSlot, sseSubagentPending({ slot: 'slot-1', id: 'a1', task: '', approval_id: 'spawn:a1' }))
+    state = reducer(state, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'scan package X', agent: 'kirocrew' }))
+    expect(state.subagents['a1'].status).toBe('running')
+    expect(state.subagents['a1'].task).toBe('scan package X')
+  })
+
+  it('sseSubagentDone resolves card by id across slots (mis-bucketed card)', () => {
+    // Card lives under activeSlot but the done event arrives with a different
+    // slot key (e.g. parent session key changed after reset) — the card must
+    // still transition to done instead of staying stuck "running" forever.
+    let state = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'task', agent: '' }))
+    state = reducer(state, sseSubagentDone({ slot: 'other-slot', id: 'a1', elapsed: 7 }))
+    expect(state.subagents['a1'].status).toBe('done')
+    expect(state.subagents['a1'].elapsed).toBe(7)
+  })
+
+  it('sseSubagentDone backfills empty task from done payload', () => {
+    let state = reducer(withSlot, sseSubagentPending({ slot: 'slot-1', id: 'a1', task: '', approval_id: 'spawn:a1' }))
+    state = reducer(state, sseSubagentDone({ slot: 'slot-1', id: 'a1', elapsed: 4, task: 'the real task' }))
+    expect(state.subagents['a1'].status).toBe('done')
+    expect(state.subagents['a1'].task).toBe('the real task')
+  })
+
   it('switchSlot saves and restores subagents per slot', () => {
     let state = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'task', agent: '' }))
     // Switch away

@@ -303,11 +303,16 @@ export function useWebSocket() {
                 ts: String(data.ts || Date.now() / 1000),
                 meta: { tool_input: data.tool_input || '', approval_id: data.id, source: data.source, ...(data.tool_call_id ? { tool_call_id: data.tool_call_id } : {}) },
               }))
-              // For spawn approvals, create a pending subagent entry instead of a toolLog approval
+              // For spawn approvals, create a pending subagent entry instead of a toolLog approval.
+              // Require an explicit slot from the event: falling back to activeSlot would
+              // misattribute cards from other sessions/crons to whatever chat the user is
+              // viewing (ghost "Starting…" cards with empty input that never resolve).
               const rid = data.id as string
               if (rid?.startsWith('spawn:')) {
-                const agentId = rid.replace('spawn:', '')
-                dispatch(sseSubagentPending({ slot: targetSlot, id: agentId, task: (data.tool as string || '').replace('spawn_run(', '').replace(/\)$/, ''), approval_id: rid }))
+                if (data.slot) {
+                  const agentId = rid.replace('spawn:', '')
+                  dispatch(sseSubagentPending({ slot: data.slot, id: agentId, task: (data.tool as string || '').replace('spawn_run(', '').replace(/\)$/, ''), approval_id: rid }))
+                }
               } else if (data.source !== 'subagent') {
                 dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval', text: data.tool || 'Unknown', approval_id: data.id, approval_type: 'chat' }))
               }

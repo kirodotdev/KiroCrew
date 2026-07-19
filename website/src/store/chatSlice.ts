@@ -786,6 +786,10 @@ const chatSlice = createSlice({
       if (existing?.status === 'pending') {
         existing.status = 'running'
         existing.agent = action.payload.agent || existing.agent || 'kirocrew'
+        // The spawn event carries the authoritative task text (the pending
+        // card's task is derived from the approval title, which may be empty
+        // or just "spawn_run") — always prefer the spawn payload's task.
+        if (action.payload.task) existing.task = action.payload.task
         return
       }
       subs[action.payload.id] = {
@@ -810,12 +814,25 @@ const chatSlice = createSlice({
       const subs = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[action.payload.slot] ??= { toolLog: [], subagents: {} }).subagents
         : state.subagents
-      const a = subs[action.payload.id]
+      let a = subs[action.payload.id]
+      if (!a) {
+        // Cross-slot fallback: the card may live under a different slot key
+        // than the done event's slot (e.g. the parent session was reset, or
+        // the pending card was created under the activeSlot fallback). Find
+        // it by id anywhere so the card doesn't stay stuck "running" forever.
+        if (state.subagents[action.payload.id]) a = state.subagents[action.payload.id]
+        else {
+          for (const sa of Object.values(state.slotActivity)) {
+            if (sa.subagents[action.payload.id]) { a = sa.subagents[action.payload.id]; break }
+          }
+        }
+      }
       if (a) {
         a.status = action.payload.error ? 'error' : 'done'
         a.elapsed = action.payload.elapsed
         a.error = action.payload.error
         a.streaming = ''
+        if (action.payload.task && !a.task) a.task = action.payload.task
       }
       else { subs[action.payload.id] = { id: action.payload.id, task: action.payload.task || '', agent: action.payload.agent || 'kirocrew', status: action.payload.error ? 'error' : 'done', streaming: '', lastTool: '', startedAt: Date.now() - action.payload.elapsed * 1000, elapsed: action.payload.elapsed, error: action.payload.error } }
     },

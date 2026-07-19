@@ -24,8 +24,17 @@ const tool = (state: ReturnType<typeof reducer>, name: string) =>
   reducer(state, sseChatMessage({ slot: SLOT, role: 'tool', content: `🔧 ${name}` }))
 
 // Arbitrary: non-empty printable string for chunk content
+// Mirror the intentional placeholder-drop in the _segment handler (see
+// chatSlice.ts sseChatMessage, "drop placeholder '...' bubbles on _segment
+// finalization"): content composed EXCLUSIVELY of 2+ punctuation/
+// whitespace placeholder chars (with at least one non-whitespace char), or a
+// lone ellipsis, is deliberately dropped on finalization. Properties that
+// assert the message survives finalization must not generate such content.
+const isDroppedPlaceholder = (s: string) =>
+  (/^[\s.\-…·•–—]{2,}$/.test(s) && /[.\-…·•–—]/.test(s)) || s === '…'
+
 const chunkContentArb = fc.string({ minLength: 1, maxLength: 50 })
-  .filter(s => s.length > 0 && !s.includes('\n[⚠'))
+  .filter(s => s.length > 0 && !s.includes('\n[⚠') && !isDroppedPlaceholder(s))
 
 
 // Feature: inline-tool-cards, Property 3: Streaming-to-assistant conversion on finalization
