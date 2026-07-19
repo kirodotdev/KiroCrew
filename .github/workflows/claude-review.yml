@@ -188,10 +188,16 @@ jobs:
       # Post the review summary for humans (best-effort, NON-gating). Reads the
       # summary from the action's structured output — not from a model-posted
       # comment — so it works even when the model doesn't call gh pr comment.
+      # UPSERT a single marker-keyed comment per PR: re-scanning on every push
+      # UPDATEs that one comment (PATCH) instead of stacking a new one —
+      # otherwise the PR fills with N near-duplicate Claude summaries as the
+      # branch evolves (PR #14 accumulated 3). Fully workflow-owned, so the
+      # dedup does not depend on the model following posting instructions.
       - name: Post Claude review summary
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           SO: ${{ steps.review.outputs.structured_output }}
@@ -200,8 +206,40 @@ jobs:
           summary=$(printf '%s' "$SO" | jq -r '.summary // ""')
           verdict=$(printf '%s' "$SO" | jq -r 'if .block_merge then "🔴 changes requested (blocking)" else "✅ no blocking findings" end')
           [ -z "$summary" ] && exit 0
-          { echo "## Claude Review — $verdict"; echo; printf '%s\n' "$summary"; echo; echo "_Verdict recorded via the action's structured output for commit \`$HEAD\`._"; } > /tmp/claude-summary.md
-          gh pr comment "$PR" --body-file /tmp/claude-summary.md || true
+          MARKER="<!-- claude-ai-review -->"
+          {
+            echo "$MARKER"
+            echo "## Claude Review — $verdict"
+            echo
+            echo "_Reviewed \`$HEAD\` — this comment is updated in place on each push._"
+            echo
+            printf '%s\n' "$summary"
+            echo
+            echo "_Verdict recorded via the action's structured output for commit \`$HEAD\`._"
+          } > /tmp/claude-summary.md
+          # Find the bot's existing marker comment (first match wins) and PATCH
+          # it in place; create once if absent. PR timeline comments are issue
+          # comments, so list/create/update via the issues/comments API. Two
+          # guards on the lookup:
+          #   - author filter: only a github-actions[bot] comment can match —
+          #     otherwise any PR commenter could plant the hidden marker and
+          #     this step would PATCH (overwrite) THEIR comment with the
+          #     write-scoped token.
+          #   - per-page jq: with --paginate the --jq filter runs PER PAGE, so
+          #     emit only matching ids (never null placeholders) and take the
+          #     first line across all pages — a multi-page comment list must
+          #     not produce a malformed multi-line id.
+          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARKER\"))) | .id" 2>/dev/null \
+            | head -n1 || true)"
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+              --field body="$(cat /tmp/claude-summary.md)" >/dev/null || true
+            echo "Updated existing Claude summary comment #$existing"
+          else
+            gh pr comment "$PR" --body-file /tmp/claude-summary.md || true
+            echo "Created new Claude summary comment"
+          fi
 
       # Fail-CLOSED gate. Gates on the action's OWN structured output
       # (steps.review.outputs.structured_output, produced by the --json-schema in

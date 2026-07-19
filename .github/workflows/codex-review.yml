@@ -227,21 +227,59 @@ jobs:
             perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-review-output.md
           fi
 
-      - name: Post review comment
+      # Upsert a SINGLE Codex summary comment per PR, keyed by a hidden marker.
+      # Re-scanning on every push must UPDATE that one comment (PATCH), never
+      # stack a new one — otherwise the PR fills with N near-duplicate Codex
+      # summaries as the branch evolves (each push = one more comment). GitHub
+      # PR timeline comments are issue comments, so list/create/update via the
+      # issues/comments API; the marker is an HTML comment (invisible in render).
+      - name: Post/update review comment
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ -f codex-review-output.md ] && [ -s codex-review-output.md ]; then
-            # Prefix with Codex header to distinguish from Claude review
-            {
-              echo "## Codex Review (GPT-5.6 Sol via Bedrock)"
-              echo ""
+          MARKER="<!-- codex-ai-review -->"
+          {
+            echo "$MARKER"
+            echo "## Codex Review (GPT-5.6 Sol via Bedrock)"
+            echo ""
+            echo "_Reviewed \`$HEAD\` — this comment is updated in place on each push._"
+            echo ""
+            if [ -f codex-review-output.md ] && [ -s codex-review-output.md ]; then
               cat codex-review-output.md
-            } > /tmp/codex-comment.md
+            else
+              # The review step errored / produced no output (e.g. a transient
+              # Bedrock failure). Say so in the SAME comment rather than leaving a
+              # stale prior body; the gate step still fails the check.
+              echo "_Codex produced no output for this commit (the review may have"
+              echo "errored). See the Codex Review job logs; re-run to refresh._"
+            fi
+          } > /tmp/codex-comment.md
 
-            gh pr comment "${{ github.event.pull_request.number }}" \
-              --body-file /tmp/codex-comment.md
+          # Find the bot's existing marker comment (first match wins). Two
+          # guards on the lookup:
+          #   - author filter: only a github-actions[bot] comment can match —
+          #     otherwise any PR commenter could plant the hidden marker and
+          #     this step would PATCH (overwrite) THEIR comment with the
+          #     write-scoped token.
+          #   - per-page jq: with --paginate the --jq filter runs PER PAGE, so
+          #     emit only matching ids (never null placeholders) and take the
+          #     first line across all pages — a multi-page comment list must
+          #     not produce a malformed multi-line id.
+          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARKER\"))) | .id" 2>/dev/null \
+            | head -n1 || true)"
+
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+              --field body="$(cat /tmp/codex-comment.md)" >/dev/null || true
+            echo "Updated existing Codex comment #$existing"
+          else
+            gh pr comment "$PR" --body-file /tmp/codex-comment.md
+            echo "Created new Codex comment"
           fi
 
       # Fail-CLOSED gate, harmonized with claude-review.yml. We do NOT block on
