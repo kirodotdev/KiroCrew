@@ -28,22 +28,33 @@ Either way, a hard **`/stop`** aborts the running turn and clears everything.
 With `queue_mode="steer"`, a mid-turn message is injected into the in-flight
 turn via kiro-cli's `_session/steer`. kiro-cli folds it in at its next
 **generation boundary** (a tool-call edge on agentic turns — seconds; the
-end-of-stream on a single long text turn — later), signalled by the
-`steering_consumed` / `AgentExecutionSteeringInjected` notification.
+end-of-stream on a single long text turn — later), and emits an inline
+`[STEERING steer-<id>: <ack summary>]` marker in the text stream at the exact
+fold point.
 
-At that boundary the Telegram renderer **seals the pre-steer output** as its own
-message and opens a **fresh message for the steered continuation that replies to
-the user's steer message**:
+The Telegram renderer streams the turn **live** (one real message, edited in
+place as text arrives, with a transient `🔧 {tool}…` footer during tool calls)
+and rotates at each complete marker: the pre-steer output **seals** as its own
+message, and the steered continuation opens a **fresh message headed by a
+summary chip** quoting the marker's ack text (the same summary the dashboard
+shows as its "Steered — …" chip):
 
 ```
-[reply ▸ "stop, only reply BANANA"]
-BANANA
+> ↪️ answered the weather question in parallel with the directory summary
+<steered continuation…>
 ```
 
-The native reply link is the record of what was folded in and where it took
-effect — no separate receipt bubble is posted. kiro-cli also emits an inline
-`[STEERING steer-<id>: …]` ack marker in the text stream (the dashboard renders
-it as a chip); Telegram **strips** it, since the reply link already conveys it.
+The user's own steer message receives an emoji **reaction** as the delivery
+receipt. The chip is **lazily materialized** — it lands only when real
+post-steer text follows the marker. A marker at the very end of the stream
+(the steer was already covered by the answer) therefore produces **no tail
+message at all**: the reaction is the only acknowledgement. Raw markers never
+appear in posted text.
+
+Per-message overrides: prefixing a mid-turn message with **`/steer <msg>`** or
+**`/queue <msg>`** forces that message down the steer or queue path
+respectively, overriding the global `messaging.queue_mode` for that message
+only (a bare `/steer` / `/queue` with no body is treated as a normal message).
 
 Steer is kiro-cli only (claude-agent-acp has no `_session/steer`); when
 unsupported the message falls back to the queue path below.

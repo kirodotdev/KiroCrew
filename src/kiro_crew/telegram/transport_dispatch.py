@@ -41,7 +41,11 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.sel import sel
-from kiro_crew.telegram.commands import ConversationState, parse_command
+from kiro_crew.telegram.commands import (
+    ConversationState,
+    parse_command,
+    parse_mid_turn_override,
+)
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
 
@@ -76,6 +80,10 @@ Commands:
 /stop — Stop the current reply and clear the queue
 /help — Show this message
 
+While a reply is running, prefix a message to control it:
+/queue <msg> — answer it after the current turn
+/steer <msg> — fold it into the running turn now
+
 Just send a message to chat. Replies stream in real-time.
 """
 
@@ -87,6 +95,10 @@ def _short(text: str, limit: int = 40) -> str:
 
 
 _RECEIPT_MAX_ITEMS = 5  # verbatim items shown in a receipt before "…and N more"
+# Instant, no-extra-bubble acknowledgement that a mid-turn steer was accepted
+# and folded into the running turn (not merely "seen" — 👀 read as passive).
+# Must be one of Telegram's allowed reaction emojis (Bot API 7.0+).
+_STEER_ACK_EMOJI = "🫡"
 
 
 def _receipt_text(
@@ -152,26 +164,52 @@ class TelegramDispatcher:
         # session_key -> the single in-place "queued" receipt bubble tracking
         # messages that arrived mid-turn (collapsed into one record + one turn).
         self._queue_receipts: dict[str, _QueueReceipt] = {}
-        # session_key -> the live TelegramRenderer for the CURRENTLY-running turn.
-        # A mid-turn steer reaches into it (via _handle_busy) to set the reply
-        # target so the steered continuation threads under the user's message.
-        self._active_renderers: dict[str, TelegramRenderer] = {}
         # Serializes the check-then-send-then-store receipt bookkeeping so a
         # burst of concurrently-dispatched mid-turn messages can't each post a
         # fresh bubble and orphan the earlier one.
         self._receipt_lock = asyncio.Lock()
+        # session_key -> the running turn's renderer, so a concurrent mid-turn
+        # steer (handled in a separate _handle_busy task) can hand it the user's
+        # typed steer text for the inline "↪️ steered: …" chip. Set on turn
+        # start, popped in finally. Records text only — no buffer slicing, so
+        # none of the old steer-split fragility.
+        self._active_renderers: dict[str, TelegramRenderer] = {}
 
     # ── Turn dispatch (transport's dispatch callback) ──────────────────────
 
-    async def handle_message(self, msg: InboundMessage, *, drain: bool = True) -> None:
+    async def handle_message(
+        self,
+        msg: InboundMessage,
+        *,
+        drain: bool = True,
+        interpret_commands: bool = True,
+    ) -> None:
         """Drive one authorized inbound message through TurnDriver end-to-end."""
         assert self.client is not None, "TelegramDispatcher.client must be set"
         user_id = int(msg.user_id)
         chat_id = int(msg.conversation_id)
         text = msg.text
 
-        # ── Command intercept (no LLM session needed) ──
-        cmd = parse_command(text)
+        # Per-message mid-turn override: "/queue …" / "/steer …" let the user
+        # choose how THIS message is handled if it lands while a turn is running
+        # (overriding the global queue_mode). Ordinary commands are parsed
+        # against the ORIGINAL text — and when an override prefix IS present,
+        # its payload is turn CONTENT, never a command: "/queue /new" queues the
+        # literal "/new" text for after the turn instead of executing it now.
+        # interpret_commands=False (the queue-drain path) skips BOTH: a drained
+        # payload is replayed as pure content, so a queued "/new" reaches the
+        # model as text instead of executing on drain.
+        override_mode = None
+        if interpret_commands and parse_command(text) is None:
+            override_mode, text = parse_mid_turn_override(text)
+
+        # ── Command intercept (no LLM session needed; skipped for override
+        # payloads and drained queue content — see above) ──
+        cmd = (
+            parse_command(text)
+            if interpret_commands and override_mode is None
+            else None
+        )
         if cmd == "new":
             self._conv.bump_gen(user_id)
             await self.client.send_message(chat_id, "✅ New conversation started.")
@@ -200,7 +238,7 @@ class TelegramDispatcher:
         # of a silent block.
         session_key = self._session_key(user_id)
         if self.sessions.is_busy(session_key):
-            await self._handle_busy(session_key, msg)
+            await self._handle_busy(session_key, msg, text, override_mode)
             return
 
         self._conv.maybe_rotate(
@@ -225,8 +263,9 @@ class TelegramDispatcher:
         renderer = TelegramRenderer(
             self.client, chat_id, TELEGRAM_CAPABILITIES, session_key=session_key
         )
-        # Register the live renderer so a mid-turn steer (_handle_busy) can set
-        # its reply target; cleared in the finally below.
+        # Expose this turn's renderer so a concurrent mid-turn steer (a separate
+        # _handle_busy task) can hand it the user's typed steer text for the
+        # inline "↪️ steered: …" chip. Popped in finally.
         self._active_renderers[session_key] = renderer
 
         # Everything acquire-dependent runs INSIDE the try so the finally always
@@ -324,10 +363,9 @@ class TelegramDispatcher:
             # get_or_create raised before the semaphore was held. Only release
             # the semaphore if we actually acquired it.
             await renderer.close()
+            self._active_renderers.pop(session_key, None)
             if _acquired:
                 self.sessions.release(session_key)
-            # Drop the live-renderer registration for this turn.
-            self._active_renderers.pop(session_key, None)
 
         # Now that the turn is released, run anything that queued during it
         # (queue_mode == "queue"). ``drain`` is False for drained turns so the
@@ -335,45 +373,72 @@ class TelegramDispatcher:
         if drain:
             await self._drain_queue(session_key, user_id, chat_id)
 
-    async def _handle_busy(self, session_key: str, msg: InboundMessage) -> None:
-        """A message arrived mid-turn: steer the running turn or queue for after it."""
+    async def _handle_busy(
+        self,
+        session_key: str,
+        msg: InboundMessage,
+        text: str,
+        override_mode: str | None,
+    ) -> None:
+        """A message arrived mid-turn: steer the running turn or queue for after
+        it. ``text`` is the message with any ``/queue``|``/steer`` directive
+        stripped; ``override_mode`` ('queue' | 'steer' | None) forces the path for
+        THIS message, overriding the global ``queue_mode``."""
         assert self.client is not None
         chat_id = int(msg.conversation_id)
-        if self.cfg.messaging.queue_mode != "queue":
+        mode = override_mode or self.cfg.messaging.queue_mode
+        if mode != "queue":
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
             # Only steer when a turn is GENUINELY in flight. ``is_busy`` stays
             # True through post-turn bookkeeping (record_success / _persist_turn
             # / _maybe_notice / SEL audit -- all await points), so without this
             # guard a steer could reach kiro-cli for a prompt that already ended
-            # -> silently swallowed (no fresh turn, no queue entry), and
-            # ``set_steer_reply_to`` would land on a renderer whose ``on_done``
-            # already ran. When no live turn, fall through to the queue/handle
-            # path below (mirrors the queue path's ``force=False`` fallback), so
-            # the message is re-run or queued instead of lost.
+            # -> silently swallowed (no fresh turn, no queue entry), and the
+            # steer-ack reaction would land on a message whose turn already
+            # finished. When no live turn, fall through to the queue/handle path
+            # below (mirrors the queue path's ``force=False`` fallback), so the
+            # message is re-run or queued instead of lost.
             has_active = getattr(provider, "has_active_turn", None)
             live = has_active is None or bool(has_active())
             steered = bool(
                 live
                 and getattr(provider, "supports_steer", False)
                 and steer is not None
-                and await steer(msg.text)
+                and await steer(text)
             )
             if steered:
-                # Thread the steered continuation under the user's message: hand
-                # the inbound message id to the live renderer, which replies to
-                # it when it opens the post-steer bubble (see on_steer_consumed).
-                renderer = self._active_renderers.get(session_key)
-                if renderer is not None:
-                    renderer.set_steer_reply_to(getattr(msg, "message_id", 0))
+                # Record the user's OWN words on the running turn's renderer so
+                # it can render an inline "↪️ steered: <text>" chip (never the
+                # redacted backend echo). Best-effort: no active renderer -> skip.
+                r = self._active_renderers.get(session_key)
+                if r is not None:
+                    r.note_steer(text)
+                # Instant, no-extra-bubble ack: react to the user's steer message
+                # so a mid-turn steer isn't silent while it waits for the next
+                # generation boundary. The steered reply lands at the end of the
+                # turn's output (no pre/post split -- that retroactive slice of a
+                # single stream leaked fragments across the cut). Best-effort --
+                # reactions need Bot API 7.0+.
+                steer_mid = getattr(msg, "message_id", 0)
+                if steer_mid:
+                    try:
+                        await self.client.set_message_reaction(
+                            chat_id, steer_mid, _STEER_ACK_EMOJI
+                        )
+                    except Exception:
+                        logger.debug(
+                            "telegram: steer ack reaction failed", exc_info=True
+                        )
                 return
-        # queue mode, or steer unavailable. Enqueue + receipt happen atomically
-        # under ``_receipt_lock`` (see ``_enqueue_with_receipt``) so the
-        # end-of-turn drain -- which takes the same lock to dequeue + flip --
-        # cannot interleave between the enqueue and the receipt and orphan a
-        # bubble. If the turn finished in the window the message is not queued,
-        # so we run it now instead of stranding it.
-        if not await self._enqueue_with_receipt(session_key, chat_id, msg.text):
+        # queue mode (or /queue override, or steer unavailable). Enqueue + receipt
+        # happen atomically under ``_receipt_lock`` (see ``_enqueue_with_receipt``)
+        # so the end-of-turn drain -- which takes the same lock to dequeue + flip
+        # -- cannot interleave between the enqueue and the receipt and orphan a
+        # bubble. If the turn finished in the window the message is not queued, so
+        # we run it now (re-entering handle_message, which re-strips the directive
+        # and runs it as a fresh turn) instead of stranding it.
+        if not await self._enqueue_with_receipt(session_key, chat_id, text):
             await self.handle_message(msg)
 
     async def _drain_queue(self, session_key: str, user_id: int, chat_id: int) -> None:
@@ -429,6 +494,9 @@ class TelegramDispatcher:
                 text=combined,
             ),
             drain=False,
+            # Drained payloads are pure turn content: a queued "/new" must reach
+            # the model as literal text, not execute as a command on drain.
+            interpret_commands=False,
         )
 
     # ── Mid-turn queue receipt (single, in-place, persistent record) ───────
