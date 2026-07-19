@@ -728,6 +728,24 @@ def _mask_quoted_separators(text: str) -> tuple[str, dict[str, str]]:
 # per-sub-agent identity/status that the stages payload lacked.
 
 
+_NATIVE_SUBAGENT_STALE_SECS = 120.0  # auto-close cards with no progress after 2 min
+
+
+def _native_card_feed(card_output, card_id: str) -> str:
+    """Join a native card's accumulated feed, truncate, and redact.
+
+    Defense in depth: card_output entries are redacted at append time, but
+    never trust LLM output at the broadcast boundary — re-apply both
+    redactions before the payload leaves the process. Single choke point for
+    every ``subagent_done`` result broadcast on the native card path.
+    """
+    feed = "".join((card_output or {}).get(card_id, []))[:8000]
+    if feed:
+        feed, _ = redact_exfiltration_urls(feed)
+        feed, _ = redact_credentials(feed)
+    return feed
+
+
 def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> None:
     """Reconcile per-subagent Activity cards from a kiro-cli
     ``_kiro.dev/subagent/list_update`` notification.
@@ -747,12 +765,16 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
     if not isinstance(subagents, list):
         return
     _running = ("working", "running", "pending", "queued", "in_progress", "")
+    now = time.time()
+    # Track which sids are still reported by kiro-cli this update
+    _seen_sids: set[str] = set()
     for sub in subagents:
         if not isinstance(sub, dict):
             continue
         sid = str(sub.get("sessionId") or "")
         if not sid:
             continue
+        _seen_sids.add(sid)
         card_id = f"native:{_redact_tool_field(sid)}"
         _status_raw = sub.get("status")
         status = _status_raw if isinstance(_status_raw, dict) else {}
@@ -767,7 +789,27 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 str(sub.get("initialQuery") or sub.get("sessionName") or "")[:2000]
             )
             task, _ = redact_credentials(task)
-            tracker[sid] = {"started": time.time(), "done": False, "agent": agent, "task": task}
+            # Skip cards with empty task entirely — kiro-cli sometimes emits
+            # list_update notifications where initialQuery/sessionName are both
+            # empty. Showing an Activity card with no meaningful input is
+            # confusing UX ("Starting..." with nothing to explain what it does).
+            # Mark as done immediately so we don't re-process on next update.
+            if not task.strip():
+                tracker[sid] = {
+                    "started": now, "done": True, "agent": agent, "task": "",
+                    "last_activity": now,
+                }
+                logger.debug(
+                    "native subagent skipped (empty task): sid=%s slot=%s",
+                    sid, slot.key,
+                )
+                continue
+            tracker[sid] = {
+                "started": now, "done": False, "agent": agent, "task": task,
+                "last_activity": now,
+            }
+            # Register in state-level dict so DELETE /api/spawn can cancel native cards.
+            _register_native_card(state, card_id, slot.key, sid)
             logger.debug(
                 "native subagent spawn broadcast: id=%s agent=%s slot=%s",
                 card_id, agent, slot.key,
@@ -776,6 +818,13 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 "subagent_spawn",
                 {"id": card_id, "slot": slot.key, "task": task, "agent": agent},
             )
+        else:
+            # Card is still being reported this update — keep it alive. Update
+            # unconditionally (not just on non-empty smsg): a card reported
+            # with empty status messages for >120s would otherwise be
+            # auto-closed the instant it disappears from the list, since its
+            # last_activity would still be the creation timestamp.
+            tracker[sid]["last_activity"] = now
         info = tracker[sid]
         if info["done"]:
             continue
@@ -786,7 +835,8 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 err, _ = redact_credentials(err)
                 err = err[:200]
             info["done"] = True
-            _feed = "".join((card_output or {}).get(card_id, []))[:8000]
+            _feed = _native_card_feed(card_output, card_id)
+            _unregister_native_card(state, card_id)
             state.broadcast_ws(
                 "subagent_done",
                 {
@@ -808,6 +858,56 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 {"id": card_id, "slot": slot.key, "tool": tool[:80]},
             )
 
+    # Staleness timeout: auto-close cards that kiro-cli no longer reports and
+    # that have had no activity for too long. This prevents native sub-agent
+    # cards from staying stuck in "Starting..." indefinitely when kiro-cli
+    # fails to emit a terminal status. Cards still present in the current
+    # list_update are alive by definition and never timed out here.
+    for sid, info in list(tracker.items()):
+        if info.get("done"):
+            continue
+        if sid in _seen_sids:
+            continue  # still reported by kiro-cli this update — not stale
+        last_act = info.get("last_activity", info["started"])
+        if now - last_act > _NATIVE_SUBAGENT_STALE_SECS:
+            info["done"] = True
+            _cid = f"native:{_redact_tool_field(sid)}"
+            _feed = _native_card_feed(card_output, _cid)
+            _unregister_native_card(state, _cid)
+            state.broadcast_ws(
+                "subagent_done",
+                {
+                    "id": _cid,
+                    "slot": slot.key,
+                    "elapsed": now - info["started"],
+                    "error": "timed out (no activity)",
+                    "task": info.get("task", ""),
+                    "agent": info.get("agent", ""),
+                    "result": _feed or "(no output received)",
+                },
+            )
+            logger.info(
+                "native subagent %s auto-closed: stale for %.0fs",
+                _cid, now - last_act,
+            )
+
+
+def _register_native_card(state, card_id: str, slot_key: str, session_id: str) -> None:
+    """Register a native subagent card in the state-level dict for cancel support."""
+    if not hasattr(state, "_native_cards"):
+        state._native_cards = {}  # card_id -> {slot, session_id, started}
+    state._native_cards[card_id] = {
+        "slot": slot_key,
+        "session_id": session_id,
+        "started": time.time(),
+    }
+
+
+def _unregister_native_card(state, card_id: str) -> None:
+    """Remove a native subagent card from the state-level dict."""
+    if hasattr(state, "_native_cards"):
+        state._native_cards.pop(card_id, None)
+
 
 def _native_subagent_close_all(state, slot, tracker, card_output=None) -> None:
     """Complete any still-open native subagent cards (turn-end safety net)."""
@@ -816,7 +916,8 @@ def _native_subagent_close_all(state, slot, tracker, card_output=None) -> None:
             continue
         info["done"] = True
         _cid = f"native:{_redact_tool_field(sid)}"
-        _feed = "".join((card_output or {}).get(_cid, []))[:8000]
+        _feed = _native_card_feed(card_output, _cid)
+        _unregister_native_card(state, _cid)
         state.broadcast_ws(
             "subagent_done",
             {

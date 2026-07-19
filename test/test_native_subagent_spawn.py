@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from kiro_crew.dashboard.chat_runner import (
     _native_subagent_close_all,
     _native_subagent_sync,
@@ -225,3 +227,255 @@ class TestNativeSubagentCloseAll:
         tracker = {"s1": {"started": 0.0, "done": False, "agent": "w", "task": "t1"}}
         _native_subagent_close_all(state, slot, tracker)
         assert _ws_calls(state)["subagent_done"][0]["result"] == "(output in chat)"
+
+
+class TestEmptyTaskSkip:
+    """Cards with empty initialQuery/sessionName are skipped entirely."""
+
+    def test_empty_task_card_not_broadcast(self):
+        state = _make_state()
+        state._native_cards = {}
+        tracker: dict = {}
+        _native_subagent_sync(state, _make_slot(), [_sub("s1", "", "worker", "", "working")], tracker)
+        assert "subagent_spawn" not in _ws_calls(state)
+        # Marked done so subsequent updates never re-process it
+        assert tracker["s1"]["done"] is True
+
+    def test_empty_task_card_not_registered_for_cancel(self):
+        state = _make_state()
+        state._native_cards = {}
+        _native_subagent_sync(state, _make_slot(), [_sub("s1", "", "worker", "", "working")], {})
+        assert state._native_cards == {}
+
+    def test_whitespace_task_also_skipped(self):
+        state = _make_state()
+        state._native_cards = {}
+        tracker: dict = {}
+        _native_subagent_sync(
+            state, _make_slot(), [_sub("s1", "  ", "worker", " \n\t", "working")], tracker
+        )
+        assert "subagent_spawn" not in _ws_calls(state)
+        assert tracker["s1"]["done"] is True
+
+
+class TestStalenessTimeout:
+    """Cards that disappeared from the list auto-close after the grace window."""
+
+    def _stale_tracker(self, now_offset=200.0):
+        import time as _time
+
+        past = _time.time() - now_offset
+        return {
+            "gone": {
+                "started": past, "done": False, "agent": "w", "task": "t",
+                "last_activity": past,
+            }
+        }
+
+    def test_disappeared_stale_card_auto_closed(self):
+        state = _make_state()
+        state._native_cards = {"native:gone": {"slot": "slot-1", "session_id": "gone", "started": 0}}
+        tracker = self._stale_tracker()
+        # Empty subagents list — 'gone' not reported anymore
+        _native_subagent_sync(state, _make_slot(), [], tracker)
+        dones = _ws_calls(state)["subagent_done"]
+        assert dones[0]["id"] == "native:gone"
+        assert dones[0]["error"] == "timed out (no activity)"
+        assert tracker["gone"]["done"] is True
+        # Unregistered from the cancel registry
+        assert "native:gone" not in state._native_cards
+
+    def test_still_reported_card_never_timed_out(self):
+        state = _make_state()
+        state._native_cards = {}
+        tracker = self._stale_tracker()
+        tracker["gone"]["task"] = "t"
+        # Same sid IS in the current update — must not be closed
+        subs = [_sub("gone", "n", "w", "task text", "working")]
+        _native_subagent_sync(state, _make_slot(), subs, tracker)
+        assert "subagent_done" not in _ws_calls(state)
+        assert tracker["gone"]["done"] is False
+
+    def test_seen_card_refreshes_last_activity_even_with_empty_message(self):
+        import time as _time
+
+        state = _make_state()
+        state._native_cards = {}
+        past = _time.time() - 500.0
+        tracker = {
+            "s1": {"started": past, "done": False, "agent": "w", "task": "t", "last_activity": past}
+        }
+        subs = [_sub("s1", "n", "w", "task text", "working", message="")]
+        _native_subagent_sync(state, _make_slot(), subs, tracker)
+        assert tracker["s1"]["last_activity"] > past
+
+    def test_disappeared_but_recent_card_kept(self):
+        import time as _time
+
+        state = _make_state()
+        state._native_cards = {}
+        recent = _time.time() - 5.0
+        tracker = {
+            "s1": {"started": recent, "done": False, "agent": "w", "task": "t", "last_activity": recent}
+        }
+        _native_subagent_sync(state, _make_slot(), [], tracker)
+        assert "subagent_done" not in _ws_calls(state)
+        assert tracker["s1"]["done"] is False
+
+
+class TestNativeCardRegistry:
+    """_register_native_card / _unregister_native_card manage state._native_cards."""
+
+    def test_register_creates_dict_and_entry(self):
+        from kiro_crew.dashboard.chat_runner import _register_native_card
+
+        class _Bare:
+            pass
+
+        state = _Bare()
+        _register_native_card(state, "native:s1", "slot-1", "s1")
+        assert state._native_cards["native:s1"]["slot"] == "slot-1"
+        assert state._native_cards["native:s1"]["session_id"] == "s1"
+
+    def test_unregister_removes_entry(self):
+        from kiro_crew.dashboard.chat_runner import (
+            _register_native_card,
+            _unregister_native_card,
+        )
+
+        class _Bare:
+            pass
+
+        state = _Bare()
+        _register_native_card(state, "native:s1", "slot-1", "s1")
+        _unregister_native_card(state, "native:s1")
+        assert "native:s1" not in state._native_cards
+
+    def test_unregister_noop_without_registry(self):
+        from kiro_crew.dashboard.chat_runner import _unregister_native_card
+
+        class _Bare:
+            pass
+
+        _unregister_native_card(_Bare(), "native:s1")  # must not raise
+
+    def test_spawn_registers_card_for_cancel(self):
+        state = _make_state()
+        state._native_cards = {}
+        _native_subagent_sync(
+            state, _make_slot(), [_sub("s1", "n", "w", "task text", "working")], {}
+        )
+        assert "native:s1" in state._native_cards
+
+    def test_terminal_status_unregisters_card(self):
+        state = _make_state()
+        state._native_cards = {}
+        tracker: dict = {}
+        _native_subagent_sync(
+            state, _make_slot(), [_sub("s1", "n", "w", "task text", "working")], tracker
+        )
+        _native_subagent_sync(
+            state, _make_slot(), [_sub("s1", "n", "w", "task text", "terminated")], tracker
+        )
+        assert "native:s1" not in state._native_cards
+
+    def test_close_all_unregisters_card(self):
+        state = _make_state()
+        state._native_cards = {"native:s1": {"slot": "slot-1", "session_id": "s1", "started": 0}}
+        tracker = {"s1": {"started": 0.0, "done": False, "agent": "w", "task": "t"}}
+        _native_subagent_close_all(state, _make_slot(), tracker)
+        assert "native:s1" not in state._native_cards
+
+
+class TestNativeCardFeedRedaction:
+    """_native_card_feed joins, truncates, and redacts at the broadcast boundary."""
+
+    def test_feed_joined_and_truncated(self):
+        from kiro_crew.dashboard.chat_runner import _native_card_feed
+
+        out = _native_card_feed({"c1": ["a" * 5000, "b" * 5000]}, "c1")
+        assert len(out) <= 8000
+        assert out.startswith("a")
+
+    def test_feed_empty_when_no_output(self):
+        from kiro_crew.dashboard.chat_runner import _native_card_feed
+
+        assert _native_card_feed(None, "c1") == ""
+        assert _native_card_feed({}, "c1") == ""
+
+    def test_feed_applies_both_redactions(self):
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard.chat_runner import _native_card_feed
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner.redact_exfiltration_urls",
+            return_value=("URLS_REDACTED", 0),
+        ) as m_urls, patch(
+            "kiro_crew.dashboard.chat_runner.redact_credentials",
+            return_value=("FULLY_REDACTED", 0),
+        ) as m_creds:
+            out = _native_card_feed({"c1": ["secret output"]}, "c1")
+        m_urls.assert_called_once_with("secret output")
+        m_creds.assert_called_once_with("URLS_REDACTED")
+        assert out == "FULLY_REDACTED"
+
+
+class TestNativeCancelHandler:
+    """DELETE /api/spawn/{id} handles native:* card IDs."""
+
+    def _request(self, state, agent_id):
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"agent_id": agent_id}
+        return request
+
+    @pytest.mark.asyncio
+    async def test_cancel_native_card_broadcasts_done_and_audits(self):
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_delete
+
+        state = _make_state()
+        state._native_cards = {"native:s1": {"slot": "slot-1", "session_id": "s1", "started": 0}}
+        with patch("kiro_crew.dashboard.handlers.messaging._sel") as m_sel:
+            m_sel.return_value.log_tool_invocation = MagicMock()
+            resp = await api_spawn_delete(self._request(state, "native:s1"))
+        body = json.loads(resp.text)
+        assert body == {"ok": True, "cancelled": True}
+        assert "native:s1" not in state._native_cards
+        dones = _ws_calls(state)["subagent_done"]
+        assert dones[0]["id"] == "native:s1"
+        assert dones[0]["error"] == "Cancelled by user"
+        audit_kwargs = m_sel.return_value.log_tool_invocation.call_args[1]
+        assert audit_kwargs["tool_name"] == "cancel_native_subagent"
+        assert audit_kwargs["outcome"] == "cancelled_by_user"
+
+    @pytest.mark.asyncio
+    async def test_cancel_unknown_native_card_404(self):
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_delete
+
+        state = _make_state()
+        state._native_cards = {}
+        resp = await api_spawn_delete(self._request(state, "native:unknown"))
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_cancel_native_card_survives_sel_failure(self):
+        import json
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_delete
+
+        state = _make_state()
+        state._native_cards = {"native:s1": {"slot": "slot-1", "session_id": "s1", "started": 0}}
+        with patch(
+            "kiro_crew.dashboard.handlers.messaging._sel",
+            side_effect=RuntimeError("sel down"),
+        ):
+            resp = await api_spawn_delete(self._request(state, "native:s1"))
+        # SEL failure must never break the cancel response
+        assert json.loads(resp.text)["ok"] is True

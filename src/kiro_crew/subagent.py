@@ -1426,6 +1426,36 @@ class SubagentManager:
         Returns:
             SubagentInfo | None: Agent metadata, or None if at capacity.
         """
+        # --- Task guard: refuse empty/whitespace-only tasks (defense in depth).
+        # The HTTP handler (api_spawn) and MCP tool schemas validate too, but
+        # direct Python callers reach this choke point unvalidated. An empty
+        # task produces a useless subagent and a blank Activity card. Must run
+        # BEFORE the redaction below, which would raise on a None task. ---
+        if not task or not task.strip():
+            logger.warning(
+                "Subagent spawn refused: empty task (parent=%s)", parent_session_key
+            )
+            # Audit is best-effort: the rejection must be returned even if
+            # SEL is unavailable (a graceful refusal must not become an
+            # unhandled exception in api_spawn / MCP tool callers).
+            try:
+                sel().log_tool_invocation(
+                    session_key=parent_session_key or "",
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="rejected_empty_task",
+                    metadata={"agent": agent},
+                )
+            except Exception:
+                logger.debug("SEL audit failed for empty-task rejection", exc_info=True)
+            return SubagentInfo(
+                id=uuid.uuid4().hex[:8],
+                task="",
+                agent=agent,
+                done=True,
+                error="spawn refused: task must be a non-empty string",
+            )
+
         # --- Redact task once for all SubagentInfo storage (raw task kept for kiro-cli prompt) ---
         _redacted_task = redact_credentials(redact_exfiltration_urls(task)[0])[0]
 

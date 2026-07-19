@@ -1472,6 +1472,84 @@ class TestSpawnMemoryGuard:
         assert call_kwargs["outcome"] == "refused_low_memory"
 
 
+class TestSpawnEmptyTaskGuard:
+    """spawn() refuses empty/whitespace tasks at the choke point.
+
+    The HTTP handler (api_spawn) and MCP tool schemas validate too, but
+    direct Python callers (gateway internals, apps, task runner) reach
+    spawn() unvalidated — an empty task produces a useless subagent and
+    a blank Activity card in the dashboard.
+    """
+
+    def _mgr(self):
+        from unittest.mock import MagicMock
+
+        from kiro_crew.subagent import SubagentManager
+
+        return SubagentManager(
+            sessions=MagicMock(),
+            ctx_builder=MagicMock(),
+            on_done=MagicMock(),
+            max_concurrent=3,
+        )
+
+    def test_spawn_rejected_empty_task(self):
+        """Empty string task returns done SubagentInfo with error + SEL audit."""
+        from unittest.mock import MagicMock, patch
+
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            info = mgr.spawn(task="", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is True
+        assert "non-empty" in info.error
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "rejected_empty_task"
+
+    def test_spawn_rejected_whitespace_task(self):
+        """Whitespace-only task is rejected the same way."""
+        from unittest.mock import MagicMock, patch
+
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            info = mgr.spawn(task="   \n\t ", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is True
+        assert "non-empty" in info.error
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "rejected_empty_task"
+
+    def test_spawn_rejection_survives_sel_failure(self):
+        """The rejection SubagentInfo is returned even when SEL audit raises."""
+        from unittest.mock import patch
+
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel", side_effect=RuntimeError("sel down")):
+            info = mgr.spawn(task="", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is True
+        assert "non-empty" in info.error
+
+    def test_spawn_rejected_none_task(self):
+        """A None task is rejected gracefully — the guard runs before redaction,
+        which would otherwise raise on a non-string task."""
+        from unittest.mock import MagicMock, patch
+
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            info = mgr.spawn(task=None, parent_session_key="sess-1")  # type: ignore[arg-type]
+
+        assert info is not None
+        assert info.done is True
+        assert "non-empty" in info.error
+
+
 class TestSubagentPostToolUseHook:
     """PostToolUse hook fires on EVENT_TOOL_RESULT in subagent loop.
 

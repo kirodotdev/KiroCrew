@@ -286,6 +286,39 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
     """DELETE /api/spawn/{agent_id} — cancel a running subagent or remove a finished one."""
     state: DashboardState = request.app["state"]
     agent_id = request.match_info["agent_id"]
+    # Handle native kiro-cli subagents (native:* IDs not in SubagentManager)
+    if agent_id.startswith("native:") and hasattr(state, "_native_cards"):
+        card_info = getattr(state, "_native_cards", {}).get(agent_id)
+        if card_info:
+            # Can't actually kill the kiro-cli internal sub-agent, but we can
+            # close the Activity card so it stops showing "Starting..."
+            state._native_cards.pop(agent_id, None)
+            # User-initiated cancellation is an auditable action (parity with
+            # the managed path, which audits inside SubagentManager.cancel()).
+            try:
+                _sel().log_tool_invocation(
+                    session_key=card_info["slot"],
+                    source="subagent",
+                    tool_name="cancel_native_subagent",
+                    outcome="cancelled_by_user",
+                    metadata={"card_id": agent_id},
+                )
+            except Exception:
+                logger.debug("SEL audit failed for native cancel %s", agent_id, exc_info=True)
+            state.broadcast_ws(
+                "subagent_done",
+                {
+                    "id": agent_id,
+                    "slot": card_info["slot"],
+                    "elapsed": time.time() - card_info.get("started", time.time()),
+                    "error": "Cancelled by user",
+                    "task": "",
+                    "agent": "",
+                    "result": "(cancelled)",
+                },
+            )
+            return web.json_response({"ok": True, "cancelled": True})
+        return web.json_response({"error": "not found"}, status=404)
     if not state.subagents or agent_id not in state.subagents._agents:
         return web.json_response({"error": "not found"}, status=404)
     cancelled = await state.subagents.cancel(agent_id)
