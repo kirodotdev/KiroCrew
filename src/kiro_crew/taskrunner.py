@@ -736,7 +736,12 @@ class TaskRunner:
             on_tool_approval=self._on_tool_approval,
             auto_test=self._auto_test,
             test_cmd=self._test_cmd,
-            work_dir=self._work_dir,
+            # Run-scoped workspace wins over the runner default: a run whose
+            # workspace_dir selected project B must EXECUTE against B, not the
+            # runner's startup dir A (planning already used run.work_dir —
+            # executing elsewhere edits/tests the wrong project). Mirrors
+            # _build_task_prompt's resolution above.
+            work_dir=Path(run.work_dir) if run.work_dir else self._work_dir,
             log_task_fn=self._log_task,
             extract_lesson_fn=self._extract_lesson,
             session_key=session_key,
