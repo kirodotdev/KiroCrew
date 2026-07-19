@@ -1097,18 +1097,28 @@ class CronService:
         # Apply jitter to spread execution unless strict_schedule is set or manual
         jitter = self._compute_jitter(job) if trigger != "manual" else 0
         self._job_jitter[job.id] = jitter
-        if jitter > 0:
-            logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
-            await asyncio.sleep(jitter)
-        exec_started_at = time.time()
-        # Notify dashboard that the job has started executing so the live
-        # is_running badge appears without a manual reload (upstream a5326708).
+        # Provisional; refined once the jitter sleep completes. Only read on
+        # the history path, which a cancelled-during-jitter run never reaches.
+        exec_started_at = started_at
         try:
-            if self._push_refresh:
-                self._push_refresh("crons")
-        except Exception:
-            logger.debug("push_refresh failed on job start", exc_info=True)
-        try:
+            # The jitter sleep MUST live inside this try: hourly/daily jobs
+            # sleep up to 59 min here, and a user cancel() during that window
+            # raises CancelledError at the sleep — if that happened BEFORE the
+            # try, the finally below would never run, leaking the
+            # _cancelled_jobs marker (and the rest of the bookkeeping) so the
+            # job's NEXT run would see the stale marker and silently drop its
+            # real result as "cancelled".
+            if jitter > 0:
+                logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
+                await asyncio.sleep(jitter)
+            exec_started_at = time.time()
+            # Notify dashboard that the job has started executing so the live
+            # is_running badge appears without a manual reload (upstream a5326708).
+            try:
+                if self._push_refresh:
+                    self._push_refresh("crons")
+            except Exception:
+                logger.debug("push_refresh failed on job start", exc_info=True)
             await self._execute_with_timeout(job)
         finally:
             finished_at = time.time()

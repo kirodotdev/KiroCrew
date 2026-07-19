@@ -178,7 +178,15 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     provider_name = (body.get("provider") or "").strip()
     skill_id = (body.get("skill_id") or "").strip()
     custom_name = (body.get("name") or "").strip()
-    overwrite = bool(body.get("overwrite", False))
+    # overwrite gates a destructive rmtree of an existing install, so demand a
+    # real JSON boolean: bool("false") is True in Python, which would turn an
+    # explicitly false-like value into consent to delete local edits.
+    overwrite_raw = body.get("overwrite", False)
+    if not isinstance(overwrite_raw, bool):
+        return web.json_response(
+            {"error": "'overwrite' must be a boolean"}, status=400
+        )
+    overwrite = overwrite_raw
 
     if not provider_name or not skill_id:
         return web.json_response(
@@ -298,6 +306,21 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
 
         def _write_bundle() -> int:
             skills_root = _skills_dir().resolve()
+            # Containment must be validated BEFORE any destructive step (the
+            # unlink/rmtree below), not only before the writes: a symlinked
+            # PARENT (provider) directory makes skill_dir.exists() traverse
+            # the link, so a late check would let rmtree delete at the
+            # symlink target. Resolve the parent chain and re-append the leaf
+            # name (deliberately NOT resolving the leaf — a leaf symlink is
+            # handled by unlink, never followed).
+            candidate = skill_dir.parent.resolve() / skill_dir.name
+            try:
+                candidate.relative_to(skills_root)
+            except ValueError:
+                logger.warning(
+                    "Refusing bundle install outside skills root: %s", skill_dir
+                )
+                return 0
             # Symlink defense: if the skill dir itself is a symlink, every
             # containment check below resolves against the symlink TARGET, so
             # a pre-planted link would redirect the whole bundle write outside
@@ -314,9 +337,8 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 shutil.rmtree(skill_dir)
             skill_dir.mkdir(parents=True, exist_ok=True)
             resolved_root = skill_dir.resolve()
-            # The (now symlink-free) skill dir must itself land under the
-            # canonical skills root — catches a symlinked PARENT (provider)
-            # directory redirecting the install elsewhere.
+            # Belt-and-suspenders: the (now symlink-free) skill dir must
+            # itself land under the canonical skills root.
             try:
                 resolved_root.relative_to(skills_root)
             except ValueError:
