@@ -868,16 +868,14 @@ class CronService:
                 return True
         return False
 
-    def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
-        """Remove many jobs under ONE lock/reload/save/re-arm.
+    def _remove_jobs_locked(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Sync core of :meth:`remove_jobs` — lock/reload/mutate/save only.
 
-        Returns ``(removed_ids, missing_ids)`` preserving input order. The
-        batch-delete API previously looped :meth:`remove_job`, paying the
-        file-lock + reload + full-serialize + atomic-write cost PER id on the
-        event loop — with up to 500 ids that starves every other gateway task.
-        One lock and one save bounds the loop work to a single mutation,
-        matching what any other single cron mutation costs. Must run on the
-        event-loop thread (``_arm_timer`` creates an asyncio task).
+        Deliberately does NO timer work so it is safe to run in an executor
+        thread (``_arm_timer`` needs the event loop). Cross-thread safety:
+        every other store mutation also takes ``_file_lock`` — flock on
+        separate fds mutually excludes within the process too — so a
+        concurrent loop-side mutation blocks until this completes.
         """
         removed: list[str] = []
         missing: list[str] = []
@@ -894,8 +892,23 @@ class CronService:
             if targets:
                 self._jobs = [j for j in self._jobs if j.id not in targets]
                 self._save()
-                self._arm_timer()
                 logger.info("Removed %d cron job(s) in batch", len(targets))
+        return removed, missing
+
+    async def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Remove many jobs under ONE lock/reload/save, off the event loop.
+
+        Returns ``(removed_ids, missing_ids)`` preserving input order. The
+        batch-delete API previously looped :meth:`remove_job`, paying the
+        file-lock + reload + full-serialize + atomic-write cost PER id on the
+        event loop — with up to 500 ids that starves every other gateway task
+        (and on slow/network storage even one save can stall). The disk work
+        runs in a worker thread; only ``_arm_timer`` (asyncio.create_task)
+        runs back on the loop, and only when something was actually removed.
+        """
+        removed, missing = await asyncio.to_thread(self._remove_jobs_locked, list(job_ids))
+        if removed:
+            self._arm_timer()
         return removed, missing
 
     def enable_job(self, job_id: str, enabled: bool = True) -> bool:

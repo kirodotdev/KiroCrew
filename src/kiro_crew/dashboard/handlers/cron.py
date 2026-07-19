@@ -347,15 +347,14 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     failed: list[str] = []
     try:
         # remove_jobs runs the WHOLE batch under one file lock with one
-        # reload/serialize/save and one _arm_timer(), instead of paying that
-        # cost per id (up to _MAX_BATCH_DELETE times) — looping remove_job on
-        # the event loop starved every other gateway task on slow storage.
-        # It MUST still run on the event-loop thread: _arm_timer() ->
-        # asyncio.create_task() raises "no running event loop" in a worker
-        # thread, and an executor offload would raise AFTER the on-disk delete
-        # (job gone yet reported failed + scheduler timer left cancelled).
-        # One bounded sync save on the loop matches every other cron mutation.
-        deleted, failed = state.crons.remove_jobs(unique_ids)
+        # reload/serialize/save — and offloads that disk work to a worker
+        # thread (no-blocking-call-on-event-loop; slow/network storage would
+        # otherwise stall chat + heartbeat). Only its _arm_timer() step runs
+        # back on the loop (asyncio.create_task needs it) — splitting these
+        # is what the earlier naive executor-offload of remove_job got wrong
+        # (it moved _arm_timer off-loop too, which raised AFTER the on-disk
+        # delete and left the scheduler timer cancelled).
+        deleted, failed = await state.crons.remove_jobs(unique_ids)
     except Exception:
         # The batch itself raised (unexpected) — report everything as failed.
         logger.warning("Batch delete failed", exc_info=True)

@@ -85,21 +85,39 @@ class SkillsShProvider:
             # skills.sh search response shape:
             # {"id": "owner/repo/skill-name", "skillId": "skill-name",
             #  "name": "skill-name", "installs": N, "source": "owner/repo"}
-            source = item.get("source", "")
+            source = item.get("source", "") if isinstance(item.get("source"), str) else ""
             repo_url = f"https://github.com/{source}" if source else ""
             try:
                 installs = int(item.get("installs", 0) or 0)
             except (TypeError, ValueError):
                 installs = 0
+            # Provider metadata is external input: a numeric id would reach
+            # _slugify().strip(), non-string tags reach the redactors — either
+            # 500s the discovery request. Coerce/drop instead of trusting.
+
+            def _s(v: Any) -> str:
+                return v if isinstance(v, str) else ""
+
+            skill_ident = (
+                _s(item.get("id")) or _s(item.get("skillId")) or _s(item.get("name"))
+            )
+            if not skill_ident:
+                continue  # entry without a usable string identifier — drop it
+            raw_tags = item.get("tags", [])
+            tags = (
+                [t for t in raw_tags if isinstance(t, str)]
+                if isinstance(raw_tags, list)
+                else []
+            )
             results.append(
                 SkillSearchResult(
-                    id=item.get("id") or item.get("skillId") or item.get("name", ""),
-                    name=item.get("name", item.get("skillId", "")),  # type: ignore[arg-type]
-                    description=item.get("description", ""),
+                    id=skill_ident,
+                    name=_s(item.get("name")) or _s(item.get("skillId")),
+                    description=_s(item.get("description")),
                     provider=self.name,
                     repo_url=repo_url,
-                    author=source.split("/")[0] if source else "",
-                    tags=item.get("tags", []),
+                    author=source.split("/")[0] if isinstance(source, str) and source else "",
+                    tags=tags,
                     installs=installs,
                 )
             )

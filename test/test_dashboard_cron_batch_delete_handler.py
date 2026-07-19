@@ -28,8 +28,8 @@ def _make_state(existing_ids):
     state = MagicMock()
     state.crons = MagicMock()
 
-    def remove_jobs(job_ids):
-        # Mirror CronService.remove_jobs: one batch call returning
+    async def remove_jobs(job_ids):
+        # Mirror CronService.remove_jobs: one async batch call returning
         # (removed_ids, missing_ids) in input order.
         removed, missing = [], []
         for jid in job_ids:
@@ -40,7 +40,7 @@ def _make_state(existing_ids):
                 missing.append(jid)
         return removed, missing
 
-    state.crons.remove_jobs = MagicMock(side_effect=remove_jobs)
+    state.crons.remove_jobs = AsyncMock(side_effect=remove_jobs)
     state.crons.get_history.return_value.delete_job_history = AsyncMock()
     state.push_refresh = MagicMock()
     return state
