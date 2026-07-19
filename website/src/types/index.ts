@@ -333,7 +333,15 @@ export interface Artifact {
   slug: string
   name: string
   kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text'
-  source: 'chat' | 'cron' | 'subagent' | 'manual' | 'import'
+  /** Provenance/origin bucket. Historically chat|cron|subagent|manual|import;
+   * now also carries the actual session origin (dashboard|slack|cli|task-runner|
+   * unknown), so treated as an open string. */
+  source: string
+  /** Originating chat session key (for the Source column's title resolution). */
+  session_key?: string
+  /** Live-resolved title of the originating chat session (or "(deleted session)"
+   * when that session is gone). Absent for non-chat origins — fall back to `source`. */
+  session_title?: string
   description: string
   tags: string[]
   version: number
@@ -359,6 +367,26 @@ export interface Artifact {
   /** Library folder this artifact is filed in ("" / absent = unfiled/root).
    * Opaque folder id — resolve names via the artifact-folders list (Mesh-2720). */
   folder_id?: string
+  /** User pin/favorite mark. Metadata-only (no version bump). Drives the
+   * All | Pinned filter on the Artifacts page. */
+  pinned?: boolean
+}
+
+/** A non-code document produced during a chat session — the virtual entries
+ * shown in the Artifacts "All" tab. Not a persisted artifact until saved
+ * (materialized) via api.materializeArtifact(path). */
+export interface SessionDoc {
+  path: string
+  name: string
+  updated_at: string
+  session_key: string
+  /** Human-readable session title (falls back to the session key). */
+  session_title: string
+  message_ts: string
+  /** True when this path already backs a saved (pinned) artifact. */
+  saved: boolean
+  /** Slug of the backing artifact when saved; empty otherwise. */
+  slug: string
 }
 
 /**

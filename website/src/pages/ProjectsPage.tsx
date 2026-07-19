@@ -280,7 +280,7 @@ export default function ProjectsPage() {
         <TextInputPanel text={specText} setText={setSpecText} rows={6} placeholder="Paste spec content or upload a file..." accept=".md,.txt" onUpload={handleFileUpload} onRun={() => handleRun(specText, 'spec')} onPlan={() => generatePlan(specText, 'spec')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError} />
       ) : (
         <TextInputPanel text={yamlText} setText={setYamlText} rows={8} placeholder="Paste YAML workflow or upload a .yaml file..." accept=".yaml,.yml" onUpload={handleYamlUpload} onRun={() => handleRun(yamlText, 'yaml')} onPlan={() => generatePlan(yamlText, 'yaml')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError}
-          banner={<div className="rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-[12px] text-muted"><Settings className="lucide-inline" /> YAML workflows bypass the LLM decomposer — <code>depends_on</code> is enforced as a hard DAG constraint.</div>} />
+          banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> YAML workflows bypass the LLM decomposer — <code>depends_on</code> is enforced as a hard DAG constraint.</div>} />
       )}
     </Card>
   )

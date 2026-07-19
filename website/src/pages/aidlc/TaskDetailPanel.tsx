@@ -143,7 +143,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           <div className="p-2.5 bg-danger/10 border border-danger/20 rounded-md text-[12px] text-danger">{task.error}</div>
         )}
         {task.result && (
-          <div className="p-2.5 bg-ok/10 border border-ok/20 rounded-md text-[12px] text-ok whitespace-pre-wrap max-h-[300px] overflow-auto">{task.result}</div>
+          <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px] text-text whitespace-pre-wrap max-h-[300px] overflow-auto" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>{task.result}</div>
         )}
 
         {/* Dependencies */}
@@ -164,7 +164,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           const blocking = deps.filter(d => d.status !== 'passed' && d.status !== 'done')
           const isBlocked = task.status === 'pending' && blocking.length > 0
           return isBlocked ? (
-            <div className="p-2.5 bg-warn/10 border border-warn/30 rounded-md text-[12px] text-warn">
+            <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
               Blocked — waiting on {blocking.length} task{blocking.length > 1 ? 's' : ''}:
               {blocking.map(d => (
                 <div key={d.index} className="mt-1 pl-4">
@@ -184,8 +184,8 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
         )}
 
         {(task.force_approval || task.requires_approval) && task.status === 'in_progress' && onApprove && (
-          <div className="p-2.5 bg-warn/10 border border-warn/30 rounded-md text-[12px]">
-            <div className="text-warn mb-2">{task.force_approval ? 'This gate blocks. force_approval=true.' : 'Requires approval before execution.'}</div>
+          <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px]" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+            <div className="text-text mb-2">{task.force_approval ? 'This gate blocks. force_approval=true.' : 'Requires approval before execution.'}</div>
             <div className="flex gap-2">
               <button className="px-3 py-1.5 rounded-md bg-ok text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('approve')}><Check className="lucide-inline" /> Approve</button>
               <button className="px-3 py-1.5 rounded-md bg-danger text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('reject')}><XIcon className="lucide-inline" /> Deny</button>
@@ -193,7 +193,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           </div>
         )}
         {(task.force_approval || task.requires_approval) && task.status === 'pending' && (
-          <div className="p-2.5 bg-warn/10 border border-warn/30 rounded-md text-[12px] text-warn">
+          <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             Requires approval before execution
           </div>
         )}

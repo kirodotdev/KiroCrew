@@ -289,9 +289,9 @@ export default function AppsPage() {
         )}
 
         {successMsg && (
-          <div className="mb-4 bg-ok/10 border border-ok/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
-            <span className="text-ok text-sm flex-1">{successMsg}</span>
-            <button aria-label="Dismiss message" className="text-ok/60 hover:text-ok text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
+          <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
+            <span className="text-text text-sm flex-1">{successMsg}</span>
+            <button aria-label="Dismiss message" className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
           </div>
         )}
 

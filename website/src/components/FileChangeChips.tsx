@@ -1,4 +1,5 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
+import { Star } from 'lucide-react'
 import type { FileChipStyle } from '../pages/chat/ChatSettings'
 import { colorForExt, fileIcon } from '../utils/fileIcons'
 
@@ -93,6 +94,84 @@ function MinimalChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void
   )
 }
 
+/**
+ * Pull light-weight structure out of a markdown doc's *new* content so the
+ * DocChip can show something more useful than a bare filename:
+ *   - `title`    → first `# ` H1 heading, if any
+ *   - `sections` → the `## ` level-2 headings, in order (fenced code skipped)
+ */
+export function extractMdInfo(after: string): { title: string | null; sections: string[] } {
+  let title: string | null = null
+  const sections: string[] = []
+  let inFence = false
+  for (const raw of after.split('\n')) {
+    const line = raw.trim()
+    if (line.startsWith('```')) { inFence = !inFence; continue }
+    if (inFence) continue
+    if (!title) {
+      const h1 = line.match(/^#\s+(.+)/)
+      if (h1) { title = h1[1].trim(); continue }
+    }
+    const h2 = line.match(/^##\s+(.+)/)
+    if (h2) sections.push(h2[1].trim())
+  }
+  return { title, sections }
+}
+
+/* ── Markdown docs: a larger card with icon, filename, status + section list ── */
+const DOC_MAX_SECTIONS = 3
+function DocChip({ fc, onClick, onSaveDoc }: { fc: FileChangeEntry; onClick: () => void; onSaveDoc?: (path: string) => void }) {
+  const [saved, setSaved] = useState(false)
+  const { added, removed } = countLines(fc.before, fc.after)
+  const isNew = fc.before === ''
+  const Icon = fileIcon(fc.path)
+  const { title, sections } = extractMdInfo(fc.after)
+  const shown = sections.slice(0, DOC_MAX_SECTIONS)
+  const extra = sections.length - shown.length
+  const sectionText = shown.length
+    ? shown.join(' • ') + (extra > 0 ? ` +${extra} more` : '')
+    : (title || 'Markdown document')
+  const status = isNew ? 'New document' : 'Updated'
+  return (
+    // A div (not a button) so the Save control can nest without invalid DOM.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+    <div
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }}
+      className="glass-surface file-chip flex items-start gap-3 w-full max-w-[440px] rounded-xl px-3.5 py-3 text-left cursor-pointer text-text"
+      aria-label={fc.path}
+    >
+      <span className="shrink-0 mt-0.5 flex items-center justify-center w-9 h-9 rounded-lg bg-bg-hover border border-border">
+        <Icon size={18} className={colorForExt(fc.path)} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          <span className="truncate font-semibold text-[13px]">{basename(fc.path)}</span>
+          <span className="shrink-0 ml-auto text-[11px]"><Stats added={added} removed={removed} /></span>
+        </span>
+        <span className="mt-0.5 block truncate text-[11.5px] text-muted">
+          {status} · {sectionText}
+        </span>
+      </span>
+      {onSaveDoc && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); if (saved) return; setSaved(true); Promise.resolve(onSaveDoc(fc.path)).catch(() => setSaved(false)) }}
+          className={`shrink-0 mt-0.5 p-1 rounded-md transition-colors bg-transparent border-none cursor-pointer ${saved ? 'text-accent' : 'text-muted/50 hover:text-accent'}`}
+          title={saved ? 'Starred' : 'Star'}
+          aria-label={saved ? 'Starred in library' : 'Star document'}
+        >
+          {saved ? <Star size={14} className="fill-current" /> : <Star size={14} />}
+        </button>
+      )}
+    </div>
+  )
+}
+
+const MD_RE = /\.(md|markdown|mdx)$/i
+
 const RENDERERS = { expanded: ExpandedChip, minimal: MinimalChip } as const
 
 /**
@@ -100,9 +179,11 @@ const RENDERERS = { expanded: ExpandedChip, minimal: MinimalChip } as const
  * Each chip shows the modified file's basename + line stats, and on
  * click opens the Monaco diff panel via `onOpenDiff(path, after, before)`.
  */
-const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff, style = 'expanded' }: {
+const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff, onSaveDoc, style = 'expanded' }: {
   fileChanges: FileChangeEntry[]
   onOpenDiff?: (path: string, modified: string, original: string) => void
+  /** Save a document chip into the artifact library (materialize + pin). */
+  onSaveDoc?: (path: string) => void
   style?: FileChipStyle
 }) {
   if (!fileChanges?.length) return null
@@ -110,7 +191,11 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff,
   return (
     <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mb-1.5">
       {fileChanges.map(fc => (
-        <Chip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} />
+        // Markdown docs get the larger info card (with a Save action);
+        // everything else keeps the compact pill from the user's setting.
+        MD_RE.test(fc.path)
+          ? <DocChip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} onSaveDoc={onSaveDoc} />
+          : <Chip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} />
       ))}
     </div>
   )

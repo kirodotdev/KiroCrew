@@ -2695,8 +2695,8 @@ function ChatSidebar({
       </LayoutGroup>
 
       {/* Sidebar-hide tip */}
-      {!tipDismissed && <div className="sidebar-toggle-tip mx-2 mb-1 mt-1 px-3 py-2 rounded-lg bg-accent/8 border border-dashed border-accent/10 text-[12px] text-muted leading-relaxed flex items-start gap-2 animate-rise">
-        <span className="flex-1">You can now toggle this sidebar<br/>Enable in <strong>Settings → Chat → Sidebar</strong>.</span>
+      {!tipDismissed && <div className="sidebar-toggle-tip mx-2 mb-1 mt-1 px-3 py-2 rounded-lg bg-bg-elevated border text-[12px] text-text leading-relaxed flex items-start gap-2 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}>
+        <span className="flex-1">You can now toggle this sidebar<br/>Enable in <strong className="text-text-strong">Settings → Chat → Sidebar</strong>.</span>
         <Btn aria-label="Dismiss sidebar tip" className="shrink-0 text-muted hover:text-text cursor-pointer bg-transparent border-none text-[14px] leading-none p-0" onClick={() => { safeSetItem('mc-sidebar-tip-dismissed', '1'); setTipDismissed(true) }}><X className="lucide-inline" /></Btn>
       </div>}
 
