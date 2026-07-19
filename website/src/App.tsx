@@ -26,7 +26,8 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Sun, Moon, Monitor, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, Activity, TerminalSquare, ClipboardCheck, Keyboard, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, Activity, TerminalSquare, ClipboardCheck, Keyboard, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact } from 'lucide-react'
+import OnboardingFlow from './components/OnboardingFlow'
 import { motion, AnimatePresence } from 'framer-motion'
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -359,8 +360,8 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
   return { tip, tipOn, rowRef, showTip, hideTip }
 }
 
-function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick }: {
-  path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void
+function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId }: {
+  path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
 }) {
   const navigate = useNavigate()
   const iconEl = <span className={`w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent' : 'opacity-70'}`}>{icon}</span>
@@ -369,6 +370,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
   return (
     <motion.div layout="position"
       ref={rowRef}
+      data-onboarding-nav={navId}
       // The row had only a mouse onClick; role+tabIndex+key handler make it a
       // real keyboard-operable control (Enter/Space activate, preventing Space
       // page-scroll). aria-label names it when collapsed (icon-only, no text).
@@ -719,7 +721,7 @@ export default function App() {
     )
   }, [isPopout, isEmbed, navigate, dispatch])
 
-  const { colorTheme, setColorTheme, allThemes, preference: modePref, setTheme: setModePref, onboarded, markOnboarded } = useTheme()
+  const { colorTheme, onboarded, markOnboarded } = useTheme()
   // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
   // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
   // never overlays the shell and intercepts every spec's interactions. If this flag is
@@ -1395,30 +1397,13 @@ export default function App() {
       {(updating || showUpdateModal) && <UpdateOverlay onCancel={() => { setUpdating(false); setShowUpdateModal(false) }} />}
       <UpdateModal />
 
-      {/* Theme onboarding for new users */}
-      {showOnboarding && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise">
-          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl">
-            <div className="text-center mb-4">
-              <div className="text-lg font-bold text-text-strong">Choose your look</div>
-              <div className="text-[13px] text-muted mt-1">Pick a color theme and mode. You can change this anytime.</div>
-            </div>
-            <div className="flex justify-center gap-2 mb-4">
-              {(['dark', 'light', 'system'] as const).map(m => (
-                <button key={m} className={`px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border transition-colors flex items-center gap-1.5 ${modePref === m ? 'bg-accent-subtle text-accent border-accent/30' : 'bg-transparent text-muted border-border hover:text-text hover:bg-bg-hover'}`} onClick={() => setModePref(m)}>{m === 'dark' ? <><Moon size={13} /> Dark</> : m === 'light' ? <><Sun size={13} /> Light</> : <><Monitor size={13} /> System</>}</button>
-              ))}
-            </div>
-            <div className="grid grid-cols-2 gap-1 max-h-[240px] overflow-y-auto mb-4">
-              {allThemes.map(t => (
-                <button key={t.value} className={`text-left px-2.5 py-1.5 rounded-md text-[12px] cursor-pointer border-none transition-colors ${colorTheme === t.value ? 'bg-accent-subtle text-accent font-medium' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'}`} onClick={() => setColorTheme(t.value)}>{t.label}</button>
-              ))}
-            </div>
-            <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={() => { markOnboarded(); setShowOnboarding(false) }}>
-              Let's go
-            </button>
-          </div>
-        </div>
-      )}
+      {/* First-run onboarding: 4-step flow (theme → Schedule → Apps → Sessions).
+          Rendered unconditionally so the `/onboarding` slash command can reopen
+          it anytime; internal visibility is seeded by `initialOpen`. */}
+      <OnboardingFlow
+        initialOpen={showOnboarding}
+        onComplete={() => { markOnboarded(); setShowOnboarding(false) }}
+      />
 
       {/* Mobile backdrop */}
       <AnimatePresence>
@@ -1498,6 +1483,7 @@ export default function App() {
               // Apps group, inside the DragOverlay ghost).
               const renderNavItem = (n: typeof fullList[number]) => (
                 <NavItem
+                  navId={n.id}
                   path={n.path}
                   label={n.label}
                   icon={n.icon}

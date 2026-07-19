@@ -12,6 +12,14 @@ export async function interceptSlashCommand(
   dispatch: AppDispatch,
 ): Promise<SlashInterceptResult> {
   const trimmed = raw.trim()
+  // Client-only command: (re)launch the first-run onboarding flow. Handled
+  // entirely in the browser (OnboardingFlow listens for this event) — never
+  // sent to the agent, and needs no active slot. Match exactly so sibling
+  // inputs like `/onboarding-help` or `/onboarding/foo` are NOT intercepted.
+  if (trimmed === '/onboarding') {
+    window.dispatchEvent(new Event('mc-start-onboarding'))
+    return { intercepted: true }
+  }
   const match = trimmed.match(SIDE_RE)
   if (!match) {
     return { intercepted: false }
