@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -15,7 +16,6 @@ from kiro_crew.wechat.client import (
     WeComClient,
     WeComInbound,
     _build_subscribe_frame,
-    _redact_frame,
 )
 
 # ------------------------------------------------------------------
@@ -413,8 +413,10 @@ class TestAckPongHandling:
         assert "ping-1" not in client._ping_reqs
 
     @pytest.mark.asyncio
-    async def test_stream_ack_non_zero_errcode_logged(self) -> None:
-        """Non-zero errcode on a non-ping ACK is a stream error."""
+    async def test_stream_ack_non_zero_errcode_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Non-zero errcode ACK logs a generic event, never errcode/errmsg."""
         client = WeComClient(
             bot_id="bot1",
             secret="sec1",
@@ -423,17 +425,25 @@ class TestAckPongHandling:
         )
         client._pending_pongs = 0
 
+        errmsg = "invalid req_id sk-live-ACKSECRET-token"
         ack_frame = json.dumps(
             {
                 "headers": {"req_id": "not-a-ping"},
                 "errcode": 846605,
-                "errmsg": "invalid req_id",
+                "errmsg": errmsg,
             }
         )
-        # Should not raise
-        await client._handle_message(ack_frame)
+        with caplog.at_level(logging.WARNING):
+            # Should not raise
+            await client._handle_message(ack_frame)
         # pongs unchanged
         assert client._pending_pongs == 0
+        # A generic stream-ACK-error warning is emitted, but the externally
+        # derived errcode/errmsg values never reach the log.
+        assert "stream ACK error" in caplog.text
+        assert "846605" not in caplog.text
+        assert errmsg not in caplog.text
+        assert "ACKSECRET" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_stream_ack_zero_errcode_silent(self) -> None:
@@ -539,23 +549,6 @@ class TestSubscribeFrame:
         assert frame["body"]["secret"] == "my-secret"
 
 
-class TestRedactFrame:
-    def test_masks_response_url_code(self) -> None:
-        raw = (
-            '{"cmd":"aibot_msg_callback","body":{"userid":"Wei",'
-            '"response_url":"https://qyapi.weixin.qq.com/cgi-bin/x?code=SECRET123"}}'
-        )
-        out = _redact_frame(raw)
-        assert "SECRET123" not in out
-        assert '"response_url":"<redacted>"' in out
-        # Non-sensitive fields survive.
-        assert '"userid":"Wei"' in out
-
-    def test_noop_without_response_url(self) -> None:
-        raw = '{"cmd":"ping","body":{"userid":"Wei"}}'
-        assert _redact_frame(raw) == raw
-
-
 class TestConcurrentSends:
     """Verify all WS sends are serialized (no interleaved send_json)."""
 
@@ -598,3 +591,175 @@ class TestThresholdClamp:
         c = WeComConfig(soft_threshold_pct=-10, hard_threshold_pct=200)
         assert c.soft_threshold_pct == 0
         assert c.hard_threshold_pct == 100
+
+
+# ------------------------------------------------------------------
+# Tests: malformed frames are isolated from the receive loop
+# ------------------------------------------------------------------
+
+
+class TestMalformedFrames:
+    """Malformed external frames must not terminate the WeCom client."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [None, [], "text", 5, True])
+    async def test_non_object_json_is_ignored(self, payload: object) -> None:
+        handler = AsyncMock()
+        client = WeComClient(
+            bot_id="bot1",
+            secret="sec1",
+            ws_url="wss://fake",
+            on_message=handler,
+        )
+
+        await client._handle_message(json.dumps(payload))
+
+        handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {"cmd": "aibot_msg_callback", "headers": None, "body": {}},
+            {"cmd": "aibot_msg_callback", "headers": {}, "body": []},
+            {
+                "cmd": "aibot_msg_callback",
+                "headers": {},
+                "body": {"from": "user", "text": {}},
+            },
+            {
+                "cmd": "aibot_msg_callback",
+                "headers": {},
+                "body": {"from": {}, "text": "message"},
+            },
+        ],
+    )
+    async def test_malformed_nested_objects_are_ignored(self, frame: dict) -> None:
+        handler = AsyncMock()
+        client = WeComClient(
+            bot_id="bot1",
+            secret="sec1",
+            ws_url="wss://fake",
+            on_message=handler,
+        )
+
+        await client._handle_message(json.dumps(frame))
+
+        handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handler_error_does_not_abort_receive_loop(self) -> None:
+        fake_ws = FakeWS(["first", "second"])
+
+        class FakeConnection:
+            async def __aenter__(self):
+                return fake_ws
+
+            async def __aexit__(self, *args):
+                return None
+
+        class FakeSession:
+            closed = False
+
+            def ws_connect(self, url, proxy=None):
+                return FakeConnection()
+
+        client = WeComClient(bot_id="bot1", secret="sec1", ws_url="wss://fake")
+        client._session = FakeSession()  # type: ignore[assignment]
+        client._handle_message = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[ValueError("malformed"), None]
+        )
+        client._ping_loop = AsyncMock()  # type: ignore[method-assign]
+
+        await client._connect_and_serve()
+
+        assert client._handle_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_non_object_frame_warning_omits_payload(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A dropped non-dict frame logs only its type, never the payload content."""
+        handler = AsyncMock()
+        client = WeComClient(
+            bot_id="bot1",
+            secret="sec1",
+            ws_url="wss://fake",
+            on_message=handler,
+        )
+
+        secret = "sk-live-DEADBEEF-super-secret-scalar-payload"
+        with caplog.at_level(logging.WARNING):
+            await client._handle_message(json.dumps(secret))
+
+        handler.assert_not_awaited()
+        # The scalar payload (potentially a secret) must never reach the
+        # warning log; only safe metadata (the Python type) is recorded.
+        assert secret not in caplog.text
+        assert "type=str" in caplog.text
+
+
+# ------------------------------------------------------------------
+# Tests: log sites never emit externally-derived frame content
+# ------------------------------------------------------------------
+
+
+class TestFrameLoggingOmitsContent:
+    """Every WeCom log site records only safe metadata (length / type / generic
+    event), never externally-derived frame content -- guards the five
+    py/clear-text-logging-sensitive-data alerts."""
+
+    @staticmethod
+    def _client() -> WeComClient:
+        return WeComClient(
+            bot_id="bot1",
+            secret="sec1",
+            ws_url="wss://fake",
+            on_message=AsyncMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_inbound_debug_logs_length_not_content(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The inbound-frame debug line records the byte length, not the frame."""
+        client = self._client()
+        secret = "sk-live-INBOUND-response-url-credential-SECRET"
+        # Unhandled cmd path exercises both the inbound-frame debug line and the
+        # unhandled-cmd debug line for a single frame.
+        raw = json.dumps({"cmd": "totally-unknown-cmd", "response_url": secret})
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.wechat.client"):
+            await client._handle_message(raw)
+        # The raw frame (incl. the response_url credential) never reaches logs.
+        assert secret not in caplog.text
+        # Safe metadata remains: the inbound-frame byte length is recorded.
+        assert "inbound frame" in caplog.text
+        assert "bytes" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unparseable_frame_warning_omits_content(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unparseable frame logs only its byte length, never its content."""
+        client = self._client()
+        secret = "sk-live-UNPARSEABLE-SECRET-blob"
+        raw = "<<<not-json>>> " + secret  # invalid JSON carrying a secret token
+        with caplog.at_level(logging.WARNING):
+            await client._handle_message(raw)
+        assert secret not in caplog.text
+        assert "unparseable frame" in caplog.text
+        assert "bytes" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unhandled_cmd_debug_omits_command_name(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unhandled command logs a generic event, never the command name."""
+        client = self._client()
+        cmd = "aibot_secret_command_name"
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.wechat.client"):
+            await client._handle_message(json.dumps({"cmd": cmd}))
+        # The externally-derived command name must not appear...
+        assert cmd not in caplog.text
+        # ...but a generic unhandled-cmd event is recorded.
+        assert "unhandled cmd" in caplog.text

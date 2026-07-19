@@ -17,7 +17,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -35,16 +34,6 @@ _REPLY_MAX_CHARS = 20000
 # that closes the socket without raising) stays on the backoff curve so it cannot
 # hot-loop with zero delay.
 _MIN_HEALTHY_CONN_SECS = 5.0
-
-# Inbound frames carry a single-use response_url whose response_code is a 1h
-# credential. Mask it before any (debug) logging so logs pasted into bug reports
-# cannot leak it.
-_RESP_URL_RE = re.compile(r'("response_url"\s*:\s*")[^"]*(")')
-
-
-def _redact_frame(raw: str) -> str:
-    """Mask the response_url value in a raw WS frame string for safe logging."""
-    return _RESP_URL_RE.sub(r"\1<redacted>\2", raw)
 
 
 @dataclass
@@ -259,7 +248,10 @@ class WeComClient:
             try:
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.TEXT:
-                        await self._handle_message(msg.data)
+                        try:
+                            await self._handle_message(msg.data)
+                        except Exception:
+                            logger.exception("WeCom WS: frame handler error; dropping frame")
                     elif msg.type in (
                         aiohttp.WSMsgType.CLOSED,
                         aiohttp.WSMsgType.CLOSING,
@@ -295,30 +287,39 @@ class WeComClient:
 
     async def _handle_message(self, raw: str) -> None:
         """Parse and dispatch an inbound WS text frame."""
-        logger.debug("WeCom WS inbound frame: %s", _redact_frame(raw)[:500])
+        logger.debug("WeCom WS inbound frame (%d bytes)", len(raw))
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("WeCom WS: unparseable frame: %s", _redact_frame(raw)[:200])
+            logger.warning("WeCom WS: unparseable frame (%d bytes)", len(raw))
+            return
+
+        if not isinstance(data, dict):
+            # Log only safe metadata (the Python type), never the parsed payload:
+            # a non-dict frame may be a bare scalar carrying secret-like content.
+            logger.warning("WeCom WS: dropping non-object frame (type=%s)", type(data).__name__)
             return
 
         cmd = data.get("cmd", "")
 
         # Cmd-less frame carrying errcode: either a pong ACK or a stream-reply ACK.
         if "errcode" in data and not cmd:
-            rid = data.get("headers", {}).get("req_id", "")
+            headers = data.get("headers", {})
+            if not isinstance(headers, dict):
+                logger.warning("WeCom WS: malformed ACK headers")
+                return
+            rid = headers.get("req_id", "")
             if rid in self._ping_reqs:
                 self._ping_reqs.discard(rid)
                 self._pending_pongs = max(0, self._pending_pongs - 1)
             else:
                 ec = data.get("errcode")
                 if ec not in (0, None):
-                    # 846605 invalid req_id / 846608 stream expired, etc.
-                    logger.warning(
-                        "WeCom stream ACK error: errcode=%s errmsg=%s",
-                        ec,
-                        data.get("errmsg"),
-                    )
+                    # errcode/errmsg are externally-derived frame content and
+                    # must not be logged (clear-text-logging); record a generic
+                    # event only. Codes seen in practice: 846605 invalid req_id,
+                    # 846608 stream expired.
+                    logger.warning("WeCom stream ACK error (non-zero errcode)")
             return
 
         if cmd in ("aibot_msg_callback", "aibot_callback"):
@@ -329,7 +330,8 @@ class WeComClient:
             if self._ws and not self._ws.closed:
                 await self._ws.close()
         else:
-            logger.debug("WeCom WS: unhandled cmd=%s", cmd)
+            # cmd is externally-derived; log a generic event, never its value.
+            logger.debug("WeCom WS: unhandled cmd")
 
     def _dispatch_callback(self, data: dict) -> None:
         """Parse an aibot_msg_callback and run on_message as a background task.
@@ -340,12 +342,20 @@ class WeComClient:
         false disconnect.
         """
         headers = data.get("headers", {})
-        req_id = headers.get("req_id", "")
         body = data.get("body", {})
+        if not isinstance(headers, dict) or not isinstance(body, dict):
+            logger.warning("WeCom WS: malformed callback object fields")
+            return
+
         from_obj = body.get("from", {})
-        userid = from_obj.get("userid", "")
         text_obj = body.get("text", {})
-        text_content = text_obj.get("content", "") if text_obj else ""
+        if not isinstance(from_obj, dict) or not isinstance(text_obj, dict):
+            logger.warning("WeCom WS: malformed callback object fields")
+            return
+
+        req_id = headers.get("req_id", "")
+        userid = from_obj.get("userid", "")
+        text_content = text_obj.get("content", "")
         response_url = body.get("response_url", "")
         chatid = body.get("chatid", "")
         msgtype = body.get("msgtype", "text")
@@ -363,9 +373,7 @@ class WeComClient:
         self._handler_tasks.add(task)
         task.add_done_callback(self._handler_tasks.discard)
 
-    def set_message_handler(
-        self, on_message: Callable[[WeComInbound], Awaitable[None]]
-    ) -> None:
+    def set_message_handler(self, on_message: Callable[[WeComInbound], Awaitable[None]]) -> None:
         """Set the inbound handler post-construction.
 
         Avoids the client<->transport construction cycle: the transport needs
