@@ -77,6 +77,50 @@ export interface SkillTreeEntry {
   size: number
 }
 
+/** A skill result from the multi-provider discover endpoint. */
+export interface DiscoveredSkill {
+  id: string
+  name: string
+  description: string
+  provider: string
+  display_provider: string
+  repo_url?: string
+  author?: string
+  installed: boolean
+  tags?: string[]
+  /** Install/download count from the provider (0 = unknown). */
+  installs?: number
+}
+
+/** Response from GET /api/skills/-/discover */
+export interface DiscoverSkillsResponse {
+  results: DiscoveredSkill[]
+  providers: string[]
+}
+
+/** Response from GET /api/skills/-/discover/preview */
+export interface DiscoverSkillPreview {
+  description: string
+  name: string
+  license?: string
+  author?: string
+  /** Full SKILL.md markdown (display-capped server-side). */
+  content?: string
+  /** Bundle file manifest (capped at 200 entries). */
+  files?: string[]
+  file_count?: number
+}
+
+/** Response from POST /api/skills/-/discover/install */
+export interface DiscoverInstallResult {
+  ok: boolean
+  key: string
+  slug: string
+  provider: string
+  kind: 'created' | 'updated'
+  file_count: number
+}
+
 export interface McpScopePresence {
   kirocrew: boolean
   kiroGlobal: boolean

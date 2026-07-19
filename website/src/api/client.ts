@@ -484,6 +484,15 @@ export const api = {
   createSkill: (name: string, content: string) => post('/api/skills', { name, content }).then(j),
   updateSkill: (name: string, content: string) => put('/api/skills/' + name.split('/').map(encodeURIComponent).join('/'), { content }).then(j),
   deleteSkill: (name: string) => del('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
+  /** Multi-provider skill discovery (skills.sh, etc.) */
+  discoverSkills: (query: string, opts?: { provider?: string; limit?: number }) =>
+    get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../types').DiscoverSkillsResponse>,
+  /** Preview a skill's description, full SKILL.md, and bundle manifest before installing */
+  previewDiscoveredSkill: (provider: string, id: string) =>
+    get(`/api/skills/-/discover/preview?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}`).then(j) as Promise<import('../types').DiscoverSkillPreview>,
+  /** Install a skill from a provider by ID. Throws ApiError(409) when already installed and overwrite is not set. */
+  installDiscoveredSkill: (provider: string, skillId: string, opts?: { name?: string; overwrite?: boolean }) =>
+    post('/api/skills/-/discover/install', { provider, skill_id: skillId, name: opts?.name, overwrite: opts?.overwrite }).then(j) as Promise<import('../types').DiscoverInstallResult>,
   // MCP
   mcpServers: () => fetch('/api/mcp').then(j),
   mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),

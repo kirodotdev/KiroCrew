@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw } from 'lucide-react'
+import { Download, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, Btn, SearchInput } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, type SkillFormData } from '../../components/SkillForm'
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
+import SkillBrowserModal from '../../components/SkillBrowserModal'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 
@@ -33,6 +34,8 @@ export default function SkillsTab() {
   const [skillFilter, setSkillFilter] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [detailEditing, setDetailEditing] = useState(false)
+  // Multi-provider skill browser drawer (Add Skill button).
+  const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
 
   const { data: skills = [], isLoading, isFetching, refetch } = useQuery<Skill[]>({
     queryKey: ['skills'],
@@ -78,6 +81,9 @@ export default function SkillsTab() {
     onSuccess: () => {
       setSelectedKey(null)
       setDetailEditing(false)
+      // Discover results carry an installed flag derived from the skills
+      // dir -- drop them so the Add Skill browser reflects the deletion.
+      queryClient.invalidateQueries({ queryKey: ['discover-skills'] })
     },
     onError: (_err, _key, context) => {
       if (context?.prev) queryClient.setQueryData(['skills'], context.prev)
@@ -172,7 +178,7 @@ export default function SkillsTab() {
       <SkillForm data={formData} onChange={setFormData} />
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">Skills ({skills.length}) <InfoTip text="On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages." /> <Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>Create New Skill</Btn></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">Skills ({skills.length}) <InfoTip text="On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages." /> <span className="ml-auto flex items-center gap-2"><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> Add Skill</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>Create New Skill</Btn></span></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
@@ -247,5 +253,8 @@ export default function SkillsTab() {
         </div>
       )}
     </Card>
+
+    {/* Multi-provider Skill Browser Modal */}
+    <SkillBrowserModal open={skillBrowserOpen} onClose={() => setSkillBrowserOpen(false)} />
   </>)
 }

@@ -62,6 +62,56 @@ function humanSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+/** Labeled frontmatter strip — the skill's contract (description, triggers,
+ *  tags, loaded-by-agents). Shared between the installed-skill viewer and
+ *  the Add Skill browser's detail preview so both surfaces present skill
+ *  metadata identically. */
+export function SkillMetaStrip({
+  description, triggers, tags, loadedByAgents,
+}: {
+  description?: string
+  triggers?: string
+  tags?: string
+  loadedByAgents?: string[]
+}) {
+  const show = !!(description || triggers || tags || (loadedByAgents && loadedByAgents.length > 0))
+  if (!show) return null
+  return (
+    <div className="space-y-2 mb-3 pb-3 border-b border-border" data-testid="frontmatter-strip">
+      {description && (
+        <div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Description</div>
+          <div className="text-[13px] text-text leading-relaxed">{description}</div>
+        </div>
+      )}
+      {triggers && (
+        <div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Triggers</div>
+          <div className="flex gap-1 flex-wrap">{triggers.split(',').map((t, i) => (
+            <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-bg-elevated text-muted border border-border font-mono">{t.trim()}</span>
+          ))}</div>
+        </div>
+      )}
+      {tags && (
+        <div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Tags</div>
+          <div className="flex gap-1 flex-wrap">{tags.replace(/[[\]]/g, '').split(',').map((t, i) => (
+            <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-accent-subtle text-accent font-mono">{t.trim()}</span>
+          ))}</div>
+        </div>
+      )}
+      {loadedByAgents && loadedByAgents.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Loaded by agents</div>
+          <div className="flex gap-1 flex-wrap">{loadedByAgents.map((a, i) => (
+            <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-bg-elevated text-text border border-border font-mono">{a}</span>
+          ))}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Recursive tree row.  Folders toggle on click; files select. */
 function TreeRow({
   node, depth, expanded, selected, onToggle, onSelect,
@@ -200,8 +250,6 @@ export default function SkillDirectoryBrowser({
   const stripDescription = skill?.description ?? skillMeta.description ?? ''
   const stripTriggers = skillMeta.triggers ?? ''
   const stripTags = skillMeta.tags ?? ''
-  const showStrip = !!(stripDescription || stripTriggers || stripTags
-    || (skill?.loaded_by_agents && skill.loaded_by_agents.length > 0))
 
   return (
     <div className="flex gap-3 h-full min-h-0" data-testid="skill-directory-browser">
@@ -223,40 +271,12 @@ export default function SkillDirectoryBrowser({
 
       {/* File viewer pane */}
       <div className="flex-1 overflow-y-auto scrollbar-overlay border border-border rounded-md bg-card p-3">
-        {showStrip && (
-          <div className="space-y-2 mb-3 pb-3 border-b border-border" data-testid="frontmatter-strip">
-            {stripDescription && (
-              <div>
-                <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Description</div>
-                <div className="text-[13px] text-text leading-relaxed">{stripDescription}</div>
-              </div>
-            )}
-            {stripTriggers && (
-              <div>
-                <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Triggers</div>
-                <div className="flex gap-1 flex-wrap">{stripTriggers.split(',').map((t, i) => (
-                  <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-bg-elevated text-muted border border-border font-mono">{t.trim()}</span>
-                ))}</div>
-              </div>
-            )}
-            {stripTags && (
-              <div>
-                <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Tags</div>
-                <div className="flex gap-1 flex-wrap">{stripTags.replace(/[[\]]/g, '').split(',').map((t, i) => (
-                  <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-accent-subtle text-accent font-mono">{t.trim()}</span>
-                ))}</div>
-              </div>
-            )}
-            {skill?.loaded_by_agents && skill.loaded_by_agents.length > 0 && (
-              <div>
-                <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Loaded by agents</div>
-                <div className="flex gap-1 flex-wrap">{skill.loaded_by_agents.map((a, i) => (
-                  <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-bg-elevated text-text border border-border font-mono">{a}</span>
-                ))}</div>
-              </div>
-            )}
-          </div>
-        )}
+        <SkillMetaStrip
+          description={stripDescription}
+          triggers={stripTriggers}
+          tags={stripTags}
+          loadedByAgents={skill?.loaded_by_agents}
+        />
         <div className="text-[11px] font-mono text-muted mb-2 truncate" title={selected}>{selected || '(no file selected)'}</div>
         {fileLoading && <div className="text-muted text-[12px] animate-pulse">Loading file…</div>}
         {fileErr && (
