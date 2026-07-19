@@ -1042,8 +1042,11 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "author": "kirocrew",
         "tags": ["tasks", "autonomy", "execution"],
         "defaultEnabled": False,
+        "iconUrl": "/app-assets/projects/icon.svg",
+        "heroImage": "/app-assets/projects/hero-light.svg",
+        "heroImageDark": "/app-assets/projects/hero-dark.svg",
         "ui": {
-            "pages": [{"route": "/projects", "label": "Task Runner", "icon": "BookOpenText"}],
+            "pages": [{"route": "/projects", "label": "Task Runner", "icon": "ClipboardCheck"}],
         },
     },
     # -------------------------------------------------------------------------

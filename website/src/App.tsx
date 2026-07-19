@@ -26,7 +26,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Sun, Moon, Monitor, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, Activity, TerminalSquare, ClipboardCheck, Keyboard, Brain, FolderTree, ChevronUp, MoreHorizontal, Coins, Contact } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Sun, Moon, Monitor, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, Activity, TerminalSquare, ClipboardCheck, Keyboard, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -135,6 +135,8 @@ const BUILTIN_ICONS: Record<string, React.ReactElement> = {
   BookOpenText: <BookOpenText size={16} />,
   Brain: <Brain size={16} />,
   FolderTree: <FolderTree size={16} />,
+  FlaskConical: <FlaskConical size={16} />,
+  ScanSearch: <ScanSearch size={16} />,
   Contact: <Contact size={16} />,
 }
 

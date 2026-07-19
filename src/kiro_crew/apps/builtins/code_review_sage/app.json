@@ -34,5 +34,8 @@
         "icon": "ScanSearch"
       }
     ]
-  }
+  },
+  "iconUrl": "/app-assets/code-review-sage/icon.svg",
+  "heroImage": "/app-assets/code-review-sage/hero-light.svg",
+  "heroImageDark": "/app-assets/code-review-sage/hero-dark.svg"
 }

@@ -685,10 +685,10 @@ function AppCard({
   const canUpdate = app.lifecycle === 'gateway'
   const canUninstall = app.lifecycle !== 'locked'
   const hasOpenCommand = !!m?.openCommand
-  // Derive icon URL from manifest iconPath via blob proxy
-  const iconUrl = m?.iconPath && m?.repo
+  // Derive icon URL: prefer manifest iconUrl (builtins), fallback to blob proxy (registry)
+  const iconUrl = m?.iconUrl || (m?.iconPath && m?.repo
     ? `/api/apps/blob?repo=${encodeURIComponent(m.repo)}&path=${encodeURIComponent(m.iconPath)}`
-    : undefined
+    : undefined)
 
   return (
     <div className="border border-border rounded-lg hover:border-accent/30 transition-colors overflow-hidden">

@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, BookOpen, BookOpenText, Component, CalendarDays, Users, Plug, Store, Settings } from 'lucide-react'
+import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Users, Plug, Settings, Store, ClipboardCheck } from 'lucide-react'
 import { createSelector } from '@reduxjs/toolkit'
 import { registerBuiltinSurface } from './registry'
 import type { RootState } from '../store'
@@ -51,7 +51,7 @@ registerBuiltinSurface({
   navId: 'projects',
   route: '/projects',
   label: 'Task Runner',
-  icon: <BookOpenText size={16} />,
+  icon: <ClipboardCheck size={16} />,
   group: 'Apps',
   appOnly: true,
   // Stub surface — no slotMode and no unreadSelector. The Projects badge
