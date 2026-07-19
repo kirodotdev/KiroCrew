@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import stat as stat_mod
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -50,16 +51,27 @@ def _sanitize_server_name(name: str) -> str:
 
 
 def cleanup_old_spill_files() -> int:
-    """Delete spill files older than 24h. Returns count deleted. Best-effort."""
+    """Delete spill files older than 24h. Returns count deleted. Best-effort.
+
+    Symlink-hardened: ``is_dir()``/``is_file()``/``stat()`` all FOLLOW
+    symlinks, so an agent that swapped the spill dir (or planted a link
+    inside it) could otherwise aim this sweep at an arbitrary directory and
+    have the gateway delete 24h-old files there (confused deputy). The dir
+    itself and every entry are checked with lstat semantics; links are
+    skipped, never followed.
+    """
     spill_dir = _spill_dir()
-    if not spill_dir.is_dir():
+    if spill_dir.is_symlink() or not spill_dir.is_dir():
         return 0
     now = time.time()
     deleted = 0
     try:
         for entry in spill_dir.iterdir():
             try:
-                if entry.is_file() and (now - entry.stat().st_mtime) > _SPILL_MAX_AGE_SECS:
+                st = entry.lstat()  # never follows — a symlink reports itself
+                if not stat_mod.S_ISREG(st.st_mode):
+                    continue  # skip symlinks / dirs / anything non-regular
+                if (now - st.st_mtime) > _SPILL_MAX_AGE_SECS:
                     entry.unlink()
                     deleted += 1
             except OSError:
@@ -139,11 +151,25 @@ def maybe_spill_response(
         filename = f"{safe_server}-{request_id}-{timestamp}.json"
 
         spill_dir = _spill_dir()
+        # Never operate through a symlinked spill dir (agent-swappable): an
+        # attacker-planted link would redirect the write outside ~/.kirocrew.
+        if spill_dir.is_symlink():
+            logger.warning("spill dir is a symlink — refusing to spill")
+            return line
         spill_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         spill_path = spill_dir / filename
 
-        # Write full response to spill file
-        spill_path.write_bytes(line)
+        # Exclusive, no-follow write: O_EXCL refuses ANY pre-existing entry
+        # at the path (including a pre-planted symlink, so nothing can make
+        # this write land on another file), and O_NOFOLLOW backstops it.
+        open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            open_flags |= os.O_NOFOLLOW
+        fd = os.open(str(spill_path), open_flags, 0o600)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
         abs_path = str(spill_path.resolve())
 
         # Truncate each text item's content to first 16 KiB + marker
