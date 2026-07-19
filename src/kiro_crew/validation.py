@@ -559,7 +559,10 @@ _ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image)$")
 # charset covers real model ids (gpt-5.6-sol, claude-sonnet-4.6) only.
 MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 _ARTIFACT_SOURCE_RE = re.compile(r"^(chat|cron|subagent|manual|import)$")
-ARTIFACT_CONTENT_MAX = 1_048_576  # 1 MiB — matches MAX_CONTENT_BYTES in artifacts.py
+# Single source of truth: the MCP save/update field cap MUST equal the store's
+# own content cap, else the tool path rejects content the store would accept
+# (or vice-versa). Import the store constant rather than re-declaring it.
+from kiro_crew.artifacts import MAX_CONTENT_BYTES as ARTIFACT_CONTENT_MAX  # noqa: E402
 
 ARTIFACT_SAVE_SCHEMA = ToolSchema(
     tool_name="artifact_save",

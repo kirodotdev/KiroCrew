@@ -433,6 +433,19 @@ Central guarded file read. Resolves the path via `expanduser().resolve()`, check
 `is_sensitive_path()`, and raises `PermissionError` if blocked. All file reads outside of
 kiro-cli tool calls must go through this function — never call `is_sensitive_path()` inline.
 
+### `safe_read_file_internal(read_id: str) -> bytes | None` (audited carve-out)
+
+A narrow, hardcoded allowlist (`_INTERNAL_READ_ALLOWLIST`) lets specific **system-internal**
+readers read an otherwise-sensitive path (today only the kiro-cli SSO token, read to call the
+CodeWhisperer `GetUsageLimits` API that powers the dashboard credit pill). It re-checks
+`is_sensitive_path()` (defense in depth), emits an SEL audit on every outcome, and is
+**fail-closed**: a `success` read whose audit cannot be recorded synchronously (`critical=True`)
+returns `None` instead of the bytes — a `logger.warning` is not itself an audit. Credential-bearing
+paths that are *not* sensitive (e.g. the kiro-cli SQLite auth store under `~/.local/share`) use the
+sibling `emit_internal_read_audit(read_id)` — same audit + fail-closed contract, gated by its own
+`_AUDIT_ONLY_READ_IDS` registry. Adding an allowlist entry is a security-review event; the bytes
+never reach an LLM/agent surface.
+
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)
 
 User-defined kiro-cli hooks that persist across `kirocrew update`. Follows the

@@ -41,6 +41,7 @@ import threading
 import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as fields_of
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -58,9 +59,15 @@ logger = logging.getLogger(__name__)
 #: when the cap is exceeded).
 MAX_VERSIONS = 50
 
-#: Maximum size of an artifact's content blob, in bytes. Widget HTML rarely
-#: exceeds a few KB; this cap exists to refuse unbounded LLM output.
-MAX_CONTENT_BYTES = 1_048_576  # 1 MiB
+#: Maximum size of an artifact's content blob, in bytes. Locally-authored
+#: widget HTML rarely tops a few KB, but cloned/pulled remote artifacts (rich
+#: HTML reports, CSVs) routinely exceed 1 MiB — at 1 MiB clone/pull would
+#: silently fail on exactly the shared-HTML artifacts bidirectional sync
+#: targets. 25 MiB is large enough to bring those down locally while still
+#: refusing truly unbounded content. Keep in lockstep with
+#: ``validation.ARTIFACT_CONTENT_MAX`` (the MCP tool-arg cap) so a save's limit
+#: doesn't depend on its entry path — guarded by a regression test.
+MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
 
 #: Maximum length of human-readable name / description fields.
 MAX_NAME_LEN = 200
@@ -86,13 +93,22 @@ ALLOWED_SOURCES = frozenset({"chat", "cron", "subagent", "manual", "import"})
 #: Allowed lifecycle event types. ``referenced`` is reserved for chat-mention
 #: scanning (added in a follow-up CR); the in-line save/update path emits
 #: ``created`` / ``edited`` / ``iterated`` / ``reverted``.
-ALLOWED_EVENT_TYPES = frozenset({"created", "edited", "iterated", "referenced", "reverted"})
+ALLOWED_EVENT_TYPES = frozenset(
+    {"created", "edited", "iterated", "referenced", "reverted", "comment"}
+)
 
 #: Max lifecycle events retained per artifact. FIFO eviction keeps meta.json
 #: bounded — at ~150 bytes per event entry, this caps each meta file at
 #: roughly 75KB on top of the static metadata, which is well within the
 #: tolerable read cost.
 MAX_EVENTS_PER_ARTIFACT = 500
+
+#: Maximum number of comments retained per artifact (FIFO, like versions/events).
+#: ``add_comment`` does load->append->rewrite of the whole comments.json, so an
+#: unbounded agent loop (``artifact_post_comment``) would be O(N^2) I/O and grow
+#: the sidecar without limit. When the cap is exceeded the OLDEST full thread(s)
+#: are dropped (a thread root + its replies together), never a reply orphaned.
+MAX_COMMENTS_PER_ARTIFACT = 500
 
 #: Maximum number of tags per artifact, and max length per tag.
 MAX_TAGS = 16
@@ -134,6 +150,111 @@ class ArtifactValidationError(ArtifactError):
 
 
 @dataclass
+class ForkMetadata:
+    """Provenance tracking for an artifact forked from Artifactory.
+
+    Present (non-``None`` on :class:`Artifact`) once an artifact has been
+    forked from a remote Artifactory artifact. Records the upstream identity
+    so pull-latest and upstream linking work.
+    """
+
+    upstream_artifact_id: str = ""  # Artifactory UUID of the source
+    upstream_url: str = ""  # stable view URL of the source
+    upstream_owner: str = ""  # ownerAlias at fork time
+    upstream_version: int = 0  # versionNumber at fork/last-pull time
+    forked_at: str = ""  # ISO timestamp of initial fork
+
+
+@dataclass
+class ArtifactPublication:
+    """Artifactory publication state for an artifact (Mesh-1880).
+
+    Present (non-``None`` on :class:`Artifact`) once an artifact has been
+    published to Harmony Artifactory. The ``artifact_id`` and ``view_url`` are
+    *stable* across every version — pushing a new version reuses the same id
+    and URL. This block holds only data; all networking lives in
+    ``artifactory_sync`` / ``artifactory_client`` (mirrors the module-purity
+    rule documented at the top of this file).
+
+    ``last_pushed_sha256`` is the optimistic-concurrency guard required by the
+    Artifactory ``upload_artifact_version`` contract: it is the sha of the
+    artifact's current latest Artifactory version. On a version push we pass it
+    as ``expectedCurrentSha256``; a mismatch means the Artifactory artifact was
+    changed out-of-band, which we surface via ``last_error`` rather than
+    force-pushing over.
+    """
+
+    artifact_id: str  # Artifactory UUID — STABLE across versions
+    view_url: str  # https://.../artifact/<uuid> — STABLE across versions
+    provider: str = "artifactory"  # publish destination (PublishProvider name)
+    visibility: str = "PRIVATE"  # PRIVATE | SHARED | PUBLIC
+    shared_with: _List[str] = field(default_factory=list)  # aliases (role EDITOR)
+    auto_sync: bool = True  # push a new Artifactory version on every KiroCrew bump
+    #: Sync authority for the bound provider: ``"mirror"`` (KiroCrew is the sole
+    #: writer; remote is a guarded/blind mirror — Artifactory/Wiki/Pippin) or
+    #: ``"live"`` (the remote owns a live CRDT; KiroCrew is a participant —
+    #: Chorus). Derived from ``provider.sync_model().collab_mode`` at publish /
+    #: clone time. Gates the push path (CRDT edit vs guarded blob replace) and
+    #: the conflict/Force-push UI. Tolerant-loaded; legacy meta.json defaults to
+    #: ``"mirror"``.
+    collab_mode: str = "mirror"
+    last_pushed_sha256: str = ""  # concurrency guard for the next version push
+    last_synced_kirocrew_version: int = 0
+    # Maps str(kirocrew_version) -> artifactory_version_number.
+    version_map: dict[str, int] = field(default_factory=dict)
+    published_at: str = ""
+    published_by: str = ""  # gateway owner alias (ownerAlias from Artifactory)
+    last_error: str = ""  # conflict / sync-failure surfaced to the UI
+    #: sha256 of the LIVE (CRDT) remote body as of the last sync (publish / push
+    #: / pull / clone / overwrite). Chorus canonicalizes markdown on write, so
+    #: drift is detected remote-vs-remote against this hash — snapshot_seq bumps
+    #: on mere viewing and is unreliable. Empty for mirror providers / legacy.
+    last_synced_remote_hash: str = ""
+
+
+@dataclass
+class ArtifactComment:
+    """A durable comment on an artifact (the canonical store).
+
+    Comments can be local-only (never leaves KiroCrew) or synced to/from a
+    provider (Artifactory). The ``origin`` + ``scope`` fields determine sync
+    behavior.
+    """
+
+    id: str  # local uuid
+    origin: str = "local"  # "local" | "artifactory:<remote_id>"
+    provider: str | None = None  # "artifactory" | None (for local)
+    scope: str = "private"  # "private" | "shared"
+    author: str = ""  # Amazon alias
+    is_agent: bool = False  # authored by an AI agent
+    body: str = ""
+    anchor_quote: str | None = None  # anchored text (portable key)
+    anchor_prefix: str | None = None
+    anchor_suffix: str | None = None
+    anchor_start_offset: int | None = None
+    anchor_end_offset: int | None = None
+    anchor_version: int | None = None
+    thread_id: str = ""  # root comment id (self for roots)
+    parent_id: str | None = None  # parent comment id
+    status: str = "open"  # "open" | "review" | "resolved"
+    target_provider: str | None = None  # which publication to sync to
+    target_external_id: str | None = None
+    sync_state: str = "local_only"  # local_only|pending_push|synced|push_failed
+    #: True when the anchored text (``anchor_quote``) can no longer be found in
+    #: the artifact's content — set/cleared by the store's anchor rescan on
+    #: every content write. A dedicated field (not a ``sync_state`` value)
+    #: because ``sync_state`` tracks provider push status and the two signals
+    #: must not clobber each other (a pending_push comment can also be
+    #: orphaned).
+    anchor_orphaned: bool = False
+    created_at: str = ""
+    updated_at: str = ""
+    # Transient: set on inbound provider mirrors that came back as tombstones so
+    # merge_remote_comments can drop the local copy. Never persisted.
+    deleted: bool = False
+
+
+@dataclass
 class Artifact:
     """In-memory representation of an artifact and its metadata.
 
@@ -172,6 +293,24 @@ class Artifact:
     #: unfiled). Only local artifacts carry a folder; remote/shared artifacts
     #: have no local record to hang one on.
     folder_id: str = ""
+    #: Artifactory publication state (Mesh-1880). ``None`` until the artifact
+    #: is published; carries the stable Artifactory id/URL, visibility,
+    #: shared-with aliases, and version-sync bookkeeping once published.
+    #: Persisted in meta.json (nested object); tolerant-loaded so older
+    #: meta.json files without the field default to ``None``.
+    publication: "ArtifactPublication | None" = None
+    #: Fork provenance (Mesh-1880 P1). ``None`` until the artifact is forked
+    #: from a remote Artifactory artifact. Records the upstream identity so
+    #: pull-latest and upstream linking work. Persisted in meta.json.
+    fork_metadata: "ForkMetadata | None" = None
+    #: Per-version render kind, mapping ``str(version) -> kind`` at the moment
+    #: that version was snapshotted. ``kind`` is otherwise artifact-global, but
+    #: pulling upstream-ahead content can flip a widget to ``html`` (the cloud
+    #: bytes are an already-wrapped standalone document that can't be
+    #: re-wrapped). Recording the kind per version means reverting to a pre-pull
+    #: widget snapshot restores widget render-mode instead of the raw inner
+    #: HTML. Tolerant-loaded; absent entries fall back to the current ``kind``.
+    version_kinds: dict[str, str] = field(default_factory=dict)
     #: Computed at GET time: True when the current live content differs
     #: from the latest numbered snapshot. Lets the frontend enable the
     #: Snapshot button anytime live has drifted from history — including
@@ -311,6 +450,27 @@ def _infer_kind(content: str, source_path: str = "", explicit: str | None = None
     return "widget"
 
 
+def _markdown_misclassification_reason(content: str, source_path: str) -> str | None:
+    """Return why a ``widget``-kind artifact actually looks like ``markdown``.
+
+    Returns a short human-readable reason string, or ``None`` if the artifact
+    is a genuine widget. Used by the CR-1 corrective migration
+    (:meth:`ArtifactStore.migrate_kinds`) to find artifacts saved as ``widget``
+    before ``kind`` inference existed. Deliberately conservative — it triggers
+    only on a ``.md`` / ``.markdown`` ``source_path`` or content with **no HTML
+    tags at all**, so a genuine widget (whose content always contains HTML) is
+    never reclassified. Only ever implies ``markdown``; the richer kinds are
+    out of migration scope.
+    """
+    if source_path:
+        ext = os.path.splitext(source_path)[1].lower()
+        if ext in (".md", ".markdown"):
+            return "source_path .md"
+    if content and "<" not in content:
+        return "no HTML tags"
+    return None
+
+
 def _validate_source(source: str) -> str:
     if source not in ALLOWED_SOURCES:
         raise ArtifactValidationError(
@@ -421,9 +581,7 @@ class ArtifactStore:
         try:
             listener(action, slug)
         except Exception:
-            logger.exception(
-                "artifact change listener failed: action=%s slug=%s", action, slug
-            )
+            logger.exception("artifact change listener failed: action=%s slug=%s", action, slug)
 
     def create(
         self,
@@ -482,6 +640,7 @@ class ArtifactStore:
                 content=content,
                 source_path=source_path[:512] if source_path else "",
                 folder_id=folder_id or "",
+                version_kinds={"1": kind},
             )
             # Lifecycle: emit `created` event. New artifacts are tagged
             # `events_backfilled=True` because their history starts here —
@@ -535,6 +694,12 @@ class ArtifactStore:
                         f"version may be higher; check list_versions)"
                     )
                 meta.content = self._read_text(vfile)
+                # Restore the render kind recorded for this version so a
+                # historical widget snapshot renders as a widget, not the raw
+                # inner HTML. Absent (legacy artifacts) → keep current kind.
+                vk = meta.version_kinds.get(str(version))
+                if vk:
+                    meta.kind = vk
                 meta.live_dirty = False  # historical view — not "live"
                 return meta
             # Current view: prefer source_path for file-backed artifacts.
@@ -566,9 +731,9 @@ class ArtifactStore:
         """Read the source file for a file-backed artifact (live pointer).
 
         Returns None on any failure (missing file, permission denied,
-        sensitive path, oversize). Caller falls back to the artifact's own
-        snapshot in that case so a missing/moved source doesn't break the
-        artifact view.
+        sensitive path, outside allowed roots, oversize). Caller falls back
+        to the artifact's own snapshot in that case so a missing/moved
+        source doesn't break the artifact view.
         """
         try:
             # Resolve before the security check so traversal segments
@@ -580,6 +745,29 @@ class ArtifactStore:
             if not p.is_absolute():
                 return None
             if is_sensitive_path(str(p)):
+                return None
+            # Root-confinement re-check on every read: a symlink replacement
+            # after relocate could escape the allowed roots if we only checked
+            # at set time. Re-validate that the RESOLVED path is under the
+            # user's home, the KIROCREW_HOME tree (store root's parent — in
+            # production this is ~/.kirocrew which is under home, but in tests
+            # may be a tmp dir), or a configured relocate root.
+            allowed = [Path.home().resolve(), self._root.resolve().parent]
+            try:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                for extra in KiroCrewConfig.load().publish.relocate_roots:
+                    if isinstance(extra, str) and extra.strip():
+                        allowed.append(Path(extra).expanduser().resolve())
+            except Exception:
+                pass
+            within_root = any(
+                p == r or p.is_relative_to(r) for r in allowed
+            )
+            if not within_root:
+                logger.warning(
+                    "source_path %r resolved outside allowed roots; refusing read", source_path
+                )
                 return None
             if not p.exists() or not p.is_file():
                 return None
@@ -623,6 +811,27 @@ class ArtifactStore:
                 return False
             if is_sensitive_path(str(p)):
                 return False
+            # Root-confinement re-check (same as _try_read_source_path): a
+            # symlink swap after relocate must not allow writes outside the
+            # allowed roots.
+            allowed = [Path.home().resolve(), self._root.resolve().parent]
+            try:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                for extra in KiroCrewConfig.load().publish.relocate_roots:
+                    if isinstance(extra, str) and extra.strip():
+                        allowed.append(Path(extra).expanduser().resolve())
+            except Exception:
+                pass
+            within_root = any(
+                p == r or p.is_relative_to(r) for r in allowed
+            )
+            if not within_root:
+                logger.warning(
+                    "source_path %r resolved outside allowed roots; refusing write",
+                    source_path,
+                )
+                return False
             # Don't create the file if it never existed — that would be
             # surprising. The 'Add to artifacts' flow always saves an
             # existing file, so the file should exist.
@@ -642,6 +851,7 @@ class ArtifactStore:
         description: str | None = None,
         tags: list[str] | None = None,
         name: str | None = None,
+        kind: str | None = None,
         actor: str = "user",
         session_id: str | None = None,
         event_type: str | None = None,
@@ -684,6 +894,12 @@ class ArtifactStore:
                 new_name = _validate_name(name)
                 name_changed = new_name != art.name
                 art.name = new_name
+            if kind is not None:
+                # Render kind may change on a pull (a widget's upstream bytes
+                # are an already-wrapped document → ``html``). A kind change
+                # alone does not bump the version; the per-version kind is
+                # recorded in the snapshot branch below when content changes.
+                art.kind = _validate_kind(kind)
             art.updated_at = _now_iso()
 
             # Snapshot of current live state (no new content provided).
@@ -717,6 +933,12 @@ class ArtifactStore:
                 self._write_text(prev, live_content)
                 if art.source_path:
                     self._try_write_source_path(art.source_path, live_content)
+                # Content changed — re-validate comment anchors so threads
+                # whose quoted text no longer exists get flagged as orphaned
+                # (and restored if the text comes back, e.g. on a revert).
+                # Every content write funnels through here: agent iterations,
+                # dashboard saves, reverts, and upstream pulls.
+                self._rescan_comment_anchors_locked(slug, live_content)
 
                 if snapshot:
                     # Validate event_type BEFORE side effects (AutoSDE round
@@ -733,6 +955,9 @@ class ArtifactStore:
                     # versions/v{N}.html so it's preserved in history.
                     art.version += 1
                     self._snapshot_version(slug, art.version, prev)
+                    # Record the render kind for this version so a later revert
+                    # restores the correct render-mode (widget vs html).
+                    art.version_kinds[str(art.version)] = art.kind
                     # Lifecycle event. Caller-specified event_type wins
                     # (revert flow uses 'reverted'); otherwise actor-based
                     # default: agent → iterated, user → edited.
@@ -750,6 +975,15 @@ class ArtifactStore:
                         from_version=from_version,
                     )
 
+            # Keep version_kinds bounded in lockstep with version-file pruning
+            # (we only ever ADD on snapshot; trim stale keys for pruned
+            # versions so meta.json doesn't grow unbounded on long-lived
+            # artifacts).
+            if len(art.version_kinds) > MAX_VERSIONS:
+                cutoff = art.version - MAX_VERSIONS
+                art.version_kinds = {
+                    k: v for k, v in art.version_kinds.items() if k.isdigit() and int(k) > cutoff
+                }
             self._write_meta(art)
             self._prune_versions(slug)
             logger.info(
@@ -770,24 +1004,6 @@ class ArtifactStore:
         elif fire_rename:
             self._fire_change("rename", slug)
         return art
-
-    def set_folder(self, slug: str, folder_id: str) -> Artifact:
-        """Move an artifact into a folder (Mesh-2720) — metadata-only.
-
-        Setting ``folder_id`` (``""`` = unfiled/root) is a pure metadata
-        mutation: it does NOT bump the version, write a snapshot, or emit a
-        lifecycle event — the same class as retag/rename. The caller is
-        responsible for having validated that ``folder_id`` refers to a real
-        folder (or is empty); a dangling id is tolerated at read time
-        (treated as unfiled) but should not be written deliberately.
-        """
-        slug = _validate_slug(slug)
-        with self._lock:
-            art = self._load_meta(slug)
-            art.folder_id = folder_id or ""
-            self._write_meta(art)
-            logger.info("artifact folder set: slug=%s folder_id=%s", slug, art.folder_id or "(root)")
-            return art
 
     def delete(self, slug: str) -> None:
         """Permanently delete an artifact and all of its versions."""
@@ -927,6 +1143,111 @@ class ArtifactStore:
         results.sort(key=lambda a: a.updated_at, reverse=True)
         return results
 
+    def migrate_kinds(self, *, apply: bool = False) -> _List[dict[str, Any]]:
+        """Corrective one-time migration: reclassify markdown artifacts that
+        were mis-saved as ``widget`` before ``kind`` inference existed (CR-1).
+
+        A ``widget`` artifact is treated as mis-saved markdown when
+        :func:`_markdown_misclassification_reason` returns a reason — its
+        ``source_path`` ends in ``.md`` / ``.markdown`` OR its current content
+        has no HTML tags at all. Matching artifacts have their global ``kind``
+        and any ``widget`` ``version_kinds`` entries flipped to ``markdown`` via
+        a direct ``meta.json`` rewrite (the store reads ``meta.json`` per call,
+        so the change is picked up with no cache invalidation or restart).
+
+        With ``apply=False`` (default) this is a **dry run**: it returns the
+        list of artifacts that *would* be flipped without writing anything. With
+        ``apply=True`` it performs the rewrites. Idempotent — a second ``apply``
+        run finds nothing because the candidates are no longer ``widget``.
+        Returns one ``{slug, name, from_kind, to_kind, reason}`` entry per
+        candidate. The directory listing is snapshotted under the lock; reads
+        and per-artifact rewrites re-acquire it, matching ``list()``'s pattern.
+        """
+        with self._lock:
+            meta_paths = list(self._iter_meta_paths())
+        changed: _List[dict[str, Any]] = []
+        for meta_path in meta_paths:
+            try:
+                art = self._read_meta_file(meta_path)
+            except (
+                ArtifactError,
+                OSError,
+                json.JSONDecodeError,
+                ValueError,
+                TypeError,
+            ) as exc:
+                logger.warning("migrate_kinds: skipping unreadable %s: %s", meta_path, exc)
+                continue
+            if art.kind != "widget":
+                continue
+            try:
+                content = self.get(art.slug).content or ""
+            except ArtifactError as exc:
+                logger.warning("migrate_kinds: cannot read content for %s: %s", art.slug, exc)
+                continue
+            reason = _markdown_misclassification_reason(content, art.source_path)
+            if reason is None:
+                continue
+            changed.append(
+                {
+                    "slug": art.slug,
+                    "name": art.name,
+                    "from_kind": "widget",
+                    "to_kind": "markdown",
+                    "reason": reason,
+                }
+            )
+            if not apply:
+                continue
+            with self._lock:
+                fresh = self._load_meta(art.slug)
+                if fresh.kind != "widget":
+                    continue  # raced with another writer — leave it alone
+                fresh.kind = "markdown"
+                fresh.version_kinds = {
+                    k: ("markdown" if v == "widget" else v) for k, v in fresh.version_kinds.items()
+                }
+                self._write_meta(fresh)
+                logger.info("migrate_kinds: flipped %s widget->markdown", art.slug)
+        return changed
+
+    def find_by_artifact_id(self, artifact_id: str) -> Artifact | None:
+        """Locate the local artifact linked to a cloud ``artifact_id``.
+
+        Matches either a ``publication`` (my push target) or ``fork_metadata``
+        (forked-from origin) that carries this upstream id. Bridges the cloud
+        id to the local slug — used to reconcile the "my cloud artifacts" list
+        against the local store and to keep clone/fork idempotent (don't create
+        a second local copy of an artifact already tracked locally). Returns
+        None when no local artifact tracks this id.
+
+        Like ``find_by_source_path``, the scan runs outside the lock — atomic
+        meta.json writes make stale-but-valid snapshots harmless.
+        """
+        if not artifact_id:
+            return None
+        with self._lock:
+            meta_paths = list(self._iter_meta_paths())
+        for meta_path in meta_paths:
+            try:
+                art = self._read_meta_file(meta_path)
+            except (
+                ArtifactError,
+                OSError,
+                json.JSONDecodeError,
+                ValueError,
+                TypeError,
+            ):
+                continue
+            if art.publication is not None and art.publication.artifact_id == artifact_id:
+                return art
+            if (
+                art.fork_metadata is not None
+                and art.fork_metadata.upstream_artifact_id == artifact_id
+            ):
+                return art
+        return None
+
     def find_by_source_path(self, source_path: str) -> Artifact | None:
         """Locate an existing artifact previously saved from this filesystem path.
 
@@ -977,6 +1298,399 @@ class ArtifactStore:
                     if m:
                         stored.append(int(m.group(1)))
             return sorted(set(stored))
+
+    # ── publication (Artifactory) — data only, no networking ──────────────
+
+    def set_publication(self, slug: str, pub: "ArtifactPublication") -> Artifact:
+        """Attach (or replace) an artifact's Artifactory publication block.
+
+        Data-only: callers in ``artifactory_sync`` perform the actual upload
+        and then persist the resulting state here. Returns the updated
+        Artifact (without content loaded).
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            art.publication = pub
+            self._write_meta(art)
+            logger.info(
+                "artifact publication set: slug=%s artifact_id=%s visibility=%s",
+                slug,
+                pub.artifact_id,
+                pub.visibility,
+            )
+            return art
+
+    def set_fork_metadata(self, slug: str, fm: "ForkMetadata") -> Artifact:
+        """Attach fork provenance to an artifact (Mesh-1880 P1)."""
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            art.fork_metadata = fm
+            self._write_meta(art)
+            return art
+
+    def update_fork_metadata(self, slug: str, **fields: Any) -> Artifact:
+        """Patch fields on an artifact's fork_metadata block."""
+        slug = _validate_slug(slug)
+        _fork_field_types = {
+            "upstream_artifact_id": str,
+            "upstream_url": str,
+            "upstream_owner": str,
+            "upstream_version": int,
+            "forked_at": str,
+        }
+        with self._lock:
+            art = self._load_meta(slug)
+            if art.fork_metadata is None:
+                raise ArtifactError(f"artifact {slug!r} has no fork_metadata")
+            for k, v in fields.items():
+                if k not in _fork_field_types:
+                    raise ArtifactError(f"ForkMetadata has no field {k!r}")
+                expected = _fork_field_types[k]
+                if not isinstance(v, expected):
+                    raise ArtifactError(
+                        f"ForkMetadata.{k} expects {expected.__name__}, got {type(v).__name__}"
+                    )
+                setattr(art.fork_metadata, k, v)
+            self._write_meta(art)
+            return art
+
+    def relocate(self, slug: str, source_path: str) -> Artifact:
+        """Update the source_path (live file pointer) for an artifact."""
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            art.source_path = source_path
+            self._write_meta(art)
+            return art
+
+    def set_folder(self, slug: str, folder_id: str) -> Artifact:
+        """Move an artifact into a folder (Mesh-2720) — metadata-only.
+
+        Setting ``folder_id`` (``""`` = unfiled/root) is a pure metadata
+        mutation: it does NOT bump the version, write a snapshot, or emit a
+        lifecycle event — the same class as retag/rename. The caller is
+        responsible for having validated that ``folder_id`` refers to a real
+        folder (or is empty); a dangling id is tolerated at read time
+        (treated as unfiled) but should not be written deliberately.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            art.folder_id = folder_id or ""
+            self._write_meta(art)
+            logger.info(
+                "artifact folder set: slug=%s folder_id=%s", slug, art.folder_id or "(root)"
+            )
+            return art
+
+    def clear_publication(self, slug: str) -> Artifact:
+        """Remove an artifact's publication block (after unpublish/delete)."""
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            art.publication = None
+            self._write_meta(art)
+            logger.info("artifact publication cleared: slug=%s", slug)
+            return art
+
+    # ── comments (durable sidecar store) ──────────────────────────────────
+
+    def list_comments(self, slug: str) -> _List["ArtifactComment"]:
+        """Load all comments for an artifact from comments.json sidecar."""
+        slug = _validate_slug(slug)
+        with self._lock:
+            return self._load_comments(slug)
+
+    def add_comment(self, slug: str, comment: "ArtifactComment") -> "ArtifactComment":
+        """Persist a new comment to the sidecar store.
+
+        Bounded at :data:`MAX_COMMENTS_PER_ARTIFACT` (FIFO). When appending would
+        exceed the cap, the OLDEST thread roots (and their replies) are dropped
+        as whole threads — never orphaning a reply — until the list fits. The
+        just-added comment is always kept.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            comments = self._load_comments(slug)
+            comments.append(comment)
+            if len(comments) > MAX_COMMENTS_PER_ARTIFACT:
+                comments = self._prune_oldest_threads(comments, keep_id=comment.id)
+            self._write_comments(slug, comments)
+            return comment
+
+    @staticmethod
+    def _prune_oldest_threads(
+        comments: _List["ArtifactComment"], *, keep_id: str
+    ) -> _List["ArtifactComment"]:
+        """Drop whole oldest threads until <= MAX_COMMENTS_PER_ARTIFACT.
+
+        A thread is a root plus every comment carrying its id as ``thread_id``.
+        Threads are ranked by their root's list position (append order == age),
+        oldest first; the thread containing ``keep_id`` is never dropped.
+        """
+
+        # Map each comment to its thread key (root id). A root's thread_id is its
+        # own id (or empty -> itself); a reply carries the root's id.
+        def thread_key(c: "ArtifactComment") -> str:
+            return c.thread_id or c.id
+
+        keep_thread = next((thread_key(c) for c in comments if c.id == keep_id), keep_id)
+        # Oldest-first order of thread keys by first appearance.
+        order: _List[str] = []
+        for c in comments:
+            k = thread_key(c)
+            if k not in order:
+                order.append(k)
+        drop: set[str] = set()
+        remaining = len(comments)
+        for k in order:
+            if remaining <= MAX_COMMENTS_PER_ARTIFACT:
+                break
+            if k == keep_thread:
+                continue
+            members = sum(1 for c in comments if thread_key(c) == k)
+            drop.add(k)
+            remaining -= members
+        if not drop:
+            return comments
+        return [c for c in comments if thread_key(c) not in drop]
+
+    #: Fields a caller may patch via :meth:`update_comment`. A narrow allowlist
+    #: (mirroring ``update_publication`` / ``update_fork_metadata``) so a future
+    #: MCP tool forwarding user/LLM-controlled keys cannot mass-assign identity/
+    #: provenance fields (``is_agent`` / ``author`` / ``origin`` / ``sync_state`` /
+    #: ``target_*``). Only the mutable lifecycle + body fields are patchable;
+    #: ``updated_at`` is always refreshed by the method itself.
+    _MUTABLE_COMMENT_FIELDS = frozenset({"status", "body", "anchor_orphaned"})
+
+    def update_comment(self, slug: str, comment_id: str, **fields: Any) -> "ArtifactComment | None":
+        """Patch fields on an existing comment. Returns updated or None.
+
+        Only fields in :data:`_MUTABLE_COMMENT_FIELDS` may be set; an unknown or
+        disallowed field name raises :class:`ArtifactError` rather than silently
+        writing it (consistent with ``update_publication`` /
+        ``update_fork_metadata``).
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            comments = self._load_comments(slug)
+            for c in comments:
+                if c.id == comment_id:
+                    for k, v in fields.items():
+                        if k not in self._MUTABLE_COMMENT_FIELDS:
+                            raise ArtifactError(f"comment field {k!r} is not patchable")
+                        setattr(c, k, v)
+                    c.updated_at = _now_iso()
+                    self._write_comments(slug, comments)
+                    return c
+            return None
+
+    def delete_comment(self, slug: str, comment_id: str) -> bool:
+        """Remove a comment from the sidecar store. Returns True if found.
+
+        Deleting a thread ROOT cascades to its replies: threads are one level
+        deep and replies carry the root's id as their ``thread_id``, so a parent
+        delete removes the whole thread rather than orphaning the children into
+        top-level comments. Deleting a reply removes only that reply.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            comments = self._load_comments(slug)
+            before = len(comments)
+            target = next((c for c in comments if c.id == comment_id), None)
+            if target is not None and (not target.parent_id or target.thread_id == target.id):
+                # Root: drop the root and every reply in its thread.
+                comments = [c for c in comments if c.thread_id != comment_id and c.id != comment_id]
+            else:
+                comments = [c for c in comments if c.id != comment_id]
+            if len(comments) < before:
+                self._write_comments(slug, comments)
+                return True
+            return False
+
+    def _rescan_comment_anchors_locked(self, slug: str, content: str) -> None:
+        """Re-validate every anchored comment against ``content`` and flip
+        ``anchor_orphaned`` accordingly. MUST be called with ``self._lock``
+        held (``update()`` calls it from inside its locked content-write
+        branch; the lock is non-reentrant so this cannot go through the
+        public ``list_comments``/``update_comment`` wrappers).
+
+        Matching is a plain substring check on ``anchor_quote`` — the same
+        exactness contract as the frontend highlighter's ``indexOf`` matcher
+        (``useMarkdownCommentHighlights``). No fuzzy matching in v1: a quote
+        either exists in the content or the thread is flagged. Resolved
+        threads are skipped (their anchors are historical by definition).
+        The flag is symmetric: content that brings the quote back (e.g. a
+        revert) clears it. Tolerant — an anchor-rescan failure must never
+        break the content write it piggybacks on.
+        """
+        try:
+            comments = self._load_comments(slug)
+            changed = False
+            for c in comments:
+                if not c.anchor_quote or c.status == "resolved":
+                    continue
+                orphaned = c.anchor_quote not in content
+                if orphaned != c.anchor_orphaned:
+                    c.anchor_orphaned = orphaned
+                    c.updated_at = _now_iso()
+                    changed = True
+            if changed:
+                self._write_comments(slug, comments)
+        except Exception:  # pragma: no cover — best-effort side scan
+            logger.warning("comment anchor rescan failed for %s", slug, exc_info=True)
+
+    def record_comment_event(
+        self,
+        slug: str,
+        *,
+        action: str,
+        by: str = "user",
+        session_id: str | None = None,
+        comment_snippet: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Append a ``comment`` lifecycle event to ``slug``'s activity log.
+
+        ``action`` says what happened to the comment (``deleted`` /
+        ``reviewed`` / ``resolved``); ``comment_snippet`` is a short excerpt
+        of the affected comment body so the timeline entry is readable
+        without the (possibly deleted) comment; ``reason`` carries the
+        agent's one-line justification on deletes. Tolerant — a timeline
+        failure must never break the comment operation it annotates.
+        """
+        try:
+            with self._lock:
+                meta = self._load_meta(slug)
+                metadata: dict[str, Any] = {"action": action}
+                if comment_snippet:
+                    metadata["comment_snippet"] = comment_snippet
+                if reason:
+                    metadata["reason"] = reason
+                self._append_event(
+                    meta,
+                    type="comment",
+                    by=by,
+                    session_id=session_id,
+                    version=meta.version,
+                    metadata=metadata,
+                )
+                self._write_meta(meta)
+        except Exception:  # pragma: no cover — timeline is best-effort
+            logger.warning("comment event append failed for %s", slug, exc_info=True)
+
+    def _load_comments(self, slug: str) -> _List["ArtifactComment"]:
+        """Load comments.json sidecar (tolerant — missing file = empty)."""
+        path = self._artifact_dir(slug) / "comments.json"
+        if not path.exists():
+            return []
+        try:
+            raw_list = json.loads(self._read_text(path))
+        except (json.JSONDecodeError, ArtifactError):
+            return []
+        if not isinstance(raw_list, list):
+            return []
+        comments: _List["ArtifactComment"] = []
+        for raw in raw_list:
+            if not isinstance(raw, dict):
+                continue
+            cid = raw.get("id")
+            if not cid:
+                continue
+            comments.append(
+                ArtifactComment(
+                    id=str(cid),
+                    origin=str(raw.get("origin") or "local"),
+                    provider=raw.get("provider"),
+                    scope=str(raw.get("scope") or "private"),
+                    author=str(raw.get("author") or ""),
+                    is_agent=bool(raw.get("is_agent")),
+                    body=str(raw.get("body") or ""),
+                    anchor_quote=raw.get("anchor_quote"),
+                    anchor_prefix=raw.get("anchor_prefix"),
+                    anchor_suffix=raw.get("anchor_suffix"),
+                    anchor_start_offset=raw.get("anchor_start_offset"),
+                    anchor_end_offset=raw.get("anchor_end_offset"),
+                    anchor_version=raw.get("anchor_version"),
+                    thread_id=str(raw.get("thread_id") or cid),
+                    parent_id=raw.get("parent_id"),
+                    status=str(raw.get("status") or "open"),
+                    target_provider=raw.get("target_provider"),
+                    target_external_id=raw.get("target_external_id"),
+                    sync_state=str(raw.get("sync_state") or "local_only"),
+                    anchor_orphaned=bool(raw.get("anchor_orphaned")),
+                    created_at=str(raw.get("created_at") or ""),
+                    updated_at=str(raw.get("updated_at") or ""),
+                )
+            )
+        return comments
+
+    def _write_comments(self, slug: str, comments: _List["ArtifactComment"]) -> None:
+        """Persist comments list to comments.json sidecar."""
+        path = self._artifact_dir(slug) / "comments.json"
+        data = []
+        for c in comments:
+            entry: dict[str, Any] = {
+                "id": c.id,
+                "origin": c.origin,
+                "scope": c.scope,
+                "author": c.author,
+                "is_agent": c.is_agent,
+                "body": c.body,
+                "thread_id": c.thread_id,
+                "status": c.status,
+                "sync_state": c.sync_state,
+                "created_at": c.created_at,
+                "updated_at": c.updated_at,
+            }
+            if c.provider:
+                entry["provider"] = c.provider
+            if c.parent_id:
+                entry["parent_id"] = c.parent_id
+            if c.target_provider:
+                entry["target_provider"] = c.target_provider
+            if c.target_external_id:
+                entry["target_external_id"] = c.target_external_id
+            if c.anchor_orphaned:
+                entry["anchor_orphaned"] = True
+            if c.anchor_quote:
+                entry["anchor_quote"] = c.anchor_quote
+            if c.anchor_prefix:
+                entry["anchor_prefix"] = c.anchor_prefix
+            if c.anchor_suffix:
+                entry["anchor_suffix"] = c.anchor_suffix
+            if c.anchor_start_offset is not None:
+                entry["anchor_start_offset"] = c.anchor_start_offset
+            if c.anchor_end_offset is not None:
+                entry["anchor_end_offset"] = c.anchor_end_offset
+            if c.anchor_version is not None:
+                entry["anchor_version"] = c.anchor_version
+            data.append(entry)
+        self._write_text(path, json.dumps(data, indent=2))
+
+    def update_publication(self, slug: str, **fields: Any) -> Artifact:
+        """Patch fields on an artifact's existing publication block.
+
+        Raises :class:`ArtifactValidationError` if the artifact has no
+        publication (callers must ``set_publication`` first). Unknown field
+        names are rejected so a typo can't silently no-op a sync update.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            if art.publication is None:
+                raise ArtifactValidationError(
+                    f"artifact {slug} is not published; cannot update publication"
+                )
+            valid = {f.name for f in fields_of(ArtifactPublication)}
+            for key, value in fields.items():
+                if key not in valid:
+                    raise ArtifactValidationError(f"unknown publication field: {key}")
+                setattr(art.publication, key, value)
+            self._write_meta(art)
+            return art
 
     # ── filesystem helpers ────────────────────────────────────────────────
 
@@ -1137,6 +1851,19 @@ class ArtifactStore:
             for ev in raw_events:
                 if isinstance(ev, dict):
                     events.append(dict(ev))
+        # Publication: Artifactory state. Tolerate older meta.json without the
+        # field (defaults to None) and a malformed/partial block (a missing
+        # artifact_id means the artifact isn't really published — treat as
+        # unpublished rather than raising).
+        publication = self._parse_publication(raw.get("publication"))
+        fork_metadata = self._parse_fork_metadata(raw.get("fork_metadata"))
+        # Per-version render kinds (tolerant: keys + values must be str).
+        raw_vk = raw.get("version_kinds") or {}
+        version_kinds: dict[str, str] = {}
+        if isinstance(raw_vk, dict):
+            for vk_k, vk_v in raw_vk.items():
+                if isinstance(vk_k, str) and isinstance(vk_v, str):
+                    version_kinds[vk_k] = vk_v
         return Artifact(
             slug=str(slug),
             name=str(raw.get("name", slug)),
@@ -1151,6 +1878,85 @@ class ArtifactStore:
             events_backfilled=bool(raw.get("events_backfilled", False)),
             source_path=str(raw.get("source_path", "")),
             folder_id=str(raw.get("folder_id") or ""),
+            publication=publication,
+            fork_metadata=fork_metadata,
+            version_kinds=version_kinds,
+        )
+
+    @staticmethod
+    def _parse_publication(raw_pub: Any) -> "ArtifactPublication | None":
+        """Build an ArtifactPublication from a meta.json sub-object.
+
+        Returns None when absent or when the block lacks the stable
+        ``artifact_id`` (the one field without which the publication is
+        meaningless). All other fields fall back to dataclass defaults so a
+        forward/backward schema drift never crashes a load.
+        """
+        if not isinstance(raw_pub, dict):
+            return None
+        artifact_id = raw_pub.get("artifact_id")
+        if not artifact_id or not isinstance(artifact_id, str):
+            return None
+        raw_version_map = raw_pub.get("version_map") or {}
+        version_map: dict[str, int] = {}
+        if isinstance(raw_version_map, dict):
+            for k, v in raw_version_map.items():
+                try:
+                    version_map[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    continue
+        raw_shared = raw_pub.get("shared_with") or []
+        shared_with = (
+            [str(a) for a in raw_shared if isinstance(a, str)]
+            if isinstance(raw_shared, list)
+            else []
+        )
+        # Tolerant parse: a corrupted/hand-edited meta.json may store a
+        # non-numeric value here; honor the "schema drift never crashes a load"
+        # contract by falling back to 0 (same pattern as version_map above).
+        try:
+            last_synced = int(raw_pub.get("last_synced_kirocrew_version", 0) or 0)
+        except (TypeError, ValueError):
+            last_synced = 0
+        return ArtifactPublication(
+            artifact_id=str(artifact_id),
+            view_url=str(raw_pub.get("view_url") or ""),
+            provider=str(raw_pub.get("provider") or "artifactory"),
+            visibility=str(raw_pub.get("visibility") or "PRIVATE"),
+            shared_with=shared_with,
+            auto_sync=bool(raw_pub.get("auto_sync", True)),
+            collab_mode=("live" if raw_pub.get("collab_mode") == "live" else "mirror"),
+            last_pushed_sha256=str(raw_pub.get("last_pushed_sha256") or ""),
+            last_synced_kirocrew_version=last_synced,
+            version_map=version_map,
+            published_at=str(raw_pub.get("published_at") or ""),
+            published_by=str(raw_pub.get("published_by") or ""),
+            last_error=str(raw_pub.get("last_error") or ""),
+            last_synced_remote_hash=str(raw_pub.get("last_synced_remote_hash") or ""),
+        )
+
+    @staticmethod
+    def _parse_fork_metadata(raw_fm: Any) -> "ForkMetadata | None":
+        """Build a ForkMetadata from a meta.json sub-object.
+
+        Returns None when absent or when the block lacks the upstream
+        ``upstream_artifact_id``. All other fields fall back to defaults.
+        """
+        if not isinstance(raw_fm, dict):
+            return None
+        upstream_id = raw_fm.get("upstream_artifact_id")
+        if not upstream_id or not isinstance(upstream_id, str):
+            return None
+        try:
+            upstream_version = int(raw_fm.get("upstream_version") or 0)
+        except (ValueError, TypeError):
+            upstream_version = 0
+        return ForkMetadata(
+            upstream_artifact_id=str(upstream_id),
+            upstream_url=str(raw_fm.get("upstream_url") or ""),
+            upstream_owner=str(raw_fm.get("upstream_owner") or ""),
+            upstream_version=upstream_version,
+            forked_at=str(raw_fm.get("forked_at") or ""),
         )
 
     def _read_text(self, path: Path) -> str:
@@ -1256,9 +2062,7 @@ class ArtifactFolderStore:
                 if isinstance(raw, list):
                     # Drop entries lacking an id (legacy/corrupt) so downstream
                     # walks never KeyError on a missing "id".
-                    self._folders = [
-                        f for f in raw if isinstance(f, dict) and f.get("id")
-                    ]
+                    self._folders = [f for f in raw if isinstance(f, dict) and f.get("id")]
         except Exception:  # noqa: BLE001 — a corrupt file must not crash boot
             logger.warning("Failed to load artifact folders", exc_info=True)
 
@@ -1371,7 +2175,12 @@ class ArtifactFolderStore:
                 folder["color"] = color
             self._folders.append(folder)
             self._save()
-            logger.info("artifact folder created: id=%s name=%s parent=%s", folder["id"], name, parent_id or "(root)")
+            logger.info(
+                "artifact folder created: id=%s name=%s parent=%s",
+                folder["id"],
+                name,
+                parent_id or "(root)",
+            )
             return dict(folder)
 
     def rename(self, folder_id: str, name: str) -> dict[str, Any]:

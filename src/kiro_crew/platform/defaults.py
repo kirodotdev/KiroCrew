@@ -37,6 +37,19 @@ class DefaultProviderRegistry:
         return None
 
 
+class DefaultPublishRegistry:
+    """Registers no publish provider — the public edition has no artifact-publish
+    destination.  The ``publish_provider`` registry stays empty, so
+    ``get_provider`` raises ``PublishUnavailableError`` (→ 503) and
+    ``list_providers`` returns ``[]`` (dashboard shows "publishing unavailable")
+    with no core branching.  A companion registers its concrete providers here
+    via the ``publish_provider.register_provider`` side effect — the structural
+    twin of ``DefaultProviderRegistry.register_acp_backends``."""
+
+    def register_publish_providers(self) -> None:
+        return None
+
+
 class DefaultAgentRuntime:
     """Today's managed MCP servers + first-run setup."""
 

@@ -105,7 +105,11 @@ class TestFetchUsageBg:
             "kiro_crew.dashboard.handlers.sessions.wrap_argv",
             lambda argv, **k: (list(argv), None),
         )
-        yield
+        # Force the text-scrape fallback path by default (the real API client
+        # would otherwise read this host's live token). API-primary behavior is
+        # covered explicitly in TestFetchUsageBgApi.
+        with patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", return_value=None):
+            yield
         _reset_usage_globals()
 
     @pytest.mark.asyncio
@@ -199,3 +203,63 @@ class TestNormalizeTextUsage:
 
     def test_no_plan_preserved_untouched(self):
         assert _normalize_text_usage({"raw": ""}) == {"raw": ""}
+
+
+class TestFetchUsageBgApi:
+    """The API path (kiro_usage_api.fetch_usage_limits) is primary; the text
+    scrape is only a fallback."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        _reset_usage_globals()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+        yield
+        _reset_usage_globals()
+
+    @pytest.mark.asyncio
+    async def test_api_result_is_primary_and_subprocess_not_spawned(self):
+        api_dict = {
+            "credits_used": 29527.0, "credits_plan": 10000.0,
+            "credits_overage": 19527.0, "credits_covered": 10000.0,
+            "percentage": 295.3, "cost_usd": 781.08, "plan": "KIRO POWER",
+            "source": "api",
+        }
+        spawn = AsyncMock()
+        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value=api_dict), \
+             patch("asyncio.create_subprocess_exec", spawn):
+            await sessions_mod._fetch_usage_bg()
+        # API path wins: real total cached, text-scrape subprocess never spawned.
+        assert sessions_mod._usage_cache["credits_used"] == 29527.0
+        assert sessions_mod._usage_cache["credits_overage"] == 19527.0
+        assert sessions_mod._usage_cache["source"] == "api"
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_api_none_falls_back_to_text_scrape(self):
+        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value=None), \
+             patch("asyncio.create_subprocess_exec",
+                   AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))):
+            await sessions_mod._fetch_usage_bg()
+        # Fallback path normalizes: credits_used becomes the TOTAL, source=text.
+        assert sessions_mod._usage_cache["credits_plan"] == 10000.0
+        assert sessions_mod._usage_cache["credits_used"] == 3164.0
+        assert sessions_mod._usage_cache["source"] == "text"
+
+    @pytest.mark.asyncio
+    async def test_api_string_fields_redacted_before_cache(self):
+        api_dict = {"credits_used": 1.0, "credits_plan": 10.0, "plan": "SENSITIVE"}
+        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value=api_dict), \
+             patch.object(sessions_mod, "redact_credentials", lambda s: (s, 0)), \
+             patch.object(sessions_mod, "redact_exfiltration_urls", lambda s: ("REDACTED", 0)):
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache["plan"] == "REDACTED"
+        assert sessions_mod._usage_cache["credits_plan"] == 10.0

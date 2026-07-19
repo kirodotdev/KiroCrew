@@ -22,7 +22,9 @@ from aiohttp import web
 # keeps tests' monkeypatching of handlers.redact_* effective (late binding).
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew.acp.client import _resolve_kiro_bin
+from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir
 from kiro_crew.mcp_discovery import (
     discover_servers_to_sync,
@@ -212,6 +214,31 @@ async def _fetch_usage_bg() -> None:
             _usage_cache = {"available": False}
             _usage_cache_ts = time.time()
             return
+        # Primary source: the real GetUsageLimits API. It reads the live bearer
+        # token kiro-cli maintains and returns the true used/limit/overage, so it
+        # survives kiro-cli stdout format changes (the regression that dropped
+        # the overage line). Runs on the subprocess pool (not the default
+        # to_thread pool): the client makes blocking urllib calls that can hang
+        # on DNS / a wedged TLS handshake, so they are isolated from the
+        # maintenance/cron pools. Fails closed (returns None) so we fall through
+        # to the text scrape rather than showing a fabricated number.
+        api_usage = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), kiro_usage_api.fetch_usage_limits
+        )
+        if api_usage and api_usage.get("credits_plan") is not None:
+            # API output is untrusted too: redact every string leaf before caching.
+            api_usage = {k: _redact_strings(v) for k, v in api_usage.items()}
+            _usage_cache = api_usage
+            _usage_cache_ts = time.time()
+            logger.info(
+                "Kiro usage refreshed (api): %s / %s credits",
+                api_usage.get("credits_used", "?"),
+                api_usage.get("credits_plan", "?"),
+            )
+            return
+        # Fallback: scrape kiro-cli /usage stdout. Lossy for org-managed accounts
+        # on recent kiro-cli (no overage line), but the only source when the API
+        # path is unavailable (no token / non-Kiro build).
         # Route through the OS-level sandbox, consistent with how the main agent
         # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv).
         argv, sandbox_cleanup = wrap_argv(

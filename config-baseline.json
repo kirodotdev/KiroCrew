@@ -2407,6 +2407,85 @@
       "defaultValue": false
     },
     {
+      "path": "publish",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "publish"
+      ],
+      "label": "Publish",
+      "help": "Artifact publishing controls (destinations allowlist).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "allowed_destinations": [],
+        "relocate_roots": []
+      }
+    },
+    {
+      "path": "publish.allowed_destinations",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "publish"
+      ],
+      "label": "Allowed Publish Destinations",
+      "help": "Publish-provider ids the operator permits (e.g. 'artifactory'). Empty list allows all registered destinations (default-open). Cannot widen past the enterprise governance ceiling.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "publish.allowed_destinations.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "publish.relocate_roots",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "artifacts"
+      ],
+      "label": "Artifact Relocate Roots",
+      "help": "Extra absolute filesystem roots an artifact may be relocated into, beyond your home directory. Empty = home-only (the secure default). The sensitive-path denylist (~/.aws, ~/.ssh, ~/.kirocrew, …) still applies inside every allowed root.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "publish.relocate_roots.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "wechat",
       "kind": "core",
       "type": "object",

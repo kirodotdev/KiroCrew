@@ -1,6 +1,6 @@
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
-import type { McpApplyChange } from '../types'
+import type { McpApplyChange, PublishProviderDescriptor } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { queryClient } from './queryClient'
 
@@ -862,6 +862,36 @@ export const api = {
   /** Move an artifact into a folder ("" = unfile to root). Metadata-only — no version bump. */
   setArtifactFolder: (slug: string, folderId: string) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/folder`, { folder_id: folderId }).then(j),
+  // Artifact publishing / sharing (Mesh-1880). Local publish/sharing management
+  // only — remote-browse / clone / fork surfaces are not part of this edition.
+  publishArtifact: (slug: string, body: { visibility?: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[]; provider?: string }) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/publish`, body).then(j),
+  /** Publishing providers available for an artifact kind, with per-kind support
+   *  + sharing/sync/discovery descriptors (Mesh-2445). Drives the share-panel
+   *  picker (selector shown only when >1 capable provider). */
+  getArtifactPublishProviders: (kind: string): Promise<{ providers: PublishProviderDescriptor[]; kind: string }> =>
+    get(`/api/artifacts/publish-providers?kind=${encodeURIComponent(kind)}`).then(j),
+  updateArtifactSharing: (slug: string, body: { visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[] }) =>
+    patch(`/api/artifacts/${encodeURIComponent(slug)}/sharing`, body).then(j),
+  unpublishArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}/publish`).then(j),
+  refreshArtifactSharing: (slug: string) => post(`/api/artifacts/${encodeURIComponent(slug)}/publish/refresh`, {}).then(j),
+  // Artifact comments (durable, local per-slug store)
+  artifactComments: (slug: string) =>
+    get(`/api/artifacts/${encodeURIComponent(slug)}/comments`).then(j),
+  postArtifactComment: (slug: string, body: { text: string; scope?: string; anchor?: object; is_agent?: boolean; author?: string }) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/comments`, body).then(j),
+  replyArtifactComment: (slug: string, commentId: string, body: { text: string; is_agent?: boolean; author?: string }) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}/reply`, body).then(j),
+  markCommentReview: (slug: string, commentId: string) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}/review`, {}).then(j),
+  resolveComment: (slug: string, commentId: string) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}/resolve`, {}).then(j),
+  reopenComment: (slug: string, commentId: string) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}/reopen`, {}).then(j),
+  deleteArtifactComment: (slug: string, commentId: string) =>
+    del(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}`).then(j),
+  editArtifactComment: (slug: string, commentId: string, body: { text: string }) =>
+    patch(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}`, body).then(j),
   browserAuthRetry: () => post('/api/browser-auth-retry', {}).then(j),
   getBrowserConfig: () => get('/api/browser/config').then(j) as Promise<{extension_mode: boolean; token: boolean}>,
   saveBrowserConfig: (body: {extension_mode: boolean; token: string}) => put('/api/browser/config', body).then(j),

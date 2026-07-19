@@ -754,7 +754,9 @@ class TestKeystoneOnRealPath:
 
         hooks = HookManager()
         r = hooks.on_tool_call(
-            "Editing key", session_key="cli_chat", tool_kind="edit",
+            "Editing key",
+            session_key="cli_chat",
+            tool_kind="edit",
             raw_params={"path": "~/.ssh/id_rsa"},
         )
         assert r.action == TOOL_DENY
@@ -765,7 +767,9 @@ class TestKeystoneOnRealPath:
 
         hooks = HookManager()
         r = hooks.on_tool_call(
-            "code", session_key="cli_chat", tool_kind="edit",
+            "code",
+            session_key="cli_chat",
+            tool_kind="edit",
             raw_params={"path": "/tmp/scratch.txt"},
         )
         assert r.action != TOOL_DENY
@@ -1081,3 +1085,220 @@ class TestChokepointsFailClosed:
         monkeypatch.setattr(gp, "governance_permits", _compose_fail)
         with pytest.raises(PlatformCompositionError):
             enterprise._governance_posture_permits_workspace("E1", "T1")
+
+
+# ── capabilities.publish gate (artifact publish Plane-C chokepoint) ──
+class TestPublishGovernanceGate:
+    """The artifact-publish chokepoint (``_publish_governance_denied``) enforces
+    the ``capabilities.publish`` ceiling AND the ``publish.allowed_destinations``
+    config allowlist. Publishing is an HTTP action the host gate never sees."""
+
+    @staticmethod
+    def _req(session_key: str = "dashboard:ui"):
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.headers.get.return_value = session_key
+        return req
+
+    def test_ungoverned_permits(self):
+        from kiro_crew.dashboard.handlers.artifacts import _publish_governance_denied
+
+        _install(None)
+        assert _publish_governance_denied(self._req(), "artifactory") is None
+
+    def test_capability_disabled_blocks(self):
+        from kiro_crew.dashboard.handlers.artifacts import _publish_governance_denied
+
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"publish": {"enabled": False}},
+            }
+        )
+        reason = _publish_governance_denied(self._req(), "artifactory")
+        assert reason is not None
+
+    def test_destination_not_in_ruleset_blocks(self):
+        from kiro_crew.dashboard.handlers.artifacts import _publish_governance_denied
+
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "publish": {
+                        "enabled": True,
+                        "scopes": {"destinations": {"mode": "allow", "allow": ["artifactory"]}},
+                    }
+                },
+            }
+        )
+        assert _publish_governance_denied(self._req(), "artifactory") is None
+        assert _publish_governance_denied(self._req(), "chorus") is not None
+
+    def test_config_allowlist_narrows(self, monkeypatch):
+        # Default-open ceiling, but the operator's config allowlist restricts to
+        # a single destination — config narrows, never widens.
+        from kiro_crew.config.loader import KiroCrewConfig, PublishConfig
+        from kiro_crew.dashboard.handlers import artifacts as art
+
+        _install(None)
+        cfg = KiroCrewConfig.load()
+        cfg.publish = PublishConfig(allowed_destinations=["artifactory"])
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: cfg))
+        assert art._publish_governance_denied(self._req(), "artifactory") is None
+        assert art._publish_governance_denied(self._req(), "chorus") is not None
+
+    def test_composition_error_propagates(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import artifacts as art
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        def _compose_fail(*a, **k):
+            raise PlatformCompositionError("companion missing")
+
+        monkeypatch.setattr(gp, "governance_permits", _compose_fail)
+        with pytest.raises(PlatformCompositionError):
+            art._publish_governance_denied(self._req(), "artifactory")
+
+    def test_generic_governance_error_fails_closed(self, monkeypatch):
+        # Unlike messaging/cron (fail-open on a transient error), the publish
+        # gate is an exfil authorization decision and must DENY when governance
+        # cannot be evaluated.
+        from kiro_crew.dashboard.handlers import artifacts as art
+
+        def _boom(*a, **k):
+            raise RuntimeError("governance module broken")
+
+        monkeypatch.setattr(gp, "governance_permits", _boom)
+        _install(None)
+        reason = art._publish_governance_denied(self._req(), "artifactory")
+        assert reason is not None and "governance could not be evaluated" in reason
+
+    def test_internal_resolve_error_fails_closed(self, monkeypatch):
+        # Regression (PR #14 nrb): governance_permits SWALLOWS its own internal
+        # errors and, by default, degrades to a permissive Decision. The publish
+        # gate calls it with fail_closed=True, so an error raised INSIDE
+        # governance_permits (e.g. resolve() throwing) must still DENY — the
+        # handler-level except never sees this error. Before the fix this path
+        # returned permitted==True and the gate wrongly permitted the publish.
+        from kiro_crew.dashboard.handlers import artifacts as art
+
+        def _resolve_boom(*a, **k):
+            raise RuntimeError("resolver exploded")
+
+        # Install a real ceiling so resolve() is actually invoked, then make it throw.
+        _install({"version": 1, "boot": {"fail_closed": True}})
+        monkeypatch.setattr(gp, "resolve", _resolve_boom, raising=False)
+        # governance_permits imports resolve locally; patch at its source module.
+        from kiro_crew.platform import governance as gov_mod
+
+        monkeypatch.setattr(gov_mod, "resolve", _resolve_boom)
+        reason = art._publish_governance_denied(self._req(), "artifactory")
+        assert reason is not None
+
+    def test_governance_permits_fail_closed_flag(self, monkeypatch):
+        # Unit-level: the shared helper denies on an internal error ONLY when
+        # fail_closed=True; the default (messaging/cron) still degrades to permit.
+        from kiro_crew.platform import governance as gov_mod
+
+        def _resolve_boom(*a, **k):
+            raise RuntimeError("resolver exploded")
+
+        _install({"version": 1, "boot": {"fail_closed": True}})
+        monkeypatch.setattr(gov_mod, "resolve", _resolve_boom)
+
+        permit_default = gp.governance_permits("capabilities.publish", "destinations:artifactory")
+        assert getattr(permit_default, "permitted", None) is True  # degrade-to-permit
+
+        deny = gp.governance_permits(
+            "capabilities.publish", "destinations:artifactory", fail_closed=True
+        )
+        assert getattr(deny, "permitted", None) is False  # fail-closed DENY
+
+    def test_fail_closed_does_not_affect_ungoverned_user(self):
+        # A user with ZERO governance config (no ceiling, no profiles) must never
+        # be denied by fail_closed=True: governance_permits returns early with an
+        # "ungoverned" permit BEFORE the except branch fail_closed lives in, so
+        # the flag is a no-op for the common standalone case. Guards against a
+        # future refactor accidentally routing ungoverned users through DENY.
+        _install(None)  # no ceiling
+        # No profiles bound (autouse _isolate fixture points profiles dir at an
+        # empty tmp dir), so every surface resolves to policy-only == ungoverned.
+        for sk in ("dashboard:ui", "", "slack:U1", "chat:main"):
+            d = gp.governance_permits(
+                "capabilities.publish",
+                "destinations:artifactory",
+                session_key=sk,
+                fail_closed=True,
+            )
+            assert getattr(d, "permitted", None) is True, sk
+        # End-to-end: the handler gate permits (returns None) for an ungoverned
+        # dashboard user even with the fail_closed call site.
+        from kiro_crew.dashboard.handlers import artifacts as art
+
+        assert art._publish_governance_denied(self._req(), "artifactory") is None
+
+    def test_config_load_failure_fails_closed(self, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers import artifacts as art
+
+        _install(None)  # governance permits; the config read is what fails
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_boom))
+        reason = art._publish_governance_denied(self._req(), "artifactory")
+        assert reason is not None and "config could not be loaded" in reason
+
+    @pytest.mark.asyncio
+    async def test_republish_gates_on_existing_provider(self, tmp_path, monkeypatch):
+        # Regression (PR #14 nrb): a re-publish with NO explicit provider in the
+        # body must gate on the EXISTING publication's provider, not the default
+        # "artifactory". publish_sync.publish() dispatches to the existing
+        # provider, so gating on "artifactory" while the artifact is published to
+        # "chorus" would push bytes to a DENIED destination. Policy: allow
+        # artifactory, deny everything else.
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew import artifacts as art_mod
+        from kiro_crew.artifacts import ArtifactPublication, ArtifactStore
+        from kiro_crew.dashboard.handlers import artifacts as art
+
+        store = ArtifactStore(root=tmp_path / "artifacts")
+        store.create(name="Doc", content="hi", slug="doc", kind="markdown")
+        store.set_publication(
+            "doc",
+            ArtifactPublication(artifact_id="ext-1", view_url="http://x", provider="chorus"),
+        )
+        monkeypatch.setattr(art_mod, "_default_store", store)
+        monkeypatch.setattr(art, "_is_restricted_session", lambda state, request: False)
+        # Should never be reached — the gate must deny before dispatch.
+        monkeypatch.setattr(
+            art.publish_sync, "publish", AsyncMock(side_effect=AssertionError("gate bypassed"))
+        )
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "publish": {
+                        "enabled": True,
+                        "scopes": {"destinations": {"mode": "allow", "allow": ["artifactory"]}},
+                    }
+                },
+            }
+        )
+        req = MagicMock()
+        req.app = {"state": MagicMock()}
+        req.headers = {"X-Session-Key": "dashboard:ui"}
+        req.match_info = {"slug": "doc"}
+        req.query = {}
+        # Body omits "provider" — the pre-fix code would default to "artifactory"
+        # (allowed) and permit the push to the chorus-published artifact.
+        req.read = AsyncMock(return_value=json.dumps({"visibility": "PRIVATE"}).encode())
+        resp = await art.api_artifact_publish(req)
+        assert resp.status == 403

@@ -52,16 +52,30 @@ from kiro_crew.dashboard.crash_dump_store import (
     rotate_dumps,
 )
 from kiro_crew.dashboard.handlers.artifacts import (
+    api_artifact_comments,
     api_artifact_delete,
+    api_artifact_delete_comment,
     api_artifact_detail,
+    api_artifact_edit_comment,
     api_artifact_events,
     api_artifact_folder_create,
     api_artifact_folder_delete,
     api_artifact_folder_update,
     api_artifact_folders,
+    api_artifact_mark_review,
+    api_artifact_post_comment,
+    api_artifact_publish,
+    api_artifact_publish_providers,
     api_artifact_record_event,
+    api_artifact_refresh_sharing,
+    api_artifact_relocate,
+    api_artifact_reopen_comment,
+    api_artifact_reply_comment,
+    api_artifact_resolve_comment,
     api_artifact_set_folder,
+    api_artifact_unpublish,
     api_artifact_update,
+    api_artifact_update_sharing,
     api_artifact_version_detail,
     api_artifact_versions,
     api_artifacts_create,
@@ -218,9 +232,7 @@ _BASE_CSP = (
     "object-src 'none'; base-uri 'self'"
 )
 
-_INSTANCES_FRAME_SRC_EXTRA = (
-    " http://127.0.0.1:* http://localhost:* http://*.localhost:*"
-)
+_INSTANCES_FRAME_SRC_EXTRA = " http://127.0.0.1:* http://localhost:* http://*.localhost:*"
 
 # Permissions-Policy header. Chrome 143+ changed the default policy so
 # that clipboard-write is DENIED unless explicitly allowlisted, even in
@@ -228,9 +240,7 @@ _INSTANCES_FRAME_SRC_EXTRA = (
 # this header, ``navigator.clipboard.writeText`` fails with a permissions
 # policy violation, breaking the "Copy link" button on published
 # artifacts. Grant same-origin only; cross-origin remains denied.
-_PERMISSIONS_POLICY = (
-    "clipboard-write=(self), clipboard-read=(self)"
-)
+_PERMISSIONS_POLICY = "clipboard-write=(self), clipboard-read=(self)"
 
 # Content-hashed build output (Vite emits ``/assets/<name>-<hash>.<ext>``;
 # the URL changes whenever the content changes) is safe to cache forever.
@@ -351,6 +361,7 @@ def _migrate_playwright_to_proxy() -> None:
 def _precompute_telemetry(state: "DashboardState") -> None:
     """Pre-compute telemetry data (blocking I/O — call before server starts)."""
     from kiro_crew.dashboard.handlers_system import _get_owner_hash, _get_static_system_info
+
     _log = logging.getLogger(__name__)
     owner_hash = "unknown"
     try:
@@ -460,15 +471,22 @@ def _register_mcp_routes(app: web.Application) -> None:
     # Artifacts — persistent, versioned LLM-generated UI
     app.router.add_get("/api/artifacts", api_artifacts_list)
     app.router.add_post("/api/artifacts", api_artifacts_create)
+    # Literal route MUST precede the dynamic /api/artifacts/{slug} GET below so
+    # "publish-providers" isn't captured as a slug (aiohttp matches in order).
+    app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)
     app.router.add_get("/api/artifacts/{slug}", api_artifact_detail)
     app.router.add_patch("/api/artifacts/{slug}", api_artifact_update)
     app.router.add_delete("/api/artifacts/{slug}", api_artifact_delete)
     app.router.add_get("/api/artifacts/{slug}/versions", api_artifact_versions)
-    app.router.add_get(
-        "/api/artifacts/{slug}/versions/{version}", api_artifact_version_detail
-    )
+    app.router.add_get("/api/artifacts/{slug}/versions/{version}", api_artifact_version_detail)
     app.router.add_get("/api/artifacts/{slug}/events", api_artifact_events)
     app.router.add_post("/api/artifacts/{slug}/events", api_artifact_record_event)
+    # Publishing / sharing (Mesh-1880)
+    app.router.add_post("/api/artifacts/{slug}/publish", api_artifact_publish)
+    app.router.add_delete("/api/artifacts/{slug}/publish", api_artifact_unpublish)
+    app.router.add_post("/api/artifacts/{slug}/publish/refresh", api_artifact_refresh_sharing)
+    app.router.add_patch("/api/artifacts/{slug}/sharing", api_artifact_update_sharing)
+    app.router.add_patch("/api/artifacts/{slug}/relocate", api_artifact_relocate)
 
     # Artifact folders (Mesh-2720). ``/api/artifact-folders`` (hyphen) never
     # collides with the ``/api/artifacts/{slug}`` dynamic route.
@@ -477,6 +495,25 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_patch("/api/artifact-folders/{id}", api_artifact_folder_update)
     app.router.add_delete("/api/artifact-folders/{id}", api_artifact_folder_delete)
     app.router.add_patch("/api/artifacts/{slug}/folder", api_artifact_set_folder)
+    # Artifact comments (durable local store)
+    app.router.add_get("/api/artifacts/{slug}/comments", api_artifact_comments)
+    app.router.add_post("/api/artifacts/{slug}/comments", api_artifact_post_comment)
+    app.router.add_patch("/api/artifacts/{slug}/comments/{comment_id}", api_artifact_edit_comment)
+    app.router.add_post(
+        "/api/artifacts/{slug}/comments/{comment_id}/reply", api_artifact_reply_comment
+    )
+    app.router.add_post(
+        "/api/artifacts/{slug}/comments/{comment_id}/review", api_artifact_mark_review
+    )
+    app.router.add_post(
+        "/api/artifacts/{slug}/comments/{comment_id}/resolve", api_artifact_resolve_comment
+    )
+    app.router.add_post(
+        "/api/artifacts/{slug}/comments/{comment_id}/reopen", api_artifact_reopen_comment
+    )
+    app.router.add_delete(
+        "/api/artifacts/{slug}/comments/{comment_id}", api_artifact_delete_comment
+    )
 
 
 async def _start_site(
@@ -715,9 +752,7 @@ def _dispatch_owner_dm(state: DashboardState, text: str) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
-def _register_instances_hooks(
-    app: web.Application, state: DashboardState, port: int
-) -> None:
+def _register_instances_hooks(app: web.Application, state: DashboardState, port: int) -> None:
     """Register the opt-in Instances (multi-instance) startup/cleanup hooks.
 
     These MUST be attached before ``runner.setup()`` freezes the app's
@@ -770,9 +805,7 @@ def _register_instances_hooks(
         # the port bind immediately; tunnels reconnect (or surface their error
         # on the instance tab, which persists on failure) without gating
         # startup.
-        revive_task = asyncio.create_task(
-            _revive_intended_instances(registry, manager)
-        )
+        revive_task = asyncio.create_task(_revive_intended_instances(registry, manager))
         state._background_tasks.add(revive_task)
         revive_task.add_done_callback(state._background_tasks.discard)
 
@@ -913,13 +946,12 @@ async def start_dashboard(
                     state.push_slots_update()
                     logger.info(
                         "workflow %s result -> chat slot %s: agent turn %s",
-                        run_id, getattr(slot, "key", "?"),
+                        run_id,
+                        getattr(slot, "key", "?"),
                         "started" if started else "queued",
                     )
                 except Exception:
-                    logger.warning(
-                        "workflow %s auto-turn failed", run_id, exc_info=True
-                    )
+                    logger.warning("workflow %s auto-turn failed", run_id, exc_info=True)
 
             try:
                 inject_workflow_result(state, run_id, snapshot, on_injected=_auto_turn)
@@ -934,7 +966,9 @@ async def start_dashboard(
             now_fn=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             concurrency=_wf_concurrency,
         )
-        logger.info("WorkflowService ready (dynamic workflows, max parallel agents=%s)", _wf_concurrency)
+        logger.info(
+            "WorkflowService ready (dynamic workflows, max parallel agents=%s)", _wf_concurrency
+        )
     except Exception:
         state.workflow_service = None
         logger.warning("WorkflowService unavailable", exc_info=True)
@@ -971,7 +1005,9 @@ async def start_dashboard(
     # Page routes
     app.router.add_get("/", handlers.index)
     app.router.add_get("/logo.png", handlers.logo)
-    app.router.add_get("/{name:manifest\\.json|sw\\.js|icon-\\d+\\.png|pcm-worklet\\.js}", handlers.pwa_file)
+    app.router.add_get(
+        "/{name:manifest\\.json|sw\\.js|icon-\\d+\\.png|pcm-worklet\\.js}", handlers.pwa_file
+    )
 
     # WebSocket (multiplexed real-time events)
     app.router.add_get("/api/ws", ws.api_ws)
@@ -1128,7 +1164,9 @@ async def start_dashboard(
     app.router.add_get("/api/chat/slots/{slot}", chat.api_chat_slot_detail)
     app.router.add_post("/api/chat/slots/{slot}/stop", chat.api_chat_slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/interrupt", chat.api_chat_slot_interrupt)
-    app.router.add_delete("/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel)
+    app.router.add_delete(
+        "/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel
+    )
     app.router.add_patch("/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_edit)
     app.router.add_put("/api/chat/slots/{slot}/queue/order", chat.api_chat_slot_queue_reorder)
     app.router.add_delete("/api/chat/slots/{slot}", chat.api_chat_slot_delete)
@@ -1137,7 +1175,9 @@ async def start_dashboard(
     # Optimizer
     app.router.add_post("/api/optimizer/optimize", handlers.handle_optimize)
     app.router.add_post("/api/chat/slots/{slot}/model", chat.api_chat_slot_model)
-    app.router.add_post("/api/chat/slots/{slot}/reasoning-effort", chat.api_chat_slot_reasoning_effort)
+    app.router.add_post(
+        "/api/chat/slots/{slot}/reasoning-effort", chat.api_chat_slot_reasoning_effort
+    )
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/project", chat.api_chat_slot_project)
     app.router.add_get("/api/recent-projects", chat.api_recent_projects)
@@ -1239,7 +1279,9 @@ async def start_dashboard(
     app.router.add_post("/api/taskrunner/from-chat", handlers.api_taskrunner_from_chat)
     app.router.add_delete("/api/taskrunner/{task_id}", handlers.api_taskrunner_delete)
     app.router.add_patch("/api/taskrunner/{task_id}/name", handlers.api_taskrunner_rename)
-    app.router.add_patch("/api/taskrunner/{task_id}/tasks/{index}", handlers.api_taskrunner_update_task)
+    app.router.add_patch(
+        "/api/taskrunner/{task_id}/tasks/{index}", handlers.api_taskrunner_update_task
+    )
     app.router.add_post("/api/taskrunner/{task_id}/retry", handlers.api_taskrunner_retry)
     app.router.add_post("/api/taskrunner/{task_id}/pause", handlers.api_taskrunner_pause)
     app.router.add_post("/api/taskrunner/{task_id}/to-chat", handlers.api_taskrunner_to_chat)
@@ -1320,7 +1362,9 @@ async def start_dashboard(
     app.router.add_post("/api/channels", handlers_channel.api_channel_create)
     app.router.add_get("/api/channels/{id}", handlers_channel.api_channel_get)
     app.router.add_delete("/api/channels/{id}", handlers_channel.api_channel_close)
-    app.router.add_post("/api/channels/{id}/clear-context", handlers_channel.api_channel_clear_context)
+    app.router.add_post(
+        "/api/channels/{id}/clear-context", handlers_channel.api_channel_clear_context
+    )
     app.router.add_post("/api/channels/{id}/messages", handlers_channel.api_channel_post)
     app.router.add_post("/api/channels/{id}/agents", handlers_channel.api_channel_add_agent)
     app.router.add_patch(
@@ -1357,9 +1401,7 @@ async def start_dashboard(
     app.router.add_post(
         "/api/instances/{id}/disconnect", handlers_instances.api_instances_disconnect
     )
-    app.router.add_post(
-        "/api/instances/{id}/restart", handlers_instances.api_instances_restart
-    )
+    app.router.add_post("/api/instances/{id}/restart", handlers_instances.api_instances_restart)
 
     # Misc (notifications GET/clear and send-message via _register_mcp_routes)
     app.router.add_get("/api/notifications", handlers.api_notifications)
@@ -1413,6 +1455,7 @@ async def start_dashboard(
 
     # App Platform
     from kiro_crew.apps.routes import register_app_routes
+
     register_app_routes(app)
 
     # Built-in app routes — register at startup (handlers check enabled state)
@@ -1441,7 +1484,8 @@ async def start_dashboard(
     # subprocess_executor (not the default to_thread pool) isolates it so a hung
     # `ps` cannot starve asyncio's default executor (the RFC's bulkhead intent).
     started_apps = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), start_enabled_app_backends)
+        subprocess_executor(), start_enabled_app_backends
+    )
     if started_apps:
         logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
 
@@ -1466,6 +1510,7 @@ async def start_dashboard(
         The OSS build ships no bundled Playwright MCP installer, so there is no
         unconditional install step — we only migrate pre-existing mcp.json entries.
         """
+
         async def _bg_migrate() -> None:
             try:
                 await asyncio.to_thread(_migrate_playwright_to_proxy)
@@ -1690,9 +1735,7 @@ async def start_dashboard(
     # Verify security invariant: if dashboard_url expands the CSRF origin
     # set for a remote URL, token auth middleware MUST be active.
     if dashboard_url:
-        _has_token_auth = any(
-            getattr(mw, "_is_token_auth", False) for mw in app.middlewares
-        )
+        _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in app.middlewares)
         if _has_token_auth:
             app["allowed_origins"] = build_allowed_origins(
                 port, local_only, configured_host, dashboard_url
@@ -1826,16 +1869,12 @@ async def start_dashboard(
             )
             # Replay stack content to journal so container/journal-only operators
             # can see it without accessing the file system.
-            _replay_lines, _truncated = await asyncio.to_thread(
-                dump_replay_lines, _prior_dump
-            )
+            _replay_lines, _truncated = await asyncio.to_thread(dump_replay_lines, _prior_dump)
             if _replay_lines:
                 _replay_body = "\n".join(_replay_lines)
                 if _truncated:
                     _replay_body += "\n  [truncated — full dump at above path]"
-                logger.warning(
-                    "Replaying prior crash dump stacks:\n%s", _replay_body
-                )
+                logger.warning("Replaying prior crash dump stacks:\n%s", _replay_body)
 
     # Fire background MCP probe at startup (non-blocking)
     asyncio.create_task(handlers._bg_mcp_probe())
@@ -1875,6 +1914,7 @@ async def start_dashboard(
             from kiro_crew.slack.handler import (
                 _trusted_sessions,  # circular import: server.py is imported by slack/gateway.py which imports handler.py
             )
+
             _trusted_sessions.clear()
         except Exception:
             logger.debug("Could not clear trusted sessions", exc_info=True)

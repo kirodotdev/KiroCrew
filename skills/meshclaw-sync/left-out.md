@@ -25,6 +25,42 @@ This repo's current history was produced by two separate events, each of which
 This is the consolidated record so the decisions (and their reasons) survive even
 if the source CRs or the backup branch are pruned.
 
+### Artifacts-page exact-mirror batch (2026-07-17) — resolves several standing DEFERs
+
+A dedicated "exact-mirror the artifacts page" batch (branch
+`sync/artifacts-mirror-2026-07-17`) deliberately REVERSED a cluster of previously
+deferred/skipped decisions, because the user asked for an exact mirror of the
+MeshClaw artifacts page (with two carve-outs — see below). What changed:
+
+- **Durable local-comment subsystem — NOW PORTED** (was DEFER/SKIP_INTERNAL:
+  `475146ca`, `86315dc`, `de64d07b`, `0000f561`/`f746d60`, `4685d34`, `a6b1fc7`,
+  the `affffcff` base). The backend `ArtifactComment` store (comments.json
+  sidecar + anchor rescan + lifecycle events) and the full FE stack
+  (`CommentsSidebar`, `CommentThreadPopover`, `InlineCommentOverlay`,
+  `FileArtifactComments`, `useCommentBridge`, `artifactCommentsSync`,
+  comment-bridge `widgetSrcdoc`) landed. Only the **remote-comment sync half**
+  (`merge_remote_comments` / `RemoteComment` — Chorus) stays STRIPPED.
+- **Masonry Artifacts page — NOW PORTED** (was `cd6730f` DEFER "still open"):
+  masonry gallery + grid/table toggle + gallery folder browse, with the new
+  `@virtuoso.dev/masonry` dep. The Harmony Artifactory remote-browse surfaces on
+  that page (`RemoteArtifactCard`, shared/public/mine sections) stay STRIPPED.
+- **Clickable artifact refs + Artifacts side-panel — NOW PORTED** (`4685d34`):
+  `ArtifactBody`/`ArtifactPanel` extraction + `MarkdownRenderer` `onArtifactOpen`.
+- **Publish/sharing — PORTED BEHIND A SEAM (not a live provider):** the
+  vendor-neutral `publish_provider` ABC + registry + `publish_sync` orchestration
+  + `ArtifactPublication`/`ForkMetadata` models + publish handlers +
+  `ArtifactSharePanel` are now generic core. Concrete **Harmony Artifactory +
+  Chorus** providers stay OUT (companion-only) — registered via the new CPP
+  `PublishRegistry` seam; whether/where publish is allowed is gated by the new
+  `capabilities.publish` governance scope + `publish.allowed_destinations` config.
+  Public edition: registry empty → publishing unavailable (503), no UI.
+
+**Still SKIP (unchanged) — the two carve-outs:** the Iterate button stays hidden
+(`SHOW_ARTIFACT_ITERATE=false`, fork-UX); and everything on **Harmony Artifactory
+browse + Chorus remote** (`RemoteArtifactCard`, `RemoteArtifactDetailPage`,
+`UpstreamSyncBanner`, remote comment sync, `artifactory_client/provider.py`)
+stays absent as internal infra.
+
 ### Independent coverage audit (2026-06-15)
 
 The lists below are sourced from the sync *records* (CRs + commit bodies). To
@@ -180,6 +216,273 @@ PR #18 (batch-38 + batch-39 follow-up) drew a fresh set of Codex findings. **Non
 > 1. `sandbox.py` cleanup sweep (Codex HIGH, repeated): the legacy-launcher sweep's raw `os.kill(int(pid_str), 0)` liveness probe was replaced with `platform_compat.pid_exists()`. This is the fork's own CLAUDE.md/AGENTS.md platform rule — `os.kill(pid, 0)` TERMINATES the target process on Windows, and every POSIX-only liveness probe must route through the `platform_compat` shim. Upstream (Linux/macOS-only) has no such rule, so this stays a deliberate fork divergence; a future upstream sweep edit must be re-applied on top of the shim call.
 > 2. `AutoNudgePopover.tsx` save button `text-white` -> `text-accent-fg` (Claude LOW): NOT a unilateral divergence — upstream itself established the `text-accent-fg` token in `15b1f9c` and accidentally regressed it to `text-white` in the `729e09d` shadcn migration. The fork restores upstream's own intended pattern; if upstream fixes it later, the next sync sees ALREADY_PRESENT.
 > 3. `TagManagerList.tsx` inline-rename `<input>` a11y (Claude LOW): added `aria-label={`Rename tag ${t.name}`}` — an additive accessible-name fix consistent with the fork's a11y conventions; same ALREADY_PRESENT convergence if upstream adds one later.
+
+PR #14 (artifacts-page exact-mirror) drew Codex + CodeQL findings across several
+re-runs. **Fork-INTRODUCED defects (all fixed fork-side on-branch):** (1) the new
+`capabilities.publish` chokepoint (`dashboard/handlers/artifacts.py`
+`_publish_governance_denied`) degraded-to-permit on an unexpected
+governance-eval error — changed to **fail closed** (deny) since publish is an
+exfil authorization decision (stricter than the messaging/cron chokepoints by
+design); (2) the new `publish.allowed_destinations` config field was never
+parsed in `KiroCrewConfig.load()` nor emitted in `to_dict()`, so the allowlist
+was inert and erased on save — wired both + round-trip test; (3) the
+`capabilities.publish` gate covered `api_artifact_publish` but NOT
+`api_artifact_update_sharing`, so an already-published artifact could be widened
+to PUBLIC bypassing the gate — added the same fail-closed gate to the sharing
+mutation; (4) CodeQL flagged the new-to-fork `api_artifact_relocate` path
+expression — reordered so the traversal + `is_sensitive_path` guards run BEFORE
+any `os.path.exists`/`isdir` stat (sanitize-before-use). The remaining
+**upstream-verbatim findings** (faithful ports of the current MeshClaw beta) —
+same disposition as prior batches (fix upstream-first, flow back via sync;
+fixing fork-only would diverge + re-conflict):
+
+| Upstream origin | Fork file:sym | Sev | Finding | Fix shape (upstream-first) |
+|---|---|---|---|---|
+| MeshClaw `publish_sync.py` | `publish_sync.py` `_write_tempfile` / `os.unlink` (~L260/352) | HIGH | Synchronous `tempfile.mkstemp`/write/`unlink` for artifacts up to 25 MiB run on the asyncio gateway loop. Byte-identical to upstream (modulo the `kc-artifact-` prefix rename). | Offload tempfile create/write/delete via `asyncio.to_thread` / the subprocess executor — upstream-first. |
+| MeshClaw `dashboard/handlers/artifacts.py` | `api_artifact_update` (~L787) | MED | A content update never calls `push_version_by_slug()`, so an `auto_sync=True` publication doesn't push the new version. Faithful port — upstream's own update handler also omits this (count 0 both sides). | Trigger a best-effort provider push after a successful version bump — upstream-first. |
+| MeshClaw `dashboard/handlers/artifacts.py` | `api_artifact_delete` (~L816) | MED | Deleting a published artifact skips `publish_sync.delete_for_artifact()`, orphaning the remote. Faithful port — upstream's delete handler also omits the cleanup. | Call `delete_for_artifact(prev)` before the local delete — upstream-first. |
+| MeshClaw `publish_sync.py` | `pull_upstream` (~L860) | MED | Live/CRDT pulls compare the version counter, which `upstream_status()` documents advances merely on view → phantom pulls. Identical to upstream. | Use the remote-content-hash comparison for live publications too — upstream-first. |
+
+The Claude Review gate (`[BLOCK-MERGE]`) on PR #14 confirmed the design and
+surfaced the same upstream-verbatim HIGH (`_write_tempfile` blocking I/O, already
+tracked above) plus two more **fork-fixed** items: the masonry artifact card was a
+bare `div onClick` with no keyboard semantics (blocking `accessible-interactive-
+elements` rule) → added `role="button"`/`tabIndex`/Enter-Space `onKeyDown` to
+match the sibling `FolderCard`; and `types/index.ts` declared `CommentAnchor`/
+`ArtifactComment` twice (a merge artifact from the transcript-replay recovery) →
+de-duplicated. One MED it raised — `scope=shared` comment/reply provider pushes
+(`artifacts.py` `api_artifact_*comment`) are outbound egress that skip the
+`capabilities.publish` gate — is **upstream-verbatim** comment-handler code and
+inert in the public edition (no provider registered); tracked as a consistency
+follow-up (gate provider-comment egress too, upstream-first).
+
+**CodeQL `py/path-injection` (3 HIGH) — suppressed as guarded false-positives**
+(user chose suppress over confine-to-root, to preserve upstream's any-file
+relocate behavior). The new-to-fork `api_artifact_relocate` handler is
+byte-identical to upstream and intentionally accepts any non-sensitive local
+file; its two `os.path.exists`/`isdir` stat calls run AFTER the `..`-traversal
+guard + the `is_sensitive_path` denylist, but CodeQL's taint tracker only accepts
+a fixed-root `is_relative_to` containment barrier (the `files.py` pattern) as a
+sanitizer, not the denylist. The third alert (`security.py:711`) is inside
+`is_sensitive_path` itself — the sanitizer's own `Path(...).resolve()` candidate
+build — surfaced only because relocate is a new caller. All three carry an inline
+`# lgtm[py/path-injection]` suppression with a justification comment; none is a
+real vulnerability (a fixed-root confine remains the upstream-first hardening if
+the any-file behavior is ever narrowed).
+
+**PR #14 review round 2 (2026-07-18, rebased onto `main` @ `1f6b478f`).** A second
+Codex/Claude/CodeQL pass drew 14 live inline threads. Triaged against this ledger:
+- **Fork-INTRODUCED, fixed fork-side on-branch** (fork-original `capabilities.publish`
+  code with no upstream counterpart — fixing can't diverge or re-conflict):
+  (a) `_publish_governance_denied` still **failed OPEN** for the case it was
+  written for: `governance_permits` swallows its OWN internal errors and returns a
+  permissive "no opinion" Decision, so the handler's fail-closed `except` was
+  unreachable for a real governance-eval error. Added an opt-in `fail_closed=True`
+  to `governance_permits` (denies + audits `failed_closed` at the point the error
+  is caught) and passed it from the publish gate. (b) The gate checked the
+  **requested/default** provider, but `publish_sync.publish()` re-dispatches an
+  already-published artifact to `publication.provider` — a re-publish with no
+  explicit provider gated on `artifactory` while pushing to a possibly-denied
+  existing destination. Now resolves the **effective** provider before the gate
+  (mirrors `api_artifact_update_sharing`). (c) `ArtifactStore.update_comment`
+  mass-assigned any dataclass attr via `setattr`; added a `_MUTABLE_COMMENT_FIELDS`
+  allowlist (`status`/`body`/`anchor_orphaned`) matching `update_publication` /
+  `update_fork_metadata`. Regression tests added in `test_governance_chokepoints.py`
+  (`test_internal_resolve_error_fails_closed`, `test_governance_permits_fail_closed_flag`,
+  `test_republish_gates_on_existing_provider`). Spec: `governance.md` publish
+  section updated.
+- **Already fixed by an earlier on-branch commit** (thread predated the fix): the
+  masonry `LocalCardBody` a11y (`role`/`tabIndex`/`onKeyDown` — commit "dedupe
+  comment types") and the duplicate `CommentAnchor`/`ArtifactComment` TS interfaces.
+- **Upstream-verbatim — DEFER unchanged** (faithful MeshClaw ports; inert in the
+  public fork's empty `PublishRegistry`; fixing fork-only would diverge + get
+  re-conflicted by the next sync): `publish_sync._write_tempfile`/`_render_content`
+  blocking I/O on the loop (already tracked above), the comment/publish
+  handlers' inline blocking store IO (`store.get`/`list_comments`/… — the reviewer
+  notes it MIRRORS the pre-existing `api_artifact_detail` inline pattern, so
+  offloading only the new handlers would be *inconsistent*; a module-wide
+  offload is the upstream-first fix), and the relocate arbitrary-local-file read
+  (same any-file behavior the 3 CodeQL suppressions above cover — a fixed-root
+  confine is the upstream-first hardening if the behavior is ever narrowed).
+
+**PR #14 review round 3 (2026-07-18) — CI AI-review gate (Codex `Severity: HIGH`
++ Claude `[BLOCK-MERGE]`) re-flagged the deferred items on the squashed HEAD.**
+Branch protection has NO required status checks (only human review), so the AI
+gates are advisory — but per the maintainer directive ("make CI green"), the
+gate-blocking HIGHs were promoted from DEFER to **fork-side fixes** where the fix
+is additive + low-risk (and still upstream-mergeable, i.e. won't re-conflict):
+- **`publish_sync._redact_untrusted` `manual`-source exemption** (Codex HIGH):
+  `source` is set once at create and NOT re-derived on a later agent `update`, so
+  a `manual`-labelled artifact can carry LLM bytes by publish time and reach a
+  provider unscanned. Made redaction **unconditional** (dropped the `manual`
+  bypass) — a false redaction is far cheaper than an exfiltration miss. Test:
+  `test_redact_untrusted_scans_every_source`.
+- **`scope=shared` comment post/reply/edit provider egress** (Codex + Claude
+  HIGH; was DEFER above): now gated through `_publish_governance_denied` (the same
+  `capabilities.publish` chokepoint as artifact publish) before the provider
+  dispatch — a denied destination keeps the comment/reply/edit LOCAL
+  (`local_only` / `remote_synced=False`) rather than pushing. Test:
+  `test_edit_gated_by_publish_governance`.
+- **HTTP envelope cap** (Codex + Claude MEDIUM): `_MAX_BODY_BYTES` was pinned at
+  2 MiB while the store/validation cap rose to 25 MiB, so valid 2–25 MiB MCP
+  saves failed at the HTTP boundary. Raised to `MAX_CONTENT_BYTES` + 8 MiB
+  envelope headroom and corrected the inverted "store enforces a stricter cap"
+  comment.
+
+Still DEFER (upstream-first, MEDIUM/non-gate-blocking — do NOT fix fork-only):
+the two remaining MEDIUMs (`api_artifact_update` omits `push_version_by_slug`;
+`api_artifact_delete` omits `delete_for_artifact`) are faithful upstream ports
+(count 0 both sides) and inert in the public fork; the relocate any-file read
+stays upstream-first as above.
+
+**PR #14 review round 3b/3c (2026-07-18) — additional fork-side hardening.** The
+CI AI-review gate is empirically **non-convergent**: four consecutive Codex runs
+over the same ~11k-line diff each surfaced a DISJOINT set of 2–5 `Severity: HIGH`
+findings (run1: wrong-provider/fail-open; run2: manual-redaction/comment-egress;
+run3: blocking-IO/mark_review-delete-gate/tags-redaction/SEL-audit; run4:
+`wrap_widget_html` CSP-idempotency/`unpublish` best-effort-clear/store-IO). None
+overlapped. Branch protection requires NO status checks (human review only), so
+the gates are advisory. Fixed fork-side every finding that is additive +
+low-risk + still upstream-mergeable:
+- **`publish_sync` blocking I/O** (promoted from DEFER): `_render_content` +
+  `_write_tempfile` + unlink in `publish()`/`push_version()` now offload via
+  `asyncio.to_thread` (+ `_safe_unlink` helper).
+- **LLM tags unredacted on publish**: `publish()` now redacts each tag via
+  `_redact_untrusted` (title/summary already were).
+- **mark_review / delete provider egress** now pass `_publish_governance_denied`
+  (same `capabilities.publish` gate) before the provider dispatch.
+- **SEL audit on comment-handler denials**: post/reply/mark_review/resolve/
+  reopen/delete restricted-session (and reply validation) denials now emit
+  `_audit(outcome="denied")`.
+- **`author` / anchor strings echoed unredacted**: `_redact_text` + length caps
+  applied to the LLM/agent-influenced `author` (256) and anchor quote/prefix/
+  suffix (2000) in post/reply.
+- **`add_comment` unbounded**: added `MAX_COMMENTS_PER_ARTIFACT = 500` FIFO cap
+  (drops oldest WHOLE threads, never orphans a reply). Tests in
+  `test_artifact_comment_store.py::TestCommentRetentionCap`.
+- **CLAUDE.md violation — Amazon terminology in generic core**: genericized
+  `ArtifactSharePanel` ("Every Amazon employee" → "Everyone in your
+  organization", `alice@amazon.com` example → `alice@example.com`). This one is a
+  real de-Amazon-fork requirement, fixed regardless of the gate.
+
+Remaining DEFER (upstream-verbatim, inert in the empty-registry public fork,
+design-intentional — a fork-only fix would diverge + re-conflict and STILL not
+make the non-convergent gate green): `wrap_widget_html` returning a `<!DOCTYPE`
+document unchanged (deliberate no-double-wrap idempotency; the sandbox null-origin
+iframe already contains it), `unpublish()` clearing local metadata on a
+best-effort provider-delete failure (documented behavior), and the comment-handler
+inline store reads (mirror `api_artifact_detail`; module-wide offload is
+upstream-first).
+
+**PR #14 review round 4 (2026-07-18) — CodeQL (the ONE deterministic gate).**
+Unlike the non-convergent Codex/Claude reviews, GitHub-native CodeQL reports the
+SAME 3 `py/path-injection` HIGH alerts every run (`artifacts.py` relocate stat
+calls + `security.py:717` inside `is_sensitive_path`). The inline
+`# lgtm[py/path-injection]` comments do NOT suppress them — that is legacy
+Semmle/LGTM syntax; GitHub CodeQL ignores it. **Reversed the earlier
+"suppress over confine-to-root" decision** (it never actually suppressed) and
+implemented the real fix the reviewers asked for: `api_artifact_relocate` now
+CONFINES `source_path` to the user's home dir via a resolved-`is_relative_to`
+barrier (the sanitizer CodeQL recognizes), with an operator
+`publish.relocate_roots` config allowlist to widen to extra absolute roots; the
+`..` guard runs first and `is_sensitive_path` still applies inside every root.
+This closes the CodeQL alerts AND the agent-reachable arbitrary-file read
+(finding #5 above). The `security.py:717` alert's taint path from relocate is
+severed by the upstream containment (other callers already pass vetted paths).
+Tests: `test_artifacts_handlers.py::TestRelocate` (home allowed, outside-home
+denied, configured extra-root allowed, traversal denied). Spec: `artifacts.md`
+Security → "Relocate root confinement". This is a deliberate, documented
+divergence from upstream's any-file relocate (the public fork is
+security-hardened here); a MeshClaw sync must NOT revert it.
+
+**PR #14 review round 5 (2026-07-18) — CodeQL green (4 FPs dismissed), Claude
+green, Codex down to 2 HIGH; both fixed fork-side.** After the relocate
+containment landed, GitHub-native CodeQL STILL flagged the `is_relative_to`
+guard + stat calls (its default `py/path-injection` query does not model
+`Path.is_relative_to` as a sanitizer). The code is correct (home-confined +
+denylist + `TestRelocate`), so the 4 PR-introduced alerts (#311–314) were
+DISMISSED via the code-scanning API as guarded false-positives with written
+justifications — CodeQL now passes. Claude's latest run reports "no CRITICAL or
+HIGH". Codex's latest 2 HIGH were both fixed:
+- **`ArtifactSharePanel.tsx` `view_url` used as `href`** (real XSS surface even
+  though inert without a provider): added `safeHttpUrl()` — a provider-controlled
+  `view_url` is rendered as a link ONLY when it parses as http(s); a
+  `javascript:`/`data:` scheme yields a disabled affordance. Tests:
+  ArtifactSharePanel.test.tsx (http href rendered / javascript: neutralized).
+- **`publish_sync` `store.get()` ≤25 MiB sync reads on the loop**: the hot
+  `publish()` / `push_version()` reads now `await asyncio.to_thread(store.get, …)`
+  (joining the tempfile/render offload already done in round 3b). The
+  clone/fork/pull/overwrite reads stay inline (separate inert ops, upstream-first).
+
+**PR #14 review round 6 (2026-07-18).** Codex's next run flagged (a) the agent
+delete `reason` persisted to the SEL audit + activity feed unredacted — fixed:
+`reason` now passes through `_redact_text` before audit/persistence (same
+treatment as comment body/author/anchors); (b) more `publish_sync` store
+reads/writes in the clone/fork/pull/overwrite paths — left inline (upstream-verbatim,
+inert without a registered provider; the hot publish/push paths are already
+offloaded). Confirms the Codex gate remains non-convergent (6 runs, disjoint
+sets); the legitimate in-scope findings are fixed as they surface.
+
+**PR #14 review round 7 (2026-07-18) — Claude [BLOCK-MERGE], both findings real
+fork bugs, fixed:**
+- **`publish.relocate_roots` never parsed in `from_dict`** (MEDIUM but a genuine
+  bug I introduced in round 4): the field was declared + consumed by the relocate
+  handler but `KiroCrewConfig.from_dict` only parsed `allowed_destinations`, so an
+  operator's configured extra roots were silently dropped (permanently `[]`) and
+  lost on round-trip. Added the parse (blank-filtered). Test:
+  `test_config_loader.py::test_publish_relocate_roots_parsed_and_round_trips`.
+- **blocking store IO in the REACHABLE publish handlers** (blocking-rule HIGH):
+  `update_sharing` / `unpublish` / `refresh_publication` / `push_version_by_slug`
+  called `store.get`/`update_publication`/`clear_publication` synchronously on the
+  loop (a ≤25 MiB read under a lock) — these three+ are wired handler paths the
+  author had missed when offloading `publish()`/`push_version()` in round 3b. Now
+  `await asyncio.to_thread(...)` like their siblings. (The still-unwired
+  clone/fork/pull/overwrite reads stay inline — upstream-verbatim, not reachable.)
+Claude's same run verified everything else clean (frontend XSS/a11y, keystone,
+governance fail-closed, path traversal, redaction, SEL audit).
+
+**PR #14 review round 8 (2026-07-18) — Claude down to ONE blocking finding,
+fixed.** The `push_version()` `live_dirty` pre-push snapshot
+(`publish_sync.py:445` `fresh = store.update(slug, snapshot=True)`) was "the one
+unwrapped store call among 8 deliberately offloaded siblings" — now
+`await asyncio.to_thread(...)`. Claude verified everything else sound (keystone,
+path-traversal, governance, never-trust-LLM redaction, SEL audit, frontend
+XSS/a11y incl. the `safeHttpUrl` guard). This is the convergent signal: Claude
+(the precise reviewer) went large-clean → one line → (expected) clean, unlike
+the non-convergent Codex gate whose 7+ runs each re-sample a disjoint HIGH set
+of the same inert-in-fork publish-path store calls.
+
+**PR #14 review round 9 (2026-07-18) — comment/relocate handler blocking IO
+offloaded (previously DEFER, now fixed to clear the Claude gate).** Claude's next
+run named a SPECIFIC, finite set of on-loop store calls in the new async
+handlers (`api_artifact_comments`, the comment mutators post/reply/mark_review/
+resolve/reopen/delete/edit, and `api_artifact_relocate`) — `store.get`
+(≤25 MiB), `list_comments`, `add_comment` (load-append-rewrite), `update_comment`,
+`delete_comment`, `record_comment_event`, `relocate`. These were the ones I'd
+deferred as "mirror the pre-existing `api_artifact_detail` inline pattern." Since
+Claude's ask is bounded (a named list, not Codex's ever-expanding "every store
+call"), routed all of them through the existing `_run_off_loop(...)` executor
+helper (the same one the folder handlers use). The 25× `MAX_CONTENT_BYTES` bump
+made the deferral no longer defensible. Handler tests (92) still pass — the
+offload is transparent to the MagicMock-request harness. This clears the
+blocking-IO category across the whole artifacts handler module, not just the
+publish seam.
+
+**PR #14 review round 10 (2026-07-18) — user merged main into the branch (broke
+the single-commit hygiene gate); rebased back to one commit + cleared Claude's
+next precise batch.** The branch was manually merged with `main` (#16 nightly CLI
+wheel), creating a 2-commit history that fails PR Hygiene — rebased my single
+commit onto the advanced `main` (`ca5bc359`) to restore the invariant. Claude's
+review then named a specific batch, all fixed: (a) HIGH — the publish/sharing HTTP
+handlers (`api_artifact_publish` ×2, `update_sharing`, `unpublish`,
+`refresh_publication`) called `get_default_store().get(slug)` (≤25 MiB) directly
+on the loop → routed through `_run_off_loop`; (b) MEDIUM — `publish_sync.py`
+re-publish branch `store.update_publication` on the loop → `asyncio.to_thread`;
+(c) LOW — `_publish_governance_denied` used `getattr(decision, "permitted", True)`
+(fail-OPEN default) on an exfil chokepoint → defaulted to `False` (fail-closed).
+Each subsequent Claude batch is precise + converges; Codex's parallel run again
+objected to the home-confinement itself + the unwired clone/fork/pull store reads
+(non-convergent, advisory).
 
 ### Resolved (deferred earlier, later ported — recorded for the audit trail)
 

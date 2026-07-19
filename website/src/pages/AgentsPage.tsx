@@ -114,7 +114,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
 
   const { data: usage = null } = useQuery({
     queryKey: ['sessions-usage', refreshTrigger],
-    queryFn: () => api.sessionsUsage().then(d => d.usage?.raw ? d.usage : null).catch(() => null),
+    queryFn: () => api.sessionsUsage().then(d => (d.usage && Number.isFinite(d.usage.credits_plan)) ? d.usage : null).catch(() => null),
   })
 
   const { data: installed = [], isPending: installedLoading, refetch: refetchInstalled } = useQuery({
@@ -400,9 +400,13 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                 {usage.resets && <span className="text-[12px] text-muted">resets {usage.resets}</span>}
               </div>
             </div>
-            {usage.credits_covered != null && usage.credits_plan != null && (() => {
-              const pct = Math.min((usage.credits_covered / usage.credits_plan) * 100, 100)
-              const hasOverage = usage.credits_used > 0
+            {usage.credits_used != null && usage.credits_plan != null && (() => {
+              const pctRaw = usage.credits_plan > 0 ? (usage.credits_used / usage.credits_plan) * 100 : 0
+              const pct = Math.min(pctRaw, 100)
+              // credits_used is the true total; credits_overage the amount above
+              // plan (fall back to used - plan when the source omits it).
+              const overage = usage.credits_overage ?? Math.max(0, usage.credits_used - usage.credits_plan)
+              const hasOverage = overage > 0
               const color = pct >= 90 ? 'bg-danger' : pct >= 70 ? 'bg-warn' : 'bg-accent'
               const glow = pct >= 90 ? 'shadow-[0_0_8px_var(--danger)]' : pct >= 70 ? 'shadow-[0_0_8px_var(--warn)]' : 'shadow-[0_0_8px_var(--accent-glow)]'
               return (
@@ -411,13 +415,13 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                   <div className="relative h-6 bg-bg-elevated rounded-full overflow-hidden border border-border mb-3">
                     <div className={`absolute inset-y-0 left-0 rounded-full transition-all duration-1000 ease-out ${color} ${pct > 5 ? glow : ''}`} style={{ width: `${Math.max(pct, 1)}%` }} />
                     <div className="absolute inset-0 flex items-center justify-between px-3 text-[13px] font-mono font-bold">
-                      <span className="text-text-strong drop-shadow-sm">{pct.toFixed(0)}%</span>
-                      <span className="text-text-strong drop-shadow-sm">{usage.credits_covered.toFixed(0)} / {usage.credits_plan.toFixed(0)}</span>
+                      <span className="text-text-strong drop-shadow-sm">{pctRaw.toFixed(0)}%</span>
+                      <span className="text-text-strong drop-shadow-sm">{usage.credits_used.toFixed(0)} / {usage.credits_plan.toFixed(0)}</span>
                     </div>
                   </div>
                   <div className="flex justify-between text-[13px]">
                     <div>
-                      {hasOverage && <span className="text-muted">Overage credits: <span className="text-warn font-medium">{usage.credits_used.toFixed(1)}</span></span>}
+                      {hasOverage && <span className="text-muted">Overage credits: <span className="text-warn font-medium">{overage.toFixed(1)}</span></span>}
                     </div>
                     <div className="flex gap-3">
                       <span className="text-muted">Est. cost: <span className="text-text-strong font-medium">${usage.cost_usd?.toFixed(2) ?? '—'}</span></span>

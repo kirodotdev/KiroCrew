@@ -185,6 +185,26 @@ def test_max_subagents_defaults_to_auto_sentinel() -> None:
     assert resolve_max_subagents(pinned) == 7
 
 
+def test_publish_relocate_roots_parsed_and_round_trips():
+    # Regression (PR #14 nrb): publish.relocate_roots was declared + consumed by
+    # the relocate handler but NOT parsed in from_dict, so an operator value was
+    # silently dropped (permanently []) and lost on round-trip.
+    loaded = _load_from_dict(
+        {
+            "publish": {
+                "allowed_destinations": ["artifactory"],
+                "relocate_roots": ["/srv/shared", "  "],
+            }
+        }
+    )
+    # Parsed (blank entries filtered), not ignored.
+    assert loaded.publish.relocate_roots == ["/srv/shared"]
+    assert loaded.publish.allowed_destinations == ["artifactory"]
+    # Survives a to_dict() -> load() round-trip.
+    reloaded = _load_from_dict(loaded.to_dict())
+    assert reloaded.publish.relocate_roots == ["/srv/shared"]
+
+
 # Hypothesis strategy for safe identifier strings (no control chars, JSON-safe)
 _safe_name_st = st.text(
     alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz0123456789_-"),
@@ -1803,12 +1823,15 @@ class TestMultiAgentMigrationEdgeCases:
             # Start with empty config
             tmp_config.write_text("{}", encoding="utf-8")
 
-            with unittest.mock.patch(
-                "kiro_crew.config.loader.config_path",
-                return_value=tmp_config,
-            ), unittest.mock.patch(
-                "kiro_crew.cli_chat.config_path",
-                return_value=tmp_config,
+            with (
+                unittest.mock.patch(
+                    "kiro_crew.config.loader.config_path",
+                    return_value=tmp_config,
+                ),
+                unittest.mock.patch(
+                    "kiro_crew.cli_chat.config_path",
+                    return_value=tmp_config,
+                ),
             ):
                 _ensure_default_agent_in_config()
 
@@ -1881,12 +1904,8 @@ class TestReactionsEmptyStringFiltering:
 
     def test_empty_string_reaction_filtered(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(
-            json.dumps({"slack": {"reactions": {"done": "", "error": "boom"}}})
-        )
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_dir", return_value=tmp_path
-        ):
+        cfg_file.write_text(json.dumps({"slack": {"reactions": {"done": "", "error": "boom"}}}))
+        with unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
             cfg = KiroCrewConfig.load()
         # Empty string should be dropped
         assert "done" not in cfg.slack.reactions
@@ -1899,12 +1918,8 @@ class TestReactionsNullSuppression:
 
     def test_null_reaction_preserved(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(
-            json.dumps({"slack": {"reactions": {"done": None, "error": "boom"}}})
-        )
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_dir", return_value=tmp_path
-        ):
+        cfg_file.write_text(json.dumps({"slack": {"reactions": {"done": None, "error": "boom"}}}))
+        with unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
             cfg = KiroCrewConfig.load()
         # null should be preserved (distinct from absent key)
         assert "done" in cfg.slack.reactions
@@ -1916,13 +1931,9 @@ class TestReactionsNullSuppression:
         """Values that are neither strings nor null (e.g. numbers, bools) are dropped."""
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(
-            json.dumps(
-                {"slack": {"reactions": {"done": 42, "error": True, "tool": "ok"}}}
-            )
+            json.dumps({"slack": {"reactions": {"done": 42, "error": True, "tool": "ok"}}})
         )
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_dir", return_value=tmp_path
-        ):
+        with unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
             cfg = KiroCrewConfig.load()
         assert "done" not in cfg.slack.reactions
         assert "error" not in cfg.slack.reactions
@@ -1938,22 +1949,16 @@ class TestSttStreamingDefault:
     def test_missing_stt_key_loads_streaming_false(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({}))
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_dir", return_value=tmp_path
-        ):
+        with unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
             cfg = KiroCrewConfig.load()
         assert cfg.stt.streaming is False
 
-    def test_partial_stt_block_without_streaming_key_loads_false(
-        self, tmp_path: Path
-    ) -> None:
+    def test_partial_stt_block_without_streaming_key_loads_false(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(
             json.dumps({"stt": {"provider": "transcribe", "language_code": "en-US"}})
         )
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_dir", return_value=tmp_path
-        ):
+        with unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
             cfg = KiroCrewConfig.load()
         assert cfg.stt.streaming is False
 
@@ -2061,10 +2066,14 @@ class TestTrackingChannelsValidation:
 
     def test_mixed_format_all_valid_coerced(self) -> None:
         """Mix of dicts and bare strings both work."""
-        data = {"slack": {"tracking_channels": [
-            {"channel_id": "C111", "name": "one"},
-            "C222",
-        ]}}
+        data = {
+            "slack": {
+                "tracking_channels": [
+                    {"channel_id": "C111", "name": "one"},
+                    "C222",
+                ]
+            }
+        }
         cfg = _load_from_dict(data)
         assert len(cfg.slack.tracking_channels) == 2
         ids = {c["channel_id"] for c in cfg.slack.tracking_channels}
@@ -2100,18 +2109,14 @@ class TestAllowedEnterpriseIdsFiltering:
 
     def test_mixed_e_and_t_prefix_kept(self) -> None:
         """Both E- and T-prefix IDs coexist in the allowlist."""
-        data = {
-            "slack": {"allowed_enterprise_ids": ["E015GUGD2V6", "T016NEJQWE9"]}
-        }
+        data = {"slack": {"allowed_enterprise_ids": ["E015GUGD2V6", "T016NEJQWE9"]}}
         cfg = _load_from_dict(data)
         assert "E015GUGD2V6" in cfg.slack.allowed_enterprise_ids
         assert "T016NEJQWE9" in cfg.slack.allowed_enterprise_ids
 
     def test_invalid_prefix_dropped(self) -> None:
         """IDs with neither E nor T prefix are stripped."""
-        data = {
-            "slack": {"allowed_enterprise_ids": ["X999INVALID", "ABCDEF"]}
-        }
+        data = {"slack": {"allowed_enterprise_ids": ["X999INVALID", "ABCDEF"]}}
         cfg = _load_from_dict(data)
         assert cfg.slack.allowed_enterprise_ids == []
 
@@ -2197,9 +2202,9 @@ class TestArchiveRetentionDays:
         from kiro_crew.config.schema import JSON_SCHEMA
 
         node = JSON_SCHEMA["properties"]["session"]["properties"]["archive_retention_days"]
-        assert "null" in node["type"], (
-            f"archive_retention_days schema must allow null, got {node['type']!r}"
-        )
+        assert (
+            "null" in node["type"]
+        ), f"archive_retention_days schema must allow null, got {node['type']!r}"
 
     def test_validation_preserves_null(self) -> None:
         """When jsonschema runs, ``null`` must survive validation (not be stripped)."""
@@ -2251,9 +2256,14 @@ class TestConfigCache:
             calls["n"] += 1
             return real_validate(data)
 
-        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_crew.config.loader.config_local_path", return_value=tmp_path / "config.local.json"
-        ), patch("kiro_crew.config.loader._validate_config_data", _counting):
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=tmp_path / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader._validate_config_data", _counting),
+        ):
             KiroCrewConfig.load()
             KiroCrewConfig.load()
             KiroCrewConfig.load()
@@ -2267,8 +2277,9 @@ class TestConfigCache:
 
         cfg_file = tmp_path / "config.json"
         local = tmp_path / "config.local.json"
-        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_crew.config.loader.config_local_path", return_value=local
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch("kiro_crew.config.loader.config_local_path", return_value=local),
         ):
             self._write(cfg_file, {"agent": {"model": "model-a"}})
             first = KiroCrewConfig.load()
@@ -2288,8 +2299,9 @@ class TestConfigCache:
 
         cfg_file = tmp_path / "config.json"
         local = tmp_path / "config.local.json"
-        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_crew.config.loader.config_local_path", return_value=local
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch("kiro_crew.config.loader.config_local_path", return_value=local),
         ):
             self._write(cfg_file, {"agent": {"yolo": False}})
             cfg = KiroCrewConfig.load()
@@ -2306,8 +2318,9 @@ class TestConfigCache:
 
         cfg_file = tmp_path / "config.json"
         local = tmp_path / "config.local.json"
-        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_crew.config.loader.config_local_path", return_value=local
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch("kiro_crew.config.loader.config_local_path", return_value=local),
         ):
             self._write(cfg_file, {"agent": {"model": "orig-model"}})
             first = KiroCrewConfig.load()
@@ -2347,15 +2360,18 @@ class TestConfigCache:
                 )
             return content
 
-        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_crew.config.loader.config_local_path", return_value=local
-        ), patch.object(Path, "read_text", _read_then_write):
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch("kiro_crew.config.loader.config_local_path", return_value=local),
+            patch.object(Path, "read_text", _read_then_write),
+        ):
             first = KiroCrewConfig.load()  # reads v0, writer swaps to v1 mid-read
             # First load returns the v0 it actually read (acceptable).
             assert first.agent.model == "v0"
         # Next load must re-read and see v1 — NOT serve stale v0 from a poisoned cache.
-        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file), patch(
-            "kiro_crew.config.loader.config_local_path", return_value=local
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch("kiro_crew.config.loader.config_local_path", return_value=local),
         ):
             second = KiroCrewConfig.load()
         assert second.agent.model == "v1", "stale config served from poisoned cache"
@@ -2498,9 +2514,7 @@ class TestSecurityBoundClamping:
         assert d["session"]["pool_size"] == 10
 
     def test_in_range_values_unchanged(self) -> None:
-        with unittest.mock.patch(
-            "kiro_crew.config.loader._log_config_clamp_event"
-        ) as mock_event:
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event") as mock_event:
             cfg = _load_from_dict(
                 {
                     "agent": {
@@ -2518,9 +2532,7 @@ class TestSecurityBoundClamping:
         mock_event.assert_not_called()
 
     def test_boundary_values_not_clamped(self) -> None:
-        with unittest.mock.patch(
-            "kiro_crew.config.loader._log_config_clamp_event"
-        ) as mock_event:
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event") as mock_event:
             cfg = _load_from_dict(
                 {
                     "agent": {"subagent_auto_max": 64, "subagent_max_turns": 200},
@@ -2540,9 +2552,7 @@ class TestSecurityBoundClamping:
         ), f"expected clamp warning, got: {logs}"
 
     def test_clamp_emits_security_event(self) -> None:
-        with unittest.mock.patch(
-            "kiro_crew.config.loader._log_config_clamp_event"
-        ) as mock_event:
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event") as mock_event:
             _load_from_dict({"agent": {"subagent_auto_max": 200}})
         mock_event.assert_called_once()
         args = mock_event.call_args.args
@@ -2557,9 +2567,7 @@ class TestSecurityBoundClamping:
         from kiro_crew.config.loader import _clamp_security_bounds
 
         data = {"agent": {"subagent_max_turns": "lots"}}
-        with unittest.mock.patch(
-            "kiro_crew.config.loader._log_config_clamp_event"
-        ) as mock_event:
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event") as mock_event:
             _clamp_security_bounds(data)
         assert data["agent"]["subagent_max_turns"] == "lots"
         mock_event.assert_not_called()
@@ -2570,9 +2578,7 @@ class TestSecurityBoundClamping:
         from kiro_crew.config.loader import _clamp_security_bounds
 
         data = {"agent": {"max_subagents": True}}
-        with unittest.mock.patch(
-            "kiro_crew.config.loader._log_config_clamp_event"
-        ) as mock_event:
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event") as mock_event:
             _clamp_security_bounds(data)
         assert data["agent"]["max_subagents"] is True
         mock_event.assert_not_called()
@@ -2597,9 +2603,7 @@ class TestConfigWriteProtection:
         from kiro_crew.security import is_sensitive_write_path
 
         assert is_sensitive_write_path("~/.kirocrew/config.local.json")
-        assert is_sensitive_write_path(
-            str(Path.home() / ".kirocrew" / "config.local.json")
-        )
+        assert is_sensitive_write_path(str(Path.home() / ".kirocrew" / "config.local.json"))
 
     def test_config_json_reads_still_allowed(self) -> None:
         from kiro_crew.security import is_sensitive_bash_command, is_sensitive_path
@@ -2657,9 +2661,7 @@ class TestTelegramAllowedUserIdsGuard:
     """Finding: a non-list allowed_user_ids must not iterate char-by-char."""
 
     def test_string_value_yields_empty_not_char_list(self) -> None:
-        cfg = _load_from_dict(
-            {"telegram": {"enabled": True, "allowed_user_ids": "12345"}}
-        )
+        cfg = _load_from_dict({"telegram": {"enabled": True, "allowed_user_ids": "12345"}})
         # A hand-edited string must NOT become [1, 2, 3, 4, 5]; treat non-list
         # as empty (fail closed).
         assert cfg.telegram.allowed_user_ids == []
@@ -2686,9 +2688,7 @@ class TestTelegramAllowedUserIdsGuard:
     def test_non_numeric_soft_threshold_defaults_not_crash(self) -> None:
         # "abc" would raise in int() and crash config load; must fall back to
         # the default (80) instead.
-        cfg = _load_from_dict(
-            {"telegram": {"enabled": True, "soft_threshold_pct": "abc"}}
-        )
+        cfg = _load_from_dict({"telegram": {"enabled": True, "soft_threshold_pct": "abc"}})
         assert cfg.telegram.soft_threshold_pct == 80
 
 

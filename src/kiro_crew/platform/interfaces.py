@@ -54,6 +54,34 @@ class ProviderRegistry(Protocol):
         ...
 
 
+class PublishRegistry(Protocol):
+    """The artifact-publish-provider registration seam.
+
+    The public edition registers NO publish provider — the
+    ``publish_provider`` registry stays empty, so ``get_provider`` raises
+    ``PublishUnavailableError`` (→ 503) and ``list_providers`` returns ``[]``,
+    which the dashboard renders as "publishing unavailable" with no core
+    branching.  A companion uses ``register_publish_providers`` to register its
+    concrete providers (e.g. an internal artifact store) through the
+    ``publish_provider`` module-level registry — the exact structural twin of
+    ``ProviderRegistry.register_acp_backends``; the core never imports a
+    companion provider.
+
+    Whether a publish to a given destination is *permitted* is a separate,
+    orthogonal decision owned by the governance ceiling
+    (``capabilities.publish``) — this seam only decides WHO implements the
+    transfer, never WHETHER it is allowed.
+    """
+
+    def register_publish_providers(self) -> None:
+        """Register any publish providers (no-op in the public edition).
+
+        Consumed at boot by ``bootstrap_context`` after the context installs,
+        alongside ``ProviderRegistry.register_acp_backends``.
+        """
+        ...
+
+
 class AgentRuntime(Protocol):
     """The agent runtime: managed MCP servers + first-run setup.
 
@@ -64,11 +92,9 @@ class AgentRuntime(Protocol):
     wired). Staged for a later migration; overriding it has no effect yet.
     """
 
-    def managed_mcp_servers(self) -> Dict[str, dict]:
-        ...
+    def managed_mcp_servers(self) -> Dict[str, dict]: ...
 
-    def run_first_run_setup(self) -> None:
-        ...
+    def run_first_run_setup(self) -> None: ...
 
 
 class SandboxPolicy(Protocol):
@@ -79,11 +105,9 @@ class SandboxPolicy(Protocol):
     ``~/.aws``/``~/.ssh``/etc. lists; companion adds ``.midway``/``.ada``/etc.
     """
 
-    def strict_dirs(self) -> List[str]:
-        ...
+    def strict_dirs(self) -> List[str]: ...
 
-    def cc_dirs(self) -> List[str]:
-        ...
+    def cc_dirs(self) -> List[str]: ...
 
 
 class CredentialPolicy(Protocol):
@@ -93,8 +117,7 @@ class CredentialPolicy(Protocol):
     ``security.py``.  The companion adds internal token/cookie regexes.
     """
 
-    def redact(self, text: str) -> str:
-        ...
+    def redact(self, text: str) -> str: ...
 
 
 class SlackEnterpriseGate(Protocol):
@@ -110,11 +133,9 @@ class SlackEnterpriseGate(Protocol):
 
     def validate_enterprise(
         self, bot_token: str, *, extra_ids: "set[str] | None" = None
-    ) -> bool:
-        ...
+    ) -> bool: ...
 
-    def check_message_origin(self, event_team_id: str) -> bool:
-        ...
+    def check_message_origin(self, event_team_id: str) -> bool: ...
 
 
 class IdentityProvider(Protocol):
@@ -127,17 +148,13 @@ class IdentityProvider(Protocol):
     coroutine the dashboard awaits.
     """
 
-    def status(self) -> Dict[str, object]:
-        ...
+    def status(self) -> Dict[str, object]: ...
 
-    async def status_line(self, prefix: str = "*Midway:*") -> str:
-        ...
+    async def status_line(self, prefix: str = "*Midway:*") -> str: ...
 
-    def whoami(self) -> Optional[str]:
-        ...
+    def whoami(self) -> Optional[str]: ...
 
-    def issuer(self) -> Optional[str]:
-        ...
+    def issuer(self) -> Optional[str]: ...
 
 
 class EmbeddingSource(Protocol):
@@ -148,16 +165,13 @@ class EmbeddingSource(Protocol):
     and a SigV4 request signer.
     """
 
-    def registry_model(self) -> str:
-        ...
+    def registry_model(self) -> str: ...
 
-    def endpoint_url(self) -> Optional[str]:
-        ...
+    def endpoint_url(self) -> Optional[str]: ...
 
     def sign_request(
         self, method: str, url: str, headers: dict, body: "bytes | str"
-    ) -> Optional[dict]:
-        ...
+    ) -> Optional[dict]: ...
 
 
 class McpToolingProvider(Protocol):
@@ -167,8 +181,7 @@ class McpToolingProvider(Protocol):
     builder-mcp and the internal AIM skill paths.
     """
 
-    def extra_mcp_servers(self) -> Dict[str, dict]:
-        ...
+    def extra_mcp_servers(self) -> Dict[str, dict]: ...
 
     def extra_skills(self) -> List[Path]:
         """NOT YET WIRED: the core does not yet load edition-contributed skill
@@ -187,11 +200,9 @@ class AppRegistryPolicy(Protocol):
     internal git hosts as trusted.
     """
 
-    def public_git_hosts(self) -> "frozenset[str]":
-        ...
+    def public_git_hosts(self) -> "frozenset[str]": ...
 
-    def clone_sandbox_mode(self, git_url: str, trusted_hosts: "frozenset[str] | None") -> str:
-        ...
+    def clone_sandbox_mode(self, git_url: str, trusted_hosts: "frozenset[str] | None") -> str: ...
 
 
 class AppsLoader(Protocol):
@@ -201,11 +212,9 @@ class AppsLoader(Protocol):
     ``file_explorer``).  The companion bundles the internal feature apps.
     """
 
-    def bundled_app_names(self) -> List[str]:
-        ...
+    def bundled_app_names(self) -> List[str]: ...
 
-    def manifest_sources(self) -> List[Path]:
-        ...
+    def manifest_sources(self) -> List[Path]: ...
 
 
 class KnowledgeProvider(Protocol):
@@ -239,11 +248,9 @@ class PackageManager(Protocol):
     overriding it has no effect yet.
     """
 
-    def install_plan(self, tool: str) -> List[str]:
-        ...
+    def install_plan(self, tool: str) -> List[str]: ...
 
-    def which(self, tool: str) -> Optional[str]:
-        ...
+    def which(self, tool: str) -> Optional[str]: ...
 
 
 # ── runtime-service / frontend extension points ──
@@ -257,17 +264,13 @@ class TunnelProvider(Protocol):
     itself is owned by PartyRock and out of scope).
     """
 
-    async def start(self) -> None:
-        ...
+    async def start(self) -> None: ...
 
-    async def stop(self) -> None:
-        ...
+    async def stop(self) -> None: ...
 
-    def public_url(self) -> str:
-        ...
+    def public_url(self) -> str: ...
 
-    def enabled(self) -> bool:
-        ...
+    def enabled(self) -> bool: ...
 
 
 class TelemetryProvider(Protocol):
@@ -278,11 +281,9 @@ class TelemetryProvider(Protocol):
     Cognito/RUM config the internal frontend host consumes.
     """
 
-    def record_event(self, event_type: str, data: dict) -> None:
-        ...
+    def record_event(self, event_type: str, data: dict) -> None: ...
 
-    def frontend_rum_config(self) -> Optional[dict]:
-        ...
+    def frontend_rum_config(self) -> Optional[dict]: ...
 
 
 class DashboardContributor(Protocol):
@@ -397,11 +398,8 @@ class FeatureApp(Protocol):
     """
 
     @property
-    def name(self) -> str:
-        ...
+    def name(self) -> str: ...
 
-    def manifest_path(self) -> Path:
-        ...
+    def manifest_path(self) -> Path: ...
 
-    def register(self, ctx: Any) -> None:
-        ...
+    def register(self, ctx: Any) -> None: ...

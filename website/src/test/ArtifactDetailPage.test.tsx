@@ -62,7 +62,10 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getByText('ops')).toBeInTheDocument()
     expect(screen.getByText('cr')).toBeInTheDocument()
     expect(screen.getByText('widget')).toBeInTheDocument()
-    expect(screen.getByTitle(/Artifact: cr-queue/)).toBeInTheDocument()
+    // The iframe title appears only after ArtifactBodyIframe's effect resolves
+    // the blob URL (async); findByTitle waits for it. A synchronous getByTitle
+    // races the effect under coverage instrumentation (CI-only flake).
+    expect(await screen.findByTitle(/Artifact: cr-queue/)).toBeInTheDocument()
   })
 
   it('shows version dropdown with Live default and changes selected version', async () => {

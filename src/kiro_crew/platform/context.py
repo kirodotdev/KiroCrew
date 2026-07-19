@@ -38,6 +38,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         McpToolingProvider,
         PackageManager,
         ProviderRegistry,
+        PublishRegistry,
         SandboxPolicy,
         SlackEnterpriseGate,
         TelemetryProvider,
@@ -91,6 +92,7 @@ class PlatformContext:
 
     # ── boot-layer extension points ──
     providers: "ProviderRegistry"
+    publish: "PublishRegistry"
     agent_runtime: "AgentRuntime"
     sandbox: "SandboxPolicy"
     credentials: "CredentialPolicy"

@@ -601,6 +601,227 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Internal authorized reads of sensitive paths
+# ---------------------------------------------------------------------------
+#
+# The default ``safe_read_file`` / ``safe_read_file_bytes`` paths refuse any
+# path that ``is_sensitive_path`` flags. A small set of **internal system**
+# operations legitimately need to read a file ``is_sensitive_path`` blocks.
+# Rather than have those callers reach for ``Path.read_bytes`` directly --
+# which would scatter sensitive-path reads across the codebase and make the
+# audit story ad-hoc -- they go through ``safe_read_file_internal(read_id)``,
+# which consults this hardcoded allowlist, performs the read, and emits an SEL
+# audit event on every outcome.
+#
+# Adding a new entry is a security-review event: it widens the set of sensitive
+# reads that can happen outside the deny rule. Each entry's comment must justify
+# why the read is system infrastructure (the bytes leaving the process never
+# reach an LLM/agent surface) rather than LLM/agent-mediated content.
+#
+# AUTOSDE `backend-security-controls` compliance: that rule requires reads of
+# "user- or LLM-influenced paths" to pass is_sensitive_path() and explicitly
+# EXEMPTS "trusted fixed-path internal ... reads". Every read_id here maps to a
+# HARDCODED constant path (never derived from user/LLM/config input), the read
+# is SEL-audited on every outcome and fail-closed (a success whose audit cannot
+# be persisted returns None), the open is O_NOFOLLOW + fstat, and the target
+# stores are themselves classified sensitive in security._SENSITIVE_HOME_DIRS
+# so agent file tools cannot reach them. This is the sanctioned fixed-path
+# internal case the rule exempts, not a weakening of the keystone.
+_INTERNAL_READ_ALLOWLIST: dict[str, str] = {
+    # ``kiro_crew.dashboard.handlers.kiro_usage_api`` reads the kiro-cli SSO
+    # access token to authenticate a single ``GetUsageLimits`` call to the
+    # hardcoded CodeWhisperer RTS endpoint
+    # (``codewhisperer.us-east-1.amazonaws.com``) that powers the dashboard
+    # credit-usage pill -- the same API the Kiro IDE credit meter uses. The
+    # token bytes go only to that AWS endpoint over TLS; only the parsed numeric
+    # usage dict returns to the process, and it is run through
+    # ``redact_credentials``/``redact_exfiltration_urls`` before caching, so the
+    # credential never reaches an LLM/agent surface. The operator already
+    # trusted KiroCrew with the session by running ``kiro-cli login`` outside
+    # any agent loop. (On Linux the live token lives in the kiro-cli SQLite
+    # store, which is not a sensitive path; these JSON entries cover the IDE /
+    # older kiro-cli cache layout.)
+    "kiro_usage_api.sso_token_cli": ".aws/sso/cache/kiro-auth-token-cli.json",
+    "kiro_usage_api.sso_token_ide": ".aws/sso/cache/kiro-auth-token.json",
+}
+
+
+def safe_read_file_internal(read_id: str) -> bytes | None:
+    """Read a sensitive path on behalf of an authorized internal caller.
+
+    The ``read_id`` must be a key in ``_INTERNAL_READ_ALLOWLIST``. The
+    function resolves the allowlisted path under ``~``, verifies it is in fact
+    sensitive (defense in depth), reads the bytes (subject to
+    ``MAX_FILE_BYTES``), emits an SEL audit event on every outcome, and returns
+    the bytes -- or ``None`` if missing / unreadable / oversized.
+
+    Raises ``PermissionError`` if ``read_id`` is not allowlisted -- callers must
+    never construct ``read_id`` from untrusted input.
+
+    Fail-closed audit: if the SEL audit for the ``success`` outcome cannot be
+    recorded (backend unavailable, or the emit raised), the function returns
+    ``None`` instead of the bytes -- a ``logger.warning`` is not itself an SEL
+    audit event, and the carve-out's validity depends on every successful read
+    producing a real audit. Callers already handle ``None`` (degrade to the
+    text scrape).
+    """
+    if read_id not in _INTERNAL_READ_ALLOWLIST:
+        _emit_internal_read_audit(read_id, "not_allowlisted")
+        raise PermissionError(
+            f"safe_read_file_internal denied: {read_id!r} not in allowlist",
+        )
+
+    rel_path = _INTERNAL_READ_ALLOWLIST[read_id]
+    abs_path = Path.home() / rel_path
+    resolved = str(abs_path.expanduser())
+
+    # Defense in depth: the allowlist is only a meaningful carve-out if the
+    # underlying path is in fact sensitive. If it has stopped being sensitive,
+    # the carve-out has nothing to protect against and the configuration has
+    # drifted; refuse rather than silently widen access.
+    if not is_sensitive_path(resolved):
+        _emit_internal_read_audit(read_id, "not_sensitive")
+        raise PermissionError(
+            f"safe_read_file_internal denied: {read_id!r} resolves to a "
+            f"non-sensitive path; allowlist is only valid for sensitive paths",
+        )
+
+    # Open with O_NOFOLLOW so a symlink at the final path component (e.g. a
+    # planted ~/.aws/sso/cache/kiro-auth-token-cli.json -> attacker file) is
+    # refused, binding the read to the real allowlisted file rather than a
+    # redirected target. Check + read share ONE descriptor (TOCTOU-safe), and
+    # fstat confirms a regular file before reading.
+    import os
+    import stat
+
+    try:
+        fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        _emit_internal_read_audit(read_id, "missing")
+        return None
+    except OSError:
+        # ELOOP (final component is a symlink) and any other open error —
+        # fail closed, never following the link.
+        _emit_internal_read_audit(read_id, "unreadable")
+        return None
+
+    data = b""
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            _emit_internal_read_audit(read_id, "not_regular")
+            return None
+        with os.fdopen(fd, "rb", closefd=True) as fh:
+            fd = -1  # ownership transferred to fh; do not double-close
+            data = fh.read(MAX_FILE_BYTES + 1)
+    except OSError:
+        _emit_internal_read_audit(read_id, "unreadable")
+        return None
+    finally:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    if len(data) > MAX_FILE_BYTES:
+        _emit_internal_read_audit(read_id, "too_large")
+        return None
+
+    if not _emit_internal_read_audit(read_id, "success"):
+        logger.error(
+            "Denying sensitive read %s: SEL audit unavailable; the carve-out "
+            "requires an audit trail and the caller will see None instead of "
+            "the file bytes.",
+            read_id,
+        )
+        return None
+    return data
+
+
+def _emit_internal_read_audit(read_id: str, outcome: str) -> bool:
+    """Emit an SEL audit event for an internal sensitive/credential read.
+
+    Returns ``True`` iff an SEL event was recorded, ``False`` otherwise (SEL
+    backend unavailable or the emit raised). ``safe_read_file_internal`` /
+    ``emit_internal_read_audit`` gate the return of sensitive bytes on this
+    result for ``success`` outcomes: a ``logger.warning`` is NOT itself an SEL
+    audit event, so a read whose audit could not be recorded must be denied.
+    """
+    try:
+        from kiro_crew.sel import sel
+    except ImportError:  # pragma: no cover - sel optional in some test envs
+        logger.warning(
+            "SEL backend unavailable; internal-read audit dropped "
+            "for read_id=%s outcome=%s",
+            read_id,
+            outcome,
+        )
+        return False
+    try:
+        sel().log_tool_invocation(
+            session_key="hooks:safe_read_file_internal",
+            tool_name=f"internal_read.{read_id}",
+            outcome=outcome,
+            source="hooks",
+            # audit-or-deny: a "success" gates the return of live credential
+            # bytes, so it must be written SYNCHRONOUSLY (critical=True drains the
+            # queue and re-raises on a filesystem failure). In async SEL mode a
+            # non-critical log() only ENQUEUES — a later writer-thread failure is
+            # swallowed and this would wrongly return True for an audit that
+            # never landed. Non-success outcomes already return None / raise, so
+            # a dropped event there still leaves an observable log line.
+            critical=(outcome == "success"),
+        )
+    except Exception:  # noqa: BLE001 - audit must never break the caller
+        logger.warning(
+            "SEL audit emission failed for internal read read_id=%s",
+            read_id,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
+# Registry of sanctioned audit-only credential reads: read_id -> the
+# credential-bearing location it covers. These are reads of paths that are NOT
+# classified sensitive (so they cannot route through ``safe_read_file_internal``
+# / ``_INTERNAL_READ_ALLOWLIST``) yet still hold a live secret and therefore owe
+# the same SEL audit trail. Every entry requires the same security-review
+# justification discipline as ``_INTERNAL_READ_ALLOWLIST``.
+_AUDIT_ONLY_READ_IDS: dict[str, str] = {
+    # kiro-cli / amazon-q SQLite auth stores: live SSO bearer token on Linux.
+    # Read read-only by ``kiro_crew.dashboard.handlers.kiro_usage_api`` for the
+    # single hardcoded GetUsageLimits call (see the kiro_usage_api.sso_token_*
+    # justification in _INTERNAL_READ_ALLOWLIST -- identical posture, different
+    # storage layout).
+    "kiro_usage_api.sqlite_token": ".local/share/{kiro-cli,amazon-q}/data.sqlite3",
+}
+
+
+def emit_internal_read_audit(read_id: str, outcome: str) -> bool:
+    """Emit an SEL audit event for a credential read that cannot route through
+    :func:`safe_read_file_internal`.
+
+    ``safe_read_file_internal`` covers reads of *sensitive paths*. Some
+    credential material lives at a path that is NOT classified sensitive yet
+    still holds a live secret -- e.g. the kiro-cli auth store at
+    ``~/.local/share/kiro-cli/data.sqlite3``. Such a reader still owes the same
+    audit trail, so it calls this wrapper with its own ``read_id`` and outcome.
+
+    The ``read_id`` MUST be registered in ``_AUDIT_ONLY_READ_IDS`` -- this entry
+    point enforces its own allowlist, mirroring the ``_INTERNAL_READ_ALLOWLIST``
+    gate, so it cannot be used as an unscoped bypass of the SEL-audit surface.
+    An unregistered ``read_id`` returns ``False`` without emitting, which
+    callers treat as "audit unavailable" and fail closed on.
+    """
+    if read_id not in _AUDIT_ONLY_READ_IDS:
+        logger.warning("emit_internal_read_audit: unregistered read_id %r rejected", read_id)
+        return False
+    return _emit_internal_read_audit(read_id, outcome)
+
+
 # ── Script Hooks ──
 
 

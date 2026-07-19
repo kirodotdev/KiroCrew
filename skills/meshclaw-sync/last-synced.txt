@@ -172,6 +172,27 @@
 #   pairs with backend ed2f65b0), 08e28b8 (Electron shell redesign — triage).
 #
 # ── Prior batch ──────────────────────────────────────────────────────────────
+# --- Artifacts-page exact-mirror batch (2026-07-17) --------------------------
+# Branch sync/artifacts-mirror-2026-07-17 (built in an isolated git worktree).
+# This is a TARGETED CONTENT PORT of the MeshClaw artifacts page, NOT an
+# incremental boundary advance — so the beta/frontend-beta boundary SHAs below
+# are intentionally LEFT UNCHANGED. Upstream tips have since advanced
+# (backend 5d1961ef->50eae442, frontend 7665cc8e->82df28c); those windows are
+# the NEXT incremental sync's input and were NOT triaged here. This batch mirrored
+# the artifacts page by content on top of the batch-37 boundary: durable LOCAL
+# comments (BE ArtifactComment store + FE CommentsSidebar/FileArtifactComments/
+# useCommentBridge/comment-bridge widgetSrcdoc), masonry ArtifactsPage
+# (@virtuoso.dev/masonry), ArtifactBody/ArtifactPanel + clickable artifact refs,
+# and a vendor-neutral PUBLISH subsystem behind a new CPP PublishRegistry seam +
+# capabilities.publish governance scope + publish.allowed_destinations config
+# (public edition registers NO provider -> publishing unavailable). EXCLUDED
+# (carve-outs): the Iterate button stays hidden (SHOW_ARTIFACT_ITERATE=false);
+# Harmony Artifactory + Chorus concrete providers, remote comment sync
+# (merge_remote_comments/RemoteComment), remote browse (RemoteArtifactCard/
+# RemoteArtifactDetailPage), and UpstreamSyncBanner stay absent (internal infra).
+# See left-out.md "Artifacts-page exact-mirror batch (2026-07-17)".
+
+# ── Prior batch ──────────────────────────────────────────────────────────────
 # --- Batch-37 (dual-repo beta sync 2026-07-17) -------------------------------
 # Branch sync/beta-2026-07-17 off origin/main (b111ee0). Backend window
 # f9b37d8c..5d1961ef, frontend window e7c1de9..7665cc8e, triaged by content.
