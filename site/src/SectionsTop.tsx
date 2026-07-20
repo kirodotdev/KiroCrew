@@ -34,9 +34,9 @@ export function Nav() {
     <motion.nav initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.5 }}
       className={`fixed top-0 left-0 right-0 z-[100] flex items-center justify-between px-6 md:px-10 py-4 max-w-[1200px] mx-auto transition-all duration-300 ${scrolled ? 'bg-white/85 dark:bg-[#06080f]/85 backdrop-blur-xl border-b border-amber-500/10' : ''}`}>
       <a href={import.meta.env.BASE_URL} className="flex items-center gap-2 no-underline">
-        <img src={`${import.meta.env.BASE_URL}kirocrew-logo.png`} alt="KiroCrew" className="w-8 h-8 rounded-lg" />
+        <img src={`${import.meta.env.BASE_URL}kirocrew-logo.png`} alt="Kiro Crew" className="w-8 h-8 rounded-lg" />
         <span className="text-xl font-bold text-slate-900 dark:text-white font-space tracking-tight">
-          <span className="text-amber-500">Kiro</span>Crew
+          <span className="text-amber-500">Kiro</span> Crew
         </span>
       </a>
       <div className="flex gap-1 items-center">

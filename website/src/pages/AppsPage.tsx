@@ -601,7 +601,7 @@ export default function AppsPage() {
                               />
                             ) : null}
                             <div className={`absolute inset-0 flex items-center justify-center bg-[var(--bg-elevated)] ${hero ? 'hidden' : ''} hero-fallback`}>
-                              <span className="text-2xl font-bold text-[var(--text)] opacity-10 tracking-widest">KIROCREW</span>
+                              <span className="text-2xl font-bold text-[var(--text)] opacity-10 tracking-widest">KIRO CREW</span>
                             </div>
                           </div>
                         )

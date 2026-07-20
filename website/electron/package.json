@@ -1,7 +1,7 @@
 {
   "name": "kirocrew-electron-mac",
   "version": "0.1.0",
-  "description": "KiroCrew \u2014 AI agent desktop app",
+  "description": "Kiro Crew \u2014 AI agent desktop app",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

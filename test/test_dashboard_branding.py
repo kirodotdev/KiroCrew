@@ -115,7 +115,7 @@ class TestBrandingEndpoint:
         with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
             resp = await api_branding(req)
         body = json.loads(resp.body)
-        assert body["bot_name"] == "KiroCrew"
+        assert body["bot_name"] == "Kiro Crew"
         assert body["avatar"] == "/logo.png"
 
     @pytest.mark.asyncio

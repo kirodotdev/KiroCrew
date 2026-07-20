@@ -88,7 +88,7 @@ const { validateRemoteSettings } = require("./validation");
 const { attachContextMenu } = require("./context-menu");
 
 // Set app name for macOS menu bar and dock
-app.name = "KiroCrew";
+app.name = "Kiro Crew";
 
 // Single-instance lock. On macOS LaunchServices reuses the already-running .app
 // when the user relaunches from the Dock / Spotlight, so a second instance is
@@ -479,7 +479,7 @@ function setupWindowContents(win, backendUrl) {
 
   function applyTitle() {
     const suffix = customName || getRemoteHostConfig(store, port)?.defaultName || `[:${port}]`;
-    win.setTitle(`KiroCrew ${suffix}`);
+    win.setTitle(`Kiro Crew ${suffix}`);
   }
 
   win._mcSetCustomName = (name) => { customName = name; applyTitle(); };
@@ -677,12 +677,12 @@ function createTray() {
   const iconPath = path.join(__dirname, "icon.png");
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
   tray = new Tray(icon);
-  tray.setToolTip("KiroCrew");
+  tray.setToolTip("Kiro Crew");
   // Each connection opens as its own window on every platform (native window
   // tabs were removed with the single-surface shell redesign).
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "Show KiroCrew", click: () => mainWindow?.show() },
+      { label: "Show Kiro Crew", click: () => mainWindow?.show() },
       { type: "separator" },
       { label: "New Connection Window…", click: () => openNewConnectionWindow() },
       { type: "separator" },
@@ -1035,8 +1035,8 @@ async function showUnrecoverableGatewayError(win, port) {
   let logTail = "";
   try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); } catch { /* no log yet */ }
   const action = await showGatewayErrorDialog(win, {
-    title: `KiroCrew — backend stuck on port ${port}`,
-    message: `The KiroCrew backend is wedged and cannot be stopped — it is in an `
+    title: `Kiro Crew — backend stuck on port ${port}`,
+    message: `The Kiro Crew backend is wedged and cannot be stopped — it is in an `
       + `uninterruptible state and is still holding port ${port}, so it can't be `
       + `force-stopped or restarted in place. Restart your computer to clear it. `
       + `(This is a known backend hang; see the launch log below for the cause.)`,
@@ -1108,16 +1108,16 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
 
     let title, message;
     if (portConflict) {
-      title = `KiroCrew — port ${PORT} already in use`;
-      message = `Another KiroCrew gateway is already using port ${PORT} (it may be wedged). `
+      title = `Kiro Crew — port ${PORT} already in use`;
+      message = `Another Kiro Crew gateway is already using port ${PORT} (it may be wedged). `
         + `Force-stop it and retry, or quit. From a terminal you can also run: `
         + `kirocrew stop --port ${PORT}`;
     } else if (failedToStart) {
-      title = "KiroCrew — gateway failed to start";
+      title = "Kiro Crew — gateway failed to start";
       message = err.message;
     } else {
-      title = "KiroCrew — can't reach the gateway";
-      message = "Could not connect to the KiroCrew backend. Make sure "
+      title = "Kiro Crew — can't reach the gateway";
+      message = "Could not connect to the Kiro Crew backend. Make sure "
         + "'kirocrew gateway' is running, or check kirocrew doctor.";
     }
 
@@ -1186,7 +1186,7 @@ async function openNewConnectionWindow() {
   </style></head><body>
     <label>Gateway port</label>
     <input id="p" type="number" value="7778" min="1" max="65535" autofocus>
-    <div class="hint">Connect to a KiroCrew gateway running on another port</div>
+    <div class="hint">Connect to a Kiro Crew gateway running on another port</div>
     <div class="row"><button class="ok" onclick="go()">Connect</button>
     <button class="cancel" onclick="window.close()">Cancel</button></div>
     <script>
@@ -1260,7 +1260,7 @@ function renameCurrentWindow() {
     .check-row label { margin:0; font-size:12px; }
   </style></head><body>
     <label>Window name</label>
-    <input id="n" value="${esc(currentTitle.replace(/^KiroCrew /g, ''))}" autofocus>
+    <input id="n" value="${esc(currentTitle.replace(/^Kiro ?Crew /g, ''))}" autofocus>
     <div class="row"><button class="ok" onclick="go()">Rename</button>
     <button class="cancel" onclick="window.close()">Cancel</button></div>
     <div class="check-row"><input type="checkbox" id="d"><label for="d">Set as default name for :${port} windows</label></div>
@@ -1307,9 +1307,9 @@ function showScreenPermissionDialog() {
     .showMessageBox({
       type: "info",
       title: "Screen Recording permission needed",
-      message: "Allow KiroCrew to capture the screen",
+      message: "Allow Kiro Crew to capture the screen",
       detail:
-        "The screen-snip tool needs macOS Screen Recording permission. Open System Settings › Privacy & Security › Screen Recording, enable KiroCrew, then try the snip again.",
+        "The screen-snip tool needs macOS Screen Recording permission. Open System Settings › Privacy & Security › Screen Recording, enable Kiro Crew, then try the snip again.",
       buttons: ["Open System Settings", "Cancel"],
       defaultId: 0,
       cancelId: 1,

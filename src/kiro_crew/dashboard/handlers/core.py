@@ -165,7 +165,7 @@ async def api_branding(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     return web.json_response(
         {
-            "bot_name": cfg.dashboard.bot_name or "KiroCrew",
+            "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
             "avatar": "/logo.png",
         }
     )

@@ -90,7 +90,7 @@ export function AppPreview() {
             <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ background: '#18181b' }}>
               <span style={{ color: '#f59e0b', fontSize: 13 }}>🐾</span>
             </div>
-            <span className="text-[13px] font-bold tracking-[.08em]" style={{ color: C.textStrong }}>KIROCREW</span>
+            <span className="text-[13px] font-bold tracking-[.08em]" style={{ color: C.textStrong }}>KIRO CREW</span>
           </div>
           <div className="hidden lg:flex items-center gap-1.5">
             <Pill>Request a Feature</Pill>
@@ -239,7 +239,7 @@ export function AppPreview() {
             {/* Input bar */}
             <div className="px-4 pb-2 shrink-0">
               <div className="rounded-2xl px-3 py-2.5" style={{ background: C.bg, border: `1px solid ${C.border}` }}>
-                <div className="text-[12px] mb-2.5" style={{ color: C.mutedSoft }}>Message KiroCrew... <span style={{ color: C.mutedSoft }}>(/command · @file · $skill)</span></div>
+                <div className="text-[12px] mb-2.5" style={{ color: C.mutedSoft }}>Message Kiro Crew... <span style={{ color: C.mutedSoft }}>(/command · @file · $skill)</span></div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2" style={{ color: C.muted }}>
                     <Plus size={14} />

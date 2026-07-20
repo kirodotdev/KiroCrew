@@ -163,11 +163,11 @@ function initAutoUpdate(deps) {
       buttons: ["Restart & Update", "Later"],
       defaultId: 0,
       cancelId: 1,
-      title: "KiroCrew update ready",
-      message: `KiroCrew ${versionName || ""} is ready to install.`.trim(),
+      title: "Kiro Crew update ready",
+      message: `Kiro Crew ${versionName || ""} is ready to install.`.trim(),
       detail:
         (notes || "").slice(0, 500) +
-        "\n\nKiroCrew will stop the local gateway, install the update, and relaunch.",
+        "\n\nKiro Crew will stop the local gateway, install the update, and relaunch.",
     });
     if (response === 0) {
       await applyUpdateAndRestart();
@@ -176,7 +176,7 @@ function initAutoUpdate(deps) {
       try {
         new Notification({
           title: "Update deferred",
-          body: "KiroCrew will finish updating the next time you quit.",
+          body: "Kiro Crew will finish updating the next time you quit.",
         }).show();
       } catch { /* notifications optional */ }
     }

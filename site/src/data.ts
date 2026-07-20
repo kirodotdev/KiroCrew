@@ -27,7 +27,7 @@ export const ARCH = [
 
 export const TERMINAL_LINES = [
   { prompt: true, text: 'kirocrew gateway' },
-  { text: 'KiroCrew v2.1 starting...' },
+  { text: 'Kiro Crew v2.1 starting...' },
   { text: '   Dashboard:  ', hl: 'http://localhost:7777' },
   { text: '   Slack:      ', hl: 'connected (Socket Mode)' },
   { text: '   MCP:        ', hl: '12 servers loaded' },
@@ -46,7 +46,7 @@ export const IN_ACTION = [
 ];
 
 export const FAQ = [
-  { q: 'Does any data leave my machine?', a: 'No. KiroCrew runs entirely locally. Dashboard is bound to localhost. Voice transcription uses local Whisper. The only external calls are to the LLM provider for inference.' },
+  { q: 'Does any data leave my machine?', a: 'No. Kiro Crew runs entirely locally. Dashboard is bound to localhost. Voice transcription uses local Whisper. The only external calls are to the LLM provider for inference.' },
   { q: 'What LLM models are supported?', a: 'ACP (default) and Bedrock. Switch models mid-session from the dashboard. Claude Sonnet 4 is the default.' },
   { q: 'Can non-engineers use it?', a: 'Yes — PMs, designers, data scientists, and any role. The Slack interface requires zero setup beyond the install.' },
   { q: 'How do I add custom tools?', a: "Drop an MCP server config in ~/.kirocrew/mcp.json. It's auto-discovered and synced. Or install via the dashboard MCP tab." },

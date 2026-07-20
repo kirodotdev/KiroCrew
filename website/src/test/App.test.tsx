@@ -318,9 +318,9 @@ describe('App routing', () => {
     fireEvent.keyDown(rows[0], { key: 'Enter' })
   })
 
-  it('renders KIROCREW branding', () => {
+  it('renders KIRO CREW branding', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    expect(screen.getAllByText('KIROCREW').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('KIRO CREW').length).toBeGreaterThan(0)
   })
 
   it('renders connection status', () => {
