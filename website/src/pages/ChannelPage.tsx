@@ -9,6 +9,7 @@ import { Btn, Input, Badge, EmptyState, PageHeader } from '../components/ui'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import AgentSelector from '../components/AgentSelector'
 import { useAgents } from '../hooks/useAgents'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { AnimatePresence } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
@@ -263,6 +264,7 @@ function MentionInput({ agents, value, onChange, onSend }: {
   const [filter, setFilter] = useState('')
   const [sel, setSel] = useState(0)
   const ref = useRef<HTMLTextAreaElement>(null)
+  const ime = useImeGuard()
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const v = e.target.value
@@ -305,13 +307,14 @@ function MentionInput({ agents, value, onChange, onSend }: {
         aria-label="Message the channel"
         className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none flex-1 transition-colors focus-ring resize-none"
         placeholder="Message the channel... (type @ to mention)"
+        {...ime.composition}
         onKeyDown={e => {
           if (show && active.length > 0) {
             if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => (s + 1) % active.length) }
             else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => (s - 1 + active.length) % active.length) }
-            else if (e.key === 'Enter') { e.preventDefault(); pick(active[sel]) }
-            else if (e.key === 'Escape') setShow(false)
-          } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend() }
+            else if (e.key === 'Enter' && !ime.isComposing(e)) { e.preventDefault(); pick(active[sel]) }
+            else if (e.key === 'Escape') { ime.reset(); setShow(false) }
+          } else if (e.key === 'Enter' && !e.shiftKey && !ime.isComposing(e)) { e.preventDefault(); onSend() }
         }} />
     </div>
   )
