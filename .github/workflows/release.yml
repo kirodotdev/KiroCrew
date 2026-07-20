@@ -90,6 +90,13 @@ jobs:
     name: Sign for Release
     needs: [build-wheel, build-desktop]
     runs-on: ubuntu-latest
+    # Tag pushes present OIDC subject ref:refs/tags/<tag>, which the signing
+    # role does NOT trust. Declaring the prod environment switches the subject
+    # to environment:prod, which the trust policy accepts. The environment is
+    # gated by ref restrictions (main + v* tags only) and the
+    # release-tags-admin-only ruleset (v* tag creation is admin-only); see
+    # notarize-macos.yml for the full rationale.
+    environment: prod
     outputs:
       version: ${{ steps.channel.outputs.version }}
       channel: ${{ steps.channel.outputs.channel }}

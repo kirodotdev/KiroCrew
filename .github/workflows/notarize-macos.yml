@@ -49,6 +49,18 @@ jobs:
     name: Notarize + staple (${{ inputs.channel }})
     runs-on: macos-14
     timeout-minutes: 45
+    # OIDC subject alignment: tag-triggered callers (release.yml) present
+    # ref:refs/tags/<tag>, which the signing role does not trust. The prod
+    # environment switches the subject to environment:prod, which it does.
+    # The prod environment is protected by GitHub-side ref restrictions
+    # rather than required reviewers (which would stall the unattended
+    # scheduled nightly): a deployment branch/tag policy limits the
+    # environment to main and v* tags, and the release-tags-admin-only
+    # repository ruleset restricts v* tag creation/update/deletion to
+    # repository admins. An unmerged commit can therefore only reach this
+    # environment if an admin deliberately tags it -- the same principal
+    # who could merge it to main.
+    environment: prod
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       CHANNEL: ${{ inputs.channel }}
