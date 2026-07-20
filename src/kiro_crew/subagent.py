@@ -201,6 +201,7 @@ _TIMEOUT_SECS = 1800  # 30 minutes
 _TURN_LIMIT = 100
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
+_STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 INJECTION_TIMEOUT = 300.0  # inner cap: max seconds for a single stream_and_collect call
 
@@ -588,6 +589,12 @@ class SubagentInfo:
     # ``AgentConfig.subagent_cwd_allowed_roots``.
     cwd: str = ""
     _pid: int | None = None  # PID of kiro-cli child process, for tombstone diagnostics
+    # Wall-clock (time.time) when _run_inner actually began executing. Distinct
+    # from ``started`` (set at registration): a subagent may sit in ``_agents``
+    # awaiting spawn approval for an arbitrary time before execution begins. The
+    # startup watchdog measures from THIS timestamp so it never reaps an agent
+    # that is merely waiting for approval. None until execution starts.
+    _exec_started: float | None = None
     # Learned-cost high-water marks (dynamic-subagent-sizing.md §4.1), sampled
     # periodically by the reaper loop and folded into the cost store at exit.
     peak_rss_gb: float = 0.0
@@ -632,6 +639,7 @@ class SubagentManager:
         max_concurrent: int = _MAX_CONCURRENT,
         default_turn_limit: int = _TURN_LIMIT,
         default_timeout: int = _TIMEOUT_SECS,
+        startup_timeout: int = _STARTUP_TIMEOUT_SECS,
         on_tool_approval: ToolApprovalCallback | None = None,
         on_tool_approval_factory: (
             Callable[["SubagentInfo"], Callable[[LLMEvent], Awaitable[bool]]] | None
@@ -648,6 +656,7 @@ class SubagentManager:
         self._max_concurrent = max_concurrent
         self._default_turn_limit = default_turn_limit
         self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
+        self._startup_deadline = startup_timeout if startup_timeout > 0 else _STARTUP_TIMEOUT_SECS
         self._on_tool_approval = on_tool_approval  # fallback for non-auto sessions
         self._on_tool_approval_factory = on_tool_approval_factory
         self._on_spawn_approval = on_spawn_approval
@@ -1066,6 +1075,29 @@ class SubagentManager:
                 if info.done:
                     continue
                 elapsed = now - info.started
+                # Startup watchdog: a subagent that entered execution but is
+                # still on turn 0 with no runtime PID after the startup window
+                # is wedged in startup (e.g. a hung provider/ACP handshake that
+                # never launches the child process). Reap it fast with a clear
+                # "failed to start" error instead of burning the full deadline
+                # and surfacing a misleading 30-minute turn-0 timeout.
+                if self._is_startup_stalled(info, now):
+                    logger.warning(
+                        "Reaper: subagent %s failed to start within %ds "
+                        "(turn 0, no runtime launched), force-killing",
+                        agent_id,
+                        self._startup_deadline,
+                    )
+                    try:
+                        await self._force_reap(
+                            agent_id,
+                            info,
+                            now - (info._exec_started or now),
+                            reason="startup_timeout",
+                        )
+                    except Exception:
+                        logger.exception("Reaper: failed to reap %s", agent_id)
+                    continue
                 if elapsed <= self._default_timeout:
                     continue
                 logger.warning(
@@ -1092,7 +1124,26 @@ class SubagentManager:
             except Exception:
                 logger.debug("Reaper: tombstone pruning failed", exc_info=True)
 
-    async def _force_reap(self, agent_id: str, info: SubagentInfo, elapsed: float) -> None:
+    def _is_startup_stalled(self, info: SubagentInfo, now: float) -> bool:
+        """True if a subagent is wedged in startup and should be reaped early.
+
+        A subagent qualifies only once it has actually entered execution
+        (``_exec_started`` set by ``_run_inner``) yet has launched no runtime
+        (``_pid is None``) and produced no turn (``turns == 0``) within
+        ``_startup_deadline`` seconds. Keying on ``_exec_started`` — not the
+        registration timestamp ``started`` — means an agent merely awaiting
+        spawn approval (never entered ``_run_inner``) is never caught here.
+        """
+        exec_started = info._exec_started
+        if exec_started is None:
+            return False
+        return (
+            info.turns == 0 and info._pid is None and (now - exec_started) > self._startup_deadline
+        )
+
+    async def _force_reap(
+        self, agent_id: str, info: SubagentInfo, elapsed: float, *, reason: str = ""
+    ) -> None:
         """Kill a subagent's session process and mark it done."""
         session_key = f"subagent:{agent_id}"
 
@@ -1148,11 +1199,14 @@ class SubagentManager:
         if not info.done:
             info.done = True
             if not info.error:
-                info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False)}]"
+                if reason == "startup_timeout":
+                    info.error = f"Failed to start within {self._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False)}]"
+                else:
+                    info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False)}]"
             self._running_count = max(0, self._running_count - 1)
             freed_slot = True
             Stats().inc_subagent_failed()
-            self._write_tombstone(info, "reaped")
+            self._write_tombstone(info, reason or "reaped")
             self._record_cost(info)
         info.reaped = True
         # A reap/cancel frees a slot but — unlike normal completion (the `if not
@@ -1992,6 +2046,10 @@ class SubagentManager:
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
         """Inner execution — called within timeout wrapper."""
+        # Mark the real start of execution BEFORE any await so the startup
+        # watchdog measures from here, not from registration (which may include
+        # an arbitrary spawn-approval wait). Must be the first statement.
+        info._exec_started = time.time()
         # Inherit approval policy from parent session; yolo/trust overrides
         parent_policy = self._sessions.get_approval_policy(info.parent_session_key)
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
