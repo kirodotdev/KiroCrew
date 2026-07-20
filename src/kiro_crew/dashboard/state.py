@@ -1254,6 +1254,7 @@ class DashboardState:
         self._refine_error: str = ""
         self._terminal_sessions: dict[str, Any] = {}  # PTY sessions for CLI panel
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
         self._loop_heartbeat: asyncio.Task | None = None  # type: ignore[type-arg]
         # Off-loop event-loop stall watchdog; armed under the real gateway
         # entrypoint (faulthandler enabled) and stopped on shutdown. Annotated

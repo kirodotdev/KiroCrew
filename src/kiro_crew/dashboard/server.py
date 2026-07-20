@@ -1957,10 +1957,15 @@ async def start_dashboard(
     # Fire background MCP probe at startup (non-blocking)
     asyncio.create_task(handlers._bg_mcp_probe())
 
-    # Start terminal orphan reaper (kills PTYs with no WS for >5 min)
+    # Start terminal orphan reaper (kills PTYs with no WS past the reaper window)
     _reaper = asyncio.create_task(handlers.reap_orphaned_terminals(app))
     _reaper.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
     state._terminal_reaper = _reaper  # prevent GC
+
+    # Start terminal title poller (pushes live foreground-command / cwd titles)
+    _title_poller = asyncio.create_task(handlers.poll_terminal_titles(app))
+    _title_poller.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
+    state._terminal_title_poller = _title_poller  # prevent GC
 
     # Start periodic flush loop for crash protection (saves dirty slots every 5s)
     state.start_flush_loop()

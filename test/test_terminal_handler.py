@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -95,6 +96,28 @@ class TestGetConfig:
         req = _make_request()
         result = terminal._get_config(req)
         assert result == {}
+
+
+# ── _resolve_cwd ──
+
+
+class TestResolveCwd:
+    def test_valid_requested_dir_wins(self, tmp_path):
+        assert terminal._resolve_cwd({"cwd": "/etc"}, str(tmp_path)) == str(tmp_path)
+
+    def test_expands_user_in_requested(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert terminal._resolve_cwd({}, "~") == str(tmp_path)
+
+    def test_invalid_requested_falls_back_to_config_cwd(self, tmp_path):
+        assert terminal._resolve_cwd({"cwd": str(tmp_path)}, "/no/such/dir/xyz") == str(tmp_path)
+
+    def test_no_request_uses_config_cwd(self, tmp_path):
+        assert terminal._resolve_cwd({"cwd": str(tmp_path)}, None) == str(tmp_path)
+
+    def test_no_request_no_config_uses_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert terminal._resolve_cwd({}, None) == str(tmp_path)
 
 
 # ── _kill_session ──
@@ -268,9 +291,9 @@ class TestApiTerminalCreate:
     async def test_rejects_when_max_sessions_reached(self):
         registry = {"s1": _make_session(), "s2": _make_session(), "s3": _make_session()}
         req = _make_request(registry=registry)
-        with patch.object(terminal, "_get_config", return_value={"enabled": True}), patch.object(
-            terminal, "_sel"
-        ) as mock_sel:
+        with patch.object(
+            terminal, "_get_config", return_value={"enabled": True, "max_sessions": 3}
+        ), patch.object(terminal, "_sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_create(req)
         assert resp.status == 429
@@ -432,7 +455,7 @@ class TestApiTerminalWs:
         registry = {"s1": _make_session(), "s2": _make_session(), "s3": _make_session()}
         req = _make_request(registry=registry, session_id="new")
         with patch.object(terminal, "_sel") as mock_sel, patch.object(
-            terminal, "_get_config", return_value={"enabled": True}
+            terminal, "_get_config", return_value={"enabled": True, "max_sessions": 3}
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_ws(req)
@@ -600,7 +623,7 @@ class TestReapOrphanedTerminals:
     @pytest.mark.asyncio
     async def test_reaps_disconnected_session(self):
         sess = _make_session(session_id="s1", alive=True)
-        sess.last_ws_disconnect = time.monotonic() - 600  # 10 min ago
+        sess.last_ws_disconnect = time.monotonic() - 2000  # ~33 min ago (> reap threshold)
         state = MagicMock()
         state._terminal_sessions = {"s1": sess}
         app = {"state": state}
@@ -642,7 +665,7 @@ class TestReapOrphanedTerminals:
     @pytest.mark.asyncio
     async def test_skips_recently_disconnected(self):
         sess = _make_session(session_id="s1", alive=True)
-        sess.last_ws_disconnect = time.monotonic() - 60  # 1 min ago (< 5 min threshold)
+        sess.last_ws_disconnect = time.monotonic() - 60  # 1 min ago (< 15 min threshold)
         state = MagicMock()
         state._terminal_sessions = {"s1": sess}
         app = {"state": state}
@@ -1114,3 +1137,160 @@ class TestIsEnabledDefault:
         terminal._enabled_cache[1] = 0.0
         with patch.object(terminal, "_get_config", return_value={"enabled": False}):
             assert terminal._is_enabled(req) is False
+
+
+# ── _proc_comm / _proc_cwd (live-title helpers) ──
+
+_HAS_PROC = os.path.isdir("/proc")
+
+
+@pytest.mark.skipif(not _HAS_PROC, reason="requires Linux /proc")
+class TestProcHelpers:
+    def test_proc_comm_returns_command_name_for_live_pid(self):
+        # Our own process is guaranteed alive; /proc/<pid>/comm is non-empty.
+        name = terminal._proc_comm(os.getpid())
+        assert name and isinstance(name, str)
+
+    def test_proc_comm_returns_none_for_bogus_pid(self):
+        # A pid this large effectively never exists -> open() raises OSError -> None.
+        assert terminal._proc_comm(2 ** 30) is None
+
+    def test_proc_cwd_returns_directory_for_live_pid(self):
+        cwd = terminal._proc_cwd(os.getpid())
+        assert cwd and os.path.isdir(cwd)
+
+    def test_proc_cwd_returns_none_for_bogus_pid(self):
+        assert terminal._proc_cwd(2 ** 30) is None
+
+
+# ── _session_title ──
+
+
+class TestSessionTitle:
+    """The tab-title label: foreground command name while one runs, else the
+    shell's cwd basename. _proc_comm/_proc_cwd and os.tcgetpgrp are patched so
+    each branch is exercised deterministically (no real PTY needed)."""
+
+    def _sess(self):
+        # _make_session gives master_fd=99 and proc.pid=12345.  # wokeignore:rule=master
+        return _make_session()
+
+    def test_returns_none_on_non_posix(self):
+        with patch.object(terminal.platform_compat, "IS_POSIX", False):
+            assert terminal._session_title(self._sess()) is None
+
+    def test_returns_none_when_fd_closed(self):
+        sess = self._sess()
+        sess.master_fd = -1  # wokeignore:rule=master
+        with patch.object(terminal.platform_compat, "IS_POSIX", True):
+            assert terminal._session_title(sess) is None
+
+    def test_returns_none_when_tcgetpgrp_raises(self):
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch("os.tcgetpgrp", side_effect=OSError):
+            assert terminal._session_title(self._sess()) is None
+
+    def test_returns_foreground_command_name(self):
+        # fg pgid (999) != shell pid (12345) -> a command is running.
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch("os.tcgetpgrp", return_value=999), \
+             patch.object(terminal, "_proc_comm", return_value="vim"):
+            assert terminal._session_title(self._sess()) == "vim"
+
+    def test_falls_back_to_cwd_basename_when_idle(self):
+        # fg pgid == shell pid -> at the prompt -> cwd basename.
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch("os.tcgetpgrp", return_value=12345), \
+             patch.object(terminal, "_proc_cwd", return_value="/home/u/my-project"):
+            assert terminal._session_title(self._sess()) == "my-project"
+
+    def test_falls_back_to_cwd_when_comm_unavailable(self):
+        # A command is running but /proc/<pgid>/comm couldn't be read.
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch("os.tcgetpgrp", return_value=999), \
+             patch.object(terminal, "_proc_comm", return_value=None), \
+             patch.object(terminal, "_proc_cwd", return_value="/tmp/scratch"):
+            assert terminal._session_title(self._sess()) == "scratch"
+
+    def test_returns_none_when_cwd_unavailable(self):
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch("os.tcgetpgrp", return_value=12345), \
+             patch.object(terminal, "_proc_cwd", return_value=None):
+            assert terminal._session_title(self._sess()) is None
+
+
+# ── poll_terminal_titles ──
+
+
+class TestPollTerminalTitles:
+    """One loop iteration is driven by patching asyncio.sleep to return once
+    then raise CancelledError (same pattern as the reaper tests)."""
+
+    @staticmethod
+    def _app(sess):
+        state = MagicMock()
+        state._terminal_sessions = {sess.session_id: sess} if sess else {}
+        return {"state": state}
+
+    @pytest.mark.asyncio
+    async def test_pushes_title_frame_on_change(self):
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        assert sess.last_title == "vim"
+        ws.send_str.assert_awaited_once()
+        assert json.loads(ws.send_str.call_args.args[0]) == {"type": "title", "text": "vim"}
+
+    @pytest.mark.asyncio
+    async def test_skips_when_title_unchanged(self):
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        sess.last_title = "vim"
+        with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        ws.send_str.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_title(self):
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        with patch.object(terminal, "_session_title", return_value=None), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        ws.send_str.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_disconnected_session(self):
+        sess = _make_session(session_id="s1", ws=None)  # no live socket
+        with patch.object(terminal, "_session_title") as mock_title, \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        mock_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_swallows_send_error(self):
+        ws = AsyncMock()
+        ws.closed = False
+        ws.send_str = AsyncMock(side_effect=ConnectionResetError)
+        sess = _make_session(session_id="s1", ws=ws)
+        with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))  # must not raise
+        assert sess.last_title == "vim"
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_state(self):
+        with patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles({"state": None})
+
+    @pytest.mark.asyncio
+    async def test_handles_no_terminal_sessions_attr(self):
+        state = MagicMock(spec=[])  # no _terminal_sessions attribute
+        with patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles({"state": state})
