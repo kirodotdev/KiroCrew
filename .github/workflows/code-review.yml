@@ -242,7 +242,7 @@ jobs:
       - name: Install and run backend tests with coverage
         run: |
           pip install -e ".[voice,desktop,dev]" --quiet
-          pytest -q --timeout=120 --cov=kiro_crew --cov-report=xml \
+          pytest -q -n auto --timeout=120 --cov=kiro_crew --cov-report=xml \
             --deselect=test/test_script_hooks.py \
             --deselect=test/test_cron_script.py \
             --deselect=test/test_run_aim_path.py \
