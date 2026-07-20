@@ -36,8 +36,9 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
 | `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers Claude Code |
 | `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers Harmony Artifactory / Chorus providers |
-| `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + Bedrock env |
-| `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | `.midway`/`.ada`/`.krb5` dirs |
+| `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + backend env |
+| `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
+| `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
 | `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed Amazon allowlist |
@@ -205,6 +206,8 @@ would only churn the seam without protecting any deployed companion. Every seam
 added pre-launch landed under this same `1`, with no bump:
 
 - the `governance` carrier (the enterprise security ceiling);
+- the `agent_executable` resolver (edition-neutral direct-executable resolution
+  before the core applies its sandbox);
 - the `knowledge` (connector registry), `dashboard` (route/service/login-handler
   contributor), and `jail` (process-isolation) extension points;
 - wiring an *existing* but previously-unconsumed Protocol method into a call site
@@ -255,7 +258,13 @@ delegates to that same global. Wired sites:
   startup (gateway raises fail-closed; cli is defensive — standalone never raises).
 - `sandbox.py` — `_build_launcher_script` / `_build_seatbelt_profile` source the
   sensitive-dir lists from `current_context().sandbox` (the `.aws`-exclusion at
-  the cc branch is preserved).
+  the cc branch is preserved). `namespace_argv` / `sandbox_exec_argv` resolve
+  argv[0] through `current_context().agent_executable` before applying the core
+  sandbox. The public Default is identity; a companion may return the direct
+  executable behind an edition-managed launcher to avoid nested isolation, but
+  cannot disable or weaken the outer sandbox. A transient adapter error falls
+  back to the original executable (outer sandbox still applies); a
+  `PlatformCompositionError` propagates fail-closed.
 - `hooks.py` — the deny check routes through `current_context().security.is_denied`;
   the kiro-hooks egress (`dashboard/handlers/hooks.py`) scrubs command/matcher
   through the shared `redact_via_context` shim.

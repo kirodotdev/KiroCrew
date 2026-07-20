@@ -77,6 +77,13 @@ class DefaultAgentRuntime:
         agent.run_first_run_setup()
 
 
+class DefaultAgentExecutableResolver:
+    """Use the executable selected by the public installation unchanged."""
+
+    def resolve_executable(self, executable: str) -> str:
+        return executable
+
+
 class DefaultSandboxPolicy:
     """Today's open-source sensitive-dir lists from ``sandbox.py``."""
 

@@ -97,12 +97,26 @@ class AgentRuntime(Protocol):
     def run_first_run_setup(self) -> None: ...
 
 
+class AgentExecutableResolver(Protocol):
+    """Resolve an edition-provided agent launcher to its direct executable.
+
+    ``sandbox.py`` calls this before applying KiroCrew's OS-level sandbox so an
+    edition can replace a managed launcher with the executable it ultimately
+    invokes, avoiding nested isolation. The public Default is identity: ordinary
+    ``kiro-cli`` paths and the explicit ``KIROCREW_KIRO_BIN`` override are used
+    unchanged. Implementations must return the input unchanged when they do not
+    recognize it and must never weaken or disable the outer sandbox.
+    """
+
+    def resolve_executable(self, executable: str) -> str: ...
+
+
 class SandboxPolicy(Protocol):
     """The sandbox *data*: which dirs/files to hide/expose.
 
     The ``wrap_argv`` mechanism stays in ``sandbox.py``; only the directory and
-    file lists are the extension point.  Public default = the open-source
-    ``~/.aws``/``~/.ssh``/etc. lists; companion adds ``.midway``/``.ada``/etc.
+    file lists are the extension point. Public default = the open-source
+    credential-directory lists; a companion may add edition-specific paths.
     """
 
     def strict_dirs(self) -> List[str]: ...
