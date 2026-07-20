@@ -172,6 +172,14 @@ def _safe_int(value: object, default: int) -> int:
         return default
 
 
+def _safe_float(value: object, default: float) -> float:
+    """Convert *value* to float, returning *default* on failure."""
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def _session_work_dir(session_key: str | None) -> Path:
     """Return a per-session subdirectory under workspace_root()."""
     root = workspace_root()
@@ -2666,6 +2674,12 @@ class KiroCrewConfig:
         telemetry_data = data.get("telemetry", {})
         if not isinstance(telemetry_data, dict):
             telemetry_data = {}
+        orchestrator_data = data.get("orchestrator", {})
+        if not isinstance(orchestrator_data, dict):
+            orchestrator_data = {}
+        watchdog_data = data.get("watchdog", {})
+        if not isinstance(watchdog_data, dict):
+            watchdog_data = {}
 
         # Parse agents section into dict[str, KiroCrewAgentConfig]
         raw_agents = data.get("agents", {})
@@ -2790,6 +2804,36 @@ class KiroCrewConfig:
                 idle_reset_minutes=_coerce_int(messaging_data.get("idle_reset_minutes"), 0),
                 daily_reset_hour=_coerce_int(messaging_data.get("daily_reset_hour"), -1),
                 queue_mode=str(messaging_data.get("queue_mode", "steer")),
+            ),
+            # orchestrator/watchdog were advertised in config-baseline.json and
+            # served by /api/config/schema, and real consumers read them
+            # (acp/session_handle.py, dashboard/chat_orchestrator.py), but load()
+            # never passed these kwargs — so config.json values were silently
+            # ignored and the dataclass defaults always won.
+            orchestrator=OrchestratorConfig(
+                stage_timeout_seconds=_safe_int(
+                    orchestrator_data.get("stage_timeout_seconds", 1800), 1800
+                ),
+            ),
+            watchdog=WatchdogConfig(
+                check_after_secs=_safe_float(
+                    watchdog_data.get("check_after_secs", 60.0), 60.0
+                ),
+                stale_window_secs=_safe_float(
+                    watchdog_data.get("stale_window_secs", 300.0), 300.0
+                ),
+                tool_stall_suspect_secs=_safe_float(
+                    watchdog_data.get("tool_stall_suspect_secs", 600.0), 600.0
+                ),
+                tool_stall_hard_cap_secs=_safe_float(
+                    watchdog_data.get("tool_stall_hard_cap_secs", 2700.0), 2700.0
+                ),
+                model_silent_probe_secs=_safe_float(
+                    watchdog_data.get("model_silent_probe_secs", 900.0), 900.0
+                ),
+                wellness_sample_secs=_safe_float(
+                    watchdog_data.get("wellness_sample_secs", 3.0), 3.0
+                ),
             ),
             telemetry=TelemetryConfig(
                 enabled=bool(telemetry_data.get("enabled", False)),
