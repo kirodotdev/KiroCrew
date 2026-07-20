@@ -20,6 +20,7 @@ import notificationsReducer from '../store/notificationsSlice'
 vi.mock('../api/client', () => ({
   api: {
     browseFiles: vi.fn().mockResolvedValue({ path: '/projects/foo', parent: '/', dirs: [], files: [] }),
+    pullRequestSource: vi.fn().mockImplementation(() => new Promise(() => {})),
   },
 }))
 
@@ -50,6 +51,26 @@ describe('ActivityViewer', () => {
   // useSortableTable persists the chosen sort to localStorage keyed by tableId,
   // so clear it between tests to keep the file-browser sort tests independent.
   beforeEach(() => localStorage.clear())
+
+  it('renders each detected PR as a source selector in the Changes view', () => {
+    render(
+      <ActivityViewer
+        {...baseProps}
+        view="changes"
+        sources={[
+          { provider: 'github', owner: 'octo', repo: 'alpha', number: 42, url: 'https://github.com/octo/alpha/pull/42' },
+          { provider: 'gitlab', owner: 'team', repo: 'beta', number: 7, url: 'https://gitlab.com/team/beta/-/merge_requests/7' },
+        ]}
+        selectedSourceUrl="https://github.com/octo/alpha/pull/42"
+        onSelectSource={vi.fn()}
+      />,
+      { wrapper },
+    )
+
+    expect(screen.getByRole('tab', { name: 'PR #42' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'MR !7' })).toBeInTheDocument()
+    expect(screen.getByText('Loading source provider…')).toBeInTheDocument()
+  })
 
   it('Resources section renders links in Files tab', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

@@ -15,10 +15,11 @@ to ``BENIGN_SPAWNS`` with a justification. This is the "lint or unit test
 asserting every subprocess spawn is either allow-listed as benign or routed
 through that wrapper" the finding asks for.
 
-The finding named three agent-influenced sites — the MCP server probe
+The agent-influenced sites — the MCP server probe
 (``mcp_discovery.probe_server``), the TaskRunner test command
-(``task_executor.run_tests``), and TaskRunner git operations
-(``git_coord._git`` / ``_is_git_repo``) — which are now routed through
+(``task_executor.run_tests``), TaskRunner git operations
+(``git_coord._git`` / ``_is_git_repo``), and authenticated source-provider
+fetches (``source_providers._run_json``) — are routed through
 ``sandboxed_spawn_argv`` and MUST stay routed (see
 ``test_agent_influenced_sites_are_routed``).
 
@@ -315,13 +316,14 @@ def test_benign_allowlist_has_no_stale_entries():
 
 
 def test_agent_influenced_sites_are_routed():
-    """The three sites the finding names must stay routed through the sandbox."""
+    """Agent-influenced spawns must stay routed through the sandbox."""
     unrouted = _collect_unrouted_spawns()
     for key in (
         "mcp_discovery.py::probe_server",
         "task_executor.py::run_tests",
         "git_coord.py::_git",
         "git_coord.py::_is_git_repo",
+        "dashboard/handlers/source_providers.py::_run_json",
     ):
         assert key not in unrouted, (
             f"{key} must route its spawn through sandboxed_spawn_argv "

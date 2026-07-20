@@ -3,7 +3,7 @@ import type { Artifact } from '../types'
 import { safeSetItem } from '../utils/safeStorage'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'
+export type ViewKind = 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal'
 
@@ -29,7 +29,7 @@ export interface PanelTab {
 }
 
 const VIEW_TITLES: Record<ViewKind, string> = {
-  files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
+  changes: 'Changes', files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
   logs: 'Logs', side: 'Side',
 }
 

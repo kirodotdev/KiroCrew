@@ -6,12 +6,13 @@
  * this test FAILS.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { act, render } from '@testing-library/react'
+import { act, render, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
+import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
 
@@ -65,13 +66,19 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
 
 const slot = (key: string, mode = ''): ChatSlot => ({
   key, title: key, messages: 0, running: false, mode, created: '', last_ts: '',
   pending_approval: false, waiting_for_input: false, last_activity_ts: undefined,
 })
 
-function renderChatPage(mode: string | undefined, activeSlot: string | null, slots: ChatSlot[]) {
+function renderChatPage(
+  mode: string | undefined,
+  activeSlot: string | null,
+  slots: ChatSlot[],
+  chatOverrides: Partial<RootState['chat']> = {},
+) {
   const store = createTestStore({
     dashboard: {
       status: { platform: 'darwin' }, connected: false, slots, approvalMode: 'normal',
@@ -85,6 +92,8 @@ function renderChatPage(mode: string | undefined, activeSlot: string | null, slo
       lastChunkSeq: undefined, history: [], historyHasMore: false, historyOffset: 0,
       pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
       subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools', slotActivity: {}, slotHistory: [],
+      slotMessages: {}, slotLoading: false,
+      ...chatOverrides,
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -101,7 +110,10 @@ function renderChatPage(mode: string | undefined, activeSlot: string | null, slo
   )
 }
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  __resetPanelTabs()
+})
 
 const allSlots = [slot('chat-1'), slot('chat-2'), slot('orch-1', 'orchestrator'), slot('orch-2', 'orchestrator')]
 
@@ -146,5 +158,21 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     await act(async () => { window.dispatchEvent(new Event('beforeunload')) })
     const persisted = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
     expect(persisted['chat-2']).toBe('mid-sentence crash content')
+  })
+
+  it('keeps the Changes tab while uncached slot history is loading', async () => {
+    vi.mocked(api.chatSlotDetail).mockImplementation(() => new Promise(() => {}))
+    const panel = renderHook(() => usePanelTabs('chat-2'))
+    act(() => panel.result.current.openView('changes'))
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+
+    renderChatPage(undefined, 'chat-2', allSlots, {
+      messages: [],
+      slotLoading: true,
+    })
+    await act(async () => {})
+
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+    expect(panel.result.current.activeId).toBe('changes')
   })
 })

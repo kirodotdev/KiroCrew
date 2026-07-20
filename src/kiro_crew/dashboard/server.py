@@ -101,6 +101,11 @@ from kiro_crew.dashboard.handlers.discover import (
     api_skills_discover_preview,
 )
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
+from kiro_crew.dashboard.handlers.source_providers import (
+    api_pull_request_checks,
+    api_pull_request_resolve,
+    api_pull_request_source,
+)
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
@@ -1211,6 +1216,9 @@ async def start_dashboard(
 
     # Chat
     app.router.add_post("/api/chat", chat.api_chat)
+    app.router.add_post("/api/source/pull-request", api_pull_request_source)
+    app.router.add_post("/api/source/pull-request/checks", api_pull_request_checks)
+    app.router.add_post("/api/source/pull-request/resolve", api_pull_request_resolve)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
     app.router.add_post("/api/chat/slots/cleanup", chat.api_chat_slots_cleanup)

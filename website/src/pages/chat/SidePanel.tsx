@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -17,15 +17,17 @@ import { safeSetItem } from '../../utils/safeStorage'
 import type { SubagentActivity, ToolActivity } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
+import type { PullRequestLink } from '../../utils/pullRequestLinks'
 
 const KIND_ICON: Record<TabKind, ReactNode> = {
-  files: <FileText size={13} />, artifacts: <Component size={13} />, subagents: <Bot size={13} />, workflows: <Workflow size={13} />,
+  changes: <GitPullRequest size={13} />, files: <FileText size={13} />, artifacts: <Component size={13} />, subagents: <Bot size={13} />, workflows: <Workflow size={13} />,
   logs: <ScrollText size={13} />, side: <MessageSquare size={13} />, terminal: <TerminalSquare size={13} />,
   file: <FileText size={13} />, diff: <GitCompare size={13} />, artifact: <Package size={13} />,
 }
 
 /** Views offered by the + menu. */
 const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; desc: string }[] = [
+  { kind: 'changes', label: 'Changes', icon: <GitPullRequest size={15} />, desc: 'Pull requests, checks & reviews' },
   { kind: 'files', label: 'Files', icon: <FileText size={15} />, desc: 'Browse & edit files' },
   { kind: 'artifacts', label: 'Artifacts', icon: <Component size={15} />, desc: 'In-session documents & stars' },
   { kind: 'subagents', label: 'Subagents', icon: <Bot size={15} />, desc: 'Live agent activity & transcripts' },
@@ -35,7 +37,7 @@ const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; d
   { kind: 'terminal', label: 'Terminal', icon: <TerminalSquare size={15} />, desc: 'Shell on the gateway host' },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
 
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
@@ -49,6 +51,10 @@ interface SidePanelProps {
   projectDir?: string
   navLinks?: ExtractedLink[]
   navResolving?: boolean
+  sources?: PullRequestLink[]
+  selectedSourceUrl?: string
+  onSelectSource?: (url: string) => void
+  onAddSourceToChat?: (text: string) => void
   onSubmitComments?: (message: string) => void
   onFileSave: (filePath: string, content: string) => Promise<void>
   /** Close the whole panel (hides the side column). */
@@ -57,10 +63,10 @@ interface SidePanelProps {
 
 /**
  * Tabbed side panel. One strip holds singleton view tabs
- * (Files / Subagents / Workflows / Logs / Side / Terminal, opened from +) and
- * document tabs (file / diff / artifact, opened on demand — file chips, the
- * Files picker, artifact refs). Each tab renders its own body; documents live
- * as tabs instead of replacing the panel.
+ * (Changes / Files / Subagents / Workflows / Logs / Side / Terminal, opened
+ * from +) and document tabs (file / diff / artifact, opened on demand — file
+ * chips, the Files picker, artifact refs). Each tab renders its own body;
+ * documents live as tabs instead of replacing the panel.
  */
 /** Panel minimum width (also the resize handle's lower clamp). */
 export const SIDE_PANEL_MIN_W = 320
@@ -96,13 +102,17 @@ export function measureSidePanelReservedW(): number {
 
 export default function SidePanel({
   tabsCtl, subagents, toolLog, slot, files, onFileOpen, onFileRemove, onFilesClear,
-  projectDir, navLinks, navResolving, onSubmitComments, onFileSave, onClose,
+  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
+  onAddSourceToChat, onSubmitComments, onFileSave, onClose,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder } = tabsCtl
   const terminalEnabled = useTerminalEnabled()
   // The + menu / empty-state launcher hide Terminal when the feature is
-  // disabled server-side (config.json dashboard.terminal.enabled=false).
-  const menuItems = terminalEnabled ? NEW_MENU : NEW_MENU.filter(m => m.kind !== 'terminal')
+  // disabled server-side and hide Changes when no PR/MR source is present.
+  const menuItems = NEW_MENU.filter(item =>
+    (terminalEnabled || item.kind !== 'terminal')
+    && (sources?.length || item.kind !== 'changes')
+  )
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
   // working dir; every other menu item is a singleton view.
   const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
@@ -142,7 +152,7 @@ export default function SidePanel({
     dropdownRef: menuListRef,
     inputRef: menuNoInputRef,
     hasFilterInput: false,
-    filteredCount: NEW_MENU.length,
+    filteredCount: menuItems.length,
     onEnterSingleMatch: () => {},
     closeToTrigger: closeMenuToTrigger,
   })
@@ -342,10 +352,14 @@ export default function SidePanel({
             return isActive ? (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
+                  view={t.kind as 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   files={files}
+                  sources={sources}
+                  selectedSourceUrl={selectedSourceUrl}
+                  onSelectSource={onSelectSource}
+                  onAddToChat={onAddSourceToChat}
                   // Files opened FROM the Files tab replace it in place (open
                   // another Files tab from + for a second file). Opens from
                   // other views keep the default open-or-focus behavior.

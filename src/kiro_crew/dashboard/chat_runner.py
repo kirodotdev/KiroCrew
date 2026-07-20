@@ -2601,6 +2601,7 @@ async def _run_chat(
                             prefix = existing[:1] if existing[:1] in ("🔧", "✅", "🚫") else "🔧"
                             _patched_content = f"{prefix} {_title_upd}"
                             m["content"] = _patched_content
+                            slot.invalidate_source_links()
                         if _meta_patch:
                             m_meta = m.setdefault("meta", {})
                             m_meta.update(_meta_patch)

@@ -59,6 +59,7 @@ that dir is appended to the MCP spawn `PATH` automatically
 | Feature | Status on Windows |
 |---------|-------------------|
 | Core gateway / chat / cron / dashboard | works |
+| Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
 | Browser automation (Playwright MCP) | works (installed via `npm`/`npx @playwright/mcp`) |
 | Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
 | STT (whisper / optional cloud transcription) | works |

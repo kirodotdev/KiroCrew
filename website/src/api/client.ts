@@ -1,6 +1,12 @@
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
-import type { McpApplyChange, SessionDoc, PublishProviderDescriptor } from '../types'
+import type {
+  McpApplyChange,
+  PullRequestCheck,
+  PullRequestSource,
+  PublishProviderDescriptor,
+  SessionDoc,
+} from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { queryClient } from './queryClient'
 
@@ -563,6 +569,9 @@ export const api = {
     return fetch('/api/stt/transcribe', { method: 'POST', body: fd }).then(j)
   },
   // Chat
+  pullRequestSource: (url: string, refresh = false) => post('/api/source/pull-request', { url, refresh }).then(j) as Promise<PullRequestSource>,
+  pullRequestChecks: (url: string) => post('/api/source/pull-request/checks', { url }).then(j) as Promise<{ checks: PullRequestCheck[] }>,
+  resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number) => {
     const p = new URLSearchParams()

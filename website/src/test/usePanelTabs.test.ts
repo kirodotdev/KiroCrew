@@ -36,6 +36,16 @@ describe('usePanelTabs', () => {
     expect(result.current.activeTab?.title).toBe('Files')
   })
 
+  it('opens Changes as a singleton source view', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openView('changes'))
+    act(() => result.current.openView('changes'))
+    expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.activeTab).toMatchObject({
+      id: 'changes', kind: 'changes', title: 'Changes',
+    })
+  })
+
   it('openFile dedupes on path, titles by basename, and carries the origin slot', () => {
     const { result } = renderHook(() => usePanelTabs())
     act(() => result.current.openFile('/src/pages/ChatPage.tsx', 'body-1', 'slot-a'))

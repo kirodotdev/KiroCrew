@@ -1172,7 +1172,9 @@ async def api_token_local(request: web.Request) -> web.Response:
         parsed = parse_duration(ttl_param)
         if parsed:
             ttl = parsed
-    token = generate_token("local-app", ttl_seconds=ttl)
+    state = request.app.get("state")
+    owner_id = str(getattr(state, "owner_id", "") or "")
+    token = generate_token(owner_id or "local-app", ttl_seconds=ttl)
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="token.local",

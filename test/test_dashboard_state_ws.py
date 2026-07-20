@@ -308,3 +308,117 @@ def test_folder_breadcrumb_cycle_safe(state):
     ]
     # No infinite loop; each visited once.
     assert state.folder_breadcrumb("a") == "B › A"
+
+
+class TestOwnerSourceStatusTransport:
+    def test_slot_updates_keep_status_out_of_sse_and_generic_websockets(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        source_url = "https://github.com/acme/repo/pull/12"
+
+        def serialize_slots(*, include_check_status: bool = False) -> list[dict]:
+            link = {"url": source_url, "provider": "github", "number": 12}
+            if include_check_status:
+                link.update({"ci": "passed", "state": "OPEN"})
+            return [{"key": "chat-1", "source_links": [link]}]
+
+        monkeypatch.setattr(state, "serialize_slots", serialize_slots)
+        monkeypatch.setattr(state, "is_yolo_active", lambda: False)
+        sent: list[tuple[object, dict]] = []
+        monkeypatch.setattr(
+            state,
+            "_spawn_ws_send",
+            lambda client, message: sent.append((client, json.loads(message))),
+        )
+        generic_ws = MagicMock(closed=False)
+        owner_ws = MagicMock(closed=False)
+        state.register_ws(generic_ws)
+        state.register_ws(owner_ws, owner=True)
+        sse_queue = state.register_sse()
+
+        state.push_slots_update()
+
+        sse_note = sse_queue.get_nowait()
+        assert "ci" not in str(sse_note["_slots_list"])
+        assert "state" not in sse_note["_slots_list"][0]["source_links"][0]
+
+        generic_messages = [message for client, message in sent if client is generic_ws]
+        owner_messages = [message for client, message in sent if client is owner_ws]
+        assert len(generic_messages) == 1
+        assert "ci" not in str(generic_messages[0]["data"])
+        assert "state" not in generic_messages[0]["data"][0]["source_links"][0]
+        assert len(owner_messages) == 2
+        assert "ci" not in str(owner_messages[0]["data"])
+        assert owner_messages[1]["data"][0]["source_links"][0]["ci"] == "passed"
+        assert owner_messages[1]["data"][0]["source_links"][0]["state"] == "OPEN"
+
+    @pytest.mark.parametrize(
+        ("claims", "owner_request"),
+        [
+            ({"user": "U_OWNER", "app": ""}, True),
+            ({"user": "U_OTHER", "app": ""}, False),
+            ({"user": "U_OWNER", "app": "source-app"}, False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_websocket_initial_status_and_refresh_are_owner_only(
+        self, monkeypatch, claims, owner_request
+    ) -> None:
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        source_url = "https://github.com/acme/repo/pull/12"
+
+        def serialize_slots(*, include_check_status: bool = False) -> list[dict]:
+            link = {"url": source_url, "provider": "github", "number": 12}
+            if include_check_status:
+                link.update({"ci": "passed", "state": "OPEN"})
+            return [{"key": "chat-1", "source_links": [link]}]
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.side_effect = serialize_slots
+        state._yolo = False
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__(claims)
+                self.app = {"state": state}
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.closed = True
+                self.sent: list[dict] = []
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        fake_ws = FakeWebSocket()
+        refresh = MagicMock()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
+
+        result = await dashboard_ws.api_ws(Request())  # type: ignore[arg-type]
+        await asyncio.sleep(0)
+
+        assert result is fake_ws
+        state.register_ws.assert_called_once_with(fake_ws, owner=owner_request)
+        initial_slots = fake_ws.sent[0]["data"]
+        if owner_request:
+            assert initial_slots[0]["source_links"][0]["ci"] == "passed"
+            refresh.assert_called_once_with([source_url], state.push_slots_update)
+        else:
+            assert "ci" not in str(initial_slots)
+            assert "state" not in initial_slots[0]["source_links"][0]
+            refresh.assert_not_called()
+        state.unregister_ws.assert_called_once_with(fake_ws)

@@ -290,6 +290,10 @@ _SESSION_RECYCLED_NOTICE = (
     "Conversation history is preserved — your next message starts a fresh process."
 )
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
+_MAX_SOURCE_LINKS_PER_SLOT = 64
+_NON_DURABLE_SOURCE_LINK_ROLES = frozenset(
+    {"chunk", "done", "streaming", "queued", "permission"}
+)
 # FIFO ceiling on a slot's pending-context queue (app-kit context inject +
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
 _MAX_PENDING_CONTEXT = 50
@@ -586,6 +590,8 @@ class _ChatSlot:
     """Independent chat session that runs server-side."""
 
     __slots__ = (
+        "_source_links_cache",
+        "_source_links_revision",
         "key",
         "title",
         "agent",
@@ -689,6 +695,9 @@ class _ChatSlot:
         self.project: str = ""
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.messages: list[dict[str, Any]] = []
+        # (content revision, links) cache for the sidebar PR chips scan.
+        self._source_links_revision = 0
+        self._source_links_cache: tuple[int, list[dict]] | None = None
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self.task: asyncio.Task | None = None  # type: ignore[type-arg]
         self.event = asyncio.Event()
@@ -856,6 +865,7 @@ class _ChatSlot:
         if meta:
             msg["meta"] = meta
         self.messages.append(msg)
+        self.invalidate_source_links()
         self.total_messages += 1
         self._dirty = True
         self._pending.append(msg)
@@ -924,6 +934,7 @@ class _ChatSlot:
             if m.get("ts") == ts:
                 if content is not None:
                     m["content"] = content
+                    self.invalidate_source_links()
                 if meta is not None:
                     m["meta"] = meta
                 self._dirty = True
@@ -1036,7 +1047,65 @@ class _ChatSlot:
             return NEW_SESSION_TITLE
         return self.title
 
-    def to_dict(self) -> dict:
+    def invalidate_source_links(self) -> None:
+        """Mark cached sidebar PR/MR links stale after message-content mutation."""
+        self._source_links_revision += 1
+
+    def _pr_source_links(self) -> list[dict]:
+        """PR/MR links found in this slot's messages, for sidebar wayfinding chips.
+
+        Linear scan (no regex backtracking) validated by the source-provider
+        URL parser and cached behind an explicit content revision.
+        """
+        if (
+            self._source_links_cache
+            and self._source_links_cache[0] == self._source_links_revision
+        ):
+            return self._source_links_cache[1]
+        # Local import: handlers.source_providers does not import state, but
+        # keep the dependency lazy to stay out of module-load ordering.
+        from kiro_crew.dashboard.handlers.source_providers import parse_source_url
+
+        stop_chars = set(' \t\n<>()[]{}"\'')
+        found: dict[str, dict] = {}
+        for msg in self.messages:
+            if len(found) >= _MAX_SOURCE_LINKS_PER_SLOT:
+                break
+            if (
+                not isinstance(msg, dict)
+                or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES
+            ):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or "https://" not in content:
+                continue
+            idx = 0
+            while len(found) < _MAX_SOURCE_LINKS_PER_SLOT:
+                idx = content.find("https://", idx)
+                if idx == -1:
+                    break
+                end = idx
+                while end < len(content) and content[end] not in stop_chars:
+                    end += 1
+                candidate = content[idx:end].rstrip(".,!?;:")
+                idx = end
+                if "/pull/" not in candidate and "/merge_requests/" not in candidate:
+                    continue
+                try:
+                    ref = parse_source_url(candidate)
+                except ValueError:
+                    continue
+                if ref.url not in found:
+                    found[ref.url] = {
+                        "provider": ref.provider,
+                        "number": ref.number,
+                        "url": ref.url,
+                    }
+        links = list(found.values())
+        self._source_links_cache = (self._source_links_revision, links)
+        return links
+
+    def to_dict(self, *, include_check_status: bool = False) -> dict:
         last_ts = self.messages[-1].get("ts", "") if self.messages else ""
         # Single reverse scan for last_msg, options, and last_activity_ts.
         last_msg = ""
@@ -1113,6 +1182,7 @@ class _ChatSlot:
                     "request_id": _redact(meta.get("approval_id", meta.get("request_id", ""))),
                 }
                 break
+        source_links = self._pr_source_links()
         return {
             "key": self.key,
             "title": _redact(self.display_title),
@@ -1147,6 +1217,14 @@ class _ChatSlot:
             "created": self.created_at,
             "last_ts": last_ts,
             "last_message": last_msg,
+            "source_links": [
+                {
+                    **link,
+                    **((_cached_check_status(link["url"]) or {}) if include_check_status else {}),
+                }
+                for link in source_links[:3]
+            ],
+            "source_links_total": len(source_links),
             "has_options": has_options,
             "options": [_redact(o) for o in options],
             "prompt_preview": prompt_preview,
@@ -1273,6 +1351,7 @@ class DashboardState:
         self._refine_answer_future: asyncio.Future | None = None  # type: ignore[type-arg]
         # WebSocket clients (multiplexed real-time connection)
         self._ws_clients: list[web.WebSocketResponse] = []
+        self._owner_ws_clients: set[web.WebSocketResponse] = set()
         self._ws_log_subscribers: set[web.WebSocketResponse] = set()
         self._ws_subagent_subscribers: set[web.WebSocketResponse] = set()
         # Pending tool approvals: id → asyncio.Future[bool]
@@ -2078,17 +2157,17 @@ class DashboardState:
         except Exception:
             logger.warning("Failed to write %s", path.name, exc_info=True)
 
-    def serialize_slots(self) -> list:
-        """Serialize all slots for the sidebar/board, annotating each with a
-        ``subagents_running`` flag (True while background sub-agents run for the
-        slot's parent key). Kept as a DashboardState method so the three
-        serialization sites (SSE push, WS snapshot, GET /api/chat/slots) stay
-        consistent without giving _ChatSlot a state back-ref.
+    def serialize_slots(self, *, include_check_status: bool = False) -> list:
+        """Serialize slots, optionally including owner-only provider status.
+
+        ``subagents_running`` remains available to every authenticated caller.
+        Credential-backed ``ci`` and ``state`` fields are omitted unless an
+        authenticated owner boundary explicitly opts in.
         """
         out = []
         subs = getattr(self, "subagents", None)
         for s in self._slots.values():
-            d = s.to_dict()
+            d = s.to_dict(include_check_status=include_check_status)
             d["subagents_running"] = bool(
                 subs and subs.running_agents_for(f"dashboard:{s.key}")
             )
@@ -2096,7 +2175,7 @@ class DashboardState:
         return out
 
     def push_slots_update(self) -> None:
-        """Push current slot list to all SSE clients (instant UI update)."""
+        """Push slots, keeping provider status confined to owner websockets."""
         yolo_active = self.is_yolo_active()  # expire first if needed
         slots_data = self.serialize_slots()
         mgr = getattr(self, "channel_manager", None)
@@ -2110,6 +2189,19 @@ class DashboardState:
                 "channelTrusted": ch_trusted,
             }
         )
+        owner_ws_clients = getattr(self, "_owner_ws_clients", None)
+        if owner_ws_clients:
+            owner_slots = self.serialize_slots(include_check_status=True)
+            self._send_ws_owners(
+                json.dumps(
+                    {
+                        "type": "slots",
+                        "data": owner_slots,
+                        "yolo": yolo_active,
+                        "channelTrusted": ch_trusted,
+                    }
+                )
+            )
 
     def push_slot_title(self, key: str, title: str, *, full: bool = True) -> None:
         """Push a targeted title update for a single slot.
@@ -2286,6 +2378,20 @@ class DashboardState:
         for ws in dead:
             self._remove_ws(ws)
 
+    def _send_ws_owners(self, msg: str) -> None:
+        """Send a pre-serialized message only to owner-authenticated clients."""
+        dead: list[web.WebSocketResponse] = []
+        for ws in list(self._owner_ws_clients):
+            if ws.closed:
+                dead.append(ws)
+                continue
+            try:
+                self._spawn_ws_send(ws, msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self._remove_ws(ws)
+
     def broadcast_ws(self, msg_type: str, data: object) -> None:
         """Send a typed message to all WS clients (not SSE)."""
         if not self._ws_clients:
@@ -2314,9 +2420,11 @@ class DashboardState:
                 payload[k] = v
         self.broadcast_ws("browser_event", payload)
 
-    def register_ws(self, ws: web.WebSocketResponse) -> None:
-        """Register a new WebSocket client."""
+    def register_ws(self, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
+        """Register a WebSocket client and its owner authorization state."""
         self._ws_clients.append(ws)
+        if owner:
+            self._owner_ws_clients.add(ws)
 
     def unregister_ws(self, ws: web.WebSocketResponse) -> None:
         """Remove a WebSocket client on disconnect."""
@@ -2328,6 +2436,7 @@ class DashboardState:
             self._ws_clients.remove(ws)
         except ValueError:
             pass
+        self._owner_ws_clients.discard(ws)
         self._ws_log_subscribers.discard(ws)
         self._ws_subagent_subscribers.discard(ws)
 
@@ -2373,6 +2482,7 @@ class DashboardState:
             except Exception:
                 pass
         self._ws_clients.clear()
+        self._owner_ws_clients.clear()
         self._ws_log_subscribers.clear()
         self._ws_subagent_subscribers.clear()
 
@@ -2491,3 +2601,10 @@ def _governance_status() -> str:
         return governance_status()
     except Exception:
         return "unknown"
+
+
+def _cached_check_status(url: str) -> dict | None:
+    """Lazy wrapper so state.py has no import-time dep on the handler module."""
+    from kiro_crew.dashboard.handlers.source_providers import get_cached_check_status
+
+    return get_cached_check_status(url)

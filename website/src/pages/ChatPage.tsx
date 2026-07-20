@@ -96,6 +96,12 @@ import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDra
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { findPrevUserMsgDisplayIdx } from '../utils/findPrevUserMsgDisplayIdx'
+import {
+  loadSeenPullRequestLinks,
+  persistSeenPullRequestLinks,
+  PullRequestLinkIndex,
+  recordNewPullRequestLinks,
+} from '../utils/pullRequestLinks'
 import { deriveFollowUpOptions } from '../utils/deriveFollowUpOptions'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
@@ -1075,6 +1081,46 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // render-gated behind !search.isOpen).
   const search = useMessageSearch(messages, activeSlot)
   const touchedFiles = useTouchedFiles(activeSlot ?? undefined)
+  const sourceLinkIndex = useRef(new PullRequestLinkIndex())
+  const sourceLinks = sourceLinkIndex.current.update(activeSlot, messages)
+  const [selectedSourceUrl, setSelectedSourceUrl] = useState('')
+
+  // Auto-open the per-slot Changes view only for newly detected source URLs.
+  // Seen state survives panel close, slot switches, route remounts, and reloads,
+  // so a historical PR cannot override a persisted panel dismissal.
+  const [seenSourceUrls] = useState(loadSeenPullRequestLinks)
+  useEffect(() => {
+    if (recordNewPullRequestLinks(seenSourceUrls, activeSlot, sourceLinks)) {
+      persistSeenPullRequestLinks(seenSourceUrls)
+      tabsCtl.openView('changes')
+      dispatch(openActivityPanel())
+    }
+    // tabsCtl/open state are intentionally not dependencies: this effect reacts
+    // only to source discovery, not to panel focus or close operations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSlot, sourceLinks, dispatch, seenSourceUrls])
+
+  useEffect(() => {
+    // An uncached slot temporarily has no messages while its history hydrates.
+    // Preserve the persisted strip until that source-of-truth load settles.
+    if (slotLoading) return
+    if (sourceLinks.length === 0) {
+      setSelectedSourceUrl('')
+      tabsCtl.closeTab('changes')
+      return
+    }
+    if (!sourceLinks.some(source => source.url === selectedSourceUrl)) {
+      setSelectedSourceUrl(sourceLinks[0].url)
+    }
+    // React to indexed sources, selection, and hydration completion only;
+    // tabsCtl changes identity as tabs move and must not retrigger source
+    // reconciliation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceLinks, selectedSourceUrl, slotLoading])
+
+  const addSourceCommentToChat = useCallback((text: string) => {
+    setInput(previous => previous.trim() ? `${previous.trimEnd()}\n\n${text}` : text)
+  }, [])
 
   // Auto-track files touched by tool calls (read, write, grep, glob)
   const lastToolLen = useRef(0)
@@ -3551,6 +3597,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
               files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
+              sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
             />
           </motion.div>
@@ -3579,6 +3626,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
                 files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
+                sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               />
             </motion.div>

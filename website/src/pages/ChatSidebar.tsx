@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu } from 'lucide-react'
+import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitPullRequest } from 'lucide-react'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -225,6 +225,14 @@ interface Slot {
   recent?: boolean
   tags?: string[]
   forked_from?: string | null
+  source_links?: Array<{
+    provider: 'github' | 'gitlab'
+    number: number
+    url: string
+    ci?: 'running' | 'passed' | 'failed' | null
+    state?: 'open' | 'draft' | 'merged' | 'closed'
+  }>
+  source_links_total?: number
 }
 
 interface HistoryItem {
@@ -1725,6 +1733,27 @@ function ChatSidebar({
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
+            {s.source_links && s.source_links.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {s.source_links.map(link => (
+                  <span key={link.url} className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={link.url}>
+                    <GitPullRequest className="lucide-inline shrink-0" />
+                    {link.provider === 'github' ? `#${link.number}` : `!${link.number}`}
+                    {(link.state === 'merged' || link.state === 'closed') && (
+                      <span className={`capitalize ${link.state === 'merged' ? 'text-aim' : 'text-danger'}`}>{link.state}</span>
+                    )}
+                    {link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label="Checks running" />}
+                    {link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label="Checks passed" />}
+                    {link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label="Checks failed" />}
+                  </span>
+                ))}
+                {typeof s.source_links_total === 'number' && s.source_links_total > s.source_links.length && (
+                  <span className="inline-flex items-center px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={`${s.source_links_total - s.source_links.length} more pull request${s.source_links_total - s.source_links.length === 1 ? '' : 's'} in this session`}>
+                    +{s.source_links_total - s.source_links.length}
+                  </span>
+                )}
+              </div>
+            )}
             {s.tags && s.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">
                 {s.tags.map(tid => {
