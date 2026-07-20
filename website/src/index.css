@@ -1008,7 +1008,7 @@
 @layer base {
   *{box-sizing:border-box;margin:0;padding:0}
   html,body,#root{height:100%}
-  body{font:400 0.875rem/1.55 var(--font-body);letter-spacing:-.02em;background:var(--bg);color:var(--text);
+  body{font:400 0.875rem/1.55 var(--font-body);letter-spacing:normal;background:var(--bg);color:var(--text);
     -webkit-font-smoothing:antialiased;overflow-x:hidden;overflow-y:auto;
     transition:background-color .25s ease,color .25s ease}
   /* Global focus ring for keyboard navigation */
@@ -1213,10 +1213,10 @@ body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%
 
 /* ── Topbar glass ── */
 .topbar-glass{
-  background:var(--chrome);
-  backdrop-filter:blur(12px) saturate(1.4);
-  -webkit-backdrop-filter:blur(12px) saturate(1.4);
-  border-bottom:1px solid var(--border);
+  background:color-mix(in srgb, var(--chrome) 74%, transparent);
+  backdrop-filter:blur(18px) saturate(1.8);
+  -webkit-backdrop-filter:blur(18px) saturate(1.8);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 8px 12px -8px rgba(0,0,0,.30);
   transition:background-color .25s ease}
 
 /* ── Scroll shadow (fade at top/bottom of scrollable panels) ── */
@@ -1460,4 +1460,15 @@ body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%
 [data-theme*="dark"] .file-chip:not(.glass-static):hover {
   border-color: rgba(255, 255, 255, 0.09);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* ── TIER1 a11y: reduced motion / transparency / contrast ── */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{ transition-duration:0.01ms !important; scroll-behavior:auto !important }
+}
+@media (prefers-reduced-transparency: reduce){
+  .topbar-glass,.glass-surface{ backdrop-filter:none !important; -webkit-backdrop-filter:none !important; background:var(--bg) !important }
+}
+@media (prefers-contrast: more){
+  .glass-surface,.topbar-glass{ background:var(--bg) !important; border:1px solid var(--text) !important }
 }

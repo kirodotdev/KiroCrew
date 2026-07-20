@@ -54,7 +54,7 @@ function QuestionCard({ questions, onSubmit }: QuestionCardProps) {
   const hasAnyAnswer = questions.some((_, i) => (selections[i]?.size ?? 0) > 0 || customInputs[i]?.trim())
 
   return (
-    <div className="border border-accent/30 rounded-xl bg-card/80 backdrop-blur-sm overflow-hidden animate-scale-in">
+    <div className="border border-accent/30 rounded-xl bg-card shadow-md overflow-hidden animate-scale-in">
       {questions.map((q, qIdx) => (
         <div key={qIdx} className={`p-4 ${qIdx > 0 ? 'border-t border-border' : ''}`}>
           <div className="flex items-center gap-2 mb-2.5">
