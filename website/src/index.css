@@ -1042,6 +1042,22 @@ body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%
 .nav-brand-glow::after{content:'';position:absolute;bottom:0;left:16px;right:16px;height:1px;
   background:linear-gradient(90deg,transparent,var(--accent),transparent);opacity:.3}
 
+/* ── App icons (two-color, theme-reactive) ──
+   Idle: muted structure + accent detail. Lit (selected OR hovered inside a
+   .group container): accent structure + text detail. Icons are inlined SVGs
+   that paint via --ico-a / --ico-b (see AppIcon.tsx). */
+.app-icon{--ico-a:var(--muted);--ico-b:var(--accent)}
+.app-icon svg *{transition:fill .2s ease,stroke .2s ease,fill-opacity .2s ease}
+.app-icon[data-selected],
+.group:hover .app-icon,
+a:hover .app-icon,
+button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
+/* Left-nav icons: lit when the row is active, and on row hover. The nav row
+   uses Tailwind's named group `group/nav` (not `.group`) and is a div, so it
+   needs its own selectors. */
+.app-icon-nav.is-lit .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
+.group\/nav:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
+
 /* ── Streaming highlight (shimmer sweep on trailing words) ── */
 .streaming-glow{background:linear-gradient(90deg,transparent 0%,var(--accent-glow) 40%,var(--accent-glow) 100%);border-radius:2px;padding:0 8px 0 2px;margin:0 -2px;position:relative;overflow:hidden}
 .streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);background-size:250% 100%;animation:stream-sweep 2.5s ease-in-out infinite;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}

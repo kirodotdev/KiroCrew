@@ -11,6 +11,7 @@ import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Users, Plug, Se
 import { createSelector } from '@reduxjs/toolkit'
 import { registerBuiltinSurface } from './registry'
 import type { RootState } from '../store'
+import AppIcon from '../components/AppIcon'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
@@ -75,7 +76,7 @@ registerBuiltinSurface({
   navId: 'apps',
   route: '/apps',
   label: 'App Store',
-  icon: <img src="/app-assets/app-store/icon.svg" width={16} height={16} alt="" style={{ borderRadius: 4 }} />,
+  icon: <AppIcon iconUrl="/app-assets/app-store/icon.svg" size={16} />,
   group: 'Apps',
 })
 
