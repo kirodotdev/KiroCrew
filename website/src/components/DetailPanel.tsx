@@ -1,8 +1,9 @@
 import { safeSetItem } from '../utils/safeStorage'
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { X } from 'lucide-react'
 import { Btn } from './ui'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 
 interface DetailPanelProps {
   title: React.ReactNode
@@ -87,20 +88,13 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
   })
   const widthRef = useRef(width)
   widthRef.current = width
-  const moveRef = useRef<((ev: MouseEvent) => void) | null>(null)
-  const upRef = useRef<(() => void) | null>(null)
+  // Panel width captured at drag start; the resize delta is applied against it.
+  const startWRef = useRef(0)
   // True while a resize-handle drag is in progress. The window `resize` listener
   // must not fight an active drag: a viewport change mid-drag would otherwise
-  // clamp `width` down and, via onUp below, persist that clamped value over the
+  // clamp `width` down and, via onEnd below, persist that clamped value over the
   // width the user actually dragged to.
   const draggingRef = useRef(false)
-
-  useEffect(() => {
-    return () => {
-      if (moveRef.current) document.removeEventListener('mousemove', moveRef.current)
-      if (upRef.current) document.removeEventListener('mouseup', upRef.current)
-    }
-  }, [])
 
   // Re-clamp on viewport shrink so a persisted width that's wider than the
   // current row can never leave the right-edge header actions off-screen or
@@ -128,32 +122,42 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
     setWidth((w) => clampPanelWidth(w, minWidth, rowWidth(), reserveWidth))
   }, [minWidth, reserveWidth])
 
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    draggingRef.current = true
-    const startX = e.clientX; const startW = widthRef.current
-    const onMove = (ev: MouseEvent) => {
-      setWidth(clampPanelWidth(startW + (startX - ev.clientX), minWidth, rowWidth(), reserveWidth))
-    }
-    const onUp = () => {
+  const drag = usePointerDrag({
+    threshold: 6,
+    onStart: () => {
+      draggingRef.current = true
+      startWRef.current = widthRef.current
+    },
+    onMove: ({ dx }) => {
+      // The old mouse handler grew width as the pointer moved LEFT:
+      //   clampPanelWidth(startW + (startX - clientX), ...).
+      // The hook reports dx = clientX - startX, so (startX - clientX) === -dx
+      // and the raw target is `startW - dx`: drag left (dx < 0) widens, drag
+      // right (dx > 0) narrows — identical to the original.
+      //
+      // Hard-clamp (no rubber-band): this panel is `shrink-0` inside an
+      // `overflow-hidden` row, so the row/viewport cap is a LAYOUT INVARIANT
+      // (Mesh-2813) — letting width exceed it, even transiently, pushes content
+      // off-screen. Rubber-band is for soft scroll edges, not overflow guards.
+      setWidth(clampPanelWidth(startWRef.current - dx, minWidth, rowWidth(), reserveWidth))
+    },
+    onEnd: ({ committed }) => {
+      // ALWAYS clear the suppression flag — the hook fires onEnd on every
+      // pointer-up (even a sub-threshold tap on the thin handle), so the resize /
+      // reserveWidth re-clamp guards can never get wedged on `true` and re-expose
+      // the Mesh-2230/2813 overflow. A tap did nothing else, so stop here.
       draggingRef.current = false
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      moveRef.current = null; upRef.current = null
-      // Persist the width the user dragged to (their preferred width) BEFORE
-      // re-clamping the render. A resize that arrived mid-drag was suppressed,
-      // so widthRef.current still holds the dragged value; this keeps the
-      // preferred width in localStorage for restore (re-clamped) on a larger
-      // screen rather than saving a resize-clamped value.
-      if (storageKey) safeSetItem(storageKey, String(widthRef.current))
-      // Re-clamp the live render once to the current row, in case a resize
-      // arrived mid-drag, so the panel can't stay wider than its row.
-      setWidth((w) => clampPanelWidth(w, minWidth, rowWidth(), reserveWidth))
-    }
-    moveRef.current = onMove; upRef.current = onUp
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [minWidth, reserveWidth, storageKey])
+      if (!committed) return
+      // Persist the dragged PREFERRED width (widthRef holds it: a resize
+      // suppressed mid-drag never touched it) so returning to a larger screen
+      // restores it — then clamp only the LIVE render down to what currently
+      // fits. Clamping before persisting would lose the preferred width (Mesh-2238).
+      const preferred = widthRef.current
+      if (storageKey) safeSetItem(storageKey, String(preferred))
+      setWidth(clampPanelWidth(preferred, minWidth, rowWidth(), reserveWidth))
+    },
+  })
+
 
   return (
     <motion.div
@@ -161,15 +165,14 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
       initial={{ width: 0, opacity: 0 }}
       animate={{ width: 'auto', opacity: 1 }}
       exit={{ width: 0, opacity: 0 }}
-      transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ width: { type: 'spring', bounce: 0, duration: 0.3 }, opacity: { duration: 0.12 } }}
       className="shrink-0 overflow-hidden h-full"
     >
       <div className="shrink-0 border-l border-border bg-bg flex flex-col h-full overflow-hidden relative" style={{ width, minWidth }}>
         {/* Drag-to-resize splitter: pointer-only affordance (no meaningful
             keyboard gesture for a 6px handle); role="separator" is the correct
             ARIA role. */}
-        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-        <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-20 group/drag" onMouseDown={onDragStart}>
+        <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-20 group/drag" style={{ touchAction: 'none' }} {...drag}>
           <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent" />
         </div>
         <div className={`flex items-center justify-between px-3 h-12 shrink-0 border-b ${headerClassName ?? 'border-border'}`}>

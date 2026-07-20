@@ -293,6 +293,15 @@ class GatewayManager:
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
             argv += ["--prewarm-count", str(self._spec.prewarm_count)]
+        # Credential-rotation drain (seam-routed): the daemon is a separately
+        # spawned process that never boots the platform, so the already-booted
+        # gateway process resolves the watch paths here and threads each as a
+        # repeatable argv flag. The public Default returns [] — no flag, and
+        # the daemon command line stays byte-identical to today. Fail-closed
+        # via safe_context_call: PlatformCompositionError propagates, any
+        # other adapter failure degrades to no watcher.
+        for cred_path in self._credential_watch_paths():
+            argv += ["--credential-watch-path", str(cred_path)]
         # Capture gatewayd stdout/stderr to the canonical KiroCrew log path.
         # This file persists across restarts so operators can diagnose
         # startup failures and stub rejections without attaching a debugger.
@@ -328,6 +337,27 @@ class GatewayManager:
             # MemoryError) that would otherwise leak ``log_fh`` until
             # GC — a real risk under a watchdog respawn storm.
             log_fh.close()
+
+    @staticmethod
+    def _credential_watch_paths() -> list[Path]:
+        """Resolve seam-supplied credential watch paths for the daemon argv.
+
+        Reads ``current_context().identity.credential_watch_paths()`` through
+        the fail-closed ``safe_context_call`` helper: a
+        ``PlatformCompositionError`` (non-standalone host that failed to
+        compose its companion) propagates; any other adapter failure —
+        including a pre-method companion adapter missing the v1 addition —
+        degrades to ``[]`` (no watcher). The public
+        ``DefaultIdentityProvider`` returns ``[]``, so the standalone daemon
+        command line is unchanged.
+        """
+        from kiro_crew.platform import current_context, safe_context_call
+
+        return safe_context_call(
+            lambda: list(current_context().identity.credential_watch_paths()),
+            fallback=[],
+            log_message="identity.credential_watch_paths failed; no watcher",
+        )
 
     @staticmethod
     def _gatewayd_log_path() -> Path:

@@ -96,7 +96,12 @@ from kiro_crew.hooks import (
     get_global_hook_store,
 )
 from kiro_crew.mcp_gateway.claim import schedule_claim
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    resource_limit_preexec,
+    scrub_agent_denied_env,
+    wrap_argv,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -198,16 +203,14 @@ def _is_safe_oauth_url(url: str) -> bool:
 def _normalize_exe_casing(path: str | None) -> str | None:
     """On Windows, return *path* with its TRUE on-disk casing (via realpath).
 
-    The Builder Toolbox ``kiro-cli.exe`` is a multiplexer shim that derives which
-    tool to run from its own ``argv[0]`` basename, CASE-SENSITIVELY. But
-    ``shutil.which`` builds the resolved name's extension from ``PATHEXT``, which
-    lists ``.EXE`` upper-case — so it returns ``...\\kiro-cli.EXE`` even though the
-    file on disk is ``kiro-cli.exe``. Spawned under that name the shim fails with
-    "Command 'kiro-cli.EXE' doesn't appear to be associated with any tool", exits
-    instantly, and the ACP pipe breaks → the dashboard shows "session stuck".
-    ``os.path.realpath`` resolves to the real directory-entry casing, fixing it.
-    No-op on POSIX (case-sensitive FS; realpath only follows symlinks). Returns
-    None unchanged.
+    Some Windows multiplexer launchers derive which tool to run from their own
+    ``argv[0]`` basename, CASE-SENSITIVELY. But ``shutil.which`` builds the
+    resolved name's extension from ``PATHEXT``, which may list ``.EXE`` upper-
+    case — so it can return ``...\\kiro-cli.EXE`` even though the file on disk
+    is ``kiro-cli.exe``. Spawned under the wrong casing, such a launcher can fail
+    to dispatch and exit immediately, breaking the ACP pipe. ``os.path.realpath``
+    restores the true directory-entry casing. No-op on POSIX (case-sensitive FS;
+    realpath only follows symlinks). Returns None unchanged.
     """
     if path is None or not platform_compat.IS_WINDOWS:
         return path
@@ -226,7 +229,7 @@ def _resolve_kiro_bin() -> str | None:
     usual local bin dirs so a non-login gateway still finds a user install) and
     returns ``None`` rather than raising when it is absent, so the caller can
     surface a clear "install kiro-cli" error instead of crashing. Windows: the
-    returned path is realpath-cased so the case-sensitive toolbox shim
+    returned path is realpath-cased so a case-sensitive multiplexer launcher
     dispatches correctly (see :func:`_normalize_exe_casing`).
     """
     env_bin = os.environ.get("KIROCREW_KIRO_BIN")
@@ -1588,6 +1591,14 @@ class AcpClient:
         env = {**os.environ}
         if self._extra_env:
             env.update(self._extra_env)
+        # Parent-level scrub of gateway-owned channel credentials. The default
+        # auto/standard sandbox launcher strips _AGENT_DENIED_ENV_KEYS only for
+        # cc/strict, and this path copies a raw os.environ + wrap_argv (not
+        # sandboxed_spawn_argv), so without this the Slack/WeCom/Telegram tokens
+        # seeded into os.environ by load_credentials() would be inherited by the
+        # agent subprocess on the default tier. Leaves the AWS/SSH env the
+        # standard sandbox intentionally exposes untouched.
+        env = scrub_agent_denied_env(env)
         env["PATH"] = augmented_path(env.get("PATH", ""))
         if self._is_claude and not env.get("CLAUDE_CODE_EXECUTABLE"):
             # Dormant seam (see _spawn docstring): the adapter's SDK needs a

@@ -1,12 +1,14 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, Camera, ExternalLink, Download, Pencil, X, AlertCircle, RotateCcw, Plus, Sparkles, Link2, MessageSquare, Monitor, Undo2, Folder as FolderIcon } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, ArrowUp, Camera, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, Link2, MessageSquare, Monitor, Undo2, Upload, Folder as FolderIcon } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
+import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
@@ -28,6 +30,7 @@ import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
 import { writePrefill } from '../utils/navIntent'
 import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCommentsSync'
+import { PublishHub } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor } from '../types'
 
 // Artifact "Iterate" affordances are hidden pending an artifact redesign
@@ -275,6 +278,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const [editedContent, setEditedContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [showPublish, setShowPublish] = useState(false)
   // Tag editing (Mesh-1654 round 4): tags shown in the header are editable
   // inline. Adding a tag posts metadata-only (no version bump). Removing a
   // tag works the same way.
@@ -485,6 +489,24 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // Stash for the keyboard handler effect — keeps deps minimal.
   const handleSaveRef = useRef(handleSave)
   useEffect(() => { handleSaveRef.current = handleSave }, [handleSave])
+
+  // Flush unsaved editor edits to the server as a silent live save so a
+  // subsequent pull/overwrite sees live_dirty and checkpoints them — closes a
+  // data-loss path where pulling mid-edit discarded the working buffer.
+  const flushLiveEdits = useCallback(async () => {
+    if (!editing || !dirty || !artifact) return
+    await api.updateArtifact(artifact.slug, { content: editedContent, snapshot: false })
+    // Drop out of edit mode after flushing. The buffer is now persisted (and a
+    // subsequent pull checkpoints it as a version), so once the post-mutate
+    // refetch lands the pulled/overwritten content the viewer must render
+    // artifact.content — not the stale pre-pull editedContent. Leaving
+    // editing=true would keep showing the old buffer, flip `dirty` back to
+    // true, and let the next Save/Cmd+S silently overwrite the pulled content.
+    setEditing(false)
+    setEditedContent('')
+    setPreviewDuringEdit(false)
+    await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+  }, [editing, dirty, artifact, editedContent, queryClient, slug])
 
   // Snapshot the current live state without an edit. Used by the Snapshot
   // button when not editing — captures whatever is on disk / current.html
@@ -1108,7 +1130,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 out. Not shown inside the popout window itself (the frame's
                 Return button handles closing). */}
             {!popout && <ArtifactPopoutControl slug={slug} name={artifact.name} />}
-            <button
+            {/* Publish action — shown for non-webapp publishable kinds */}
+            {artifact.kind !== 'webapp' && (
+              <Btn
+                type="button"
+                onClick={() => setShowPublish(v => !v)}
+                className="p-1.5 rounded"
+                title="Publish"
+                aria-label="Publish"
+              >
+                <Upload size={13} />
+              </Btn>
+            )}
+            <Btn
               type="button"
               onClick={downloadAsHtml}
               className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
@@ -1116,12 +1150,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               aria-label="Download"
             >
               <Download size={13} />
-            </button>
+            </Btn>
           </span>
         </div>
 
         {artifact.description && (
           <div className="mb-3 text-sm text-muted italic">{artifact.description}</div>
+        )}
+
+        {(artifact.fork_metadata || artifact.publication) && (
+          <UpstreamSyncBanner artifact={artifact} onBeforeMutate={flushLiveEdits} onPulled={() => {
+            queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+            queryClient.invalidateQueries({ queryKey: ['upstream-status', slug] })
+          }} />
         )}
 
         {showCronWarning && (
@@ -1151,6 +1192,16 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           />
         )}
 
+        {/* Publish panel — toggled by the Upload toolbar button */}
+        {showPublish && artifact.kind !== 'webapp' && (
+          <div className="mb-3">
+            <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />
+          </div>
+        )}
+
+        {artifact.kind === 'webapp' ? (
+          <WebAppArtifactCard artifact={artifact} />
+        ) : (
         <div className="flex gap-4 items-start">
           <div className="flex-1 min-w-0">
             {usesIframe ? (
@@ -1231,6 +1282,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             />
           )}
         </div>
+        )}
 
         <div className="mt-3 text-[12px] text-muted">
           Created {artifact.created_at} &middot; Updated {artifact.updated_at} &middot;{' '}
@@ -1279,6 +1331,213 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         </div>
       </div>
     </>
+  )
+}
+
+
+// Static theme-token class sets (Tailwind JIT needs literal strings, not
+// interpolated tone names).
+const _SYNC_TONES: Record<string, { wrap: string; btn: string }> = {
+  info: { wrap: 'border-info/40 bg-info-subtle text-info', btn: 'border-info/40 text-info hover:bg-info/10' },
+  warn: { wrap: 'border-warn/40 bg-warn-subtle text-warn', btn: 'border-warn/40 text-warn hover:bg-warn/10' },
+  danger: { wrap: 'border-danger/40 bg-danger-subtle text-danger', btn: 'border-danger/40 text-danger hover:bg-danger/10' },
+}
+
+function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: Artifact; onPulled: () => void; onBeforeMutate?: () => Promise<void> }) {
+  const fm = artifact.fork_metadata
+  const pub = artifact.publication
+  const [pulling, setPulling] = useState(false)
+  const [overwriting, setOverwriting] = useState(false)
+  const [snapshotting, setSnapshotting] = useState(false)
+  const [error, setError] = useState('')
+  // A benign, non-error outcome (e.g. "up to date" when the remote isn't
+  // actually ahead) — rendered in a neutral tone, not danger-red, so a no-op
+  // pull on an up-to-date fork doesn't look like a failure.
+  const [notice, setNotice] = useState('')
+  // The whole banner is gated on a registered publish provider: the public
+  // edition ships an empty registry, so providers resolves to [] and this
+  // component renders nothing (an artifact can only carry fork_metadata /
+  // publication once a companion provider existed to create them anyway).
+  const { data: providersData } = useQuery({
+    queryKey: ['publish-providers', artifact.kind],
+    queryFn: () => api.getArtifactPublishProviders(artifact.kind),
+    staleTime: 300_000,
+  })
+  const providers = providersData?.providers || []
+  // Cheap, non-blocking upstream check — the local content renders immediately;
+  // this only drives the "pull available" / "conflict" affordance.
+  const { data: status } = useQuery({
+    queryKey: ['upstream-status', artifact.slug],
+    queryFn: () => api.upstreamStatus(artifact.slug),
+    staleTime: 15_000,
+    enabled: providers.length > 0,
+  })
+  const upstreamAhead = !!status?.upstream_ahead
+  const hasLocalEdits = !!artifact.live_dirty || !!status?.live_dirty || !!status?.local_ahead
+  const cloudV = typeof status?.cloud_version === 'number' ? status.cloud_version : null
+
+  const handlePull = async () => {
+    setPulling(true)
+    setError('')
+    setNotice('')
+    try {
+      // Flush any unsaved editor edits to the server FIRST so they become
+      // live_dirty and pull_upstream checkpoints them as a version — otherwise
+      // the working buffer is lost when the post-pull refetch replaces the
+      // live content (data-loss reported on test).
+      await onBeforeMutate?.()
+      const res = await api.pullLatest(artifact.slug)
+      if (res.error) setError(res.error)
+      else if (res.pull_result && res.pull_result.pulled === false)
+        // pulled=false is a benign no-op (the "Pull latest" button is always
+        // shown on a fork as a manual check, even when the 15s-stale status
+        // says nothing is ahead), so surface it as a neutral notice — not a
+        // danger-styled error.
+        setNotice(String(res.pull_result.reason || 'Nothing to pull.'))
+      else onPulled()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Pull failed')
+    } finally {
+      setPulling(false)
+    }
+  }
+
+  const handleOverwrite = async () => {
+    setOverwriting(true)
+    setError('')
+    setNotice('')
+    try {
+      // Flush unsaved editor edits first so the overwrite pushes the user's
+      // actual current edits (and they're snapshotted locally), not the
+      // last-saved live state.
+      await onBeforeMutate?.()
+      const res = await api.overwriteRemote(artifact.slug)
+      if (res.error) setError(res.error)
+      else if (res.overwrite_result && res.overwrite_result.overwritten === false)
+        setError(String(res.overwrite_result.reason || 'Could not overwrite.'))
+      else onPulled()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Overwrite failed')
+    } finally {
+      setOverwriting(false)
+    }
+  }
+
+  const handleSnapshot = async () => {
+    setSnapshotting(true)
+    setError('')
+    setNotice('')
+    try {
+      // Flush editor buffer first (if any) so the snapshot captures it, then
+      // snapshot=true versions the live body and auto-pushes to the provider.
+      await onBeforeMutate?.()
+      const res = await api.updateArtifact(artifact.slug, { snapshot: true })
+      if ((res as { error?: string })?.error) setError(String((res as { error?: string }).error))
+      else onPulled()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Snapshot failed')
+    } finally {
+      setSnapshotting(false)
+    }
+  }
+
+  // No registered provider → no sync surface (public edition renders nothing).
+  if (providers.length === 0) return null
+
+  // Provider label from the registry's self-described display_name — never a
+  // hardcoded vendor string.
+  const provLabel = providers.find((p) => p.name === pub?.provider)?.display_name
+    || pub?.provider || 'the remote'
+
+  // Local edits not yet published, with no remote drift: a visible prompt to
+  // publish them. (When the remote is ALSO ahead, the pull/overwrite banner
+  // below handles it and already reassures that local edits are checkpointed.)
+  if (!fm && !upstreamAhead && pub && hasLocalEdits) {
+    return (
+      <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-md border text-[13px] border-warn/40 bg-warn-subtle text-warn">
+        <Camera size={14} className="lucide-inline shrink-0" />
+        <span className="flex-1">Local changes not yet published to {provLabel}.</span>
+        {error && <span className="text-danger">{error}</span>}
+        <Btn
+          type="button"
+          onClick={handleSnapshot}
+          disabled={snapshotting}
+          className="gap-1 px-2 py-0.5 text-[12px] font-medium border-warn/50 hover:bg-warn/10"
+          title="Snapshot the current content as a new version and publish it"
+        >
+          <Camera size={12} />
+          {snapshotting ? 'Publishing…' : 'Snapshot to publish'}
+        </Btn>
+      </div>
+    )
+  }
+
+  // Nothing to surface: not a fork and the remote copy isn't ahead.
+  if (!fm && !upstreamAhead) return null
+
+  const tone = _SYNC_TONES[upstreamAhead ? 'warn' : 'info']
+  // Provider-supplied (fork/publication metadata) — validate the scheme before
+  // rendering a clickable link so a malicious provider can't smuggle a
+  // javascript:/file: URL into "View remote".
+  const upstreamUrl = safeHttpUrl(fm?.upstream_url || pub?.view_url || '')
+  return (
+    <div className={`mb-3 flex items-center gap-2 px-3 py-2 rounded-md border text-[13px] ${tone.wrap}`}>
+      {fm ? (
+        <GitFork size={14} className="lucide-inline shrink-0" />
+      ) : (
+        <RefreshCw size={14} className="lucide-inline shrink-0" />
+      )}
+      <span className="flex-1">
+        {fm ? (
+          <>
+            Forked from <strong>{fm.upstream_owner || 'someone'}</strong>&apos;s artifact
+            {fm.forked_at ? ` on ${fm.forked_at.slice(0, 10)}` : ''}
+          </>
+        ) : (
+          <>Published artifact</>
+        )}
+        {upstreamUrl && (
+          <>
+            {' · '}
+            <a href={upstreamUrl} target="_blank" rel="noopener noreferrer" className="underline hover:no-underline">
+              View remote
+            </a>
+          </>
+        )}
+        {upstreamAhead && (
+          <> · a newer version is available in the remote copy{cloudV ? ` (v${cloudV})` : ''}{pub ? ' — pull it down, or overwrite to keep yours' : ''}.</>
+        )}
+        {upstreamAhead && hasLocalEdits && (
+          <> Your current edits are saved as a version first, so nothing is lost.</>
+        )}
+      </span>
+      {(upstreamAhead || !!fm) && (
+        <Btn
+          type="button"
+          onClick={handlePull}
+          disabled={pulling || overwriting}
+          className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn}`}
+          title="Pull the latest remote content as a new local version (your edits are preserved)"
+        >
+          <RefreshCw size={12} className={pulling ? 'animate-spin' : undefined} />
+          Pull latest
+        </Btn>
+      )}
+      {upstreamAhead && !!pub && (
+        <Btn
+          type="button"
+          onClick={handleOverwrite}
+          disabled={overwriting || pulling}
+          className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn}`}
+          title="Push your local version up as the remote's new version WITHOUT pulling the remote's content first. The remote's newer version stays in its history but is superseded."
+        >
+          <ArrowUp size={12} className={overwriting ? 'animate-pulse' : undefined} />
+          Overwrite remote
+        </Btn>
+      )}
+      {error && <span className="text-danger text-[11px]">{error}</span>}
+      {notice && !error && <span className="text-muted text-[11px]">{notice}</span>}
+    </div>
   )
 }
 

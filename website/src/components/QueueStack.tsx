@@ -208,7 +208,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                   borderBottomRightRadius: fused ? 0 : 12,
                   borderBottomWidth: fused ? 0 : 1,
                 }}
-                exit={{ y: y + 40, zIndex: 50, borderBottomWidth: 1, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, transition: { duration: 0.3, ease: 'easeIn' } }}
+                exit={{ y: y + 40, zIndex: 50, borderBottomWidth: 1, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, transition: SPRING }}
                 transition={SPRING}
                 className="absolute top-0 left-0 right-0 bg-warn border border-warn/20 px-3 py-2 text-[13px] text-warn-fg"
                 style={{ transformOrigin: 'bottom center', height: CARD_H, zIndex }}

@@ -1,15 +1,16 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, ExternalLink, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { AlertTriangle, Bookmark, ExternalLink, Globe, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
 import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
-import { PageHeader, Btn, Badge, SearchInput, EmptyState, Input, StatCard } from '../components/ui'
+import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input, StatCard } from '../components/ui'
+import RemoteArtifactCard from '../components/RemoteArtifactCard'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
@@ -23,7 +24,7 @@ import { sanitize } from '../api/helpers'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
-import type { Artifact, ArtifactFolder, SessionDoc } from '../types'
+import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
 
 /** Read the current computed theme CSS vars (capped to the known set, each
  * value sanitized) so a sandboxed preview iframe matches the dashboard theme.
@@ -42,7 +43,7 @@ function readThemeVars(): Record<string, string> {
 const sel =
   'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
 
-const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text'] as const
+const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp'] as const
 
 const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   widget: 'aim',
@@ -51,6 +52,7 @@ const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   svg: 'warn',
   json: 'ok',
   text: 'ok',
+  webapp: 'aim',
 }
 
 function isoToTs(iso: string): number {
@@ -1133,7 +1135,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [filter, setFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<string>('')
-  const [pinnedOnly, setPinnedOnly] = useState(true)
+  // Default to "All" artifacts, but remember the last visit's choice: if the
+  // user last selected "Starred", start there again.
+  const [pinnedOnly, setPinnedOnly] = useState(
+    () => localStorage.getItem('mc-artifacts-pinned-only') === '1',
+  )
   const [view, setView] = useState<'grid' | 'table'>(
     () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
   )
@@ -1331,6 +1337,25 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     return Array.from(s).sort()
   }, [allTagsData])
 
+  // Registered publish providers gate the ENTIRE remote-browse surface: the
+  // public edition ships an empty registry, so this resolves to [] and no
+  // remote section renders (zero extra requests beyond this one probe).
+  const { data: providersData } = useQuery<{ providers: PublishProviderDescriptor[] }>({
+    queryKey: ['publish-providers', 'widget'],
+    queryFn: () => api.getArtifactPublishProviders('widget'),
+    staleTime: 300_000,
+  })
+  const discoveryProviders = useMemo(
+    () =>
+      (providersData?.providers || []).filter(
+        (p) =>
+          p.discovery_model.list_mine ||
+          p.discovery_model.list_shared_with_me ||
+          p.discovery_model.list_public,
+      ),
+    [providersData],
+  )
+
   const visible = useMemo(() => {
     let list = artifacts
     if (pinnedOnly) list = list.filter((a) => a.pinned)
@@ -1510,10 +1535,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 </option>
               ))}
             </select>
-            <div className="ml-auto inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label="Filter starred">
+            <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title="Artifact Deploy — AWS profiles and published sites">
+              <Globe size={13} /> Artifact Deploy
+            </Btn>
+            <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label="Filter starred">
               <button
                 type="button"
-                onClick={() => setPinnedOnly(true)}
+                onClick={() => { setPinnedOnly(true); safeSetItem('mc-artifacts-pinned-only', '1') }}
                 aria-pressed={pinnedOnly}
                 className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none inline-flex items-center gap-1 ${pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
               >
@@ -1521,7 +1549,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               </button>
               <button
                 type="button"
-                onClick={() => setPinnedOnly(false)}
+                onClick={() => { setPinnedOnly(false); safeSetItem('mc-artifacts-pinned-only', '0') }}
                 aria-pressed={!pinnedOnly}
                 className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none ${!pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
               >
@@ -1675,8 +1703,113 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             onConfirm={confirmDeleteFolder}
             onClose={() => setDeletingFolder(null)}
           />
+
+        {/* Remote browse — one section per discovery-capable registered
+            publish provider. The public edition registers no provider, so
+            discoveryProviders is [] and NOTHING renders (inert surface). */}
+        {discoveryProviders.map((p) => (
+          <RemoteBrowseSection
+            key={p.name}
+            provider={p}
+            onForked={(slug) => { qc.invalidateQueries({ queryKey: ['artifacts'] }); qc.invalidateQueries({ queryKey: ['remote-artifacts', p.name] }); navigate(`/artifacts/${slug}`) }}
+            onCloned={(slug) => { qc.invalidateQueries({ queryKey: ['artifacts'] }); qc.invalidateQueries({ queryKey: ['remote-artifacts', p.name] }); navigate(`/artifacts/${slug}`) }}
+          />
+        ))}
       </div>
     </>
+  )
+}
+
+
+/** Browse one publish provider's remote artifacts (provider-routed; vendor
+ * copy comes from the provider's own display_name). Renders nothing while
+ * loading/failed so the library page never blocks on a remote. */
+function RemoteBrowseSection({ provider, onForked, onCloned }: {
+  provider: PublishProviderDescriptor
+  onForked: (slug: string) => void
+  onCloned: (slug: string) => void
+}) {
+  const [search, setSearch] = useState('')
+  const scope = provider.discovery_model.list_mine ? 'mine'
+    : provider.discovery_model.list_shared_with_me ? 'shared' : 'public'
+  const useSearch = !!search && provider.discovery_model.full_text_search
+  const {
+    data, isLoading, error, fetchNextPage, hasNextPage, isFetchingNextPage, isPlaceholderData,
+  } = useInfiniteQuery<
+    { artifacts: RemoteArtifact[]; next_page_token?: string | null }
+  >({
+    // Tag the key with the mode ('q' vs 'scope') so a full-text query that
+    // happens to equal the scope word (e.g. typing "mine") can't collide with
+    // the scope listing's cache entry.
+    queryKey: ['remote-artifacts', provider.name, useSearch ? ['q', search] : ['scope', scope]],
+    queryFn: ({ pageParam }) =>
+      api.browseRemoteArtifacts(provider.name, {
+        ...(useSearch ? { q: search } : { scope }),
+        ...(pageParam ? { pageToken: pageParam as string } : {}),
+      }),
+    initialPageParam: '',
+    // The provider paginates via next_page_token; stop when it stops handing
+    // one out (null/empty ⇒ last page). Without this, remote artifacts beyond
+    // the provider's first page would be unreachable.
+    getNextPageParam: (last) => last.next_page_token || undefined,
+    staleTime: 60_000,
+    // Keep the prior page's rows while a new full-text query fetches. Without
+    // this, every keystroke changes the key → data=undefined → isLoading=true →
+    // the section (and the focused SearchInput inside it) unmounts, dropping
+    // keyboard focus mid-word.
+    placeholderData: keepPreviousData,
+  })
+  const items: RemoteArtifact[] = (data?.pages || []).flatMap((p) => p.artifacts || [])
+  // Drop artifacts already on this device (cloned or forked) — they live in
+  // Your Artifacts above, so listing them here too would be a duplicate.
+  const notLocal = items.filter(a => !a.local_slug)
+  if (isLoading && !notLocal.length) return null
+  if (error) return null
+  if (!notLocal.length && !search) return null
+  const filtered = search && !useSearch
+    ? notLocal.filter(a => a.title.toLowerCase().includes(search.toLowerCase()) || a.tags?.some(t => t.toLowerCase().includes(search.toLowerCase())))
+    : notLocal
+  // In full-text mode the shown rows can be the PREVIOUS query's results
+  // (keepPreviousData) while a new query fetches, and they are NOT locally
+  // re-filtered — so clone/fork would act on a stale artifact. Disable those
+  // actions until the current query resolves. (Scope/list mode isn't affected:
+  // its rows are locally filtered and the id-match stays valid.)
+  const actionsStale = useSearch && isPlaceholderData
+  return (
+    <Card className="mt-4">
+      <CardTitle>On {provider.display_name}</CardTitle>
+      <div className="mb-2">
+        <SearchInput placeholder={`Filter ${provider.display_name} artifacts…`} value={search} onChange={e => setSearch((e.target as HTMLInputElement).value)} />
+      </div>
+      <div className="divide-y divide-border">
+        {filtered.map((a) => (
+          <RemoteArtifactCard
+            key={a.external_id}
+            artifact={a}
+            provider={provider.name}
+            providerLabel={provider.display_name}
+            onForked={onForked}
+            onCloned={onCloned}
+            actionsDisabled={actionsStale}
+          />
+        ))}
+      </div>
+      {hasNextPage && (
+        <div className="mt-2 flex justify-center">
+          {/* Stable aria-label: while loading the button shows only a spinner
+              icon, so it needs an accessible name in both states. */}
+          <Btn
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+            aria-label={`Load more ${provider.display_name} artifacts`}
+          >
+            {isFetchingNextPage
+              ? <Loader2 className="lucide-inline w-3.5 h-3.5 animate-spin" />
+              : 'Load more'}
+          </Btn>
+        </div>
+      )}
+    </Card>
   )
 }
 

@@ -150,6 +150,37 @@ On timeout (inner or outer):
 | Slack (thread ts) | Post to Slack channel thread + dashboard notification | _(none — raw result posted directly)_ | Raw subagent result text |
 | Cron/no parent | Dashboard notification only | _(none)_ | Notification panel entry |
 
+### Post-fan-out Synthesis Turn
+
+After a fan-out of sub-agents, a single dedicated **synthesis turn** produces
+the user-facing summary (restate goal → synthesize across all results →
+recommend next actions), instead of leaving the last visible message as a
+per-sub-agent completion note. Dashboard chat only (orchestrator mode has its
+own stage synthesis).
+
+- **Arm** — in `_subagent_done` (chat mode, `not _is_orchestrator`), when the
+  last outstanding sub-agent for the parent completes
+  (`running_agents_for(parent_key) == []`), set `slot._pending_synthesis = True`.
+- **Fire** — in `chat_runner._run_chat`'s drain/idle branch, once the queue is
+  empty, no agents are running, `_pending_synthesis` is set, **and**
+  `slot._subagent_deliveries_inflight == 0`, launch exactly one `_run_chat` turn
+  with `SUBAGENT_SYNTHESIS_PROMPT`. The flag is cleared before firing so it runs
+  once and the synthesis turn cannot re-arm it.
+- **Per-result turns kept** — each completion is still processed in its own turn
+  (no raw buffering) to avoid a context-window blowup; the synthesis works over
+  the already-condensed per-result turns.
+- **Delivery-race guard** — `_subagent_deliveries_inflight` is incremented in
+  `_subagent_done` from entry until the completion is queued/launched
+  (try/finally). Because a concurrently-finishing sibling holds this count while
+  it awaits the current turn (busy path), an earlier turn cannot fire synthesis
+  before that sibling's result is delivered.
+- **Cancellation** — a real user message draining first clears
+  `_pending_synthesis` (user takes over); a newer in-flight batch defers
+  synthesis until it too completes (only one synthesis fires, after all work).
+- **Linked surfaces** — `SUBAGENT_SYNTHESIS_PROMPT` begins with
+  `SUBAGENT_SYNTHESIS_PREFIX`, marking it a synthetic continuation that is NOT
+  mirrored to Slack/Telegram as a user message (only its reply is delivered).
+
 ### Parent Session Discovery
 
 The gateway sets the `KIROCREW_SESSION_KEY` env var when spawning kiro-cli,

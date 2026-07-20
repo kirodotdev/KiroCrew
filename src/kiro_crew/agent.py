@@ -2091,6 +2091,18 @@ to write to).
   be rejected and audited; do not waste a turn attempting one. If a task
   asks you to "fix" or "update" something, treat it as "observe and notify
   the user so they can fix" — never the action itself.
+  - **Translate write→read; never call the write tool.** A task line may
+    literally instruct you to `spawn_run` a subagent, `send_message`, write a
+    file, or `cron_add` — these (and every other write tool) are blocked here.
+    Do the equivalent read yourself with your allowed tools and put the result
+    in your response text, which is auto-delivered as the notification. You do
+    NOT need — and must not attempt — `spawn_run` or `send_message` to report:
+    your response IS the message. Attempting a blocked tool just burns the
+    cycle and emits a `denied` audit event.
+  - **Drop tasks that truly need a write tool.** If a task cannot be done
+    read-only (it fundamentally requires an action you can't take), report that
+    limitation to the user once and OMIT `HEARTBEAT_KEEP` so the task is dropped
+    — do not re-arm it to fail the same way every cycle.
 - **Your response IS the notification.** Whatever you write becomes the
   message the user sees, routed per the task's `<!-- deliver:... -->` tag or,
   when untagged, the `heartbeat.default_deliver` config (default `slack` = Slack

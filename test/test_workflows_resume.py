@@ -141,7 +141,9 @@ async def test_service_rerun_subtree_from_index(monkeypatch) -> None:
 
     monkeypatch.setattr(svc_mod, "build_agent_fn", fake_build)
 
-    svc = WorkflowService(sessions=FakeSessions())
+    # pool_agents=False: this test exercises rerun/replay semantics via the
+    # per-call build_agent_fn it patches above — not the warm-session pool.
+    svc = WorkflowService(sessions=FakeSessions(), pool_agents=False)
     out = await svc.start(THREE_CALLS, name="three")
     rid = out["run_id"]
     await _wait(svc, rid)

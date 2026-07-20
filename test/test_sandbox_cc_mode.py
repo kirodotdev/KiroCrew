@@ -14,6 +14,9 @@ from kiro_crew.sandbox import (
     _build_launcher_script,
     _build_seatbelt_profile,
     sandbox_exec_argv,
+    sandboxed_spawn_argv,
+    scrub_agent_denied_env,
+    scrub_env,
     wrap_argv,
 )
 
@@ -242,3 +245,107 @@ class TestAgentDeniedEnvKeys:
             assert ".aws/config" in content
         finally:
             os.unlink(cleanup)
+
+
+# Sentinel values only; never use real credentials in these tests.
+_FAKE_CHANNEL_ENV = {
+    "SLACK_BOT_TOKEN": "xoxb-FAKE-slack-bot",
+    "SLACK_APP_TOKEN": "xapp-FAKE-slack-app",
+    "SLACK_USER_TOKEN": "xoxp-FAKE-slack-user",
+    "WECOM_BOT_ID": "FAKE-wecom-bot-id",
+    "WECOM_SECRET": "FAKE-wecom-secret",
+    "TELEGRAM_BOT_TOKEN": "0000:FAKE-telegram-token",
+    "KIROCREW_OWNER_ID": "U_FAKE_OWNER",
+}
+
+
+class TestChannelCredentialIsolation:
+    """Gateway-only channel credentials never reach agent subprocesses."""
+
+    def test_denylist_covers_loader_credentials(self):
+        from kiro_crew.config.loader import _CREDENTIAL_KEYS
+
+        missing = set(_CREDENTIAL_KEYS) - set(_AGENT_DENIED_ENV_KEYS)
+        assert not missing, f"loader credential keys not in agent denylist: {sorted(missing)}"
+
+    def test_scrub_env_strips_channel_secrets(self, monkeypatch):
+        for key, value in _FAKE_CHANNEL_ENV.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+
+        cleaned = scrub_env()
+
+        for key in _FAKE_CHANNEL_ENV:
+            assert key not in cleaned, f"{key} leaked through scrub_env"
+        assert cleaned.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
+
+    def test_standard_spawn_strips_channel_secrets(self, monkeypatch):
+        for key, value in _FAKE_CHANNEL_ENV.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+        with patch("kiro_crew.sandbox.detect_backend", return_value="none"), patch(
+            "kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True
+        ):
+            _argv, env, cleanup = sandboxed_spawn_argv(["echo", "hi"], mode="standard")
+        try:
+            for key in _FAKE_CHANNEL_ENV:
+                assert key not in env, f"{key} leaked into standard spawn env"
+            assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
+        finally:
+            if cleanup:
+                os.unlink(cleanup)
+
+    def test_cc_and_strict_launchers_strip_oss_channel_secrets(self):
+        for mode in ("cc", "strict"):
+            script = _build_launcher_script(mode)
+            env_prefixes = next(
+                line for line in script.splitlines() if line.startswith("ENV_PREFIXES = ")
+            )
+            for key in ("WECOM_BOT_ID", "WECOM_SECRET", "TELEGRAM_BOT_TOKEN"):
+                assert key in env_prefixes, f"{key} missing from {mode} launcher"
+
+    def test_macos_cc_launcher_strips_oss_channel_secrets(self, monkeypatch):
+        keys = ("WECOM_BOT_ID", "WECOM_SECRET", "TELEGRAM_BOT_TOKEN")
+        for key in keys:
+            monkeypatch.setenv(key, _FAKE_CHANNEL_ENV[key])
+
+        argv, cleanup = sandbox_exec_argv(["echo", "hi"], sandbox_level="cc")
+        try:
+            for key in keys:
+                assert key in argv, f"{key} missing from sandbox-exec argv"
+        finally:
+            if cleanup:
+                os.unlink(cleanup)
+
+    def test_scrub_agent_denied_env_strips_all_denied_keys(self):
+        env = dict(_FAKE_CHANNEL_ENV)
+        env["KIROCREW_UNRELATED_KEEPME"] = "keep-this-value"
+
+        cleaned = scrub_agent_denied_env(env)
+
+        for key in _AGENT_DENIED_ENV_KEYS:
+            assert key not in cleaned, f"{key} survived scrub_agent_denied_env"
+        for key in _FAKE_CHANNEL_ENV:
+            assert key not in cleaned, f"{key} survived scrub_agent_denied_env"
+        assert cleaned.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
+
+    def test_scrub_agent_denied_env_preserves_aws_ssh(self):
+        # Unlike scrub_env, the parent channel-credential scrub must leave the
+        # AWS/SSH env the standard sandbox intentionally exposes intact.
+        env = {
+            "WECOM_SECRET": "FAKE-wecom-secret",
+            "AWS_ACCESS_KEY_ID": "FAKE-akid",
+            "AWS_SECRET_ACCESS_KEY": "FAKE-secret",
+            "AWS_SESSION_TOKEN": "FAKE-session",
+            "SSH_AUTH_SOCK": "/tmp/fake-agent.sock",
+            "PATH": "/usr/bin",
+        }
+
+        cleaned = scrub_agent_denied_env(env)
+
+        assert "WECOM_SECRET" not in cleaned
+        assert cleaned["AWS_ACCESS_KEY_ID"] == "FAKE-akid"
+        assert cleaned["AWS_SECRET_ACCESS_KEY"] == "FAKE-secret"
+        assert cleaned["AWS_SESSION_TOKEN"] == "FAKE-session"
+        assert cleaned["SSH_AUTH_SOCK"] == "/tmp/fake-agent.sock"
+        assert cleaned["PATH"] == "/usr/bin"

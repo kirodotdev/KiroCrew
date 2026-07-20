@@ -821,6 +821,37 @@ async def test_pull_upstream_fork_origin(store, fake_client, tmp_path):
     assert reloaded.fork_metadata.upstream_version == 2
 
 
+def test_source_target_origin_resolves_fork_provider(store):
+    """A fork's ``origin`` pull must resolve against the provider it was forked
+    from, not always DEFAULT_PROVIDER — otherwise pulling a fork of provider B
+    would query provider A (wrong content, or sync failure)."""
+    art = store.create(name="Fp", content="x", kind="html")
+    store.set_fork_metadata(
+        art.slug,
+        ForkMetadata(
+            upstream_artifact_id="ext-9",
+            upstream_version=1,
+            upstream_provider="provider-b",
+        ),
+    )
+    reloaded = store.get(art.slug)
+    provider_name, ext_id, _v, is_pub = publish_sync._source_target(reloaded, "origin")
+    assert provider_name == "provider-b"
+    assert ext_id == "ext-9"
+    assert is_pub is False
+
+
+def test_source_target_origin_legacy_fork_falls_back_to_default(store):
+    """A pre-multi-provider fork record (no upstream_provider) falls back to
+    DEFAULT_PROVIDER so single-provider forks keep resolving."""
+    art = store.create(name="Fl", content="x", kind="html")
+    store.set_fork_metadata(art.slug, ForkMetadata(upstream_artifact_id="ext-legacy"))
+    reloaded = store.get(art.slug)
+    provider_name, ext_id, _v, _is_pub = publish_sync._source_target(reloaded, "origin")
+    assert provider_name == publish_sync.DEFAULT_PROVIDER
+    assert ext_id == "ext-legacy"
+
+
 @pytest.mark.asyncio
 async def test_clone_from_remote_owned(store, fake_client, tmp_path):
     me = getpass.getuser()

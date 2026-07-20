@@ -5574,6 +5574,106 @@ class TestFolderCRUD:
             assert data["collapsed"] is True
 
     @pytest.mark.asyncio
+    async def test_update_folder_reparent_into_folder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/folders", json={"name": "A"})).json()
+            b = await (await client.post("/api/chat/folders", json={"name": "B"})).json()
+            resp = await client.patch(f"/api/chat/folders/{b['id']}", json={"parent_id": a["id"]})
+            assert resp.status == 200
+            assert (await resp.json())["parent_id"] == a["id"]
+            assert state._folders[1]["parent_id"] == a["id"]
+
+    @pytest.mark.asyncio
+    async def test_update_folder_reparent_to_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/folders", json={"name": "A"})).json()
+            b = await (
+                await client.post("/api/chat/folders", json={"name": "B", "parent_id": a["id"]})
+            ).json()
+            # Empty string and null both mean "move to top level".
+            resp = await client.patch(f"/api/chat/folders/{b['id']}", json={"parent_id": ""})
+            assert resp.status == 200
+            assert (await resp.json())["parent_id"] == ""
+            resp = await client.patch(f"/api/chat/folders/{b['id']}", json={"parent_id": a["id"]})
+            assert (await resp.json())["parent_id"] == a["id"]
+            resp = await client.patch(f"/api/chat/folders/{b['id']}", json={"parent_id": None})
+            assert resp.status == 200
+            assert (await resp.json())["parent_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_update_folder_reparent_self_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/folders", json={"name": "A"})).json()
+            resp = await client.patch(f"/api/chat/folders/{a['id']}", json={"parent_id": a["id"]})
+            assert resp.status == 400
+            assert state._folders[0]["parent_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_update_folder_reparent_unknown_parent_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/folders", json={"name": "A"})).json()
+            resp = await client.patch(f"/api/chat/folders/{a['id']}", json={"parent_id": "nope"})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_update_folder_reparent_cycle_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/folders", json={"name": "A"})).json()
+            b = await (
+                await client.post("/api/chat/folders", json={"name": "B", "parent_id": a["id"]})
+            ).json()
+            c = await (
+                await client.post("/api/chat/folders", json={"name": "C", "parent_id": b["id"]})
+            ).json()
+            # A -> C would create A > B > C > A
+            resp = await client.patch(f"/api/chat/folders/{a['id']}", json={"parent_id": c["id"]})
+            assert resp.status == 400
+            assert "descendant" in (await resp.json())["error"]
+            # Direct child is also a descendant
+            resp = await client.patch(f"/api/chat/folders/{a['id']}", json={"parent_id": b["id"]})
+            assert resp.status == 400
+            assert state._folders[0]["parent_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_update_folder_rejected_field_leaves_no_partial_mutation(
+        self, tmp_path, monkeypatch
+    ):
+        """A PATCH mixing a VALID field (name) with an INVALID one (bad parent_id)
+        must be all-or-nothing: the 400 rejection must NOT persist the name change
+        (validate-all-before-mutate). Regression for the partial-mutation bug."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            f = await (await client.post("/api/chat/folders", json={"name": "Original"})).json()
+            resp = await client.patch(
+                f"/api/chat/folders/{f['id']}",
+                json={"name": "Renamed", "parent_id": "does-not-exist"},
+            )
+            assert resp.status == 400
+            # The name change from the SAME rejected request must not have landed.
+            assert state._folders[0]["name"] == "Original"
+            # And a later valid update must not resurrect the rejected name.
+            resp = await client.patch(f"/api/chat/folders/{f['id']}", json={"collapsed": True})
+            assert resp.status == 200
+            assert state._folders[0]["name"] == "Original"
+
+    @pytest.mark.asyncio
     async def test_create_folder_hidden_defaults_false(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

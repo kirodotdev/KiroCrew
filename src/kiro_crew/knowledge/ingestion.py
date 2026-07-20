@@ -15,7 +15,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import dedup_document
-from .embedder import embed_signature, floats_to_bytes
+from .embedder import embedder_signature, floats_to_bytes
 from .extractor import EntityExtractor
 from .readers import FileReader
 from .store import KnowledgeStore
@@ -421,7 +421,7 @@ class IngestionPipeline:
         if vec:
             self.store.db.execute(
                 "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? WHERE id = ?",
-                (floats_to_bytes(vec), embed_signature(self.embedder.model, self.embedder.content_budget),
+                (floats_to_bytes(vec), embedder_signature(self.embedder),
                  datetime.now().isoformat(), item_id))
             self.store.db.commit()
 
@@ -468,6 +468,120 @@ _REBUILD_BATCH_SIZE = 50
 # so the single-flight guard treats it as dead and lets a new rebuild start.
 _REBUILD_STALE_AFTER = timedelta(minutes=10)
 
+# Items that just failed a re-embed (vec is None) keep a stale sig but get an
+# `embedded_at` stamp; the watcher backs off from re-triggering on them until this
+# window elapses, so a perpetually-failing item (Ollama down) can't drive a fresh
+# rebuild every scan interval. Longer than _REBUILD_STALE_AFTER so a legit retry
+# isn't suppressed but a tight retrigger loop is.
+_REEMBED_RETRY_BACKOFF = timedelta(minutes=15)
+
+
+def _heartbeat_rebuild_job(store, job_id: str, now_iso: str) -> None:
+    """Advance a rebuild job's ``updated_at`` (single write + commit).
+
+    Called via ``asyncio.to_thread`` from the async rebuild loop so the blocking
+    SQLite write never runs on the event loop. ``store.db`` resolves to the
+    WORKER thread's own connection (per-thread ``threading.local``), so this is
+    safe to run off-loop; the loop awaits it serially.
+    """
+    store.db.execute(
+        "UPDATE ingestion_jobs SET updated_at = ? WHERE id = ?", (now_iso, job_id)
+    )
+    store.db.commit()
+
+
+def _write_item_embedding(store, item_id: str, blob: bytes, sig: str, now_iso: str, snap) -> bool:
+    """Persist a freshly-computed vector for one item; return True if it landed.
+
+    Runs via ``asyncio.to_thread`` (blocking SQLite off the event loop; worker's
+    own thread-local connection). The ``updated_at <= snap`` guard skips the
+    write when a concurrent re-ingest rewrote the item mid-embed (lost-update
+    protection) — ``cur.rowcount == 0`` then, so the caller counts it as failed.
+    """
+    cur = store.db.execute(
+        "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? "
+        "WHERE id = ? AND (updated_at IS NULL OR updated_at <= ?)",
+        (blob, sig, now_iso, item_id, snap))
+    store.db.commit()
+    return bool(cur.rowcount)
+
+
+def _stamp_embed_attempt(store, item_id: str, now_iso: str) -> None:
+    """Stamp ``embedded_at`` after a transient embed failure (leaves sig stale so
+    the item is retried, but backs the watcher off it). Offloaded like the other
+    per-item writes so it never blocks the event loop.
+    """
+    store.db.execute(
+        "UPDATE items SET embedded_at = ? WHERE id = ?", (now_iso, item_id))
+    store.db.commit()
+
+
+def _select_active_rebuild_job(store, *, now: datetime | None = None):
+    """Return a FRESH (within the staleness window) active rebuild job row, or None.
+
+    A corpus-wide rebuild is identified by ``source_id IS NULL`` + ``status='processing'``.
+    Rows older than the staleness window are crashed leftovers and are NOT returned
+    (callers sweep them). Must be called inside an open transaction by the claimer.
+    """
+    fresh = ((now or datetime.now()) - _REBUILD_STALE_AFTER).isoformat()
+    return store.db.execute(
+        "SELECT id FROM ingestion_jobs WHERE source_id IS NULL AND status = 'processing' "
+        "AND updated_at > ? ORDER BY created_at DESC LIMIT 1",
+        (fresh,)).fetchone()
+
+
+def start_rebuild_job(store, *, now: datetime | None = None) -> str | None:
+    """Atomically claim the single-flight slot for a corpus rebuild.
+
+    Wraps check-then-insert in a single ``BEGIN IMMEDIATE`` transaction so the
+    watcher's 300s tick and a user-clicked rebuild can't both observe "no active
+    job" and each insert one (the per-path single-flight guard was not safe across
+    paths). Also sweeps any stale ``processing`` rows from prior crashes to
+    ``abandoned`` so they don't accumulate as phantom jobs forever.
+
+    Returns the new ``job_id`` if this caller claimed the slot, or ``None`` if a
+    fresh rebuild is already in flight (caller should not start one).
+    """
+    now = now or datetime.now()
+    ts = now.isoformat()
+    fresh = (now - _REBUILD_STALE_AFTER).isoformat()
+    store.db.execute("BEGIN IMMEDIATE")
+    try:
+        if _select_active_rebuild_job(store, now=now) is not None:
+            store.db.execute("COMMIT")
+            return None
+        # Sweep crashed leftovers (stale 'processing' rows) so they don't linger.
+        store.db.execute(
+            "UPDATE ingestion_jobs SET status = 'abandoned', "
+            "error = 'abandoned: updated_at past staleness window', updated_at = ? "
+            "WHERE source_id IS NULL AND status = 'processing' AND updated_at <= ?",
+            (ts, fresh))
+        job_id = uuid4().hex[:12]
+        store.db.execute(
+            "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
+            "VALUES (?, NULL, 'processing', ?, ?)",
+            (job_id, ts, ts))
+        store.db.execute("COMMIT")
+        return job_id
+    except Exception:
+        store.db.execute("ROLLBACK")
+        raise
+
+
+def count_stale_items(store, sig: str, *, now: datetime | None = None) -> int:
+    """Count active items whose embedding sig is stale and not in retry backoff.
+
+    Excludes items re-attempted within ``_REEMBED_RETRY_BACKOFF`` (stale sig but a
+    recent ``embedded_at``) so a perpetually-failing item can't make the watcher
+    re-trigger every scan interval.
+    """
+    cutoff = ((now or datetime.now()) - _REEMBED_RETRY_BACKOFF).isoformat()
+    return store.db.execute(
+        "SELECT COUNT(*) AS c FROM items WHERE status = 'active' "
+        "AND (embedding_sig IS NULL OR embedding_sig != ?) "
+        "AND (embedded_at IS NULL OR embedded_at < ?)",
+        (sig, cutoff)).fetchone()["c"]
+
 
 async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
                              force: bool = False) -> int:
@@ -482,24 +596,30 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
     Vectors are overwritten one item at a time so search stays queryable throughout.
     When ``job_id`` is given, progress is written to that ``ingestion_jobs`` row; the
     same function powers the dashboard trigger and the watcher self-heal. Returns the
-    number of items re-embedded.
+    number of items successfully re-embedded.
 
     ponytail: serial single-item embed (Ollama is the CPU floor and fans out
     internally); batch size is only the commit/progress cadence, not a throttle.
     """
     loop = asyncio.get_running_loop()
-    sig = embed_signature(embedder.model, embedder.content_budget)
+    sig = embedder_signature(embedder)
     processed = 0
+    failed = 0
+    # Keep the COUNT predicate and the page predicate as separate strings so neither
+    # is derived by stripping a clause out of the other (a string-replace that would
+    # silently no-op if the WHERE were ever reworded).
     if force:
-        where = "status = 'active' AND id > ?"
+        count_where = "status = 'active'"
+        page_where = "status = 'active' AND id > ?"
         params_tail: tuple = ()
     else:
-        where = "status = 'active' AND (embedding_sig IS NULL OR embedding_sig != ?) AND id > ?"
+        count_where = "status = 'active' AND (embedding_sig IS NULL OR embedding_sig != ?)"
+        page_where = count_where + " AND id > ?"
         params_tail = (sig,)
 
     if job_id is not None:
         total = store.db.execute(
-            f"SELECT COUNT(*) AS c FROM items WHERE {where.replace(' AND id > ?', '')}",  # noqa: S608
+            f"SELECT COUNT(*) AS c FROM items WHERE {count_where}",  # noqa: S608
             params_tail).fetchone()["c"]
         store.db.execute(
             "UPDATE ingestion_jobs SET items_total = ?, updated_at = ? WHERE id = ?",
@@ -509,7 +629,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
     last_id = ""
     while True:
         rows = store.db.execute(
-            f"SELECT id, title, summary, content FROM items WHERE {where} "  # noqa: S608
+            f"SELECT id, title, summary, content, updated_at FROM items WHERE {page_where} "  # noqa: S608
             "ORDER BY id LIMIT ?",
             (*params_tail, last_id, _REBUILD_BATCH_SIZE)).fetchall()
         if not rows:
@@ -518,17 +638,57 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
             vec = await loop.run_in_executor(
                 None, embedder.embed_for_item, row["title"], row["summary"], row["content"]
             )
+            now_iso = datetime.now().isoformat()
+            # Per-item SQLite writes are OFFLOADED (asyncio.to_thread): a sync
+            # write can block up to the busy_timeout under a concurrent writer,
+            # and rebuild_embeddings is awaited on the gateway event loop — an
+            # inline write would freeze chat/liveness (AUTOSDE
+            # no-blocking-call-on-event-loop). store.db is a per-thread connection
+            # (threading.local, WAL); the loop awaits each serially, so there is
+            # no concurrent-connection use.
             if vec:
-                store.db.execute(
-                    "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? "
-                    "WHERE id = ?",
-                    (floats_to_bytes(vec), sig, datetime.now().isoformat(), row["id"]))
+                # Guard against a lost update: if ingestion (file-change re-ingest)
+                # rewrote title/content while we were embedding, its updated_at moved
+                # past our snapshot's -- skip our stale-vector UPDATE and let that
+                # item re-embed via its own _embed_item. ``snap`` is the row's
+                # updated_at at read time.
+                snap = row["updated_at"]
+                landed = await asyncio.to_thread(
+                    _write_item_embedding, store, row["id"], floats_to_bytes(vec), sig, now_iso, snap
+                )
+                if landed:
+                    processed += 1
+                else:
+                    failed += 1  # raced with a concurrent writer; counts as not-done
+            else:
+                # Transient embed failure: leave sig stale (so it's retried) but stamp
+                # embedded_at as the attempt time so the watcher backs off this item.
+                await asyncio.to_thread(_stamp_embed_attempt, store, row["id"], now_iso)
+                failed += 1
             last_id = row["id"]
-            processed += 1
+            if job_id is not None:
+                # Heartbeat the job row PER ITEM, not just per batch: a single embed
+                # is the CPU floor (Ollama), so 50 serial embeds can exceed
+                # _REBUILD_STALE_AFTER on a slow/cold host. If updated_at only
+                # advanced at end-of-batch, the single-flight claimer would judge a
+                # live rebuild abandoned mid-batch and start a second one (duplicated
+                # embedding work). Committing the timestamp each item keeps the job
+                # demonstrably alive within the staleness window. The heavier
+                # progress counters still land once per batch below.
+                #
+                # OFFLOAD the write: rebuild_embeddings is awaited on the gateway
+                # event loop, and a synchronous SQLite write can block up to the
+                # busy_timeout when another writer holds the lock — freezing chat /
+                # liveness (AUTOSDE no-blocking-call-on-event-loop). ``store.db`` is
+                # a per-thread connection (threading.local, WAL), so the worker
+                # thread safely uses its OWN connection to the same db; the loop
+                # awaits it serially, so there is no concurrent-connection use.
+                await asyncio.to_thread(_heartbeat_rebuild_job, store, job_id, now_iso)
         if job_id is not None:
             store.db.execute(
-                "UPDATE ingestion_jobs SET items_processed = ?, updated_at = ? WHERE id = ?",
-                (processed, datetime.now().isoformat(), job_id))
+                "UPDATE ingestion_jobs SET items_processed = ?, items_failed = ?, "
+                "updated_at = ? WHERE id = ?",
+                (processed, failed, datetime.now().isoformat(), job_id))
         store.db.commit()
 
     return processed

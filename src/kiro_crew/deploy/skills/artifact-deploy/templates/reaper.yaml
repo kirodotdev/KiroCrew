@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  KiroCrew One-Click Deploy - in-account scheduled reaper. An EventBridge rule
+  fires a Lambda on a timer; the Lambda deletes expired non-persistent deploys
+  (S3 prefix + CloudFront behavior/origin + backend CloudFormation stack). Runs
+  entirely in the user's account - no local creds, no human. Install once.
+
+Parameters:
+  Bucket:
+    Type: String
+  DistributionId:
+    Type: String
+  CodeBucket:
+    Type: String
+  CodeKey:
+    Type: String
+  ScheduleRate:
+    Type: String
+    Default: 'rate(1 hour)'
+
+Resources:
+
+  ReaperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: kirocrew-deploy-reaper-exec
+      # R23 F1: mandatory boundary — installer's iam:CreateRole is conditioned on it.
+      PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/kirocrew-deploy-app-boundary'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      # Least privilege (BSC6): everything scoped to kirocrew-deploy-app-*
+      # resources + the shared bucket + the one distribution. The only broad
+      # action is apigateway:DELETE on /apis/* (HTTP API ids are random and
+      # cannot be name-scoped); a future hardening is tag-based scoping.
+      Policies:
+        - PolicyName: reaper
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3List
+                Effect: Allow
+                Action: [s3:ListBucket]
+                Resource: !Sub 'arn:aws:s3:::${Bucket}'
+              - Sid: S3Objects
+                Effect: Allow
+                Action: [s3:GetObject, s3:DeleteObject, s3:PutObject]
+                Resource: !Sub 'arn:aws:s3:::${Bucket}/*'
+              - Sid: CloudFront
+                Effect: Allow
+                Action: [cloudfront:GetDistributionConfig, cloudfront:UpdateDistribution, cloudfront:CreateInvalidation]
+                Resource: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}'
+              - Sid: CloudFrontEngineSites
+                Effect: Allow
+                # R20 F3: ListTagsForResource is required by the R19 tag-verify
+                # gate — without it the gate errors and finite-TTL engine
+                # deployments are never reaped.
+                Action: [cloudfront:GetDistributionConfig, cloudfront:UpdateDistribution, cloudfront:DeleteDistribution, cloudfront:ListTagsForResource]
+                Resource: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/*'
+                # F6 (R9): Scope DeleteDistribution to per-site distributions only.
+                # Engine.py tags per-site distributions with kirocrew:site=<site_id>
+                # (value is the site id, NOT 'true'). The shared base-stack
+                # distribution carries kirocrew:managed=true but NOT kirocrew:site.
+                # Using a presence test (Null: false) prevents the reaper from
+                # accidentally deleting the shared distribution.
+                # NOTE: StringEquals 'true' would be a DEAD condition since the tag
+                # value is a site id string, not the literal 'true'.
+                Condition:
+                  'Null':
+                    'aws:ResourceTag/kirocrew:site': 'false'
+              # F7: OAC lifecycle — List cannot be tag-scoped (returns all OACs
+              # in the account); Get/Delete scoped to the account's OAC ARNs.
+              # Required to prevent OAC quota exhaustion on repeated deployments.
+              - Sid: CloudFrontOACCleanup
+                Effect: Allow
+                Action: [cloudfront:ListOriginAccessControls]
+                Resource: '*'
+              - Sid: CloudFrontOACManage
+                Effect: Allow
+                Action: [cloudfront:GetOriginAccessControl, cloudfront:DeleteOriginAccessControl]
+                Resource: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:origin-access-control/*'
+              - Sid: S3EngineSites
+                Effect: Allow
+                Action: [s3:ListBucket, s3:DeleteBucket, s3:GetBucketTagging]
+                Resource: 'arn:aws:s3:::kirocrew-web-*'
+              - Sid: S3EngineSiteObjects
+                Effect: Allow
+                Action: [s3:GetObject, s3:DeleteObject]
+                Resource: 'arn:aws:s3:::kirocrew-web-*/*'
+              - Sid: Cfn
+                Effect: Allow
+                Action: [cloudformation:DescribeStacks, cloudformation:DeleteStack]
+                Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/kirocrew-deploy-app-*/*'
+              - Sid: CascadeCompute
+                Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:DeleteFunction
+                  - lambda:RemovePermission
+                  - lambda:GetFunctionUrlConfig
+                  - lambda:DeleteFunctionUrlConfig
+                  - dynamodb:DescribeTable
+                  - dynamodb:DeleteTable
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:kirocrew-deploy-app-*'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/kirocrew-deploy-app-*'
+              - Sid: CascadeIam
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:DeleteRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/kirocrew-deploy-app-*-exec'
+                  # Origin-verify authorizer role (app-apigw*.yaml) — without this
+                  # the stack delete leaves the -authz role behind (DELETE_FAILED).
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/kirocrew-deploy-app-*-authz'
+              - Sid: CascadeApiGwRead
+                Effect: Allow
+                Action: [apigateway:GET]
+                Resource: !Sub 'arn:aws:apigateway:${AWS::Region}::/apis/*'
+              - Sid: CascadeApiGwDelete
+                Effect: Allow
+                Action: [apigateway:DELETE]
+                Resource: !Sub 'arn:aws:apigateway:${AWS::Region}::/apis/*'
+                # HTTP API ids are random and cannot be name-scoped; constrain
+                # DELETE to APIs carrying the managed tag (set by app templates)
+                # so a reaper bug or Lambda compromise cannot delete unrelated
+                # API Gateways in the account.
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/kirocrew:managed': 'true'
+
+  ReaperFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: kirocrew-deploy-reaper
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ReaperRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          BUCKET: !Ref Bucket
+          DIST_ID: !Ref DistributionId
+          # R30 F2: the reaper role has no sts:GetCallerIdentity permission, so
+          # the lambda's STS fallback for account-id discovery fails as
+          # AccessDenied and every engine-arch reap returns "reaping" forever
+          # (expired resources leak). Supply the account id directly.
+          ACCOUNT_ID: !Ref AWS::AccountId
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Tags:
+        - { Key: 'kirocrew:managed', Value: 'true' }
+
+  Schedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: kirocrew-deploy-reaper
+      Description: KiroCrew deploy TTL reaper schedule
+      ScheduleExpression: !Ref ScheduleRate
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ReaperFn.Arn
+          Id: reaper
+
+  SchedulePerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReaperFn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Schedule.Arn
+
+Outputs:
+  ReaperFunctionName:
+    Value: !Ref ReaperFn
+  ScheduleRate:
+    Value: !Ref ScheduleRate

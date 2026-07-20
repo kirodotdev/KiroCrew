@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -271,10 +272,64 @@ class AcpProvider(LLMProvider):
         return not self.is_claude_backend
 
     async def _start_kiro_runtime(self) -> None:
+        """Spawn an AcpRuntime + session; time the kiro cold-start split.
+
+        Thin telemetry wrapper over ``_start_kiro_runtime_impl`` so the DEFAULT
+        (kiro) backend's cold start is finally measured. ``AcpClient.ensure_ready``
+        already emits ``kirocrew.session.startup.duration`` for the *claude* path
+        only; the kiro path went through here with no duration metric. We reuse the
+        same histogram, tagged ``backend=kiro`` + ``phase=<...>`` so the phase split
+        (spawn+initialize vs session/new-the-MCP-toolset-load vs set_model) is
+        visible. Best-effort — a telemetry failure never affects startup.
+        """
+        t0 = time.monotonic()
+        phases: dict[str, float] = {}
+        outcome = "error"
+        try:
+            await self._start_kiro_runtime_impl(phases)
+            outcome = "ready"
+        except AcpAuthRequired:
+            outcome = "auth_required"
+            raise
+        finally:
+            self._emit_kiro_startup_metric(t0, phases, outcome)
+
+    def _emit_kiro_startup_metric(self, t0: float, phases: dict[str, float], outcome: str) -> None:
+        """Emit the kiro cold-start histogram (total + per-phase). Best-effort."""
+        try:
+            # circular import: importing get_recorder at module top would form a
+            # config.loader -> ... -> metrics.provider -> config.loader cycle
+            # (same reason as the lazy import in acp/client.py's ensure_ready).
+            # Keep it lazy so provider is never loaded during config.loader's
+            # import chain.
+            from kiro_crew.metrics.provider import get_recorder
+
+            rec = get_recorder()
+            total_ms = (time.monotonic() - t0) * 1000.0
+            rec.histogram(
+                "kirocrew.session.startup.duration",
+                total_ms,
+                unit="ms",
+                attrs={"backend": "kiro", "phase": "total", "outcome": outcome},
+            )
+            for phase, ms in phases.items():
+                rec.histogram(
+                    "kirocrew.session.startup.duration",
+                    ms,
+                    unit="ms",
+                    attrs={"backend": "kiro", "phase": phase, "outcome": outcome},
+                )
+        except Exception:  # never let telemetry break session startup
+            logger.debug("kiro startup metric emit failed", exc_info=True)
+
+    async def _start_kiro_runtime_impl(self, phases: dict[str, float]) -> None:
         """Spawn an AcpRuntime and replace self._client with AcpSessionProvider.
 
         After this, self._client is an AcpSessionProvider that implements the
         same interface as AcpClient, so all downstream method calls work unchanged.
+
+        ``phases`` is populated in-place with per-step wall-clock (ms) — spawn_init,
+        session_new, set_model — for the startup histogram in the wrapper.
         """
         # Extract params from the AcpClient that was created in __init__
         # (it was never spawned — just used for config storage)
@@ -306,6 +361,7 @@ class AcpProvider(LLMProvider):
             mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
             mcp_gateway_socket=mcp_gateway_socket,
         )
+        _t_spawn = time.monotonic()
         try:
             await runtime.spawn()
         except AcpRuntimeError as exc:
@@ -315,6 +371,9 @@ class AcpProvider(LLMProvider):
             if runtime.saw_not_logged_in():
                 raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
             raise
+        finally:
+            # subprocess launch + ACP `initialize` handshake
+            phases["spawn_init"] = (time.monotonic() - _t_spawn) * 1000.0
 
         # Everything AFTER a successful spawn() must be guarded: until the
         # AcpSessionProvider is constructed and assigned to self._client, NOTHING
@@ -328,6 +387,9 @@ class AcpProvider(LLMProvider):
             # fresh session/new. Resume issues session/load DIRECTLY (no
             # session/new first) so it fully mirrors AcpClient and avoids the
             # double-context 'refusal' failure mode.
+            # session/new is where kiro loads the full MCP toolset + system prompt
+            # (the dominant cold-start cost) — time it as its own phase.
+            _t_sess = time.monotonic()
             handle = None
             resumed = False
             if resume_sid:
@@ -407,10 +469,13 @@ class AcpProvider(LLMProvider):
                     if runtime.saw_not_logged_in():
                         raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
                     raise
+            # session/new (or session/load) + MCP-toolset/system-prompt load done.
+            phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
 
             # Apply the configured model override (mirrors AcpClient handshake).
             # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
             if configured_model and configured_model != DEFAULT_MODEL:
+                _t_model = time.monotonic()
                 try:
                     await handle.set_model(configured_model)
                     logger.info("Kiro runtime model set: %s", configured_model)
@@ -420,6 +485,8 @@ class AcpProvider(LLMProvider):
                         configured_model,
                         exc_info=True,
                     )
+                finally:
+                    phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
 
             # Replace the placeholder AcpClient with the real AcpSessionProvider
             provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
@@ -845,6 +912,20 @@ class AcpProvider(LLMProvider):
     async def wait_for_compaction(self, timeout: float = 120.0) -> dict:
         """Wait for compaction completed/failed after stream ends."""
         return await self._client.wait_for_compaction(timeout)
+
+    async def new_conversation(self) -> None:
+        """Clean-slate reset on the SAME warm process (no cold start).
+
+        Delegates to the backing client — ``AcpSessionProvider.new_conversation``
+        on the kiro path (``self._client`` is swapped to the session provider by
+        ``start()``), which issues a fresh ``session/new`` on the already-running
+        process, skipping subprocess spawn + the ``initialize`` handshake. This is
+        the primitive a warm session pool uses to reuse one worker across
+        independent tasks without leaking context between them. The dormant
+        claude-backend seam would delegate to its own client-side reset the same
+        way (the fork's ``AcpClient`` does not ship it — hence the type ignore).
+        """
+        await self._client.new_conversation()  # type: ignore[attr-defined]
 
     def is_alive(self) -> bool:
         return self._client.is_responsive()

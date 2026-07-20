@@ -2872,3 +2872,57 @@ def test_periodic_sweep_skips_protected_runtime_pid():
         assert f"1:{runtime_pid}" not in dead
     finally:
         unregister_protected_pid(runtime_pid)
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_scrubs_channel_creds_on_default_auto(monkeypatch):
+    """AcpRuntime.spawn strips gateway channel creds on the default auto tier.
+
+    Mirrors the AcpClient guard: the runtime copies a raw os.environ + wrap_argv
+    (not sandboxed_spawn_argv), and the default tier launcher does not strip
+    _AGENT_DENIED_ENV_KEYS, so scrub_agent_denied_env must remove them.
+    """
+    import kiro_crew.acp.runtime as runtime_mod
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "0000:FAKE-telegram")
+    monkeypatch.setenv("WECOM_BOT_ID", "FAKE-wecom-bot")
+    monkeypatch.setenv("WECOM_SECRET", "FAKE-wecom-secret")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-FAKE")
+    monkeypatch.setenv("KIROCREW_OWNER_ID", "U_FAKE_OWNER")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
+    monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+
+    captured: dict[str, object] = {}
+
+    class _StopSpawn(Exception):
+        pass
+
+    async def _fake_exec(*_args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        raise _StopSpawn()
+
+    monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin", lambda: "/fake/kiro")
+    monkeypatch.setattr(
+        runtime_mod, "wrap_argv", lambda argv, mode, strip_python_env=False: (argv, None)
+    )
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
+    monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    rt = AcpRuntime(sandbox_mode="auto")  # default tier
+    with pytest.raises(_StopSpawn):
+        await rt.spawn()
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    for key in (
+        "TELEGRAM_BOT_TOKEN",
+        "WECOM_BOT_ID",
+        "WECOM_SECRET",
+        "SLACK_BOT_TOKEN",
+        "KIROCREW_OWNER_ID",
+    ):
+        assert key not in env, f"{key} leaked into default-auto runtime child env"
+    assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
+    assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"

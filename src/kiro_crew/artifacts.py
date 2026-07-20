@@ -48,6 +48,15 @@ from typing import Any, Callable, Iterator
 from typing import List as _List
 
 from kiro_crew.config.loader import config_dir
+from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
+    WebAppArchitecture,
+    WebAppCost,
+    WebAppDeployTarget,
+    WebAppLifecycle,
+    WebAppMetadata,
+    WebAppTeardown,
+    webapp_metadata_from_dict,
+)
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
@@ -84,17 +93,28 @@ ALLOWED_KINDS = frozenset(
         "json",  # structured data
         "text",  # plain text
         "image",  # generated image (source_path points to PNG/JPEG)
+        "webapp",  # a deployed web application; rendered as an infra control card
     }
 )
 
 #: Allowed source markers (provenance).
-ALLOWED_SOURCES = frozenset({
-    # Provenance/creation buckets (back-compat) + actual session origins from
-    # ``infer_use_case`` so an artifact's source can reflect WHERE the saving
-    # session came from rather than a generic "manual".
-    "chat", "cron", "subagent", "manual", "import",
-    "dashboard", "slack", "cli", "task-runner", "unknown",
-})
+ALLOWED_SOURCES = frozenset(
+    {
+        # Provenance/creation buckets (back-compat) + actual session origins from
+        # ``infer_use_case`` so an artifact's source can reflect WHERE the saving
+        # session came from rather than a generic "manual".
+        "chat",
+        "cron",
+        "subagent",
+        "manual",
+        "import",
+        "dashboard",
+        "slack",
+        "cli",
+        "task-runner",
+        "unknown",
+    }
+)
 
 #: Allowed lifecycle event types. ``referenced`` is reserved for chat-mention
 #: scanning (added in a follow-up CR); the in-line save/update path emits
@@ -164,11 +184,15 @@ class ForkMetadata:
     so pull-latest and upstream linking work.
     """
 
-    upstream_artifact_id: str = ""  # Artifactory UUID of the source
+    upstream_artifact_id: str = ""  # provider-native id of the source
     upstream_url: str = ""  # stable view URL of the source
     upstream_owner: str = ""  # ownerAlias at fork time
     upstream_version: int = 0  # versionNumber at fork/last-pull time
     forked_at: str = ""  # ISO timestamp of initial fork
+    # Publish provider the fork originated from. Empty on records written before
+    # multi-provider support; readers fall back to DEFAULT_PROVIDER so legacy
+    # single-provider forks keep resolving their origin correctly.
+    upstream_provider: str = ""
 
 
 @dataclass
@@ -336,6 +360,10 @@ class Artifact:
     #: between the last snapshot and now (Mesh-1654 round 6, requested
     #: by nrb). Not persisted; set by ``get()``.
     live_dirty: bool = False
+    #: Structured metadata for ``kind="webapp"`` artifacts — a deployed application
+    #: (deploy target, architecture, lifecycle/TTL, cost estimate, teardown handle).
+    #: ``None`` for every other kind. Tolerant-loaded from meta.json.
+    webapp_metadata: "WebAppMetadata | None" = None
 
     def to_dict(self, *, include_content: bool = False, persist: bool = False) -> dict[str, Any]:
         """Render as a JSON-friendly dict, optionally including the content blob.
@@ -628,6 +656,7 @@ class ArtifactStore:
         source_path: str = "",
         folder_id: str = "",
         session_key: str = "",
+        webapp_metadata: "WebAppMetadata | None" = None,
     ) -> Artifact:
         """Persist a new artifact and return it.
 
@@ -675,6 +704,7 @@ class ArtifactStore:
                 folder_id=folder_id or "",
                 session_key=session_key[:256] if session_key else "",
                 version_kinds={"1": kind},
+                webapp_metadata=webapp_metadata,
             )
             # Lifecycle: emit `created` event. New artifacts are tagged
             # `events_backfilled=True` because their history starts here —
@@ -795,9 +825,7 @@ class ArtifactStore:
                         allowed.append(Path(extra).expanduser().resolve())
             except Exception:
                 pass
-            within_root = any(
-                p == r or p.is_relative_to(r) for r in allowed
-            )
+            within_root = any(p == r or p.is_relative_to(r) for r in allowed)
             if not within_root:
                 logger.warning(
                     "source_path %r resolved outside allowed roots; refusing read", source_path
@@ -857,9 +885,7 @@ class ArtifactStore:
                         allowed.append(Path(extra).expanduser().resolve())
             except Exception:
                 pass
-            within_root = any(
-                p == r or p.is_relative_to(r) for r in allowed
-            )
+            within_root = any(p == r or p.is_relative_to(r) for r in allowed)
             if not within_root:
                 logger.warning(
                     "source_path %r resolved outside allowed roots; refusing write",
@@ -886,6 +912,7 @@ class ArtifactStore:
         tags: list[str] | None = None,
         name: str | None = None,
         kind: str | None = None,
+        webapp_metadata: "WebAppMetadata | None" = None,
         actor: str = "user",
         session_id: str | None = None,
         event_type: str | None = None,
@@ -934,6 +961,8 @@ class ArtifactStore:
                 # alone does not bump the version; the per-version kind is
                 # recorded in the snapshot branch below when content changes.
                 art.kind = _validate_kind(kind)
+            if webapp_metadata is not None:
+                art.webapp_metadata = webapp_metadata
             art.updated_at = _now_iso()
 
             # Snapshot of current live state (no new content provided).
@@ -1053,6 +1082,47 @@ class ArtifactStore:
             self._write_meta(art)
             logger.info("artifact pin set: slug=%s pinned=%s", slug, art.pinned)
             return art
+
+    def mark_webapp_expired(self, slug: str) -> Artifact:
+        """Tombstone a kind="webapp" artifact: set lifecycle.status to "expired".
+
+        Used by the human-triggered teardown path. FU-6: also clears
+        ``lifecycle.expires_at`` and ``deploy_target.public_url`` so the card
+        cannot render a live-looking countdown or a dead public link next to
+        the Expired badge. Deploy history stays in the artifact's event feed.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            if art.kind != "webapp" or art.webapp_metadata is None:
+                raise ArtifactValidationError(
+                    f"artifact {slug!r} is not a webapp artifact; teardown does not apply"
+                )
+            art.webapp_metadata.lifecycle.status = "expired"
+            art.webapp_metadata.lifecycle.expires_at = None
+            if art.webapp_metadata.deploy_target is not None:
+                art.webapp_metadata.deploy_target.public_url = ""
+            art.updated_at = _now_iso()
+            self._write_meta(art)
+        self._fire_change("upsert", slug)
+        return art
+
+    def unmark_webapp_expired(self, slug: str) -> Artifact:
+        """Reverse a tombstone: restore lifecycle.status from "expired" to "live".
+
+        Used when teardown manifest-expiry fails for persistent deployments and
+        we need to keep the card's Tear down button available for retry.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            art = self._load_meta(slug)
+            if art.kind != "webapp" or art.webapp_metadata is None:
+                raise ArtifactValidationError(f"artifact {slug!r} is not a webapp artifact")
+            art.webapp_metadata.lifecycle.status = "live"
+            art.updated_at = _now_iso()
+            self._write_meta(art)
+        self._fire_change("upsert", slug)
+        return art
 
     def delete(self, slug: str) -> None:
         """Permanently delete an artifact and all of its versions."""
@@ -1260,7 +1330,9 @@ class ArtifactStore:
                 logger.info("migrate_kinds: flipped %s widget->markdown", art.slug)
         return changed
 
-    def find_by_artifact_id(self, artifact_id: str) -> Artifact | None:
+    def find_by_artifact_id(
+        self, artifact_id: str, *, provider: str | None = None
+    ) -> Artifact | None:
         """Locate the local artifact linked to a cloud ``artifact_id``.
 
         Matches either a ``publication`` (my push target) or ``fork_metadata``
@@ -1270,11 +1342,32 @@ class ArtifactStore:
         a second local copy of an artifact already tracked locally). Returns
         None when no local artifact tracks this id.
 
+        Provider-native ids are NOT globally unique — providers A and B may both
+        expose id ``123``. When *provider* is given, a candidate matches only if
+        its own recorded provider equals *provider*; a record that predates
+        multi-provider tracking (empty provider) still matches as a legacy
+        fallback so old single-provider forks/publications keep resolving. When
+        *provider* is None the match is id-only (callers that genuinely don't
+        know the provider).
+
         Like ``find_by_source_path``, the scan runs outside the lock — atomic
         meta.json writes make stale-but-valid snapshots harmless.
         """
         if not artifact_id:
             return None
+
+        from kiro_crew.publish_provider import DEFAULT_PROVIDER
+
+        def _provider_ok(rec_provider: str) -> bool:
+            # No provider filter → id-only match. Exact provider match → ok.
+            # A legacy record with NO provider recorded originated from the
+            # default provider, so it may only satisfy a request for that same
+            # default provider — NOT an arbitrary provider B (which would let
+            # provider B's clone bind an unrelated legacy artifact sharing the id).
+            if provider is None or rec_provider == provider:
+                return True
+            return not rec_provider and provider == DEFAULT_PROVIDER
+
         with self._lock:
             meta_paths = list(self._iter_meta_paths())
         for meta_path in meta_paths:
@@ -1288,14 +1381,80 @@ class ArtifactStore:
                 TypeError,
             ):
                 continue
-            if art.publication is not None and art.publication.artifact_id == artifact_id:
+            if (
+                art.publication is not None
+                and art.publication.artifact_id == artifact_id
+                and _provider_ok(art.publication.provider)
+            ):
                 return art
             if (
                 art.fork_metadata is not None
                 and art.fork_metadata.upstream_artifact_id == artifact_id
+                and _provider_ok(art.fork_metadata.upstream_provider)
             ):
                 return art
         return None
+
+    @staticmethod
+    def artifact_index_key(provider: str, artifact_id: str) -> str:
+        """Compound index key for :meth:`index_by_artifact_id` lookups.
+
+        Provider-native ids collide across providers, so the browse-annotation
+        index is keyed by ``provider\\x00artifact_id``. A NUL separator can't
+        appear in a provider name or id, so the key is unambiguous."""
+        return f"{provider}\x00{artifact_id}"
+
+    def index_by_artifact_id(self) -> dict[str, str]:
+        """Build a ``{key: local_slug}`` map in a SINGLE store scan.
+
+        The batch counterpart to :meth:`find_by_artifact_id` — annotating a
+        browse page of N rows with per-row ``find_by_artifact_id`` is O(N × store)
+        (a fresh full scan + meta.json parse per row); this pays one scan total.
+        Each local artifact contributes its ``publication.artifact_id`` (my push
+        target) and/or ``fork_metadata.upstream_artifact_id`` (forked-from origin).
+
+        Keys are **provider-namespaced** via :meth:`artifact_index_key`
+        (``provider\\x00id``) because provider-native ids are not globally
+        unique — keying on the bare id would let a browse against provider B
+        annotate provider A's local copy. A bare-id key is ALSO emitted (legacy
+        fallback) so a lookup for a record that predates provider tracking still
+        resolves. On collision the newest-first ``list()`` order wins.
+
+        Scan runs outside the lock like ``list()`` — atomic meta.json writes
+        make a stale-but-valid snapshot harmless.
+        """
+        index: dict[str, str] = {}
+        with self._lock:
+            meta_paths = list(self._iter_meta_paths())
+        for meta_path in meta_paths:
+            try:
+                art = self._read_meta_file(meta_path)
+            except (
+                ArtifactError,
+                OSError,
+                json.JSONDecodeError,
+                ValueError,
+                TypeError,
+            ):
+                continue
+            pub = art.publication
+            if pub is not None and pub.artifact_id:
+                index.setdefault(self.artifact_index_key(pub.provider, pub.artifact_id), art.slug)
+                # Bare-id key ONLY for a legacy record with no provider recorded.
+                # Emitting it for every record would let a browse against provider
+                # B fall back to provider A's slug on a shared id, wrongly marking
+                # B's artifact as already-local and hiding its clone/fork action.
+                if not pub.provider:
+                    index.setdefault(pub.artifact_id, art.slug)
+            fm = art.fork_metadata
+            if fm is not None and fm.upstream_artifact_id:
+                index.setdefault(
+                    self.artifact_index_key(fm.upstream_provider, fm.upstream_artifact_id),
+                    art.slug,
+                )
+                if not fm.upstream_provider:  # legacy bare-id fallback only
+                    index.setdefault(fm.upstream_artifact_id, art.slug)
+        return index
 
     def find_by_source_path(self, source_path: str) -> Artifact | None:
         """Locate an existing artifact previously saved from this filesystem path.
@@ -1388,6 +1547,7 @@ class ArtifactStore:
             "upstream_owner": str,
             "upstream_version": int,
             "forked_at": str,
+            "upstream_provider": str,
         }
         with self._lock:
             art = self._load_meta(slug)
@@ -1932,6 +2092,7 @@ class ArtifactStore:
             publication=publication,
             fork_metadata=fork_metadata,
             version_kinds=version_kinds,
+            webapp_metadata=webapp_metadata_from_dict(raw.get("webapp_metadata")),
         )
 
     @staticmethod
@@ -2008,6 +2169,7 @@ class ArtifactStore:
             upstream_owner=str(raw_fm.get("upstream_owner") or ""),
             upstream_version=upstream_version,
             forked_at=str(raw_fm.get("forked_at") or ""),
+            upstream_provider=str(raw_fm.get("upstream_provider") or ""),
         )
 
     def _read_text(self, path: Path) -> str:

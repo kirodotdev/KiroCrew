@@ -54,7 +54,7 @@ from kiro_crew.hooks import (
     safe_read_file_bytes,
     validate_file_path,
 )
-from kiro_crew.llm_helpers import save_conversation_turn
+from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
@@ -179,7 +179,9 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         # reasoning whose only break is a newline still cuts cleanly instead of
         # falling through to the hard cut.
         boundaries = list(re.finditer(r"\s", text[:limit]))
-        cut = boundaries[-1].start() if boundaries and boundaries[-1].start() >= limit // 2 else limit
+        cut = (
+            boundaries[-1].start() if boundaries and boundaries[-1].start() >= limit // 2 else limit
+        )
         text = text[:cut].rstrip()
         truncated = True
     quoted = "\n".join(f"> {ln}" if ln.strip() else ">" for ln in text.splitlines())
@@ -743,9 +745,7 @@ async def maybe_apply_privacy_modifiers(
     """
     cmd_stripped, had_temporary = _strip_temporary_token(cmd_text)
     if had_temporary:
-        await _apply_temporary_modifier(
-            session_key, user_id, channel, slack, sessions, reply_ts
-        )
+        await _apply_temporary_modifier(session_key, user_id, channel, slack, sessions, reply_ts)
         cmd_text = cmd_stripped
         text = _TEMPORARY_TOKEN_RE.sub("", text)
         text = " ".join(text.split()) or text  # collapse whitespace
@@ -755,9 +755,7 @@ async def maybe_apply_privacy_modifiers(
 
     cmd_stripped, had_incognito = _strip_incognito_token(cmd_text)
     if had_incognito:
-        await _apply_incognito_modifier(
-            session_key, user_id, channel, slack, sessions, reply_ts
-        )
+        await _apply_incognito_modifier(session_key, user_id, channel, slack, sessions, reply_ts)
         cmd_text = cmd_stripped
         text = _INCOGNITO_TOKEN_RE.sub("", text)
         text = " ".join(text.split()) or text
@@ -969,7 +967,7 @@ def _iter_cc_agent_names(cc_plugins_dir: Path | None = None) -> Iterator[str]:
             content = raw.decode("utf-8")
             if not content.startswith("---"):
                 continue
-            frontmatter = content[3:content.index("---", 3)]
+            frontmatter = content[3 : content.index("---", 3)]
             name_match = _CC_AGENT_NAME_RE.search(frontmatter)
             if not name_match:
                 continue
@@ -1007,11 +1005,7 @@ def _list_all_agent_names(cc_plugins_dir: Path | None = None) -> str:
     if agents_dir.is_dir():
         # Hide the internal kirocrew-lite variant from BOTH sources — a
         # ~/.kiro/agents/kirocrew-lite.json would otherwise leak into the list.
-        names.extend(
-            f.stem
-            for f in sorted(agents_dir.glob("*.json"))
-            if f.stem != "kirocrew-lite"
-        )
+        names.extend(f.stem for f in sorted(agents_dir.glob("*.json")) if f.stem != "kirocrew-lite")
     seen = set(names)
     for agent_name in _iter_cc_agent_names(cc_plugins_dir):
         if agent_name not in seen and agent_name != "kirocrew-lite":
@@ -2844,9 +2838,7 @@ async def handle_message(
         # (no reasoning this turn) is cleaned up at end of turn.
         if _show_thinking and thinking_ts is None:
             try:
-                thinking_ts = await slack.post_message(
-                    channel, _THINKING_PLACEHOLDER, reply_ts
-                )
+                thinking_ts = await slack.post_message(channel, _THINKING_PLACEHOLDER, reply_ts)
             except Exception:
                 logger.debug("Failed to reserve thinking slot", exc_info=True)
         stream_ts = await slack.start_stream(
@@ -3076,7 +3068,9 @@ async def handle_message(
                     else:
                         assert stream_ts is not None
                         if channel_activation != ACTIVATION_REVIEW:
-                            await _safe_update(slack, channel, stream_ts, redact(accumulated) + _CURSOR)
+                            await _safe_update(
+                                slack, channel, stream_ts, redact(accumulated) + _CURSOR
+                            )
                     last_edit = now
 
             elif event.kind == EVENT_THINKING_CHUNK:
@@ -3153,7 +3147,9 @@ async def handle_message(
                     if _active_task_id:
                         _elapsed = _tool_elapsed_str()
                         _cancel_tool_timer()
-                        _ct = f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
+                        _ct = (
+                            f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
+                        )
                         await _append_task(_active_task_id, _ct, "complete")
                     _task_counter += 1
                     _active_task_id = f"tool_{_task_counter}"
@@ -3182,7 +3178,9 @@ async def handle_message(
                     if _active_task_id:
                         _elapsed = _tool_elapsed_str()
                         _cancel_tool_timer()
-                        _ct = f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
+                        _ct = (
+                            f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
+                        )
                         await _append_task(_active_task_id, _ct, "complete")
                         _active_task_id = ""
                     await slack.stop_stream(channel, stream_ts)
@@ -3353,6 +3351,9 @@ async def handle_message(
             task.complete()
             sessions.record_success(session_key)
             Stats().inc_message_success()
+            # Per-interaction telemetry (PlatformContext seam) — shared helper so
+            # the payload shape and model reflection cannot drift across surfaces.
+            record_interaction_event(client, session_key, "slack")
 
         # Check context usage — fires background compaction at configured threshold, never blocks
         sessions.check_context_usage(session_key, client)

@@ -24,7 +24,7 @@ from kiro_crew.apps.hooks_integration import (
     on_gateway_shutdown,
     on_gateway_startup,
 )
-from kiro_crew.apps.manager import register_builtin_apps
+from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.browser.setup import (
     get_extension_token,
     has_playwright_extension,
@@ -64,9 +64,11 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_folders,
     api_artifact_mark_review,
     api_artifact_materialize,
+    api_artifact_overwrite_remote,
     api_artifact_post_comment,
     api_artifact_publish,
     api_artifact_publish_providers,
+    api_artifact_pull_latest,
     api_artifact_record_event,
     api_artifact_refresh_sharing,
     api_artifact_relocate,
@@ -79,10 +81,14 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_unpublish,
     api_artifact_update,
     api_artifact_update_sharing,
+    api_artifact_upstream_status,
     api_artifact_version_detail,
     api_artifact_versions,
     api_artifacts_create,
     api_artifacts_list,
+    api_remote_artifacts_browse,
+    api_remote_artifacts_clone,
+    api_remote_artifacts_fork,
 )
 from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_logout,
@@ -116,6 +122,8 @@ from kiro_crew.dashboard.token_auth import (
     _is_spa_shell_request,
     token_auth_middleware,
 )
+from kiro_crew.deploy import _register_core_skills as _register_deploy_skills
+from kiro_crew.deploy.handlers import register_routes as _register_deploy_routes
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances.registry import InstancesRegistry
@@ -212,7 +220,12 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # entry above — without this entry those MCP calls fall through to
         # cookie auth and fail with "Token required".
         "/api/artifact-folders",
+        # Provider-routed remote-artifact browse/clone/fork. Same auth model
+        # as "/api/artifacts": browser cookie auth + internal-secret callers;
+        # prefix covers every /api/remote-artifacts/{provider}/... sub-route.
+        "/api/remote-artifacts",
         "/api/workflows",  # DW engine: MCP tools + Workflows tab polling
+        "/api/deploy",  # MCP deploy_artifact tool — server enforces preview-only (confirm/override_scan stripped for internal-secret callers)
         "/v1/chat/completions",  # OpenAI-compat API
     }
 )
@@ -258,9 +271,7 @@ _IMMUTABLE_PATH_PREFIXES = ("/assets/",)
 _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 
-def _apply_security_headers(
-    resp: web.StreamResponse, app: web.Application, path: str = ""
-) -> None:
+def _apply_security_headers(resp: web.StreamResponse, app: web.Application, path: str = "") -> None:
     """Apply cache-control and security headers to a dashboard response.
 
     Sets four groups of headers (all via ``setdefault`` so handlers keep
@@ -504,6 +515,20 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/artifacts/{slug}/publish/refresh", api_artifact_refresh_sharing)
     app.router.add_patch("/api/artifacts/{slug}/sharing", api_artifact_update_sharing)
     app.router.add_patch("/api/artifacts/{slug}/relocate", api_artifact_relocate)
+    # Upstream sync (fork/publication lineage) — pull / status / overwrite
+    app.router.add_post("/api/artifacts/{slug}/pull-latest", api_artifact_pull_latest)
+    app.router.add_get("/api/artifacts/{slug}/upstream-status", api_artifact_upstream_status)
+    app.router.add_post("/api/artifacts/{slug}/overwrite-remote", api_artifact_overwrite_remote)
+    # Remote artifacts — provider-routed browse / clone / fork. Inert in the
+    # public edition (empty provider registry -> 404); a companion registers
+    # providers via the CPP publish seam.
+    app.router.add_get("/api/remote-artifacts/{provider}/browse", api_remote_artifacts_browse)
+    # external_id travels in the JSON body, NOT a path segment: provider-native
+    # ids can contain "/" (e.g. Artifactory repo paths), which a single
+    # {external_id} segment cannot carry — the router decodes a percent-encoded
+    # slash before matching and 404s. Body transport is slash-safe.
+    app.router.add_post("/api/remote-artifacts/{provider}/clone", api_remote_artifacts_clone)
+    app.router.add_post("/api/remote-artifacts/{provider}/fork", api_remote_artifacts_fork)
 
     # Artifact folders (Mesh-2720). ``/api/artifact-folders`` (hyphen) never
     # collides with the ``/api/artifacts/{slug}`` dynamic route.
@@ -1306,9 +1331,7 @@ async def start_dashboard(
     app.router.add_get(
         "/api/taskrunner/{task_id}/plan-context", handlers.api_taskrunner_plan_context
     )
-    app.router.add_get(
-        "/api/taskrunner/{task_id}/plan.yaml", handlers.api_taskrunner_export_yaml
-    )
+    app.router.add_get("/api/taskrunner/{task_id}/plan.yaml", handlers.api_taskrunner_export_yaml)
     app.router.add_put("/api/taskrunner/{task_id}/plan", handlers.api_taskrunner_update_plan)
     app.router.add_post("/api/taskrunner/{task_id}/execute", handlers.api_taskrunner_execute_plan)
     app.router.add_post("/api/reveal", handlers.api_reveal_path)
@@ -1491,6 +1514,32 @@ async def start_dashboard(
 
     # Register built-in apps (idempotent — surfaces baked-in features in App Store)
     register_builtin_apps()
+
+    # One-time migration: disable stale deploy_web builtin installs (now core module).
+    # Idempotent — logs once and silently succeeds if already gone.
+    # R34 F1: the cleanup reads/deletes files under the data dir — run it off
+    # the event loop so wedged filesystem I/O cannot block gateway startup.
+    from kiro_crew.apps.builtins import _MIGRATED_BUILTINS
+
+    def _run_migrated_cleanup() -> None:
+        for _migrated in _MIGRATED_BUILTINS:
+            try:
+                _result = cleanup_migrated_builtin(_migrated)
+                if not _result.ok:
+                    logger.warning("migrated builtin cleanup failed for %s: %s", _migrated, _result.error)
+                elif _result.message and "cleaned up" in _result.message:
+                    logger.info("migrated builtin cleanup: %s — %s", _migrated, _result.message)
+            except Exception:  # noqa: BLE001
+                logger.debug("migrated builtin cleanup skipped for %s", _migrated)
+
+    await asyncio.to_thread(_run_migrated_cleanup)
+
+    # Core deploy module routes (folded from deploy_web app)
+    _register_deploy_routes(app)
+
+    # Core deploy skills — symlink into <home>/skills/ so the agent can load them.
+    # Offloaded: copytree/rmtree/stat are blocking filesystem calls.
+    await asyncio.to_thread(_register_deploy_skills)
 
     # Knowledge Library
     setup_knowledge_routes(app)
@@ -2165,6 +2214,10 @@ async def start_api_server(
     ]
 
     _register_mcp_routes(app)
+
+    # R16 F6: Deploy routes must be registered in api-only mode too, otherwise
+    # the deploy_artifact MCP tool 404s in Slack-only/headless mode.
+    _register_deploy_routes(app)
 
     runner = web.AppRunner(app)
     await runner.setup()

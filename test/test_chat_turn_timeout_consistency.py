@@ -9,7 +9,7 @@ cron injection path (handlers/messaging.py), the Slack/dashboard nudge path
 (slack/gateway.py:_deliver_script_result) remained unwrapped — depending on
 the inner ACP _DEFAULT_PROMPT_TIMEOUT (7200s) instead.
 
-This module verifies the cap value is correct AND that all seven dispatch
+This module verifies the cap value is correct AND that all eight dispatch
 sites in the source tree are wrapped with ``asyncio.wait_for(...,
 timeout=CHAT_TURN_TIMEOUT)``.
 
@@ -172,12 +172,13 @@ def test_every_run_chat_dispatch_uses_chat_turn_timeout() -> None:
 
 
 def test_dispatch_site_count_matches_expectation() -> None:
-    """Pin the expected number of ``_run_chat`` dispatch sites at 7.
+    """Pin the expected number of ``_run_chat`` dispatch sites at 8.
 
-    The CR description enumerates exactly seven sites. If a new dispatch lands
-    (or one is removed), this test fails loudly so the contributor updates
-    the CR description, the spec doc (``learn-cron-dashboard.md``), and the
-    other tests in this module.
+    The CR description enumerates the sites (the eighth is the post-fan-out
+    synthesis turn in ``chat_runner.py``). If a new dispatch lands (or one is
+    removed), this test fails loudly so the contributor updates the CR
+    description, the spec doc (``learn-cron-dashboard.md``), and the other
+    tests in this module.
 
     Without this check, a new wrapped dispatch site would silently slip past
     review — the static guards above only fire on *missing* wraps, not on
@@ -192,8 +193,8 @@ def test_dispatch_site_count_matches_expectation() -> None:
             if "_run_chat(" in body:
                 total += 1
 
-    assert total == 7, (
-        f"Expected 7 _run_chat dispatch sites, found {total}.  "
+    assert total == 8, (
+        f"Expected 8 _run_chat dispatch sites, found {total}.  "
         "If you added or removed one, update:\n"
         "  - the CR description / Mesh ticket\n"
         "  - docs/system-specs/modules/learn-cron-dashboard.md (Per-turn timeout section)\n"

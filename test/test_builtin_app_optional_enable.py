@@ -373,20 +373,35 @@ class TestValidateBuiltinApp:
             assert errors == [], f"{app_data['name']} failed validation: {errors}"
 
     def test_all_builtins_default_disabled(self):
-        """Every shipped builtin app defaults to disabled (opt-in via App Store).
+        """Builtin apps default to disabled (opt-in via App Store), except for a
+        small, explicit allowlist of core surfaces we intentionally ship enabled.
 
         Builtin apps are hidden on a fresh install so the sidebar stays minimal;
-        users enable the ones they want from the Browse tab. Each entry must set
-        ``defaultEnabled: False`` explicitly rather than relying on the field's
-        backward-compat default of True.
+        users enable the ones they want from the Browse tab. Entries not on the
+        intentional default-on allowlist must set ``defaultEnabled: False``
+        explicitly rather than relying on the field's backward-compat default of
+        True. Adding an app to the allowlist is a deliberate product decision —
+        keep it small and update this test in the same change.
         """
         import kiro_crew.apps.manager as mgr
 
+        # Core surfaces intentionally enabled on a fresh install. A default-on
+        # builtin still honors the ``apps`` governance allowlist at registration
+        # (see test_default_enabled_builtin_respects_governance_deny).
+        intentionally_default_on = {"projects"}  # Task Runner
+
         for app_data in mgr._BUILTIN_APPS:
-            assert app_data.get("defaultEnabled") is False, (
-                f"{app_data['name']} must ship with defaultEnabled=False "
-                f"(got {app_data.get('defaultEnabled')!r})"
-            )
+            name = app_data["name"]
+            if name in intentionally_default_on:
+                assert app_data.get("defaultEnabled") is True, (
+                    f"{name} is on the intentional default-on allowlist but does "
+                    f"not set defaultEnabled=True (got {app_data.get('defaultEnabled')!r})"
+                )
+            else:
+                assert app_data.get("defaultEnabled") is False, (
+                    f"{name} must ship with defaultEnabled=False "
+                    f"(got {app_data.get('defaultEnabled')!r})"
+                )
 
     def test_all_file_based_builtins_default_disabled(self):
         """File-based builtin apps (apps/builtins/*/app.json) also default to disabled.
@@ -403,6 +418,56 @@ class TestValidateBuiltinApp:
                 f"{app_data['name']} (file-based builtin) must ship with "
                 f"defaultEnabled=False (got {app_data.get('defaultEnabled')!r})"
             )
+
+    def test_default_enabled_builtin_respects_governance_deny(self, app_home, monkeypatch):
+        """A default-enabled builtin still honors the ``apps`` allowlist.
+
+        register_builtin_apps() persists a default-enabled app on first
+        registration without routing through enable_app(), so it must re-apply
+        the same ``_app_activation_denied`` gate — otherwise a host deny-by-default
+        policy would be bypassed for default-on apps. When governance denies the
+        app, it must register DISABLED.
+        """
+        import kiro_crew.apps.manager as mgr
+
+        monkeypatch.setattr(mgr, "_app_activation_denied", lambda name: "denied by policy")
+        monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
+            "name": "gov-denied-default-on",
+            "version": "1.0.0",
+            "displayName": "Governed",
+            "description": "Default-on app that governance denies",
+            "author": "kirocrew",
+            "defaultEnabled": True,
+        }])
+        monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+
+        register_builtin_apps()
+
+        meta = _read_installed("gov-denied-default-on")
+        assert meta is not None
+        assert meta.enabled is False, "governance-denied default-on builtin must register disabled"
+
+    def test_default_enabled_builtin_enabled_when_governance_permits(self, app_home, monkeypatch):
+        """When governance permits (the common case), a default-enabled builtin
+        registers enabled — the gate is a no-op absent a deny policy."""
+        import kiro_crew.apps.manager as mgr
+
+        monkeypatch.setattr(mgr, "_app_activation_denied", lambda name: None)
+        monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
+            "name": "gov-ok-default-on",
+            "version": "1.0.0",
+            "displayName": "Permitted",
+            "description": "Default-on app that governance permits",
+            "author": "kirocrew",
+            "defaultEnabled": True,
+        }])
+        monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+
+        register_builtin_apps()
+
+        meta = _read_installed("gov-ok-default-on")
+        assert meta is not None
+        assert meta.enabled is True
 
 
 # ---------------------------------------------------------------------------

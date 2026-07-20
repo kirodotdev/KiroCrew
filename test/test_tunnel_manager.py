@@ -315,3 +315,267 @@ class TestLoaderEdgeCases:
             cfg = KiroCrewConfig.load()
         assert cfg.tunnel.enabled is False
         assert cfg.tunnel.name_mode == "username"
+
+
+# ── Seam delegation: a companion-style TunnelProvider drives the manager ──
+
+
+class _FakeTunnelProvider:
+    """A stand-in companion provider that records the seam calls.
+
+    ``enabled()`` returns True so the manager treats it as an active tunnel
+    (skipping the OSS-disabled notice); ``start`` fires the registered
+    ``on_connect`` callback with its public URL to mimic a real connect.
+    """
+
+    def __init__(self, url: str = "https://companion.tunnels.example") -> None:
+        self._url = url
+        self.started = 0
+        self.stopped = 0
+        self._on_connect = None
+        self._on_disconnect = None
+
+    def register_callbacks(self, *, on_connect=None, on_disconnect=None) -> None:
+        self._on_connect = on_connect
+        self._on_disconnect = on_disconnect
+
+    async def start(self) -> None:
+        self.started += 1
+        if self._on_connect is not None:
+            await self._on_connect(self._url)
+
+    async def stop(self) -> None:
+        self.stopped += 1
+        if self._on_disconnect is not None:
+            await self._on_disconnect()
+
+    def public_url(self) -> str:
+        return self._url
+
+    def enabled(self) -> bool:
+        return True
+
+    def status_snapshot(self):
+        return {
+            "state": "connected",
+            "url": self._url,
+            "connected_at": 1000.0,
+            "reconnect_attempt": 2,
+        }
+
+
+def _install_tunnel_provider(provider):
+    """Install a PlatformContext whose ``tunnel`` field is *provider*.
+
+    The autouse ``_reset_platform_context`` fixture resets the context after the
+    test, so this leaks nothing.
+    """
+    import dataclasses
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import build_default_context, set_context
+
+    ctx = build_default_context(KiroCrewConfig())
+    set_context(dataclasses.replace(ctx, tunnel=provider))
+    return provider
+
+
+class TestTunnelProviderDelegation:
+    @pytest.mark.asyncio
+    async def test_start_stop_delegate_to_provider(self):
+        """start()/stop() call through to the active provider unconditionally."""
+        provider = _install_tunnel_provider(_FakeTunnelProvider())
+        mgr = TunnelManager(port=5476)
+
+        await mgr.start()
+        assert provider.started == 1
+
+        await mgr.stop()
+        assert provider.stopped == 1
+
+    @pytest.mark.asyncio
+    async def test_public_url_flows_from_provider(self):
+        """The manager's public_url reflects the provider's live URL."""
+        _install_tunnel_provider(_FakeTunnelProvider("https://gsanc.tunnels.example"))
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        assert mgr.public_url == "https://gsanc.tunnels.example"
+
+    @pytest.mark.asyncio
+    async def test_status_reflects_provider_snapshot(self):
+        """status_snapshot() from the provider projects onto TunnelStatus."""
+        _install_tunnel_provider(_FakeTunnelProvider("https://snap.tunnels.example"))
+        mgr = TunnelManager(port=5476)
+        status = mgr.status
+        assert status.state == TunnelState.CONNECTED
+        assert status.url == "https://snap.tunnels.example"
+        assert status.reconnect_attempt == 2
+
+    @pytest.mark.asyncio
+    async def test_default_provider_status_is_local_and_disabled(self):
+        """With the Default provider, status stays local + disabled (unchanged)."""
+        # No provider installed → the standalone Default composes lazily.
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        assert mgr.state == TunnelState.DISABLED
+        assert mgr.status.error == "not available in OSS"
+        assert mgr.public_url == ""
+
+    @pytest.mark.asyncio
+    async def test_stop_wins_over_stale_snapshot(self):
+        """An explicit stop() pins STOPPED even if the provider snapshot lags.
+
+        The fake provider keeps returning a "connected" snapshot after stop();
+        the local STOPPED write must win so /api/tunnel/status does not report a
+        live tunnel with a URL after teardown.
+        """
+        provider = _install_tunnel_provider(_FakeTunnelProvider())
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        assert mgr.status.state == TunnelState.CONNECTED  # snapshot flows pre-stop
+
+        await mgr.stop()
+        assert provider.stopped == 1
+        # Provider snapshot still says "connected", but STOPPED must win.
+        assert mgr.status.state == TunnelState.STOPPED
+        assert mgr.status.url == ""
+        assert mgr.public_url == ""
+
+    @pytest.mark.asyncio
+    async def test_stop_failure_does_not_pin_stopped(self):
+        """If the provider's stop() RAISES, the tunnel may still be reachable —
+        the manager must NOT pin STOPPED (which would hide a live URL); it
+        surfaces an error and lets the live snapshot flow instead."""
+
+        class _FailStopProvider(_FakeTunnelProvider):
+            async def stop(self) -> None:
+                raise RuntimeError("provider stop boom")
+
+        _install_tunnel_provider(_FailStopProvider())
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        assert mgr.status.state == TunnelState.CONNECTED
+
+        await mgr.stop()
+        # Not pinned STOPPED — the provider's still-connected snapshot keeps
+        # flowing (the tunnel may still be up), so the dashboard doesn't wrongly
+        # hide a live tunnel + URL after a failed teardown.
+        assert mgr.status.state == TunnelState.CONNECTED
+        assert mgr.public_url == "https://companion.tunnels.example"
+
+    @pytest.mark.asyncio
+    async def test_start_after_stop_unpins_and_snapshot_flows_again(self):
+        """A fresh start() clears the STOPPED pin so the snapshot flows again."""
+        _install_tunnel_provider(_FakeTunnelProvider("https://again.tunnels.example"))
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        await mgr.stop()
+        assert mgr.status.state == TunnelState.STOPPED
+
+        await mgr.start()
+        assert mgr.status.state == TunnelState.CONNECTED
+        assert mgr.status.url == "https://again.tunnels.example"
+
+    @pytest.mark.asyncio
+    async def test_snapshot_failure_does_not_leave_stale_connected(self):
+        """When status_snapshot() later raises, status must not report a stale
+        connected tunnel from a prior snapshot."""
+        provider = _install_tunnel_provider(_FakeTunnelProvider("https://old.example"))
+        mgr = TunnelManager(port=5476)
+        assert mgr.status.state == TunnelState.CONNECTED  # first snapshot flows
+
+        def _boom():
+            raise RuntimeError("provider unreachable")
+
+        provider.status_snapshot = _boom  # type: ignore[assignment]
+        # safe_context_call degrades to None → fall back to local status, which
+        # was never contaminated by the earlier snapshot (fresh projection).
+        assert mgr.status.state == TunnelState.DISABLED
+        assert mgr.status.url == ""
+
+    @pytest.mark.asyncio
+    async def test_snapshot_omitting_key_resets_stale_field(self):
+        """A later snapshot that omits a previously-set key (error/url) resets it
+        to default rather than retaining the stale value."""
+        provider = _install_tunnel_provider(_FakeTunnelProvider())
+        mgr = TunnelManager(port=5476)
+
+        provider.status_snapshot = lambda: {  # type: ignore[assignment]
+            "state": "error",
+            "error": "boom",
+        }
+        assert mgr.status.state == TunnelState.ERROR
+        assert mgr.status.error == "boom"
+
+        provider.status_snapshot = lambda: {  # type: ignore[assignment]
+            "state": "connected",
+            "url": "https://new.example",
+        }
+        status = mgr.status
+        assert status.state == TunnelState.CONNECTED
+        assert status.url == "https://new.example"
+        assert status.error == ""  # stale "boom" must not persist
+
+    @pytest.mark.asyncio
+    async def test_public_url_empty_while_reconnecting(self):
+        """public_url returns "" when the provider is not CONNECTED even if it
+        still exposes a last-known URL (guard mirrors the pre-seam stub)."""
+        provider = _install_tunnel_provider(_FakeTunnelProvider("https://last.example"))
+        mgr = TunnelManager(port=5476)
+        provider.status_snapshot = lambda: {  # type: ignore[assignment]
+            "state": "reconnecting",
+            "url": "https://last.example",
+        }
+        assert mgr.status.state == TunnelState.RECONNECTING
+        assert mgr.public_url == ""
+
+
+class TestSetupTunnelThroughProvider:
+    @pytest.mark.asyncio
+    async def test_provider_start_called_when_token_auth_present(self):
+        """setup_tunnel drives the installed provider's start via TunnelManager."""
+        from kiro_crew.tunnel import get_tunnel_url, set_tunnel_url
+        from kiro_crew.tunnel.setup import setup_tunnel
+
+        set_tunnel_url("")
+        provider = _install_tunnel_provider(_FakeTunnelProvider("https://flow.tunnels.example"))
+        allowed_origins: set = set()
+        mw = MagicMock()
+        mw._is_token_auth = True
+
+        result = await setup_tunnel(
+            middlewares=[mw],
+            allowed_origins=allowed_origins,
+            tunnel_name_mode="username",
+            tunnel_name_override="",
+            port=5476,
+            log_api_access=MagicMock(),
+        )
+
+        assert result is not None
+        assert provider.started == 1
+        # public_url flowed into set_tunnel_url + the CORS allow-list. Compare by
+        # exact set membership (not a substring/`in` scan) so the origin is
+        # matched whole.
+        assert allowed_origins == {"https://flow.tunnels.example"}
+        assert get_tunnel_url() == "https://flow.tunnels.example"
+        set_tunnel_url("")
+
+    @pytest.mark.asyncio
+    async def test_provider_start_not_called_without_token_auth(self):
+        """The token-auth deny gate is evaluated BEFORE provider.start()."""
+        from kiro_crew.tunnel.setup import setup_tunnel
+
+        provider = _install_tunnel_provider(_FakeTunnelProvider())
+
+        result = await setup_tunnel(
+            middlewares=[],  # no token auth
+            allowed_origins=set(),
+            tunnel_name_mode="username",
+            tunnel_name_override="",
+            port=5476,
+            log_api_access=MagicMock(),
+        )
+
+        assert result is None
+        assert provider.started == 0

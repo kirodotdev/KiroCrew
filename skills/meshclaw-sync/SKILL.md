@@ -2,7 +2,7 @@
 name: meshclaw-sync
 description: How to sync fixes from the upstream MeshClaw mainline into this de-Amazoned KiroCrew fork. Use for porting commits, upstream sync, picking fixes from MeshClaw, daily merge, cherry-pick from internal.
 always: false
-triggers: meshclaw, upstream, sync, port, cherry-pick, mainline, internal fork, de-amazon, deamazon, pick fixes, merge upstream
+triggers: meshclaw, upstream, sync, port, cherry-pick, mainline, internal fork, de-amazon, deamazon, pick fixes, merge upstream, extract, governance seam, cpp, companion, route through seam
 ---
 # Syncing fixes from MeshClaw → KiroCrew
 
@@ -80,10 +80,19 @@ For each candidate in either repo, get the touched files: `git show --stat <sha>
 the backend v2.6.0 release merge `72301c08`; that is history — the state file is
 the live boundary.)
 
-## Step 2 — Triage each commit (KEEP vs SKIP)
+## Step 2 — Triage each commit (KEEP / EXTRACT / PARTIAL / SKIP)
+
+> **Before SKIP-ing an Amazon coupling, ask: is there a reusable mechanism to
+> EXTRACT?** Since the CPP `platform/` seam exists, an "internal-only" commit is
+> often really a *generic mechanism* wired to an Amazon behavior. The mechanism
+> is fork-side core; only the behavior is companion-side. That is an **EXTRACT**
+> (see below), not a SKIP. The 2026-07-18 governance-seam re-triage flipped ~10
+> such rows from `SKIP_INTERNAL` → `EXTRACT`; `left-out.md` → "Governance-seam
+> re-triage" is the worked record. Reach for SKIP only after EXTRACT is ruled out.
 
 **SKIP** — anything that only touches Amazon-internal subsystems the fork
-removed or stubbed. These have no public-fork equivalent:
+removed or stubbed AND exposes no reusable mechanism worth an EXTRACT. These
+have no public-fork equivalent:
 
 | Internal subsystem | Why skip |
 |---|---|
@@ -140,8 +149,43 @@ old "copy the allowlist verbatim" guidance.
 gateway + dashboard, security controls (deny patterns, redaction, trust
 matching), token auth, model handling. These are the daily bread of a sync.
 
-**PARTIAL** — a commit that mixes both. Port only the generic hunks; drop the
-internal ones. Examples:
+**EXTRACT** — a commit whose Amazon-specific behavior rides on a **reusable
+mechanism** that belongs in the public core. Land the mechanism in core behind a
+`Default*` no-op adapter (so standalone behavior is byte-identical), and let the
+companion adapter supply the Amazon behavior. This is the seam-routing verdict:
+it turns a would-be SKIP into a generic-core landing without importing anything
+internal. Rules (from the 2026-07-18 re-triage; full spec:
+`docs/system-specs/modules/platform-context.md` + `governance.md`):
+
+- **Prefer adding a method to an EXISTING extension-point Protocol**
+  (`interfaces.py`) with a `Default*` no-op/empty implementation — NOT a new
+  Protocol. The re-triage added exactly 3 v1 methods
+  (`IdentityProvider.preflight_checks`, `IdentityProvider.credential_watch_paths`,
+  `CredentialPolicy.exempt_exact_hosts`) + a minimal `TunnelProvider` surface,
+  with **zero new Protocols, zero new `SCOPE_CATALOG` rows, `CONTRACT_VERSION`
+  stays 1**. A governance capability/scope addition is a `SCOPE_CATALOG` data row,
+  never an evaluator edit.
+- **The core reads the behavior via `current_context()`** — never `isinstance`
+  on an edition, never an `import` of a companion. The `Default*` must reproduce
+  today's OSS behavior exactly (a standalone process is byte-identical).
+- **Extract the mechanism, NOT the escalation.** Drop any sub-part that would be
+  an agent-writable code-exec or ceiling-relaxation hole even in the generic form
+  (e.g. G1 ported the preflight *runner* but deliberately dropped the
+  `module:function` string-exec mechanism; an EXTRACTed `CredentialPolicy`
+  exemption is **narrow-only** — it can skip a heuristic but never relax the
+  hard-credential floor).
+- **The Amazon data/behavior stays companion-side**: the credential path, M365
+  host list, Midway `ensure_midway`, AEA supervisor, usage-upload queue — none of
+  it lands in the fork. Only the seam + `Default*` no-op do.
+- Verdict tokens seen in `left-out.md`: `EXTRACT` (implement the seam),
+  `SEAM_EXISTS` (a companion composes against an *already-present* extension
+  point — no core change), `RESOLVED_BY_PR` (content already landed via a fork
+  PR), `NO_ACTION` (nothing to do). Record every EXTRACT in `left-out.md` with
+  what landed in core vs what stays companion-side.
+
+**PARTIAL** — a commit that mixes generic + internal but exposes no reusable
+*mechanism* to seam (so it is not an EXTRACT). Port only the generic hunks; drop
+the internal ones. Examples:
 - The upstream `send_channel_challenge` / challenge-and-redirect flow is
   **DELIBERATELY REMOVED in this fork** (Amazon-internal-only posture; external
   Slack messages reach the agent inline). **DROP any upstream hunk that adds or
@@ -236,7 +280,9 @@ existed solely to read `~/.midway/cookie` for the absent `scanner_sync`).
 
 If unsure whether a fix is already in the fork, check by **content**, not SHA:
 read the upstream diff, then read the corresponding `kiro_crew` file. Verdicts:
-ALREADY_PRESENT / MISSING / PARTIAL / N/A_INTERNAL.
+ALREADY_PRESENT / MISSING / PARTIAL / EXTRACT / SEAM_EXISTS / N/A_INTERNAL.
+(Before settling on N/A_INTERNAL for a coupling, apply the EXTRACT test above —
+a reusable mechanism behind a `Default*` no-op is a core landing, not a skip.)
 
 **Scaling the triage:** a triage+verify Workflow (one analyzer + one verifier
 per commit) is the right tool for a big batch (dozens of candidates). For a
@@ -438,6 +484,13 @@ other KEPT controls. Specifically, when triaging/porting:
 - **Do NOT strip or weaken** them during a sync, and do NOT treat them as
   Amazon couplings (they are the opposite — the seam that lets the Amazon
   companion exist WITHOUT the core importing it).
+- **This seam is what makes EXTRACT possible** (Step 2). When an upstream commit
+  wires an Amazon behavior into a new place, the EXTRACT move is: add a v1 method
+  to the relevant `interfaces.py` Protocol with a `Default*` no-op, read it via
+  `current_context()`, and let the companion supply the behavior — a
+  `SCOPE_CATALOG` data row for a new governance capability, never an evaluator
+  edit; `CONTRACT_VERSION` stays 1. Prefer extending an existing Protocol over a
+  new one.
 - An upstream commit that touches `security.py`'s sensitive-path /
   deny-pattern / bash-command matchers, `hooks.on_tool_call`, `sandbox.wrap_argv`,
   `sel.py`, or any `mcp_cron`/`subagent`/`mcp_core` tool gate **collides with the

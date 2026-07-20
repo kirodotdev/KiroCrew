@@ -83,16 +83,36 @@ describe('DetailPanel width clamp (Mesh-2230)', () => {
     )
     const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
     // start dragging from x=1000, then move left to x=300 → intended width 1100 (fits cap 1200)
-    fireEvent.mouseDown(handle, { clientX: 1000 })
-    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: 300 })) })
+    fireEvent.pointerDown(handle, { clientX: 1000, pointerId: 1 })
+    act(() => { fireEvent.pointerMove(handle, { clientX: 300, pointerId: 1 }) })
     expect(panelWidth(container)).toBe(1100)
     // viewport shrinks mid-drag (DevTools toggle / OS tile / zoom) → cap drops to 480.
     // The resize listener must be suppressed, so the in-flight width is untouched.
     act(() => { setViewport(800); window.dispatchEvent(new Event('resize')) })
     expect(panelWidth(container)).toBe(1100)
     // release: preferred width (1100) persists, live render clamps to fit (480).
-    act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
+    act(() => { fireEvent.pointerUp(handle, { clientX: 300, pointerId: 1 }) })
     expect(localStorage.getItem('mc-test-w')).toBe('1100')
+    expect(panelWidth(container)).toBe(480)
+  })
+
+  // Regression: a sub-threshold tap on the 6px handle must still reset the drag
+  // suppression flag. usePointerDrag fires onEnd on every pointer-up (committed
+  // or not), so a stray click can't wedge draggingRef=true and make later resize
+  // re-clamps early-return forever (which would re-expose the Mesh-2230/2813 overflow).
+  it('resets the drag guard after a sub-threshold click so later resizes still clamp', () => {
+    setViewport(2000) // cap = 1200
+    localStorage.setItem('mc-test-w', '1100')
+    const { container } = render(
+      <DetailPanel title="t" onClose={() => {}} storageKey="mc-test-w" initialWidth={1100} minWidth={300}>x</DetailPanel>,
+    )
+    expect(panelWidth(container)).toBe(1100)
+    const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
+    // Stray click: down then up moving only 2px (< 6px threshold) → never commits.
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1 })
+    act(() => { fireEvent.pointerUp(handle, { clientX: 502, pointerId: 1 }) })
+    // Viewport shrinks: the re-clamp guard must NOT be wedged → width clamps to fit.
+    act(() => { setViewport(800); window.dispatchEvent(new Event('resize')) }) // cap = 480
     expect(panelWidth(container)).toBe(480)
   })
 })
@@ -117,11 +137,11 @@ describe('DetailPanel row-aware width clamp (Mesh-2813)', () => {
     )
     const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
     // Drag far left (start 900 → move to 0) would ask for 480 + 900 = 1380.
-    fireEvent.mouseDown(handle, { clientX: 900 })
-    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: 0 })) })
+    fireEvent.pointerDown(handle, { clientX: 900, pointerId: 1 })
+    act(() => { fireEvent.pointerMove(handle, { clientX: 0, pointerId: 1 }) })
     // Capped to row(1000) − reserve(400) = 600, NOT the viewport 1200.
     expect(panelWidth(container)).toBe(600)
-    act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
+    act(() => { fireEvent.pointerUp(handle, { clientX: 0, pointerId: 1 }) })
   })
 
   it('never lets the panel exceed rowWidth − reserveWidth however far you drag', () => {
@@ -131,11 +151,11 @@ describe('DetailPanel row-aware width clamp (Mesh-2813)', () => {
       <DetailPanel title="t" onClose={() => {}} initialWidth={400} minWidth={300} reserveWidth={500}>x</DetailPanel>,
     )
     const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
-    fireEvent.mouseDown(handle, { clientX: 1000 })
-    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: -5000 })) }) // absurd overshoot
+    fireEvent.pointerDown(handle, { clientX: 1000, pointerId: 1 })
+    act(() => { fireEvent.pointerMove(handle, { clientX: -5000, pointerId: 1 }) }) // absurd overshoot
     expect(panelWidth(container)).toBe(700)
     expect(panelWidth(container)).toBeLessThanOrEqual(1200 - 500)
-    act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
+    act(() => { fireEvent.pointerUp(handle, { clientX: -5000, pointerId: 1 }) })
   })
 
   it('re-clamps a fitting width down when reserveWidth grows (sidebar widened)', () => {
@@ -162,10 +182,10 @@ describe('DetailPanel row-aware width clamp (Mesh-2813)', () => {
       <DetailPanel title="t" onClose={() => {}} initialWidth={400} minWidth={300}>x</DetailPanel>,
     )
     const handle = container.querySelector('div.cursor-col-resize') as HTMLElement
-    fireEvent.mouseDown(handle, { clientX: 1000 })
-    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: -3000 })) })
+    fireEvent.pointerDown(handle, { clientX: 1000, pointerId: 1 })
+    act(() => { fireEvent.pointerMove(handle, { clientX: -3000, pointerId: 1 }) })
     // No reserveWidth → row term drops out → capped at viewport 1200, not row(1000)-anything.
     expect(panelWidth(container)).toBe(1200)
-    act(() => { document.dispatchEvent(new MouseEvent('mouseup')) })
+    act(() => { fireEvent.pointerUp(handle, { clientX: -3000, pointerId: 1 }) })
   })
 })

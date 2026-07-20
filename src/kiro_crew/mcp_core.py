@@ -41,6 +41,7 @@ from kiro_crew.artifacts import _infer_kind
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, outbox_dir
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS, summarize_result
 from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.knowledge.dedup import dedup_sweep
@@ -60,15 +61,20 @@ from kiro_crew.subagent import resolve_max_subagents
 from kiro_crew.subagent_persistence import _agent_dir
 from kiro_crew.validation import (
     _SLACK_TS_RE,
+    ARTIFACT_AGENT_MARKER,
+    ARTIFACT_DELETE_COMMENT_SCHEMA,
     ARTIFACT_DELETE_SCHEMA,
     ARTIFACT_FOLDER_CREATE_SCHEMA,
     ARTIFACT_FOLDER_DELETE_SCHEMA,
     ARTIFACT_FOLDER_LIST_SCHEMA,
     ARTIFACT_FOLDER_MOVE_SCHEMA,
     ARTIFACT_FOLDER_RENAME_SCHEMA,
+    ARTIFACT_GET_COMMENTS_SCHEMA,
     ARTIFACT_GET_SCHEMA,
     ARTIFACT_LIST_SCHEMA,
+    ARTIFACT_MARK_REVIEW_SCHEMA,
     ARTIFACT_MOVE_SCHEMA,
+    ARTIFACT_POST_COMMENT_SCHEMA,
     ARTIFACT_REVERT_SCHEMA,
     ARTIFACT_SAVE_SCHEMA,
     ARTIFACT_UPDATE_SCHEMA,
@@ -336,8 +342,7 @@ def _list_tools() -> list[dict[str, Any]]:
                 "gets its own session with full tool access. BLOCKS until all sub-agents "
                 "complete, then returns their collected results. Use for delegating "
                 "independent subtasks to specialist agents. Preferred over spawn_run when "
-                "you need results before continuing."
-                + _cap_hint
+                "you need results before continuing." + _cap_hint
             ),
             "inputSchema": {
                 "type": "object",
@@ -683,7 +688,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["widget", "html", "markdown", "svg", "json", "text"],
+                        "enum": ["widget", "html", "markdown", "svg", "json", "text", "webapp"],
                         "description": (
                             "Artifact kind. Optional — inferred from the content "
                             "when omitted (HTML-ish body -> widget, markdown text "
@@ -713,6 +718,17 @@ def _list_tools() -> list[dict[str, Any]]:
                             "Missing path segments are auto-created (mkdir -p). "
                             "Omit or pass 'root' to leave it unfiled."
                         ),
+                    },
+                    "webapp_metadata": {
+                        "type": "object",
+                        "description": (
+                            "For kind='webapp' only — metadata for the app-artifact "
+                            "control card. Shape: {slug, origin_session, "
+                            "deploy_target:{provider,account,region,public_url}, "
+                            "architecture, lifecycle, cost, teardown}. "
+                            "For draft apps: set lifecycle.status='draft'"
+                        ),
+                        "additionalProperties": True,
                     },
                 },
                 "required": ["name", "content"],
@@ -776,6 +792,14 @@ def _list_tools() -> list[dict[str, Any]]:
                         "items": {"type": "string"},
                         "description": "Replacement tag list (optional).",
                     },
+                    "webapp_metadata": {
+                        "type": "object",
+                        "description": (
+                            "Webapp deployment metadata (optional). Used to "
+                            "transition an artifact between draft and live "
+                            "deployment states."
+                        ),
+                    },
                 },
                 "required": ["slug"],
             },
@@ -823,7 +847,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     "tag": {"type": "string", "description": "Filter by tag."},
                     "kind": {
                         "type": "string",
-                        "enum": ["widget", "html", "markdown", "svg", "json", "text"],
+                        "enum": ["widget", "html", "markdown", "svg", "json", "text", "webapp"],
                         "description": "Filter by kind.",
                     },
                     "q": {
@@ -866,6 +890,107 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["slug"],
+            },
+        },
+        {
+            "name": "artifact_get_comments",
+            "description": (
+                "Get all comments on an artifact (local + provider-synced). "
+                "Use to read feedback, review comments, or discussion threads "
+                "on an artifact before addressing them."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Artifact slug to get comments for.",
+                    },
+                },
+                "required": ["slug"],
+            },
+        },
+        {
+            "name": "artifact_post_comment",
+            "description": (
+                "Post a comment on an artifact. Agent comments are flagged "
+                "(is_agent) and SEL-audited. Use scope='shared' to sync to the "
+                "provider."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Artifact slug.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Comment body text.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "private (local only) or shared (syncs to provider).",
+                    },
+                },
+                "required": ["slug", "text"],
+            },
+        },
+        {
+            "name": "artifact_mark_review",
+            "description": (
+                "Advance a comment thread to REVIEW status, signaling "
+                "the issue is addressed and awaiting human verification. "
+                "Agent can mark_review but NEVER resolve."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Artifact slug.",
+                    },
+                    "comment_id": {
+                        "type": "string",
+                        "description": "ID of the root comment to advance.",
+                    },
+                },
+                "required": ["slug", "comment_id"],
+            },
+        },
+        {
+            "name": "artifact_delete_comment",
+            "description": (
+                "Delete a comment thread you have demonstrably applied — an "
+                "unambiguous directive ('delete this', 'fix typo') that was "
+                "fully executed. Root deletes cascade to replies. For "
+                "judgment calls the human may want to verify, use "
+                "artifact_mark_review instead. Provider-synced comments "
+                "cannot be deleted by agents (the tool refuses) — mark those "
+                "REVIEW. Deletion is SEL-audited and recorded in the "
+                "artifact's activity feed with your reason."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Artifact slug.",
+                    },
+                    "comment_id": {
+                        "type": "string",
+                        "description": "ID of the comment to delete (root deletes its replies too).",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "One-line justification recorded in the audit log and "
+                            "activity feed, e.g. 'applied in v12: deleted the "
+                            "flagged paragraph'."
+                        ),
+                    },
+                },
+                "required": ["slug", "comment_id", "reason"],
             },
         },
         {
@@ -975,6 +1100,54 @@ def _list_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "deploy_artifact",
+            "description": (
+                "Preview a deploy of a webapp artifact or local directory to a "
+                "public URL on the user's AWS account. This tool is PREVIEW-ONLY: "
+                "it returns scan status and deploy details but never executes. "
+                "Final confirmation happens in the dashboard Artifact Deploy page. "
+                "Restricted-session guard and SEL audit apply identically to the "
+                "HTTP endpoint."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "site_id": {
+                        "type": "string",
+                        "description": "Deploy slot name (e.g. 'my-app').",
+                    },
+                    "artifact_slug": {
+                        "type": "string",
+                        "description": (
+                            "Slug of a static artifact (widget/html/markdown) "
+                            "to deploy — its content is rendered as a page. "
+                            "kind=webapp artifacts are rejected (their content "
+                            "is an app summary, not deployable HTML — deploy "
+                            "the app's built directory via local_dir instead). "
+                            "Mutually exclusive with local_dir."
+                        ),
+                    },
+                    "local_dir": {
+                        "type": "string",
+                        "description": (
+                            "Validated absolute path to a static directory "
+                            "(e.g. fullstack app's public/ root). Mutually "
+                            "exclusive with artifact_slug."
+                        ),
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "AWS profile override (default: registry default).",
+                    },
+                    "ttl_hours": {
+                        "type": "integer",
+                        "description": "Hours until auto-cleanup, 0-8760 (default: 72; 0 = persistent).",
+                    },
+                },
+                "required": ["site_id"],
+            },
+        },
+        {
             "name": "autonudge_stop",
             "description": (
                 "Stop the auto-nudge loop driving your current session. Call this "
@@ -1040,7 +1213,8 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "description": (
                             "false (default) = dry-run preview, no changes. "
-                            "true = perform the hard deletes."),
+                            "true = perform the hard deletes."
+                        ),
                         "default": False,
                     },
                 },
@@ -1181,7 +1355,7 @@ def _list_tools() -> list[dict[str, Any]]:
                 "\n\n"
                 "Use after a skill scaffolds a new working tree (e.g. brazil-workspace) "
                 "so the agent retargets to the new source instead of the old one. "
-                "To clear the project, pass path=\"\" with clear=true. "
+                'To clear the project, pass path="" with clear=true. '
                 "\n\n"
                 "Restrictions: only works in dashboard sessions with explicit identity "
                 "(injected KIROCREW_SESSION_KEY or per-call caller context). Subagents, "
@@ -1253,7 +1427,10 @@ def _list_tools() -> list[dict[str, Any]]:
                         "description": "If no source: a NL goal to author then run",
                     },
                     "name": {"type": "string", "description": "Optional run name"},
-                    "args": {"type": "object", "description": "Optional args passed to the workflow"},
+                    "args": {
+                        "type": "object",
+                        "description": "Optional args passed to the workflow",
+                    },
                     "budget_total": {
                         "type": "integer",
                         "description": "Optional token budget ceiling for the run",
@@ -1444,9 +1621,7 @@ def _get_ppid(pid: int) -> int:
                 return ppid
         # Last-resort fallback (unknown platform, or a libproc/proc miss): ``ps``.
         # May be sandbox-blocked, in which case this raises and we return 0.
-        out = subprocess.check_output(
-            ["ps", "-o", "ppid=", "-p", str(pid)], text=True, timeout=2
-        )
+        out = subprocess.check_output(["ps", "-o", "ppid=", "-p", str(pid)], text=True, timeout=2)
         return int(out.strip())
     except Exception:
         pass
@@ -1596,7 +1771,9 @@ def _vet_messaging_governance(caller_session: str) -> str | None:
             log_warning=False,
         )
         if not getattr(decision, "permitted", True):
-            _audit_governance_deny(caller_session, "send_message", "capabilities.messaging", decision)
+            _audit_governance_deny(
+                caller_session, "send_message", "capabilities.messaging", decision
+            )
             return "outbound messaging blocked by governance policy"
         return None
     except PlatformCompositionError:
@@ -1650,7 +1827,9 @@ def _vet_channel_governance(caller_session: str, transport: str) -> str | None:
             log_warning=False,
         )
         if not getattr(decision, "permitted", True):
-            _audit_governance_deny(caller_session, f"send_message:{transport}", "channels", decision)
+            _audit_governance_deny(
+                caller_session, f"send_message:{transport}", "channels", decision
+            )
             return f"messaging via transport {transport!r} blocked by governance policy"
         return None
     except PlatformCompositionError:
@@ -2100,6 +2279,11 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
 _HISTORY_INCOGNITO_MODES = frozenset({"incognito", "temporary"})
 _SNIPPET_RADIUS = 120  # chars of context kept on each side of a match
 _SNIPPET_MAX_LEN = 320  # hard cap on a returned snippet
+# Upper bound on ranked candidates pulled from the backend per search. Bound to
+# the backend's own scan window (imported, not copied) so we consider every
+# ranked match (bounded I/O) and post-filtering can't starve a caller whose hits
+# rank past a small page — and the two can't silently drift apart.
+_SEARCH_HISTORY_SCAN = SEARCH_SCAN_WINDOW
 
 
 def _history_is_incognito(meta: dict) -> bool:
@@ -2129,11 +2313,78 @@ def _parse_iso_date_epoch(date_str: str) -> float | None:
         return None
 
 
+def _ws_bucket(meta_ws: object) -> str:
+    """Normalize a session's workspace value to a comparable bucket.
+
+    ``update_metadata`` accepts arbitrary JSON for ``workspace``; a non-string
+    (or empty) value must bucket to "default" rather than compare unequal to a
+    real workspace name and silently hide the session from its owner.
+    """
+    return meta_ws if isinstance(meta_ws, str) and meta_ws else "default"
+
+
+def _caller_workspace(cl: "object", session_key: str) -> str:
+    """Resolve the calling session's workspace bucket for scope filtering.
+
+    Read from the caller's own session metadata (normalized via _ws_bucket).
+    Known limitation: on a brand-new session whose metadata file has not been
+    written yet, this returns "default". A multi-workspace caller in that narrow
+    window is scoped to the default bucket (fail-CLOSED — they see fewer results,
+    never another workspace's). Fully fixing it needs the gateway to carry the
+    workspace in CallerContext (the register payload does not today), so it is
+    tracked as a separate gateway change rather than papered over here.
+    """
+    if not session_key:
+        return "default"
+    return _ws_bucket(cl.get_metadata(session_key).get("workspace"))  # type: ignore[attr-defined]
+
+
+_HISTORY_SNIPPET_ROLES = frozenset({"user", "assistant"})
+
+
+def _casefold_match_span(text: str, needle_cf: str) -> tuple[int, int] | None:
+    """Locate *needle_cf* (already casefolded) inside *text* using full casefolding.
+
+    Returns ``(start, end)`` source indices into *text* for the first match, or
+    ``None``. Unlike ``re.search(..., re.IGNORECASE)`` — which does only simple
+    per-character case mapping — this mirrors ``str.casefold`` so multi-char
+    folds (e.g. ``ß`` ↔ ``ss``, ``ﬃ`` ↔ ``ffi``) match, keeping the wrap matcher
+    consistent with the ``str.casefold().find`` selection above. ``str.casefold``
+    is a per-character homomorphism, so casefolded offsets map back to source
+    character boundaries.
+    """
+    if not needle_cf:
+        return None
+    # bounds[k] = length of casefold(text[:k]); the running offset into cf_text
+    # for each source char boundary, so a casefolded match offset maps back to
+    # the source index whose bounds entry equals it.
+    bounds = [0]
+    for ch in text:
+        bounds.append(bounds[-1] + len(ch.casefold()))
+    cf_text = text.casefold()
+    cf_start = cf_text.find(needle_cf)
+    if cf_start < 0:
+        return None
+    cf_end = cf_start + len(needle_cf)
+    # Map casefolded offsets to source char boundaries. A fold that expands
+    # length can leave an offset mid-expansion (no exact boundary); fall back to
+    # the enclosing boundary so the wrap never splits a source character.
+    try:
+        start = bounds.index(cf_start)
+    except ValueError:
+        start = next((k for k in range(len(bounds)) if bounds[k] > cf_start), 1) - 1
+    try:
+        end = bounds.index(cf_end)
+    except ValueError:
+        end = next((k for k in range(len(bounds)) if bounds[k] >= cf_end), len(bounds) - 1)
+    return start, end
+
+
 def _extract_history_snippet(messages: list[dict], needle: str) -> str:
-    """Return a bounded snippet around the first message matching *needle*.
+    """Return a bounded snippet around the first user/assistant message matching *needle*.
 
     The matched substring is delimited with ``<<<...>>>``. Returns "" when no
-    message content contains the needle (e.g. it only matched the title).
+    eligible message content contains the needle (e.g. it only matched the title).
     """
     # Defense-in-depth: an empty/whitespace needle makes str.find return 0 on
     # every message and would wrap meaningless text in <<<>>>. The query is
@@ -2143,6 +2394,10 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
         return ""
     needle_cf = needle.casefold()
     for m in messages:
+        # Only surface user/assistant content (mirror get_chat_session) so the
+        # snippet is the human-facing context, not a tool/system trace blob.
+        if str(m.get("role", "")).lower() not in _HISTORY_SNIPPET_ROLES:
+            continue
         content = m.get("content")
         if not isinstance(content, str) or not content:
             continue
@@ -2152,9 +2407,18 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
         start = max(0, idx - _SNIPPET_RADIUS)
         end = min(len(content), idx + len(needle) + _SNIPPET_RADIUS)
         seg = content[start:end]
-        rel = seg.casefold().find(needle_cf)
-        if rel >= 0:
-            seg = seg[:rel] + "<<<" + seg[rel : rel + len(needle)] + ">>>" + seg[rel + len(needle) :]
+        # Redact BEFORE inserting <<<...>>> markers: marker insertion would split
+        # a credential/URL token and defeat the contiguous-match redactors, so a
+        # query that is a substring of a secret in stored content could leak it.
+        seg = _redact_history_output(seg)
+        # Locate the match span in the (possibly redacted) original text using the
+        # SAME full casefolding as the selection above — a case-insensitive regex
+        # does only simple per-char mapping and would miss multi-char folds
+        # (ß→ss), leaving a selected-but-unwrapped snippet with no <<<...>>>.
+        span = _casefold_match_span(seg, needle_cf)
+        if span:
+            s, e = span
+            seg = seg[:s] + "<<<" + seg[s:e] + ">>>" + seg[e:]
         seg = ("…" if start > 0 else "") + seg + ("…" if end < len(content) else "")
         result = seg[:_SNIPPET_MAX_LEN]
         # If the hard cap sliced through the match delimiters (possible with a
@@ -2163,6 +2427,28 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
             result = result[: _SNIPPET_MAX_LEN - 3] + ">>>"
         return result
     return ""
+
+
+def _format_anchor(anchor: dict) -> str:
+    """Format an anchor quote for the artifact_get_comments output (Mesh-2503).
+
+    Short quotes (≤300 chars) are shown in full. Longer quotes are bookended
+    with the first and last 100 chars plus an explicit TRUNCATED marker
+    (never ambiguous with literal user text). Offsets are always included
+    when available so the agent can locate the range in the document.
+    """
+    quote = anchor.get("quote", "")
+    start = anchor.get("start_offset")
+    end = anchor.get("end_offset")
+    offset_info = ""
+    if start is not None and end is not None:
+        offset_info = f", chars {start}:{end}"
+    if len(quote) <= 300:
+        return f' [on: "{quote}"{offset_info}]'
+    head = quote[:100]
+    tail = quote[-100:]
+    omitted = len(quote) - 200
+    return f' [on: "{head}" [TRUNCATED: {omitted} chars omitted' f'{offset_info}] "{tail}"]'
 
 
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
@@ -2229,7 +2515,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 spawn_lines.append(f"  - {e}")
         if agent_ids:
             spawn_lines.append(
-                "\nWait for [Subagent completion event] messages before responding to the user."
+                "\n⚠️ END YOUR TURN NOW — do no further work this turn."
+                " Wait for the [Subagent completion event] messages, which will resume you."
             )
         else:
             spawn_lines.append("All tasks queued — results will arrive as completion events.")
@@ -2285,9 +2572,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 if aid:
                     sa_ids.append(aid)
                 else:
-                    sa_errors.append(
-                        f"{_redact_sa(prompt[:60])}: spawn returned no agent id"
-                    )
+                    sa_errors.append(f"{_redact_sa(prompt[:60])}: spawn returned no agent id")
 
         if not sa_ids and sa_errors:
             return "Error spawning sub-agents:\n" + "\n".join(f"  - {e}" for e in sa_errors)
@@ -2337,16 +2622,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             if sa_st.get("error"):
                 errored += 1
                 sa_results.append(
-                    json.dumps({
-                        "agent": label, "status": "error",
-                        "error": _redact_sa(sa_st["error"]),
-                    })
+                    json.dumps(
+                        {
+                            "agent": label,
+                            "status": "error",
+                            "error": _redact_sa(sa_st["error"]),
+                        }
+                    )
                 )
             elif not sa_st.get("done"):
                 timed_out += 1
-                sa_results.append(
-                    json.dumps({"agent": label, "status": "timed_out"})
-                )
+                sa_results.append(json.dumps({"agent": label, "status": "timed_out"}))
             else:
                 completed += 1
                 result_text = _redact_sa(sa_st.get("result", ""))
@@ -2361,18 +2647,18 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     except (ValueError, OSError):
                         result_path = ""
                     if result_path:
-                        result_text = summarize_result(
-                            result_text, result_path
-                        )
+                        result_text = summarize_result(result_text, result_path)
                 sa_results.append(
-                    json.dumps({
-                        "agent": label, "status": "completed", "text": result_text,
-                    })
+                    json.dumps(
+                        {
+                            "agent": label,
+                            "status": "completed",
+                            "text": result_text,
+                        }
+                    )
                 )
         if sa_errors:
-            sa_results.append(
-                json.dumps({"status": "spawn_errors", "errors": sa_errors})
-            )
+            sa_results.append(json.dumps({"status": "spawn_errors", "errors": sa_errors}))
         sel().log_tool_invocation(
             session_key=parent_session or "",
             source="mcp_core",
@@ -2538,9 +2824,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # Audit even validation failures — every tool invocation must emit a
             # SEL event (matches the success/error paths below).
             sel().log_tool_invocation(
-                session_key=_resolve_session_key(), source="mcp",
-                tool_name="skill_search", tool_kind="read",
-                outcome="validation_error", metadata={"reason": "empty_query"},
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="skill_search",
+                tool_kind="read",
+                outcome="validation_error",
+                metadata={"reason": "empty_query"},
             )
             return "Provide a 'query' to search skills."
         try:
@@ -2553,16 +2842,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             matches = SkillsLoader(install_builtins=False).search_skills(query, limit=limit)
         except Exception as exc:  # pragma: no cover — defensive
             sel().log_tool_invocation(
-                session_key=_resolve_session_key(), source="mcp",
-                tool_name="skill_search", tool_kind="read", outcome="error",
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="skill_search",
+                tool_kind="read",
+                outcome="error",
                 metadata={"error": type(exc).__name__},
             )
             return f"skill_search failed: {type(exc).__name__}: {exc}"
         sel().log_tool_invocation(
-            session_key=_resolve_session_key(), source="mcp",
-            tool_name="skill_search", tool_kind="read", outcome="success",
-            metadata={"query_hash": hashlib.sha256(query.encode()).hexdigest()[:16],
-                      "matches": len(matches)},
+            session_key=_resolve_session_key(),
+            source="mcp",
+            tool_name="skill_search",
+            tool_kind="read",
+            outcome="success",
+            metadata={
+                "query_hash": hashlib.sha256(query.encode()).hexdigest()[:16],
+                "matches": len(matches),
+            },
         )
         if not matches:
             return (
@@ -2951,7 +3248,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             "name": args["name"],
             "content": args["content"],
         }
-        for k in ("slug", "kind", "source", "description", "tags", "folder"):
+        for k in ("slug", "kind", "source", "description", "tags", "folder", "webapp_metadata"):
             if k in args and args[k] is not None:
                 save_body[k] = args[k]
         # Pre-save dedup probe: when saving a chat-source widget, check for
@@ -3211,6 +3508,96 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             )
         return "\n".join(out_lines)
 
+    if name == "artifact_get_comments":
+        args = validate_tool_args(args, ARTIFACT_GET_COMMENTS_SCHEMA)
+        slug = args["slug"]
+        d = _get(f"/api/artifacts/{slug}/comments")
+        if d.get("error"):
+            return f"Error: {d['error']}"
+        comments = d.get("comments", [])
+        if not comments:
+            return f"No comments on artifact `{slug}`."
+        lines = []
+        for c in comments:
+            # Agent provenance rides on the structured is_agent field, not the
+            # persisted body — prefix a plain-text marker on this CLI/text surface
+            # (the dashboard shows a lucide Bot icon from the same field).
+            prefix = ARTIFACT_AGENT_MARKER if c.get("is_agent") else ""
+            comment_body = str(c.get("body", ""))
+            anchor = ""
+            if c.get("anchor") and c["anchor"].get("quote"):
+                anchor = _format_anchor(c["anchor"])
+            indent = "  ↳ " if c.get("parent_id") else "• "
+            # Surface the comment id: it is the handle the agent must pass to
+            # artifact_mark_review / artifact_delete_comment, so omitting it left
+            # those follow-up tools uncallable from a get_comments result.
+            cid = c.get("id")
+            id_tag = f" (id={cid})" if cid else ""
+            lines.append(
+                f"{indent}{prefix}{c.get('author', '?')}: {comment_body}"
+                f"{anchor} [{c.get('status', 'open')}]{id_tag}"
+            )
+        result_str = f"Comments on `{slug}` ({len(comments)}):\n" + "\n".join(lines)
+        # Route verbatim comment egress through the canonical context-aware shim
+        # (not the raw redact_credentials/redact_exfiltration_urls pair) so a
+        # companion's extra credential patterns apply, matching the chat-history
+        # egress in this same file.
+        return redact(result_str)
+
+    if name == "artifact_post_comment":
+        args = validate_tool_args(args, ARTIFACT_POST_COMMENT_SCHEMA)
+        slug = args["slug"]
+        text = args["text"]
+        scope = args.get("scope") or "private"
+        # Never trust LLM output — redact before posting to the dashboard. Route
+        # through the canonical context-aware shim so a companion's extra
+        # credential patterns apply on this egress path too. (The SEL audit log
+        # is redacted centrally in call_tool_with_logging, so the raw text can't
+        # leak into the audit resources either.)
+        text = redact(text)
+        d = _post(
+            f"/api/artifacts/{slug}/comments",
+            {
+                # Store the body verbatim; agent provenance is the structured
+                # is_agent flag (no emoji persisted into the body — CLAUDE.md).
+                "text": text,
+                "scope": scope,
+                "is_agent": True,
+                "author": "agent",
+            },
+        )
+        if d.get("error"):
+            return f"Error: {d['error']}"
+        cmt = d.get("comment", {})
+        return f"Comment posted (id={cmt.get('id', '?')}, sync={cmt.get('sync_state', '?')})"
+
+    if name == "artifact_mark_review":
+        args = validate_tool_args(args, ARTIFACT_MARK_REVIEW_SCHEMA)
+        slug = args["slug"]
+        comment_id = args["comment_id"]
+        d = _post(f"/api/artifacts/{slug}/comments/{comment_id}/review", {})
+        if d.get("error"):
+            return f"Error: {d['error']}"
+        return f"Comment {comment_id} advanced to REVIEW status."
+
+    if name == "artifact_delete_comment":
+        args = validate_tool_args(args, ARTIFACT_DELETE_COMMENT_SCHEMA)
+        slug = args["slug"]
+        comment_id = args["comment_id"]
+        reason = args["reason"]
+        # Never trust LLM output — the reason lands in the activity feed, so
+        # redact before sending. Route through the canonical context-aware shim
+        # so a companion's extra credential patterns apply. (The SEL audit log
+        # is redacted centrally in call_tool_with_logging.)
+        reason = redact(reason)
+        d = _delete(
+            f"/api/artifacts/{slug}/comments/{comment_id}",
+            {"reason": reason},
+        )
+        if d.get("error"):
+            return f"Error: {d['error']}"
+        return f"Comment {comment_id} deleted (reason recorded in activity feed)."
+
     if name == "artifact_list":
         args = validate_tool_args(args, ARTIFACT_LIST_SCHEMA)
         params: dict[str, str] = {}
@@ -3348,6 +3735,88 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"folder id={moved_fid}." if moved_fid else "the library root (unfiled)."
         )
 
+    if name == "deploy_artifact":
+        # Schema validation already handled by _validate_args via MCP_CORE_SCHEMAS.
+        # PREVIEW-ONLY: the MCP tool never passes confirm or override_scan.
+        # Human confirmation happens in the dashboard UI (Artifact Deploy page).
+        # This prevents an LLM caller from self-confirming destructive deploys.
+        # F4: enforce mutual exclusion of artifact_slug / local_dir at the MCP tool layer too.
+        has_slug = bool(args.get("artifact_slug"))
+        has_dir = bool(args.get("local_dir"))
+        if has_slug and has_dir:
+            return "Error: provide exactly one of artifact_slug or local_dir"
+        if not has_slug and not has_dir:
+            return "Error: provide artifact_slug or local_dir"
+        deploy_body: dict[str, Any] = {"site_id": args["site_id"]}
+        if args.get("artifact_slug"):
+            deploy_body["artifact_slug"] = args["artifact_slug"]
+        if args.get("local_dir"):
+            deploy_body["local_dir"] = args["local_dir"]
+        if args.get("profile"):
+            deploy_body["profile"] = args["profile"]
+        if args.get("ttl_hours") is not None:
+            deploy_body["ttl_hours"] = args["ttl_hours"]
+        d = _post("/api/deploy/deploy", deploy_body)
+        # R18 F4: everything textual returned to the LLM goes through the
+        # canonical credential redaction -- error/scan/message fields can
+        # carry file content.
+        from kiro_crew.deploy.handlers import _redact_text as _deploy_redact
+        if d.get("error"):
+            return f"Error: {_deploy_redact(str(d['error']))}"
+        if d.get("blocked"):
+            findings = _deploy_redact(str(d.get("findings", "")))
+            if d.get("credential"):
+                # Credential-class findings are a HARD block — never pending.
+                return (f"Deploy BLOCKED by scan ({d.get('count', '?')} finding(s)):\n"
+                        f"{findings}")
+            # R24: non-credential findings are documented as human-overridable.
+            # Persist a pending entry flagged override_scan_required so the
+            # dashboard can present the explicit "deploy anyway" action —
+            # previously these previews silently never reached the pending list.
+            from kiro_crew.deploy.pending import add_pending
+            add_pending({
+                "site_id": args["site_id"],
+                "artifact_slug": args.get("artifact_slug", ""),
+                "local_dir": args.get("local_dir", ""),
+                "profile": d.get("profile", args.get("profile", "")),
+                "region": d.get("region", ""),
+                "ttl_hours": args.get("ttl_hours", 72),
+                "scan_summary": findings,
+                "content_digest": d.get("content_digest", ""),
+                "override_scan_required": True,
+            })
+            return (
+                f"Deploy blocked by scan ({d.get('count', '?')} non-credential "
+                f"finding(s)):\n{findings}\n\n"
+                f"These findings are overridable by a HUMAN: the deploy now "
+                f"appears under \"Pending confirmations\" on the Artifact "
+                f"Deploy page, where the user can review the findings and "
+                f"explicitly deploy anyway (or dismiss)."
+            )
+        # Preview response (requires_confirm is always true for the tool path)
+        # Persist as a pending confirmation so the dashboard UI can execute it.
+        from kiro_crew.deploy.pending import add_pending
+        pending_params = {
+            "site_id": args["site_id"],
+            "artifact_slug": args.get("artifact_slug", ""),
+            "local_dir": args.get("local_dir", ""),
+            "profile": d.get("profile", args.get("profile", "")),
+            "region": d.get("region", deploy_body.get("region", "")),
+            "ttl_hours": args.get("ttl_hours", 72),
+            "scan_summary": d.get("scan", "clean"),
+            "content_digest": d.get("content_digest", ""),
+        }
+        add_pending(pending_params)
+        return (
+            f"Deploy preview for site '{args['site_id']}':\n"
+            f"  Public: {d.get('public', True)}\n"
+            f"  Size: {d.get('bytes', '?')} bytes\n"
+            f"  Scan: {_deploy_redact(str(d.get('scan', 'clean')))}\n"
+            f"  TTL: {args.get('ttl_hours', 72)} hours\n"
+            f"\nThis deploy now appears under \"Pending confirmations\" on the "
+            f"Artifact Deploy page in the dashboard. Open it to confirm or dismiss."
+        )
+
     if name == "autonudge_stop":
         # Defense-in-depth: _call_tool() already validates via _validate_args;
         # re-validate here so schema enforcement is visible at the extraction
@@ -3408,39 +3877,50 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         query = args["query"]
         limit = args.get("limit", 10)
         all_workspaces = args.get("all_workspaces", False)
-        after_epoch = _parse_iso_date_epoch(args["after"]) if args.get("after") else None
-        before_epoch = _parse_iso_date_epoch(args["before"]) if args.get("before") else None
+        # A supplied-but-unparseable date (e.g. 2026-02-30 passes the regex but is
+        # not a real calendar date) must ERROR, not be silently dropped — a silent
+        # drop would return the UNFILTERED set and mislead the caller.
+        after_epoch = before_epoch = None
+        if args.get("after"):
+            after_epoch = _parse_iso_date_epoch(args["after"])
+            if after_epoch is None:
+                return "Invalid 'after' date — use a real calendar date (YYYY-MM-DD)."
+        if args.get("before"):
+            before_epoch = _parse_iso_date_epoch(args["before"])
+            if before_epoch is None:
+                return "Invalid 'before' date — use a real calendar date (YYYY-MM-DD)."
 
         cl = ConversationLog()
         session_key = _resolve_session_key()
+        # Default scoping: confine to the caller's workspace (fail-closed — unset
+        # buckets to "default"). all_workspaces opts out.
+        current_ws: str | None = None if all_workspaces else _caller_workspace(cl, session_key)
 
-        # Default scoping: confine results to the caller's workspace. Sessions
-        # with no workspace recorded (legacy, or an unresolved caller) are
-        # bucketed as "default" on BOTH sides of the comparison, so an
-        # unresolvable caller scopes to the default bucket rather than
-        # fail-open-ing to every workspace's history. all_workspaces opts out.
-        current_ws: str | None = None
-        if not all_workspaces:
-            current_ws = (cl.get_metadata(session_key).get("workspace") if session_key else None) or "default"
-
-        # Over-fetch from the ranked backend so post-filtering (incognito,
-        # workspace, date) can drop rows without starving the limit. (Named
-        # `ranked`, not `raw`: `raw` is bound as bytes|None elsewhere in this
-        # function and mypy unifies a function's locals.)
-        ranked: list[dict] = cl.search_sessions(query, limit=limit * 3)
+        # Fetch the FULL ranked match set (bounded by the backend's scan window),
+        # not a fixed limit*3 over-fetch: heavy incognito/workspace/date drops on
+        # the first page could otherwise starve a caller whose real matches rank
+        # lower, returning "no results" while hits exist.
+        ranked: list[dict] = cl.search_sessions(query, limit=_SEARCH_HISTORY_SCAN)
 
         results: list[dict] = []
         for meta in ranked:
             key = meta.get("key", "")
             if not key:
                 continue
-            # Authoritative metadata (list meta omits workspace and may carry a
-            # default memory_mode) — one bounded read per candidate.
+            # TOCTOU: the file may be unlinked (clear-sessions, rotation, concurrent
+            # process) between the ranked snapshot and this read. has_log is the
+            # existence gate so we never emit a ghost row for a session the read
+            # tool can no longer retrieve. Do NOT additionally require non-empty
+            # metadata: a legacy session whose file predates the metadata line
+            # returns {} here yet get_chat_session serves it fine, so rejecting {}
+            # would hide those sessions from search while they remain readable.
+            if not cl.has_log(key):
+                continue
             full_meta = cl.get_metadata(key)
             if _history_is_incognito(full_meta) or _history_is_incognito(meta):
                 continue  # EB-5: incognito/temporary never surface
-            if current_ws is not None and (full_meta.get("workspace") or "default") != current_ws:
-                continue  # EB-cc3: workspace scoping (fail-closed via "default" bucket)
+            if current_ws is not None and _ws_bucket(full_meta.get("workspace")) != current_ws:
+                continue  # EB-cc3: workspace scoping (fail-closed; normalizes non-str)
             modified = meta.get("modified", 0) or 0
             if after_epoch is not None and modified < after_epoch:
                 continue
@@ -3461,8 +3941,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
         if not results:
             sel().log_tool_invocation(
-                session_key=session_key, source="mcp",
-                tool_name="search_chat_history", outcome="no_results",
+                session_key=session_key,
+                source="mcp",
+                tool_name="search_chat_history",
+                outcome="no_results",
                 metadata={"query_len": len(query)},
             )
             return "No matching conversations found. Try different keywords."
@@ -3483,8 +3965,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # EB-6: redact secrets/exfil URLs from snippets before returning.
         output = _redact_history_output(output)
         sel().log_tool_invocation(
-            session_key=session_key, source="mcp",
-            tool_name="search_chat_history", outcome="success",
+            session_key=session_key,
+            source="mcp",
+            tool_name="search_chat_history",
+            outcome="success",
             metadata={"query_len": len(query), "result_count": len(results)},
         )
         return output
@@ -3496,53 +3980,69 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         all_workspaces = args.get("all_workspaces", False)
 
         # Defense-in-depth on a path-bearing identifier: ConversationLog._safe_key
-        # already neutralizes separators, but reject traversal markers outright
-        # here so a crafted key can never probe outside the sessions dir. (A
-        # strict allowlist regex is avoided: real keys legitimately contain ':'
-        # and '.', e.g. Slack thread_ts and "dashboard:chat-…".)
-        if "/" in key or "\\" in key or ".." in key:
+        # already neutralizes separators. Reject path separators outright, and ".."
+        # only as a STANDALONE component — not as a substring — so legitimate keys
+        # like "dashboard_chat-2..3" round-trip between search and read. (A strict
+        # allowlist regex is avoided: real keys legitimately contain ':' and '.')
+        if "/" in key or "\\" in key or key in ("..", "."):
             sel().log_tool_invocation(
-                session_key=_resolve_session_key(), source="mcp",
-                tool_name="get_chat_session", outcome="rejected_bad_key",
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="get_chat_session",
+                outcome="rejected_bad_key",
             )
             return "Invalid session_key."
 
         cl = ConversationLog()
         if not cl.has_log(key):
             sel().log_tool_invocation(
-                session_key=_resolve_session_key(), source="mcp",
-                tool_name="get_chat_session", outcome="not_found",
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="get_chat_session",
+                outcome="not_found",
             )
-            return _redact_history_output(f"No conversation found for session_key `{key}`.")
+            # Do NOT echo the raw caller-supplied key: the dashboard renders it as
+            # live markdown, so a crafted key (e.g. "[x](https://evil/)") would be a
+            # reflected phishing/prompt-injection payload. Return a stable
+            # fingerprint instead — enough to correlate, safe to render. (Not a
+            # security signature — just a display-safe correlation id — but use
+            # sha256 anyway so no weak-hash scanner flags this egress path.)
+            fp = hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:12]
+            return f"No conversation found for that session_key (fp:{fp})."
 
         meta = cl.get_metadata(key)
         if _history_is_incognito(meta):
             # EB-7b: no bypass of incognito exclusion via direct fetch.
             sel().log_tool_invocation(
-                session_key=_resolve_session_key(), source="mcp",
-                tool_name="get_chat_session", outcome="refused_incognito",
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="get_chat_session",
+                outcome="refused_incognito",
             )
             return "That conversation is private (incognito/temporary) and cannot be read."
 
         # Deny-by-default workspace isolation: mirror search_chat_history's
         # fail-closed scoping so a caller can't bypass it by fetching a session
-        # from another workspace directly. Unset workspaces bucket as "default".
+        # from another workspace directly. Unset/non-string workspaces bucket as
+        # "default" via _ws_bucket.
         if not all_workspaces:
-            caller_key = _resolve_session_key()
-            caller_ws = (cl.get_metadata(caller_key).get("workspace") if caller_key else None) or "default"
-            target_ws = meta.get("workspace") or "default"
-            if caller_ws != target_ws:
+            caller_ws = _caller_workspace(cl, _resolve_session_key())
+            if _ws_bucket(meta.get("workspace")) != caller_ws:
                 sel().log_tool_invocation(
-                    session_key=caller_key, source="mcp",
-                    tool_name="get_chat_session", outcome="denied_cross_workspace",
+                    session_key=_resolve_session_key(),
+                    source="mcp",
+                    tool_name="get_chat_session",
+                    outcome="denied_cross_workspace",
                 )
                 return "Access denied: that conversation belongs to a different workspace."
 
         messages = cl.recent(key, max_messages=max_messages, roles={"user", "assistant"})
         if not messages:
             sel().log_tool_invocation(
-                session_key=_resolve_session_key(), source="mcp",
-                tool_name="get_chat_session", outcome="empty",
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="get_chat_session",
+                outcome="empty",
             )
             return _redact_history_output(f"Conversation `{key}` has no readable messages.")
 
@@ -3555,8 +4055,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
         output = _redact_history_output("\n".join(lines))
         sel().log_tool_invocation(
-            session_key=_resolve_session_key(), source="mcp",
-            tool_name="get_chat_session", outcome="success",
+            session_key=_resolve_session_key(),
+            source="mcp",
+            tool_name="get_chat_session",
+            outcome="success",
             metadata={"message_count": len(messages)},
         )
         return output
@@ -3667,8 +4169,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         db_path = Path(config_dir()) / "workspace" / "knowledge" / "knowledge.db"
         if not db_path.exists():
             sel().log_tool_invocation(
-                session_key=_resolve_session_key(), source="mcp",
-                tool_name="knowledge_dedup", outcome="not_configured",
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="knowledge_dedup",
+                outcome="not_configured",
             )
             return "Knowledge Library is not configured. Ingest documents via the dashboard first."
         store = KnowledgeStore(str(db_path))
@@ -3677,7 +4181,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         finally:
             store.db.close()
         sel().log_tool_invocation(
-            session_key=_resolve_session_key(), source="mcp",
+            session_key=_resolve_session_key(),
+            source="mcp",
             tool_name="knowledge_dedup",
             outcome="applied" if apply else "preview",
             metadata={"duplicate_count": len(results), "apply": apply},
@@ -3689,7 +4194,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         for r in results:
             lines.append(
                 f"- {r['loser']} ({r['items_deleted']} chunks) -> kept "
-                f"{r['winner']} [{r['reason']}]")
+                f"{r['winner']} [{r['reason']}]"
+            )
         output = "\n".join(lines)
         output, _ = redact_exfiltration_urls(output)
         output, _ = redact_credentials(output)
@@ -3732,8 +4238,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         sk = _resolve_session_key_strict()
         if not sk.startswith("dashboard:"):
             sel().log_tool_invocation(
-                session_key=sk or "<unresolved>", source="mcp",
-                tool_name="set_project", outcome="rejected",
+                session_key=sk or "<unresolved>",
+                source="mcp",
+                tool_name="set_project",
+                outcome="rejected",
                 error="non-dashboard or unresolved session",
             )
             return (
@@ -3741,19 +4249,23 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "identity. Slack, cron, and subagent contexts are rejected to avoid "
                 "cross-context state mutation."
             )
-        slot_name = sk[len("dashboard:"):]
+        slot_name = sk[len("dashboard:") :]
         d = _post(f"/api/chat/slots/{slot_name}/project", {"project": path})
         err_val = d.get("error")
         if err_val:
             sel().log_tool_invocation(
-                session_key=sk, source="mcp",
-                tool_name="set_project", outcome="error",
+                session_key=sk,
+                source="mcp",
+                tool_name="set_project",
+                outcome="error",
                 error=str(err_val),
             )
             return f"Error: {err_val}"
         sel().log_tool_invocation(
-            session_key=sk, source="mcp",
-            tool_name="set_project", outcome="success",
+            session_key=sk,
+            source="mcp",
+            tool_name="set_project",
+            outcome="success",
         )
         new_project = d.get("project") or ""
         if not new_project:
@@ -3784,8 +4296,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         safe, _ = redact_exfiltration_urls(text)
         safe, _ = redact_credentials(safe)
         sel().log_tool_invocation(
-            session_key=_resolve_session_key(), source="mcp",
-            tool_name=tool, outcome=outcome,
+            session_key=_resolve_session_key(),
+            source="mcp",
+            tool_name=tool,
+            outcome=outcome,
         )
         return safe
 
@@ -3796,7 +4310,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return _wf_return("workflow_author", "Error: intent is required", outcome="error")
         d = _post("/api/workflows/author", {"intent": intent})
         if d.get("error"):
-            return _wf_return("workflow_author", f"workflow_author failed: {d['error']}", outcome="error")
+            return _wf_return(
+                "workflow_author", f"workflow_author failed: {d['error']}", outcome="error"
+            )
         if not d.get("ok"):
             return _wf_return(
                 "workflow_author",
@@ -3827,7 +4343,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             wf_body["intent"] = intent
             d = _post("/api/workflows/run_intent", wf_body)
             if d.get("error"):
-                return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
+                return _wf_return(
+                    "workflow_run", f"workflow_run failed: {d['error']}", outcome="error"
+                )
             return _wf_return(
                 "workflow_run",
                 f"Started workflow run `{d.get('run_id')}`. It is authoring the workflow "
@@ -3836,7 +4354,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 f"here on completion — or check progress with workflow_status('{d.get('run_id')}').",
             )
         if not source:
-            return _wf_return("workflow_run", "Error: provide either 'source' or 'intent'", outcome="error")
+            return _wf_return(
+                "workflow_run", "Error: provide either 'source' or 'intent'", outcome="error"
+            )
         wf_body["source"] = source
         d = _post("/api/workflows/run", wf_body)
         if d.get("error"):
@@ -3867,8 +4387,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return _wf_return(
             "workflow_status",
             f"Run `{d.get('run_id')}` ({safe_name}): **{d.get('status')}** "
-            f"— {d.get('event_count', 0)} events"
-            + (f"; error: {safe_err}" if safe_err else ""),
+            f"— {d.get('event_count', 0)} events" + (f"; error: {safe_err}" if safe_err else ""),
         )
 
     if name == "workflow_result":
@@ -3933,7 +4452,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             {"from_index": from_index if isinstance(from_index, int) else 0},
         )
         if d.get("error"):
-            return _wf_return("workflow_rerun_subtree", f"workflow_rerun_subtree: {d['error']}", outcome="error")
+            return _wf_return(
+                "workflow_rerun_subtree", f"workflow_rerun_subtree: {d['error']}", outcome="error"
+            )
         return _wf_return(
             "workflow_rerun_subtree",
             f"Re-running `{run_id}` as `{d.get('run_id')}` "

@@ -23,6 +23,7 @@ from kiro_crew.platform.context import (
     set_context,
 )
 from kiro_crew.platform.defaults import (
+    DefaultAgentExecutableResolver,
     DefaultAgentRuntime,
     DefaultAppRegistryPolicy,
     DefaultAppsLoader,
@@ -120,6 +121,7 @@ def build_default_context(
         providers=DefaultProviderRegistry(),
         publish=DefaultPublishRegistry(),
         agent_runtime=DefaultAgentRuntime(),
+        agent_executable=DefaultAgentExecutableResolver(),
         sandbox=DefaultSandboxPolicy(),
         credentials=DefaultCredentialPolicy(),
         security=PolicyAuthority(),  # _NullOverlay → baseline only

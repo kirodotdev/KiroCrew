@@ -1,6 +1,6 @@
 import React from 'react'
 import { twMerge } from 'tailwind-merge'
-import { motion, useMotionValue, useSpring, useMotionTemplate } from 'framer-motion'
+import { motion, useMotionValue, useSpring, useMotionTemplate, useReducedMotion } from 'framer-motion'
 import InfoTip from './InfoTip'
 
 /* ── Shared UI primitives ── */
@@ -21,7 +21,7 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
   ({ children, danger, primary, className, ...rest }, ref) => (
     <button
       ref={ref}
-      className={twMerge(`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[13px] cursor-pointer font-body transition-all disabled:opacity-30 disabled:cursor-not-allowed ${
+      className={twMerge(`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[13px] cursor-pointer font-body transition-all active:scale-[0.97] active:duration-75 disabled:opacity-30 disabled:cursor-not-allowed ${
         primary
           ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)]'
           : danger
@@ -70,7 +70,7 @@ export const IconButton = React.forwardRef<
     ref={ref}
     type="button"
     className={twMerge(
-      'p-[4px] rounded transition-all cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed',
+      'p-[4px] rounded transition-all active:scale-[0.97] active:duration-75 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed',
       ICON_BUTTON_VARIANTS[variant],
       className,
     )}
@@ -312,6 +312,7 @@ export function Slider({
   const [dragging, setDragging] = React.useState(false)
   const pointerDown = React.useRef(false)
   const [hoverVal, setHoverVal] = React.useState<number | null>(null)
+  const reduceMotion = useReducedMotion()
 
   const range = (max - min) || 1
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
@@ -485,10 +486,10 @@ export function Slider({
         <motion.div aria-hidden className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: motionPos }}>
           <motion.div
             className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
-            animate={{ scale: dragging ? 1.15 : 1, boxShadow: dragging ? '0 2px 7px rgba(0,0,0,.4)' : atMax ? '0 0 10px var(--accent)' : '0 1px 3px rgba(0,0,0,.3)' }}
-            whileHover={disabled ? undefined : { scale: 1.12 }}
-            whileTap={disabled ? undefined : { scale: 1.2 }}
-            transition={{ type: 'spring', stiffness: 500, damping: 26 }}
+            animate={{ scale: reduceMotion ? 1 : (dragging ? 1.15 : 1), boxShadow: dragging ? '0 2px 7px rgba(0,0,0,.4)' : atMax ? '0 0 10px var(--accent)' : '0 1px 3px rgba(0,0,0,.3)' }}
+            whileHover={disabled || reduceMotion ? undefined : { scale: 1.12 }}
+            whileTap={disabled || reduceMotion ? undefined : { scale: 1.2 }}
+            transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 26 }}
           />
         </motion.div>
       </div>

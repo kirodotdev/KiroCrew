@@ -46,11 +46,12 @@ from typing import Any, Callable, Optional
 from kiro_crew import platform_compat
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.mcp_caller import CallerContext
-from kiro_crew.mcp_gateway import socketsec
+from kiro_crew.mcp_gateway import credwatch, socketsec
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env
 from kiro_crew.mcp_gateway.pool import (
+    DRAIN_DEADLINE_SECS,
     READ_BUFFER_LIMIT_BYTES,
     BackendPool,
     BackendUnavailable,
@@ -137,6 +138,14 @@ _SHUTDOWN_DRAIN_SECS = 10.0
 # interval after startup so short-lived runs (tests) never trigger it.
 _HEARTBEAT_SWEEP_INTERVAL_SECS = 60.0
 
+# Interval between credential-file change probes when one or more
+# ``--credential-watch-path`` flags were supplied. On a content change,
+# backends spawned with the stale credential are drained (blue-green
+# cutover) so they respawn with the refreshed credential. The probe is a
+# cheap stat (plus a hash only when mtime moved), so 30s keeps rotation
+# latency low without measurable overhead. No flag ⇒ no watcher task.
+_CREDENTIAL_WATCH_INTERVAL_SECS = 30.0
+
 # Interval between hot-key persistence flushes when prewarming is enabled.
 # Recording a register hit is O(1) in-memory; the actual disk write is
 # batched onto this cadence and run via ``asyncio.to_thread`` so the event
@@ -204,6 +213,7 @@ async def run_gatewayd(
     stop_event: asyncio.Event,
     target_resolver: Optional[TargetResolver] = None,
     prewarm_count: int = 0,
+    credential_watch_paths: Optional[list[Path]] = None,
 ) -> None:
     """Run the gateway until ``stop_event`` is set.
 
@@ -235,6 +245,16 @@ async def run_gatewayd(
             runs. Clamped to ``max_backends - 1`` if set at or above pool
             capacity, since prewarmed backends are pinned and would otherwise
             leave no reclaimable slot for a live, non-warm session.
+        credential_watch_paths: Credential files to watch for content
+            changes. On a real rotation (content digest change — a no-op
+            rewrite with identical bytes never fires), ALL pooled backends
+            are drained via a blue-green cutover so they respawn with the
+            fresh credential, then the warm pool is re-warmed. ``None`` or
+            empty (the public default) creates no watcher task — the run
+            flow is byte-identical to the pre-watcher daemon. The paths are
+            caller-supplied (typically threaded through the seam-resolved
+            ``--credential-watch-path`` argv flags); the daemon never
+            hardcodes or interprets any credential path.
 
     The function never raises on normal shutdown. Startup failures (e.g.
     socket directory not creatable, another daemon already bound to the
@@ -256,7 +276,8 @@ async def run_gatewayd(
     if lock_fd is None:
         logger.warning(
             "gatewayd: another instance already owns %s — exiting without "
-            "binding (singleton guard)", socket_path,
+            "binding (singleton guard)",
+            socket_path,
         )
         return
     await _remove_stale_socket(socket_path)
@@ -280,7 +301,9 @@ async def run_gatewayd(
         logger.warning(
             "prewarm_count=%d >= max_backends=%d would pin the whole pool; "
             "clamping to %d to reserve capacity for live sessions",
-            prewarm_count, max_backends, clamped,
+            prewarm_count,
+            max_backends,
+            clamped,
         )
         prewarm_count = clamped
 
@@ -322,8 +345,7 @@ async def run_gatewayd(
             connections.add(task)
         except Exception:
             logger.exception(
-                "accept callback crashed while spawning handler; "
-                "closing connection"
+                "accept callback crashed while spawning handler; " "closing connection"
             )
             try:
                 writer.close()
@@ -343,6 +365,7 @@ async def run_gatewayd(
     heartbeat: Optional[asyncio.Task[None]] = None
     flush_sweeper: Optional[asyncio.Task[None]] = None
     topup_sweeper: Optional[asyncio.Task[None]] = None
+    credential_watchers: list[asyncio.Task[None]] = []
     prewarm_tasks: set[asyncio.Task[None]] = set()
     _prewarm_lock = asyncio.Lock()  # serialize passes so unpin sees latest state
 
@@ -371,7 +394,9 @@ async def run_gatewayd(
             logger.debug("spill cleanup failed at startup", exc_info=True)
         logger.info(
             "gatewayd listening socket=%s max_backends=%d idle_timeout=%ds",
-            socket_path, max_backends, idle_timeout_secs,
+            socket_path,
+            max_backends,
+            idle_timeout_secs,
         )
 
         # Idle sweeper — wakes every ``idle_timeout_secs / 4`` (bounded to
@@ -397,7 +422,9 @@ async def run_gatewayd(
         # after startup.
         heartbeat = asyncio.create_task(
             _heartbeat_sweeper(
-                pool, _HEARTBEAT_SWEEP_INTERVAL_SECS, stop_event,
+                pool,
+                _HEARTBEAT_SWEEP_INTERVAL_SECS,
+                stop_event,
                 backends_pidfile=Path(f"{socket_path}.backends"),
             ),
             name="mcp-gateway-heartbeat-sweeper",
@@ -458,7 +485,9 @@ async def run_gatewayd(
                         return backend
 
                     await prewarm_from_payloads(
-                        payloads, _acquire, limit=prewarm_count,
+                        payloads,
+                        _acquire,
+                        limit=prewarm_count,
                         unreserve=pool.unreserve,
                     )
 
@@ -470,7 +499,10 @@ async def run_gatewayd(
                         PoolKey.from_register(p).stable_hash() for p in payloads[:prewarm_count]
                     }
                     for pool_key, backend in await pool.snapshot():
-                        if getattr(backend, "pinned", False) and pool_key.stable_hash() not in current_top_digests:
+                        if (
+                            getattr(backend, "pinned", False)
+                            and pool_key.stable_hash() not in current_top_digests
+                        ):
                             backend.pinned = False
                 except asyncio.CancelledError:
                     raise
@@ -491,19 +523,37 @@ async def run_gatewayd(
 
         if hot_keys is not None:
             flush_sweeper = asyncio.create_task(
-                _hot_keys_flush_sweeper(
-                    hot_keys, _HOT_KEYS_FLUSH_INTERVAL_SECS, stop_event
-                ),
+                _hot_keys_flush_sweeper(hot_keys, _HOT_KEYS_FLUSH_INTERVAL_SECS, stop_event),
                 name="mcp-gateway-hot-keys-flush",
             )
             topup_sweeper = asyncio.create_task(
-                _prewarm_topup_sweeper(
-                    _schedule_prewarm, _PREWARM_TOPUP_INTERVAL_SECS, stop_event
-                ),
+                _prewarm_topup_sweeper(_schedule_prewarm, _PREWARM_TOPUP_INTERVAL_SECS, stop_event),
                 name="mcp-gateway-prewarm-topup",
             )
             # (a) Warm once at startup -- initial=True loads persisted hot keys.
             _schedule_prewarm(initial=True)
+
+        # Credential-rotation drain: on a content change of any watched
+        # credential file, drain ALL pooled backends (blue-green cutover) so
+        # they respawn with the fresh credential, then re-warm. Watcher tasks
+        # exist ONLY when the caller supplied watch paths — the public default
+        # (no paths) creates no task and the run flow is byte-identical.
+        async def _on_credential_change() -> None:
+            await _drain_and_rewarm_on_credential_change(pool, _schedule_prewarm)
+
+        for cred_path in credential_watch_paths or []:
+            credential_watchers.append(
+                asyncio.create_task(
+                    credwatch.watch_credential(
+                        cred_path,
+                        _CREDENTIAL_WATCH_INTERVAL_SECS,
+                        stop_event,
+                        _on_credential_change,
+                        logger,
+                    ),
+                    name="mcp-gateway-credential-watcher",
+                )
+            )
 
         await stop_event.wait()
     finally:
@@ -548,7 +598,13 @@ async def run_gatewayd(
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await topup_sweeper
 
-        # Cancel any in-flight warm passes (startup / top-up / cookie-triggered)
+        for watcher in credential_watchers:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await watcher
+        credential_watchers.clear()
+
+        # Cancel any in-flight warm passes (startup / top-up / credential-triggered)
         # so a slow handshake cannot stall shutdown.
         for task in list(prewarm_tasks):
             task.cancel()
@@ -676,6 +732,44 @@ async def _prewarm_topup_sweeper(
         pass
 
 
+async def _drain_and_rewarm_on_credential_change(
+    pool: BackendPool,
+    schedule_prewarm: Callable[[], None],
+) -> None:
+    """Handle a credential rotation via blue-green cutover: move ALL
+    active backends (including in-use, refcount>0) to the draining list,
+    then re-warm fresh backends with the new credential.
+
+    Draining backends continue serving in-flight requests but are invisible
+    to new acquires. The heartbeat sweeper reaps them when refcount drops to
+    0 or the deadline expires, whichever first. New requests immediately cut
+    over to fresh backends spawned with the rotated credential.
+
+    If the drain itself raises, we deliberately skip the re-warm: stale
+    backends may still be pooled, and re-warming would reuse + PIN them,
+    making them harder to evict next cycle. Skipping leaves recovery to the
+    next credential change or the top-up sweeper once they idle out.
+    """
+    try:
+        # First evict truly idle backends (refcount==0) immediately — they
+        # have no in-flight work and can be killed outright.
+        idle_drained = await pool.evict_idle(0.0, include_pinned=True)
+        # Move in-use backends (refcount>0) to the draining list for
+        # blue-green cutover — they finish in-flight work then get reaped.
+        moved = await pool.drain_all_to_bluegreen()
+        logger.info(
+            "credential file changed: blue-green cutover — evicted %d idle, "
+            "moved %d in-use to draining (deadline=%ds)",
+            idle_drained,
+            moved,
+            int(DRAIN_DEADLINE_SECS),
+        )
+    except Exception:
+        logger.exception("credential-change blue-green cutover failed; skipping re-warm")
+        return
+    schedule_prewarm()
+
+
 async def _heartbeat_sweeper(
     pool: BackendPool,
     interval: float,
@@ -711,24 +805,32 @@ async def _heartbeat_sweeper(
                     try:
                         state = await backend._heartbeat_once(now)
                     except Exception:  # pragma: no cover — defensive
-                        logger.exception(
-                            "heartbeat probe crashed for %s", key.human_readable()
-                        )
+                        logger.exception("heartbeat probe crashed for %s", key.human_readable())
                         continue
                     if state in ("gone", "wedged"):
-                        pool.note_backend_death(
-                            key.stable_hash(), now - backend.created_at
-                        )
+                        pool.note_backend_death(key.stable_hash(), now - backend.created_at)
                         evicted = await pool.evict(key, expected=backend)
                         if evicted is not None:
                             with contextlib.suppress(Exception):
                                 await evicted.shutdown(timeout=2.0)
                         logger.warning(
                             "heartbeat recycled %s backend pool=%s",
-                            state, key.human_readable(),
+                            state,
+                            key.human_readable(),
                         )
                     elif state == "alive":
                         pool.note_backend_healthy(key.stable_hash())
+                # Reap draining backends (blue-green cutover) whose refcount
+                # hit 0 or whose deadline expired.
+                reaped = await pool.reap_draining()
+                for backend in reaped:
+                    logger.info(
+                        "heartbeat reaped draining backend server=%s pid=%s "
+                        "refcount=%d (credential-rotation cutover)",
+                        backend.pool_key.server_name,
+                        backend.pid,
+                        backend.refcount,
+                    )
                 # Persist live backend pids out-of-band so the supervising
                 # manager can killpg them if it must SIGKILL a wedged gatewayd
                 # (which then never runs pool.shutdown_all()).
@@ -940,10 +1042,7 @@ def _register_pids(register: dict[str, Any]) -> list[int]:
     if not isinstance(raw, list):
         legacy = register.get("parent_pid")
         raw = [legacy] if legacy is not None else []
-    return [
-        p for p in raw
-        if isinstance(p, int) and not isinstance(p, bool) and p > 1
-    ]
+    return [p for p in raw if isinstance(p, int) and not isinstance(p, bool) and p > 1]
 
 
 def _conn_index_add(conn: _StubConn) -> None:
@@ -1013,8 +1112,10 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
         _audit_caller_claimed(old_key, updated_caller.session_key, conn.pool_label, "allowed")
         logger.info(
             "stub %s claim → session_key=%s type=%s (was %s)",
-            conn.stub_uuid, updated_caller.session_key,
-            updated_caller.session_type, old_key or "<none>",
+            conn.stub_uuid,
+            updated_caller.session_key,
+            updated_caller.session_type,
+            old_key or "<none>",
         )
     return {"type": "claimed", "updated": updated, "connections": len(conns)}
 
@@ -1077,7 +1178,10 @@ async def _apply_abort(frame: dict[str, Any], pool: "BackendPool") -> dict[str, 
 
     logger.info(
         "abort applied: pids=%r reason=%s cancelled=%d stubs=%d",
-        pids, reason, total_cancelled, len(affected_stubs),
+        pids,
+        reason,
+        total_cancelled,
+        len(affected_stubs),
     )
     _audit_abort_applied(pids, reason, "allowed", total_cancelled, len(affected_stubs))
     return {"type": "aborted", "cancelled": total_cancelled, "stubs": len(affected_stubs)}
@@ -1202,15 +1306,15 @@ async def _handle_connection(
         if not socketsec.socket_owner_only(socket_path):
             logger.warning(
                 "rejecting gateway connection: peer uid unverifiable on this "
-                "platform and socket %s is not owner-only (0600)", socket_path,
+                "platform and socket %s is not owner-only (0600)",
+                socket_path,
             )
-            _audit_peer_denied(
-                f"peer uid unverifiable and socket not owner-only: {socket_path}"
-            )
+            _audit_peer_denied(f"peer uid unverifiable and socket not owner-only: {socket_path}")
             return
         logger.debug(
             "peer uid unverifiable on this platform; socket %s verified "
-            "owner-only, proceeding on the filesystem gate", socket_path,
+            "owner-only, proceeding on the filesystem gate",
+            socket_path,
         )
     register = await _read_first_frame(reader)
     if register is None:
@@ -1291,9 +1395,7 @@ async def _handle_connection(
     # so a ``claim`` frame naming ANY level of that tree re-targets every
     # connection of the claimed runtime. Best-effort — stubs that send no
     # usable PIDs simply keep the recaller-poll fallback.
-    conn = _StubConn(
-        stub_uuid, _register_pids(register), pool_key.human_readable(), caller
-    )
+    conn = _StubConn(stub_uuid, _register_pids(register), pool_key.human_readable(), caller)
     _conn_index_add(conn)
 
     # Provisional backend_id: the real pid isn't known until the backend
@@ -1315,7 +1417,8 @@ async def _handle_connection(
     )
     logger.info(
         "registered stub_uuid=%s pool=%s",
-        stub_uuid, pool_key.human_readable(),
+        stub_uuid,
+        pool_key.human_readable(),
     )
     # Accepting an identified stub is a permission decision; record it in the
     # SEL alongside the denial path so the audit trail covers both outcomes.
@@ -1356,8 +1459,9 @@ async def _handle_connection(
             except asyncio.IncompleteReadError:
                 return
             except asyncio.LimitOverrunError:
-                logger.warning("stub %s frame exceeded %d bytes; dropping conn",
-                               stub_uuid, _MAX_FRAME_BYTES)
+                logger.warning(
+                    "stub %s frame exceeded %d bytes; dropping conn", stub_uuid, _MAX_FRAME_BYTES
+                )
                 return
             if not line:
                 return
@@ -1403,16 +1507,16 @@ async def _handle_connection(
                     # Connection already carries an identity — reject the pivot
                     # (a compromised stub must not re-bind to another session).
                     attempted = _caller_from_register(msg)
-                    attempted_key = (
-                        attempted.session_key if attempted is not None else "<none>"
-                    )
+                    attempted_key = attempted.session_key if attempted is not None else "<none>"
                     logger.warning(
                         "stub %s sent recaller but caller already set "
                         "(session_key=%s); ignoring",
-                        stub_uuid, existing_key,
+                        stub_uuid,
+                        existing_key,
                     )
                     _audit_recaller_rejected(
-                        existing_key, pool_key.human_readable(),
+                        existing_key,
+                        pool_key.human_readable(),
                         f"recaller pivot attempt to session_key={attempted_key}",
                     )
                     continue
@@ -1425,7 +1529,8 @@ async def _handle_connection(
                         stub_uuid,
                     )
                     _audit_recaller_rejected(
-                        "", pool_key.human_readable(),
+                        "",
+                        pool_key.human_readable(),
                         "recaller frame with empty/malformed session_key",
                     )
                     continue
@@ -1436,7 +1541,9 @@ async def _handle_connection(
                 _audit_caller_rekey(caller.session_key, pool_key.human_readable())
                 logger.info(
                     "stub %s recaller → session_key=%s type=%s",
-                    stub_uuid, caller.session_key, caller.session_type,
+                    stub_uuid,
+                    caller.session_key,
+                    caller.session_type,
                 )
                 continue
 
@@ -1459,18 +1566,21 @@ async def _handle_connection(
                     except _TargetUnknown as exc:
                         _audit_pool_rejected(
                             caller.session_key if caller else "",
-                            pool_key.human_readable(), str(exc),
+                            pool_key.human_readable(),
+                            str(exc),
                         )
                         await _write_json_line(writer, {"type": "rejected", "reason": str(exc)})
                         return
                     except (BackendUnavailable, PoolAtCapacity) as exc:
                         logger.info(
                             "ensure_backend rejected (fallback-eligible) for %s: %s",
-                            pool_key.human_readable(), exc,
+                            pool_key.human_readable(),
+                            exc,
                         )
                         _audit_pool_fallback(
                             caller.session_key if caller else "",
-                            pool_key.human_readable(), str(exc),
+                            pool_key.human_readable(),
+                            str(exc),
                         )
                         await _write_json_line(
                             writer,
@@ -1486,11 +1596,13 @@ async def _handle_connection(
                         # tools for the whole session.
                         logger.warning(
                             "ensure_backend spawn failed (fallback-eligible) for %s: %s",
-                            pool_key.human_readable(), exc,
+                            pool_key.human_readable(),
+                            exc,
                         )
                         _audit_pool_fallback(
                             caller.session_key if caller else "",
-                            pool_key.human_readable(), f"spawn failed: {exc}",
+                            pool_key.human_readable(),
+                            f"spawn failed: {exc}",
                         )
                         await _write_json_line(
                             writer,
@@ -1512,7 +1624,8 @@ async def _handle_connection(
                         )
                         _audit_pool_rejected(
                             caller.session_key if caller else "",
-                            pool_key.human_readable(), f"internal error: {exc}",
+                            pool_key.human_readable(),
+                            f"internal error: {exc}",
                         )
                         await _write_json_line(
                             writer,
@@ -1550,12 +1663,16 @@ async def _handle_connection(
                 except _TargetUnknown as exc:
                     _audit_pool_rejected(
                         caller.session_key if caller else "",
-                        pool_key.human_readable(), str(exc),
+                        pool_key.human_readable(),
+                        str(exc),
                     )
-                    await _write_json_line(writer, {
-                        "type": "rejected",
-                        "reason": str(exc),
-                    })
+                    await _write_json_line(
+                        writer,
+                        {
+                            "type": "rejected",
+                            "reason": str(exc),
+                        },
+                    )
                     return
                 except (BackendUnavailable, PoolAtCapacity) as exc:
                     # Legacy lazy-spawn path: only pre-ensure_backend stubs
@@ -1564,27 +1681,36 @@ async def _handle_connection(
                     # fallback-eligible. New stubs pre-flight via ensure_backend.
                     logger.info(
                         "lazy-spawn rejected for %s: %s",
-                        pool_key.human_readable(), exc,
+                        pool_key.human_readable(),
+                        exc,
                     )
                     _audit_pool_rejected(
                         caller.session_key if caller else "",
-                        pool_key.human_readable(), str(exc),
+                        pool_key.human_readable(),
+                        str(exc),
                     )
-                    await _write_json_line(writer, {
-                        "type": "rejected",
-                        "reason": str(exc),
-                    })
+                    await _write_json_line(
+                        writer,
+                        {
+                            "type": "rejected",
+                            "reason": str(exc),
+                        },
+                    )
                     return
                 except Exception as exc:
                     logger.exception("backend spawn failed for %s", pool_key.human_readable())
                     _audit_pool_rejected(
                         caller.session_key if caller else "",
-                        pool_key.human_readable(), f"spawn failed: {exc}",
+                        pool_key.human_readable(),
+                        f"spawn failed: {exc}",
                     )
-                    await _write_json_line(writer, {
-                        "type": "rejected",
-                        "reason": f"backend spawn failed: {exc}",
-                    })
+                    await _write_json_line(
+                        writer,
+                        {
+                            "type": "rejected",
+                            "reason": f"backend spawn failed: {exc}",
+                        },
+                    )
                     return
                 try:
                     inbox = await backend.attach_stub(stub_uuid)
@@ -1614,17 +1740,22 @@ async def _handle_connection(
                 # and fail ONLY this one in-flight request with a retryable
                 # error. The transport stays open, so the next call self-heals.
                 recovered = await _respawn_backend_for_stub(
-                    pool, pool_key, resolver, stub_uuid, writer,
-                    captured_init, backend, inbox, writer_task,
+                    pool,
+                    pool_key,
+                    resolver,
+                    stub_uuid,
+                    writer,
+                    captured_init,
+                    backend,
+                    inbox,
+                    writer_task,
                 )
                 if recovered is None:
                     # Genuinely unrecoverable (no captured init, circuit
                     # breaker open / capacity, or prime failed): fall back to
                     # the terminal error so the stub can do a clean
                     # per-session exec rather than churn against a dead server.
-                    await _write_json_line(
-                        writer, _jsonrpc_error(msg, f"backend gone: {exc}")
-                    )
+                    await _write_json_line(writer, _jsonrpc_error(msg, f"backend gone: {exc}"))
                     return
                 backend, inbox, writer_task = recovered
                 # Fail only this in-flight request; kiro-cli retries it on the
@@ -1656,14 +1787,18 @@ async def _handle_connection(
                 cancelled = await backend.cancel_in_flight_for_stub(stub_uuid)
             except Exception:
                 logger.warning(
-                    "cancel_in_flight_for_stub failed for %s", stub_uuid,
+                    "cancel_in_flight_for_stub failed for %s",
+                    stub_uuid,
                     exc_info=True,
                 )
             remaining = await backend.detach_stub(stub_uuid)
             if cancelled:
                 logger.info(
                     "stub %s detached with %d in-flight request(s) %s -> cancelled; refcount=%d",
-                    stub_uuid, len(cancelled), cancelled[:5], remaining,
+                    stub_uuid,
+                    len(cancelled),
+                    cancelled[:5],
+                    remaining,
                 )
                 # SEL audit: cancelling in-flight tool work on a plain stub
                 # disconnect is the same security-relevant action as the abort
@@ -1806,7 +1941,8 @@ async def _respawn_backend_for_stub(
         # be made usable without replaying it. Give up (terminal).
         logger.info(
             "respawn give-up (no captured initialize) stub=%s pool=%s",
-            stub_uuid, pool_key.human_readable(),
+            stub_uuid,
+            pool_key.human_readable(),
         )
         return None
 
@@ -1815,13 +1951,16 @@ async def _respawn_backend_for_stub(
     except (_TargetUnknown, BackendUnavailable, PoolAtCapacity, OSError) as exc:
         logger.info(
             "respawn give-up (acquire rejected) stub=%s pool=%s: %s",
-            stub_uuid, pool_key.human_readable(), exc,
+            stub_uuid,
+            pool_key.human_readable(),
+            exc,
         )
         return None
     except Exception:  # pragma: no cover — defensive
         logger.exception(
             "respawn acquire crashed stub=%s pool=%s",
-            stub_uuid, pool_key.human_readable(),
+            stub_uuid,
+            pool_key.human_readable(),
         )
         return None
 
@@ -1835,7 +1974,9 @@ async def _respawn_backend_for_stub(
         except BackendGone as exc:
             logger.info(
                 "respawn give-up (prime failed) stub=%s pool=%s: %s",
-                stub_uuid, pool_key.human_readable(), exc,
+                stub_uuid,
+                pool_key.human_readable(),
+                exc,
             )
             return None
         new_inbox = await new_backend.attach_stub(stub_uuid)
@@ -1847,7 +1988,9 @@ async def _respawn_backend_for_stub(
     )
     logger.info(
         "transparent respawn: stub=%s rebound to fresh backend pid=%s pool=%s",
-        stub_uuid, new_backend.pid, pool_key.human_readable(),
+        stub_uuid,
+        new_backend.pid,
+        pool_key.human_readable(),
     )
     return new_backend, new_inbox, new_writer_task
 
@@ -1871,16 +2014,15 @@ async def _drain_inbox_to_stub(
             try:
                 async with guard:
                     writer.write(payload)
-                    await asyncio.wait_for(
-                        writer.drain(), timeout=_WRITE_REPLY_TIMEOUT_SECS
-                    )
+                    await asyncio.wait_for(writer.drain(), timeout=_WRITE_REPLY_TIMEOUT_SECS)
             except (ConnectionError, BrokenPipeError):
                 # Scope E: log late responses dropped after stub detach
                 # instead of letting BrokenPipeError propagate unlogged.
                 logger.info(
                     "stub %s: response arrived after disconnect — dropped "
                     "(%d bytes); this is expected during session stop",
-                    stub_uuid or "unknown", len(payload),
+                    stub_uuid or "unknown",
+                    len(payload),
                 )
                 return
             except asyncio.TimeoutError:
@@ -2065,7 +2207,8 @@ async def _remove_stale_socket(socket_path: Path) -> None:
     if not stat.S_ISSOCK(st.st_mode):
         logger.warning(
             "path %s exists and is not a socket (mode=%o); leaving in place",
-            socket_path, st.st_mode,
+            socket_path,
+            st.st_mode,
         )
         return
     # Probe whether the socket is live before unlinking. If connect
@@ -2182,12 +2325,14 @@ def _collect_task_stacks() -> list[dict[str, Any]]:
                 )
         except Exception:  # pragma: no cover — defensive
             frames = ["<stack unavailable>"]
-        out.append({
-            "name": task.get_name(),
-            "done": task.done(),
-            "cancelled": task.cancelled(),
-            "stack": frames,
-        })
+        out.append(
+            {
+                "name": task.get_name(),
+                "done": task.done(),
+                "cancelled": task.cancelled(),
+                "stack": frames,
+            }
+        )
     return out
 
 
@@ -2263,8 +2408,11 @@ async def _zombie_diagnostic(
             # RuntimeError and would kill this watchdog on its first probe.
             task_count = len(asyncio.all_tasks())
             snap = await asyncio.to_thread(
-                _snapshot_state, server=server, pool=pool,
-                connections=connections, task_count=task_count,
+                _snapshot_state,
+                server=server,
+                pool=pool,
+                connections=connections,
+                task_count=task_count,
             )
             snap["tag"] = "probe"
             await asyncio.to_thread(_write_diagnostic, diag_path, snap)
@@ -2277,7 +2425,10 @@ async def _zombie_diagnostic(
                 logger.error(
                     "zombie gatewayd detected: is_serving=False while stop_event unset; "
                     "tasks=%d fd=%d rss_kb=%d — diagnostic dumped to %s; setting stop_event",
-                    snap["task_count"], snap["fd_count"], snap["rss_kb"], diag_path,
+                    snap["task_count"],
+                    snap["fd_count"],
+                    snap["rss_kb"],
+                    diag_path,
                 )
                 stop_event.set()
                 return
@@ -2319,8 +2470,19 @@ def _build_argparser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Number of hottest observed (agent x server x channel) backends to "
-             "spawn at startup, before the first stub connects, to remove the "
-             "cold-after-restart new-chat latency. 0 (default) disables prewarming.",
+        "spawn at startup, before the first stub connects, to remove the "
+        "cold-after-restart new-chat latency. 0 (default) disables prewarming.",
+    )
+    p.add_argument(
+        "--credential-watch-path",
+        dest="credential_watch_paths",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Credential file to watch for content changes (repeatable). On a "
+        "real rotation, all pooled backends are drained via a blue-green "
+        "cutover and respawned with the fresh credential. No flag "
+        "(default) disables the watcher entirely.",
     )
     p.add_argument(
         "--log-level",
@@ -2347,9 +2509,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # this hook they get logged through asyncio's default handler only
     # if the task is awaited; zombie modes have been traced to exactly
     # this path.
-    def _loop_exception_handler(
-        loop: asyncio.AbstractEventLoop, context: dict[str, Any]
-    ) -> None:
+    def _loop_exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
         exc = context.get("exception")
         msg = context.get("message", "unhandled event loop error")
         if exc is not None:
@@ -2386,6 +2546,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             idle_timeout_secs=args.idle_timeout_secs,
             stop_event=stop_event,
             prewarm_count=args.prewarm_count,
+            credential_watch_paths=[Path(p) for p in args.credential_watch_paths],
         )
     except Exception:
         logger.exception("gatewayd exited with unhandled exception")

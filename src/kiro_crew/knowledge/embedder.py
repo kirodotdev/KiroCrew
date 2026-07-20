@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import socket
 import struct
 import time
 import urllib.error
@@ -111,8 +112,32 @@ class OllamaEmbedder:
             with urllib.request.urlopen(req, timeout=self.timeout_secs) as resp:  # nosemgrep
                 data = json.loads(resp.read())
             return data.get("embedding")
+        except (socket.timeout, TimeoutError):
+            # A timeout is operator-actionable (slow/overloaded Ollama, or a chunk
+            # near the content budget on CPU-only inference) -- surface it at
+            # WARNING so repeated misses aren't silent at default log levels.
+            logger.warning(
+                "Ollama embed timeout (%ss, content=%d chars) at %s; consider raising "
+                "knowledge.embed_timeout_secs or lowering knowledge.embed_content_budget.",
+                self.timeout_secs,
+                len(text),
+                self.base_url,
+            )
+            self._available = None  # invalidate so next call re-checks
+            return None
         except Exception as e:
-            logger.debug("Ollama embed failed: %s", e)
+            if isinstance(e, urllib.error.URLError) and isinstance(
+                getattr(e, "reason", None), (socket.timeout, TimeoutError)
+            ):
+                logger.warning(
+                    "Ollama embed timeout (%ss, content=%d chars) at %s; consider raising "
+                    "knowledge.embed_timeout_secs or lowering knowledge.embed_content_budget.",
+                    self.timeout_secs,
+                    len(text),
+                    self.base_url,
+                )
+            else:
+                logger.debug("Ollama embed failed: %s", e)
             self._available = None  # invalidate so next call re-checks
             return None
 
@@ -154,27 +179,42 @@ def bytes_to_floats(data: bytes) -> list[float]:
     return list(struct.unpack(f"{n}f", data))
 
 
-def embed_signature(model: str, content_budget: int = _EMBED_CONTENT_BUDGET) -> str:
+def embed_signature(
+    model: str, content_budget: int = _EMBED_CONTENT_BUDGET, *, base_url: str = ""
+) -> str:
     """Signature over the embedding inputs a re-embed can actually change.
 
-    Captures the model name and the content budget — change either and a stored
-    vector becomes stale, and re-embedding the same item content fixes it. Items
-    whose stored ``embedding_sig`` differs from the current one are re-embedded by
-    the sig-gated rebuild (manual trigger and watcher self-heal both use it).
+    Captures the model name, the inference endpoint (``base_url``), and the content
+    budget — change any one and a stored vector may come from a different vector
+    space, and re-embedding the same item content fixes it. ``base_url`` matters
+    because the same model name served by a different backend (different host, or a
+    different model variant behind the same name) can produce vectors that no longer
+    align with query embeddings. Items whose stored ``embedding_sig`` differs from
+    the current one are re-embedded by the sig-gated rebuild (manual trigger and
+    watcher self-heal both use it).
+
+    ``content_budget`` is the SECOND positional parameter (preserving the original
+    ``embed_signature(model, content_budget)`` contract); ``base_url`` is
+    KEYWORD-ONLY so adding it can never silently rebind a caller's positional
+    ``content_budget`` to a URL (which would mint a wrong-but-valid signature and
+    trigger spurious rebuilds). The hash string order is unchanged, so existing
+    stored signatures stay valid regardless of how the args are passed.
 
     ponytail: does NOT cover edits to ``embed_for_item``'s assembly logic (field
     set / join separator) — a value hash can't see code. Ceiling: such a change
     needs a manual ``force`` rebuild. Upgrade path: add an ast-normalized source
     hash here if that logic starts churning.
     """
-    raw = f"{model}|{content_budget}"
+    raw = f"{model}|{base_url}|{content_budget}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def embedder_signature(embedder: OllamaEmbedder) -> str:
     """Current sig for an embedder. Single source of truth for callsites so the
-    set of inputs (model + budget) can't drift between them."""
-    return embed_signature(embedder.model, embedder.content_budget)
+    set of inputs (model + base_url + budget) can't drift between them."""
+    return embed_signature(
+        embedder.model, embedder.content_budget, base_url=embedder.base_url
+    )
 
 
 def _positive_or(value: object, default: float) -> float:

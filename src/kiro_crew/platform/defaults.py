@@ -21,8 +21,14 @@ from kiro_crew import midway, security
 # import ``kiro_crew.platform`` at module-load time, so importing them at the top
 # of this module (loaded during ``platform`` package init via ``bootstrap``)
 # would create a cycle — those stay local to each method and carry a
-# ``# circular import`` annotation.  ``security`` and ``midway`` do not reach
-# ``platform``, so they are imported at top level.
+# ``# circular import`` annotation.  ``security`` and ``midway`` are imported at
+# top level here because neither reaches ``platform`` at MODULE-LOAD time.
+# Exception (deferred-only): ``security.scan_exfiltration_urls`` /
+# ``redact_exfiltration_urls`` read ``current_context().credentials
+# .exempt_exact_hosts()`` through a FUNCTION-LOCAL import of
+# ``kiro_crew.platform.context`` (the ``sel.py`` deferred pattern).  Because that
+# reach-back is deferred to call time — never at ``security`` module load — the
+# top-level ``security`` import above stays cycle-free.
 
 
 class DefaultProviderRegistry:
@@ -71,6 +77,13 @@ class DefaultAgentRuntime:
         agent.run_first_run_setup()
 
 
+class DefaultAgentExecutableResolver:
+    """Use the executable selected by the public installation unchanged."""
+
+    def resolve_executable(self, executable: str) -> str:
+        return executable
+
+
 class DefaultSandboxPolicy:
     """Today's open-source sensitive-dir lists from ``sandbox.py``."""
 
@@ -90,6 +103,13 @@ class DefaultCredentialPolicy:
 
     def redact(self, text: str) -> str:
         return security.redact(text)
+
+    def exempt_exact_hosts(self) -> "frozenset[str]":
+        # The public edition exempts no hosts from the exfil heuristics — the
+        # base64-blob / query-length checks run for every domain, so redaction
+        # is byte-identical to today.  The companion returns its trusted-tenant
+        # host set (empty = MORE redaction, the safe direction).
+        return frozenset()
 
 
 class DefaultSlackEnterpriseGate:
@@ -126,6 +146,17 @@ class DefaultIdentityProvider:
 
     def issuer(self) -> Optional[str]:
         return None
+
+    def preflight_checks(self) -> List[Callable[[], None]]:
+        # The public edition runs no pre-launch checks — gateway/token startup
+        # is unchanged.  The companion returns its SSO-session checks here.
+        return []
+
+    def credential_watch_paths(self) -> List[Path]:
+        # The public edition watches no credential files — the MCP gateway
+        # daemon runs with no rotation watcher. A companion returns its
+        # rotated-credential file path(s) here.
+        return []
 
 
 class DefaultEmbeddingSource:
@@ -216,6 +247,21 @@ class DefaultTunnelProvider:
 
     def enabled(self) -> bool:
         return False
+
+    def register_callbacks(
+        self,
+        *,
+        on_connect: Optional[Callable[[str], Any]] = None,
+        on_disconnect: Optional[Callable[[], Any]] = None,
+    ) -> None:
+        # No managed tunnel → the connect/disconnect reflection callbacks never
+        # fire.  The stub TunnelManager keeps them for import compatibility.
+        return None
+
+    def status_snapshot(self) -> Optional[Dict[str, Any]]:
+        # None → the stub TunnelManager reports its own local status, so the
+        # standalone ``/api/tunnel/status`` payload is byte-identical to today.
+        return None
 
 
 class DefaultTelemetryProvider:

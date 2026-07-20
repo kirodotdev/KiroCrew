@@ -2722,66 +2722,96 @@ class GatewayOrchestrator:
 
                 if _injection_slot:
 
-                    if _injection_slot.running:
-                        # Slot is busy — wait for current turn to finish,
-                        # then inject. No visible queue card.
-                        _current = _injection_slot.task
-                        if _current is not None:
-                            try:
-                                await asyncio.wait_for(
-                                    asyncio.shield(_current),
-                                    timeout=INJECTION_TIMEOUT,
-                                )
-                            except asyncio.TimeoutError:
-                                pass  # Timed out waiting — slot still busy, will be queued below
-                            except asyncio.CancelledError:
-                                raise  # Don't swallow cancellation of this coroutine
-                            except Exception:
-                                pass  # Task failed — slot is now idle
-
-                        # Re-check: another injection may have claimed the slot
-                        # during the await above.
-                        if _injection_slot.running:
-                            logger.info(
-                                "Subagent %s: slot %s claimed by another injection, queuing",
-                                info.id, _slot_name,
+                    # ── Fix 2 (B1): arm a one-shot post-fan-out synthesis turn ──
+                    # When this is the LAST outstanding sub-agent for the parent
+                    # (chat mode only), flag the slot so that once every completion
+                    # has been processed and the queue drains, _run_chat fires ONE
+                    # dedicated synthesis turn (see chat_runner drain/idle branch).
+                    # Ordering guarantees running_agents_for == [] here on the last
+                    # agent (info.done set + _running_count decremented first).
+                    if not _is_orchestrator:
+                        try:
+                            _still_running = (
+                                self.subagent_mgr.running_agents_for(parent_key)
+                                if self.subagent_mgr
+                                else None
                             )
-                            # Bounded by CHAT_TURN_TIMEOUT (~7200s): _run_chat's
-                            # finally block drains slot._queue on any exit path.
-                            _injection_slot.queue_append(announce)
-                            self.dashboard_state.push_slots_update()
-                            logger.info("Subagent %s → queued in %s", info.id, _slot_name)
-                            return
+                        except Exception:
+                            _still_running = None  # error → don't arm (fail safe)
+                        if _still_running == []:
+                            _injection_slot._pending_synthesis = True
 
-                    # Slot is idle — start _run_chat.
-                    _task = asyncio.create_task(
-                        asyncio.wait_for(
-                            _run_chat(self.dashboard_state, _injection_slot, announce),
-                            timeout=CHAT_TURN_TIMEOUT,
-                        )
-                    )
-                    _injection_slot.task = _task
-                    self.dashboard_state._background_tasks.add(_task)
-                    _task.add_done_callback(
-                        self.dashboard_state._background_tasks.discard
-                    )
+                    # Fix 2 (B1) race guard: count this completion as an
+                    # in-flight delivery from entry until it is handed off (turn
+                    # launched or queued). The synthesis fire-gate in chat_runner
+                    # requires this count to be zero, so a concurrently-finishing
+                    # sibling that is still awaiting the current turn (busy path)
+                    # can't let an earlier turn fire synthesis before this result
+                    # is delivered. try/finally so a CancelledError can't leak it.
+                    _injection_slot._subagent_deliveries_inflight += 1
+                    try:
+                        if _injection_slot.running:
+                            # Slot is busy — wait for current turn to finish,
+                            # then inject. No visible queue card.
+                            _current = _injection_slot.task
+                            if _current is not None:
+                                try:
+                                    await asyncio.wait_for(
+                                        asyncio.shield(_current),
+                                        timeout=INJECTION_TIMEOUT,
+                                    )
+                                except asyncio.TimeoutError:
+                                    pass  # Timed out waiting — slot still busy, will be queued below
+                                except asyncio.CancelledError:
+                                    raise  # Don't swallow cancellation of this coroutine
+                                except Exception:
+                                    pass  # Task failed — slot is now idle
 
-                    def _on_inject_done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
-                        if _injection_slot.task is t:
-                            _injection_slot.task = None
-                        if not t.cancelled() and t.exception():
-                            logger.error("Subagent injection _run_chat failed: %s", t.exception())
-                            if self.subagent_mgr:
-                                _reason = str(t.exception())
-                                _reason, _ = redact_exfiltration_urls(_reason)
-                                _reason, _ = redact_credentials(_reason)
-                                self.subagent_mgr.notify_injection_failed(
-                                    info, reason=_reason,
+                            # Re-check: another injection may have claimed the slot
+                            # during the await above.
+                            if _injection_slot.running:
+                                logger.info(
+                                    "Subagent %s: slot %s claimed by another injection, queuing",
+                                    info.id, _slot_name,
                                 )
+                                # Bounded by CHAT_TURN_TIMEOUT (~7200s): _run_chat's
+                                # finally block drains slot._queue on any exit path.
+                                _injection_slot.queue_append(announce)
+                                self.dashboard_state.push_slots_update()
+                                logger.info("Subagent %s → queued in %s", info.id, _slot_name)
+                                return
 
-                    _task.add_done_callback(_on_inject_done)
-                    self.dashboard_state.push_slots_update()
-                    logger.info("Subagent %s → _run_chat in %s", info.id, _slot_name)
+                        # Slot is idle — start _run_chat.
+                        _task = asyncio.create_task(
+                            asyncio.wait_for(
+                                _run_chat(self.dashboard_state, _injection_slot, announce),
+                                timeout=CHAT_TURN_TIMEOUT,
+                            )
+                        )
+                        _injection_slot.task = _task
+                        self.dashboard_state._background_tasks.add(_task)
+                        _task.add_done_callback(
+                            self.dashboard_state._background_tasks.discard
+                        )
+
+                        def _on_inject_done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
+                            if _injection_slot.task is t:
+                                _injection_slot.task = None
+                            if not t.cancelled() and t.exception():
+                                logger.error("Subagent injection _run_chat failed: %s", t.exception())
+                                if self.subagent_mgr:
+                                    _reason = str(t.exception())
+                                    _reason, _ = redact_exfiltration_urls(_reason)
+                                    _reason, _ = redact_credentials(_reason)
+                                    self.subagent_mgr.notify_injection_failed(
+                                        info, reason=_reason,
+                                    )
+
+                        _task.add_done_callback(_on_inject_done)
+                        self.dashboard_state.push_slots_update()
+                        logger.info("Subagent %s → _run_chat in %s", info.id, _slot_name)
+                    finally:
+                        _injection_slot._subagent_deliveries_inflight -= 1
                 else:
                     logger.info(
                         "Subagent %s: parent slot %s gone, notification only",

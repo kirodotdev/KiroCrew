@@ -125,16 +125,19 @@ _PYTHON_ENV_PREFIXES: list[str] = [
     "PYTHONHOME",
 ]
 
-# Additional credential names scrubbed only in cc/strict modes (LLM-controlled
-# agent subprocesses). Mirrors the file-level deny list for ~/.kirocrew/.env:
-# config/loader.py seeds these into os.environ so trusted children (gateway,
-# MCP servers, cron) inherit them, but a sandboxed Claude Code agent must not
-# see them via env any more than via the bind-mounted file. Use exact-name
-# matches by virtue of the prefix iteration's startswith check.
+# Gateway-owned credentials must never reach agent-influenced subprocesses.
+# This list feeds the cc/strict launcher scrub, the always-on ``scrub_env``
+# parent scrub, and ``scrub_agent_denied_env`` — the parent-level scrub the ACP
+# spawn paths apply on EVERY tier (incl. the default auto/standard tier, whose
+# launcher does not strip these keys). Loader coverage is pinned by regression
+# test.
 _AGENT_DENIED_ENV_KEYS: list[str] = [
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
     "SLACK_USER_TOKEN",
+    "WECOM_BOT_ID",
+    "WECOM_SECRET",
+    "TELEGRAM_BOT_TOKEN",
     "KIROCREW_OWNER_ID",
 ]
 
@@ -172,6 +175,45 @@ def _probe_unshare() -> bool:
         _, status = os.waitpid(pid, 0)
         return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
     except Exception:
+        return False
+
+
+def userns_available() -> bool:
+    """Public: True if unprivileged user + mount namespaces work on this host.
+
+    Stable cross-module entry point for the namespace-support probe, shared by
+    the OS-level sandbox here and the JailProvider extension point
+    (``platform/interfaces.py``), so consumers do not depend on the private
+    ``_probe_unshare`` name.
+    """
+    return _probe_unshare()
+
+
+@functools.lru_cache(maxsize=1)
+def is_wsl() -> bool:
+    """Public: True if this Linux host is running under Windows Subsystem for Linux.
+
+    Centralized host probe (parallel to :func:`userns_available`) so consumers
+    never re-implement WSL detection. WSL2 *does* expose working user
+    namespaces, so :func:`userns_available` returns True there — but WSL's
+    networking is a NAT'd virtual interface, and rootless-namespace jails
+    (slirp4netns) make agentic command networking unreachable. A jail backend
+    (JailProvider) uses this to opt WSL out of jailing.
+
+    Detection (cheap, in order): the ``WSL_DISTRO_NAME`` / ``WSL_INTEROP`` env
+    vars WSL injects into every login shell, then the ``microsoft`` marker the
+    WSL kernel stamps into ``/proc/version`` (covers WSL1 + WSL2, both Microsoft
+    and -microsoft-standard builds). Result is cached — the host's WSL-ness does
+    not change within a process. Always False off Linux.
+    """
+    if sys.platform != "linux":
+        return False
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        with open("/proc/version", encoding="utf-8", errors="replace") as fh:
+            return "microsoft" in fh.read().lower()
+    except OSError:
         return False
 
 
@@ -238,149 +280,23 @@ def _probe_sandbox_exec() -> bool:
 # ── Backend: Linux namespace sandbox ──
 
 
-# Native-executable magic numbers, split by platform so we never accept an ELF
-# binary on macOS or a Mach-O binary on Linux (which would select an unrunnable
-# target). Mach-O set covers thin 32/64-bit AND fat/universal 32-bit *and*
-# 64-bit (FAT_MAGIC_64), both byte orders — a universal kiro-cli must not be
-# rejected. Used to confirm a resolved candidate is a real binary rather than a
-# shim, stub, or partial/corrupt download.
-_ELF_MAGICS: tuple[bytes, ...] = (b"\x7fELF",)
-_MACHO_MAGICS: tuple[bytes, ...] = (
-    b"\xfe\xed\xfa\xce",  # MH_MAGIC     Mach-O 32-bit (BE)
-    b"\xce\xfa\xed\xfe",  # MH_CIGAM     Mach-O 32-bit (LE)
-    b"\xfe\xed\xfa\xcf",  # MH_MAGIC_64  Mach-O 64-bit (BE)
-    b"\xcf\xfa\xed\xfe",  # MH_CIGAM_64  Mach-O 64-bit (LE)
-    b"\xca\xfe\xba\xbe",  # FAT_MAGIC    universal/fat 32-bit (BE)
-    b"\xbe\xba\xfe\xca",  # FAT_CIGAM    universal/fat 32-bit (LE)
-    b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64 universal/fat 64-bit (BE)
-    b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64 universal/fat 64-bit (LE)
-)
+def _resolve_agent_executable(executable: str) -> str:
+    """Resolve *executable* through the active edition before sandboxing.
 
-
-def _native_magics() -> tuple[bytes, ...]:
-    """Executable magics valid for the *current* platform."""
-    return _MACHO_MAGICS if sys.platform == "darwin" else _ELF_MAGICS
-
-
-def _is_native_kiro(p: Path) -> bool:
-    """True if *p* is a runnable native kiro-cli binary.
-
-    Requires (1) a regular file named ``kiro-cli``, (2) the platform execute
-    bit (``platform_compat.is_executable_file``), and (3) a platform-correct
-    native binary magic (ELF on Linux; Mach-O thin/fat incl. FAT_MAGIC_64 on
-    macOS). The magic prefix is read through ``hooks.safe_read_prefix``, which
-    enforces ``is_sensitive_path`` and opens with ``O_NOFOLLOW`` — so a
-    ``kiro-cli``-named symlink pointing into a credential path is refused rather
-    than read. Rejects shell shims, non-executable/partial installs, and stubs.
+    The public adapter is identity. An edition companion may replace a managed
+    launcher with the direct executable it ultimately invokes so KiroCrew can
+    apply exactly one OS-level sandbox. A transient adapter failure degrades to
+    the original executable, which preserves the secure behavior: the outer
+    sandbox still applies and a launcher that cannot run nested fails closed.
+    Platform composition failures always propagate through ``safe_context_call``.
     """
-    try:
-        if p.name != "kiro-cli" or not p.is_file():
-            return False
-        if not platform_compat.is_executable_file(p):
-            return False
-        from kiro_crew.hooks import safe_read_prefix
+    from kiro_crew.platform import safe_context_call
 
-        magic = safe_read_prefix(str(p), 4)
-        if not magic:
-            return False
-        return any(magic.startswith(m) for m in _native_magics())
-    except OSError:
-        return False
-
-
-def _is_toolbox_shim(path: str) -> bool:
-    """True if *path* is the toolbox / aim-sandbox wrapper shim we must bypass.
-
-    The shim is a small shell script that re-execs kiro-cli through
-    ``aim sandbox``. We only redirect to the real binary when the supplied
-    path is positively identified as this shim, so an explicit
-    ``KIROCREW_KIRO_BIN`` override (even a custom ``kiro-cli`` script) is
-    honored rather than silently replaced by a toolbox install.
-    """
-    from kiro_crew.hooks import safe_read_prefix
-
-    head = safe_read_prefix(path, 4096)
-    if not head or not head.startswith(b"#!"):
-        return False
-    return b"aim sandbox" in head or b"aim-sandbox" in head
-
-
-def _resolve_real_kiro_bin(shim_path: str) -> str:
-    """Resolve the real kiro-cli binary, bypassing any wrapper shim.
-
-    On some installs ``kiro-cli`` is a bash shim that re-execs the real
-    binary through a launcher (e.g. the Amazon toolbox shim routes through
-    ``aim sandbox`` which creates its own seatbelt sandbox — nesting that
-    inside KiroCrew's sandbox-exec fails on macOS 26+).
-
-    Resolution order:
-    1. If the supplied path resolves (through symlinks) to a native binary,
-       use it — this honors an explicit ``KIROCREW_KIRO_BIN`` / PATH selection
-       and the macOS ``~/.local/bin/kiro-cli`` -> ``.app`` symlink layout.
-    2. If the supplied path is an explicit *non-toolbox* script override,
-       return it unchanged (do not substitute a toolbox install).
-    3. Otherwise (the path is the toolbox aim-sandbox shim, or missing) resolve
-       via the toolbox-managed ``~/.local/bin/kiro-cli`` symlink, then the Linux
-       ``$BUNDLE_ROOT/kiro-cli`` sibling of that symlink's target.
-
-    Security: we deliberately do NOT enumerate ``~/.toolbox/tools/kiro-cli/<ver>``
-    and pick the highest version. That directory is user-writable, so a
-    compromised/sandboxed process could plant a higher-version binary and have
-    it exec'd — including under the ``(allow default)`` capability probe. The
-    installer's symlink is the single trusted pointer to the active version, so
-    resolution follows it and nothing else.
-
-    Every candidate must pass ``_is_native_kiro`` (executable + binary magic).
-    Falls back to ``shim_path`` unchanged if nothing is found. Only attempts
-    resolution when the basename is ``kiro-cli``.
-
-    Intentionally uncached: it is a few ``stat``/``readlink`` calls (no
-    subprocess, no directory scan), and caching risked returning a stale
-    version across a toolbox upgrade that retains the old install.
-    """
-    if Path(shim_path).name != "kiro-cli":
-        return shim_path
-    home = Path.home()
-
-    # 1. Supplied path already a native binary (after following symlinks). On
-    #    macOS this resolves ~/.local/bin/kiro-cli -> the active version's
-    #    .app binary directly, honoring an explicit KIROCREW_KIRO_BIN / PATH
-    #    selection too.
-    try:
-        resolved = Path(shim_path).resolve(strict=True)
-        if _is_native_kiro(resolved):
-            return str(resolved)
-    except (OSError, ValueError):
-        pass
-
-    # 2. Explicit non-toolbox script override → honor it unchanged. Only the
-    #    toolbox aim-sandbox shim (or a missing/unusable path) triggers the
-    #    trusted-symlink fallback below.
-    if os.path.isfile(shim_path) and not _is_toolbox_shim(shim_path):
-        return shim_path
-
-    # 3a. Follow the toolbox-managed ~/.local/bin/kiro-cli symlink. This is the
-    #     installer's trusted pointer to the ACTIVE version — NOT a scan of the
-    #     user-writable version directory (see the security note above).
-    try:
-        local = Path(home / ".local" / "bin" / "kiro-cli").resolve(strict=True)
-        if _is_native_kiro(local):
-            return str(local)
-    except (OSError, ValueError):
-        pass
-
-    # 3b. Linux $BUNDLE_ROOT/kiro-cli sibling of the resolved symlink target
-    #     (pure realpath, non-blocking — no directory enumeration).
-    for entry in [shim_path, str(home / ".local" / "bin" / "kiro-cli")]:
-        try:
-            self_path = os.path.realpath(entry)
-        except OSError:
-            continue
-        candidate = Path(self_path).parent.parent / "kiro-cli"
-        if str(candidate) != self_path and _is_native_kiro(candidate):
-            return str(candidate)
-
-    return shim_path
+    return safe_context_call(
+        lambda: current_context().agent_executable.resolve_executable(executable),
+        fallback=executable,
+        log_message="Agent executable resolver failed; using the original executable",
+    )
 
 
 @functools.lru_cache(maxsize=None)
@@ -834,9 +750,9 @@ def namespace_argv(
     child bind-mounts empty dirs over credential paths before exec.
     The child retains the real UID/GID.
     """
-    real_argv = list(argv)
-    if real_argv:
-        real_argv[0] = _resolve_real_kiro_bin(real_argv[0])
+    resolved_argv = list(argv)
+    if resolved_argv:
+        resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
 
     script = _build_launcher_script(sandbox_level, strip_python_env=strip_python_env)
     run_dir = _ensure_run_dir()
@@ -845,7 +761,7 @@ def namespace_argv(
     os.close(fd)
     platform_compat.chmod_safe(path, 0o700)
 
-    return [sys.executable, path, *real_argv]
+    return [sys.executable, path, *resolved_argv]
 
 
 # ── Backend: macOS sandbox-exec ──
@@ -938,12 +854,9 @@ def sandbox_exec_argv(
     Returns (new_argv, tmp_profile_path).  Caller should delete the
     profile file after the child exits.
     """
-    # Resolve the real kiro-cli binary to bypass wrapper shims (e.g. the
-    # toolbox shim that calls ``aim sandbox``, which would nest a second
-    # seatbelt inside ours and fail on macOS 26+).
-    real_argv = list(argv)
-    if real_argv:
-        real_argv[0] = _resolve_real_kiro_bin(real_argv[0])
+    resolved_argv = list(argv)
+    if resolved_argv:
+        resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
 
     profile = _build_seatbelt_profile(sandbox_level)
     run_dir = _ensure_run_dir()
@@ -964,7 +877,7 @@ def sandbox_exec_argv(
             if key.startswith(prefix):
                 unset_args.extend(["-u", key])
                 break
-    return ["env", *unset_args, "sandbox-exec", "-f", path, *real_argv], path
+    return ["env", *unset_args, "sandbox-exec", "-f", path, *resolved_argv], path
 
 
 def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
@@ -1152,7 +1065,7 @@ def detect_backend(config_mode: str = "auto") -> str:
         _backend_config_mode = config_mode
     if config_mode == "off":
         _backend = "none"
-    elif _probe_unshare():
+    elif userns_available():
         _backend = "namespace"
     elif _probe_sandbox_exec():
         _backend = "sandbox-exec"
@@ -1341,6 +1254,37 @@ def scrub_env(
     prefixes = _SPAWN_SCRUB_ENV_PREFIXES + (extra_prefixes or [])
     src = os.environ if env is None else env
     return {k: v for k, v in src.items() if not any(k.startswith(p) for p in prefixes)}
+
+
+def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
+    """Return a copy of *env* with gateway-owned channel credentials removed.
+
+    Drops every key matching ``_AGENT_DENIED_ENV_KEYS`` — the Slack/WeCom/
+    Telegram tokens and owner id that ``config/loader.load_credentials()`` seeds
+    into ``os.environ`` for trusted children only.
+
+    This is the PARENT-level complement to the OS-sandbox launcher scrub. The
+    launcher (``namespace_argv`` / ``sandbox_exec_argv``) only strips these keys
+    for the ``cc``/``strict`` tiers; on the default ``auto``/``standard`` tier
+    they are left in place. The production ACP spawn paths
+    (:meth:`AcpRuntime._spawn` / :meth:`AcpClient._spawn`) copy a raw
+    ``os.environ`` and call :func:`wrap_argv` directly (not
+    :func:`sandboxed_spawn_argv`), so without this scrub the channel credentials
+    would be inherited by the agent subprocess on the default tier — reachable
+    via ``env`` / ``os.environ`` and usable to control those channel identities
+    outside KiroCrew.
+
+    Unlike :func:`scrub_env`, this deliberately does NOT strip
+    ``_SENSITIVE_ENV_PREFIXES`` (AWS/SSH/GPG): the ``standard`` sandbox is
+    designed to leave git-over-SSH, the AWS CLI and kubectl usable, so those
+    vars must survive the parent scrub. Prefix match via ``startswith`` mirrors
+    the launcher's ENV_PREFIXES check.
+    """
+    return {
+        k: v
+        for k, v in env.items()
+        if not any(k.startswith(p) for p in _AGENT_DENIED_ENV_KEYS)
+    }
 
 
 def sandboxed_spawn_argv(

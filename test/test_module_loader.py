@@ -346,3 +346,80 @@ class TestModuleUnload:
         assert func_v2(None) == "v2"
 
         unload_app_modules("test-app-reload")
+
+
+def test_deploy_skill_install_copy_fallback(tmp_path, monkeypatch):
+    """When symlinking fails (Windows/restricted FS), skills are copied — never skipped."""
+    from pathlib import Path
+
+    import kiro_crew.deploy as deploy_pkg
+
+    monkeypatch.setattr(deploy_pkg, "config_dir", lambda: tmp_path)
+
+    def _no_symlink(self, target, *a, **kw):
+        raise OSError("symlink not permitted")
+    monkeypatch.setattr(Path, "symlink_to", _no_symlink)
+
+    deploy_pkg._register_core_skills()
+    installed = tmp_path / "skills" / "artifact-deploy"
+    assert installed.is_dir() and not installed.is_symlink()
+    assert (installed / "SKILL.md").exists()
+
+
+def test_deploy_skill_install_preserves_user_placed_dir(tmp_path, monkeypatch):
+    """A user-placed directory without .kirocrew-managed marker is never removed."""
+    from pathlib import Path
+
+    import kiro_crew.deploy as deploy_pkg
+
+    monkeypatch.setattr(deploy_pkg, "config_dir", lambda: tmp_path)
+
+    # Pre-create a user-owned directory with the same name as a built-in skill
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    user_dir = skills_dir / "artifact-deploy"
+    user_dir.mkdir()
+    (user_dir / "my-custom-file.txt").write_text("user content")
+
+    # No .kirocrew-managed marker — should survive
+    def _no_symlink(self, target, *a, **kw):
+        raise OSError("symlink not permitted")
+    monkeypatch.setattr(Path, "symlink_to", _no_symlink)
+
+    deploy_pkg._register_core_skills()
+
+    # User directory must be untouched
+    assert user_dir.is_dir()
+    assert (user_dir / "my-custom-file.txt").read_text() == "user content"
+    # Our SKILL.md was NOT installed (user dir blocked it)
+    assert not (user_dir / "SKILL.md").exists()
+
+
+def test_deploy_skill_install_replaces_managed_dir(tmp_path, monkeypatch):
+    """A directory WITH .kirocrew-managed marker is replaced on refresh."""
+    from pathlib import Path
+
+    import kiro_crew.deploy as deploy_pkg
+
+    monkeypatch.setattr(deploy_pkg, "config_dir", lambda: tmp_path)
+
+    # Pre-create a managed directory (stale copy from a prior version)
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    managed_dir = skills_dir / "artifact-deploy"
+    managed_dir.mkdir()
+    (managed_dir / ".kirocrew-managed").write_text("")
+    (managed_dir / "stale-file.txt").write_text("old")
+
+    def _no_symlink(self, target, *a, **kw):
+        raise OSError("symlink not permitted")
+    monkeypatch.setattr(Path, "symlink_to", _no_symlink)
+
+    deploy_pkg._register_core_skills()
+
+    # Managed directory was replaced — stale file gone, new content present
+    assert managed_dir.is_dir()
+    assert not (managed_dir / "stale-file.txt").exists()
+    assert (managed_dir / "SKILL.md").exists()
+    # Marker was re-written by the copy fallback
+    assert (managed_dir / ".kirocrew-managed").exists()

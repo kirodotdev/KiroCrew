@@ -43,6 +43,7 @@ from kiro_crew.executors import discovery_executor
 from kiro_crew.security import is_sensitive_path
 
 _VALID_PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$")
+_MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
 logger = logging.getLogger(__name__)
 
@@ -959,7 +960,7 @@ async def api_models(request: web.Request) -> web.Response:
                 preexec_fn=resource_limit_preexec(),
             )
             try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
             except asyncio.TimeoutError:
                 try:
                     proc.kill()
@@ -979,8 +980,37 @@ async def api_models(request: web.Request) -> web.Response:
         finally:
             if cleanup and callable(cleanup):
                 cleanup()
-        data = json.loads(stdout.decode(errors="replace"))
-        models = data.get("models", [])
+
+        if proc.returncode != 0:
+            from kiro_crew.platform import redact_via_context  # noqa: F811
+
+            stderr_tail = stderr.decode(errors="replace").strip()
+            stderr_tail = redact_via_context(stderr_tail)[-_MODEL_LIST_STDERR_TAIL_CHARS:]
+            logger.warning(
+                "api_models: --list-models exited %s: %s; returning 503",
+                proc.returncode,
+                stderr_tail or "<no stderr>",
+            )
+            return web.json_response({"error": "model list command failed"}, status=503)
+
+        if not stdout.strip():
+            logger.warning("api_models: --list-models returned empty output; returning 503")
+            return web.json_response({"error": "model list returned empty output"}, status=503)
+
+        try:
+            data = json.loads(stdout.decode(errors="replace"))
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "api_models: --list-models returned invalid JSON (%s); returning 503",
+                exc,
+            )
+            return web.json_response({"error": "model list returned invalid JSON"}, status=503)
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            logger.warning("api_models: --list-models returned an invalid payload; returning 503")
+            return web.json_response(
+                {"error": "model list returned an invalid payload"}, status=503
+            )
+        models = data["models"]
         try:
             from kiro_crew.dashboard.chat import is_deprecated_model  # noqa: F811
 
