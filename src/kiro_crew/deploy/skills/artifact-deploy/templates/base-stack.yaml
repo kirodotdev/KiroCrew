@@ -33,6 +33,29 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      # Versioning + lifecycle give a recovery path for the retained content
+      # bucket: the deploy engine syncs with --delete and overwrites in place,
+      # so an accidental/erroneous sync or object delete would otherwise be
+      # unrecoverable (CWE-1188). Noncurrent versions are bounded (30d / 3
+      # kept) so recovery does not grow storage without limit.
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # S3 rejects a lifecycle rule without a filter; an empty rule-level
+          # Prefix applies the rule to all objects (cfn-lint's S3 Rule schema
+          # uses Prefix, not Filter).
+          - Id: expire-noncurrent-versions
+            Status: Enabled
+            Prefix: ''
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+              NewerNoncurrentVersions: 3
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            Prefix: ''
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
       Tags:
         - { Key: 'kirocrew:managed', Value: 'true' }
 

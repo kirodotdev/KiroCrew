@@ -255,7 +255,7 @@ _BASE_CSP = (
     # additionally gates on that exact host shape (framablePreviewUrl) so a
     # crafted webapp_metadata URL on any other host is never framed.
     "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
-    "object-src 'none'; base-uri 'self'"
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
 )
 
 _INSTANCES_FRAME_SRC_EXTRA = " http://127.0.0.1:* http://localhost:* http://*.localhost:*"
@@ -330,6 +330,19 @@ def _apply_security_headers(resp: web.StreamResponse, app: web.Application, path
         _BASE_CSP.format(frame_src_extra=frame_src_extra),
     )
     resp.headers.setdefault("Permissions-Policy", _PERMISSIONS_POLICY)
+    # Defense-in-depth browser headers (CWE-1021/693/200/319). All via
+    # setdefault so a handler can override. frame-ancestors 'self' (in the
+    # CSP above) is the modern clickjacking control; X-Frame-Options SAMEORIGIN
+    # is kept for older browsers. nosniff blocks MIME-confusion; Referrer-Policy
+    # avoids leaking the (token-bearing) dashboard URL cross-origin. HSTS is
+    # inert over the default loopback HTTP bind but protects HTTPS tunnel/desktop
+    # access, so it is set unconditionally (browsers ignore it on plain HTTP).
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault(
+        "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+    )
 
 
 def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:

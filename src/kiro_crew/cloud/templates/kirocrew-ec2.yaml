@@ -217,6 +217,17 @@ Resources:
       # they're mutually exclusive with the top-level forms.
       NetworkInterfaces:
         - DeviceIndex: 0
+          # ── Documented accepted tradeoff (CSE P475357377, CWE-1188) ──
+          # A public IP widens attack surface, but is REQUIRED for egress when
+          # only an IGW subnet is available (bootstrap would otherwise hang). It
+          # is accepted, not an oversight, because it is defense-in-depth capped:
+          #   * InstanceSecurityGroup has NO default inbound ingress (SSM-only,
+          #     egress-only); optional SSH is gated behind HasSshCidr with a
+          #     validated CIDR (rejects ranges wider than /16).
+          #   * IMDSv2 enforced (HttpTokens: required, HopLimit: 1) below.
+          #   * EBS root encrypted.
+          # Preferred posture is still a private subnet + NAT (discover_network
+          # picks that first); this only forces the public IP on IGW-only subnets.
           AssociatePublicIpAddress: true
           SubnetId: !Ref SubnetId
           GroupSet: [!Ref InstanceSecurityGroup]

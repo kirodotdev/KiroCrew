@@ -92,6 +92,22 @@ Resources:
                 Effect: Allow
                 Action: [s3:GetObject, s3:DeleteObject]
                 Resource: 'arn:aws:s3:::kirocrew-web-*/*'
+              # ── Documented scoped exception (CSE P476046776, CWE-269) ──
+              # The reaper's whole job is unattended teardown of expired deploys,
+              # so it MUST hold cloudformation:DeleteStack (Sid Cfn) and the
+              # teardown-only IAM verbs iam:DeleteRole/DeleteRolePolicy/
+              # DetachRolePolicy (Sid CascadeIam). Removing them would defeat the
+              # feature. This is accepted, not an oversight, because the grant is
+              # tightly bounded and cannot escalate:
+              #   * NO privilege-escalation verbs — no CreateRole, PutRolePolicy,
+              #     AttachRolePolicy, UpdateAssumeRolePolicy, PassRole,
+              #     SetDefaultPolicyVersion. Only Delete*/Detach*/Get*/List*.
+              #   * Every ARN is prefix-scoped to kirocrew-deploy-app-* (roles,
+              #     stacks, functions, tables) — never '*'.
+              #   * The role is Lambda-assumed and itself carries the
+              #     kirocrew-deploy-app-boundary permissions boundary (below).
+              # Net: a reaper compromise can only delete the ephemeral deploy
+              # resources it manages, not mutate account-wide IAM.
               - Sid: Cfn
                 Effect: Allow
                 Action: [cloudformation:DescribeStacks, cloudformation:DeleteStack]

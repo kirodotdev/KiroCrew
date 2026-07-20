@@ -66,10 +66,12 @@ class TestNightlyPermissions:
         assert _permission_block(lines, "  publish:") == {
             "id-token": "write",
             "contents": "read",
+            "attestations": "write",
         }
         assert _permission_block(lines, "  publish-cli:") == {
             "contents": "read",
             "id-token": "write",
+            "attestations": "write",
         }
         # Caller job for the reusable notarize workflow: a workflow_call
         # callee can never exceed the caller job's permissions, so the
@@ -95,6 +97,7 @@ class TestReleasePermissions:
         assert _permission_block(lines, "  release:") == {
             "contents": "read",
             "id-token": "write",
+            "attestations": "write",
         }
         assert _permission_block(lines, "  github-release:") == {
             "contents": "write",

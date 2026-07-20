@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from kiro_crew.cloud import aws
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +416,28 @@ def ensure_bucket(profile: str, region: str) -> str:
     return bucket
 
 
+def _audit_iam_policy_change(operation: str, arn: str, outcome: str, error: str = "") -> None:
+    """Emit a structured SEL audit event for a direct IAM-policy mutation.
+
+    The instance permissions boundary is created/deleted via the ``aws`` CLI
+    (``iam create-policy`` / ``iam delete-policy``), a privileged principal
+    mutation that CloudTrail records but WITHOUT the in-app context (which
+    workflow triggered it). Land who/what/target/outcome on the immutable SEL
+    trail too (CWE-778). Best-effort: never let audit failure break the deploy.
+    """
+    try:
+        sel().log_api_access(
+            caller="_host",
+            operation=operation,
+            outcome=outcome,
+            source="cloud.source",
+            resources=f"policy={arn}",
+            error=error,
+        )
+    except Exception:
+        logger.debug("IAM-policy-change SEL audit unavailable", exc_info=True)
+
+
 def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     """Create (once, idempotently) the shared instance permissions boundary; return its ARN.
 
@@ -485,6 +508,7 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     ]
     rc, _out, err = aws.run_aws(create, profile, region)
     if rc == 0:
+        _audit_iam_policy_change("iam.create-policy", arn, "allowed")
         return arn
     # A concurrent launch (or a prior create) may have won the race between our
     # get-policy and create-policy — the boundary now exists, but we must VERIFY
@@ -497,6 +521,7 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     # precise missing action so the user knows what to grant.
     missing = aws.map_missing_action(err)
     hint = f" — grant `{missing}` and retry" if missing else ""
+    _audit_iam_policy_change("iam.create-policy", arn, "denied", error=(err or "").strip()[:300])
     raise aws.AWSError(
         f"could not create the instance permissions boundary '{iam.BOUNDARY_NAME}': "
         f"{(err or '').strip()[:300]}{hint}",
@@ -582,7 +607,9 @@ def delete_instance_boundary(profile: str = "", region: str = "") -> dict:
     arn = iam.boundary_arn(account)
     rc, _out, err = aws.run_aws(["iam", "delete-policy", "--policy-arn", arn], profile, region)
     if rc == 0 or "NoSuchEntity" in (err or ""):
+        _audit_iam_policy_change("iam.delete-policy", arn, "allowed")
         return {"removed": True, "arn": arn, "error": ""}
+    _audit_iam_policy_change("iam.delete-policy", arn, "denied", error=(err or "").strip()[:300])
     return {"removed": False, "arn": arn, "error": (err or "").strip()}
 
 

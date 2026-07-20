@@ -104,6 +104,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: write
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       HAS_CDSIGNER: ${{ secrets.CDSIGNER_API_ENDPOINT != '' && 'true' || '' }}
@@ -137,6 +138,26 @@ jobs:
           mkdir -p release
           find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.dmg" -o -name "*.zip" -o -name "*.AppImage" \) -exec cp {} release/ \;
           ls -la release/
+
+      - name: Attest build provenance
+        # Signed SLSA build-provenance for the built artifacts
+        # (wheel/sdist/DMG/AppImage) — CWE-1104 / P475357136. Placed in the
+        # `release` job because it already holds id-token (OIDC); per the
+        # least-privilege split enforced by test_workflow_permissions.py the
+        # id-token job must never also hold contents:write (that lives only in
+        # the separate github-release job). The macOS .zip is attested here in
+        # its pre-notarized form (notarize/staple runs in a later job); the
+        # wheel/sdist/dmg/AppImage digests are identical to what is published.
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          # Attest only artifacts whose bytes are final here. The macOS .zip is
+          # re-signed + notarized in a later job, so attesting it pre-notarization
+          # binds a digest that never ships (Codex review). Omit *.zip.
+          subject-path: |
+            release/*.whl
+            release/*.tar.gz
+            release/*.dmg
+            release/*.AppImage
 
       # Install the CDSigner SigV4 client BEFORE AWS credentials are configured
       # (same supply-chain ordering as nightly.yml).
