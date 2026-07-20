@@ -143,6 +143,9 @@ export const THEMES: ThemeEntry[] = [
   { value: 'amoled-grey-calm', label: '🌑 AMOLED Grey Calm' },
 ]
 
+/** Default color theme applied on first run when no preference is persisted. */
+export const DEFAULT_COLOR_THEME: ColorTheme = 'kiro'
+
 const SYNC_EVENT = 'mc-theme-sync'
 export const CUSTOM_THEMES_CHANGED_EVENT = 'mc-custom-themes-changed'
 
@@ -205,7 +208,7 @@ function useThemeState(): ThemeContextValue {
     () => (localStorage.getItem('mc-theme') as ModePreference) || 'system'
   )
   const [colorTheme, setColorThemeState] = useState<ColorTheme>(
-    () => (localStorage.getItem('mc-color-theme') as ColorTheme) || 'emerald'
+    () => (localStorage.getItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME
   )
   const [resolved, setResolved] = useState<ResolvedMode>(() => resolveMode(mode))
   const [customThemes, setCustomThemes] = useState<ThemeEntry[]>([])
@@ -316,7 +319,7 @@ function useThemeState(): ThemeContextValue {
     safeSetItem('mc-theme', pref)
     setMode(pref)
     setResolved(resolveMode(pref))
-    const ct = (localStorage.getItem('mc-color-theme') as ColorTheme) || 'emerald'
+    const ct = (localStorage.getItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME
     broadcast(pref, ct)
     persistTheme({ mode: pref })
   }, [persistTheme])
@@ -351,7 +354,7 @@ function useThemeState(): ThemeContextValue {
     await api.deleteTheme(slug)
     removeCustomThemeCSS(slug)
     if (colorTheme === `custom-${slug}`) {
-      setColorTheme('emerald')
+      setColorTheme(DEFAULT_COLOR_THEME)
     }
     await loadCustomThemes()
     broadcastCustomThemesChanged()

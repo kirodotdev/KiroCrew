@@ -111,6 +111,9 @@ describe('useTheme', () => {
 
   it('sets data-theme on document element', () => {
     mockMatchMedia(true)
+    // emerald is the base theme and renders unsuffixed (data-theme = mode).
+    // Set it explicitly so this assertion is independent of the default theme.
+    localStorage.setItem('mc-color-theme', 'emerald')
     renderThemeHook()
     expect(document.documentElement.dataset.theme).toBe('dark')
   })
