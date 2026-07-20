@@ -18,6 +18,13 @@
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# Isolate the managed venv from any inherited PYTHONPATH/PYTHONHOME. If the
+# caller's environment points these at foreign site-packages (e.g. another
+# app's interpreter on a different Python version), pip treats those packages
+# as already satisfied and silently skips installing our dependencies into the
+# venv -- producing a broken install (ImportError: No module named 'aiohttp').
+unset PYTHONPATH PYTHONHOME
+
 # ── Parse arguments ──
 WITH_VOICE=0
 for _arg in "$@"; do
