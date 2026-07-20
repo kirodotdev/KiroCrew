@@ -3092,7 +3092,9 @@ class TestResetStateExtended:
         client._pid = 1234
         client._child_pids = {5678: None, 9012: None}
 
-        with patch("kiro_crew.session._untrack_child_pids") as mock_uc, patch(
+        with patch(
+            "kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=True
+        ), patch("kiro_crew.session._untrack_child_pids") as mock_uc, patch(
             "kiro_crew.session._untrack_pid"
         ) as mock_up, patch("kiro_crew.session._untrack_session_pid") as mock_usp:
             client._reset_state()
@@ -3102,6 +3104,45 @@ class TestResetStateExtended:
         mock_usp.assert_called_once_with(1234)
         assert client._child_pids == {}
         assert client._pid is None
+
+    def test_retains_live_root_pid_survivor(self):
+        """A root PID still alive after teardown MUST keep its tracking entry so
+        the orphan sweep can reap it — untracking a live survivor is the
+        permanent-orphan leak this guards against. In-memory state still clears.
+        """
+        client = AcpClient()
+        client._process = None
+        client._pid = 4242
+        client._child_pids = {}
+
+        with patch(
+            "kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=False
+        ), patch("kiro_crew.session._untrack_pid") as mock_up, patch(
+            "kiro_crew.session._untrack_session_pid"
+        ) as mock_usp:
+            client._reset_state()
+
+        mock_up.assert_not_called()
+        mock_usp.assert_not_called()
+        assert client._pid is None  # in-memory state is still cleared
+
+    def test_untracks_dead_children_retains_live(self):
+        """Dead children are untracked; a live child is retained (partial-reap:
+        killpg missed a child in another process group)."""
+        client = AcpClient()
+        client._process = None
+        client._pid = None
+        client._child_pids = {5678: None, 9012: None}
+
+        def _gone(pid):
+            return pid == 5678  # 5678 dead -> untrack; 9012 alive -> retain
+
+        with patch(
+            "kiro_crew.session_pid._pid_gone_or_unmanaged", side_effect=_gone
+        ), patch("kiro_crew.session._untrack_child_pids") as mock_uc:
+            client._reset_state()
+
+        mock_uc.assert_called_once_with({5678: None})
 
     def test_cancels_stderr_task(self):
         client = AcpClient()

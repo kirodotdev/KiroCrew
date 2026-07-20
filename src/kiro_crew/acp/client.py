@@ -1873,28 +1873,55 @@ class AcpClient:
         self._last_stop_reason = ""
         self._pending_oauth_requests.clear()
         self._oauth_emitted_servers.clear()
-        # Untrack child PIDs from the orphan tracking file
+        # Untrack PIDs from the orphan tracking files — but ONLY those confirmed
+        # dead. A child or root still alive after teardown survived the kill
+        # (killpg only reaches the kiro-cli process group, so children in other
+        # groups can outlive it, and a mid-init crash can race the descendant
+        # scan in _kill_process()). Retaining a survivor's entry keeps it visible
+        # to the periodic orphan sweep and next-startup cleanup_orphaned_sessions(),
+        # which reap it; untracking one would orphan it permanently (all sweep
+        # mechanisms key off these files) — the memory-leak this guards against.
+        # These untrack helpers live in kiro_crew.session, which imports this
+        # module transitively, so they must be imported inline.
+        from kiro_crew.session import _untrack_child_pids, _untrack_pid, _untrack_session_pid
+        from kiro_crew.session_pid import _pid_gone_or_unmanaged
+
         if saved_child_pids:
-            try:
-                from kiro_crew.session import _untrack_child_pids
-
-                _untrack_child_pids(saved_child_pids)
-            except Exception:
-                pass
-        # Untrack parent kiro-cli PID
+            dead_children = {
+                pid: rec for pid, rec in saved_child_pids.items() if _pid_gone_or_unmanaged(pid)
+            }
+            survivors = [p for p in saved_child_pids if p not in dead_children]
+            if dead_children:
+                try:
+                    _untrack_child_pids(dead_children)
+                except Exception:
+                    logger.debug(
+                        "untracking child PIDs %s failed", list(dead_children), exc_info=True
+                    )
+            if survivors:
+                logger.warning(
+                    "Retained tracking for %d live child PID(s) that survived "
+                    "teardown; orphan sweep will reap them: %s",
+                    len(survivors),
+                    survivors,
+                )
+        # Untrack parent kiro-cli PID (only if confirmed dead)
         if saved_pid is not None:
-            try:
-                from kiro_crew.session import _untrack_pid
-
-                _untrack_pid(saved_pid)
-            except Exception:
-                pass
-            try:
-                from kiro_crew.session import _untrack_session_pid
-
-                _untrack_session_pid(saved_pid)
-            except Exception:
-                pass
+            if _pid_gone_or_unmanaged(saved_pid):
+                try:
+                    _untrack_pid(saved_pid)
+                except Exception:
+                    logger.debug("untracking PID %s failed", saved_pid, exc_info=True)
+                try:
+                    _untrack_session_pid(saved_pid)
+                except Exception:
+                    logger.debug("untracking session PID %s failed", saved_pid, exc_info=True)
+            else:
+                logger.warning(
+                    "Retained tracking for live root PID %s that survived "
+                    "teardown; orphan sweep will reap it",
+                    saved_pid,
+                )
         self._child_pids = {}
 
     async def _new_session_following_substitution(self) -> dict:

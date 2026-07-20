@@ -144,6 +144,36 @@ def _is_managed_agent_process(pid: int) -> bool:
     return platform_compat.process_matches(pid, ("kiro-cli", "claude"))
 
 
+def _pid_gone_or_unmanaged(pid: int) -> bool:
+    """Return ``True`` when it is safe to *untrack* ``pid`` from the PID files.
+
+    Safe means the process is confirmed gone. Returns ``False`` when a process
+    with this PID is still alive (or is unsignalable): a teardown kill may have
+    failed to reap our agent (``killpg`` misses children in other process
+    groups; a mid-init crash can race the descendant scan in ``_kill_process``),
+    so the tracking entry is **retained**. The periodic orphan sweep — which
+    re-validates ownership via ``_is_managed_agent_process`` before it kills
+    anything — then reaps a genuine survivor and skips a recycled PID.
+    Untracking a live survivor here would orphan it permanently, since every
+    sweep mechanism keys off these files (the ``kiro-cli-chat acp`` memory-leak
+    class). Fail-safe: any inconclusive result retains.
+
+    Routes through ``platform_compat.pid_liveness`` (a non-blocking probe, safe
+    on the asyncio event loop) rather than a raw ``os.kill(pid, 0)`` — on
+    Windows that call TERMINATES the target. This is stricter than upstream
+    ``33da30e6``, which untracks on ``PermissionError`` (assumes a recycled,
+    other-user PID): ``pid_liveness`` collapses EPERM into ``PID_UNSIGNALABLE``,
+    which we treat as "retain", so an unsignalable PID stays tracked for the
+    sweep to re-validate off the hot path. Never orphaning a live survivor is
+    the invariant that matters; a retained-but-recycled PID is harmless (the
+    sweep's ownership recheck skips it). It deliberately does NOT call
+    ``_is_managed_agent_process`` (which shells out to ``ps`` on macOS): that
+    would block the loop and could mislabel a live-but-transiently-unreadable
+    agent as unmanaged — the exact leak this guards against.
+    """
+    return platform_compat.pid_liveness(pid) == platform_compat.PID_DEAD
+
+
 def _collect_active_pids(sessions: "dict") -> tuple[set[int], bool]:
     """Extract PIDs from live sessions. Returns ``(pids, ok)``.
 
