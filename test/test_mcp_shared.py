@@ -66,7 +66,12 @@ class TestReadMessageContentLength:
         assert mcp_shared._use_content_length is True
 
     def test_reads_multibyte_utf8(self):
-        msg = {"jsonrpc": "2.0", "method": "tools/call", "id": 1, "params": {"name": "tëst_émoji_🎉"}}
+        msg = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "id": 1,
+            "params": {"name": "tëst_émoji_🎉"},
+        }
         stdin = _make_stdin(_content_length_frame(msg))
         result = _read_message(stdin)
         assert result == msg
@@ -207,3 +212,41 @@ class TestRespondFraming:
         with patch("sys.stdout", out):
             respond(None, {"ok": True})
         assert out.getvalue() == ""
+
+
+class TestCallToolWithLoggingRedaction:
+    """The SEL audit ``resources`` (serialized tool args) must be redacted, so a
+    credential passed in a free-text arg (e.g. artifact_post_comment ``text``,
+    artifact_delete_comment ``reason``) can't be persisted verbatim in the audit
+    log even when the per-tool handler only scrubbed its own egress copy."""
+
+    def test_args_redacted_before_sel_log(self):
+        from kiro_crew.mcp_shared import call_tool_with_logging
+
+        captured = {}
+
+        class _FakeSel:
+            def log_tool_invocation(self, **kw):
+                captured.update(kw)
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+
+        def _validate(_name, raw):
+            return raw
+
+        def _inner(_name, _args):
+            return "ok"
+
+        with patch("kiro_crew.sel.sel", return_value=_FakeSel()):
+            call_tool_with_logging(
+                "artifact_post_comment",
+                {"slug": "doc", "text": f"leak {secret} here"},
+                _validate,
+                _inner,
+                session_key="mcp_core",
+                downstream_service="kirocrew-core",
+            )
+        # The raw AKIA credential must NOT appear in the logged resources.
+        assert secret not in captured.get("resources", "")
+        # The non-sensitive fields still make it into the audit trail.
+        assert "slug" in captured.get("resources", "")

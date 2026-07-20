@@ -96,7 +96,7 @@ async def test_author_returns_valid_script(monkeypatch) -> None:
 
 async def test_author_uses_isolated_torn_down_lite_session(monkeypatch) -> None:
     """Separation of concerns: authoring runs in a FRESH, ISOLATED, ephemeral
-    session (never the shared _bg), on the tool-less meshclaw-lite agent, and tears
+    session (never the shared _bg), on the tool-less kirocrew-lite agent, and tears
     it down after — so a workflow's authoring never pollutes (or is polluted by)
     chat/consolidation/other runs, while staying cheap (no MCP toolset load)."""
     _patch_stream(monkeypatch, [GOOD_SCRIPT])
@@ -108,7 +108,7 @@ async def test_author_uses_isolated_torn_down_lite_session(monkeypatch) -> None:
     # NOT the shared background session
     assert key != "_bg" and key.startswith("wf-author:")
     # tool-less lite agent
-    assert kw.get("agent") == "meshclaw-lite"
+    assert kw.get("agent") == "kirocrew-lite"
     # torn down (cleanup=True) — nothing persists between runs
     assert key in sessions.cleaned
 
@@ -392,3 +392,29 @@ async def test_finished_run_busy_slot_queues_turn(monkeypatch) -> None:
     assert any(m["role"] == "assistant" for m in origin.messages)
     assert started == [False]
     assert origin.turns == []
+
+
+# --------------------------------------------------------------------------- #
+# Warm-session pool wiring (loading-time win) — reachable in production?
+# --------------------------------------------------------------------------- #
+
+
+async def test_default_service_pools_agents() -> None:
+    """The gateway constructs WorkflowService WITHOUT passing pool_agents
+    (dashboard/server.py), so the pool must be ON by default. A pooled runner
+    has an on_complete teardown (== pool.shutdown) wired; an un-pooled one does
+    not. This guards the live wiring so the loading-time win can't silently
+    regress to cold-start-per-call."""
+    svc = WorkflowService(sessions=FakeSessions([]), concurrency=4)
+    assert svc._pool_agents is True  # default engages in production
+    runner = svc._runner("wf_probe")
+    # on_complete is only set on the pooled path (service._runner wires pool.shutdown).
+    assert runner._on_complete is not None
+
+
+async def test_pool_agents_false_uses_per_call_sessions() -> None:
+    """Opt-out restores the original per-call path (no pool teardown wired)."""
+    svc = WorkflowService(sessions=FakeSessions([]), pool_agents=False)
+    assert svc._pool_agents is False
+    runner = svc._runner("wf_probe")
+    assert runner._on_complete is None

@@ -39,13 +39,15 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     "registry": set(),  # leaf: background-run registry, imports only __init__ (store via DI)
     "agent_exec": set(),  # production agent_fn adapter; imports llm_helpers (external),
     #                       no intra-pkg siblings — an OPTIONAL adapter, not engine layer
+    "agent_pool": set(),  # warm-session agent_fn adapter; imports acp.worker_pool +
+    #                       llm_helpers (external), no intra-pkg siblings — OPTIONAL adapter
     "store": set(),  # durable JSON-per-run persistence; imports config.paths + security
     #                  (external), no intra-pkg siblings — an OPTIONAL persistence adapter
     "context": {"validate"},
     "runner": {"validate", "dsl", "events", "context", "schema", "registry"},
     # service is the gateway-side façade ABOVE runner — composes the engine for the
     # live process (chat tools / app / injection). Top of the stack.
-    "service": {"validate", "registry", "runner", "agent_exec", "store"},
+    "service": {"validate", "registry", "runner", "agent_exec", "agent_pool", "store"},
 }
 
 # Modules outside the package the engine must never import directly (F1).

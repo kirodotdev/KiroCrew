@@ -56,14 +56,14 @@ _TRANSIENT_MARKERS = (
     "internal error: api error",
     "serviceunavailable",
     "service unavailable",
-    "throttl",                 # ThrottlingException + "Bedrock is throttling"
+    "throttl",  # ThrottlingException + "Bedrock is throttling"
     "toomanyrequests",
     "servicequotaexceeded",
     "modelstreamerror",
     "connection reset",
     "connectionreset",
-    "dispatch failure",        # AWS SDK connector-level I/O failure (conn/DNS/TLS drop)
-    "dispatchfailure",         # Rust DispatchFailure variant (unspaced)
+    "dispatch failure",  # AWS SDK connector-level I/O failure (conn/DNS/TLS drop)
+    "dispatchfailure",  # Rust DispatchFailure variant (unspaced)
     "is unavailable on bedrock",  # capacity/region rollout (formatted message)
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message (Mesh-2356)
 )
@@ -143,6 +143,39 @@ if TYPE_CHECKING:
     from kiro_crew.hooks import HookManager
 
 logger = logging.getLogger(__name__)
+
+
+def record_interaction_event(client: LLMProvider, session_key: str, surface: str) -> None:
+    """Record one per-interaction telemetry event via the PlatformContext seam.
+
+    The Default ``TelemetryProvider.record_event`` is a no-op, so standalone is
+    unchanged; a companion records one event per successful turn. Payload is
+    strictly metadata (session key, surface, model) — never prompt/response text
+    or file contents. Best-effort: a telemetry failure never affects the turn.
+
+    Shared by every surface (dashboard, Slack) so the payload shape and the
+    model-extraction reflection cannot drift between call sites.
+    """
+    from kiro_crew.platform import current_context
+
+    try:
+        # Resolve the active model across backend shapes. After Kiro startup the
+        # provider's ``_client`` is an ``AcpSessionProvider`` that exposes the
+        # model via a ``model`` property (backed by ``_handle.model``); before
+        # startup / for the raw client it is the ``_model`` attribute. Try the
+        # property first, then the raw attr, on the inner client then the outer.
+        inner = getattr(client, "_client", client)
+        model = ""
+        for obj in (inner, client):
+            model = getattr(obj, "model", "") or getattr(obj, "_model", "") or ""
+            if model:
+                break
+        current_context().telemetry.record_event(
+            "interaction",
+            {"session_key": session_key, "surface": surface, "model": model},
+        )
+    except Exception:
+        logger.debug("telemetry.record_event(interaction) failed", exc_info=True)
 
 
 def _extract_tool_input_strings(tool_input: str) -> list[str]:
@@ -255,7 +288,8 @@ async def stream_and_collect(
                     if max_turns is not None and tool_call_count > max_turns:
                         logger.warning(
                             "max_turns=%d exceeded (%d tool calls), breaking",
-                            max_turns, tool_call_count,
+                            max_turns,
+                            tool_call_count,
                         )
                         _sel().log_tool_invocation(
                             session_key="",
@@ -275,7 +309,9 @@ async def stream_and_collect(
                         outcome="auto_approved",
                     )
                     await fire_tool_hooks(
-                        get_global_hook_store(), event.title, event.tool_input,
+                        get_global_hook_store(),
+                        event.title,
+                        event.tool_input,
                     )
                 elif event.kind == EVENT_COMPLETE:
                     break
@@ -299,7 +335,9 @@ async def stream_and_collect(
                     raise PromptBusyExhaustedError(msg) from exc
                 logger.warning(
                     "Prompt busy (attempt %d/%d), cancelling and retrying: %s",
-                    attempt + 1, _PROMPT_BUSY_RETRIES, exc,
+                    attempt + 1,
+                    _PROMPT_BUSY_RETRIES,
+                    exc,
                 )
                 try:
                     await provider.cancel()
@@ -332,7 +370,10 @@ async def stream_and_collect(
                 delay = transient_retry_delay(transient_attempts)
                 logger.warning(
                     "Transient backend error (attempt %d/%d), retrying in %.1fs: %s",
-                    transient_attempts, _TRANSIENT_RETRIES, delay, exc,
+                    transient_attempts,
+                    _TRANSIENT_RETRIES,
+                    delay,
+                    exc,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -393,13 +434,15 @@ async def _resolve_permission(
     normalized = event.title or ""
     if not normalized:
         await provider.reject_tool(event.request_id)
-        _log("denied", error="Blocked: missing tool title",
-             metadata={"mechanism": "always_deny"})
+        _log("denied", error="Blocked: missing tool title", metadata={"mechanism": "always_deny"})
         return False
     if is_sensitive_path(normalized):
         await provider.reject_tool(event.request_id)
-        _log("denied", error=f"Blocked: sensitive path: {normalized}",
-             metadata={"mechanism": "always_deny"})
+        _log(
+            "denied",
+            error=f"Blocked: sensitive path: {normalized}",
+            metadata={"mechanism": "always_deny"},
+        )
         return False
     _bash_reason = is_sensitive_bash_command(normalized)
     if _bash_reason:
@@ -423,20 +466,21 @@ async def _resolve_permission(
         for s in _input_strings:
             if is_sensitive_path(s):
                 await provider.reject_tool(event.request_id)
-                _log("denied", error=f"Blocked: sensitive path in tool_input: {s}",
-                     metadata={"mechanism": "always_deny_input"})
+                _log(
+                    "denied",
+                    error=f"Blocked: sensitive path in tool_input: {s}",
+                    metadata={"mechanism": "always_deny_input"},
+                )
                 return False
             _input_bash = is_sensitive_bash_command(s)
             if _input_bash:
                 await provider.reject_tool(event.request_id)
-                _log("denied", error=_input_bash,
-                     metadata={"mechanism": "always_deny_input"})
+                _log("denied", error=_input_bash, metadata={"mechanism": "always_deny_input"})
                 return False
             _input_deny = is_denied(s)
             if _input_deny:
                 await provider.reject_tool(event.request_id)
-                _log("denied", error=_input_deny,
-                     metadata={"mechanism": "always_deny_input"})
+                _log("denied", error=_input_deny, metadata={"mechanism": "always_deny_input"})
                 return False
 
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks:

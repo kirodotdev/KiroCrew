@@ -23,6 +23,8 @@ mutations — MCP tools and the CLI both go through here.
 from __future__ import annotations
 
 import asyncio
+import base64
+import copy
 import getpass
 import json
 import logging
@@ -67,6 +69,8 @@ from kiro_crew.publish_provider import (
     list_providers,
 )
 from kiro_crew.security import (
+    _B64_CHUNK_RE,
+    _HARD_CREDENTIAL_RE,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -231,17 +235,52 @@ def _audit(
     extra: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
+    """Write a tool-invocation SEL event, redacting caller-supplied text.
+
+    The SEL writer signs bytes as-written and does NOT redact (see
+    ``sel.log_governance_decision``'s docstring), so both the ``error`` string
+    and every string leaf of ``extra`` are redacted HERE before ``log`` — an
+    upstream provider exception can carry a credential or signed URL, and
+    ``external_id`` in ``extra`` is provider-controlled. Routing through
+    ``redact_via_context`` (not the bare ``_redact_text``) means a loaded
+    companion's extra credential/cookie regexes apply to the audit trail too.
+    """
+    from kiro_crew.platform.context import redact_via_context
+
     try:
+        safe_error = redact_via_context(error) if error else ""
+        safe_extra = _redact_audit_metadata(extra) if extra else {}
         sel().log_tool_invocation(
             session_key=_session_key(request),
             source="api",
             tool_name=tool,
             outcome=outcome,
-            error=error or "",
-            metadata=extra or {},
+            error=safe_error,
+            metadata=safe_extra,
         )
     except Exception:  # pragma: no cover — audit must never break a request
         logger.debug("SEL audit failed for %s", tool, exc_info=True)
+
+
+def _redact_audit_metadata(obj: Any) -> Any:
+    """Recursively redact every string leaf of SEL ``extra`` metadata.
+
+    Provider-controlled values (e.g. ``external_id``) reach the audit log via
+    ``extra`` and can be credential-shaped, so they pass the same
+    seam-aware credential/exfil redaction as ``error``.
+    """
+    from kiro_crew.platform.context import redact_via_context
+
+    if isinstance(obj, str):
+        return redact_via_context(obj)
+    if isinstance(obj, dict):
+        return {
+            (redact_via_context(k) if isinstance(k, str) else k): _redact_audit_metadata(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_audit_metadata(v) for v in obj]
+    return obj
 
 
 def _serialize(art: Any, *, include_content: bool = False, state: Any = None) -> dict[str, Any]:
@@ -306,6 +345,7 @@ def _validate_inbound_webapp_metadata(body: dict[str, Any]) -> str | None:
     if body.get("webapp_metadata") is None:
         return None
     from kiro_crew.validation import ValidationError, _validate_artifact_save
+
     try:
         _validate_artifact_save({"webapp_metadata": body["webapp_metadata"]})
     except ValidationError as exc:
@@ -331,6 +371,130 @@ def _redact_webapp_metadata(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_redact_webapp_metadata(v) for v in obj]
     return obj
+
+
+#: Top-level keys ``_serialize`` has already passed through the redactors, so
+#: ``_redact_remote_response`` need not rescan them (avoids a second full-content
+#: regex pass over the ≤25 MiB ``content`` body on the event loop).
+_SERIALIZE_REDACTED_KEYS = frozenset({"content", "name", "description", "tags"})
+
+#: Defense-in-depth cap on how deep the remote-response redactor walks, matching
+#: the Block Kit sanitizer in ``messaging.py`` — a pathologically nested provider
+#: response can't drive a ``RecursionError`` (which would escape the handler's
+#: 502 mapping as an unhandled 500). Nesting beyond this is truncated.
+_MAX_REDACT_DEPTH = 10
+
+#: Keys in a remote/provider response that hold an OPAQUE provider identifier —
+#: a join key (matched against the local index) and the action handle the FE
+#: sends back verbatim for clone/fork. These are never human-readable prose. For
+#: them the redactor skips ONLY the entropy/exfil heuristic (which false-positives
+#: on a benign high-entropy id — UUID / content hash — and would rewrite it to
+#: ``[REDACTED]``, breaking clone/fork of that id) but STILL runs hard-credential
+#: redaction, so a provider that embeds a literal AKIA/SSH/Slack token in an id
+#: cannot reach the dashboard verbatim. Titles/snippets/owners are redacted in
+#: full (both heuristic and hard-credential).
+_REMOTE_ID_KEYS = frozenset({"external_id", "artifactId", "id"})
+
+#: Replacement for a provider id that embeds a literal hard credential — the
+#: whole id is dropped (a clone/fork of it fails rather than round-tripping the
+#: token back to the browser and provider).
+_REMOTE_ID_CRED_TAG = "[REDACTED: credential]"
+
+
+def _id_embeds_hard_credential(value: str) -> bool:
+    """True if an opaque provider id embeds a hard credential — literal OR
+    base64-encoded.
+
+    The id-key branch of ``_redact_remote_response`` deliberately skips the
+    ENTROPY heuristic (a benign UUID / content hash is high-entropy and must
+    survive so clone/fork can send it back), but a malicious provider could
+    still smuggle a real token in the id. We therefore run the hard-credential
+    floor two ways: on the raw id, and on any base64-shaped chunk decoded to
+    text. A benign high-entropy id decodes to non-credential bytes (or fails to
+    decode), so this preserves the exemption while closing the encoded-token
+    hole. Only the hard floor is applied to the decoded bytes — NOT the entropy
+    heuristic — so a benign id that merely *looks* base64 is not rewritten."""
+    if _HARD_CREDENTIAL_RE.search(value):
+        return True
+    for m in _B64_CHUNK_RE.finditer(value):
+        try:
+            decoded = base64.b64decode(m.group(), validate=True).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        if _HARD_CREDENTIAL_RE.search(decoded):
+            return True
+    return False
+
+
+def _redact_remote_response(data: dict, *, already_redacted: frozenset[str] = frozenset()) -> dict:
+    """Redact credential patterns and exfiltration URLs from a remote/provider
+    response before it reaches the dashboard.
+
+    Walks nested dicts AND lists — *including* lists nested inside lists (the
+    prior hand-rolled walker only redacted dicts/strings inside a top-level
+    list, silently skipping list-in-list values) — up to ``_MAX_REDACT_DEPTH``
+    levels. A single ``deepcopy`` at entry isolates the caller's object; the
+    recursion then rewrites in place instead of re-copying every subtree at
+    each level (the old per-level ``deepcopy`` made redaction O(n·depth)).
+
+    ``already_redacted`` names top-level keys whose string values the caller has
+    already passed through the same redactors (e.g. ``_serialize`` redacts an
+    up-to-25 MiB ``content`` body), so they are not rescanned a second time.
+    Strips ``localPath`` (a leaked local filesystem path) from the top level.
+
+    The walk builds fresh containers as it goes (so it doubles as the copy — no
+    separate unbounded ``copy.deepcopy`` of the input, which would itself
+    ``RecursionError`` on a pathologically nested provider response before the
+    depth cap could take effect).
+    """
+
+    def _walk(value: Any, depth: int, key: str = "") -> Any:
+        # Opaque provider identifiers are join keys + action handles (the FE
+        # sends external_id straight back as the clone/fork target), NOT prose.
+        # The exfil/entropy heuristic false-positives on a benign high-entropy
+        # id (UUID / content hash) and would rewrite it to [REDACTED], breaking
+        # clone/fork of that id. So for these keys we skip ONLY the entropy
+        # heuristic — but STILL run hard-credential redaction, so a provider that
+        # smuggles a literal AKIA/SSH/Slack token in the id can't reach the
+        # dashboard verbatim. A benign id passes through unchanged; an id that
+        # actually contains a credential is redacted (and a clone of it would
+        # legitimately fail rather than exfiltrate).
+        if key in _REMOTE_ID_KEYS and isinstance(value, str):
+            # Use the HARD-credential floor only (literal AKIA/ASIA/SSH/PEM/Slack
+            # markers + base64-encoded variants), NOT redact_credentials — the
+            # latter also runs the bare-secret ENTROPY heuristic, which
+            # false-positives on a benign high-entropy id (UUID / content hash)
+            # and would break clone/fork. If a hard credential IS embedded
+            # (literal or base64), redact the whole id (a clone of it should
+            # fail rather than exfiltrate the token).
+            return _REMOTE_ID_CRED_TAG if _id_embeds_hard_credential(value) else value
+        if depth > _MAX_REDACT_DEPTH:
+            # Redact a boundary string; truncate deeper containers rather than
+            # recurse further (defense-in-depth, mirrors messaging._sanitize_blocks).
+            if isinstance(value, str):
+                return _redact_text(value) if value else value
+            if isinstance(value, dict):
+                return {}
+            if isinstance(value, list):
+                return []
+            return value
+        if isinstance(value, str):
+            return _redact_text(value) if value else value
+        if isinstance(value, dict):
+            return {k: _walk(v, depth + 1, k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_walk(item, depth + 1) for item in value]
+        return value
+
+    out: dict = {}
+    for key, val in data.items():
+        # An already-redacted top-level value is copied (deep) as-is rather than
+        # rescanned. copy.deepcopy is bounded here — these values (e.g. the
+        # serialized ``content`` string / ``tags`` list) are not adversarially
+        # nested — and keeps the response independent of the caller's object.
+        out[key] = copy.deepcopy(val) if key in already_redacted else _walk(val, 1)
+    out.pop("localPath", None)
+    return out
 
 
 #: Max length of a content preview snippet returned by the list endpoint when
@@ -474,7 +638,9 @@ def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
     return store.get(slug)
 
 
-def _scan_session_docs(conversation_log: Any, saved_map: dict[str, str], session_key: str | None = None) -> list[dict[str, Any]]:
+def _scan_session_docs(
+    conversation_log: Any, saved_map: dict[str, str], session_key: str | None = None
+) -> list[dict[str, Any]]:
     """Scan ALL sessions for non-code document file-changes (blocking).
 
     Returns one entry per distinct document path (latest session wins), each
@@ -595,7 +761,9 @@ def _recorded_doc_identities(conversation_log: Any) -> set[tuple[int, int]]:
     return out
 
 
-def _materialize_and_pin(path: str, conversation_log: Any, source: str = "chat", session_key: str = "") -> Any:
+def _materialize_and_pin(
+    path: str, conversation_log: Any, source: str = "chat", session_key: str = ""
+) -> Any:
     """Create (or reuse) a file-backed artifact from ``path`` and mark it saved.
 
     Idempotent: if an artifact already backs this path, just pin it. Otherwise
@@ -632,7 +800,9 @@ def _materialize_and_pin(path: str, conversation_log: Any, source: str = "chat",
     # inode's identity is in the recorded-documents allowlist, so a symlink/dir
     # swap between realpath() and open() cannot substitute an unauthorized file.
     try:
-        data = safe_read_file_bytes_with_identity(canonical, _recorded_doc_identities(conversation_log))
+        data = safe_read_file_bytes_with_identity(
+            canonical, _recorded_doc_identities(conversation_log)
+        )
     except PermissionError as exc:
         raise ArtifactValidationError("path is not a document from your chat history") from exc
     except FileTooLargeError as exc:
@@ -847,8 +1017,12 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
                     request=request,
                     outcome="denied",
                     error="dedup kind conflict",
-                    extra={"slug": existing.slug, "source_path": source_path,
-                           "existing_kind": existing.kind, "supplied_kind": supplied_kind},
+                    extra={
+                        "slug": existing.slug,
+                        "source_path": source_path,
+                        "existing_kind": existing.kind,
+                        "supplied_kind": supplied_kind,
+                    },
                 )
                 return _err(
                     f"source_path dedup conflict: existing artifact '{existing.slug}' "
@@ -1164,8 +1338,24 @@ async def api_artifact_update(request: web.Request) -> web.Response:
     # rollback even when the body carries no content field). Metadata-only
     # updates (rename / retag / description / folder) don't move content, so
     # open views have nothing to re-render.
-    if body.get("content") is not None or event_type == "reverted":
+    content_changed = body.get("content") is not None or event_type == "reverted"
+    if content_changed:
         _notify_artifact_update(state, art.slug, art.version)
+    # Auto-sync egress: a snapshot that bumped the version on an artifact
+    # published with ``auto_sync`` (the state a bidirectional ``clone`` arms)
+    # pushes the new version to the remote — this is the leg that makes clone
+    # actually bidirectional. Gated through the SAME ``capabilities.publish``
+    # ceiling the clone passed, so a governance-denied surface can edit locally
+    # but never egresses. Best-effort: a push failure must not fail the local
+    # save (the version is already durable); the next snapshot retries.
+    # Inert in the public edition (empty registry -> push_version_by_slug's
+    # provider resolve raises PublishUnavailableError, swallowed here).
+    if content_changed and snapshot and art.publication is not None and art.publication.auto_sync:
+        if _publish_governance_denied(request, art.publication.provider) is None:
+            try:
+                await publish_sync.push_version_by_slug(art.slug)
+            except Exception as exc:  # noqa: BLE001 - best-effort egress
+                logger.info("auto-sync push after snapshot failed for %s: %s", art.slug, exc)
     return _json_response(_serialize(art, include_content=True))
 
 
@@ -1762,6 +1952,215 @@ async def api_artifact_refresh_sharing(request: web.Request) -> web.Response:
     return _json_response(_serialize(art, include_content=True))
 
 
+async def api_artifact_pull_latest(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/pull-latest — pull upstream into a fork."""
+
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_pull_latest",
+            request=request,
+            outcome="denied",
+            error="restricted session",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot pull latest", status=403)
+
+    slug = request.match_info.get("slug", "")
+    store = get_default_store()
+    try:
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+
+    if art.publication is None and art.fork_metadata is None:
+        return _err("artifact does not track an upstream", status=400)
+
+    # Delegate to the unified pull engine — works for a fork's origin lineage
+    # AND my own publication (a collaborator edited my cloud copy). ``source``
+    # (publication|origin|auto) selects which tracked upstream to pull. The
+    # engine pulls into a NEW local snapshot, never auto-republishes, and
+    # surfaces a conflict (never clobbers) for an owned copy with unsynced
+    # local edits. Read-only ingress — no publish governance gate (no bytes
+    # leave the box).
+    source = request.rel_url.query.get("source", "auto")
+    try:
+        # ``pull_upstream`` is best-effort for provider/network failures (it
+        # returns a result dict, never raises for those), so the realistic
+        # raises here are store/registry errors: a concurrent delete during the
+        # remote-fetch window (ArtifactNotFoundError → 404) or an unregistered
+        # provider (PublishUnavailableError → 503). Map those like the other
+        # sync handlers instead of collapsing every error into a 502.
+        result = await publish_sync.pull_upstream(slug, source=source)
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        return _sync_error_response("artifact_pull_latest", request, slug, exc)
+    except PublishUnavailableError as exc:
+        return _sync_error_response("artifact_pull_latest", request, slug, exc)
+    except Exception as exc:  # pragma: no cover — pull is best-effort
+        _audit(
+            tool="artifact_pull_latest",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+
+    _audit(
+        tool="artifact_pull_latest",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "pulled": bool(result.get("pulled"))},
+    )
+    # A pull lands upstream content as a new local snapshot (Mesh-2772).
+    if result.get("pulled"):
+        _notify_artifact_update(state, slug, art.version)
+    # ``_serialize`` already ran the redactors over the (≤25 MiB) content body
+    # and the other LLM-originated fields, so don't rescan ``content`` — that
+    # double pass is a redundant multi-second regex scan on the event loop.
+    payload = _redact_remote_response(
+        _serialize(art, include_content=True), already_redacted=_SERIALIZE_REDACTED_KEYS
+    )
+    payload["pull_result"] = _redact_remote_response(result)
+    return _json_response(payload)
+
+
+async def api_artifact_upstream_status(request: web.Request) -> web.Response:
+    """GET /api/artifacts/{slug}/upstream-status — cheap (metadata-only) check
+    of whether the tracked upstream has changes to pull. Read-only; drives the
+    detail page's non-blocking pull-available / conflict banner. Best-effort —
+    a provider failure reports ``tracked`` with ahead/conflict defaulted False
+    so opening an artifact never blocks on the network."""
+    slug = request.match_info.get("slug", "")
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_upstream_status",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": slug},
+        )
+        return _err("restricted session cannot query upstream status", status=403)
+    try:
+        status = await publish_sync.upstream_status(slug)
+    except ArtifactNotFoundError as exc:
+        _audit(
+            tool="artifact_upstream_status",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:
+        _audit(
+            tool="artifact_upstream_status",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc))
+    _audit(
+        tool="artifact_upstream_status",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "upstream_ahead": bool(status.get("upstream_ahead"))},
+    )
+    return _json_response(status)
+
+
+async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/overwrite-remote — force the local content to
+    become the remote's current version even when the remote moved ahead,
+    WITHOUT pulling the remote's (possibly untrusted) bytes into the local
+    store. The superseded remote version stays in the provider's history (no
+    delete-version primitive). See ``publish_sync.overwrite_upstream``.
+
+    Egress chokepoint: bytes leave the box to the tracked destination, and
+    ``publish_sync.overwrite_upstream`` has NO internal gate (``push_version``
+    is ungated), so the ``capabilities.publish`` governance ceiling is enforced
+    HERE — on the resolved ``publication.provider`` — before any provider
+    dispatch (same fail-closed gate as publish / update-sharing).
+    """
+    slug = request.match_info.get("slug", "")
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_overwrite_remote",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": slug},
+        )
+        return _err("restricted session cannot overwrite the remote", status=403)
+    store = get_default_store()
+    try:
+        existing = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        _audit(
+            tool="artifact_overwrite_remote",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=404)
+    # Resolve the destination the bytes actually go to: the existing
+    # publication's provider. An unpublished artifact can't be overwritten —
+    # publish_sync reports that cleanly, but it must not bypass the gate, so
+    # gate on the default provider name in that case.
+    overwrite_provider = (
+        existing.publication.provider
+        if existing.publication is not None and existing.publication.provider
+        else "artifactory"
+    )
+    gov_denial = _publish_governance_denied(request, overwrite_provider)
+    if gov_denial is not None:
+        _audit(
+            tool="artifact_overwrite_remote",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"slug": slug, "provider": overwrite_provider},
+        )
+        return _err(gov_denial, status=403)
+    try:
+        result = await publish_sync.overwrite_upstream(slug)
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:
+        _audit(
+            tool="artifact_overwrite_remote",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=404)
+    except Exception as exc:  # pragma: no cover — overwrite is best-effort
+        _audit(
+            tool="artifact_overwrite_remote",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+    _audit(
+        tool="artifact_overwrite_remote",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "overwritten": bool(result.get("overwritten"))},
+    )
+    payload = _redact_remote_response(
+        _serialize(art, include_content=True), already_redacted=_SERIALIZE_REDACTED_KEYS
+    )
+    payload["overwrite_result"] = _redact_remote_response(result)
+    return _json_response(payload)
+
+
 async def api_artifact_relocate(request: web.Request) -> web.Response:
     """PATCH /api/artifacts/{slug}/relocate — update source_path."""
 
@@ -2240,7 +2639,13 @@ async def api_artifact_set_pinned(request: web.Request) -> web.Response:
     try:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
-        _audit(tool="artifact_set_pinned", request=request, outcome="denied", error=str(exc), extra={"slug": slug})
+        _audit(
+            tool="artifact_set_pinned",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
         return _err(str(exc))
     raw_pinned = body.get("pinned")
     if not isinstance(raw_pinned, bool):
@@ -2358,7 +2763,12 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
         return _err(str(exc))
     path = body.get("path")
     if not isinstance(path, str) or not path.strip():
-        _audit(tool="artifact_materialize", request=request, outcome="denied", error="path required (must be a string)")
+        _audit(
+            tool="artifact_materialize",
+            request=request,
+            outcome="denied",
+            error="path required (must be a string)",
+        )
         return _err("path required (must be a string)")
     path = path.strip()
     # Redacted copy for audit/error metadata — never emit a raw (LLM-influenced)
@@ -2367,17 +2777,47 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
     audit_path, _ = redact_exfiltration_urls(_rc)
     clog = getattr(state, "conversation_log", None)
     if clog is None:
-        _audit(tool="artifact_materialize", request=request, outcome="error", error="conversation log unavailable", extra={"path": audit_path})
+        _audit(
+            tool="artifact_materialize",
+            request=request,
+            outcome="error",
+            error="conversation log unavailable",
+            extra={"path": audit_path},
+        )
         return _err("conversation log unavailable", status=500)
     try:
-        art = await _run_off_loop(lambda: _materialize_and_pin(path, clog, _artifact_source_for_request(request), _clean_origin_session_key(body.get("origin_session_key"))))
+        art = await _run_off_loop(
+            lambda: _materialize_and_pin(
+                path,
+                clog,
+                _artifact_source_for_request(request),
+                _clean_origin_session_key(body.get("origin_session_key")),
+            )
+        )
     except ArtifactValidationError as exc:
-        _audit(tool="artifact_materialize", request=request, outcome="denied", error=str(exc), extra={"path": audit_path})
+        _audit(
+            tool="artifact_materialize",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"path": audit_path},
+        )
         return _err(str(exc))
     except ArtifactError as exc:
-        _audit(tool="artifact_materialize", request=request, outcome="error", error=str(exc), extra={"path": audit_path})
+        _audit(
+            tool="artifact_materialize",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"path": audit_path},
+        )
         return _err(str(exc), status=500)
-    _audit(tool="artifact_materialize", request=request, outcome="success", extra={"path": audit_path, "slug": art.slug})
+    _audit(
+        tool="artifact_materialize",
+        request=request,
+        outcome="success",
+        extra={"path": audit_path, "slug": art.slug},
+    )
     return _json_response(_serialize(art, include_content=True))
 
 
@@ -3056,12 +3496,9 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
     if target is None:
         return _err("comment not found", status=404)
 
-    # Preserve the agent watermark: an edit must never strip the 🤖 mark from an
-    # agent-authored comment (artifact_post_comment prepends it on create).
-    # Centralized here so both the UI edit and the MCP artifact_update_comment
-    # tool keep the invariant regardless of what body they send.
-    if target.is_agent and not text.startswith("\U0001f916"):
-        text = f"\U0001f916 {text}"
+    # Agent provenance is the structured is_agent flag, not a body prefix — an
+    # edit stores the body verbatim (no emoji stamped into the text; the
+    # dashboard renders a lucide Bot icon from is_agent per CLAUDE.md).
 
     # Push the edit to the provider in place when its origin provider supports
     # it (Chorus). Others edit locally only. Gated by the same capabilities.publish
@@ -3160,3 +3597,241 @@ async def api_artifact_publish_providers(request: web.Request) -> web.Response:
             }
         )
     return _json_response({"providers": out, "kind": kind})
+
+
+# ── Remote artifacts (provider-routed browse / clone / fork) ─────────────────
+
+
+def _annotate_local_slugs(out: dict[str, Any], index: dict[str, str], provider: str = "") -> None:
+    """Annotate each browse row with ``local_slug`` (the local copy if already
+    cloned/forked) so the UI shows open-vs-clone without a round-trip.
+
+    ``index`` is a prebuilt map (one off-loop store scan via
+    ``ArtifactStore.index_by_artifact_id``) — NOT a per-row store scan on the
+    event loop. Lookups are provider-namespaced (``provider\\x00id``) so a
+    browse against provider B never annotates provider A's local copy that
+    happens to share an id; the bare-id key is tried only as a legacy fallback
+    for records that predate provider tracking. Must run on the UN-redacted
+    rows: a high-entropy ``external_id`` can be rewritten to
+    ``[REDACTED: credential]`` by the credential heuristic, which would miss the
+    local match and wrongly offer Clone instead of Open."""
+    from kiro_crew.publish_provider import DEFAULT_PROVIDER
+
+    items = out.get("artifacts")
+    if not isinstance(items, list):
+        return
+    # A legacy no-provider record only emits a bare-id key (see
+    # index_by_artifact_id), and such a record originated from the DEFAULT
+    # provider — so the bare-id fallback may resolve ONLY a browse against that
+    # same default provider. Applying it to an arbitrary provider B would let
+    # B's row inherit provider A's legacy slug on a shared id, wrongly marking
+    # B's artifact already-local and hiding its clone/fork action (mirrors the
+    # _provider_ok gate in find_by_artifact_id).
+    allow_bare = provider == DEFAULT_PROVIDER or not provider
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        aid = str(item.get("external_id") or item.get("artifactId") or item.get("id") or "")
+        if not aid:
+            item["local_slug"] = None
+            continue
+        scoped = index.get(get_default_store().artifact_index_key(provider, aid))
+        if scoped is not None:
+            item["local_slug"] = scoped
+        else:
+            item["local_slug"] = index.get(aid) if allow_bare else None
+
+
+async def api_remote_artifacts_browse(request: web.Request) -> web.Response:
+    """GET /api/remote-artifacts/{provider}/browse?scope=&q= — provider-routed
+    discovery via ``list_remote`` / ``search_remote``.
+
+    A non-empty ``q`` runs full-text ``search_remote`` (providers whose
+    ``discovery_model().full_text_search`` is True); otherwise
+    ``list_remote(scope)``. ``None`` from the provider means that discovery
+    primitive isn't supported (400). Gated like other reads-with-state. In the
+    public edition the registry is empty, so ``get_provider`` raises
+    ``PublishUnavailableError`` and every browse returns 404 — the surface is
+    inert until a companion registers a provider.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_browse_remote",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+        )
+        return _err("restricted session cannot browse remote artifacts", status=403)
+    provider_name = request.match_info.get("provider", "")
+    scope = request.rel_url.query.get("scope", "mine")
+    query = request.rel_url.query.get("q") or ""
+    page_token = request.rel_url.query.get("pageToken")
+    try:
+        provider = get_provider(provider_name)
+    except PublishUnavailableError as exc:
+        # No provider registered under this name — inert public edition or a
+        # companion misconfiguration. 503 (not 404), matching the clone/fork
+        # handlers: the surface exists, the provider tooling doesn't.
+        return _err(_redact_text(str(exc)), status=503)
+    except Exception as exc:
+        return _err(_redact_text(str(exc)), status=502)
+    try:
+        if query:
+            result = await provider.search_remote(query=query, page_token=page_token)
+        else:
+            result = await provider.list_remote(scope=scope, page_token=page_token)
+    except Exception as exc:
+        _audit(
+            tool="artifact_browse_remote",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"provider": provider_name},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+    if result is None:
+        verb = "full-text search" if query else f"{scope} listing"
+        return _err(f"{provider_name} does not support {verb}", status=400)
+    # Annotate on the UN-redacted rows (external_ids intact) using a single
+    # off-loop store scan, THEN redact — annotating after redaction would look up
+    # a credential-shaped external_id in its ``[REDACTED]`` form and miss the
+    # local match. The per-row scan is replaced by one indexed scan off the loop.
+    index = await _run_off_loop(lambda: get_default_store().index_by_artifact_id())
+    _annotate_local_slugs(result, index, provider_name)
+    out = _redact_remote_response(result)
+    _audit(
+        tool="artifact_browse_remote",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "scope": "search" if query else scope},
+    )
+    return _json_response(out)
+
+
+async def api_remote_artifacts_clone(request: web.Request) -> web.Response:
+    """POST /api/remote-artifacts/{provider}/clone (``external_id`` in the JSON
+    body) — provider-routed bidirectional clone (sets a ``publication``;
+    collab_mode from the provider).
+
+    Governance: a clone arms future egress — ``clone_from_remote`` sets
+    ``auto_sync=True``, so every later local snapshot auto-pushes to the remote
+    via the ungated ``push_version``. The ``capabilities.publish`` ceiling is
+    therefore enforced HERE, before the clone binds the two copies (same
+    fail-closed gate as publish). Fork (pull-only lineage) stays ungated.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_clone",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+        )
+        return _err("restricted session cannot clone artifacts", status=403)
+    provider_name = request.match_info.get("provider", "")
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+    external_id = str(body.get("external_id") or "").strip()
+    if not external_id:
+        return _err("external_id is required")
+    gov_denial = _publish_governance_denied(request, provider_name)
+    if gov_denial is not None:
+        _audit(
+            tool="artifact_clone",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(gov_denial, status=403)
+    try:
+        art = await publish_sync.clone_from_remote(external_id, provider_name=provider_name)
+    except PublishUnavailableError as exc:
+        _audit(
+            tool="artifact_clone",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=503)
+    except Exception as exc:
+        _audit(
+            tool="artifact_clone",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+    _audit(
+        tool="artifact_clone",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "external_id": external_id, "slug": art.slug},
+    )
+    return _json_response(
+        _redact_remote_response(
+            _serialize(art, include_content=True), already_redacted=_SERIALIZE_REDACTED_KEYS
+        ),
+        status=201,
+    )
+
+
+async def api_remote_artifacts_fork(request: web.Request) -> web.Response:
+    """POST /api/remote-artifacts/{provider}/fork (``external_id`` in the JSON
+    body) — provider-routed fork (independent copy with pull-only
+    ``fork_metadata`` lineage). Ingress only — never arms a push — so no publish
+    governance gate."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_fork",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+        )
+        return _err("restricted session cannot fork artifacts", status=403)
+    provider_name = request.match_info.get("provider", "")
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+    external_id = str(body.get("external_id") or "").strip()
+    if not external_id:
+        return _err("external_id is required")
+    try:
+        art = await publish_sync.fork_from_remote(external_id, provider_name=provider_name)
+    except PublishUnavailableError as exc:
+        _audit(
+            tool="artifact_fork",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=503)
+    except Exception as exc:
+        _audit(
+            tool="artifact_fork",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+    _audit(
+        tool="artifact_fork",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "external_id": external_id, "slug": art.slug},
+    )
+    return _json_response(
+        _redact_remote_response(
+            _serialize(art, include_content=True), already_redacted=_SERIALIZE_REDACTED_KEYS
+        ),
+        status=201,
+    )

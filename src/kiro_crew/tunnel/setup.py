@@ -21,12 +21,20 @@ async def setup_tunnel(
 ) -> TunnelManager | None:
     """Set up the dashboard tunnel if token auth is active.
 
-    Returns the TunnelManager if started, None if denied. The tunnel feature is
-    a no-op in the OSS build (see ``kiro_crew.tunnel.manager``), but the security
-    gate and wiring are preserved so a custom provider can be dropped in.
-    All dependencies are passed explicitly — no implicit imports from dashboard.
+    Returns the TunnelManager if started, None if denied. Lifecycle
+    (``start`` / ``stop`` / ``public_url``) routes through the active
+    ``TunnelProvider`` seam inside ``TunnelManager``; the public core's Default
+    provider is a no-op so the OSS build stays disabled, while a companion drives
+    a real tunnel. The connect/disconnect callbacks below (CORS + ``set_tunnel_url``)
+    and ``/api/tunnel/status`` stay wrapped AROUND the provider.
+
+    The token-auth deny gate is evaluated BEFORE the manager is constructed or
+    ``start()`` reached, so a companion tunnel can never start without dashboard
+    token auth. All dependencies are passed explicitly — no implicit imports from
+    dashboard.
     """
-    # Security gate: refuse to start tunnel without token auth (deny-by-default)
+    # Security gate: refuse to start tunnel without token auth (deny-by-default).
+    # MUST stay ahead of TunnelManager construction / provider.start().
     _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in middlewares)
     logger.debug("Tunnel security gate: _has_token_auth=%s", _has_token_auth)
 

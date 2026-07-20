@@ -795,11 +795,8 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
         _kiro_prefix = ".kirocrew" + os.sep
         for d in home_dirs:
             if d.startswith(_kiro_prefix) or d == ".kirocrew":
-                tail = d[len(".kirocrew"):]  # includes leading / or is ""
-                full = (
-                    os.path.join(kiro_home, tail.lstrip(os.sep))
-                    if tail else kiro_home
-                )
+                tail = d[len(".kirocrew") :]  # includes leading / or is ""
+                full = os.path.join(kiro_home, tail.lstrip(os.sep)) if tail else kiro_home
                 sensitive_targets.add(full.casefold())
                 # Also add the resolved form in case the env value itself has
                 # symlinks (matches the home/home_real duality above).
@@ -1033,9 +1030,12 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
 
 
 # ── URL Exfiltration Detection ──
-# Detects URLs whose query strings contain credential-like data.
-# Domain-agnostic: we flag the PAYLOAD, not the destination.
-# Any URL with secrets in query params is suspicious regardless of domain.
+# Detects URLs whose path/query contain credential-like data. We flag the
+# PAYLOAD, not the destination: any URL with secrets is suspicious regardless of
+# host. The sole host-sensitive carve-out is a companion-supplied exact-host
+# exemption (see _exfil_url_warning) that narrows ONLY the base64-blob and
+# query-length heuristics for trusted tenants; the hard-credential floor and the
+# heavy percent-encoding detector stay unconditional for every host.
 
 # Host group (group 1) matches THREE host shapes so a raw-IP exfil destination
 # is not silently skipped (Talos 78224f3f): a DNS name with a letter TLD, a raw
@@ -1072,6 +1072,17 @@ _EXFIL_PATTERNS = re.compile(
     r"|BEGIN[\s+%](?:RSA|DSA|EC|OPENSSH)[\s+%]PRIVATE[\s+%]KEY"  # private key header
     r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token
     r")",
+    re.IGNORECASE,
+)
+
+# Heavy URL-encoding detector — the same "20+ consecutive percent-encoded
+# octets" branch carved out of _EXFIL_PATTERNS. This stays UNCONDITIONAL: the
+# exact-host exemption below skips only the base64-blob and query-length
+# heuristics (which false-positive on legitimate long base64 document
+# pointers), NOT this percent-encoding detector, so an encoded exfil payload to
+# a trusted-tenant host is still caught.
+_EXFIL_PERCENT_RE = re.compile(
+    r"%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}",
     re.IGNORECASE,
 )
 
@@ -1164,49 +1175,153 @@ _HARD_CREDENTIAL_RE = re.compile(
 )
 
 
-def scan_exfiltration_urls(text: str) -> list[str]:
-    """Scan text for URLs that may be exfiltrating data via query params.
+def _exempt_exact_hosts() -> frozenset[str]:
+    """Exact-match hosts that skip ONLY the exfil base64/length heuristics.
 
-    Domain-agnostic — only inspects query string content for secret patterns.
-    Returns list of warning strings, empty if clean.
+    Sourced from the active ``PlatformContext``'s ``CredentialPolicy`` — the
+    public Default returns an empty set (no exemptions), a loaded companion
+    supplies its trusted-tenant host list.  NEVER read from ``config.json``: an
+    agent-writable exemption would be a hole in the redaction ceiling.
+
+    Import is FUNCTION-LOCAL (deferred, mirroring the ``sel.py`` pattern) so
+    ``security`` never reaches ``kiro_crew.platform`` at module-load time — the
+    CPP import-direction invariant (``platform/defaults.py`` imports ``security``
+    at top level).
+
+    Degrade semantics (INVERTED vs ``redact_via_context``'s baseline-redact
+    fallback): ``PlatformCompositionError`` propagates fail-closed, but any other
+    adapter failure degrades to ``frozenset()`` — the empty set means MORE
+    redaction (every host runs the heuristics), the SAFE direction here.  A
+    pre-method companion adapter (no ``exempt_exact_hosts``) degrades to the empty
+    set via ``getattr`` rather than raising.  NO logging on the degrade path: this
+    runs inside the stdio MCP servers whose stray writes corrupt the JSON-RPC
+    stream.
     """
-    warnings: list[str] = []
-    for match in _URL_RE.finditer(text):
-        domain = match.group(1)
-        path_and_query = match.group(3) or ""
-        qmark = path_and_query.find("?")
-        query = path_and_query[qmark + 1 :] if qmark != -1 else ""
+    from kiro_crew.platform.context import PlatformCompositionError, current_context
 
-        # Valid S3 presigned URLs carry AKIA in X-Amz-Credential legitimately, so
-        # exempt them wholesale BEFORE the hard-credential path scan below would
-        # otherwise flag them.
-        if query and _is_safe_presigned(domain, query):
-            continue
+    try:
+        policy = current_context().credentials
+        getter = getattr(policy, "exempt_exact_hosts", None)
+        if getter is None:
+            return frozenset()
+        raw = getter()
+        # Normalize INSIDE the guarded block: a buggy companion adapter may return
+        # None or a set with non-string members, and callers (_exfil_exempt_hosts)
+        # iterate + .lower() the result. If that raised outside this try, it would
+        # break EVERY redaction path (chat/Slack/MCP/dashboard) instead of degrading
+        # to maximum redaction. Keep only str members; anything malformed degrades
+        # to the empty set (the SAFE direction — more redaction).
+        return frozenset(h for h in raw if isinstance(h, str))
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        return frozenset()
 
-        # Hard credential markers ANYWHERE in the path or query (Talos 78224f3f).
-        # The scan below is query-only, so a secret embedded in the URL PATH
-        # (``https://evil/AKIA…`` — no ``?``) escaped it entirely, and a raw-IP
-        # host never even matched _URL_RE. These markers (AKIA/ASIA, key=value
-        # creds, SSH/PEM, Slack) are unambiguous, so flag regardless of domain — a
-        # real AWS key in a URL is exfil even to an otherwise-safe host. The
-        # base64-blob / length heuristics stay query-only (below) since long
-        # base64 PATH segments — CDN asset ids, git object hashes — are benign.
-        if _HARD_CREDENTIAL_RE.search(path_and_query):
-            warnings.append(f"Suspicious URL with credential in path/query: {domain}")
-            continue
 
-        if qmark == -1:
-            continue
+def _exfil_exempt_hosts() -> frozenset[str]:
+    """Companion exempt-host set normalized to lowercase for case-insensitive match.
 
-        # (Valid S3 presigned URLs were already exempted at the top of the loop,
-        # so no _is_safe_presigned re-check is needed here.)
+    Hostnames are case-insensitive (RFC 4343); Office apps commonly emit
+    mixed-case hosts (``Contoso.SharePoint.com``). _URL_RE captures the host
+    verbatim, so both the captured host and the companion-supplied members must
+    be lowercased before comparison or a legitimate document pointer to an
+    exempted tenant is wrongly redacted. Delegates fail-closed / degrade
+    semantics to _exempt_exact_hosts().
+    """
+    return frozenset(host.lower() for host in _exempt_exact_hosts())
+
+
+def _exfil_url_warning(
+    domain: str, path_and_query: str, exempt_hosts: frozenset[str]
+) -> str | None:
+    """Classify one matched URL — the single per-URL exfil verdict.
+
+    Shared by scan_exfiltration_urls (which collects the warnings) and
+    redact_exfiltration_urls (which redacts every URL that returns non-None), so
+    the two paths can never drift — redact_ early-returns on scan_'s warnings, so
+    a divergence would silently produce warnings-without-redaction. Returns the
+    warning string, or None if the URL is clean/exempt.
+    """
+    qmark = path_and_query.find("?")
+    query = path_and_query[qmark + 1 :] if qmark != -1 else ""
+
+    # Valid S3 presigned URLs carry AKIA in X-Amz-Credential legitimately, so
+    # exempt them wholesale BEFORE the hard-credential path scan below would
+    # otherwise flag them.
+    if query and _is_safe_presigned(domain, query):
+        return None
+
+    # Hard credential markers ANYWHERE in the path or query (Talos 78224f3f).
+    # The base64/length heuristics below are query-only, so a secret embedded in
+    # the URL PATH (``https://evil/AKIA…`` — no ``?``) escaped them entirely, and
+    # a raw-IP host never even matched _URL_RE. These markers (AKIA/ASIA,
+    # key=value creds, SSH/PEM, Slack) are unambiguous, so flag regardless of
+    # domain — a real AWS key in a URL is exfil even to an otherwise-safe (or
+    # exempted) host. This hard-credential floor is UNCONDITIONAL.
+    if _HARD_CREDENTIAL_RE.search(path_and_query):
+        return f"Suspicious URL with credential in path/query: {domain}"
+
+    if qmark == -1:
+        return None
+
+    # UNCONDITIONAL base64 decode-and-scan: a hard credential (AWS key, SSH/PEM,
+    # Slack token) that is base64-ENCODED into the query would slip past the raw
+    # _HARD_CREDENTIAL_RE floor above (which matches literal markers, not encoded
+    # bytes) AND, on an exempt host, past the raw base64-blob heuristic below.
+    # Decode any base64 chunk and re-scan the decoded bytes for credential
+    # markers; a legitimate base64 *document* decodes to non-credential text and
+    # _decode_b64_safe returns "" (so it still qualifies for the exemption).
+    # This runs for EVERY host, closing the encoded-credential-to-trusted-tenant
+    # gap without re-flagging benign document pointers.
+    if query and _decode_b64_safe(query):
+        return f"Suspicious URL with encoded credential in query: {domain}"
+
+    # Exact-host heuristic exemption (companion-supplied trusted tenants),
+    # matched case-insensitively and EXACTLY (not by suffix) so a shared
+    # multi-tenant domain does not exempt every tenant. The exemption skips ONLY
+    # the raw base64-blob and query-length heuristics below — the ones that
+    # false-positive on legitimate long base64 document pointers. Everything
+    # else stays unconditional: the hard-credential floor above already ran, the
+    # decode-and-scan just above catches ENCODED credentials on every host, and
+    # the heavy percent-encoding detector below runs even for exempted hosts, so
+    # an encoded exfil payload to a trusted tenant is still caught.
+    if domain.lower() not in exempt_hosts:
+        # (Valid S3 presigned URLs were already exempted at the top, so no
+        # _is_safe_presigned re-check is needed here.)
         if len(query) >= _EXFIL_QUERY_MIN_LEN:
-            warnings.append(
+            return (
                 f"Suspicious URL with long query params ({len(query)} chars): "
                 f"{domain}{path_and_query[:60]}..."
             )
-        elif _EXFIL_PATTERNS.search(query):
-            warnings.append(f"Suspicious URL with credential-like query data: {domain}")
+        if _EXFIL_PATTERNS.search(query):
+            return f"Suspicious URL with credential-like query data: {domain}"
+
+    # Heavy percent-encoding is a hard heuristic, NOT part of the exempted
+    # base64/length set — it runs for every host (for non-exempt hosts it was
+    # already covered by _EXFIL_PATTERNS above, so this only adds coverage on
+    # exempted hosts).
+    if _EXFIL_PERCENT_RE.search(query):
+        return f"Suspicious URL with credential-like query data: {domain}"
+    return None
+
+
+def scan_exfiltration_urls(text: str) -> list[str]:
+    """Scan text for URLs that may be exfiltrating data via query params.
+
+    Flags the PAYLOAD, not the destination: the hard-credential floor and the
+    base64/length heuristics inspect the URL path+query for secret patterns
+    regardless of host. The one host-sensitive exception is a companion-supplied
+    exact-host exemption that narrows ONLY the base64/length heuristics for
+    trusted tenants (see _exfil_url_warning); the hard-credential floor and the
+    percent-encoding detector stay unconditional. Returns list of warning
+    strings, empty if clean.
+    """
+    exempt_hosts = _exfil_exempt_hosts()
+    warnings: list[str] = []
+    for match in _URL_RE.finditer(text):
+        warning = _exfil_url_warning(match.group(1), match.group(3) or "", exempt_hosts)
+        if warning:
+            warnings.append(warning)
     return warnings
 
 
@@ -1219,31 +1334,12 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     if not warnings:
         return text, []
 
+    exempt_hosts = _exfil_exempt_hosts()
     result = text
     for match in _URL_RE.finditer(text):
         domain = match.group(1)
-        full_url = match.group(0)
-        path_and_query = match.group(3) or ""
-        qmark = path_and_query.find("?")
-        query = path_and_query[qmark + 1 :] if qmark != -1 else ""
-
-        # Exempt valid S3 presigned URLs before the path scan (mirror of scan_).
-        if query and _is_safe_presigned(domain, query):
-            continue
-
-        # Hard credential markers anywhere in path or query (Talos 78224f3f) —
-        # redact the whole URL regardless of domain (mirror of scan_).
-        if _HARD_CREDENTIAL_RE.search(path_and_query):
-            result = result.replace(full_url, f"[REDACTED: suspicious URL to {domain}]")
-            continue
-
-        if qmark == -1:
-            continue
-
-        # (Valid S3 presigned URLs were already exempted at the top of the loop.)
-        if len(query) >= _EXFIL_QUERY_MIN_LEN or _EXFIL_PATTERNS.search(query):
-            result = result.replace(full_url, f"[REDACTED: suspicious URL to {domain}]")
-
+        if _exfil_url_warning(domain, match.group(3) or "", exempt_hosts):
+            result = result.replace(match.group(0), f"[REDACTED: suspicious URL to {domain}]")
     return result, warnings
 
 

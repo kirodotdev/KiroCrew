@@ -8,6 +8,7 @@ import { useProvider } from '../providers'
 import { fmtSpeed } from '../api/helpers'
 import { StatCard, PageHeader } from '../components/ui'
 import InfoTip from '../components/InfoTip'
+import McpGatewayCard from './McpGatewayCard'
 import type { SystemData } from '../types'
 
 export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
@@ -42,6 +43,7 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
             <StatCard key={s.label} label={s.label} value={s.value} accent={s.accent} />
           ))}
         </div>
+        <McpGatewayCard />
         <div className="grid grid-cols-2 gap-4 mb-6 max-[900px]:grid-cols-1">
           <div className="flex flex-col">
             <div className="card-glow border border-border border-l-[3px] border-l-accent bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">

@@ -1123,9 +1123,7 @@ class TestBuiltinDenyPatterns:
         # The protective behavior must remain: a real protected push chained
         # AFTER a benign feature push is still blocked.
         assert is_denied("git push origin feat && git push origin main") is not None
-        assert (
-            is_denied("git commit -m 'ready to push' && git push origin main") is not None
-        )
+        assert is_denied("git commit -m 'ready to push' && git push origin main") is not None
 
     def test_allows_git_verbs_with_push_substring_args(self) -> None:
         """Other git subcommands whose arguments contain ``push`` (branch
@@ -1612,6 +1610,290 @@ class TestExfilUrlPathAndRawIp:
         result, warnings = redact_exfiltration_urls(text)
         assert "[REDACTED" not in result
         assert not warnings
+
+
+class TestExfilExactHostExemption:
+    """Exact-host heuristic exemption for exfiltration redaction (CredentialPolicy).
+
+    A companion CredentialPolicy may supply a set of EXACT trusted-tenant hosts
+    whose URLs skip ONLY the base64-blob / query-length heuristics (which
+    false-positive on legitimate long base64 document pointers).  The
+    hard-credential floor (S3-presigned fast-path + unconditional
+    ``_HARD_CREDENTIAL_RE`` path+query scan) is UNCONDITIONAL — an exempted host
+    with a real AWS key / bare secret / token is still redacted.
+
+    NEUTRAL PLACEHOLDER HOSTS ONLY — the companion's real tenant host list never
+    appears in the public repo (it is companion CredentialPolicy adapter data).
+    """
+
+    # Placeholder trusted-tenant hosts (no real tenant names).
+    _EXEMPT = frozenset({"contoso.sharepoint.com", "trusted.example.com"})
+
+    class _StubCredentialPolicy:
+        """CredentialPolicy stub exposing a caller-supplied exempt-host set."""
+
+        def __init__(self, hosts: "frozenset[str]"):
+            self._hosts = hosts
+
+        def redact(self, text: str) -> str:
+            from kiro_crew.security import redact
+
+            return redact(text)
+
+        def exempt_exact_hosts(self) -> "frozenset[str]":
+            return self._hosts
+
+    def _install_exempt_hosts(self, hosts: "frozenset[str]") -> None:
+        import dataclasses
+
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import set_context
+
+        base = build_default_context(KiroCrewConfig())
+        stub = self._StubCredentialPolicy(hosts)
+        set_context(dataclasses.replace(base, credentials=stub))
+
+    def _long_nav_url(self, host: str) -> str:
+        """URL with a long base64 ``nav=`` pointer (>200 char query).
+
+        This trips BOTH the query-length heuristic and the base64-blob pattern —
+        exactly what an exact-host exemption is meant to skip.
+        """
+        url = (
+            f"https://{host}/:fl:/r/contentstorage/CSP_x/Document%20Library/"
+            "AppData/doc.loop?d=wabc&csf=1&web=1&e=ABCdef&nav=eyJ" + "A" * 220
+        )
+        assert len(url.split("?", 1)[1]) >= 200  # confirm query > threshold
+        return url
+
+    def test_default_context_redacts_long_query(self) -> None:
+        """Standalone default (empty exempt set) still redacts the long nav URL.
+
+        Byte-identical to today: with no exemptions every host runs the
+        heuristics, so a long base64 query is redacted regardless of host.
+        """
+        from kiro_crew.security import redact_exfiltration_urls
+
+        url = self._long_nav_url("contoso.sharepoint.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert len(warnings) == 1
+
+    def test_exempted_host_long_query_preserved(self) -> None:
+        """An exact-member host's long base64 nav URL is NOT redacted."""
+        from kiro_crew.security import redact_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        url = self._long_nav_url("contoso.sharepoint.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" not in result
+        assert len(warnings) == 0
+
+    def test_second_exempted_host_preserved(self) -> None:
+        """A different exact-member host is also exempt (whole set honored)."""
+        from kiro_crew.security import redact_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        url = self._long_nav_url("trusted.example.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" not in result
+        assert len(warnings) == 0
+
+    def test_exempted_host_scan_clean(self) -> None:
+        """scan_exfiltration_urls returns no warnings for an exempted host URL."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        url = self._long_nav_url("contoso.sharepoint.com")
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 0
+
+    def test_mixed_case_exempted_host_preserved(self) -> None:
+        """Hostnames are case-insensitive — a mixed-case host (as Office apps
+        emit, e.g. ``Contoso.SharePoint.com``) whose lowercase form is in the
+        exempt set is NOT redacted. Guards against a case-sensitive ``in`` check
+        that would wrongly redact a legitimate document pointer."""
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        url = self._long_nav_url("Contoso.SharePoint.com")
+        assert len(scan_exfiltration_urls(f"Doc: {url}")) == 0
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" not in result
+        assert len(warnings) == 0
+
+    def test_mixed_case_exempt_member_preserved(self) -> None:
+        """Symmetric to the above: a mixed-case MEMBER of the exempt set still
+        matches a lowercase host (both sides normalized to lowercase)."""
+        from kiro_crew.security import redact_exfiltration_urls
+
+        self._install_exempt_hosts(frozenset({"Contoso.SharePoint.com"}))
+        url = self._long_nav_url("contoso.sharepoint.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" not in result
+        assert len(warnings) == 0
+
+    def test_exempted_host_percent_encoding_still_redacted(self) -> None:
+        """The heavy percent-encoding detector is NOT part of the exempted
+        base64/length heuristics — a URL-encoded payload to an exempted host is
+        still flagged and redacted."""
+        from kiro_crew.security import (
+            _EXFIL_QUERY_MIN_LEN,
+            redact_exfiltration_urls,
+            scan_exfiltration_urls,
+        )
+
+        self._install_exempt_hosts(self._EXEMPT)
+        # 25 consecutive percent-encoded octets (>20) trips _EXFIL_PERCENT_RE
+        # but the short query does NOT trip the length heuristic.
+        url = "https://contoso.sharepoint.com/doc?p=" + "%41" * 25
+        assert len(url.split("?", 1)[1]) < _EXFIL_QUERY_MIN_LEN
+        assert scan_exfiltration_urls(f"Doc: {url}")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert len(warnings) == 1
+
+    def test_non_exempted_tenant_still_redacted(self) -> None:
+        """A non-member host is NOT exempt (exact match only, not suffix)."""
+        from kiro_crew.security import redact_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        # Same registrable domain family, different subdomain — must NOT match.
+        url = self._long_nav_url("attacker.sharepoint.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert len(warnings) == 1
+
+    def test_exempted_host_credential_query_still_redacted(self) -> None:
+        """A hard AWS key in the QUERY on an exempted host is still redacted."""
+        from kiro_crew.security import redact_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        url = "https://contoso.sharepoint.com/doc?key=AKIAIOSFODNN7EXAMPLE1234"
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert len(warnings) == 1
+
+    def test_exempted_host_akia_in_path_still_redacted(self) -> None:
+        """BINDING: an exempted host with an AKIA key in the URL PATH is still
+        redacted — the exemption narrows only the heuristics, never the
+        unconditional path+query hard-credential floor."""
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        url = "https://contoso.sharepoint.com/upload/AKIAIOSFODNN7EXAMPLE/report"
+        assert scan_exfiltration_urls(f"Doc: {url}")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert len(warnings) == 1
+
+    def test_exempted_host_base64_encoded_credential_still_flagged(self) -> None:
+        """A hard credential base64-ENCODED into the query on an EXEMPT host is
+        still flagged: the unconditional decode-and-scan runs for every host, so
+        an encoded AWS key can't ride the exemption out (the raw hard-credential
+        regex would miss the encoded form, and the raw base64-blob heuristic is
+        skipped for exempt hosts — decode-and-scan closes that gap)."""
+        import base64
+
+        from kiro_crew.security import scan_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        # An AWS key wrapped in base64 — the raw AKIA regex won't see it, and the
+        # host is exempt from the raw blob heuristic; only decode-and-scan catches it.
+        blob = base64.b64encode(b"AKIAIOSFODNN7EXAMPLE secret payload").decode()
+        url = f"https://contoso.sharepoint.com/doc?d={blob}"
+        assert scan_exfiltration_urls(f"Doc: {url}")
+
+    def test_exempted_host_base64_document_still_exempt(self) -> None:
+        """A legitimate base64 DOCUMENT pointer (decodes to printable non-credential
+        text) on an exempt host is still exempt — decode-and-scan only fires on
+        an encoded credential, so the false-positive the exemption exists to avoid
+        stays avoided."""
+        import base64
+
+        from kiro_crew.security import scan_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        # 60+ char base64 of plain readable text: trips the raw blob heuristic
+        # (which is exempted) but decodes to a non-credential document → clean.
+        blob = base64.b64encode(b"the quick brown fox jumps over the lazy dog again").decode()
+        url = f"https://contoso.sharepoint.com/doc?ref={blob}"
+        assert scan_exfiltration_urls(f"Doc: {url}") == []
+
+    def test_exempted_host_bare_secret_value_redacted(self) -> None:
+        """A bare ``SecretAccessKey=<base64>`` value (no AKIA prefix) on an
+        exempted host is redacted at the URL level, not silently skipped."""
+        from kiro_crew.security import redact_exfiltration_urls
+
+        self._install_exempt_hosts(self._EXEMPT)
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        url = f"https://trusted.example.com/doc?SecretAccessKey={secret}"
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert secret not in result
+        assert len(warnings) == 1
+
+    def test_composition_error_propagates_fail_closed(self) -> None:
+        """PlatformCompositionError from the adapter propagates (fail-closed),
+        never degrading to an empty set silently."""
+        import dataclasses
+
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import PlatformCompositionError, set_context
+        from kiro_crew.security import scan_exfiltration_urls
+
+        class _RaisingCredentialPolicy(self._StubCredentialPolicy):
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                raise PlatformCompositionError("no companion")
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_RaisingCredentialPolicy(frozenset())))
+        with pytest.raises(PlatformCompositionError):
+            scan_exfiltration_urls("https://contoso.sharepoint.com/doc?nav=eyJ" + "A" * 220)
+
+    def test_adapter_failure_degrades_to_full_redaction(self) -> None:
+        """A transient (non-composition) adapter failure degrades to the empty
+        set = MORE redaction (the safe direction), never fewer exemptions."""
+        import dataclasses
+
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import set_context
+        from kiro_crew.security import redact_exfiltration_urls
+
+        class _BrokenCredentialPolicy(self._StubCredentialPolicy):
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                raise RuntimeError("adapter broke")
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_BrokenCredentialPolicy(frozenset())))
+        url = self._long_nav_url("contoso.sharepoint.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert len(warnings) == 1
+
+    def test_pre_method_adapter_degrades_to_empty(self) -> None:
+        """A pre-method companion adapter (no ``exempt_exact_hosts``) degrades to
+        the empty set via getattr rather than raising — full redaction stands."""
+        import dataclasses
+
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import set_context
+        from kiro_crew.security import redact_exfiltration_urls
+
+        class _LegacyCredentialPolicy:
+            def redact(self, text: str) -> str:
+                return text
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_LegacyCredentialPolicy()))
+        url = self._long_nav_url("contoso.sharepoint.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert len(warnings) == 1
 
 
 class TestIsSensitivePath:

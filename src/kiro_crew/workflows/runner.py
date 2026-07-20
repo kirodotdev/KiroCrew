@@ -407,6 +407,7 @@ class WorkflowRunner:
         concurrency: Optional[int] = None,
         audit: Optional[AuditFn] = None,
         ports: Optional[dict] = None,
+        on_complete: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         self._agent_fn = agent_fn
         self._timeout_secs = timeout_secs
@@ -415,6 +416,11 @@ class WorkflowRunner:
         # B10 audit sink (default = real SEL) + M4 native ports (default = none wired).
         self._audit = _guarded_audit(audit or _default_audit)
         self._ports = ports or {}
+        # Optional async teardown fired once when a background run reaches its
+        # terminal state (success/fail/cancel). Used to shut down a per-run warm
+        # session pool (agent_pool) so its warm sessions are released exactly when
+        # the run ends. Best-effort — a teardown failure never changes the outcome.
+        self._on_complete = on_complete
 
     async def run(
         self,
@@ -522,14 +528,27 @@ class WorkflowRunner:
             if not vr.ok:
                 emit(stream.run_failed(now, error="; ".join(vr.errors), where="validate"))
                 return RunResult(
-                    run_id, ok=False, result=None, events=events,
-                    error="; ".join(vr.errors), source=source,
+                    run_id,
+                    ok=False,
+                    result=None,
+                    events=events,
+                    error="; ".join(vr.errors),
+                    source=source,
                 )
             return await self._exec_validated(
-                source, run_id=run_id, now=now, args=args, owner_dm=owner_dm,
-                budget_total=budget_total, author=author, on_event=on_event,
-                replay_results=replay_results, replay_before=replay_before,
-                stream=stream, events=events, emit=emit,
+                source,
+                run_id=run_id,
+                now=now,
+                args=args,
+                owner_dm=owner_dm,
+                budget_total=budget_total,
+                author=author,
+                on_event=on_event,
+                replay_results=replay_results,
+                replay_before=replay_before,
+                stream=stream,
+                events=events,
+                emit=emit,
             )
 
         # 1. Validate (B-group static). A bad script fails before any exec.
@@ -552,10 +571,19 @@ class WorkflowRunner:
             )
         )
         return await self._exec_validated(
-            source, run_id=run_id, now=now, args=args, owner_dm=owner_dm,
-            budget_total=budget_total, author=author, on_event=on_event,
-            replay_results=replay_results, replay_before=replay_before,
-            stream=stream, events=events, emit=emit,
+            source,
+            run_id=run_id,
+            now=now,
+            args=args,
+            owner_dm=owner_dm,
+            budget_total=budget_total,
+            author=author,
+            on_event=on_event,
+            replay_results=replay_results,
+            replay_before=replay_before,
+            stream=stream,
+            events=events,
+            emit=emit,
         )
 
     async def _exec_validated(
@@ -587,8 +615,12 @@ class WorkflowRunner:
         if not vr.ok:
             emit(stream.run_failed(now, error="; ".join(vr.errors), where="validate"))
             return RunResult(
-                run_id, ok=False, result=None, events=events,
-                error="; ".join(vr.errors), source=source,
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error="; ".join(vr.errors),
+                source=source,
             )
 
         # 2. Build the run context + restricted exec namespace.
@@ -683,8 +715,12 @@ class WorkflowRunner:
             },
         )
         return RunResult(
-            run_id, ok=True, result=result, events=events,
-            agent_results=dict(ctx.agent_results), source=source,
+            run_id,
+            ok=True,
+            result=result,
+            events=events,
+            agent_results=dict(ctx.agent_results),
+            source=source,
         )
 
     async def run_background(
@@ -721,6 +757,7 @@ class WorkflowRunner:
         run_id instantly instead of blocking on a slow synchronous author. The
         authored script is written back onto the handle for rerun/restart.
         """
+
         def _publish_source(src: str) -> None:
             # Write the authored script onto the handle the instant authoring
             # completes (mid-run), so "View source" works during execution.
@@ -739,22 +776,32 @@ class WorkflowRunner:
         async def _factory(
             record: Callable[[WorkflowEvent], None],
         ) -> tuple[Any, str, Optional[str], dict]:
-            res = await self.run(
-                source,
-                run_id=run_id,
-                now=now,
-                args=args,
-                owner_dm=owner_dm,
-                budget_total=budget_total,
-                script_hash=script_hash,
-                author=author,
-                on_event=record,
-                replay_results=replay_results,
-                replay_before=replay_before,
-                intent=intent,
-                author_fn=author_fn,
-                on_source=_publish_source,
-            )
+            try:
+                res = await self.run(
+                    source,
+                    run_id=run_id,
+                    now=now,
+                    args=args,
+                    owner_dm=owner_dm,
+                    budget_total=budget_total,
+                    script_hash=script_hash,
+                    author=author,
+                    on_event=record,
+                    replay_results=replay_results,
+                    replay_before=replay_before,
+                    intent=intent,
+                    author_fn=author_fn,
+                    on_source=_publish_source,
+                )
+            finally:
+                # Fire per-run teardown (e.g. warm-pool shutdown) on EVERY exit —
+                # success, failure, or cancellation — so warm sessions are always
+                # released. Best-effort: never let teardown mask the run outcome.
+                if self._on_complete is not None:
+                    try:
+                        await self._on_complete()
+                    except Exception:  # noqa: BLE001 - teardown must not mask outcome
+                        pass
             # Belt-and-suspenders: ensure the final source is on the handle even if
             # the mid-run publish was skipped (e.g. pre-authored source path).
             h = registry.get(run_id)

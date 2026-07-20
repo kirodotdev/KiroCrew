@@ -744,4 +744,57 @@ describe('ArtifactDetailPage', () => {
     expect(beforeUnloadCalls.length).toBe(0)
     addSpy.mockRestore()
   })
+
+  // ── UpstreamSyncBanner (fork/publish sync) ──────────────────────────────
+  describe('UpstreamSyncBanner Pull latest', () => {
+    const mkFork = () => mkArtifact({
+      kind: 'markdown',
+      content: '# local',
+      fork_metadata: {
+        upstream_artifact_id: 'up-1',
+        upstream_url: 'https://remote.example.com/a/up-1',
+        upstream_owner: 'alice',
+        upstream_version: 3,
+        forked_at: '2026-06-01T00:00:00Z',
+      },
+    })
+
+    beforeEach(() => {
+      vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+        providers: [{
+          name: 'companion', display_name: 'Companion', capabilities: ['content_versions'],
+          kind_support: 'native', capable: true,
+          sharing_model: {
+            supports_private: true, supports_shared: true, supports_public: true,
+            principal_kind: 'user', supports_roles: false, supports_expiration: false,
+            programmable: true, out_of_band_url: '',
+          },
+          sync_model: { authority: 'mirror', concurrency: 'token', collab_mode: 'mirror' },
+          discovery_model: {
+            list_mine: true, list_shared_with_me: true, list_public: true,
+            full_text_search: false, pull_by_id: true,
+          },
+        }],
+        kind: 'markdown',
+      })
+      vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1] })
+    })
+
+    it('surfaces a benign "up to date" pull no-op as a neutral notice, not a danger error', async () => {
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkFork())
+      // Upstream NOT ahead → the info-tone "Forked from" banner with a Pull button.
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({ upstream_ahead: false })
+      vi.mocked(api).pullLatest = vi.fn().mockResolvedValue({
+        pull_result: { pulled: false, reason: 'up to date' },
+      })
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+      const pullBtn = await screen.findByTitle(/Pull the latest remote content/i)
+      fireEvent.click(pullBtn)
+      const notice = await screen.findByText('up to date')
+      // Neutral tone — must NOT be the danger-styled error span.
+      expect(notice.className).toContain('text-muted')
+      expect(notice.className).not.toContain('text-danger')
+    })
+  })
 })

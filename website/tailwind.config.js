@@ -36,6 +36,12 @@ export default {
         'danger-subtle': 'var(--danger-subtle)',
         info: 'var(--info)',
         'info-fg': 'var(--info-fg)',
+        // Matches the warn/danger/ok "-subtle" pattern, but derived from
+        // --info via color-mix so every theme gets a translucent info fill
+        // without adding a per-theme var. Consumed by _SYNC_TONES.info in
+        // ArtifactDetailPage; without it `bg-info-subtle` mapped to no color
+        // and the info-tone sync banner rendered a transparent background.
+        'info-subtle': 'color-mix(in srgb, var(--info) 12%, transparent)',
         aim: 'var(--aim)',
         'aim-fg': 'var(--aim-fg)',
         'aim-subtle': 'var(--aim-subtle)',

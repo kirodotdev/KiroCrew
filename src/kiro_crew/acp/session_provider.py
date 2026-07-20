@@ -23,6 +23,7 @@ from typing import Any
 
 from kiro_crew.acp.client import (
     _NOT_LOGGED_IN_MESSAGE,
+    DEFAULT_MODEL,
     AcpAuthRequired,
     AcpError,
     AcpProcessDied,
@@ -71,6 +72,72 @@ class AcpSessionProvider(LLMProvider):
 
     async def start(self) -> None:
         """No-op — the session handle is already initialized."""
+
+    async def new_conversation(self) -> None:
+        """Reset to a fresh conversation on the SAME warm runtime (kiro path).
+
+        Parity with ``AcpClient.new_conversation`` — the cheap clean-slate reuse
+        primitive a warm worker pool relies on: create a brand-new ``session/new``
+        on the *already-running* kiro-cli process (paying only session/new + the
+        MCP-init drain), then destroy the old session so its context/transcript
+        and MCP children are freed on the shared process. This SKIPS the expensive
+        parts of a cold start — subprocess spawn + the ACP ``initialize`` handshake
+        — which is exactly what makes pooled reuse faster than teardown+respawn.
+
+        If the runtime is dead there is nothing warm to reuse; the caller (pool)
+        detects that via ``is_alive()``/``is_process_alive()`` and replaces the
+        worker, so this raises rather than silently respawning a new process here
+        (the runtime is owned by this provider's lifecycle, not recreated in place).
+        """
+        if not self._runtime.is_alive():
+            raise AcpProcessDied("Runtime is not alive — cannot start a new conversation")
+        old = self._handle
+        # Create the fresh session BEFORE destroying the old one so a failure
+        # leaves the provider still pointing at a usable handle (no window where
+        # self._handle references a terminated session).
+        new_handle = await self._runtime.create_session(
+            cwd=self._runtime._work_dir,
+            agent=self._runtime._agent or None,
+        )
+        # Re-apply the configured non-default model to the fresh session. A new
+        # session/new reverts to the agent-config default model, so a warm worker
+        # configured with a non-default model (via the cold-start set_model in
+        # AcpProvider._start_kiro_runtime_impl, recorded on the old handle) would
+        # silently run every reused task on the wrong model without this. Mirrors
+        # that cold-start handshake: skip the "auto" sentinel (let kiro pick).
+        #
+        # If the re-apply FAILS we must NOT commit the fresh handle — a
+        # wrong-model session would silently run every subsequent pooled step on
+        # the default model. Tear the fresh session down and raise so the caller
+        # (WorkerPool) performs its hard-reset fallback and the old, correctly
+        # configured handle is not destroyed below.
+        prior_model = getattr(old, "model", "")
+        if isinstance(prior_model, str) and prior_model and prior_model != DEFAULT_MODEL:
+            try:
+                await new_handle.set_model(prior_model)
+            except Exception as exc:
+                logger.warning(
+                    "new_conversation: failed to re-apply model %s to fresh session; "
+                    "tearing it down and signalling reset",
+                    prior_model,
+                    exc_info=True,
+                )
+                try:
+                    await new_handle.destroy()
+                except Exception:
+                    logger.debug(
+                        "new_conversation: fresh-session teardown after model "
+                        "re-apply failure also failed",
+                        exc_info=True,
+                    )
+                raise AcpError(f"failed to re-apply model {prior_model} to fresh session") from exc
+        self._handle = new_handle
+        # Best-effort teardown of the old session on the shared process so its
+        # context doesn't linger (RSS growth). Never let cleanup mask success.
+        try:
+            await old.destroy()
+        except Exception:
+            logger.debug("new_conversation: old session destroy failed", exc_info=True)
 
     async def shutdown(self) -> None:
         """Destroy the session and optionally kill the runtime.

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent, TurnUsage
 from kiro_crew.providers.acp import AcpProvider
 
@@ -511,6 +512,103 @@ class TestStartKiroRuntimeResume:
         provider = self._kiro_provider(model="auto")
         _handle, runtime = await self._run_start(provider, "", file_exists=True)
         runtime.kill.assert_not_called()
+
+
+class _CapturingRecorder:
+    """Records every histogram() call's (name, attrs) — a metrics-recorder
+    stand-in so the startup-metric tests never touch a real exporter."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def histogram(self, name, value, *, unit="ms", attrs=None, **kwargs) -> None:
+        self.calls.append((name, dict(attrs or {})))
+
+
+class TestKiroStartupMetric:
+    """The kiro cold-start (the DEFAULT backend) must emit
+    ``kirocrew.session.startup.duration`` tagged ``backend=kiro`` with a phase
+    split (total + spawn_init + session_new [+ set_model]) so the dominant
+    session/new MCP-toolset load is measurable. AcpClient.ensure_ready already
+    covers the claude path; this covers the kiro path."""
+
+    def _kiro_provider(self, model="auto"):
+        provider = _build_provider(backend="")  # kiro backend
+        provider._client._work_dir = "/tmp/ws"
+        provider._client._agent = "kirocrew"
+        provider._client._sandbox_mode = "auto"
+        provider._client._extra_env = {}
+        provider._client._mcp_gateway_overlay = None
+        provider._client._mcp_gateway_settings_mcp_json = None
+        provider._client._mcp_gateway_socket = None
+        provider._client._resume_session_id = ""
+        provider._client._model = model
+        return provider
+
+    async def _start(self, provider, *, spawn_exc=None):
+        mock_handle = MagicMock()
+        mock_handle.session_id = "kiro-sess-1"
+        mock_handle.set_model = AsyncMock()
+        mock_runtime = MagicMock()
+        mock_runtime.pid = 4321
+        mock_runtime.spawn = AsyncMock(side_effect=spawn_exc)
+        mock_runtime.saw_not_logged_in = MagicMock(return_value=bool(spawn_exc))
+        mock_runtime.kill = AsyncMock()
+        mock_runtime.create_session = AsyncMock(return_value=mock_handle)
+        rec = _CapturingRecorder()
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch(
+                "kiro_crew.providers.acp.AcpSessionProvider",
+                side_effect=lambda handle, runtime, **kw: MagicMock(resumed=False),
+            ),
+            patch("kiro_crew.metrics.provider.get_recorder", return_value=rec),
+        ):
+            await provider._start_kiro_runtime()
+        return rec
+
+    def _phases(self, rec):
+        assert rec.calls, "kiro startup histogram must be emitted"
+        for name, _ in rec.calls:
+            assert name == "kirocrew.session.startup.duration"
+        return {a["phase"]: a for _, a in rec.calls}
+
+    @pytest.mark.asyncio
+    async def test_emits_total_and_phase_split_on_success(self):
+        provider = self._kiro_provider(model="auto")
+        rec = await self._start(provider)
+        phases = self._phases(rec)
+        # total + the two mandatory phases (auto model → no set_model phase).
+        assert {"total", "spawn_init", "session_new"} <= set(phases)
+        for attrs in phases.values():
+            assert attrs["backend"] == "kiro"
+            assert attrs["outcome"] == "ready"
+
+    @pytest.mark.asyncio
+    async def test_set_model_phase_only_for_non_default_model(self):
+        provider = self._kiro_provider(model="claude-sonnet-5")
+        rec = await self._start(provider)
+        phases = self._phases(rec)
+        assert "set_model" in phases  # a non-"auto" model adds the phase
+
+    @pytest.mark.asyncio
+    async def test_auth_required_outcome(self):
+        from kiro_crew.acp.runtime import AcpRuntimeError
+
+        provider = self._kiro_provider()
+        mock_runtime = MagicMock()
+        mock_runtime.spawn = AsyncMock(side_effect=AcpRuntimeError("boom"))
+        mock_runtime.saw_not_logged_in = MagicMock(return_value=True)
+        mock_runtime.kill = AsyncMock()
+        rec = _CapturingRecorder()
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch("kiro_crew.metrics.provider.get_recorder", return_value=rec),
+        ):
+            with pytest.raises(AcpAuthRequired):
+                await provider._start_kiro_runtime()
+        phases = self._phases(rec)
+        assert phases["total"]["outcome"] == "auth_required"
 
 
 # ── Fix B: dead runtime in fresh-start fallback ──────────────────────────────

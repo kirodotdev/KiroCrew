@@ -20,15 +20,19 @@ authoring-reliability gates (G1/G2) cover this shape.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 
 from .agent_exec import build_agent_fn
+from .agent_pool import build_pooled_agent_fn
 from .registry import RunRegistry
 from .runner import WorkflowRunner
 from .store import WorkflowRunStore
 from .validate import validate
+
+logger = logging.getLogger(__name__)
 
 # Bounded attempts to coax a valid script out of the model (mirrors schema retry).
 _AUTHOR_RETRIES = 2
@@ -125,6 +129,7 @@ class WorkflowService:
         concurrency: Optional[int] = None,
         persist: bool = True,
         store: Any = None,
+        pool_agents: bool = True,
     ) -> None:
         # Durable store (FIX-21): runs are mirrored to disk so they survive gateway
         # restarts. Pass persist=False (or store=None) to keep a purely in-memory
@@ -142,6 +147,12 @@ class WorkflowService:
         self._sessions = sessions
         self._now_fn = now_fn or (lambda: "1970-01-01T00:00:00Z")
         self._concurrency = concurrency
+        # When True, each run's ``ctx.agent()`` calls reuse a small WARM session
+        # pool instead of cold-starting a fresh session per call (kills the
+        # per-call cold-start that dominates workflow wall-clock — see
+        # workflows/agent_pool.py). The pool is per-run and torn down when the run
+        # ends. Off => the original cold-start-per-call path (build_agent_fn).
+        self._pool_agents = pool_agents
         self._seq = 0
         # Rehydrate any persisted runs from a prior process, and continue the
         # run-id sequence past the highest seen so new ids never collide.
@@ -169,6 +180,28 @@ class WorkflowService:
         return f"wf_{self._seq:06d}"
 
     def _runner(self, run_id: str) -> WorkflowRunner:
+        if self._pool_agents:
+            try:
+                # Size the warm pool to the run's fan-out cap so a fully-parallel
+                # wave gets a distinct warm worker each, and sequential steps reuse.
+                workers = self._concurrency if self._concurrency and self._concurrency > 0 else 4
+                agent_fn, pool = build_pooled_agent_fn(
+                    self._sessions,
+                    run_id=run_id,
+                    max_workers=workers,
+                    max_starting=min(workers, 2),
+                )
+                return WorkflowRunner(
+                    agent_fn=agent_fn,
+                    concurrency=self._concurrency,
+                    on_complete=pool.shutdown,
+                )
+            except Exception:  # noqa: BLE001 - never let pooling break run start
+                logger.warning(
+                    "workflow agent pool init failed for %s; falling back to per-call sessions",
+                    run_id,
+                    exc_info=True,
+                )
         agent_fn = build_agent_fn(self._sessions, run_id=run_id)
         return WorkflowRunner(agent_fn=agent_fn, concurrency=self._concurrency)
 
@@ -184,6 +217,7 @@ class WorkflowService:
         ``on_progress(msg)`` (M6.7) streams human-readable authoring progress (each
         attempt, retries) so author-in-run can surface it live in the sidebar/chat.
         """
+
         def _say(msg: str) -> None:
             if on_progress is not None:
                 try:
@@ -196,21 +230,23 @@ class WorkflowService:
         # never pollutes (or is polluted by) chat, consolidation, or other runs.
         #
         # Cost: authoring is pure text generation (intent → Python script), so it
-        # uses the tool-less ``meshclaw-lite`` agent. That is the lever that makes a
+        # uses the tool-less ``kirocrew-lite`` agent. That is the lever that makes a
         # fresh session cheap: the dominant cold-start cost was loading the full
         # MCP toolset + system prompt; lite carries no tools, so the turn is just
         # the generation. REJECT_ALL is belt-and-suspenders against the Claude Code
         # backend injecting tools without set_mode. The session is torn down
         # (cleanup=True) the instant authoring finishes — nothing persists.
         key = f"wf-author:{self._new_run_id()}"
-        provider, *_ = await self._sessions.get_or_create(key, agent="meshclaw-lite")
+        provider, *_ = await self._sessions.get_or_create(key, agent="kirocrew-lite")
         try:
             errors: list[str] = []
             source = ""
             attempts = _AUTHOR_RETRIES + 1
             for i in range(attempts):
                 if errors:
-                    _say(f"Script was invalid ({'; '.join(errors)}) — revising (attempt {i + 1}/{attempts})…")
+                    _say(
+                        f"Script was invalid ({'; '.join(errors)}) — revising (attempt {i + 1}/{attempts})…"
+                    )
                 else:
                     _say(f"Drafting the workflow script (attempt {i + 1}/{attempts})…")
                 prompt = _AUTHOR_SYSTEM.format(intent=intent)
@@ -254,7 +290,9 @@ class WorkflowService:
             return {"error": "intent is required"}
         run_id = self._new_run_id()
 
-        async def _author_fn(it: str, *, on_progress: Optional[Callable[[str], None]] = None) -> dict:
+        async def _author_fn(
+            it: str, *, on_progress: Optional[Callable[[str], None]] = None
+        ) -> dict:
             return await self.author(it, author=author, on_progress=on_progress)
 
         await self._runner(run_id).run_background(
@@ -360,8 +398,10 @@ class WorkflowService:
             replay_before=replay_before,
         )
         return {
-            "run_id": new_id, "from": run_id,
-            "replayed_before": replay_before, "edited": edited,
+            "run_id": new_id,
+            "from": run_id,
+            "replayed_before": replay_before,
+            "edited": edited,
         }
 
 

@@ -14,7 +14,7 @@ deny decision must be ``@final`` to enforce the ADD-only floor.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -119,6 +119,27 @@ class CredentialPolicy(Protocol):
 
     def redact(self, text: str) -> str: ...
 
+    def exempt_exact_hosts(self) -> "frozenset[str]":
+        """Exact-match hosts that skip ONLY the exfil *heuristics*.
+
+        WIRED: ``security.scan_exfiltration_urls`` /
+        ``security.redact_exfiltration_urls`` read this set (via a function-local
+        deferred import of the platform context) and, for a URL whose domain is
+        an EXACT member, skip the base64-blob / query-length heuristics.  This is
+        **narrow-only**: it can only relax the heuristics, never the hard-credential
+        floor — the S3-presigned fast-path and the unconditional
+        ``_HARD_CREDENTIAL_RE`` path+query scan still run first, so a real AWS key /
+        SSH-or-PEM header / Slack token on an exempted host is still flagged and
+        redacted.  Matched exactly (not by suffix) so a shared multi-tenant domain
+        (``*.sharepoint.com``) does not exempt every tenant.
+
+        Public default = ``frozenset()`` (no exemptions — redaction unchanged); the
+        companion supplies its own trusted-tenant host list.  The set is NEVER
+        sourced from ``config.json`` — an agent-writable exemption would be a hole
+        in the redaction ceiling, so the companion adapter is the only supplier.
+        """
+        ...
+
 
 class SlackEnterpriseGate(Protocol):
     """Slack enterprise/workspace allowlist + per-message origin gate.
@@ -146,6 +167,14 @@ class IdentityProvider(Protocol):
 
     ``status_line`` is async to match the existing ``get_midway_status_line``
     coroutine the dashboard awaits.
+
+    ``credential_watch_paths`` lists credential files whose rotation should
+    drain pooled MCP backends (blue-green cutover).  Public default = ``[]``
+    (no watcher).  The already-booted gateway process resolves this and
+    threads each path to the separately-spawned gateway daemon as a
+    ``--credential-watch-path`` argv flag — the daemon itself never boots the
+    platform and never hardcodes a credential path.  v1 method addition (no
+    ``CONTRACT_VERSION`` bump).
     """
 
     def status(self) -> Dict[str, object]: ...
@@ -155,6 +184,22 @@ class IdentityProvider(Protocol):
     def whoami(self) -> Optional[str]: ...
 
     def issuer(self) -> Optional[str]: ...
+
+    def preflight_checks(self) -> List[Callable[[], None]]:
+        """Already-resolved pre-launch checks for ``gateway``/``token``.
+
+        WIRED: ``kiro_crew.preflight.run_preflight_checks`` (called from the
+        ``gateway`` dispatch in ``cli.py`` and ``_token`` in ``cli_server.py``)
+        runs each callable in order.  ``SystemExit`` from a check aborts the
+        launch; other exceptions are logged and swallowed per check.  Public
+        default = ``[]`` (no checks, startup unchanged); the companion returns
+        e.g. an SSO-session freshness prompt.  Callables only — checks are
+        never resolved from config strings (code-exec escalation).
+        """
+        ...
+
+    def credential_watch_paths(self) -> List[Path]:
+        ...
 
 
 class EmbeddingSource(Protocol):
@@ -262,6 +307,20 @@ class TunnelProvider(Protocol):
     Public default = disabled/no-op (the ``tunnel/manager.py`` stub).  The
     companion supplies the internal tunnel supervisor (the Tunnels primitive
     itself is owned by PartyRock and out of scope).
+
+    WIRED: the ``tunnel/manager.py`` stub ``TunnelManager`` delegates its
+    ``start`` / ``stop`` / ``public_url`` UNCONDITIONALLY to
+    ``current_context().tunnel`` (no edition/identity branch).  The Default is a
+    no-op so the standalone build is byte-identical; a companion drives a real
+    tunnel through this same surface.  ``dashboard/server.py`` gates enablement
+    on ``enabled()`` (OR-ed with ``cfg.tunnel.enabled``), and
+    ``tunnel/setup.py`` evaluates its token-auth deny gate BEFORE ``start()`` is
+    reached, so a companion tunnel cannot start without dashboard token auth.
+
+    ``register_callbacks`` and ``status_snapshot`` are the MINIMAL edition-neutral
+    additions the CORS-reflection wrapper and ``/api/tunnel/status`` need so they
+    can stay wrapped AROUND the provider (v1 addition; no ``CONTRACT_VERSION``
+    bump).
     """
 
     async def start(self) -> None: ...
@@ -271,6 +330,33 @@ class TunnelProvider(Protocol):
     def public_url(self) -> str: ...
 
     def enabled(self) -> bool: ...
+
+    def register_callbacks(
+        self,
+        *,
+        on_connect: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_disconnect: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> None:
+        """Register the connect/disconnect callbacks the wrapper wires in.
+
+        ``on_connect(url)`` reflects the live public URL into the dashboard CORS
+        allow-list + ``set_tunnel_url`` (presigned-link source); ``on_disconnect()``
+        tears that reflection down.  The Default no-op provider never fires them.
+        Called by ``TunnelManager.start`` before it delegates ``start()``.
+        """
+        ...
+
+    def status_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Return a live status view, or ``None`` to defer to the caller's own.
+
+        Edition-neutral primitives only (no import of ``kiro_crew.tunnel``): keys
+        ``state`` (a ``TunnelState`` value string), ``url``, ``error``,
+        ``started_at``, ``connected_at``, ``reconnect_attempt``.  The Default
+        returns ``None`` so the stub ``TunnelManager`` keeps reporting its own
+        local status (byte-identical standalone); a companion returns its live
+        snapshot so ``/api/tunnel/status`` reflects the real tunnel.
+        """
+        ...
 
 
 class TelemetryProvider(Protocol):

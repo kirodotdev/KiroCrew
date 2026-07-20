@@ -41,6 +41,7 @@ from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, HooksConfig
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as svc_linux
@@ -120,6 +121,11 @@ def _probe_dashboard_health(port: int) -> None:
 
 def _token(args: argparse.Namespace) -> None:
     """Print a dashboard URL with a fresh auth token."""
+    # Seam-supplied pre-launch checks (CPP IdentityProvider seam) — e.g. a
+    # companion SSO-session freshness prompt before minting a token. Public
+    # default = no checks; see kiro_crew.preflight.
+    run_preflight_checks()
+
     ttl = parse_duration(args.ttl)
     if ttl is None:
         print(f"❌ Invalid TTL: {args.ttl} (use e.g. 1h, 30m)")

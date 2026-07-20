@@ -110,6 +110,7 @@ from kiro_crew.llm_helpers import (
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,
     acp_error_is_transient,
+    record_interaction_event,
     transient_retry_delay,
 )
 from kiro_crew.messaging.link import SLACK_NAMESPACE
@@ -3672,6 +3673,9 @@ async def _run_chat(
         state.broadcast_ws("context_usage", _context_usage_payload(slot.key, client))
         if _stop_reason != STOP_REASON_CANCELLED and not _retrying_empty:
             state.sessions.record_success(session_key)
+            # Per-interaction telemetry (PlatformContext seam) — shared helper so
+            # the payload shape and model reflection cannot drift across surfaces.
+            record_interaction_event(client, session_key, "dashboard")
         # Broadcast prompt stats for activity viewer
         _prompt_stats = getattr(  # type: ignore[assignment]
             getattr(client, "_client", client), "last_prompt_stats", None

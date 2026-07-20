@@ -42,10 +42,14 @@ _ORPHAN_TIMEOUT_S = 300  # 5 min with no WS → reap PTY
 _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
 
 
-def _redact_terminal(data: bytes) -> bytes:
+def _redact_terminal(data: bytes | bytearray) -> bytes:
     """Strip credentials/exfiltration URLs from PTY output before it reaches a
     client. ``kiro_crew.security`` redactors return ``(text, warnings)`` tuples
-    (unlike upstream's str-returning ``redaction`` module), so unpack both."""
+    (unlike upstream's str-returning ``redaction`` module), so unpack both.
+
+    Accepts ``bytearray`` too: the reconnect-replay path passes the
+    ``_TerminalSession.scrollback`` ring buffer (a ``bytearray``) directly, and
+    ``.decode()`` behaves identically on both."""
     text = data.decode("utf-8", errors="replace")
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)

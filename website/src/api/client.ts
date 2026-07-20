@@ -319,8 +319,19 @@ export interface AddInstanceBody {
   id?: string
 }
 
+/** Tunnel status surfaced by GET /api/tunnel/status (backend TunnelManager).
+ *  Enables mobile dashboard access via a remote tunnel. */
+export interface TunnelStatus {
+  state: 'disabled' | 'starting' | 'connected' | 'reconnecting' | 'error' | 'stopped'
+  url: string
+  error: string
+  uptime: number
+  reconnect_attempt: number
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
+  tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
   securityStats: () => fetch('/api/security/stats').then(j) as Promise<{ denied_commands: number; suspicious_patterns: number; tool_schemas: number; redaction_paths: number }>,
@@ -507,7 +518,7 @@ export const api = {
   // MCP Gateway (shared pool)
   mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; running: boolean; ping_ok: boolean }>,
   mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
-  mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }[] }>,
+  mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
   mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpPoolableServer[] }>,
   mcpGatewaySetPoolable: (name: string, poolable: boolean) => post('/api/mcp-gateway/servers/poolable', { name, poolable }).then(j) as Promise<{ ok: boolean; name: string; poolable: boolean; enabled?: boolean; applied?: boolean; poolable_servers?: string[] }>,
   // Agent config
@@ -882,10 +893,30 @@ export const api = {
    *  picker (selector shown only when >1 capable provider). */
   getArtifactPublishProviders: (kind: string): Promise<{ providers: PublishProviderDescriptor[]; kind: string }> =>
     get(`/api/artifacts/publish-providers?kind=${encodeURIComponent(kind)}`).then(j),
+  /** Provider-routed clone/fork of a remote artifact into the local store.
+   *  external_id travels in the body (not the path) — provider-native ids can
+   *  contain "/", which a path segment can't carry. */
+  cloneRemoteArtifact: (provider: string, externalId: string) =>
+    post(`/api/remote-artifacts/${encodeURIComponent(provider)}/clone`, { external_id: externalId }).then(j),
+  forkRemoteArtifact: (provider: string, externalId: string) =>
+    post(`/api/remote-artifacts/${encodeURIComponent(provider)}/fork`, { external_id: externalId }).then(j),
+  browseRemoteArtifacts: (provider: string, opts?: { scope?: string; q?: string; pageToken?: string }) =>
+    get(
+      `/api/remote-artifacts/${encodeURIComponent(provider)}/browse` +
+        `?scope=${encodeURIComponent(opts?.scope ?? 'mine')}` +
+        (opts?.q ? `&q=${encodeURIComponent(opts.q)}` : '') +
+        (opts?.pageToken ? `&pageToken=${encodeURIComponent(opts.pageToken)}` : ''),
+    ).then(j),
   updateArtifactSharing: (slug: string, body: { visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[] }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/sharing`, body).then(j),
   unpublishArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}/publish`).then(j),
   refreshArtifactSharing: (slug: string) => post(`/api/artifacts/${encodeURIComponent(slug)}/publish/refresh`, {}).then(j),
+  pullLatest: (slug: string) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/pull-latest`, {}).then(j),
+  upstreamStatus: (slug: string) =>
+    get(`/api/artifacts/${encodeURIComponent(slug)}/upstream-status`).then(j),
+  overwriteRemote: (slug: string) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/overwrite-remote`, {}).then(j),
   // Artifact comments (durable, local per-slug store)
   artifactComments: (slug: string) =>
     get(`/api/artifacts/${encodeURIComponent(slug)}/comments`).then(j),

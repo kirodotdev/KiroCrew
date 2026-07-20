@@ -106,6 +106,10 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_folder_move` | Reparent a folder; cycle-guarded |
 | `artifact_folder_delete` | Delete a folder; default keeps contents (re-parent), `delete_contents=true` cascades |
 | `artifact_move` | Move an artifact into a folder / unfile it (metadata-only, no version bump) |
+| `artifact_get_comments` | Read all comments on an artifact (local + provider-synced) |
+| `artifact_post_comment` | Post a comment; agent comments carry the structured `is_agent` flag (no emoji stamped into the body — dashboard renders a lucide `Bot` icon, CLI prefixes a plain-text `[agent]` marker) + SEL-audited; `scope='shared'` syncs to the provider |
+| `artifact_mark_review` | Advance a comment thread to REVIEW status (agent can mark_review but NEVER resolve) |
+| `artifact_delete_comment` | Delete a fully-applied comment thread (root cascades to replies); provider-synced comments refused; SEL-audited with a `reason` |
 
 Schemas live in `validation.py` (`ARTIFACT_*_SCHEMA`) and are registered in
 `MCP_CORE_SCHEMAS`. The MCP tool layer always proxies through the HTTP API so
@@ -144,6 +148,12 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
+| `POST` | `/api/artifacts/{slug}/pull-latest` | Pull the tracked upstream (`?source=publication\|origin\|auto`) into a NEW local snapshot via `publish_sync.pull_upstream`; ungated ingress |
+| `GET` | `/api/artifacts/{slug}/upstream-status` | Cheap metadata-only drift check (`publish_sync.upstream_status`); best-effort, never blocks on the network |
+| `POST` | `/api/artifacts/{slug}/overwrite-remote` | Force-push local content over an upstream-ahead remote (`publish_sync.overwrite_upstream`); **egress — gated by `_publish_governance_denied` on the resolved `publication.provider`** |
+| `GET` | `/api/remote-artifacts/{provider}/browse` | Provider-routed discovery: `?q=` → `search_remote`, else `list_remote(?scope=mine\|shared\|public)`; rows annotated with `local_slug`; unregistered provider → 503 (matches clone/fork) |
+| `POST` | `/api/remote-artifacts/{provider}/clone` | Bidirectional clone (`publish_sync.clone_from_remote`, sets `auto_sync=True` → arms future pushes); **gated by `_publish_governance_denied` on the routed provider**; empty registry → 503. Body: `{ "external_id": ... }` (provider-native ids can contain `/`, which a path segment can't carry) |
+| `POST` | `/api/remote-artifacts/{provider}/fork` | Independent copy with pull-only `fork_metadata` lineage (`publish_sync.fork_from_remote`); ungated ingress; empty registry → 503. Body: `{ "external_id": ... }` |
 
 POST/PATCH/DELETE require an unrestricted session. The HTTP body envelope is
 capped at 2 MiB; the store enforces a per-content cap of 25 MiB
@@ -169,7 +179,38 @@ descendant artifacts) — never silent.
 authenticate via `X-Internal-Secret`, and the prefix matcher
 (`path == p or path.startswith(p + "/")`) does NOT cover the hyphenated path
 via the `"/api/artifacts"` entry. Guarded by a regression test in
-`test_artifact_folder_handlers.py`.
+`test_artifact_folder_handlers.py`. `"/api/remote-artifacts"` is registered the
+same way (same non-coverage reason; the prefix covers every
+`/api/remote-artifacts/{provider}/...` sub-route) so `--slack-only` auth stays
+at parity with the dashboard — guarded in `test_remote_artifacts.py`.
+
+**Remote artifacts (provider-routed browse / clone / fork — G4).** The
+`/api/remote-artifacts/{provider}/...` trio + the upstream sync trio
+(`pull-latest` / `upstream-status` / `overwrite-remote`) wire `publish_sync`'s
+provider-agnostic orchestration (`pull_upstream` / `clone_from_remote` /
+`fork_from_remote` / `upstream_status` / `overwrite_upstream`) to HTTP. The
+surface is **inert in the public edition**: the provider registry is empty, so
+`get_provider()` raises `PublishUnavailableError` → browse / clone / fork all
+503, and the frontend gates the entire remote section + `UpstreamSyncBanner` on
+a non-empty `GET /api/artifacts/publish-providers` result (zero remote pixels /
+requests with no provider). A companion registers providers via the CPP publish
+seam. Governance: `publish_sync` has NO internal gate and `push_version` is
+ungated, so the two egress-arming routes go through
+`_publish_governance_denied` (fail-closed `capabilities.publish ∩
+destinations:<provider>`) BEFORE dispatch — `overwrite-remote` on the resolved
+`publication.provider`, and `clone` on the routed provider (a clone sets
+`auto_sync=True`, arming every future snapshot push). Fork and the read-only
+routes (browse, upstream-status, pull-latest) stay ungated ingress. All remote
+payloads pass `_redact_remote_response` (recursive credential/exfil-URL
+redaction, depth-capped, `localPath` stripped). Browse rows are annotated with
+`local_slug` BEFORE redaction (so a credential-shaped `external_id` isn't
+rewritten out of the local-match lookup) using a single off-loop
+`ArtifactStore.index_by_artifact_id` scan (not a per-row `find_by_artifact_id`
+scan on the event loop) so the UI dedups already-local copies. Browse is
+paginated: the response carries the provider's `next_page_token`, the client
+forwards it as `?pageToken=`, and `RemoteBrowseSection` drives a
+`useInfiniteQuery` with a "Load more" control — so remote artifacts past the
+provider's first page are reachable rather than silently truncated.
 
 ### Dashboard pages
 
@@ -236,6 +277,14 @@ as `chat` for materialized documents.
   classifies the session as restricted (`_is_restricted_session`).
 - **SEL audit** — every mutation emits a `log_tool_invocation` event from the
   HTTP layer (`api/dashboard/handlers/artifacts.py`). Reads are not audited.
+  `_audit` redacts caller-supplied text before it reaches the SEL writer (which
+  signs bytes as-written and does NOT redact): the `error` string and every
+  string leaf of `extra` metadata pass through `redact_via_context`, so an
+  upstream provider exception carrying a credential/signed URL — or a
+  provider-controlled `external_id` echoed into `extra` on the remote
+  browse/clone/fork/pull/overwrite error paths — cannot leak into the audit log.
+  Routing through the platform-seam shim (not the bare `_redact_text`) means a
+  loaded companion's extra credential/cookie regexes apply to the audit trail.
 - **Atomic writes** — `_write_text()` writes to a `.tmp` sibling and renames,
   so a crash mid-write cannot corrupt `current.html` or `meta.json`.
 - **Tolerant load** — `_read_meta_file()` ignores unknown keys and supplies
@@ -356,10 +405,10 @@ not enforce uniqueness.
 (`DashboardState.push_artifact_update`, called via the handlers'
 `_notify_artifact_update` helper) from: create (both the genuine-create and
 source_path dedup-bump paths), content-carrying PATCH (Save / Snapshot /
-MCP update / revert — metadata-only PATCHes do NOT emit), and delete
-(`deleted: true`). Fire-and-forget; react-query's 30s staleness window
-remains the safety net. (Upstream also emits from pull-latest and relocate;
-those handlers belong to the Artifactory subsystem removed from this fork.)
+MCP update / revert — metadata-only PATCHes do NOT emit), delete
+(`deleted: true`), relocate, and pull-latest (when the pull actually landed a
+new snapshot). Fire-and-forget; react-query's 30s staleness window remains
+the safety net.
 
 ## Roadmap
 

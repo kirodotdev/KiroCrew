@@ -213,6 +213,7 @@ class KnowledgeStore:
                 status TEXT DEFAULT 'pending',
                 items_total INTEGER DEFAULT 0,
                 items_processed INTEGER DEFAULT 0,
+                items_failed INTEGER DEFAULT 0,
                 error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -266,6 +267,9 @@ class KnowledgeStore:
         # above; IF NOT EXISTS keeps it idempotent for fresh DBs too.
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_items_content_hash ON items(content_hash)")
+        job_cols = {r[1] for r in self.db.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
+        if "items_failed" not in job_cols:
+            self.db.execute("ALTER TABLE ingestion_jobs ADD COLUMN items_failed INTEGER DEFAULT 0")
         src_cols = {r[1] for r in self.db.execute("PRAGMA table_info(sources)").fetchall()}
         if "sync_status" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN sync_status TEXT DEFAULT 'pending'")

@@ -718,6 +718,216 @@ class TestApproveHandlerTrustCommand:
         assert slot._trust is True
         assert fut.result() == "approved"
 
+    @pytest.mark.asyncio
+    async def test_trust_resolves_future_on_another_slot(self, tmp_path):
+        """Regression: the pending approval future may be registered on a
+        different slot object than the one named in the URL (session-sharing or
+        a rehydrated/replaced slot). The handler now locates the OWNER slot (the
+        one whose session loop consumes the future and gates subsequent tools)
+        and applies the trust side-effects there, then resolves the real future.
+        Applying trust to the addressed slot instead would leave the running
+        session prompting while the UI reports success."""
+        state = _make_state(tmp_path)
+        set_policy = MagicMock()
+        state.sessions.set_approval_policy = set_policy
+        # Slot named in the URL — has no pending future of its own.
+        addressed = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = addressed
+        # A different slot actually owns the pending approval future, but it
+        # SHARES the addressed slot's session identity (the only case in which a
+        # cross-slot future is legitimate — session-sharing / rehydration).
+        owner = _ChatSlot(key="slot-2")
+        owner.linked_session_key = "dashboard:slot-1"
+        state._slots["slot-2"] = owner
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        owner._approval_futures["req-800"] = fut
+        meta = json.dumps({"request_id": "req-800", "full_command": "ls", "base_command": "ls"})
+        owner.messages.append({"role": "permission", "content": "Running: ls", "cls": meta})
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust", "request_id": "req-800"},
+            )
+            assert resp.status == 200
+        # Trust applied to the OWNER slot (the one that gates the session), not
+        # the addressed slot, and the real future got resolved. The approval
+        # policy is keyed by the owner's EFFECTIVE session key
+        # (linked_session_key = "dashboard:slot-1"), NOT the raw slot key
+        # ("dashboard:slot-2") — a linked cron/workflow session runs under the
+        # linked key, so writing the raw key would leave it on its old policy.
+        assert owner._trust is True
+        assert addressed._trust is False
+        set_policy.assert_any_call("dashboard:slot-1", "auto")
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_trust_policy_keyed_by_linked_session_not_slot_key(self, tmp_path):
+        """A linked cron/workflow slot runs under its ``linked_session_key``, so
+        'Trust tools' must write the approval policy under THAT key — not
+        ``dashboard:{slot.key}`` — or the running session keeps its old policy and
+        subsequently-spawned agents don't inherit the trust decision."""
+        state = _make_state(tmp_path)
+        set_policy = MagicMock()
+        state.sessions.set_approval_policy = set_policy
+        slot = _ChatSlot(key="slot-cron")
+        slot.linked_session_key = "cron:nightly-report"  # runs under the cron key
+        state._slots["slot-cron"] = slot
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        slot._approval_futures["req-950"] = fut
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-cron/approve",
+                json={"action": "trust", "request_id": "req-950"},
+            )
+            assert resp.status == 200
+        assert slot._trust is True
+        # Policy landed on the EFFECTIVE (linked) session key, not the slot key.
+        set_policy.assert_any_call("cron:nightly-report", "auto")
+        for call in set_policy.call_args_list:
+            assert call.args[0] != "dashboard:slot-cron", "policy on wrong (raw) key"
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_trust_reads_variant_preserved_on_another_slot(self, tmp_path):
+        """Regression: trust_reads on a cross-slot future must reach the owner as
+        the full ``approved_trust_reads`` outcome (not a coerced ``approved``), so
+        chat_runner's approved_trust_reads branch sets the owner's _trust_reads."""
+        state = _make_state(tmp_path)
+        state.sessions.set_approval_policy = MagicMock()
+        addressed = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = addressed
+        owner = _ChatSlot(key="slot-2")
+        owner.linked_session_key = "dashboard:slot-1"
+        state._slots["slot-2"] = owner
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        owner._approval_futures["req-810"] = fut
+        meta = json.dumps({"request_id": "req-810", "full_command": "ls", "base_command": "ls"})
+        owner.messages.append({"role": "permission", "content": "Running: ls", "cls": meta})
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust_reads", "request_id": "req-810"},
+            )
+            assert resp.status == 200
+        # The trust-reads variant is threaded intact to the owning future — the
+        # session loop, not the handler, sets _trust_reads once it consumes it.
+        assert fut.result() == "approved_trust_reads"
+
+    @pytest.mark.asyncio
+    async def test_trust_command_pattern_lands_on_owner_slot(self, tmp_path):
+        """trust_command inferred from the pending permission card must add the
+        pattern to the OWNER slot (whose messages hold the card and whose loop
+        checks _trusted_patterns), not the addressed slot."""
+        state = _make_state(tmp_path)
+        state.sessions.set_approval_policy = MagicMock()
+        addressed = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = addressed
+        owner = _ChatSlot(key="slot-2")
+        owner.linked_session_key = "dashboard:slot-1"
+        state._slots["slot-2"] = owner
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        owner._approval_futures["req-820"] = fut
+        meta = json.dumps(
+            {"request_id": "req-820", "full_command": "ls /tmp", "base_command": "ls"}
+        )
+        owner.messages.append({"role": "permission", "content": "Running: ls /tmp", "cls": meta})
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust_command", "request_id": "req-820"},
+            )
+            assert resp.status == 200
+        assert "ls /tmp" in owner._trusted_patterns
+        assert "ls /tmp" not in addressed._trusted_patterns
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_trust_truly_no_pending_still_404(self, tmp_path):
+        """The fallback must not mask a genuine 'nothing pending anywhere' case:
+        with no future on any slot (and none state-level), trust still 404s."""
+        state = _make_state(tmp_path)
+        state.sessions.set_approval_policy = MagicMock()
+        state._slots["slot-1"] = _ChatSlot(key="slot-1")
+        state._slots["slot-2"] = _ChatSlot(key="slot-2")
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust", "request_id": "req-missing"},
+            )
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_colliding_request_id_cannot_approve_unrelated_slot(self, tmp_path):
+        """Security regression: a request addressed to slot-1 carrying a request_id
+        that collides with a DIFFERENT slot's pending approval (different session
+        identity, NOT session-shared) must NOT resolve that other slot's future.
+
+        The session-identity owner scan skips the mismatched candidate, and the
+        state-level fallback (resolve_state_approval) does not re-scan slots — so
+        the crafted collision 404s instead of approving/executing slot-2's tool.
+        Regression for the cross-slot authorization hole in the old
+        resolve_approval fallback."""
+        state = _make_state(tmp_path)
+        state.sessions.set_approval_policy = MagicMock()
+        # Addressed slot: no pending future of its own.
+        addressed = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = addressed
+        # Victim slot with an UNRELATED session identity (not session-shared with
+        # slot-1) owns a slot-level future under the SAME request_id.
+        victim = _ChatSlot(key="slot-2")
+        victim.linked_session_key = "dashboard:slot-2"
+        state._slots["slot-2"] = victim
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        victim._approval_futures["req-900"] = fut
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "approved", "request_id": "req-900"},
+            )
+            # The collision does not resolve the victim's tool — it 404s.
+            assert resp.status == 404
+        # Victim's future is untouched: its tool stays pending, not executed.
+        assert not fut.done()
+
+    @pytest.mark.asyncio
+    async def test_state_level_future_still_resolved_via_fallback(self, tmp_path):
+        """The narrowed fallback must still dismiss a genuine STATE-level approval
+        (cron/subagent/gateway) that no slot owns — otherwise a background approval
+        would 404. resolve_state_approval covers exactly this case."""
+        state = _make_state(tmp_path)
+        state.sessions.set_approval_policy = MagicMock()
+        state._slots["slot-1"] = _ChatSlot(key="slot-1")
+        loop = asyncio.get_running_loop()
+        state_fut: asyncio.Future[bool] = loop.create_future()
+        state._approval_futures["req-910"] = state_fut
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "approved", "request_id": "req-910"},
+            )
+            assert resp.status == 200
+        assert state_fut.done()
+        assert state_fut.result() is True
+
 
 class TestMatchesTrustedPatternPiped:
     """Piped commands: each segment checked independently, ALL must match."""

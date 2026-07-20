@@ -1494,17 +1494,38 @@ class DashboardState:
         except Exception:
             self._log.warning("WS broadcast failed for approval resolution", exc_info=True)
 
+    def resolve_state_approval(self, approval_id: str, approved: bool) -> bool:
+        """Resolve ONLY a state-level (background: cron/subagent/gateway) approval.
+
+        Does NOT scan slot-level futures — so it carries no cross-slot authority.
+        Callers that have already located the owning slot under a session-identity
+        guard (e.g. the dashboard slot-approve handler's fallback) MUST use this
+        rather than :meth:`resolve_approval`: a bare id-match slot scan would let a
+        request-id collision resolve an unrelated slot's pending tool, bypassing
+        the owner's session-identity check. Returns False if no state-level future
+        owns ``approval_id``.
+        """
+        fut = self._approval_futures.get(approval_id)
+        if fut and not fut.done():
+            fut.set_result(approved)
+            self._audit_and_broadcast_approval("state", approval_id, approved)
+            return True
+        return False
+
     def resolve_approval(self, approval_id: str, approved: bool) -> bool:
         """Resolve a pending approval. Returns False if not found.
 
         State-level futures receive ``bool`` (consumed by gateway, which converts to str).
         Slot-level futures receive ``str`` ("approved"/"rejected", consumed by channel.py).
+
+        This scans slot-level futures by bare id-match with NO session-identity
+        check, so it is safe only for callers that legitimately own the id
+        (native gateway / Slack click / session-scoped handler). A caller that
+        addresses one slot but may hold a colliding id from another MUST use
+        :meth:`resolve_state_approval` instead (see the slot-approve handler).
         """
         decision = "approved" if approved else "rejected"
-        fut = self._approval_futures.get(approval_id)
-        if fut and not fut.done():
-            fut.set_result(approved)
-            self._audit_and_broadcast_approval("state", approval_id, approved)
+        if self.resolve_state_approval(approval_id, approved):
             return True
         # Also check slot-level approval futures (chat tool approvals)
         for slot in self._slots.values():

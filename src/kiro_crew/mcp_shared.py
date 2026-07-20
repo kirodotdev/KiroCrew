@@ -312,6 +312,18 @@ def call_tool_with_logging(
 
     result = inner_fn(name, args)
     outcome = "failed" if result.startswith("Error:") else "completed"
+    # Redact the serialized args before they land in the SEL audit resources.
+    # Tool args can carry agent-supplied free text (e.g. artifact_post_comment
+    # `text`, artifact_delete_comment `reason`) that may contain a credential;
+    # per-tool handlers redact their OWN egress copy, but the args dict logged
+    # here is a separate validated object, so redact centrally through the
+    # canonical context-aware shim (defense-in-depth for every tool, not just
+    # the ones a handler happened to scrub).
+    resources = ""
+    if args:
+        from kiro_crew.platform import redact_via_context
+
+        resources = redact_via_context(json.dumps(args))[:500]
     sel().log_tool_invocation(
         session_key=session_key,
         source="mcp",
@@ -319,7 +331,7 @@ def call_tool_with_logging(
         tool_kind=session_key,
         outcome=outcome,
         downstream_service=downstream_service,
-        resources=json.dumps(args)[:500] if args else "",
+        resources=resources,
         error=result[:500] if outcome == "failed" else "",
     )
     return result

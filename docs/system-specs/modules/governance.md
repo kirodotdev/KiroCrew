@@ -75,6 +75,16 @@ matcher. `register_scope` / `register_matcher` are append-only extension seams;
 the test suite proves a synthetic scope resolves end-to-end with **zero**
 evaluator edits.
 
+> **2026-07-18 governance-seam re-triage.** The re-triage of the 16 upstream CPP
+> commit groups added **zero `SCOPE_CATALOG` rows** and **did not touch the
+> evaluator** — its seam work was confined to `platform/interfaces.py` /
+> `defaults.py` (IdentityProvider / CredentialPolicy / TunnelProvider method
+> additions) and their consumption sites, none of which are governed scopes. The
+> only capability scope in the catalog that post-dates the original governance
+> model, `capabilities.publish` (below), arrived via **PR #14** (artifacts
+> mirror), **not** this re-triage. See `platform-context.md` and
+> `skills/meshclaw-sync/left-out.md` for the per-item record.
+
 ## Loading + precedence
 
 `load_security_policy()` precedence (first present wins):

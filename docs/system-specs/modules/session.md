@@ -137,8 +137,12 @@ Persistent mapping of `session_key → kiro_session_id` stored at
 kiro-cli conversation history when a session is recycled.
 
 **Only long-lived conversational sessions are mapped.** Stateless sessions
-(cron, subagent, taskrunner, channel, secretary, side, heartbeat/background)
-are excluded via `_STATELESS_PREFIXES`. The `side:` prefix is included so
+(cron, subagent, taskrunner, channel, secretary, side, heartbeat/background,
+`wf-pool:` warm workflow-pool workers) are excluded via `_STATELESS_PREFIXES`.
+The `wf-pool:` prefix keeps per-run pooled workers (workflows/agent_pool.py)
+from persisting a session_map entry or resuming a prior transcript — their
+hard-reset fallback must hand the next task a clean session, never a
+`session/load` replay of the previous task's conversation. The `side:` prefix is included so
 `/side` conversations never resume across KiroCrew restarts — each cold-start
 triggers `is_first_turn=True` in `build_side_message` which re-seeds the
 parent snapshot + accumulated side history.

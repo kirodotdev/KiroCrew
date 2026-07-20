@@ -31,7 +31,9 @@ export function SharedMcpGatewayToggle() {
       const r = await api.mcpGatewayEnable(next)
       const ok = next ? r.ping_ok : !r.running
       if (ok) qc.invalidateQueries({ queryKey: ['mcpGatewayStatus'] })
-      if (ok && next) { setPhase('idle'); navigate('/settings?tab=overview'); return }  // land on the live metrics
+      // Land on the live gateway metrics — the McpGatewayCard renders on
+      // Developer > System (P5 moved it there), not Settings Overview.
+      if (ok && next) { setPhase('idle'); navigate('/developer?tab=system'); return }
       setPhase(ok ? 'done' : 'failed')
     } catch {
       setPhase('failed')
@@ -39,7 +41,7 @@ export function SharedMcpGatewayToggle() {
   }
 
   const subStatus = !enabled ? 'Disabled — each session spawns its own MCP backends.'
-    : pingOk ? 'Active — sessions share pooled MCP backends. See the live pool in Overview.'
+    : pingOk ? 'Active — sessions share pooled MCP backends. See the live pool under Developer > System.'
     : 'Enabled — broker not reachable; toggle off and on to re-apply.'
 
   const btn = 'text-[13px] px-3 py-1.5 rounded-md transition-colors cursor-pointer'

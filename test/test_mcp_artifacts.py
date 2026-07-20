@@ -9,7 +9,10 @@ HTTP call shape, and result formatting.
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import patch
+
+import pytest
 
 from kiro_crew.mcp_core import _call_tool_inner
 
@@ -109,9 +112,7 @@ class TestArtifactReferenceLink:
                 b'{"slug": "log", "version": 5, "name": "Run Log", "kind": "text"}'
             )
             # when the update tool result is rendered
-            result = _call_tool_inner(
-                "artifact_update", {"slug": "log", "content": "new"}
-            )
+            result = _call_tool_inner("artifact_update", {"slug": "log", "content": "new"})
         # then the clickable reference is appended
         assert "[Run Log](/artifacts/log)" in result
 
@@ -122,9 +123,7 @@ class TestArtifactReferenceLink:
                 b'{"slug": "anon-doc", "version": 1, "kind": "markdown"}'
             )
             # when the update tool result is rendered
-            result = _call_tool_inner(
-                "artifact_update", {"slug": "anon-doc", "content": "x"}
-            )
+            result = _call_tool_inner("artifact_update", {"slug": "anon-doc", "content": "x"})
         # then the slug is used as the link text so the link is never empty
         assert "[anon-doc](/artifacts/anon-doc)" in result
 
@@ -201,7 +200,7 @@ class TestArtifactReferenceLink:
         # then the credential is scrubbed out of the link URL before the
         # charset filter (redaction runs first, same as the label)
         link_start = result.index("[Doc](")
-        link = result[link_start:result.index(")", link_start) + 1]
+        link = result[link_start : result.index(")", link_start) + 1]
         assert leaked_credential.lower() not in link
 
     def test_empty_slug_after_sanitize_emits_plain_text(self) -> None:
@@ -294,9 +293,7 @@ class TestArtifactSave:
 
     def test_error_propagated(self) -> None:
         with patch("kiro_crew.mcp_core._post", return_value={"error": "duplicate"}):
-            result = _call_tool_inner(
-                "artifact_save", {"name": "x", "content": "a"}
-            )
+            result = _call_tool_inner("artifact_save", {"name": "x", "content": "a"})
         assert "Error: duplicate" in result
 
     def test_dedup_hint_when_existing_widget_with_same_name(self) -> None:
@@ -304,20 +301,23 @@ class TestArtifactSave:
         # matches an existing chat-source widget, the response includes
         # a duplicate-warning hint pointing at the existing slug. The
         # save still proceeds — we only WARN; we don't block.
-        with patch(
-            "kiro_crew.mcp_core._get",
-            return_value={
-                "artifacts": [
-                    {
-                        "slug": "rules-of-fight-club",
-                        "name": "Rules of Fight Club",
-                        "updated_at": "2026-05-29T03:24:00Z",
-                    },
-                ],
-            },
-        ), patch(
-            "kiro_crew.mcp_core._post",
-            return_value={"slug": "rules-of-fight-club-2", "version": 1},
+        with (
+            patch(
+                "kiro_crew.mcp_core._get",
+                return_value={
+                    "artifacts": [
+                        {
+                            "slug": "rules-of-fight-club",
+                            "name": "Rules of Fight Club",
+                            "updated_at": "2026-05-29T03:24:00Z",
+                        },
+                    ],
+                },
+            ),
+            patch(
+                "kiro_crew.mcp_core._post",
+                return_value={"slug": "rules-of-fight-club-2", "version": 1},
+            ),
         ):
             result = _call_tool_inner(
                 "artifact_save",
@@ -334,16 +334,19 @@ class TestArtifactSave:
         nfd = "Cafe\u0301"  # decomposed
         nfc = "Caf\u00e9"  # composed (= "Café")
         assert nfd != nfc  # sanity
-        with patch(
-            "kiro_crew.mcp_core._get",
-            return_value={
-                "artifacts": [
-                    {"slug": "cafe", "name": nfc, "updated_at": "2026-05-29T03:00:00Z"},
-                ],
-            },
-        ), patch(
-            "kiro_crew.mcp_core._post",
-            return_value={"slug": "cafe-2", "version": 1},
+        with (
+            patch(
+                "kiro_crew.mcp_core._get",
+                return_value={
+                    "artifacts": [
+                        {"slug": "cafe", "name": nfc, "updated_at": "2026-05-29T03:00:00Z"},
+                    ],
+                },
+            ),
+            patch(
+                "kiro_crew.mcp_core._post",
+                return_value={"slug": "cafe-2", "version": 1},
+            ),
         ):
             result = _call_tool_inner(
                 "artifact_save",
@@ -356,9 +359,12 @@ class TestArtifactSave:
         # Agent passing explicit slug=foo means it knows what it's
         # doing — typically re-saving a known artifact. Don't surface
         # a hint that would just be noise. Probe shouldn't even fire.
-        with patch("kiro_crew.mcp_core._get") as get, patch(
-            "kiro_crew.mcp_core._post",
-            return_value={"slug": "foo", "version": 1},
+        with (
+            patch("kiro_crew.mcp_core._get") as get,
+            patch(
+                "kiro_crew.mcp_core._post",
+                return_value={"slug": "foo", "version": 1},
+            ),
         ):
             result = _call_tool_inner(
                 "artifact_save",
@@ -372,9 +378,12 @@ class TestArtifactSave:
         # agent doesn't set a title — too collision-prone to dedup
         # against (every title-less widget would bind to the first
         # such artifact in the library).
-        with patch("kiro_crew.mcp_core._get") as get, patch(
-            "kiro_crew.mcp_core._post",
-            return_value={"slug": "x", "version": 1},
+        with (
+            patch("kiro_crew.mcp_core._get") as get,
+            patch(
+                "kiro_crew.mcp_core._post",
+                return_value={"slug": "x", "version": 1},
+            ),
         ):
             result = _call_tool_inner(
                 "artifact_save",
@@ -387,9 +396,12 @@ class TestArtifactSave:
         # Same-named markdown / html / json artifacts are a different
         # use case — they're often per-source-file or per-document
         # snapshots where collision is normal, not a sign of a mistake.
-        with patch("kiro_crew.mcp_core._get") as get, patch(
-            "kiro_crew.mcp_core._post",
-            return_value={"slug": "x", "version": 1},
+        with (
+            patch("kiro_crew.mcp_core._get") as get,
+            patch(
+                "kiro_crew.mcp_core._post",
+                return_value={"slug": "x", "version": 1},
+            ),
         ):
             _call_tool_inner(
                 "artifact_save",
@@ -401,12 +413,15 @@ class TestArtifactSave:
         # If the artifact_list probe fails (network blip, store error),
         # we proceed with the save without the hint rather than letting
         # a transient observability concern block legitimate saves.
-        with patch(
-            "kiro_crew.mcp_core._get",
-            side_effect=RuntimeError("probe boom"),
-        ), patch(
-            "kiro_crew.mcp_core._post",
-            return_value={"slug": "x", "version": 1},
+        with (
+            patch(
+                "kiro_crew.mcp_core._get",
+                side_effect=RuntimeError("probe boom"),
+            ),
+            patch(
+                "kiro_crew.mcp_core._post",
+                return_value={"slug": "x", "version": 1},
+            ),
         ):
             result = _call_tool_inner(
                 "artifact_save",
@@ -499,9 +514,7 @@ class TestArtifactList:
         assert "kind=widget" in url
 
     def test_empty(self) -> None:
-        with patch(
-            "kiro_crew.mcp_core._get", return_value={"artifacts": []}
-        ):
+        with patch("kiro_crew.mcp_core._get", return_value={"artifacts": []}):
             result = _call_tool_inner("artifact_list", {})
         assert result == "No artifacts saved."
 
@@ -528,17 +541,13 @@ class TestArtifactVersions:
 
 class TestArtifactDelete:
     def test_delete(self) -> None:
-        with patch(
-            "kiro_crew.mcp_core._delete", return_value={"ok": True}
-        ) as delete:
+        with patch("kiro_crew.mcp_core._delete", return_value={"ok": True}) as delete:
             result = _call_tool_inner("artifact_delete", {"slug": "x"})
         assert delete.call_args.args[0] == "/api/artifacts/x"
         assert "Deleted artifact: x" in result
 
     def test_delete_error(self) -> None:
-        with patch(
-            "kiro_crew.mcp_core._delete", return_value={"error": "not found"}
-        ):
+        with patch("kiro_crew.mcp_core._delete", return_value={"error": "not found"}):
             result = _call_tool_inner("artifact_delete", {"slug": "x"})
         assert "Error: not found" in result
 
@@ -558,18 +567,17 @@ class TestArtifactRevert:
         # snapshot=True for reverted updates so the revert always lands as
         # a new version on the timeline.
         target_content = "# v2 content"
-        with patch(
-            "kiro_crew.mcp_core._get",
-            return_value={"slug": "doc", "version": 2, "content": target_content},
-        ) as get_mock, patch(
-            "kiro_crew.mcp_core.urllib.request.urlopen"
-        ) as urlopen_mock:
+        with (
+            patch(
+                "kiro_crew.mcp_core._get",
+                return_value={"slug": "doc", "version": 2, "content": target_content},
+            ) as get_mock,
+            patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock,
+        ):
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4}'
             )
-            result = _call_tool_inner(
-                "artifact_revert", {"slug": "doc", "target_version": 2}
-            )
+            result = _call_tool_inner("artifact_revert", {"slug": "doc", "target_version": 2})
         # Step 1: GET the target version
         get_mock.assert_called_once_with("/api/artifacts/doc/versions/2")
         # Step 2: PATCH with reverted event metadata
@@ -586,62 +594,51 @@ class TestArtifactRevert:
 
     def test_revert_propagates_get_error(self) -> None:
         # If the target version doesn't exist, the GET fails and we report it.
-        with patch(
-            "kiro_crew.mcp_core._get", return_value={"error": "version not found"}
-        ):
-            result = _call_tool_inner(
-                "artifact_revert", {"slug": "doc", "target_version": 99}
-            )
+        with patch("kiro_crew.mcp_core._get", return_value={"error": "version not found"}):
+            result = _call_tool_inner("artifact_revert", {"slug": "doc", "target_version": 99})
         assert "cannot fetch version 99" in result
 
     def test_revert_validates_target_version(self) -> None:
         # Schema enforces target_version is a positive integer.
         from kiro_crew.mcp_core import _call_tool
 
-        result = _call_tool(
-            "artifact_revert", {"slug": "doc", "target_version": 0}
-        )
+        result = _call_tool("artifact_revert", {"slug": "doc", "target_version": 0})
         assert "error" in result.lower() or "target_version" in result.lower()
 
     def test_revert_surfaces_source_path_for_diff_headers(self) -> None:
         # When the artifact is file-backed, the response should include
         # source_path so the calling agent can build a unified-diff header
         # that activates the dashboard's Open file affordance.
-        with patch(
-            "kiro_crew.mcp_core._get",
-            return_value={"slug": "doc", "version": 2, "content": "v2"},
-        ), patch(
-            "kiro_crew.mcp_core.urllib.request.urlopen"
-        ) as urlopen_mock:
+        with (
+            patch(
+                "kiro_crew.mcp_core._get",
+                return_value={"slug": "doc", "version": 2, "content": "v2"},
+            ),
+            patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock,
+        ):
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4, "source_path": "/home/u/notes/doc.md"}'
             )
-            result = _call_tool_inner(
-                "artifact_revert", {"slug": "doc", "target_version": 2}
-            )
+            result = _call_tool_inner("artifact_revert", {"slug": "doc", "target_version": 2})
         assert "source_path: /home/u/notes/doc.md" in result
         # Guidance for emitting a proper diff is included so the agent
         # surfaces an operable Open file button to the user.
-        assert (
-            "--- /home/u/notes/doc.md" in result
-            and "+++ /home/u/notes/doc.md" in result
-        )
+        assert "--- /home/u/notes/doc.md" in result and "+++ /home/u/notes/doc.md" in result
 
     def test_revert_no_source_path_omits_diff_guidance(self) -> None:
         # Chat-backed artifacts (no source_path) shouldn't get the diff
         # guidance — there's no file to open in the side panel.
-        with patch(
-            "kiro_crew.mcp_core._get",
-            return_value={"slug": "doc", "version": 2, "content": "v2"},
-        ), patch(
-            "kiro_crew.mcp_core.urllib.request.urlopen"
-        ) as urlopen_mock:
+        with (
+            patch(
+                "kiro_crew.mcp_core._get",
+                return_value={"slug": "doc", "version": 2, "content": "v2"},
+            ),
+            patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock,
+        ):
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4}'  # no source_path
             )
-            result = _call_tool_inner(
-                "artifact_revert", {"slug": "doc", "target_version": 2}
-            )
+            result = _call_tool_inner("artifact_revert", {"slug": "doc", "target_version": 2})
         assert "source_path" not in result
         assert "--- " not in result
 
@@ -659,9 +656,7 @@ class TestSchemas:
     def test_save_rejects_invalid_slug(self) -> None:
         from kiro_crew.mcp_core import _call_tool
 
-        result = _call_tool(
-            "artifact_save", {"name": "x", "content": "a", "slug": "Has Spaces"}
-        )
+        result = _call_tool("artifact_save", {"name": "x", "content": "a", "slug": "Has Spaces"})
         assert "error" in result.lower() or "invalid" in result.lower()
 
     def test_get_rejects_invalid_slug(self) -> None:
@@ -669,3 +664,467 @@ class TestSchemas:
 
         result = _call_tool("artifact_get", {"slug": "BAD/PATH"})
         assert "error" in result.lower() or "invalid" in result.lower()
+
+
+class TestArtifactGetCommentsFullBody:
+    """Body text is returned in full — no [:200] truncation (Mesh-2503)."""
+
+    def test_short_body_returned_in_full(self) -> None:
+        body = "Fix the typo in section 3."
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {"author": "alice", "body": body, "status": "open"},
+                ]
+            },
+        ) as get:
+            result = _call_tool_inner("artifact_get_comments", {"slug": "my-doc"})
+        assert get.call_args.args[0] == "/api/artifacts/my-doc/comments"
+        assert body in result
+
+    def test_long_body_not_truncated(self) -> None:
+        # 500-char body — previously would be cut to 200
+        body = "A" * 250 + " MIDDLE " + "B" * 242
+        assert len(body) == 500
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {"author": "bob", "body": body, "status": "open"},
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        # Full body present, including the middle marker
+        assert " MIDDLE " in result
+        assert "B" * 242 in result
+
+    def test_very_long_body_preserved(self) -> None:
+        # Near the ARTIFACT_COMMENT_TEXT_MAX (10_000) ceiling
+        body = "X" * 5000
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {"author": "eve", "body": body, "status": "open"},
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        assert "X" * 5000 in result
+
+
+class TestArtifactGetCommentsAnchorFormatting:
+    """Anchor quotes: short shown in full, long bookended with TRUNCATED marker (Mesh-2503)."""
+
+    def test_short_anchor_shown_in_full(self) -> None:
+        quote = "Callers / Sources"
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {
+                        "author": "alice",
+                        "body": "comment",
+                        "status": "open",
+                        "anchor": {"quote": quote, "start_offset": 42, "end_offset": 59},
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        # Full quote present
+        assert f'"{quote}"' in result
+        # Offsets included
+        assert "chars 42:59" in result
+        # No TRUNCATED marker
+        assert "TRUNCATED" not in result
+
+    def test_anchor_at_300_chars_shown_in_full(self) -> None:
+        quote = "Z" * 300
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {
+                        "author": "bob",
+                        "body": "lgtm",
+                        "status": "open",
+                        "anchor": {"quote": quote, "start_offset": 0, "end_offset": 300},
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        # 300 chars exactly = still shown in full (threshold is <=300)
+        assert "Z" * 300 in result
+        assert "TRUNCATED" not in result
+
+    def test_anchor_over_300_chars_is_bookended(self) -> None:
+        # 500-char anchor — should be truncated with bookending
+        head = "H" * 100
+        middle = "M" * 300
+        tail = "T" * 100
+        quote = head + middle + tail
+        assert len(quote) == 500
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {
+                        "author": "carol",
+                        "body": "needs work",
+                        "status": "open",
+                        "anchor": {"quote": quote, "start_offset": 100, "end_offset": 600},
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        # Bookended: first 100 and last 100 chars present
+        assert "H" * 100 in result
+        assert "T" * 100 in result
+        # Middle NOT fully present (it's 300 chars, omitted)
+        assert "M" * 300 not in result
+        # TRUNCATED marker with char count
+        assert "TRUNCATED" in result
+        assert "300 chars omitted" in result
+        # Offsets included
+        assert "chars 100:600" in result
+
+    def test_anchor_without_offsets(self) -> None:
+        quote = "some text"
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {
+                        "author": "dave",
+                        "body": "fix this",
+                        "status": "open",
+                        "anchor": {"quote": quote},
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        assert f'"{quote}"' in result
+        # No offset info when not provided
+        assert "chars" not in result
+
+    def test_long_anchor_without_offsets(self) -> None:
+        quote = "A" * 400
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {
+                        "author": "eve",
+                        "body": "too long",
+                        "status": "open",
+                        "anchor": {"quote": quote},
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        # Still bookended
+        assert "TRUNCATED" in result
+        assert "200 chars omitted" in result
+        # No "chars X:Y" offset info when offsets not provided
+        assert not re.search(r"chars \d+:\d+", result)
+
+
+class TestArtifactGetCommentsEdgeCases:
+    """Edge cases: no comments, errors, agent comments, replies (Mesh-2503)."""
+
+    def test_no_comments_message(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={"comments": []},
+        ) as get:
+            result = _call_tool_inner("artifact_get_comments", {"slug": "empty"})
+        assert get.call_args.args[0] == "/api/artifacts/empty/comments"
+        assert "No comments" in result
+
+    def test_error_response(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={"error": "artifact not found"},
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "gone"})
+        assert "Error" in result
+        assert "artifact not found" in result
+
+    def test_agent_comment_prefix(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {
+                        "author": "kiro",
+                        "body": "auto-review",
+                        "status": "open",
+                        "is_agent": True,
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        # Agent provenance renders as a plain-text marker (no emoji), derived from
+        # the structured is_agent field — not persisted into the body.
+        from kiro_crew.validation import ARTIFACT_AGENT_MARKER
+
+        assert ARTIFACT_AGENT_MARKER in result
+        assert "\U0001f916" not in result
+
+    def test_reply_indent(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {"author": "alice", "body": "parent", "status": "open"},
+                    {
+                        "author": "bob",
+                        "body": "child reply",
+                        "status": "open",
+                        "parent_id": "c1",
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        assert "↳" in result
+
+    def test_comment_count_in_header(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {"author": "a", "body": "one", "status": "open"},
+                    {"author": "b", "body": "two", "status": "open"},
+                    {"author": "c", "body": "three", "status": "resolved"},
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        assert "(3)" in result
+
+    def test_comment_id_surfaced(self) -> None:
+        # The id is the handle artifact_mark_review / artifact_delete_comment
+        # need; omitting it left those follow-up tools uncallable from a result.
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {"id": "c-42", "author": "alice", "body": "fix", "status": "open"},
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        assert "id=c-42" in result
+
+    def test_agent_comment_body_stored_verbatim_no_emoji(self) -> None:
+        # Bodies are stored verbatim (no emoji stamped in); the CLI marker is a
+        # plain-text prefix derived from is_agent, applied once at render time.
+        from kiro_crew.validation import ARTIFACT_AGENT_MARKER
+
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={
+                "comments": [
+                    {
+                        "id": "c1",
+                        "author": "agent",
+                        "body": "auto-review note",
+                        "status": "open",
+                        "is_agent": True,
+                    },
+                ]
+            },
+        ):
+            result = _call_tool_inner("artifact_get_comments", {"slug": "doc"})
+        # Exactly one plain-text marker, no emoji.
+        assert result.count(ARTIFACT_AGENT_MARKER) == 1
+        assert "\U0001f916" not in result
+        assert "auto-review note" in result
+
+
+class TestArtifactPostCommentTool:
+    """The artifact_post_comment MCP tool POSTs the comment route with the body
+    verbatim + is_agent flag, redacting the body before sending (no emoji)."""
+
+    def test_post_comment_hits_comment_route_verbatim(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._post",
+            return_value={"comment": {"id": "c9", "sync_state": "local"}},
+        ) as post:
+            result = _call_tool_inner(
+                "artifact_post_comment",
+                {"slug": "doc", "text": "looks wrong in section 2"},
+            )
+        post.assert_called_once()
+        path, payload = post.call_args.args
+        assert path == "/api/artifacts/doc/comments"
+        # Body stored verbatim (no emoji watermark); provenance is is_agent.
+        assert payload["text"] == "looks wrong in section 2"
+        assert "\U0001f916" not in payload["text"]
+        assert payload["is_agent"] is True
+        assert payload["author"] == "agent"
+        assert payload["scope"] == "private"
+        assert "c9" in result
+
+    def test_post_comment_shared_scope_passed(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._post",
+            return_value={"comment": {"id": "c1", "sync_state": "pending"}},
+        ) as post:
+            _call_tool_inner(
+                "artifact_post_comment",
+                {"slug": "doc", "text": "sync me", "scope": "shared"},
+            )
+        _, payload = post.call_args.args
+        assert payload["scope"] == "shared"
+
+    def test_post_comment_redacts_credentials_in_body(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._post",
+            return_value={"comment": {"id": "c1", "sync_state": "local"}},
+        ) as post:
+            _call_tool_inner(
+                "artifact_post_comment",
+                {"slug": "doc", "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
+            )
+        _, payload = post.call_args.args
+        assert "AKIAIOSFODNN7EXAMPLE" not in payload["text"]
+
+    def test_post_comment_surfaces_backend_error(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._post",
+            return_value={"error": "artifact not found"},
+        ):
+            result = _call_tool_inner(
+                "artifact_post_comment",
+                {"slug": "gone", "text": "hi"},
+            )
+        assert result.startswith("Error:")
+
+    def test_post_comment_rejects_invalid_scope(self) -> None:
+        from kiro_crew.validation import ValidationError
+
+        with patch("kiro_crew.mcp_core._post") as post:
+            with pytest.raises(ValidationError):
+                _call_tool_inner(
+                    "artifact_post_comment",
+                    {"slug": "doc", "text": "hi", "scope": "public"},
+                )
+        post.assert_not_called()
+
+    def test_post_comment_text_within_handler_cap(self) -> None:
+        # The body is stored verbatim (no watermark), so the MCP schema's text cap
+        # equals the HTTP handler's cap exactly — no schema-valid input can be
+        # rejected server-side.
+        from kiro_crew.validation import (
+            ARTIFACT_COMMENT_TEXT_MAX,
+            ARTIFACT_POST_COMMENT_SCHEMA,
+        )
+
+        text_max = next(f.max_len for f in ARTIFACT_POST_COMMENT_SCHEMA.fields if f.name == "text")
+        assert text_max <= ARTIFACT_COMMENT_TEXT_MAX
+        # The maximum-length accepted text POSTs a body within the handler cap.
+        max_text = "x" * text_max
+        with patch(
+            "kiro_crew.mcp_core._post",
+            return_value={"comment": {"id": "c1", "sync_state": "local"}},
+        ) as post:
+            _call_tool_inner("artifact_post_comment", {"slug": "doc", "text": max_text})
+        _, payload = post.call_args.args
+        assert len(payload["text"]) <= ARTIFACT_COMMENT_TEXT_MAX
+
+
+class TestArtifactMarkReviewTool:
+    """The artifact_mark_review MCP tool POSTs the review route — agents may
+    advance a thread to REVIEW but never resolve it."""
+
+    def test_mark_review_hits_review_route(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._post",
+            return_value={"status": "review"},
+        ) as post:
+            result = _call_tool_inner(
+                "artifact_mark_review",
+                {"slug": "doc", "comment_id": "c1"},
+            )
+        post.assert_called_once()
+        path, payload = post.call_args.args
+        assert path == "/api/artifacts/doc/comments/c1/review"
+        assert payload == {}
+        assert "REVIEW" in result
+
+    def test_mark_review_surfaces_backend_error(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._post",
+            return_value={"error": "comment not found"},
+        ):
+            result = _call_tool_inner(
+                "artifact_mark_review",
+                {"slug": "doc", "comment_id": "missing"},
+            )
+        assert result.startswith("Error:")
+        assert "comment not found" in result
+
+    def test_mark_review_rejects_bad_comment_id(self) -> None:
+        from kiro_crew.validation import ValidationError
+
+        with patch("kiro_crew.mcp_core._post") as post:
+            with pytest.raises(ValidationError):
+                _call_tool_inner(
+                    "artifact_mark_review",
+                    {"slug": "doc", "comment_id": "../etc/passwd"},
+                )
+        post.assert_not_called()
+
+
+class TestArtifactDeleteCommentTool:
+    """The artifact_delete_comment MCP tool DELETEs the comment route with the
+    required reason in the body (redacted before sending — it lands in the SEL
+    audit and activity feed)."""
+
+    def test_delete_comment_hits_delete_route_with_reason(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._delete",
+            return_value={"deleted": True},
+        ) as dl:
+            result = _call_tool_inner(
+                "artifact_delete_comment",
+                {"slug": "doc", "comment_id": "c1", "reason": "applied in v3: typo fixed"},
+            )
+        dl.assert_called_once()
+        path, payload = dl.call_args.args
+        assert path == "/api/artifacts/doc/comments/c1"
+        assert payload["reason"] == "applied in v3: typo fixed"
+        assert "deleted" in result.lower()
+
+    def test_delete_comment_surfaces_backend_error(self) -> None:
+        with patch(
+            "kiro_crew.mcp_core._delete",
+            return_value={"error": "agents cannot delete provider-synced comments"},
+        ):
+            result = _call_tool_inner(
+                "artifact_delete_comment",
+                {"slug": "doc", "comment_id": "c1", "reason": "applied"},
+            )
+        assert result.startswith("Error:")
+        assert "provider-synced" in result
+
+    def test_delete_comment_requires_reason(self) -> None:
+        from kiro_crew.validation import ValidationError
+
+        with patch("kiro_crew.mcp_core._delete") as dl:
+            with pytest.raises(ValidationError):
+                _call_tool_inner(
+                    "artifact_delete_comment",
+                    {"slug": "doc", "comment_id": "c1"},
+                )
+        dl.assert_not_called()

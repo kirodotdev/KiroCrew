@@ -792,6 +792,60 @@ ARTIFACT_REVERT_SCHEMA = ToolSchema(
     ],
 )
 
+# Artifact comments (Mesh-1880). Comment ids are local UUIDs or provider-origin
+# ids (e.g. a remote provider's "<ts>-<uuid>"); allow alphanumerics + - . : _ .
+_ARTIFACT_COMMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
+_ARTIFACT_SCOPE_RE = re.compile(r"^(private|shared)$")
+ARTIFACT_COMMENT_TEXT_MAX = 10_000
+
+#: Plain-text marker for agent-authored comments on CLI/text surfaces that lack
+#: a structured ``is_agent`` flag (e.g. the ``artifact_get_comments`` MCP text
+#: rendering). NOT persisted into the comment body and NOT an emoji: agent
+#: provenance is carried by the structured ``is_agent`` field, which the
+#: dashboard renders as a lucide ``Bot`` icon (no emoji in the UI, per
+#: CLAUDE.md). This constant is only for prefixing plain-text output.
+ARTIFACT_AGENT_MARKER = "[agent] "
+
+ARTIFACT_GET_COMMENTS_SCHEMA = ToolSchema(
+    tool_name="artifact_get_comments",
+    fields=[
+        FieldSpec("slug", str, required=True, max_len=80, pattern=_ARTIFACT_SLUG_RE),
+    ],
+)
+
+ARTIFACT_POST_COMMENT_SCHEMA = ToolSchema(
+    tool_name="artifact_post_comment",
+    fields=[
+        FieldSpec("slug", str, required=True, max_len=80, pattern=_ARTIFACT_SLUG_RE),
+        # The body is stored verbatim (no watermark prepended), so the full
+        # ARTIFACT_COMMENT_TEXT_MAX budget is available; agent provenance rides
+        # on the structured is_agent field, not the text.
+        FieldSpec("text", str, required=True, max_len=ARTIFACT_COMMENT_TEXT_MAX),
+        FieldSpec("scope", str, max_len=10, pattern=_ARTIFACT_SCOPE_RE),
+    ],
+)
+
+ARTIFACT_MARK_REVIEW_SCHEMA = ToolSchema(
+    tool_name="artifact_mark_review",
+    fields=[
+        FieldSpec("slug", str, required=True, max_len=80, pattern=_ARTIFACT_SLUG_RE),
+        FieldSpec("comment_id", str, required=True, max_len=128, pattern=_ARTIFACT_COMMENT_ID_RE),
+    ],
+)
+
+#: Cap on the one-line justification an agent must record when deleting a
+#: comment it has applied (surfaced in the SEL audit + activity timeline).
+ARTIFACT_DELETE_COMMENT_REASON_MAX = 500
+
+ARTIFACT_DELETE_COMMENT_SCHEMA = ToolSchema(
+    tool_name="artifact_delete_comment",
+    fields=[
+        FieldSpec("slug", str, required=True, max_len=80, pattern=_ARTIFACT_SLUG_RE),
+        FieldSpec("comment_id", str, required=True, max_len=128, pattern=_ARTIFACT_COMMENT_ID_RE),
+        FieldSpec("reason", str, required=True, max_len=ARTIFACT_DELETE_COMMENT_REASON_MAX),
+    ],
+)
+
 # Artifact folders (Mesh-2720). A folder reference is a folder id OR a
 # ``/``-separated human path, so it can't share the slug regex — only bound
 # the length. Folder names cap at 100 chars (matches ArtifactFolderStore).
@@ -880,7 +934,14 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
         FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
         FieldSpec("approval_mode", str, max_len=10, pattern=re.compile(r"^(auto)?$")),
-        FieldSpec("skip_dates", list, item_type=str, item_max_len=10, max_items=366, item_pattern=re.compile(r"^\d{4}-\d{2}-\d{2}$")),
+        FieldSpec(
+            "skip_dates",
+            list,
+            item_type=str,
+            item_max_len=10,
+            max_items=366,
+            item_pattern=re.compile(r"^\d{4}-\d{2}-\d{2}$"),
+        ),
         FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
         FieldSpec("persistent_session", bool),
         FieldSpec("minimal_context", bool),
@@ -896,7 +957,12 @@ CRON_ADD_SCHEMA = ToolSchema(
         #                                  + _clean_cron_env() env scrubbing
         # Do not treat these regexes as the guard, and do not relax them assuming
         # downstream code re-validates the value as safe.
-        FieldSpec("script", str, max_len=200, pattern=re.compile(r"^[a-zA-Z0-9_.~/-]+:[a-zA-Z_][a-zA-Z0-9_]*$")),
+        FieldSpec(
+            "script",
+            str,
+            max_len=200,
+            pattern=re.compile(r"^[a-zA-Z0-9_.~/-]+:[a-zA-Z_][a-zA-Z0-9_]*$"),
+        ),
         FieldSpec("command", str, max_len=5000, pattern=re.compile(r"^[^\x00-\x1f\x7f]*$")),
         FieldSpec("timeout", int, min_val=0, max_val=3600),
     ],
@@ -998,7 +1064,9 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         FieldSpec("unfurl_media", bool),
         FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
         FieldSpec("reply_broadcast", bool),
-        FieldSpec("session", str, max_len=MAX_SHORT_STRING, pattern=re.compile(r"^(origin|slack)$")),
+        FieldSpec(
+            "session", str, max_len=MAX_SHORT_STRING, pattern=re.compile(r"^(origin|slack)$")
+        ),
         FieldSpec("caller_session", str, max_len=MAX_SHORT_STRING, pattern=CRON_SESSION_RE),
     ],
 )
@@ -1110,6 +1178,10 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "artifact_list": ARTIFACT_LIST_SCHEMA,
     "artifact_versions": ARTIFACT_VERSIONS_SCHEMA,
     "artifact_revert": ARTIFACT_REVERT_SCHEMA,
+    "artifact_get_comments": ARTIFACT_GET_COMMENTS_SCHEMA,
+    "artifact_post_comment": ARTIFACT_POST_COMMENT_SCHEMA,
+    "artifact_mark_review": ARTIFACT_MARK_REVIEW_SCHEMA,
+    "artifact_delete_comment": ARTIFACT_DELETE_COMMENT_SCHEMA,
     "artifact_folder_list": ARTIFACT_FOLDER_LIST_SCHEMA,
     "artifact_folder_create": ARTIFACT_FOLDER_CREATE_SCHEMA,
     "artifact_folder_rename": ARTIFACT_FOLDER_RENAME_SCHEMA,
@@ -1137,7 +1209,14 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("approval_mode", str, max_len=10, pattern=re.compile(r"^(auto)?$")),
             FieldSpec("silent", bool),
             FieldSpec("strict_schedule", bool),
-            FieldSpec("skip_dates", list, item_type=str, item_max_len=10, max_items=366, item_pattern=re.compile(r"^\d{4}-\d{2}-\d{2}$")),
+            FieldSpec(
+                "skip_dates",
+                list,
+                item_type=str,
+                item_max_len=10,
+                max_items=366,
+                item_pattern=re.compile(r"^\d{4}-\d{2}-\d{2}$"),
+            ),
             FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
             FieldSpec("persistent_session", bool),
             FieldSpec("minimal_context", bool),
@@ -1283,12 +1362,14 @@ def validate_ask_user_question(raw: object) -> list[dict]:
             opts.append({"label": label, "description": desc})
         if not opts:
             continue
-        result.append({
-            "question": qt,
-            "header": qh,
-            "options": opts,
-            "multiSelect": bool(q.get("multiSelect")),
-        })
+        result.append(
+            {
+                "question": qt,
+                "header": qh,
+                "options": opts,
+                "multiSelect": bool(q.get("multiSelect")),
+            }
+        )
     if not result:
         raise ValidationError("questions", "no valid questions after validation")
     return result

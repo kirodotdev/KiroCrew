@@ -331,6 +331,45 @@ export interface ForkMetadata {
   forked_at: string
 }
 
+/** One provider-neutral remote listing row, as returned by
+ * GET /api/remote-artifacts/{provider}/browse. Inert in the public edition —
+ * the endpoint 404s until a companion registers a provider.
+ *
+ * Fields fall into two groups:
+ *  - The documented backend RemoteListing core (external_id, title, owner,
+ *    view_url, updated_at, snippet) plus the handler's local_slug annotation —
+ *    always present on a contract-faithful provider.
+ *  - Optional companion extensions (tags, visibility, current_version,
+ *    editable) beyond the base RemoteListing contract. A provider that only
+ *    serializes the core dataclass omits these, so any UI gated on them (e.g.
+ *    the Clone shortcut, which requires `editable`) simply doesn't render. */
+export interface RemoteArtifact {
+  /** The provider's stable id (clone/fork routes key on it). */
+  external_id: string
+  title: string
+  owner?: string
+  /** The provider's human link for the remote copy. */
+  view_url?: string
+  /** Best-effort ISO/epoch string for sort/display. */
+  updated_at?: string
+  snippet?: string
+  /** Companion extension (not in the base RemoteListing contract). */
+  tags?: string[]
+  /** Companion extension (not in the base RemoteListing contract). */
+  visibility?: string
+  /** Companion extension (not in the base RemoteListing contract). */
+  current_version?: number
+  /** Set by the browse handler: the local slug if this remote artifact is
+   * already cloned/forked onto this device (else null). */
+  local_slug?: string | null
+  /** Companion extension (not in the base RemoteListing contract).
+   * Positive-only hint: the caller can edit the remote copy, so a Clone
+   * shortcut is offered. NOT an enforcement gate — the provider remains
+   * sole authority at push time. A core-only provider omits it, so Clone is
+   * not shown (only Fork). */
+  editable?: boolean
+}
+
 export interface Artifact {
   slug: string
   name: string

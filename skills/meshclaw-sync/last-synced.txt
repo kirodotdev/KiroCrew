@@ -279,6 +279,31 @@
 #   pairs with backend ed2f65b0), 08e28b8 (Electron shell redesign — triage).
 #
 # ── Prior batch ──────────────────────────────────────────────────────────────
+# --- Governance-seam re-triage (2026-07-18) ----------------------------------
+# NOT a sync boundary advance. This pass re-triaged 16 already-in-window upstream
+# commit GROUPS against the CPP platform/ extension-point strategy; it did NOT
+# triage any new upstream window, so the beta / frontend-beta / mainline boundary
+# SHAs below are INTENTIONALLY UNCHANGED. Full per-SHA verdict tables (implemented
+# ports/extracts, rejected recommendations, and the 16 group summaries) live in
+# left-out.md -> "Governance-seam re-triage (2026-07-18)". Two prior boundary-note
+# classifications are corrected here:
+#   * 40965431 (mcp-gateway blue-green pooled-backend drain on credential rotation)
+#     — RECLASSIFIED SKIP_INTERNAL -> EXTRACT (item G6). The drain machinery
+#     (pool.py drain_all_to_bluegreen + credwatch.py content-digest watcher) is
+#     Amazon-free generic core; the credential watch PATH is supplied by the
+#     companion via the new IdentityProvider.credential_watch_paths() seam (Default
+#     returns [] = no watcher, run_gatewayd byte-identical). Landed on branch
+#     feat/governance-seam-retriage (consolidated after PR #18 merged; the
+#     drain was first built on the stacked feat/govseam-post-pr18 whose pool.py
+#     offsets differ and whose sync boundary advanced past 40965431).
+#   * 4964a3e (credit-usage popup FE half of ebad8b6c) — the batch-30 DEFER below
+#     ("reads credits_overage/percentage the fork backend does not yet emit") is now
+#     OBSOLETE: the fork backend emits the canonical shape, and the same FE fix was
+#     independently merged as fork PR #20 (382c9bd5 "show true Kiro credit total via
+#     usage API"). Recorded as ALREADY_PRESENT (via PR #20); the govseam item P4 was
+#     DROPPED during rebase (superseded).
+
+# ── Prior batch ──────────────────────────────────────────────────────────────
 # --- Artifacts-page exact-mirror batch (2026-07-17) --------------------------
 # Branch sync/artifacts-mirror-2026-07-17 (built in an isolated git worktree).
 # This is a TARGETED CONTENT PORT of the MeshClaw artifacts page, NOT an
@@ -597,6 +622,10 @@ mainline 45dcb603f117886648d79c7dde05e82d2d8cda2d  # 2026-07-15 MeshClaw mainlin
 # 1 DEFER = 4964a3e (credit-usage popup FE half of ebad8b6c): reads credits_overage/percentage
 #   the fork's text-scrape backend does not yet emit; porting alone regresses the pill. Port as a
 #   pair once the backend text path emits the canonical shape. Flagged for human review.
+#   >> OBSOLETE (2026-07-18 governance-seam re-triage): the fork backend now emits the canonical
+#   >> shape and the same FE fix was independently merged as fork PR #20 (382c9bd5). Recorded
+#   >> ALREADY_PRESENT via PR #20; govseam item P4 dropped as superseded. See the re-triage note
+#   >> at the top of this file + left-out.md.
 
 # --- Batch-28 (dual-repo sync 2026-07-13) ---
 # Branch sync/beta-2026-07-13 off origin/main 4f942f3. 58 candidates triaged (31 backend in

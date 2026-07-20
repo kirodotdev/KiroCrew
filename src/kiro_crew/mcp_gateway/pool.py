@@ -213,8 +213,11 @@ class PoolKey:
 
         Raises :class:`ValueError` on missing or malformed fields.
         """
-        missing = [f.name for f in cls.__dataclass_fields__.values()  # type: ignore[attr-defined]
-                   if f.name != "channel_id" and f.name not in register]
+        missing = [
+            f.name
+            for f in cls.__dataclass_fields__.values()  # type: ignore[attr-defined]
+            if f.name != "channel_id" and f.name not in register
+        ]
         if missing:
             raise ValueError(f"Register payload missing required fields: {missing}")
 
@@ -233,9 +236,7 @@ class PoolKey:
             raise ValueError(f"os_uid must be int, got {type(os_uid).__name__}")
         trust_all_tools = register["trust_all_tools"]
         if not isinstance(trust_all_tools, bool):
-            raise ValueError(
-                f"trust_all_tools must be bool, got {type(trust_all_tools).__name__}"
-            )
+            raise ValueError(f"trust_all_tools must be bool, got {type(trust_all_tools).__name__}")
 
         try:
             return cls(
@@ -274,8 +275,16 @@ class PoolKey:
         """Short log-friendly label. NOT collision-resistant — use
         :meth:`stable_hash` as the actual pool dict key.
         """
-        cmd_short = (self.command_args_hash[:8] + "…") if len(self.command_args_hash) > 8 else self.command_args_hash
-        env_short = (self.effective_env_hash[:8] + "…") if len(self.effective_env_hash) > 8 else self.effective_env_hash
+        cmd_short = (
+            (self.command_args_hash[:8] + "…")
+            if len(self.command_args_hash) > 8
+            else self.command_args_hash
+        )
+        env_short = (
+            (self.effective_env_hash[:8] + "…")
+            if len(self.effective_env_hash) > 8
+            else self.effective_env_hash
+        )
         chan = f" chan={self.channel_id}" if self.channel_id else ""
         return (
             f"{self.agent_name}:{self.server_name} "
@@ -301,6 +310,42 @@ class PoolAtCapacity(RuntimeError):
     ``fallback: true`` so the stub runs the real backend directly (unpooled)
     for that session instead of dropping the server's tools for the whole
     session."""
+
+
+# Default deadline (seconds) for draining backends during a blue-green
+# credential-rotation cutover. A draining backend serves in-flight requests
+# until either its refcount drops to 0 or this deadline expires, whichever
+# comes first.
+DRAIN_DEADLINE_SECS = 60.0
+
+
+# Maximum re-spawn attempts when a blue-green cutover keeps landing inside the
+# spawn window. Bounds a pathological drain-storm from looping forever; after
+# this many collisions the last-spawned backend is pooled as-is (it raced the
+# most recent rotation and will be caught by the next drain / idle sweep).
+_MAX_SPAWN_DRAIN_RETRIES = 3
+
+
+class _DrainedDuringSpawn(RuntimeError):
+    """Internal signal: a blue-green cutover advanced the drain epoch while a
+    backend was being spawned, so :meth:`BackendPool.add` refused to insert the
+    (possibly stale-credential) backend into the active pool. Caught by
+    :meth:`get_or_create`, which discards the backend and respawns fresh."""
+
+
+@dataclass
+class _DrainingBackend:
+    """A backend removed from the active pool and finishing in-flight work.
+
+    The heartbeat sweeper reaps it when ``refcount == 0`` or the deadline
+    passes, whichever first. ``digest`` is retained so the reaper can skip a
+    backend that is still reserved (handed out but not yet attached): reaping
+    it at refcount==0 would kill it out from under a stub mid-``attach_stub``.
+    """
+
+    backend: "Backend"
+    deadline: float  # monotonic deadline
+    digest: str
 
 
 class BackendPool:
@@ -361,6 +406,15 @@ class BackendPool:
         # Surfaced in :meth:`stats` so a sustained-overflow fallback storm is
         # observable rather than invisible in the stub's best-effort log.
         self._capacity_rejects = 0
+        # Blue-green draining: backends moved here continue serving in-flight
+        # requests but are invisible to acquire. The heartbeat sweeper reaps
+        # them on refcount==0 or deadline expiry.
+        self._draining: list[_DrainingBackend] = []
+        # Blue-green cutover generation. Bumped on every drain so an in-flight
+        # spawn that started before a credential rotation can detect that a
+        # cutover landed while it was suspended and refuse to pool its
+        # (now stale-credential) backend as active. See ``get_or_create``.
+        self._drain_epoch = 0
 
     @property
     def max_backends(self) -> int:
@@ -380,6 +434,7 @@ class BackendPool:
             "evictions_lru": self._evictions_lru,
             "spawns": self._spawns,
             "capacity_rejects": self._capacity_rejects,
+            "draining": len(self._draining),
         }
 
     def _metrics_snapshot(self) -> dict[str, Any]:
@@ -428,9 +483,7 @@ class BackendPool:
             ]
             base = self.stats()
         pids = [pid for _, pid in entries]
-        rss_by_pid = await asyncio.to_thread(
-            lambda: {pid: _proc_rss_kb(pid) for pid in pids}
-        )
+        rss_by_pid = await asyncio.to_thread(lambda: {pid: _proc_rss_kb(pid) for pid in pids})
         rows: list[dict[str, Any]] = []
         for row, pid in entries:
             row["rss_kb"] = rss_by_pid.get(pid, -1)
@@ -463,15 +516,29 @@ class BackendPool:
             self._breaker.record_healthy(breaker_key)
 
     def live_backend_pids(self) -> list[int]:
-        """PIDs of all currently-pooled backends. Each backend is spawned as a
-        session leader (``start_new_session=True``), so ``pid == pgid``.
-        Persisted out-of-band so a supervising manager can ``killpg`` these
-        survivors if it has to SIGKILL a wedged gatewayd (which then never runs
-        :meth:`shutdown_all`)."""
-        return [b.pid for b in self._backends.values() if b.pid is not None]
+        """PIDs of all currently-pooled backends **and draining backends**. Each
+        backend is spawned as a session leader (``start_new_session=True``), so
+        ``pid == pgid``. Persisted out-of-band so a supervising manager can
+        ``killpg`` these survivors if it has to SIGKILL a wedged gatewayd (which
+        then never runs :meth:`shutdown_all`).
+
+        Draining backends (blue-green cutover) keep running as live session
+        leaders for up to :data:`DRAIN_DEADLINE_SECS` after being removed from
+        the active index, so they MUST appear here too — otherwise a gatewayd
+        SIGKILLed during the drain window leaves them orphaned, the exact leak
+        this pidfile mechanism exists to prevent.
+        """
+        pids = [b.pid for b in self._backends.values() if b.pid is not None]
+        pids.extend(e.backend.pid for e in self._draining if e.backend.pid is not None)
+        return pids
 
     async def add(
-        self, key: PoolKey, backend: "Backend", *, reserve: bool = False
+        self,
+        key: PoolKey,
+        backend: "Backend",
+        *,
+        reserve: bool = False,
+        spawn_epoch: Optional[int] = None,
     ) -> None:
         """Register a freshly-spawned backend under ``key``.
 
@@ -486,9 +553,21 @@ class BackendPool:
         in use, and ``add`` then raises :class:`PoolAtCapacity`. The spawn
         path in :meth:`get_or_create` translates that into a clean
         fallback-eligible rejection so the stub runs the backend unpooled.
+
+        ``spawn_epoch`` is the :attr:`_drain_epoch` value observed by the
+        caller immediately before it started spawning. If a blue-green
+        cutover advanced the epoch while the spawn was in flight, the backend
+        was launched with the pre-rotation credential and MUST NOT be pooled
+        as active — :class:`_DrainedDuringSpawn` is raised so
+        :meth:`get_or_create` discards it and respawns fresh. ``None`` (the
+        default) disables the guard.
         """
         digest = key.stable_hash()
         async with self._lock:
+            if spawn_epoch is not None and spawn_epoch != self._drain_epoch:
+                raise _DrainedDuringSpawn(
+                    f"blue-green cutover during spawn of {key.human_readable()}"
+                )
             if digest in self._backends:
                 raise RuntimeError(
                     f"pool key collision: {key.human_readable()} already has a backend"
@@ -506,9 +585,7 @@ class BackendPool:
                 # Reserve UNDER the insert lock so a concurrent add() under
                 # capacity pressure can't LRU-evict this brand-new idle,
                 # unreserved backend in the window before the caller reserves.
-                self._reserved_digests[digest] = (
-                    self._reserved_digests.get(digest, 0) + 1
-                )
+                self._reserved_digests[digest] = self._reserved_digests.get(digest, 0) + 1
 
     async def get_or_create(
         self,
@@ -557,7 +634,8 @@ class BackendPool:
                     logger.info(
                         "get_or_create: backend pid=%s for %s is quarantined — "
                         "shutting down and spawning fresh",
-                        existing.pid, key.server_name,
+                        existing.pid,
+                        key.server_name,
                     )
                     try:
                         await existing.shutdown()
@@ -595,24 +673,67 @@ class BackendPool:
                         "refusing to spawn (recent crash loop)"
                     )
 
-                backend = await spawn()
-                try:
-                    await self.add(key, backend, reserve=True)
-                except BaseException:
-                    # BaseException (incl. CancelledError): a cancel delivered
-                    # during add() or the _spawns lock would otherwise skip
-                    # cleanup and orphan the just-spawned subprocess (never
-                    # inserted into _backends, so unreachable by evict_idle /
-                    # shutdown_all). Shield the shutdown so the cancel can't
-                    # abort it mid-way.
+                # Spawn under an epoch guard: if a blue-green cutover advances
+                # the drain epoch while spawn() is suspended, the backend was
+                # launched with the pre-rotation credential — add() rejects it
+                # with _DrainedDuringSpawn and we respawn fresh. Bounded retries
+                # keep a pathological drain storm from looping forever.
+                #
+                # The epoch guard stays ARMED on EVERY attempt (including the
+                # last): disabling it on the final try would let a rotation racing
+                # that spawn admit a stale-credential backend into the active pool
+                # AFTER the drain completed, defeating revocation. If the retries
+                # are exhausted (a persistent rotation storm), we discard the last
+                # backend and raise BackendUnavailable — a fallback-eligible
+                # failure the stub degrades to an unpooled per-session exec — never
+                # pooling a possibly-stale backend.
+                for _attempt in range(_MAX_SPAWN_DRAIN_RETRIES + 1):
+                    spawn_epoch = self._drain_epoch
+                    backend = await spawn()
                     try:
-                        await asyncio.shield(backend.shutdown(timeout=2.0))
-                    except Exception:
-                        pass
-                    raise
-                async with self._lock:
-                    self._spawns += 1
-                return backend
+                        await self.add(
+                            key,
+                            backend,
+                            reserve=True,
+                            spawn_epoch=spawn_epoch,
+                        )
+                    except _DrainedDuringSpawn:
+                        # Stale-credential backend raced a rotation — discard it
+                        # (shielded so a concurrent cancel can't orphan it) and
+                        # respawn against the fresh credential.
+                        logger.info(
+                            "get_or_create: blue-green cutover during spawn of "
+                            "%s — discarding stale backend and respawning",
+                            key.server_name,
+                        )
+                        try:
+                            await asyncio.shield(backend.shutdown(timeout=2.0))
+                        except Exception:
+                            pass
+                        continue
+                    except BaseException:
+                        # BaseException (incl. CancelledError): a cancel delivered
+                        # during add() or the _spawns lock would otherwise skip
+                        # cleanup and orphan the just-spawned subprocess (never
+                        # inserted into _backends, so unreachable by evict_idle /
+                        # shutdown_all). Shield the shutdown so the cancel can't
+                        # abort it mid-way.
+                        try:
+                            await asyncio.shield(backend.shutdown(timeout=2.0))
+                        except Exception:
+                            pass
+                        raise
+                    async with self._lock:
+                        self._spawns += 1
+                    return backend
+                # Retries exhausted under a persistent rotation storm: the last
+                # backend was already discarded by the final _DrainedDuringSpawn
+                # branch. Reject fallback-eligibly rather than pooling a stale one.
+                raise BackendUnavailable(
+                    f"repeated blue-green cutover during spawn of "
+                    f"{key.server_name!r}; refusing to pool a possibly-stale "
+                    f"backend (credential rotation storm)"
+                )
         finally:
             # Reap the per-digest spawn lock on the error paths (breaker OPEN,
             # spawn failure, capacity) where no backend landed in _backends —
@@ -660,7 +781,10 @@ class BackendPool:
             self._reserved_digests.pop(digest, None)
 
     async def evict(
-        self, key: PoolKey, *, keep_spawn_lock: bool = False,
+        self,
+        key: PoolKey,
+        *,
+        keep_spawn_lock: bool = False,
         expected: Optional["Backend"] = None,
     ) -> Optional["Backend"]:
         """Detach the backend for ``key`` from the pool and return it.
@@ -796,6 +920,88 @@ class BackendPool:
                 oldest = (digest, backend)
         return oldest
 
+    async def drain_all_to_bluegreen(
+        self,
+        deadline_secs: float = DRAIN_DEADLINE_SECS,
+    ) -> int:
+        """Move ALL active backends (including refcount>0 and pinned) to the
+        draining list for a blue-green cutover.
+
+        Draining backends are removed from the acquire index — subsequent
+        ``get_or_create`` calls will spawn fresh backends. Draining backends
+        keep serving in-flight requests until reaped by
+        :meth:`reap_draining`.
+
+        Returns the count of backends moved to draining.
+        """
+        now = time.monotonic()
+        deadline = now + deadline_secs
+        async with self._lock:
+            # Bump the cutover generation so any in-flight spawn that started
+            # before this drain (reading the pre-rotation credential) is
+            # rejected by add()'s epoch guard and respawned fresh, instead of
+            # landing a stale-credential backend in the freshly-drained pool.
+            self._drain_epoch += 1
+            moved = 0
+            for digest in list(self._backends.keys()):
+                backend = self._backends.pop(digest)
+                # Do NOT pop a spawn lock held by an in-flight spawn for this
+                # digest — the epoch guard now handles the in-flight backend,
+                # and popping a held lock breaks the fork convention (a
+                # concurrent get_or_create would create a fresh lock and could
+                # double-spawn / hit the pool-key-collision RuntimeError). Only
+                # reap an idle lock (no holder, no waiter).
+                lock = self._spawn_locks.get(digest)
+                if lock is not None and _lock_idle(lock):
+                    self._spawn_locks.pop(digest, None)
+                self._draining.append(
+                    _DrainingBackend(backend=backend, deadline=deadline, digest=digest)
+                )
+                moved += 1
+            return moved
+
+    async def reap_draining(self) -> list["Backend"]:
+        """Reap draining backends whose refcount hit 0 or whose deadline
+        expired.
+
+        Returns the list of reaped backends (already shut down). Called by
+        the heartbeat sweeper on each tick.
+        """
+        now = time.monotonic()
+        reaped: list["Backend"] = []
+        surviving: list[_DrainingBackend] = []
+        async with self._lock:
+            for entry in self._draining:
+                expired = now >= entry.deadline
+                # A reserved-but-unattached draining backend (handed out by
+                # get_or_create, refcount still 0, attach_stub not yet run) must
+                # NOT be reaped on the refcount==0 rule — that would kill it out
+                # from under a stub mid-attach. The deadline still force-kills it
+                # so a bailed reservation cannot pin a draining backend forever.
+                reserved = entry.digest in self._reserved_digests
+                if expired or (entry.backend.refcount == 0 and not reserved):
+                    reaped.append(entry.backend)
+                else:
+                    surviving.append(entry)
+            self._draining = surviving
+        for backend in reaped:
+            if backend.refcount > 0:
+                # Deadline expired with stubs still attached — broadcast gone
+                # so stubs can transparently respawn onto a fresh backend.
+                await backend._broadcast_backend_gone(
+                    "draining deadline expired (credential-rotation cutover)"
+                )
+            try:
+                await backend.shutdown(timeout=2.0)
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("shutdown failed during draining reap")
+        return reaped
+
+    @property
+    def draining_count(self) -> int:
+        """Number of backends currently in the draining list."""
+        return len(self._draining)
+
     async def snapshot(self) -> list[tuple[PoolKey, "Backend"]]:
         """Return a point-in-time list of (key, backend) pairs. Intended
         for diagnostics and idle-sweep logic added in Milestone 2.
@@ -813,8 +1019,14 @@ class BackendPool:
         Used by the abort handler which needs to iterate backends to cancel
         in-flight requests for specific stubs. The list is a snapshot so
         mutations during iteration are safe.
+
+        Includes backends that are DRAINING (moved out of ``_backends`` by a
+        blue-green credential-rotation cutover but still finishing in-flight
+        calls until refcount-0 or the drain deadline). Omitting them would let a
+        stop/abort during the drain window miss in-flight calls on the old
+        backend, which would then run to completion instead of being cancelled.
         """
-        return list(self._backends.values())
+        return list(self._backends.values()) + [e.backend for e in self._draining]
 
     async def shutdown_all(self, timeout: float = 5.0) -> None:
         """Shut down every registered backend and clear the pool.
@@ -826,8 +1038,11 @@ class BackendPool:
         """
         async with self._lock:
             backends = list(self._backends.values())
+            # Also collect draining backends so they don't leak on shutdown.
+            backends.extend(entry.backend for entry in self._draining)
             self._backends.clear()
             self._spawn_locks.clear()
+            self._draining.clear()
             pending = list(self._shutdown_tasks)
         # Shutdowns are independent: fan out + join with gather.
         # ``return_exceptions=True`` keeps one slow/bad backend from
