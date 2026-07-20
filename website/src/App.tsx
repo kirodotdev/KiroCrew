@@ -1108,6 +1108,14 @@ export default function App() {
     isMacElectron &&
     !macFullscreen &&
     visibleInstanceTabs(instancesData?.instances ?? [], instanceWarm).length > 0
+  // Tell the Electron main process which strip is topmost so it can center the
+  // native traffic lights against the 32px instance bar (when shown) instead of
+  // the 52px header — otherwise the buttons sit ~10px below the tab row.
+  useEffect(() => {
+    if (!isMacElectron) return
+    const api = (window as { electronAPI?: { setInstanceBarInset?: (on: boolean) => void } }).electronAPI
+    api?.setInstanceBarInset?.(macInstanceBarInset)
+  }, [macInstanceBarInset])
   const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb })), refetchInterval: metricsOpen ? 30_000 : false, enabled: metricsOpen })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)

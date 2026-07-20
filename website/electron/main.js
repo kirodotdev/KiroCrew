@@ -573,13 +573,19 @@ function setupWindowContents(win, backendUrl) {
 // factor: the header's on-screen height is 52 * zoomFactor, so both the x
 // inset and the vertical centering scale with it.
 const HEADER_CSS_PX = 52;
+// The instance tab strip (InstanceTabBar, h-8 = 32px) becomes the topmost row
+// whenever >=1 remote is connected; the native lights then sit over IT, not the
+// 52px header, so they must be centered against the strip's height — otherwise
+// they land ~10px too low and look off-row from the tab pills. The renderer
+// reports this via the "instancebar-inset-changed" IPC (see App.tsx).
+const INSTANCEBAR_CSS_PX = 32;
 const TRAFFIC_LIGHT_NATIVE_H = 14;
 
-function trafficLightPositionForZoom(zoomFactor) {
-  const headerPx = Math.round(HEADER_CSS_PX * zoomFactor);
+function trafficLightPositionForZoom(zoomFactor, stripCssPx = HEADER_CSS_PX) {
+  const stripPx = Math.round(stripCssPx * zoomFactor);
   return {
     x: Math.round(16 * zoomFactor),
-    y: Math.max(6, Math.round((headerPx - TRAFFIC_LIGHT_NATIVE_H) / 2)),
+    y: Math.max(6, Math.round((stripPx - TRAFFIC_LIGHT_NATIVE_H) / 2)),
   };
 }
 
@@ -587,8 +593,22 @@ function positionTrafficLights(win) {
   if (!IS_MAC || !win || win.isDestroyed()) return;
   try {
     const zoom = win._mcView ? win._mcView.webContents.getZoomFactor() : 1;
-    win.setWindowButtonPosition(trafficLightPositionForZoom(zoom));
+    const stripCssPx = win._mcInstanceBarInset ? INSTANCEBAR_CSS_PX : HEADER_CSS_PX;
+    win.setWindowButtonPosition(trafficLightPositionForZoom(zoom, stripCssPx));
   } catch { /* window mid-teardown */ }
+}
+
+// Map a WebContents (an IPC event.sender) back to the BaseWindow that hosts it.
+// The shell renders each page in a WebContentsView (win._mcView), so we match on
+// that — BrowserWindow.fromWebContents() is null for a BaseWindow. Needed because
+// connection windows load the same SPA and each can emit window-scoped IPC.
+function windowForWebContents(wc) {
+  for (const win of BaseWindow.getAllWindows()) {
+    try {
+      if (win._mcView && win._mcView.webContents === wc) return win;
+    } catch { /* window mid-teardown */ }
+  }
+  return null;
 }
 
 function createWindow() {
@@ -1407,6 +1427,20 @@ app.whenReady().then(async () => {
     const menu = Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById("devtools-toggle");
     if (item) item.visible = !!enabled;
+  });
+
+  // The renderer reports whether the 32px instance tab strip is the topmost row
+  // (App.tsx macInstanceBarInset). When it is, the native traffic lights sit
+  // over that strip, so re-center them for its height instead of the 52px
+  // header — keeps the buttons on the same row as the tab pills.
+  ipcMain.on("instancebar-inset-changed", (event, on) => {
+    // Target the window that actually sent this — connection windows load the
+    // same SPA and can each emit it, so hardcoding mainWindow would cross-wire
+    // their traffic-light positions.
+    const win = windowForWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    win._mcInstanceBarInset = !!on;
+    positionTrafficLights(win);
   });
 
   // Enable the chat input's screen-snip tool inside the Electron shell.
