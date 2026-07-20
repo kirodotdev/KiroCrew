@@ -19,6 +19,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from pathlib import PureWindowsPath
 from typing import Any
 
 # ── Constants ──
@@ -598,6 +599,23 @@ _WM_LIST_CAP = 50
 
 def _validate_webapp_metadata_shape(am: dict) -> None:
     """Validate webapp_metadata nested structure — tolerant for absent fields."""
+    # app_dir — LLM-controlled filesystem path consumed by the local preview
+    # channel (round-3 F1). Reject control characters (NUL crashes
+    # Path.resolve with ValueError) and relative paths at WRITE time; the
+    # serve path re-validates against the allow-listed roots regardless.
+    app_dir = am.get("app_dir")
+    if app_dir is not None:
+        if not isinstance(app_dir, str) or len(app_dir) > 4096:
+            raise ValidationError(
+                "webapp_metadata.app_dir", "must be a string (max 4096 chars)")
+        if app_dir != "":
+            if any(ord(c) < 0x20 for c in app_dir):
+                raise ValidationError(
+                    "webapp_metadata.app_dir", "must not contain control characters")
+            posix_abs = app_dir.startswith("/") or app_dir.startswith("~/") or app_dir == "~"
+            if not posix_abs and not PureWindowsPath(app_dir).is_absolute():
+                raise ValidationError(
+                    "webapp_metadata.app_dir", "must be an absolute path (or ~/-prefixed)")
     # deploy_target.public_url
     dt = am.get("deploy_target")
     if dt is not None:

@@ -113,6 +113,13 @@ class WebAppMetadata:
 
     slug: str = ""
     origin_session: str = ""
+    # Local copy of the app source tree (the dir that was/would be deployed).
+    # Powers the dashboard's local preview channel: the gateway serves the
+    # app's static build from this dir so the card can render the app without
+    # touching the remote deployment. LLM-influenceable via the artifact API,
+    # so it is re-validated against the allow-listed local roots at SERVE
+    # time (see dashboard/handlers/webapp_preview.py) — never trusted as-is.
+    app_dir: str = ""
     deploy_target: WebAppDeployTarget = field(default_factory=WebAppDeployTarget)
     architecture: WebAppArchitecture = field(default_factory=WebAppArchitecture)
     lifecycle: WebAppLifecycle = field(default_factory=WebAppLifecycle)
@@ -145,6 +152,7 @@ def webapp_metadata_from_dict(raw: Any) -> "WebAppMetadata | None":
     return WebAppMetadata(
         slug=_capped_str(raw.get("slug"), ""),
         origin_session=_capped_str(raw.get("origin_session"), ""),
+        app_dir=_capped_str(raw.get("app_dir"), "", 4096),
         deploy_target=WebAppDeployTarget(
             provider=_capped_str(dt.get("provider"), "aws"),
             account=_capped_str(dt.get("account"), ""),

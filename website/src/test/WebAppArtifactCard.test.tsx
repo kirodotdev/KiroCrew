@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import type { ReactElement } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { api } from '../api/client'
+import { framablePreviewUrl } from '../lib/safeUrl'
 import type { Artifact } from '../types'
 
 vi.mock('../api/client', () => ({
@@ -272,5 +273,97 @@ describe('WebAppArtifactCard', () => {
     const launch = (window as unknown as { __mc_chat_launch?: { message: string } }).__mc_chat_launch
     expect(launch!.message).toContain('Use the AWS profile "my-deploy".')
     vi.unstubAllGlobals()
+  })
+
+  // ------------------------------------------------------------- redesign (PR #7)
+
+  const stubPreviewFetch = (remoteFramable: boolean) =>
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        String(url).includes('/app-preview')
+          ? { available: false, remote_framable: remoteFramable }
+          : { profiles: [], default: '' },
+    }) as unknown as Response))
+
+  it('live CloudFront deployment embeds a sandboxed site preview iframe', async () => {
+    // Round-7 F2: the remote iframe renders only after the gateway probe
+    // confirms the deployed site is framable.
+    stubPreviewFetch(true)
+    renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+    const frame = (await screen.findByTitle('Live preview: kanban-demo')) as HTMLIFrameElement
+    expect(frame.tagName).toBe('IFRAME')
+    expect(frame.src).toBe('https://d2nzmpzyp0popu.cloudfront.net/kanban/')
+    // Sandboxed, no top-navigation escape.
+    expect(frame.getAttribute('sandbox')).not.toContain('allow-top-navigation')
+    expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
+    vi.unstubAllGlobals()
+  })
+
+  it('legacy stack (probe says not framable) shows the hero fallback, never a blank iframe (R7)', async () => {
+    stubPreviewFetch(false)
+    renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+    expect(await screen.findByText(/Preview unavailable for this host/)).toBeInTheDocument()
+    expect(screen.queryByTitle('Live preview: kanban-demo')).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  it('does not embed a preview iframe for a non-CloudFront public_url', () => {
+    const artifact = makeArtifact()
+    artifact.webapp_metadata!.deploy_target.public_url = 'https://evil-cloudfront.net.attacker.example/app/'
+    renderWithClient(<WebAppArtifactCard artifact={artifact} />)
+    expect(screen.queryByTitle('Live preview: kanban-demo')).toBeNull()
+    expect(screen.getByText(/Preview unavailable for this host/)).toBeInTheDocument()
+  })
+
+  it('expired card renders no countdown even when a legacy tombstone kept a future expires_at (FU-7)', () => {
+    const artifact = makeArtifact()
+    // Legacy (pre-FU-6) tombstone: status expired but expires_at survived.
+    artifact.webapp_metadata!.lifecycle.status = 'expired'
+    renderWithClient(<WebAppArtifactCard artifact={artifact} />)
+    expect(screen.getByText('Expired')).toBeInTheDocument()
+    expect(screen.queryByText(/expires in/)).toBeNull()
+    expect(screen.queryByText(/Time to live/)).toBeNull()
+    // And the dead deployment must not embed a live preview.
+    expect(screen.queryByTitle('Live preview: kanban-demo')).toBeNull()
+  })
+
+  it('marks cost as a what-if estimate, never a bill (Joe R2)', () => {
+    renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+    expect(screen.getByText('estimate')).toBeInTheDocument()
+    expect(screen.getByText(/What-if traffic scenarios/)).toBeInTheDocument()
+    expect(screen.getByText(/you pay only for actual usage/)).toBeInTheDocument()
+  })
+
+  it('deploying state shows the deploying hero, not an iframe', () => {
+    const artifact = makeArtifact()
+    artifact.webapp_metadata!.lifecycle.status = 'deploying'
+    renderWithClient(<WebAppArtifactCard artifact={artifact} />)
+    expect(screen.getByText(/Deploying/)).toBeInTheDocument()
+    expect(screen.queryByTitle('Live preview: kanban-demo')).toBeNull()
+  })
+})
+
+describe('framablePreviewUrl', () => {
+  it('accepts a first-party CloudFront distribution URL', () => {
+    expect(framablePreviewUrl('https://d2nzmpzyp0popu.cloudfront.net/kanban/')).toBe(
+      'https://d2nzmpzyp0popu.cloudfront.net/kanban/',
+    )
+  })
+
+  it.each([
+    ['http (not https)', 'http://d2nzmpzyp0popu.cloudfront.net/kanban/'],
+    ['userinfo smuggling', 'https://user:pass@d2nzmpzyp0popu.cloudfront.net/'],
+    ['lookalike suffix host', 'https://evil-cloudfront.net/app/'],
+    ['cloudfront.net as prefix of attacker domain', 'https://d123.cloudfront.net.evil.example/'],
+    ['subdomain depth mismatch', 'https://a.b.cloudfront.net/'],
+    ['bare cloudfront.net', 'https://cloudfront.net/'],
+    ['custom domain', 'https://app.example.com/'],
+    ['javascript scheme', 'javascript:alert(1)'],
+    ['not a URL', 'not a url'],
+    ['empty', ''],
+  ])('rejects %s', (_label, url) => {
+    expect(framablePreviewUrl(url)).toBeNull()
   })
 })

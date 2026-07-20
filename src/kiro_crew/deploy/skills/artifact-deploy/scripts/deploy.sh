@@ -225,12 +225,19 @@ echo ">> ensuring base stack ($STACK_NAME) in $REGION ..."
 if ! "${AWS[@]}" cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
   echo "   base stack not found - creating it now."
   echo "   NOTE: first deploy takes ~5-15 min while CloudFront propagates globally."
-  "${AWS[@]}" cloudformation deploy \
-    --stack-name "$STACK_NAME" \
-    --template-file "$TEMPLATE" \
-    --no-fail-on-empty-changeset \
-    --tags 'kirocrew:managed=true'
+else
+  # Migration path: ALWAYS apply the current template (idempotent — a
+  # no-op changeset when nothing changed). A create-only guard left
+  # pre-existing stacks running stale ResponseHeadersPolicy headers
+  # (X-Frame-Options: SAMEORIGIN), which blocks the dashboard's live
+  # preview iframe for every site behind the old stack.
+  echo "   base stack exists - applying current template (no-op if unchanged)."
 fi
+"${AWS[@]}" cloudformation deploy \
+  --stack-name "$STACK_NAME" \
+  --template-file "$TEMPLATE" \
+  --no-fail-on-empty-changeset \
+  --tags 'kirocrew:managed=true' 
 
 read -r BUCKET DIST_ID DOMAIN < <(
   "${AWS[@]}" cloudformation describe-stacks --stack-name "$STACK_NAME" \

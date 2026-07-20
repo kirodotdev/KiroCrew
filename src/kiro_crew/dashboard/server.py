@@ -244,7 +244,12 @@ _BASE_CSP = (
     "connect-src 'self' ws://localhost:* ws://127.0.0.1:*; "
     "media-src 'self' blob:; "
     "worker-src 'self' blob:; "
-    "frame-src 'self' blob:{frame_src_extra}; "
+    # https://*.cloudfront.net: live preview iframes for deployed webapp
+    # artifacts (WebAppArtifactCard / WebAppThumb). The artifact-deploy
+    # contract only ever produces `<dist-id>.cloudfront.net` URLs; the FE
+    # additionally gates on that exact host shape (framablePreviewUrl) so a
+    # crafted webapp_metadata URL on any other host is never framed.
+    "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
     "object-src 'none'; base-uri 'self'"
 )
 
@@ -508,6 +513,8 @@ def _register_mcp_routes(app: web.Application) -> None:
     # Static sub-paths MUST precede the ``/{slug}`` dynamic route below, else
     # "session-docs" / "materialize" / "publish-providers" would be captured as
     # a slug (aiohttp matches routes in registration order).
+    from kiro_crew.dashboard.handlers.webapp_preview import register_webapp_preview_routes
+    register_webapp_preview_routes(app)
     app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)

@@ -1,11 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Cloud, Copy, ExternalLink, Infinity, Rocket, Trash2 } from 'lucide-react'
+import {
+  Cloud,
+  CloudOff,
+  Copy,
+  Database,
+  ExternalLink,
+  Globe,
+  Infinity,
+  Rocket,
+  Server,
+  Trash2,
+} from 'lucide-react'
 import { api } from '../api/client'
 import { Badge } from '../components/ui'
-import { safeHttpUrl } from '../lib/safeUrl'
-import type { Artifact } from '../types'
+import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
+import type { Artifact, WebAppMetadata } from '../types'
 
 function statusBadgeVariant(status: string): 'ok' | 'warn' | 'err' | 'aim' {
   switch (status) {
@@ -41,6 +52,225 @@ function ttlProgressPct(expiresAt: string | null, ttlHours: number): number {
   if (now >= end) return 0
   if (now <= start) return 100
   return Math.round(((end - now) / (end - start)) * 100)
+}
+
+/** The three traffic-light dots of the mock browser chrome. Decorative. */
+function ChromeDots() {
+  return (
+    <div className="flex gap-1.5 shrink-0" aria-hidden="true">
+      <span className="w-2.5 h-2.5 rounded-full bg-danger/50" />
+      <span className="w-2.5 h-2.5 rounded-full bg-warn/50" />
+      <span className="w-2.5 h-2.5 rounded-full bg-ok/50" />
+    </div>
+  )
+}
+
+/** One architecture row: icon + label + human description + resource id. */
+function ArchRow({
+  icon,
+  label,
+  text,
+  resourceId,
+}: {
+  icon: React.ReactNode
+  label: string
+  text: string
+  resourceId?: string
+}) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <span className="mt-0.5 shrink-0 text-muted" aria-hidden="true">{icon}</span>
+      <div className="min-w-0">
+        <span className="text-muted mr-1.5">{label}:</span>
+        <span className="text-sm text-text">{text}</span>
+        {resourceId && (
+          <code className="ml-2 text-[11px] text-muted break-all">{resourceId}</code>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Architecture rows with per-layer icons, shared by every card state. */
+function ArchitectureRows({ architecture }: { architecture: WebAppMetadata['architecture'] }) {
+  const res = (t: string) =>
+    architecture.resources.find((r: { type: string; id: string }) => r.type === t)?.id
+  return (
+    <div className="space-y-1.5">
+      {architecture.frontend && (
+        <ArchRow icon={<Globe size={14} />} label="Frontend" text={architecture.frontend} resourceId={res('frontend')} />
+      )}
+      {architecture.backend && (
+        <ArchRow icon={<Server size={14} />} label="Backend" text={architecture.backend} resourceId={res('backend')} />
+      )}
+      {architecture.state && (
+        <ArchRow icon={<Database size={14} />} label="State" text={architecture.state} resourceId={res('state')} />
+      )}
+    </div>
+  )
+}
+
+/** Cost estimate pills: `1,000 views · $0.05` as one compact chip each. */
+function CostPills({ cost, label }: { cost: WebAppMetadata['cost']; label: string }) {
+  if (cost.estimates.length === 0) return null
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span className="text-[12px] text-muted font-medium">{label}</span>
+        {/* Joe R2: "$45" was read as a monthly bill. Each pill is a
+            what-if traffic scenario over the window — say so loudly. */}
+        <span className="text-[10px] px-1.5 py-px rounded-full bg-warn-subtle text-warn font-medium uppercase tracking-wide">
+          estimate
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {cost.estimates.map((e: { views: number; usd: number }, i: number) => (
+          <span
+            key={i}
+            className="inline-flex items-baseline gap-1.5 rounded-full border border-border bg-bg-elevated px-2.5 py-1"
+          >
+            <span className="text-[11px] text-muted">{Number(e.views ?? 0).toLocaleString()} views</span>
+            <span className="text-[12px] font-medium text-text-strong">${Number(e.usd ?? 0).toFixed(4)}</span>
+          </span>
+        ))}
+      </div>
+      <div className="text-[11px] text-muted mt-1.5">
+        What-if traffic scenarios &mdash; you pay only for actual usage &middot; {cost.note} &middot; idle &asymp; ${cost.idle_usd} &middot; billed to your account
+      </div>
+    </div>
+  )
+}
+
+/** Deploy-target pills (provider / account / region / profile). */
+function TargetPills({ dt }: { dt: WebAppMetadata['deploy_target'] }) {
+  return (
+    <div className="flex gap-1.5 flex-wrap">
+      <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-elevated border border-border text-muted uppercase">
+        {dt.provider}
+      </span>
+      <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-elevated border border-border text-muted">
+        acct {dt.account}
+      </span>
+      <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-elevated border border-border text-muted">
+        {dt.region}
+      </span>
+      {dt.profile && (
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-elevated border border-border text-muted">
+          profile {dt.profile}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** Scaled-down live iframe of the deployed site, framed like a minified
+ * desktop viewport (same trick as the gallery WidgetThumb): the frame lays
+ * out at BASE_W so the app renders its desktop design, then the whole thing
+ * is CSS-scaled to the card width. CloudFront-only (framablePreviewUrl) and
+ * mirrored by the server CSP frame-src. */
+function LiveSiteFrame({ url, slug }: { url: string; slug: string }) {
+  const BASE_W = 1280
+  const BASE_H = 720
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [w, setW] = useState(640)
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const measure = () => setW(el.clientWidth || 640)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const scale = w / BASE_W
+  return (
+    <div ref={wrapRef} className="relative w-full overflow-hidden bg-card" style={{ height: Math.round(BASE_H * scale) }}>
+      <iframe
+        src={url}
+        // Remote-origin site preview: allow-same-origin here refers to the
+        // SITE's own https://*.cloudfront.net origin (needed for its API
+        // fetches), never the dashboard origin — the frame gets no access to
+        // dashboard DOM/storage. No top-navigation, no downloads.
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+        referrerPolicy="no-referrer"
+        loading="lazy"
+        title={`Live preview: ${slug}`}
+        tabIndex={-1}
+        className="border-none bg-card block"
+        style={{ width: BASE_W, height: BASE_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}
+      />
+    </div>
+  )
+}
+
+/** Query the gateway's local preview channel for this artifact. Returns the
+ * token-gated base URL when the app's local copy is servable, null otherwise.
+ * Shared react-query key with the gallery thumb so detail + gallery mint one
+ * token per slug per TTL window. */
+export function useAppPreview(slug: string, enabled: boolean) {
+  const { data } = useQuery<{ available: boolean; base?: string; remote_framable?: boolean }>({
+    queryKey: ['webapp-preview', slug],
+    queryFn: async () => {
+      const r = await fetch(`/api/artifacts/${encodeURIComponent(slug)}/app-preview`)
+      if (!r.ok) return { available: false }
+      return (await r.json()) as { available: boolean; base?: string; remote_framable?: boolean }
+    },
+    staleTime: 5 * 60_000,
+    // Round-5 F4: the backend token expires after 15 minutes and staleTime
+    // alone never refetches a mounted query — long-lived previews would
+    // start 404ing on lazy-loaded assets. Re-mint before expiry; the iframe
+    // is keyed by base so a fresh token reloads it cleanly.
+    refetchInterval: 10 * 60_000,
+    enabled,
+  })
+  return {
+    base: data?.available && data.base ? data.base : null,
+    // Round-7 F2: only trust a remote CloudFront iframe when the gateway
+    // probed the deployed site's headers and confirmed browsers will frame
+    // it — pre-existing base stacks still send X-Frame-Options: SAMEORIGIN,
+    // which renders as a silent blank. Anything short of an explicit "yes"
+    // (probe failure, legacy response, still loading) falls to the hero.
+    remoteFramable: data?.remote_framable === true,
+  }
+}
+
+/** Scaled preview of the app's LOCAL copy, served by the gateway's
+ * token-gated static channel. sandbox="allow-scripts" only: the document
+ * runs with an opaque origin (double-enforced by the channel's own CSP
+ * `sandbox` header) and can never reach dashboard cookies/DOM. Relative
+ * subresources resolve under the token path automatically. */
+function LocalAppFrame({ base, slug }: { base: string; slug: string }) {
+  const BASE_W = 1280
+  const BASE_H = 720
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [w, setW] = useState(640)
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const measure = () => setW(el.clientWidth || 640)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const scale = w / BASE_W
+  return (
+    <div ref={wrapRef} className="relative w-full overflow-hidden bg-card" style={{ height: Math.round(BASE_H * scale) }}>
+      <iframe
+        key={base}
+        src={base}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        loading="lazy"
+        title={`App preview: ${slug}`}
+        tabIndex={-1}
+        className="border-none bg-card block"
+        style={{ width: BASE_W, height: BASE_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}
+      />
+    </div>
+  )
 }
 
 export default function WebAppArtifactCard({
@@ -127,6 +357,10 @@ export default function WebAppArtifactCard({
   })
   const registeredProfiles = profilesResp?.profiles ?? []
   const defaultProfile = profilesResp?.default ?? ''
+  // Local-first preview: the app's local copy (like html/widget artifacts)
+  // beats iframing the remote deployment — no dependency on remote frame
+  // headers, CDN propagation, or the deployment even existing.
+  const { base: previewBase, remoteFramable } = useAppPreview(artifact.slug, !!meta)
   // Deploy launches a FRESH chat session that auto-runs the artifact-deploy skill
   // on this artifact — the same __mc_chat_launch mechanism ChatPage consumes (new
   // session + auto-send). A fresh session is the isolation boundary, so no
@@ -157,6 +391,7 @@ export default function WebAppArtifactCard({
   // Deploy affordance instead of the infra control card (artifact-first model —
   // the app artifact exists before any deploy).
   const notDeployed = !deploy_target.public_url && !isExpired && !isDeploying
+  const frameUrl = !isExpired && !isDeploying && remoteFramable ? framablePreviewUrl(deploy_target.public_url) : null
   const costLabel = cost.model === 'ttl-window'
     ? `Estimated cost \u2014 over ${cost.window_hours}h TTL window`
     : 'Estimated monthly cost'
@@ -170,229 +405,227 @@ export default function WebAppArtifactCard({
     teardownMut.mutate()
   }
 
+  // ---------------------------------------------------------------- not deployed
   if (notDeployed) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Cloud className="lucide-inline text-accent" />
-            <span className="font-semibold text-text-strong">{artifact.slug}</span>
-            {tierSummary && <span className="text-sm text-muted">{tierSummary}</span>}
-          </div>
-          <Badge variant="aim">Not deployed</Badge>
-        </div>
-        <p className="text-sm text-muted">
-          Not deployed yet &mdash; deploy to your own AWS account for a global public link. Deploying requires an AWS profile.
-        </p>
-        {(architecture.frontend || architecture.backend || architecture.state) && (
-          <div>
-            <div className="text-[12px] uppercase tracking-wide text-muted font-medium mb-1">Will provision</div>
-            <div className="text-sm text-text-strong space-y-0.5">
-              {architecture.frontend && <div>Frontend: {architecture.frontend}</div>}
-              {architecture.backend && <div>Backend: {architecture.backend}</div>}
-              {architecture.state && <div>State: {architecture.state}</div>}
+        {/* Hero CTA: the artifact exists, the infra doesn't — invite the deploy. */}
+        <div className="rounded-xl border border-border bg-gradient-to-br from-accent-subtle via-card to-card p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="shrink-0 w-10 h-10 rounded-lg bg-accent/10 border border-accent/30 flex items-center justify-center">
+                <Rocket size={18} className="text-accent" aria-hidden="true" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-semibold text-text-strong truncate">{artifact.slug}</div>
+                {tierSummary && <div className="text-[12px] text-muted">{tierSummary}</div>}
+              </div>
             </div>
+            <Badge variant="aim">Not deployed</Badge>
+          </div>
+          <p className="text-sm text-muted mt-3 mb-4">
+            Not deployed yet &mdash; deploy to your own AWS account for a global public link. Deploying requires an AWS profile.
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            {registeredProfiles.length > 0 && (
+              <select
+                value={deployProfile}
+                onChange={(e) => setDeployProfile(e.target.value)}
+                aria-label="AWS profile to deploy with"
+                className="px-2 py-1.5 rounded-md text-[12px] bg-bg-elevated border border-border text-text cursor-pointer"
+              >
+                <option value="">
+                  {defaultProfile ? `profile: ${defaultProfile} (default)` : 'profile: default'}
+                </option>
+                {registeredProfiles.filter((p) => p.name !== defaultProfile).map((p) => (
+                  <option key={p.name} value={p.name}>profile: {p.name}</option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              onClick={openDeployChat}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium bg-accent text-accent-fg hover:bg-accent-hover cursor-pointer transition-all border-none"
+              title="Deploy this app to your AWS account"
+              aria-label="Deploy"
+            >
+              <Rocket size={14} aria-hidden="true" />
+              Deploy
+            </button>
+            <span className="text-[10px] text-muted">
+              {registeredProfiles.length > 0
+                ? 'opens a new chat session to run the deploy'
+                : 'opens a new chat session to run the deploy — add a profile in Artifact Deploy first'}
+            </span>
+          </div>
+        </div>
+
+        {previewBase && (
+          <div className="rounded-xl border border-border overflow-hidden bg-card">
+            <div className="flex items-center gap-2.5 px-3 py-2 bg-bg-elevated border-b border-border">
+              <ChromeDots />
+              <div className="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card border border-border">
+                <Globe size={12} className="text-muted shrink-0" aria-hidden="true" />
+                <span className="text-[12px] text-muted truncate">local preview &mdash; not deployed yet</span>
+              </div>
+            </div>
+            <LocalAppFrame base={previewBase} slug={artifact.slug} />
+          </div>
+        )}
+        {(architecture.frontend || architecture.backend || architecture.state) && (
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="text-[12px] text-muted font-medium mb-2">Will provision</div>
+            <ArchitectureRows architecture={architecture} />
           </div>
         )}
         {cost.estimates.length > 0 && (
-          <div>
-            <div className="text-[12px] uppercase tracking-wide text-muted font-medium mb-1">
-              Estimated cost once deployed {cost.model === 'ttl-window' ? `(over ${cost.window_hours}h)` : '(monthly)'}
-            </div>
-            <div className="flex flex-wrap gap-3 text-sm text-text-strong">
-              {cost.estimates.map((e: { views: number; usd: number }) => (
-                <span key={e.views}>{e.views.toLocaleString()} views: ${e.usd.toFixed(4)}</span>
-              ))}
-            </div>
-            <div className="text-[11px] text-muted mt-1">{cost.note} &middot; idle &asymp; ${cost.idle_usd}</div>
+          <div className="rounded-xl border border-border bg-card p-4">
+            <CostPills
+              cost={cost}
+              label={`Estimated cost once deployed ${cost.model === 'ttl-window' ? `(over ${cost.window_hours}h)` : '(monthly)'}`}
+            />
           </div>
         )}
-        <div className="flex items-center gap-2 pt-2 border-t border-border flex-wrap">
-          {registeredProfiles.length > 0 && (
-            <select
-              value={deployProfile}
-              onChange={(e) => setDeployProfile(e.target.value)}
-              aria-label="AWS profile to deploy with"
-              className="px-2 py-1.5 rounded-md text-[12px] bg-bg-elevated border border-border text-text cursor-pointer"
-            >
-              <option value="">
-                {defaultProfile ? `profile: ${defaultProfile} (default)` : 'profile: default'}
-              </option>
-              {registeredProfiles.filter((p) => p.name !== defaultProfile).map((p) => (
-                <option key={p.name} value={p.name}>profile: {p.name}</option>
-              ))}
-            </select>
-          )}
-          <button
-            type="button"
-            onClick={openDeployChat}
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12px] font-medium border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-all bg-transparent"
-            title="Deploy this app to your AWS account"
-            aria-label="Deploy"
-          >
-            <Rocket className="lucide-inline" />
-            Deploy
-          </button>
-          <span className="text-[10px] text-muted">
-            {registeredProfiles.length > 0
-              ? 'opens a new chat session to run the deploy'
-              : 'opens a new chat session to run the deploy — add a profile in Artifact Deploy first'}
-          </span>
-        </div>
       </div>
     )
   }
 
+  // ------------------------------------------------------- deployed / expired
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Cloud className="lucide-inline text-accent" />
-          <span className="font-semibold text-text-strong">{artifact.slug}</span>
-          <span className="text-sm text-muted">{tierSummary}</span>
-        </div>
-        <Badge variant={statusBadgeVariant(isExpired ? 'expired' : lifecycle.status)}>
-          {isExpired ? 'Expired' : lifecycle.status}
-        </Badge>
-      </div>
-
-      {/* Public link — FU-6: an expired/torn-down deployment must not render a
-          live-looking link; the URL is dead (or already cleared server-side). */}
-      <div className="rounded-lg border border-border bg-bg-elevated p-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          {isExpired ? (
-            <span className="text-sm text-muted">
-              Deployment torn down &mdash; infrastructure is removed by the in-account reaper.
-            </span>
-          ) : safeUrl ? (
-            <a
-              href={safeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-accent hover:underline break-all"
-            >
-              {deploy_target.public_url}
-            </a>
-          ) : (
-            <span
-              className="text-sm text-muted break-all"
-              title="Non-http(s) URL blocked"
-            >
-              {deploy_target.public_url}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
-            title="Copy URL"
-            aria-label="Copy URL"
-          >
-            <Copy className="lucide-inline" />
-          </button>
-          {safeUrl && (
-            <a
-              href={safeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-1 rounded text-muted hover:text-text transition-colors"
-              title="Open in new tab"
-              aria-label="Open in new tab"
-            >
-              <ExternalLink className="lucide-inline" />
-            </a>
-          )}
-        </div>
-        <div className="flex gap-2 mt-2 flex-wrap">
-          <span className="text-[11px] px-1.5 py-0.5 rounded bg-card border border-border text-muted uppercase">
-            {deploy_target.provider}
-          </span>
-          <span className="text-[11px] px-1.5 py-0.5 rounded bg-card border border-border text-muted">
-            acct {deploy_target.account}
-          </span>
-          <span className="text-[11px] px-1.5 py-0.5 rounded bg-card border border-border text-muted">
-            {deploy_target.region}
-          </span>
-          {deploy_target.profile && (
-            <span className="text-[11px] px-1.5 py-0.5 rounded bg-card border border-border text-muted">
-              profile {deploy_target.profile}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Architecture */}
-      <div>
-        <div className="text-[12px] uppercase tracking-wide text-muted font-medium mb-1">Architecture</div>
-        <div className="space-y-1">
-          {architecture.frontend && (
-            <div className="text-sm text-text">
-              <span className="text-muted mr-1.5">Frontend:</span>
-              {architecture.frontend}
-              {architecture.resources.find((r: { type: string; id: string }) => r.type === 'frontend') && (
-                <code className="ml-2 text-[11px] text-muted">{architecture.resources.find((r: { type: string; id: string }) => r.type === 'frontend')!.id}</code>
+      {/* Browser-framed hero: chrome bar (URL + actions) over the live site
+          preview. Expired deployments show a tombstone instead — a dead URL
+          must never render as something that looks alive (FU-6). */}
+      <div className="rounded-xl border border-border overflow-hidden bg-card">
+        <div className="flex items-center gap-2.5 px-3 py-2 bg-bg-elevated border-b border-border">
+          <ChromeDots />
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card border border-border">
+            {isExpired ? (
+              <>
+                <CloudOff size={12} className="text-muted shrink-0" aria-hidden="true" />
+                <span className="text-[12px] text-muted truncate">
+                  Deployment torn down &mdash; infrastructure is removed by the in-account reaper.
+                </span>
+              </>
+            ) : (
+              <>
+                <Globe size={12} className="text-muted shrink-0" aria-hidden="true" />
+                {safeUrl ? (
+                  <a
+                    href={safeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[12px] text-accent hover:underline truncate"
+                  >
+                    {deploy_target.public_url}
+                  </a>
+                ) : (
+                  <span className="text-[12px] text-muted truncate" title="Non-http(s) URL blocked">
+                    {deploy_target.public_url}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+          {!isExpired && (
+            <>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none shrink-0"
+                title="Copy URL"
+                aria-label="Copy URL"
+              >
+                <Copy className="lucide-inline" />
+              </button>
+              {safeUrl && (
+                <a
+                  href={safeUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-1 rounded text-muted hover:text-text transition-colors shrink-0"
+                  title="Open in new tab"
+                  aria-label="Open in new tab"
+                >
+                  <ExternalLink className="lucide-inline" />
+                </a>
               )}
-            </div>
-          )}
-          {architecture.backend && (
-            <div className="text-sm text-text">
-              <span className="text-muted mr-1.5">Backend:</span>
-              {architecture.backend}
-              {architecture.resources.find((r: { type: string; id: string }) => r.type === 'backend') && (
-                <code className="ml-2 text-[11px] text-muted">{architecture.resources.find((r: { type: string; id: string }) => r.type === 'backend')!.id}</code>
-              )}
-            </div>
-          )}
-          {architecture.state && (
-            <div className="text-sm text-text">
-              <span className="text-muted mr-1.5">State:</span>
-              {architecture.state}
-              {architecture.resources.find((r: { type: string; id: string }) => r.type === 'state') && (
-                <code className="ml-2 text-[11px] text-muted">{architecture.resources.find((r: { type: string; id: string }) => r.type === 'state')!.id}</code>
-              )}
-            </div>
+            </>
           )}
         </div>
-      </div>
 
-      {/* Estimated cost */}
-      <div>
-        <div className="text-[12px] uppercase tracking-wide text-muted font-medium mb-1">{costLabel}</div>
-        <div className="flex flex-wrap gap-2">
-          {cost.estimates.map((e: { views: number; usd: number }, i: number) => (
-            <div key={i} className="rounded border border-border bg-bg-elevated px-2.5 py-1.5 text-center">
-              <div className="text-[11px] text-muted">{Number(e.views ?? 0).toLocaleString()} views</div>
-              <div className="text-sm font-medium text-text-strong">${Number(e.usd ?? 0).toFixed(4)}</div>
-            </div>
-          ))}
-        </div>
-        <div className="text-[11px] text-muted mt-1">
-          {cost.note} &middot; idle &asymp; ${cost.idle_usd} &middot; billed to your account
-        </div>
-      </div>
-
-      {/* TTL remaining */}
-      <div>
-        <div className="text-[12px] uppercase tracking-wide text-muted font-medium mb-1">TTL remaining</div>
-        <div className="text-sm text-text-strong">
-          {countdown.startsWith('\u221e') ? (
-            <span className="inline-flex items-center gap-1"><Infinity size={14} aria-label="persistent" /> persistent</span>
-          ) : countdown}
-        </div>
-        {!lifecycle.persistent && lifecycle.expires_at && !isExpired && (
-          <>
-            <div className="mt-1.5 h-1.5 rounded-full bg-bg-elevated overflow-hidden">
-              <div
-                className="h-full rounded-full bg-accent transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <div className="text-[11px] text-muted mt-1">
-              expires {lifecycle.expires_at} &middot; then auto-reaped &rarr; tombstone
-            </div>
-          </>
+        {previewBase ? (
+          <LocalAppFrame base={previewBase} slug={artifact.slug} />
+        ) : isExpired ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-10 bg-bg-elevated/50">
+            <CloudOff size={28} className="text-muted" aria-hidden="true" />
+            <div className="text-sm text-muted">This deployment has expired</div>
+          </div>
+        ) : isDeploying ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-10 bg-bg-elevated/50">
+            <Cloud size={28} className="text-warn animate-pulse" aria-hidden="true" />
+            <div className="text-sm text-muted">Deploying&hellip;</div>
+          </div>
+        ) : frameUrl ? (
+          <LiveSiteFrame url={frameUrl} slug={artifact.slug} />
+        ) : (
+          <div className="flex flex-col items-center justify-center gap-2 py-10 bg-bg-elevated/50">
+            <Globe size={28} className="text-muted" aria-hidden="true" />
+            <div className="text-[12px] text-muted">Preview unavailable for this host &mdash; open the link above</div>
+          </div>
         )}
+      </div>
+
+      {/* Status strip: identity + state + target pills */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <Cloud className="lucide-inline text-accent shrink-0" aria-hidden="true" />
+          <span className="font-semibold text-text-strong truncate">{artifact.slug}</span>
+          <span className="text-sm text-muted shrink-0">{tierSummary}</span>
+        </div>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <TargetPills dt={deploy_target} />
+          <Badge variant={statusBadgeVariant(isExpired ? 'expired' : lifecycle.status)}>
+            {isExpired ? 'Expired' : lifecycle.status}
+          </Badge>
+        </div>
+      </div>
+
+      {/* Info panels: architecture | lifecycle + cost */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="text-[12px] text-muted font-medium mb-2">Architecture</div>
+          <ArchitectureRows architecture={architecture} />
+        </div>
+        <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+          {/* FU-7: an expired card renders no countdown at all — legacy
+              tombstones (pre-FU-6) may still carry a stale expires_at, and a
+              ticking clock on a dead deployment reads as alive. */}
+          {!isExpired && (
+            <div>
+              <div className="text-[12px] text-muted font-medium mb-1.5">Time to live</div>
+              <div className="text-sm text-text-strong">
+                {countdown.startsWith('\u221e') ? (
+                  <span className="inline-flex items-center gap-1"><Infinity size={14} aria-label="persistent" /> persistent</span>
+                ) : countdown}
+              </div>
+              {!lifecycle.persistent && lifecycle.expires_at && (
+                <>
+                  <div className="mt-1.5 h-1.5 rounded-full bg-bg-elevated overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-accent transition-all"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <div className="text-[11px] text-muted mt-1">
+                    expires {lifecycle.expires_at} &middot; then auto-reaped &rarr; tombstone
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          <CostPills cost={cost} label={costLabel} />
+        </div>
       </div>
 
       {/* Footer */}
@@ -409,6 +642,7 @@ export default function WebAppArtifactCard({
               title="Redeploy this app — opens a fresh deploy session (same flow as Deploy)"
               aria-label="Redeploy"
             >
+              <Rocket size={12} aria-hidden="true" />
               Redeploy
             </button>
           )}

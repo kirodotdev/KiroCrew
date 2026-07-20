@@ -543,6 +543,8 @@ export interface WebAppTeardown {
 export interface WebAppMetadata {
   slug: string;
   origin_session: string;
+  /** Local copy of the app tree — powers the gateway's local preview channel. */
+  app_dir?: string;
   deploy_target: WebAppDeployTarget;
   architecture: WebAppArchitecture;
   lifecycle: WebAppLifecycle;
