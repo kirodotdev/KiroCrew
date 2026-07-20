@@ -212,6 +212,8 @@ PR #46 (batch-42, Electron shell UX rescue) drew two Codex findings whose flagge
 | [`53214b50`](https://code.amazon.com/packages/MeshClaw/commits/53214b50d0b0e0f3d9f3ec6951ff5ad8680868c1) | `acp/client.py` + `sandbox.py` `session_host_preexec` replaces `resource_limit_preexec` | MED | The NOFILE-raise preexec REPLACES the configured resource-limit preexec on session hosts, so operator-configured `max_processes`/`max_cpu_seconds`/`max_memory_mb` no longer apply to session hosts. This substitution is exactly upstream `53214b50`'s own diff (`-resource_limit_preexec()` → `+session_host_preexec()`), reflecting its "session hosts are trusted" design note. | Compose the configured limits with the NOFILE override (disable only `max_open_files`) upstream if the trust call is revisited; flow back. |
 | [`f2661c8a`](https://code.amazon.com/packages/MeshClaw/commits/f2661c8aa8ec2fa0be552872db0a885495a47cf3) | `sandbox.py` `_probe_unshare` on-loop cold-cache early-return | HIGH | First `wrap_argv` on a running loop with a cold cache returns `False`/`"none"` (fail-closed `RuntimeError`) before the background warm thread populates the cache. Upstream's documented mitigation: `prewarm_backend()` boot hook fills the cache before the first on-loop spawn reaches `detect_backend()`. The on-loop early-return + the prewarm boot hook are both upstream `f2661c8a` lines 284-339 (docstring says "Boot prewarm ensures this path is rarely hit"). | Add an awaited readiness mechanism or resolve the backend off-loop before `asyncio.run` upstream; flow back. |
 | [`808f7f74`](https://code.amazon.com/packages/MeshClaw/commits/808f7f746f00e16bdc3e2d28c2cacffb3c26c033) | `session.py` RSS-watchdog idle check (`sess.semaphore.locked()`) | HIGH | Codex: an idle parent chat whose background subagents share its `AcpRuntime` passes the semaphore-only idle check; RSS recycle then resets the parent, killing the co-tenant subagents' in-flight turns. Fork block is byte-identical to upstream `808f7f74` lines 2954-2958 (verified by region diff). Upstream's CR1 "wrap-first" note suggests co-tenancy refinements were deliberately deferred. | Add a co-tenant/runtime-activity check before reset upstream (with regression test); flow back on a later sync. |
+| [`b5a7f360`](https://code.amazon.com/packages/MeshClaw/commits/b5a7f360) (PR #54 host-PID identity hardening) | `mcp_gateway/gatewayd.py` `check_peer_uid(writer, os.getuid())` (~L1506) | LOW | Claude Review: a new `os.getuid()` call is not behind a `PEERCRED_SUPPORTED`/`IS_POSIX` guard for symmetry with the other platform-gated calls. No runtime impact — the gateway transport is `start_unix_server` (POSIX-only), so the line is unreachable on Windows. Byte-identical to upstream MeshClaw `gatewayd.py` L1296/L1402 (`check_peer_uid(writer, os.getuid())`). | Gate the `os.getuid()` behind the existing POSIX/peercred guard for symmetry, upstream-first; flow back. |
+| [`08e28b8a`](https://code.amazon.com/packages/MeshClawWebsite/commits/08e28b8a7648ddfb739bb33522c1d8043b826401) | `website/src/components/MarkdownPanel.tsx` unsaved-changes `●` glyph (~L1316) | LOW | Claude Review: the unsaved-changes indicator renders a literal `●` glyph (`<span className="text-warn …" title="Unsaved changes">●</span>`) rather than a styled dot span / lucide icon — leans against the icon convention, though Claude itself notes it "isn't a true emoji." Byte-identical to the upstream `08e28b8a` MarkdownPanel dirty indicator (the fork ported the Electron shell redesign verbatim). | Replace with a CSS-drawn dot (`rounded-full` span) or a small lucide dot upstream; flow back. |
 
 PR #92 (batch-35) drew a further set of Codex findings, again all byte-identical / faithful ports of the current MeshClaw beta (Windows shim `eaf62582`, Talos `383eae45`/`1b0585bb`, frontend `340cfa9`). Same disposition — fix upstream-first, flow back via sync.
 
@@ -537,6 +539,26 @@ re-publish branch `store.update_publication` on the loop → `asyncio.to_thread`
 Each subsequent Claude batch is precise + converges; Codex's parallel run again
 objected to the home-confinement itself + the unwired clone/fork/pull store reads
 (non-convergent, advisory).
+
+**PR #46 review round 11 (2026-07-20) — Claude Review + Codex both green
+(`SUCCESS`, neither emitted `[BLOCK-MERGE]`); 3 Claude LOW findings, all
+upstream-verbatim (INVALID per drift-prevention).** After the final main-merge
+(`fa25d32f`) + the discover-tags fix (`4f0d091f`), the two AI gates concluded
+non-blocking. Claude's 3 LOW observations were each verified byte-identical to the
+upstream post-image and tabled above, not patched fork-side (fork-only fixes would
+diverge + re-conflict on the next sync):
+- **`acp/runtime.py` / `sandbox.session_host_preexec` rlimit trade-off** — already
+  tracked (the `53214b50` row above); session hosts drop NPROC/AS/CPU rlimits by
+  upstream's own design (ceilings move to the cgroup scope).
+- **`mcp_gateway/gatewayd.py` unguarded `os.getuid()`** — new row above; unreachable
+  on Windows (POSIX-only unix-socket transport), byte-identical to upstream
+  `gatewayd.py` L1296/L1402. Came in via the PR #54 merge (`b5a7f360`).
+- **`MarkdownPanel.tsx` literal `●` unsaved-changes glyph** — new row above; the
+  verbatim upstream `08e28b8a` dirty indicator (Claude concedes "isn't a true
+  emoji"). Fix upstream to a CSS/lucide dot; flow back.
+Cumulative across the PR: **11 AI-review rounds, ~25 findings — 23 upstream-verbatim
+(tabled, fix-upstream-first) + 2 fork-introduced fixed (credential redaction
+`d685926f`, discover tags `4f0d091f`).**
 
 ### Resolved (deferred earlier, later ported — recorded for the audit trail)
 
