@@ -60,6 +60,7 @@ from kiro_crew.platform import (
     boot_platform,
     current_context,
 )
+from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.seed import seed_cmd
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
@@ -1680,9 +1681,7 @@ Examples:
                 _log_file.rename(_prev_log)
             except OSError:
                 pass  # race or permission — keep going
-    _fh = RotatingFileHandler(
-        _log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
-    )
+    _fh = RotatingFileHandler(_log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
     _fh.setLevel(level)
     _fh.setFormatter(
         logging.Formatter(
@@ -1761,6 +1760,13 @@ Examples:
     elif args.command == "tui":
         _tui(args)
     elif args.command == "gateway":
+        # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
+        # HERE in the gateway dispatch — not in boot_platform (which runs for
+        # every subcommand incl. the mcp-core/mcp-cron stdio servers, where an
+        # interactive prompt would corrupt the JSON-RPC stream) and not in
+        # DashboardContributor.start_services (which never fires for `token`
+        # and only inside gateway async startup). Public default = no checks.
+        run_preflight_checks()
         # Enable faulthandler for the long-lived gateway process: it makes
         # `kill -ABRT <pid>` dump every thread's stack to stderr (the gateway
         # log) on demand, and it is the signal the dashboard's stall watchdog

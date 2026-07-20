@@ -12,6 +12,7 @@ from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     parse_llm_json,
     parse_llm_json_list,
+    record_interaction_event,
     save_conversation_turn,
     stream_and_collect,
 )
@@ -84,9 +85,9 @@ class TestParseLlmJson:
         # A non-JSON brace span in the preamble must NOT defeat extraction of
         # the real trailing JSON (the first-match-only scanner regressed here).
         assert parse_llm_json('Use {placeholder} then: {"a": 1}') == {"a": 1}
-        assert parse_llm_json(
-            'schema is {field: value}. Here:\n{"prefs": ["x"]}'
-        ) == {"prefs": ["x"]}
+        assert parse_llm_json('schema is {field: value}. Here:\n{"prefs": ["x"]}') == {
+            "prefs": ["x"]
+        }
 
     def test_dict_request_does_not_dig_into_array(self) -> None:
         # dict expected but only an array-of-objects present → None, NOT the
@@ -208,8 +209,9 @@ class TestStreamAndCollectPromptBusy:
         """After all retries fail, provider.shutdown() is called."""
         provider = _make_provider(error=AcpError("already in progress"))
 
-        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(
-            PromptBusyExhaustedError
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(PromptBusyExhaustedError),
         ):
             await stream_and_collect(provider, "test")
 
@@ -283,7 +285,9 @@ class TestTransientErrorClassifier:
         from kiro_crew.llm_helpers import _is_transient_acp_error
 
         # These must fail fast — a retry cannot fix them.
-        assert not _is_transient_acp_error("Bedrock authentication failed. Run 'ada credentials update'")
+        assert not _is_transient_acp_error(
+            "Bedrock authentication failed. Run 'ada credentials update'"
+        )
         assert not _is_transient_acp_error("AccessDeniedException")
         assert not _is_transient_acp_error("ExpiredTokenException")
         assert not _is_transient_acp_error("ValidationException: bad input")
@@ -304,9 +308,7 @@ class TestAcpErrorIsTransient:
         from kiro_crew.llm_helpers import acp_error_is_transient
 
         # Flag is authoritative: a transient-looking message still fails fast.
-        assert not acp_error_is_transient(
-            AcpError("ServiceUnavailableException", transient=False)
-        )
+        assert not acp_error_is_transient(AcpError("ServiceUnavailableException", transient=False))
 
     def test_unflagged_5xx_message_falls_back_to_string(self) -> None:
         from kiro_crew.llm_helpers import acp_error_is_transient
@@ -456,3 +458,71 @@ class TestStreamAndCollectTransient:
             await stream_and_collect(provider, "test", retry_transient=False)
 
         assert call_count == 1  # opt-out → no inner retry
+
+
+class TestRecordInteractionEvent:
+    """The shared per-interaction telemetry helper used by every surface."""
+
+    def _install_stub(self, monkeypatch, record):
+        import kiro_crew.platform as platform
+
+        telemetry = MagicMock()
+        telemetry.record_event = record
+        ctx = MagicMock()
+        ctx.telemetry = telemetry
+        monkeypatch.setattr(platform, "current_context", lambda: ctx)
+        return telemetry
+
+    def test_records_metadata_payload(self, monkeypatch) -> None:
+        calls: list = []
+        self._install_stub(monkeypatch, lambda etype, data: calls.append((etype, data)))
+
+        # After Kiro startup client._client is an AcpSessionProvider exposing a
+        # ``model`` property (backed by _handle.model). Model the real shape.
+        client = MagicMock()
+        client._client.model = "test-model-id"
+
+        record_interaction_event(client, "sess-1", "dashboard")
+
+        assert calls == [
+            (
+                "interaction",
+                {"session_key": "sess-1", "surface": "dashboard", "model": "test-model-id"},
+            ),
+        ]
+
+    def test_reads_model_from_raw_client_model_attr(self, monkeypatch) -> None:
+        """Pre-startup / raw AcpClient exposes the configured model on the
+        ``_model`` attribute (no ``model`` property); the extraction falls back
+        to it. Use a plain object so ``model`` genuinely doesn't exist."""
+        calls: list = []
+        self._install_stub(monkeypatch, lambda etype, data: calls.append((etype, data)))
+
+        class _RawClient:
+            _model = "raw-model-id"
+
+        class _Provider:
+            def __init__(self, inner):
+                self._client = inner
+
+        record_interaction_event(_Provider(_RawClient()), "sess-1", "slack")
+        assert calls[0][1]["model"] == "raw-model-id"
+
+    def test_missing_model_falls_back_to_empty_string(self, monkeypatch) -> None:
+        calls: list = []
+        self._install_stub(monkeypatch, lambda etype, data: calls.append((etype, data)))
+
+        # A plain object with no _client/_model attributes.
+        client = object()
+        record_interaction_event(client, "sess-2", "slack")  # type: ignore[arg-type]
+
+        assert calls[0][1] == {"session_key": "sess-2", "surface": "slack", "model": ""}
+
+    def test_telemetry_failure_is_swallowed(self, monkeypatch) -> None:
+        def _boom(etype, data):
+            raise RuntimeError("sink down")
+
+        self._install_stub(monkeypatch, _boom)
+
+        # Must not raise — best-effort only.
+        record_interaction_event(MagicMock(), "sess-3", "dashboard")

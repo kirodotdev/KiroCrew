@@ -488,9 +488,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
             )
         else:
             await asyncio.to_thread(
-                lambda: store.update_publication(
-                    art.slug, last_error=f"sync failed: {safe_err}"
-                )
+                lambda: store.update_publication(art.slug, last_error=f"sync failed: {safe_err}")
             )
         logger.warning("push_version error for %s: %s", art.slug, safe_err)
         return
@@ -764,7 +762,15 @@ def _source_target(art: Artifact, source: str):
         return (pub.provider, pub.artifact_id, expected, True)
     if source == "origin" and art.fork_metadata is not None:
         fm = art.fork_metadata
-        return (DEFAULT_PROVIDER, fm.upstream_artifact_id, fm.upstream_version, False)
+        # Resolve the origin against the provider the fork came from; legacy
+        # records (pre multi-provider) carry no provider and fall back to the
+        # default, preserving single-provider behavior.
+        return (
+            fm.upstream_provider or DEFAULT_PROVIDER,
+            fm.upstream_artifact_id,
+            fm.upstream_version,
+            False,
+        )
     return None
 
 
@@ -797,7 +803,17 @@ async def upstream_status(slug: str) -> dict[str, object]:
     if target is None:
         return base
     provider_name, ext_id, expected_v, is_pub = target
-    provider = _resolve_provider(provider_name)
+    try:
+        # Best-effort contract: resolving the provider must not raise out of
+        # here. In the public edition (empty registry) — or when a tracked
+        # publication/fork_metadata survives from a companion edition (snapshot
+        # restore) with no matching provider — ``_resolve_provider`` raises
+        # ``PublishUnavailableError``; degrade to the base tracked payload so the
+        # detail page's drift banner never turns a status probe into an error.
+        provider = _resolve_provider(provider_name)
+    except PublishError as exc:
+        logger.warning("upstream_status: provider unavailable for %s: %s", slug, exc)
+        return base
     if not provider.available():
         return base
     try:
@@ -1022,7 +1038,9 @@ async def clone_from_remote(artifact_id: str, *, provider_name: str = DEFAULT_PR
     Idempotent via ``find_by_artifact_id``.
     """
     store = get_default_store()
-    existing = await asyncio.to_thread(store.find_by_artifact_id, artifact_id)
+    existing = await asyncio.to_thread(
+        lambda: store.find_by_artifact_id(artifact_id, provider=provider_name)
+    )
     if existing is not None:
         return existing
     provider = _resolve_provider(provider_name)
@@ -1052,7 +1070,9 @@ async def clone_from_remote(artifact_id: str, *, provider_name: str = DEFAULT_PR
             content = inner
             kind = "widget"
     async with _clone_lock:
-        existing = await asyncio.to_thread(store.find_by_artifact_id, artifact_id)
+        existing = await asyncio.to_thread(
+            lambda: store.find_by_artifact_id(artifact_id, provider=provider_name)
+        )
         if existing is not None:
             return existing
         art = await asyncio.to_thread(
@@ -1154,6 +1174,7 @@ async def fork_from_remote(external_id: str, *, provider_name: str = DEFAULT_PRO
         upstream_owner=owner,
         upstream_version=upstream_v,
         forked_at=_now_iso(),
+        upstream_provider=provider.name,
     )
     await asyncio.to_thread(store.set_fork_metadata, art.slug, fm)
     logger.info("fork_from_remote: %s (%s) as slug=%s", external_id, provider.name, art.slug)

@@ -36,9 +36,10 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
 | `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers Claude Code |
 | `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers Harmony Artifactory / Chorus providers |
-| `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + Bedrock env |
-| `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | `.midway`/`.ada`/`.krb5` dirs |
-| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction) | internal token regexes |
+| `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + backend env |
+| `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
+| `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
+| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed Amazon allowlist |
 | `identity` | adapter | `DefaultIdentityProvider` (`midway.py` stub) | Midway / MCS |
@@ -205,14 +206,34 @@ would only churn the seam without protecting any deployed companion. Every seam
 added pre-launch landed under this same `1`, with no bump:
 
 - the `governance` carrier (the enterprise security ceiling);
+- the `agent_executable` resolver (edition-neutral direct-executable resolution
+  before the core applies its sandbox);
 - the `knowledge` (connector registry), `dashboard` (route/service/login-handler
   contributor), and `jail` (process-isolation) extension points;
 - wiring an *existing* but previously-unconsumed Protocol method into a call site
   (e.g. `ProviderRegistry.create_factory` going live, `AppsLoader` bundling
-  feature apps) — no shape change, so no bump regardless.
+  feature apps) — no shape change, so no bump regardless;
+- adding `TunnelProvider.register_callbacks` / `status_snapshot` when the tunnel
+  lifecycle was routed through the seam — a v1 method addition to an existing
+  Protocol.
 
 Start incrementing only after the first public release, when a separately-built
 companion can pin against a frozen contract.
+
+**2026-07-18 governance-seam re-triage.** A re-triage of the CPP seam against the
+16 upstream commit groups landed four of the above seam additions on this branch,
+each in its own commit — `IdentityProvider.preflight_checks()` (G1, "Preflight
+checks" below), `CredentialPolicy.exempt_exact_hosts()` (G3, "Exfil exact-host
+heuristic exemption" below), `TunnelProvider.register_callbacks` /
+`status_snapshot` (G2, "tunnel/manager.py" below), and
+`IdentityProvider.credential_watch_paths()` (G6, blue-green pooled-backend drain
+on credential rotation, "mcp_gateway/manager.py" below) — plus the metadata-only
+`interaction` telemetry event (G8, "Telemetry record_event sites" below, no
+Protocol change). All are v1 additions with **no `CONTRACT_VERSION` bump**. G6
+was first built on the stacked branch `feat/govseam-post-pr18` (it depends on
+PR #18's `mcp_gateway/` reshape) and was consolidated onto this branch once that
+work merged. The re-triage added **no new Protocols and no new `SCOPE_CATALOG`
+rows**; the full per-SHA verdict record is in `skills/meshclaw-sync/left-out.md`.
 
 ## Companion packaging
 
@@ -237,7 +258,13 @@ delegates to that same global. Wired sites:
   startup (gateway raises fail-closed; cli is defensive — standalone never raises).
 - `sandbox.py` — `_build_launcher_script` / `_build_seatbelt_profile` source the
   sensitive-dir lists from `current_context().sandbox` (the `.aws`-exclusion at
-  the cc branch is preserved).
+  the cc branch is preserved). `namespace_argv` / `sandbox_exec_argv` resolve
+  argv[0] through `current_context().agent_executable` before applying the core
+  sandbox. The public Default is identity; a companion may return the direct
+  executable behind an edition-managed launcher to avoid nested isolation, but
+  cannot disable or weaken the outer sandbox. A transient adapter error falls
+  back to the original executable (outer sandbox still applies); a
+  `PlatformCompositionError` propagates fail-closed.
 - `hooks.py` — the deny check routes through `current_context().security.is_denied`;
   the kiro-hooks egress (`dashboard/handlers/hooks.py`) scrubs command/matcher
   through the shared `redact_via_context` shim.
@@ -251,10 +278,62 @@ delegates to that same global. Wired sites:
   exfil-then-credential two-pass (the Default `CredentialPolicy.redact` delegates
   to `security.redact`); a loaded companion adds its internal-token regexes
   uniformly across every egress surface.
+- Exfil exact-host heuristic exemption (`CredentialPolicy.exempt_exact_hosts()`) —
+  `security.scan_exfiltration_urls` / `redact_exfiltration_urls` read the
+  companion-supplied exact-host set and, for a URL whose domain is an EXACT
+  member, skip ONLY the base64-blob / query-length heuristics (which
+  false-positive on legitimate long base64 document pointers, e.g. SharePoint
+  `:fl:` / Loop `nav=<base64>` links). **Narrow-only:** the exemption can only
+  relax the heuristics, NEVER the hard-credential floor — the S3-presigned
+  fast-path and the unconditional `_HARD_CREDENTIAL_RE` path+query scan run FIRST
+  (before the exemption is consulted), so a real AWS key / SSH-or-PEM header /
+  Slack token on an exempted host — including one embedded in the URL PATH — is
+  still flagged and redacted. Matched EXACTLY (not by suffix) so a shared
+  multi-tenant domain does not exempt every tenant. The set is guarded with
+  `getattr(policy, "exempt_exact_hosts", None)` (a pre-method companion adapter
+  degrades to the empty set) and is NEVER sourced from `config.json` — an
+  agent-writable exemption would be a hole in the redaction ceiling, so the
+  companion adapter is the only supplier. Degrade semantics are INVERTED vs
+  `redact_via_context`'s baseline-redact fallback: a `PlatformCompositionError`
+  propagates fail-closed, but any other adapter failure degrades to
+  `frozenset()` — the empty set means MORE redaction (every host runs the
+  heuristics), the safe direction; NO logging on the degrade path (runs inside
+  the stdio MCP servers). **Deferred-import exception:** `security` reads the set
+  through a FUNCTION-LOCAL import of `kiro_crew.platform.context` (the `sel.py`
+  pattern), so the CPP import-direction invariant holds — `platform/defaults.py`
+  imports `security` at module load, and `security` never reaches `platform` at
+  module-load time (only at call time). v1 method addition to the existing
+  `CredentialPolicy` Protocol; no `CONTRACT_VERSION` bump; `DefaultCredentialPolicy`
+  returns `frozenset()` so standalone redaction is byte-identical.
 - `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
   additively (`setdefault`) into the agent config build + dynamic refresh.
 - `slack/events.py` / `slack/handler.py` / `dashboard/handlers_system.py` —
   Slack enterprise gate + Midway status route through `slack_gate` / `identity`.
+- `mcp_gateway/manager.py` — `GatewayManager._spawn_once` resolves
+  `current_context().identity.credential_watch_paths()` (v1 method addition to
+  `IdentityProvider`; Default returns `[]`) and threads each path to the
+  gateway daemon as a repeatable `--credential-watch-path` argv flag. The seam
+  is resolved in the **already-booted gateway process**, never in the daemon:
+  gatewayd is a separately spawned subprocess that does not call
+  `boot_platform`, and `current_context()`'s lazy default fails closed on
+  non-standalone profiles — so the argv flag is the only channel. Absent flag
+  (the public default) ⇒ the daemon creates no watcher task and its run flow is
+  byte-identical. With a flag, `mcp_gateway/credwatch.py` polls the file and
+  fires only on a **content-digest** change (an mtime bump with byte-identical
+  content — the no-op-rewrite storm — never fires; the first observation is the
+  silent baseline, whether the file is present OR **absent**). An absent
+  baseline that later **appears** DOES fire (a "no credential -> credential"
+  transition drains any backend prewarmed during the absent startup window —
+  prewarm is scheduled before the watcher's first probe), and a **present ->
+  absent** deletion fires too (credential *revocation* — otherwise pooled
+  backends keep the revoked credential until deadline/restart); the baseline
+  moves to absent so a re-appearance fires again. Genuine absence only — a
+  transient stat/read `OSError` is skipped without firing. Firing triggers a
+  blue-green drain (`pool.drain_all_to_bluegreen`) + re-warm so pooled backends
+  respawn with the rotated credential. The core
+  never hardcodes or interprets any credential path/content — the bytes are
+  only hashed. Read through `safe_context_call` (fallback `[]`), so a
+  pre-method companion adapter degrades to no-watcher instead of raising.
 - `apps/manager.py` — builtin discovery + orphan detection merge
   `current_context().apps_loader` sources.
 - `apps/registry.py` / `apps/routes.py` — clone-sandbox-mode decision routes
@@ -262,7 +341,66 @@ delegates to that same global. Wired sites:
 - `embeddings.py` — model/endpoint/sign_request source from
   `current_context().embeddings` (explicit caller args win); BOTH the async
   `EmbeddingClient` and the sync `make_sync_embed_fn` vector-memory path.
-- `dashboard/server.py` — telemetry `record_event` at boot; tunnel enable-gate
+- Telemetry `record_event` sites — `dashboard/server.py` records `gateway_start`
+  at boot; `dashboard/chat_runner.py` and `slack/handler.py` record one
+  `interaction` event per successful chat turn (immediately after the
+  `record_success` call, non-cancelled / non-retrying branch only; cancelled
+  turns emit nothing). **The interaction payload is strictly metadata —
+  `session_key`, `surface` (`"dashboard"` / `"slack"`), and `model` — never
+  prompt/response text or file contents.** All sites are best-effort
+  (try/except-Exception, debug log); the Default provider is a no-op so
+  standalone is byte-identical. Phase-1 scope is dashboard + slack only
+  (cli_chat/cron/subagent/task_executor sites are deliberately not wired).
+- Preflight checks (`IdentityProvider.preflight_checks()`) —
+  `kiro_crew.preflight.run_preflight_checks()` runs seam-supplied pre-launch
+  checks at exactly two sites: the `gateway` dispatch in `cli.py` (before
+  faulthandler/lock/`asyncio.run`) and `_token` in `cli_server.py` (before TTL
+  parsing). The method returns **already-resolved callables** — checks are
+  never `module:function` strings resolved from config (an agent-writable
+  config importing arbitrary callables at next start would be a code-exec
+  escalation). `SystemExit` from a check propagates so a check can abort the
+  launch; every other exception is logged and swallowed per check. When called
+  with no explicit list, the runner resolves the checks through
+  `safe_context_call` (fallback `[]`), so a transient context failure can never
+  block standalone startup while `PlatformCompositionError` still propagates
+  fail-closed. `DefaultIdentityProvider.preflight_checks()` returns `[]` —
+  standalone startup is byte-identical; the companion returns e.g. an
+  SSO-session freshness prompt. Placement rationale: the checks cannot live in
+  `boot_platform` (it runs for every subcommand, incl. the mcp-core/mcp-cron
+  stdio servers where an interactive prompt would corrupt the JSON-RPC stream)
+  nor in `DashboardContributor.start_services` (it never runs for `token` and
+  fires only inside gateway async startup) — so the two command dispatch sites
+  host the call. v1 method addition to the existing `IdentityProvider`
+  Protocol; no `CONTRACT_VERSION` bump.
+- `tunnel/manager.py` — the tunnel **lifecycle** routes through the seam. The
+  stub `TunnelManager` delegates `start` / `stop` / `public_url` UNCONDITIONALLY
+  to `current_context().tunnel` (via `safe_context_call` / `async_safe_context_call`
+  — re-raise `PlatformCompositionError`, degrade other errors); there is **no**
+  `isinstance`/identity check against `DefaultTunnelProvider` (that would be an
+  edition branch by proxy). `start()` first registers the connect/disconnect
+  CORS-reflection callbacks with the provider (`register_callbacks`), then
+  delegates `start()`; when the provider is not enabled (the public Default) it
+  falls through to the byte-identical "not available in OSS" disabled notice. The
+  `status` property prefers the provider's `status_snapshot()` and otherwise
+  reports its own local `TunnelStatus` — the Default returns `None`, so the
+  standalone `/api/tunnel/status` payload and `test_tunnel_manager.py` assertions
+  are unchanged. Precedence: an explicit local lifecycle write wins — `stop()`
+  (STOPPED) and the OSS-disabled `start()` (DISABLED) pin the local status so a
+  stale/lagging companion snapshot cannot resurrect a "connected" state after
+  teardown; the next `start()` clears the pin. The snapshot is projected onto a
+  FRESH `TunnelStatus` each read, so a key a later snapshot omits (e.g. a cleared
+  `error`/`url`) resets to its default rather than persisting a stale value.
+  `public_url` returns the provider URL only while state is CONNECTED (mirrors
+  the pre-seam stub), so a companion that keeps its last URL while
+  RECONNECTING/ERROR is not reported as live. `register_callbacks` +
+  `status_snapshot` are a v1 addition to the
+  existing `TunnelProvider` Protocol (no `CONTRACT_VERSION` bump). The token-auth
+  deny gate in `tunnel/setup.py` is evaluated BEFORE the manager is constructed or
+  `start()` reached, so a companion tunnel cannot start without dashboard token
+  auth; the connect/disconnect callbacks and `/api/tunnel/status` stay wrapped
+  AROUND the provider. Import direction: `tunnel/` imports
+  `kiro_crew.platform.context`; `platform/` keeps zero imports of `kiro_crew.tunnel`.
+- `dashboard/server.py` — tunnel enable-gate
   ORs in `current_context().tunnel.enabled()`. **Dashboard contributor (wave 3):**
   in `start_dashboard` only, the `/api/mwinit` route binds
   `dashboard.mwinit_handler()` (or the built-in stub when `None`),
@@ -326,8 +464,6 @@ delegates to that same global. Wired sites:
 
 - `agent.py` — `mcp_tooling.extra_skills()` (skill catalog) is **not** wired:
   skill discovery lives in `SkillsLoader`, not the agent config (TODO).
-- `dashboard/server.py` — the tunnel **lifecycle** (start/stop/public_url) still
-  runs through `setup_tunnel`; only the enable *gate* is wired (TODO).
 - `cli_doctor.py` — `package_manager` is **not** wired: the ollama-install
   diagnostic is inline step-by-step logic, not a single plan-resolution site
   (TODO; Default `install_plan` returns `[]` = today's inline behavior).

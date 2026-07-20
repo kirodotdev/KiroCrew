@@ -145,8 +145,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
     except ValueError as exc:
         sel().log_api_access(
-            caller=request.get("app", ""), operation="chat_send", outcome="denied",
-            source="memory_mode_mismatch", resources=f"slot={slot_name}",
+            caller=request.get("app", ""),
+            operation="chat_send",
+            outcome="denied",
+            source="memory_mode_mismatch",
+            resources=f"slot={slot_name}",
             error=str(exc),
         )
         return web.json_response({"error": str(exc)}, status=409)
@@ -159,15 +162,21 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if not slot._app:
             # Unscoped slot created by dashboard — apps cannot access it.
             sel().log_api_access(
-                caller=request_app, operation="chat_send", outcome="denied",
-                source="app_isolation", resources=f"slot={slot.key}",
+                caller=request_app,
+                operation="chat_send",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot.key}",
                 error="app cannot access unscoped slots",
             )
             return web.json_response({"error": "app cannot access unscoped slots"}, status=403)
         elif request_app != slot._app:
             sel().log_api_access(
-                caller=request_app, operation="chat_send", outcome="denied",
-                source="app_isolation", resources=f"slot={slot.key}",
+                caller=request_app,
+                operation="chat_send",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot.key}",
                 error="app does not own this slot",
             )
             return web.json_response({"error": "app does not own this slot"}, status=403)
@@ -224,7 +233,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     # sanitized form — raw content must never reach an external
                     # surface (AUTOSDE security-controls).
                     slot.append(
-                        "user", _sanitized, "msg msg-u", ts=_ts,
+                        "user",
+                        _sanitized,
+                        "msg msg-u",
+                        ts=_ts,
                         meta={"steer": True},
                     )
                     state.broadcast_ws(
@@ -245,7 +257,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _c, _ = redact_exfiltration_urls(message)
             _c, _ = redact_credentials(_c)
             _redacted = _redact_for_display(_c)
-            state.broadcast_ws("queue_push", {"slot": slot.key, "content": _redacted, "ts": datetime.now(timezone.utc).isoformat(), "queue_id": qid})
+            state.broadcast_ws(
+                "queue_push",
+                {
+                    "slot": slot.key,
+                    "content": _redacted,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "queue_id": qid,
+                },
+            )
         return web.json_response({"ok": True, "queued": True})
 
     if not message:
@@ -259,15 +279,20 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # injections. Queue it instead (reusing the slot queue) — the queue drain
     # releases it after the last sub-agent finishes (see chat_runner _hold_users).
     # Always on: steering is the effective opt-out.
-    if (
-        state.subagents is not None
-        and state.subagents.running_agents_for(f"dashboard:{slot.key}")
-    ):
+    if state.subagents is not None and state.subagents.running_agents_for(f"dashboard:{slot.key}"):
         qid = slot.queue_append(message)
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
         _redacted = _redact_for_display(_c)
-        state.broadcast_ws("queue_push", {"slot": slot.key, "content": _redacted, "ts": datetime.now(timezone.utc).isoformat(), "queue_id": qid})
+        state.broadcast_ws(
+            "queue_push",
+            {
+                "slot": slot.key,
+                "content": _redacted,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "queue_id": qid,
+            },
+        )
         return web.json_response({"ok": True, "queued": True})
 
     # WS mode: return JSON immediately, chunks delivered via WebSocket
@@ -335,7 +360,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             "Refused orchestrator auto-run escalation for widget-origin turn on slot %s",
             slot.key,
         )
-    elif getattr(slot, "mode", "") == "orchestrator" and message.strip().lower() in ("go", "go all"):
+    elif getattr(slot, "mode", "") == "orchestrator" and message.strip().lower() in (
+        "go",
+        "go all",
+    ):
         _is_auto = message.strip().lower() == "go all"
         if _is_auto:
             slot._auto_run = True
@@ -499,9 +527,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             try:
                 disk_msgs = state.conversation_log.read_messages_chained(history_key)
             except Exception:
-                logger.warning(
-                    "read_messages_chained failed for %s", history_key, exc_info=True
-                )
+                logger.warning("read_messages_chained failed for %s", history_key, exc_info=True)
                 disk_msgs = []
             older = disk_msgs[: slot._disk_older_count] if disk_msgs else []
             messages = older + mem_msgs
@@ -550,7 +576,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             "running": slot.running,
             "stopping": slot._stopping,
             "messages": prepared,
-            "queue": [{"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue],
+            "queue": [
+                {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
+            ],
             "total": total,
             "has_more": has_more,
         }
@@ -584,7 +612,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         if memory_mode not in ("persistent", "incognito", "temporary"):
             return web.json_response({"error": "invalid memory_mode"}, status=400)
         slot = state.get_or_create_slot(
-            name, agent=agent, workspace=workspace, model=model, mode=body.get("mode", ""),
+            name,
+            agent=agent,
+            workspace=workspace,
+            model=model,
+            mode=body.get("mode", ""),
             memory_mode=memory_mode,
             ephemeral=body.get("ephemeral"),
             app=request.get("app", ""),
@@ -722,9 +754,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
 
         # Unblock chat runner if it's suspended waiting for tool approval.
         _reject_pending_approvals(slot)
-        await state.sessions.stop_turn(
-            _history_key_for(name), force=True, on_hard=_on_hard_force
-        )
+        await state.sessions.stop_turn(_history_key_for(name), force=True, on_hard=_on_hard_force)
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
             agent=getattr(slot, "agent", "") or "kirocrew",
@@ -799,12 +829,12 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     stop_msg = json.dumps(stop_data)
     slot.append("system", stop_msg, stop_msg)
     state.push_slots_update()
-    logger.info(
-        "Stop: cooperative cancel for slot %s (queue=%d)", name, len(slot._queue)
-    )
+    logger.info("Stop: cooperative cancel for slot %s (queue=%d)", name, len(slot._queue))
 
     async def _on_soft() -> None:
-        logger.debug("_on_soft called: stop_state=%r stop_event_id=%r", slot._stop_state, slot._stop_event_id)
+        logger.debug(
+            "_on_soft called: stop_state=%r stop_event_id=%r", slot._stop_state, slot._stop_event_id
+        )
         if slot._stop_state != "soft_pending":
             logger.debug("_on_soft: state not soft_pending, bail")
             return
@@ -984,8 +1014,11 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
     state.push_slots_update()
     sel().log_tool_invocation(
-        session_key=f"dashboard:{name}", agent="kirocrew", source="dashboard",
-        tool_name="queue_cancel", tool_kind="permission",
+        session_key=f"dashboard:{name}",
+        agent="kirocrew",
+        source="dashboard",
+        tool_name="queue_cancel",
+        tool_kind="permission",
         outcome="allowed",
         metadata={"queue_id": queue_id, "slot": name},
     )
@@ -1019,8 +1052,11 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     state.broadcast_ws("queue_edit", {"slot": name, "queue_id": queue_id, "content": _redacted})
     state.push_slots_update()
     sel().log_tool_invocation(
-        session_key=f"dashboard:{name}", agent="kirocrew", source="dashboard",
-        tool_name="queue_edit", tool_kind="permission",
+        session_key=f"dashboard:{name}",
+        agent="kirocrew",
+        source="dashboard",
+        tool_name="queue_edit",
+        tool_kind="permission",
         outcome="allowed",
         metadata={"queue_id": queue_id, "slot": name},
     )
@@ -1069,11 +1105,16 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     reordered_msgs = [queued_by_id[qid] for qid in order if qid in queued_by_id]
     remaining_msgs = [m for m in queued_msgs if m not in reordered_msgs]
     slot.messages[:] = other_msgs + reordered_msgs + remaining_msgs
-    state.broadcast_ws("queue_reorder", {"slot": name, "order": [item["id"] for item in slot._queue]})
+    state.broadcast_ws(
+        "queue_reorder", {"slot": name, "order": [item["id"] for item in slot._queue]}
+    )
     state.push_slots_update()
     sel().log_tool_invocation(
-        session_key=f"dashboard:{name}", agent="kirocrew", source="dashboard",
-        tool_name="queue_reorder", tool_kind="permission",
+        session_key=f"dashboard:{name}",
+        agent="kirocrew",
+        source="dashboard",
+        tool_name="queue_reorder",
+        tool_kind="permission",
         outcome="allowed",
         metadata={"slot": name, "order_len": len(order)},
     )
@@ -1098,15 +1139,21 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     request_app = request.get("app", "")
     if request_app and slot._app != request_app:
         sel().log_api_access(
-            caller=request_app, operation="slot_delete", outcome="denied",
-            source="app_isolation", resources=f"slot={name}",
+            caller=request_app,
+            operation="slot_delete",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
             error="app does not own this slot",
         )
         return web.json_response({"error": "app does not own this slot"}, status=403)
     if request_app and not slot._app:
         sel().log_api_access(
-            caller=request_app, operation="slot_delete", outcome="denied",
-            source="app_isolation", resources=f"slot={name}",
+            caller=request_app,
+            operation="slot_delete",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
             error="app cannot delete unscoped slots",
         )
         return web.json_response({"error": "app cannot delete unscoped slots"}, status=403)
@@ -1203,11 +1250,21 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     # Dry-run: return the exact list without archiving
     if dry_run:
         sel().log_api_access(
-            caller="dashboard", operation="chat.cleanup_dry_run",
-            outcome="allowed", source="dashboard",
+            caller="dashboard",
+            operation="chat.cleanup_dry_run",
+            outcome="allowed",
+            source="dashboard",
             resources=f"count={len(stale_keys)} threshold={max_days}d",
         )
-        return web.json_response({"ok": True, "dry_run": True, "keys": stale_keys, "count": len(stale_keys), "active_is_stale": active_is_stale})
+        return web.json_response(
+            {
+                "ok": True,
+                "dry_run": True,
+                "keys": stale_keys,
+                "count": len(stale_keys),
+                "active_is_stale": active_is_stale,
+            }
+        )
     archived: list[str] = []
     failed: list[str] = []
     _tasks_to_cancel: list[asyncio.Task] = []
@@ -1248,7 +1305,9 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"archived={len(archived)} failed={len(failed)} threshold={max_days}d keys={','.join(archived[:10])}",
     )
-    return web.json_response({"ok": True, "archived": len(archived), "keys": archived, "failed": failed})
+    return web.json_response(
+        {"ok": True, "archived": len(archived), "keys": archived, "failed": failed}
+    )
 
 
 async def api_chat_slot_agent(request: web.Request) -> web.Response:
@@ -1274,7 +1333,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             error="project_path provided without agent name",
         )
         return web.json_response(
-            {"error": "project_path requires a non-empty agent; use POST /api/chat/slots/{slot}/project to set the project directly"},
+            {
+                "error": "project_path requires a non-empty agent; use POST /api/chat/slots/{slot}/project to set the project directly"
+            },
             status=400,
         )
     if agent_name and not _AGENT_NAME_RE.match(agent_name):
@@ -1341,12 +1402,12 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     resources=explicit_path,
                     error="sensitive project_path rejected",
                 )
-                return web.json_response({"error": "project_path rejected as sensitive"}, status=403)
+                return web.json_response(
+                    {"error": "project_path rejected as sensitive"}, status=403
+                )
             # Verify the named agent exists in this project before committing.
             # Uses name-field matching (not filename stem) to mirror kiro-cli's --agent resolution.
-            agent_file = _find_agent_file(
-                Path(resolved_path) / ".kiro" / "agents", agent_name
-            )
+            agent_file = _find_agent_file(Path(resolved_path) / ".kiro" / "agents", agent_name)
             if agent_file is None:
                 slot.agent = prev_agent
                 slot.workspace = prev_workspace
@@ -1386,13 +1447,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # advertise an agent we couldn't actually switch to.
     if state.conversation_log:
         try:
-            state.conversation_log.update_metadata(
-                _history_key_for(name), {"agent": agent_name}
-            )
+            state.conversation_log.update_metadata(_history_key_for(name), {"agent": agent_name})
         except Exception:
-            logger.warning(
-                "Failed to persist agent for slot %s", name, exc_info=True
-            )
+            logger.warning("Failed to persist agent for slot %s", name, exc_info=True)
     state.push_slots_update()
     return web.json_response({"ok": True, "agent": agent_name, "workspace": workspace})
 
@@ -1533,7 +1590,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     valid_efforts = get_reasoning_effort_values()
     if not isinstance(effort, str) or effort not in valid_efforts:
         return web.json_response(
-            {"error": f"reasoning_effort must be one of: {', '.join(sorted(valid_efforts - {''}))}"},
+            {
+                "error": f"reasoning_effort must be one of: {', '.join(sorted(valid_efforts - {''}))}"
+            },
             status=400,
         )
     if slot.reasoning_effort == effort:
@@ -1552,13 +1611,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         # is already persisted on the slot, so defer the live push to the next
         # turn instead of pushing now or resetting (effort is a cheap knob).
         if provider.has_active_turn():
-            logger.info(
-                "Slot %s deferred live effort push: turn active", name
-            )
+            logger.info("Slot %s deferred live effort push: turn active", name)
             state.push_slots_update()
-            return web.json_response(
-                {"ok": True, "reasoning_effort": effort, "deferred": True}
-            )
+            return web.json_response({"ok": True, "reasoning_effort": effort, "deferred": True})
         # change_effort handles both backends and persists the per-model
         # override + overlay. "" clears the override → fall back to model
         # default (kiro: /effort with model default; claude: leave as-is).
@@ -1570,7 +1625,10 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         except Exception as exc:
             logger.warning(
                 "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
-                effort, name, type(exc).__name__, exc,
+                effort,
+                name,
+                type(exc).__name__,
+                exc,
             )
     elif isinstance(provider, AcpProvider):
         # Model does not support effort — persist the slot value for when the
@@ -1639,7 +1697,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 operation="chat_slot_project",
                 outcome="denied",
                 resources=f"slot={name} project={project}",
-                error="sensitive path"
+                error="sensitive path",
             )
             return web.json_response({"error": "Access denied"}, status=403)
     old_project = slot.project
@@ -1721,8 +1779,7 @@ async def api_recent_projects(request: web.Request) -> web.Response:
         if not isinstance(dirs, list):
             dirs = []
         return [
-            d for d in dirs
-            if isinstance(d, str) and os.path.isdir(d) and not is_sensitive_path(d)
+            d for d in dirs if isinstance(d, str) and os.path.isdir(d) and not is_sensitive_path(d)
         ]
 
     dirs = await asyncio.to_thread(_read_recent_projects)
@@ -1765,15 +1822,21 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         if request_app:
             if not existing._app:
                 sel().log_api_access(
-                    caller=request_app, operation="slot_resume", outcome="denied",
-                    source="app_isolation", resources=f"slot={existing.key}",
+                    caller=request_app,
+                    operation="slot_resume",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={existing.key}",
                     error="app cannot access unscoped slots",
                 )
                 return web.json_response({"error": "app cannot access unscoped slots"}, status=403)
             elif request_app != existing._app:
                 sel().log_api_access(
-                    caller=request_app, operation="slot_resume", outcome="denied",
-                    source="app_isolation", resources=f"slot={existing.key}",
+                    caller=request_app,
+                    operation="slot_resume",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={existing.key}",
                     error="app does not own this slot",
                 )
                 return web.json_response({"error": "app does not own this slot"}, status=403)
@@ -1785,7 +1848,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                 "ok": True,
                 "key": existing.key,
                 "messages": prepared,
-                "queue": [{"id": q["id"], "content": _redact_for_display(q["content"])} for q in existing._queue],
+                "queue": [
+                    {"id": q["id"], "content": _redact_for_display(q["content"])}
+                    for q in existing._queue
+                ],
                 "total": total,
                 "has_more": total > 200,
                 "memory_mode": existing.memory_mode,
@@ -1880,7 +1946,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             content,
             cls,
             ts=m.get("ts", ""),
-            meta=_redact_meta_for_role(role, m["meta"]) if isinstance(m.get("meta"), dict) else None,
+            meta=(
+                _redact_meta_for_role(role, m["meta"]) if isinstance(m.get("meta"), dict) else None
+            ),
         )
         _attach_variants(slot, m)
     slot.drain()
@@ -1894,7 +1962,19 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     _sync_dashboard_slots(state)
     state.push_slots_update()
     return web.json_response(
-        {"ok": True, "key": slot.key, "messages": _prepare_messages(recent, slot.running), "queue": [{"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue], "total": total, "has_more": total > len(recent), "memory_mode": slot.memory_mode, "mode": slot.mode, "surface": slot.mode}
+        {
+            "ok": True,
+            "key": slot.key,
+            "messages": _prepare_messages(recent, slot.running),
+            "queue": [
+                {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
+            ],
+            "total": total,
+            "has_more": total > len(recent),
+            "memory_mode": slot.memory_mode,
+            "mode": slot.mode,
+            "surface": slot.mode,
+        }
     )
 
 
@@ -2109,10 +2189,51 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON"}, status=400)
     action = body.get("action", "rejected")
     original_action = action
-    # Trust: auto-approve remaining tools for this slot
+    request_id = body.get("request_id", "")
+    # Locate the slot that OWNS the pending approval future. It is usually the
+    # addressed slot, but under session-sharing or a rehydrated/replaced slot the
+    # future can live on a different slot object under a different key. All
+    # slot-scoped side-effects (trust flags, trusted patterns, approval policy)
+    # and the resolved outcome MUST land on the OWNER slot — the one whose
+    # session loop consumes the future and gates subsequent tools — or the trust
+    # opt-in silently fails on the running session while the UI reports success.
+    owner = slot
+    if request_id:
+        fut = slot._approval_futures.get(request_id)
+        if not fut or fut.done():
+            # The future can live on a DIFFERENT slot object only under
+            # session-sharing / rehydration — i.e. a slot that resolves to the
+            # SAME session identity as the addressed one. ACP request_ids are
+            # connection-scoped and can collide across unrelated sessions, so a
+            # bare id-match scan could approve (and, for trust, auto-approve) an
+            # unrelated slot's pending tool. Guard the scan on session identity:
+            # only a candidate whose effective session key equals the addressed
+            # slot's is a legitimate owner.
+            want_session = slot.linked_session_key or _history_key_for(slot.key)
+            for s in state._slots.values():
+                cand = s._approval_futures.get(request_id)
+                if not cand or cand.done():
+                    continue
+                cand_session = s.linked_session_key or _history_key_for(s.key)
+                if cand_session != want_session:
+                    continue
+                owner, fut = s, cand
+                break
+    else:
+        pending = [(k, f) for k, f in slot._approval_futures.items() if not f.done()]
+        if len(pending) == 1:
+            request_id, fut = pending[0]
+        else:
+            fut = None
+    # Trust: auto-approve remaining tools for this slot. The approval policy MUST
+    # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow slot
+    # runs under ``linked_session_key``, not ``dashboard:{key}``, so writing the
+    # raw slot key would leave the running session on its old policy and the trust
+    # decision would silently not take (mirrors the _run_chat session-key derivation).
     if action == "trust":
-        slot._trust = True
-        state.sessions.set_approval_policy(f"dashboard:{name}", "auto")
+        owner._trust = True
+        owner_session = owner.linked_session_key or _history_key_for(owner.key)
+        state.sessions.set_approval_policy(owner_session, "auto")
         action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
     # Defer setting _trust_reads until after the approval future is consumed
@@ -2123,26 +2244,26 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     elif action == "trust_command":
         pattern = body.get("pattern", "")
         if not pattern:
-            pattern = _get_pattern_from_pending(slot, body.get("request_id", ""), "full_command")
+            pattern = _get_pattern_from_pending(owner, request_id, "full_command")
         if pattern:
-            slot._trusted_patterns.add(pattern)
+            owner._trusted_patterns.add(pattern)
         action = "approved"
     # Trust-base: trust the base command glob e.g. "ls *" (session-scoped)
     # For multi-command titles ("cat,wc"), adds patterns for each binary.
     elif action == "trust_base":
         pattern = body.get("pattern", "")
         if not pattern:
-            base = _get_pattern_from_pending(slot, body.get("request_id", ""), "base_command")
+            base = _get_pattern_from_pending(owner, request_id, "base_command")
             pattern = ",".join(f"{b} *" for b in base.split(",") if b) if base else ""
         for p in pattern.split(","):
             p = p.strip()
             if p:
-                slot._trusted_patterns.add(p)
+                owner._trusted_patterns.add(p)
                 # Also trust the bare command (no args) since "ls *" doesn't match "ls"
                 if p.endswith(" *"):
                     bare = p[:-2]
                     if bare:
-                        slot._trusted_patterns.add(bare)
+                        owner._trusted_patterns.add(bare)
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":
@@ -2153,17 +2274,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 status=503,
             )
         for s in state._slots.values():
-            state.sessions.set_approval_policy(f"dashboard:{s.key}", "auto")
+            # Same effective-session-key rule as the single-slot trust above: a
+            # linked cron/workflow slot runs under its linked_session_key.
+            s_session = s.linked_session_key or _history_key_for(s.key)
+            state.sessions.set_approval_policy(s_session, "auto")
         action = "approved"
-    request_id = body.get("request_id", "")
-    if not request_id:
-        pending = [(k, f) for k, f in slot._approval_futures.items() if not f.done()]
-        if len(pending) == 1:
-            request_id, fut = pending[0]
-        else:
-            fut = None
-    else:
-        fut = slot._approval_futures.get(request_id)
+    resolved = action if action in ("approved", "approved_trust_reads") else "rejected"
     if not fut or fut.done():
         # Distinguish ambiguous (multiple pending) from truly empty
         if not request_id and slot._approval_futures:
@@ -2176,13 +2292,24 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                     },
                     status=400,
                 )
+        # No slot owns this future — fall back to the STATE-LEVEL-ONLY resolver so
+        # a background approval (cron/subagent/gateway) is still dismissed instead
+        # of 404-ing. MUST be resolve_state_approval, NOT resolve_approval: the
+        # latter re-scans every slot's futures by bare id-match, which would let a
+        # request-id collision resolve an unrelated slot's pending tool — exactly
+        # the cross-slot approval the session-identity owner scan above prevents.
+        # State-level futures have no per-slot trust semantics, so the bool
+        # coercion loses nothing.
+        if request_id and state.resolve_state_approval(request_id, resolved != "rejected"):
+            return web.json_response({"ok": True})
         return web.json_response({"error": "no pending approval"}, status=404)
-    resolved = action if action in ("approved", "approved_trust_reads") else "rejected"
     fut.set_result(resolved)
-    # Persist resolved state into the permission message so it survives tab switches
+    # Persist resolved state into the permission message so it survives tab
+    # switches — on the owner slot, whose messages hold the permission card.
     if request_id:
         _mark_permission_resolved(
-            slot.messages, request_id,
+            owner.messages,
+            request_id,
             original_action if original_action in ("trust", "trust_reads") else resolved,
         )
     # Broadcast first to ensure frontend is unblocked
@@ -2319,7 +2446,8 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         source_count = sum(1 for e in slot._pending_context if e.get("source") == source)
         if source_count >= _MAX_CONTEXT_PER_SOURCE:
             return web.json_response(
-                {"error": f"source {source!r} has {_MAX_CONTEXT_PER_SOURCE} pending entries"}, status=429
+                {"error": f"source {source!r} has {_MAX_CONTEXT_PER_SOURCE} pending entries"},
+                status=429,
             )
 
     # FIFO eviction: cap pending queue at the shared ceiling

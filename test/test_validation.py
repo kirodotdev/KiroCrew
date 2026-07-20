@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.validation import (
+    ARTIFACT_SAVE_SCHEMA,
     CHANNEL_ID_RE,
     CRON_ADD_SCHEMA,
     LEARN_ADD_SCHEMA,
@@ -510,3 +511,140 @@ class TestSetProjectSchema:
     def test_strips_hidden_unicode(self):
         result = validate_tool_args({"path": "/home/me\x00/x"}, SET_PROJECT_SCHEMA)
         assert "\x00" not in result["path"]
+
+
+# ── webapp_metadata bounded validation tests ──
+
+class TestWebappMetadataBoundedValidation:
+    """Test the nested webapp_metadata validator added for item 5."""
+
+    def test_valid_metadata_accepted(self):
+        args = {
+            "name": "test", "content": "<h1>hi</h1>", "kind": "webapp",
+            "webapp_metadata": {
+                "deploy_target": {
+                    "public_url": "https://example.com/demo",
+                    "profile": "my-profile",
+                    "region": "us-west-2",
+                    "slug": "my-demo",
+                },
+                "lifecycle": {"status": "live", "expires_at": "2026-12-31T23:59:59Z"},
+                "cost": {"monthly_estimate": ["$0.50"]},
+            },
+        }
+        result = validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+        assert result["webapp_metadata"]["deploy_target"]["slug"] == "my-demo"
+
+    def test_invalid_public_url_rejected(self):
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {"deploy_target": {"public_url": "ftp://nope"}},
+        }
+        with pytest.raises(ValidationError, match="http\\(s\\) URL"):
+            validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+
+    def test_invalid_lifecycle_status_rejected(self):
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {"lifecycle": {"status": "banana"}},
+        }
+        with pytest.raises(ValidationError, match="must be one of"):
+            validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+
+    def test_invalid_expires_at_rejected(self):
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {"lifecycle": {"expires_at": "not-a-date"}},
+        }
+        with pytest.raises(ValidationError, match="ISO-8601"):
+            validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+
+    def test_oversized_list_rejected(self):
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {"cost": {"items": ["x"] * 51}},
+        }
+        with pytest.raises(ValidationError, match="exceeds 50"):
+            validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+
+    def test_absent_fields_tolerated(self):
+        """Absent nested fields don't trigger validation errors."""
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {},  # all fields absent
+        }
+        result = validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+        assert result["webapp_metadata"] == {}
+
+    def test_invalid_profile_format_rejected(self):
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {"deploy_target": {"profile": "evil;rm -rf"}},
+        }
+        with pytest.raises(ValidationError, match="invalid profile"):
+            validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+
+    def test_invalid_slug_format_rejected(self):
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {"deploy_target": {"slug": "HAS_UPPERCASE"}},
+        }
+        with pytest.raises(ValidationError, match="invalid slug"):
+            validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+
+    # --- item 4 R18: empty string public_url for drafts ---
+
+    def test_empty_public_url_accepted_for_drafts(self):
+        """deploy_target.public_url="" is valid (documented draft state)."""
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {
+                "deploy_target": {"public_url": "", "profile": "p", "slug": "my-app"},
+                "lifecycle": {"status": "draft"},
+            },
+        }
+        result = validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+        assert result["webapp_metadata"]["deploy_target"]["public_url"] == ""
+
+    def test_javascript_url_still_rejected(self):
+        """javascript: URLs are still rejected (XSS vector)."""
+        args = {
+            "name": "t", "content": "x", "kind": "webapp",
+            "webapp_metadata": {"deploy_target": {"public_url": "javascript:alert(1)"}},
+        }
+        with pytest.raises(ValidationError, match="http\\(s\\) URL"):
+            validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+
+
+# --- deploy_artifact schema tests (item 6 R18) ---
+
+class TestDeployArtifactSchema:
+    """Test the deploy_artifact MCP tool schema validation."""
+
+    def test_schema_accepts_valid_artifact_slug(self):
+        from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
+
+        # confirm/override_scan were REMOVED from the schema (round-19: the MCP
+        # tool is preview-only; human confirmation happens in the dashboard).
+        args = {"site_id": "my-app", "artifact_slug": "my-demo"}
+        result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
+        assert result["site_id"] == "my-app"
+        assert result["artifact_slug"] == "my-demo"
+        assert "confirm" not in result
+
+    def test_schema_accepts_valid_local_dir(self):
+        from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
+        args = {"site_id": "my-app", "local_dir": "/home/user/app/public"}
+        result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
+        assert result["local_dir"] == "/home/user/app/public"
+
+    def test_schema_rejects_missing_site_id(self):
+        from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
+        with pytest.raises(ValidationError, match="site_id"):
+            validate_tool_args({"artifact_slug": "x"}, DEPLOY_ARTIFACT_SCHEMA)
+
+    def test_schema_accepts_ttl_hours(self):
+        from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
+        args = {"site_id": "s", "artifact_slug": "a", "ttl_hours": 48}
+        result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
+        assert result["ttl_hours"] == 48

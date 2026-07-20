@@ -22,6 +22,7 @@ import {
 } from '../store/terminalSlice'
 import { useTerminalWs } from '../hooks/useTerminalWs'
 import { setActiveTerminalSession } from '../utils/terminalRegistry'
+import { usePointerDrag, rubberband } from '../hooks/usePointerDrag'
 
 const HEIGHT_KEY = 'kirocrew-terminal-height'
 const WIDTH_KEY = 'kirocrew-terminal-width'
@@ -358,34 +359,48 @@ export default function CliPanel() {
   const isBottomRef = useRef(isBottom)
   isBottomRef.current = isBottom
 
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    const startPos = isBottomRef.current ? e.clientY : e.clientX
-    const startSize = sizeRef.current
+  // Size captured at pointer-down so live moves are computed from a stable origin.
+  const dragStartSize = useRef(size)
 
-    const onMove = (ev: MouseEvent) => {
-      const delta = isBottomRef.current ? startPos - ev.clientY : startPos - ev.clientX
-      setSize(Math.max(isBottomRef.current ? MIN_H : MIN_W, startSize + delta))
-    }
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
+  const bounds = () => {
+    const bottom = isBottomRef.current
+    const min = bottom ? MIN_H : MIN_W
+    // Cap the panel so it can't swallow the whole viewport; leave `min` for the rest of the UI.
+    const max = Math.max(min, (bottom ? window.innerHeight : window.innerWidth) - min)
+    return { min, max }
+  }
+
+  // Pointer Events (mouse + touch) via the shared hook. Grows the panel as the
+  // splitter is dragged toward the panel's anchored edge; rubber-bands past max.
+  const drag = usePointerDrag({
+    threshold: 6,
+    onStart: () => { dragStartSize.current = sizeRef.current },
+    onMove: ({ dx, dy }) => {
+      const { min, max } = bounds()
+      // Bottom panel is anchored to the viewport bottom → dragging up (dy < 0) grows it;
+      // right panel is anchored to the right edge → dragging left (dx < 0) grows it.
+      const raw = dragStartSize.current - (isBottomRef.current ? dy : dx)
+      let next = raw
+      if (raw > max) next = max + rubberband(raw - max, max) // progressive resistance past the cap
+      else if (raw < min) next = min                          // hard floor (matches prior behavior)
+      setSize(next)
+    },
+    onEnd: () => {
       setSize(s => {
-        const clamped = Math.max(isBottomRef.current ? MIN_H : MIN_W, s)
+        const { min, max } = bounds()
+        const clamped = Math.min(max, Math.max(min, s)) // settle back inside [min, max]
         safeSetItem(isBottomRef.current ? HEIGHT_KEY : WIDTH_KEY, String(clamped))
         return clamped
       })
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, []) // stable — no deps, uses refs
+    },
+  })
 
   return (
     <motion.div
       initial={isBottom ? { height: 0, width: '100%' } : { width: 0, height: '100%' }}
       animate={isBottom ? { height: size, width: '100%' } : { width: size, height: '100%' }}
       exit={isBottom ? { height: 0, width: '100%' } : { width: 0, height: '100%' }}
-      transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
       onAnimationComplete={refitAll}
       className={`shrink-0 overflow-hidden border border-border rounded-lg bg-bg ${isBottom ? 'ml-0 mr-2 mb-2 mt-0' : 'ml-0 mr-2 my-2'}`}
       style={isBottom ? undefined : { minWidth: MIN_W }}
@@ -393,21 +408,20 @@ export default function CliPanel() {
       <div
         className="flex flex-col overflow-hidden relative w-full h-full"
       >
-        {/* Resize handle — a pointer-drag splitter carrying the correct
-            role="separator"/aria-orientation semantics. The rule treats "separator"
-            as non-interactive, so the drag-only onMouseDown is flagged despite the
-            role being the ARIA-correct choice for a resizer. */}
-        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+        {/* Resize handle — a Pointer-Events drag splitter (mouse + touch) carrying
+            the correct role="separator"/aria-orientation semantics. The rule treats
+            "separator" as non-interactive, so the drag handlers are flagged despite
+            the role being the ARIA-correct choice for a resizer. */}
         <div
           role="separator"
           aria-orientation={isBottom ? 'horizontal' : 'vertical'}
           aria-label="Resize terminal panel"
-          className={`absolute z-20 group/drag ${
+          className={`absolute z-20 group/drag touch-none ${
             isBottom
               ? 'left-0 right-0 top-0 h-[6px] cursor-ns-resize'
               : 'left-0 top-0 bottom-0 w-[6px] cursor-col-resize'
           }`}
-          onMouseDown={onDragStart}
+          {...drag}
         >
           <div
             className={`absolute transition-colors duration-200 bg-transparent group-hover/drag:bg-accent ${

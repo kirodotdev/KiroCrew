@@ -11,7 +11,6 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 from aiohttp import web
 
@@ -25,16 +24,16 @@ from kiro_crew.knowledge.connectors.base import BaseConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
 from kiro_crew.knowledge.embedder import (
     create_embedder_from_config,
-    embed_signature,
+    embedder_signature,
     floats_to_bytes,
 )
 from kiro_crew.knowledge.extractor import EntityExtractor
 from kiro_crew.knowledge.folder_watcher import SOURCE_TYPE_SKIP_DIRS
 from kiro_crew.knowledge.ingestion import (
-    _REBUILD_STALE_AFTER,
     IngestionPipeline,
     _redact,
     rebuild_embeddings,
+    start_rebuild_job,
 )
 from kiro_crew.knowledge.llm_pool import LLMPool
 from kiro_crew.knowledge.readers import FileReader
@@ -1231,24 +1230,20 @@ async def batch_embed_items(request: web.Request) -> web.Response:
     force = body.get("force", False)
 
     if rebuild:
-        # Single-flight: don't stack a rebuild on top of one already running. A row
-        # whose updated_at is older than the staleness window is from a crash that
-        # bypassed cleanup and is ignored so it can't permanently block rebuilds.
-        fresh = (datetime.now() - _REBUILD_STALE_AFTER).isoformat()
-        active = store.db.execute(
-            "SELECT id FROM ingestion_jobs WHERE source_id IS NULL AND status = 'processing' "
-            "AND updated_at > ? ORDER BY created_at DESC LIMIT 1",
-            (fresh,)
-        ).fetchone()
-        if active:
-            return web.json_response({"job_id": active["id"], "status": "processing"})
-        job_id = uuid4().hex[:12]
-        now = datetime.now().isoformat()
-        store.db.execute(
-            "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
-            "VALUES (?, NULL, 'processing', ?, ?)",
-            (job_id, now, now))
-        store.db.commit()
+        # Single-flight: atomically claim the slot (sweeps crashed leftovers, races
+        # safely against the watcher self-heal). None -> a rebuild is already running.
+        # Offloaded: start_rebuild_job runs a blocking BEGIN IMMEDIATE write-lock
+        # acquisition (busy_timeout up to 10s), which must never block the gateway
+        # event loop (no-blocking-call-on-event-loop).
+        job_id = await asyncio.to_thread(start_rebuild_job, store)
+        if job_id is None:
+            active = store.db.execute(
+                "SELECT id FROM ingestion_jobs WHERE source_id IS NULL AND status = 'processing' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            return web.json_response(
+                {"job_id": active["id"] if active else None, "status": "processing"}
+            )
         task = asyncio.create_task(
             _rebuild_embeddings_job(request.app, store, embedder, job_id, force=force))
         app_tasks = request.app.setdefault("_bg_tasks", set())
@@ -1262,7 +1257,7 @@ async def batch_embed_items(request: web.Request) -> web.Response:
     ).fetchall()
 
     loop = asyncio.get_running_loop()
-    sig = embed_signature(embedder.model, embedder.content_budget)
+    sig = embedder_signature(embedder)
     embedded = 0
     for row in rows:
         vec = await loop.run_in_executor(

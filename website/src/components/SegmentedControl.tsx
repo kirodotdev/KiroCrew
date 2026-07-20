@@ -126,7 +126,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
                     initial={{ width: 0 }}
                     animate={{ width: 'auto' }}
                     exit={{ width: 0 }}
-                    transition={{ duration: 0.15 }}
+                    transition={{ type: 'spring', bounce: 0, duration: 0.2 }}
                     className="relative z-[1] overflow-hidden whitespace-nowrap"
                   >
                     {s.label}

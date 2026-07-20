@@ -7570,3 +7570,62 @@ class TestAcpClientIsShellSignal:
         # And the default carries through as False when not a shell tool.
         not_shell = AcpProvider._to_llm_event(AcpEvent(kind=EVENT_PERMISSION_REQUEST))
         assert not_shell.is_shell is False
+
+
+class TestSpawnEnvChannelCredentialScrub:
+    """The default auto/standard ACP spawn path scrubs gateway channel creds.
+
+    Guards the exact production path Codex flagged: ``AcpClient._spawn`` copies a
+    raw ``os.environ`` and calls ``wrap_argv`` directly (not
+    ``sandboxed_spawn_argv``), and the default tier's launcher does NOT strip
+    ``_AGENT_DENIED_ENV_KEYS`` — so the parent-level ``scrub_agent_denied_env``
+    must remove them before the child inherits the environment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_client_spawn_scrubs_channel_creds_on_default_auto(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "0000:FAKE-telegram")
+        monkeypatch.setenv("WECOM_BOT_ID", "FAKE-wecom-bot")
+        monkeypatch.setenv("WECOM_SECRET", "FAKE-wecom-secret")
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-FAKE")
+        monkeypatch.setenv("KIROCREW_OWNER_ID", "U_FAKE_OWNER")
+        # A credential the standard sandbox intentionally exposes + a benign key
+        # must both survive the parent scrub.
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+
+        captured: dict[str, object] = {}
+
+        class _StopSpawn(Exception):
+            pass
+
+        async def _fake_exec(*_args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            raise _StopSpawn()
+
+        monkeypatch.setattr(acp_client, "_resolve_kiro_bin", lambda: "/fake/kiro")
+        monkeypatch.setattr(
+            acp_client, "wrap_argv", lambda argv, mode, strip_python_env=False: (argv, None)
+        )
+        monkeypatch.setattr(acp_client, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(acp_client, "augmented_path", lambda p: p)
+        monkeypatch.setattr(acp_client, "resolve_krb5_ccname", lambda env: None)
+        monkeypatch.setattr(acp_client, "_resolve_ssh_auth_sock", lambda env: None)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+        client = AcpClient(sandbox_mode="auto")  # default tier
+        with pytest.raises(_StopSpawn):
+            await client._spawn()
+
+        env = captured["env"]
+        assert isinstance(env, dict)
+        for key in (
+            "TELEGRAM_BOT_TOKEN",
+            "WECOM_BOT_ID",
+            "WECOM_SECRET",
+            "SLACK_BOT_TOKEN",
+            "KIROCREW_OWNER_ID",
+        ):
+            assert key not in env, f"{key} leaked into default-auto ACP child env"
+        assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
+        assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"

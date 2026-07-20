@@ -252,15 +252,19 @@ class TestEditComment:
         assert stored.body == "edited body"
 
     @pytest.mark.asyncio
-    async def test_edit_preserves_agent_watermark(self, store):
-        # An agent-authored comment must keep the 🤖 mark through an edit even
-        # when the new body arrives without it.
+    async def test_edit_stores_agent_body_verbatim_no_emoji(self, store):
+        # Agent provenance is the structured is_agent flag, not a body prefix —
+        # an edit stores the new body verbatim, never stamping an emoji into it
+        # (the dashboard renders a lucide Bot icon from is_agent per CLAUDE.md).
         root = await _post("doc", text="original", is_agent=True)
         resp = await h.api_artifact_edit_comment(
             _req(body={"text": "corrected"}, match={"slug": "doc", "comment_id": root["id"]})
         )
         assert resp.status == 200, _j(resp)
-        assert store.list_comments("doc")[0].body == "\U0001f916 corrected"
+        stored = store.list_comments("doc")[0]
+        assert stored.body == "corrected"
+        assert stored.is_agent is True
+        assert "\U0001f916" not in stored.body
 
     @pytest.mark.asyncio
     async def test_edit_empty_text_400(self, store):

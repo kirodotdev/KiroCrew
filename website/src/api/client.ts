@@ -319,8 +319,19 @@ export interface AddInstanceBody {
   id?: string
 }
 
+/** Tunnel status surfaced by GET /api/tunnel/status (backend TunnelManager).
+ *  Enables mobile dashboard access via a remote tunnel. */
+export interface TunnelStatus {
+  state: 'disabled' | 'starting' | 'connected' | 'reconnecting' | 'error' | 'stopped'
+  url: string
+  error: string
+  uptime: number
+  reconnect_attempt: number
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
+  tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
   securityStats: () => fetch('/api/security/stats').then(j) as Promise<{ denied_commands: number; suspicious_patterns: number; tool_schemas: number; redaction_paths: number }>,
@@ -507,7 +518,7 @@ export const api = {
   // MCP Gateway (shared pool)
   mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; running: boolean; ping_ok: boolean }>,
   mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
-  mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }[] }>,
+  mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
   mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpPoolableServer[] }>,
   mcpGatewaySetPoolable: (name: string, poolable: boolean) => post('/api/mcp-gateway/servers/poolable', { name, poolable }).then(j) as Promise<{ ok: boolean; name: string; poolable: boolean; enabled?: boolean; applied?: boolean; poolable_servers?: string[] }>,
   // Agent config
@@ -882,10 +893,30 @@ export const api = {
    *  picker (selector shown only when >1 capable provider). */
   getArtifactPublishProviders: (kind: string): Promise<{ providers: PublishProviderDescriptor[]; kind: string }> =>
     get(`/api/artifacts/publish-providers?kind=${encodeURIComponent(kind)}`).then(j),
+  /** Provider-routed clone/fork of a remote artifact into the local store.
+   *  external_id travels in the body (not the path) — provider-native ids can
+   *  contain "/", which a path segment can't carry. */
+  cloneRemoteArtifact: (provider: string, externalId: string) =>
+    post(`/api/remote-artifacts/${encodeURIComponent(provider)}/clone`, { external_id: externalId }).then(j),
+  forkRemoteArtifact: (provider: string, externalId: string) =>
+    post(`/api/remote-artifacts/${encodeURIComponent(provider)}/fork`, { external_id: externalId }).then(j),
+  browseRemoteArtifacts: (provider: string, opts?: { scope?: string; q?: string; pageToken?: string }) =>
+    get(
+      `/api/remote-artifacts/${encodeURIComponent(provider)}/browse` +
+        `?scope=${encodeURIComponent(opts?.scope ?? 'mine')}` +
+        (opts?.q ? `&q=${encodeURIComponent(opts.q)}` : '') +
+        (opts?.pageToken ? `&pageToken=${encodeURIComponent(opts.pageToken)}` : ''),
+    ).then(j),
   updateArtifactSharing: (slug: string, body: { visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[] }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/sharing`, body).then(j),
   unpublishArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}/publish`).then(j),
   refreshArtifactSharing: (slug: string) => post(`/api/artifacts/${encodeURIComponent(slug)}/publish/refresh`, {}).then(j),
+  pullLatest: (slug: string) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/pull-latest`, {}).then(j),
+  upstreamStatus: (slug: string) =>
+    get(`/api/artifacts/${encodeURIComponent(slug)}/upstream-status`).then(j),
+  overwriteRemote: (slug: string) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/overwrite-remote`, {}).then(j),
   // Artifact comments (durable, local per-slug store)
   artifactComments: (slug: string) =>
     get(`/api/artifacts/${encodeURIComponent(slug)}/comments`).then(j),
@@ -928,15 +959,32 @@ export const api = {
   researchReport: (id: string) => get("/api/apps/auto-research/campaigns/" + id + "/report").then(j),
   researchDelete: (id: string) => del("/api/apps/auto-research/campaigns/" + id).then(j),
 
-  // Web Deploy (deploy-web). deploy/recall/destroy are status-aware: the backend
-  // uses 200+requires_confirm (confirm-gate) and 409 (pre-publish scan-block) as
-  // normal control flow, so we surface {status, data} instead of throwing via j().
-  deployWebConfig: () => get('/api/apps/deploy-web/config').then(j) as Promise<{ profile: string; region: string }>,
-  deployWebSaveConfig: (body: { profile: string; region: string }) => put('/api/apps/deploy-web/config', body).then(j) as Promise<{ profile: string; region: string }>,
-  deployWebIamPolicy: (customDomain = false) => get('/api/apps/deploy-web/iam-policy' + (customDomain ? '?custom_domain=1' : '')).then(j) as Promise<{ policy: string }>,
-  deployWebVerify: () => post('/api/apps/deploy-web/verify', {}).then(async r => ({ status: r.status, data: await r.json() })),
-  deployWebSites: () => get('/api/apps/deploy-web/sites').then(j) as Promise<{ sites: Array<{ site_id: string; bucket: string; distribution_id: string }>; configured: boolean }>,
-  deployWebDeploy: (body: object) => post('/api/apps/deploy-web/deploy', body).then(async r => ({ status: r.status, data: await r.json() })),
-  deployWebRecall: (body: object) => post('/api/apps/deploy-web/recall', body).then(async r => ({ status: r.status, data: await r.json() })),
-  deployWebDestroy: (body: object) => post('/api/apps/deploy-web/destroy', body).then(async r => ({ status: r.status, data: await r.json() })),
+  artifactTeardown: (slug: string) => post(`/api/deploy/teardown/${slug}`, { confirm: true }).then(j),
+  publishProviders: () => get('/api/publish-providers').then(j) as Promise<{ providers: AppPublishProvider[] }>,
+  publishToProvider: async (slug: string, providerId: string, provider?: AppPublishProvider, ttlHours?: number) => {
+    // Route to the provider's declared endpoint with the payload shape
+    // that _do_deploy expects (site_id + artifact_slug). ttl_hours is sent on
+    // BOTH preview and confirm so the previewed TTL matches what is deployed
+    // (R12 F3 — omitting it here made preview use the backend 72h default).
+    const endpoint = provider?.endpoint || '/api/deploy/deploy'
+    const payload: Record<string, unknown> = { site_id: slug, artifact_slug: slug, provider_id: providerId }
+    if (ttlHours !== undefined) payload.ttl_hours = ttlHours
+    const r = await post(endpoint, payload)
+    checkSessionExpired(r)
+    if (r.ok) { removeAuthBanner(); return r.json() }
+    // 409 = scan blocked — parse body so PublishHub can render findings panel
+    if (r.status === 409) { return r.json() }
+    const errText = await r.text()
+    throw new ApiError(r.status, errText || `HTTP ${r.status}`)
+  },
+}
+
+export interface AppPublishProvider {
+  id: string
+  label: string
+  icon: string
+  kinds: string[]
+  configured: boolean
+  setupRoute: string
+  endpoint: string
 }

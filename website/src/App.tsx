@@ -49,6 +49,7 @@ import CapabilitiesPage from './pages/CapabilitiesPage'
 import KnowledgePage from './pages/KnowledgePage'
 import ArtifactsPage from './pages/ArtifactsPage'
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
+import ArtifactDeployPage from './pages/ArtifactDeployPage'
 import SettingsPage from './pages/SettingsPage'
 import EmbedSettingsPage from './pages/EmbedSettingsPage'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
@@ -1646,7 +1647,9 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/developer" element={<DeveloperPage />} />
             <Route path="/artifacts" element={<ArtifactsPage />} />
+            <Route path="/artifacts/deploy" element={<Navigate to="/deploy" replace />} />
             <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
+            <Route path="/deploy" element={<ArtifactDeployPage />} />
             {/* Builtin app routes — auto-discovered from registry. React Router v6
                 ranks static paths higher than parameterized ones, so /settings, /agents
                 etc. still match first. Unrecognized paths fall through to /chat. */}

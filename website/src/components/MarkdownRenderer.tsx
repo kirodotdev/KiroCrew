@@ -224,6 +224,12 @@ function ImgWithFallback({
       </span>
     )
   }
+  // SVGs authored with only a `viewBox` (no width/height) carry no intrinsic
+  // size. Under the max-w/max-h-only CSS below they collapse to ~0px and look
+  // missing — so uploading several SVGs appears to render only the ones that
+  // happen to declare width/height. Give SVGs a definite width basis; the
+  // viewBox aspect ratio then derives the height, clamped by max-h.
+  const isSvg = /\.svg([?#]|$)/i.test(src)
   return (
     <span className="inline-block my-2">
       {/* The <img> is the lightbox trigger; dispatchLightbox needs the image
@@ -235,6 +241,7 @@ function ImgWithFallback({
       <img
         src={url} alt={alt || ''} loading="lazy"
         className="max-w-[240px] max-h-[160px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity"
+        style={isSvg ? { width: '240px', height: 'auto' } : undefined}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
         title={alt || src}

@@ -7,14 +7,18 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
-from .embedder import embed_signature
+from .embedder import embedder_signature
 from .folder_watcher import FolderWatcher
-from .ingestion import _REBUILD_STALE_AFTER, IngestionPipeline, rebuild_embeddings
+from .ingestion import (
+    IngestionPipeline,
+    count_stale_items,
+    rebuild_embeddings,
+    start_rebuild_job,
+)
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -25,8 +29,7 @@ FOLDER_SOURCE_TYPES = {"local_folder", "obsidian_vault"}
 class KnowledgeWatcher:
     """Polls registered local_file sources for file changes and re-ingests."""
 
-    def __init__(self, store: KnowledgeStore, pipeline: IngestionPipeline,
-                 interval: int = 300):
+    def __init__(self, store: KnowledgeStore, pipeline: IngestionPipeline, interval: int = 300):
         self.store = store
         self.pipeline = pipeline
         self.interval = interval
@@ -55,8 +58,10 @@ class KnowledgeWatcher:
         # Folder sources (local_folder, obsidian_vault)
         folder_rows = self.store.db.execute(
             "SELECT id, uri, source_type, properties FROM sources WHERE source_type IN ({})".format(
-                ",".join("?" for _ in FOLDER_SOURCE_TYPES)),
-            tuple(FOLDER_SOURCE_TYPES)).fetchall()
+                ",".join("?" for _ in FOLDER_SOURCE_TYPES)
+            ),
+            tuple(FOLDER_SOURCE_TYPES),
+        ).fetchall()
         for row in folder_rows:
             try:
                 source = dict(row)
@@ -67,8 +72,13 @@ class KnowledgeWatcher:
                 if stats.get("error"):
                     logger.warning("Folder scan error for %s: %s", source["uri"], stats["error"])
                 elif any(stats.get(k, 0) for k in ("new", "changed", "deleted")):
-                    logger.info("Folder scan %s: +%d ~%d -%d", source["uri"],
-                                stats.get("new", 0), stats.get("changed", 0), stats.get("deleted", 0))
+                    logger.info(
+                        "Folder scan %s: +%d ~%d -%d",
+                        source["uri"],
+                        stats.get("new", 0),
+                        stats.get("changed", 0),
+                        stats.get("deleted", 0),
+                    )
             except Exception:
                 logger.exception("Error scanning folder source %s", row["uri"])
 
@@ -100,11 +110,13 @@ class KnowledgeWatcher:
                 if mtime > stored_mtime:
                     # Check content hash to avoid re-ingesting touched-but-unchanged files
                     content_hash = await asyncio.get_running_loop().run_in_executor(
-                        None, self._hash_file, Path(uri))
+                        None, self._hash_file, Path(uri)
+                    )
                     if content_hash != props.get("content_hash"):
                         logger.info("Source changed: %s", uri)
                         await self.pipeline.ingest_file(
-                            uri, source_id=row["id"],
+                            uri,
+                            source_id=row["id"],
                             namespace=props.get("namespace", "default"),
                         )
                         # Re-read props after ingest (ingest may update them)
@@ -137,32 +149,22 @@ class KnowledgeWatcher:
             return
         if self._reembed_task and not self._reembed_task.done():
             return
-        sig = embed_signature(embedder.model, embedder.content_budget)
-        stale = self.store.db.execute(
-            "SELECT COUNT(*) AS c FROM items "
-            "WHERE status = 'active' AND (embedding_sig IS NULL OR embedding_sig != ?)",
-            (sig,)).fetchone()["c"]
+        sig = embedder_signature(embedder)
+        # Stale count excludes items in retry backoff (recently-failed) so a
+        # perpetually-failing item can't drive a fresh rebuild every scan.
+        stale = count_stale_items(self.store, sig)
         if not stale:
             return
-        # Don't stack on a dashboard-triggered rebuild already in flight. A row
-        # stale past the window is from a crash that bypassed cleanup; ignore it.
-        fresh = (datetime.now() - _REBUILD_STALE_AFTER).isoformat()
-        active = self.store.db.execute(
-            "SELECT id FROM ingestion_jobs WHERE source_id IS NULL AND status = 'processing' "
-            "AND updated_at > ? ORDER BY created_at DESC LIMIT 1",
-            (fresh,)
-        ).fetchone()
-        if active:
+        # Atomically claim the single-flight slot (sweeps crashed leftovers, guards
+        # against racing the dashboard trigger). None -> a rebuild is already running.
+        # Offloaded: the BEGIN IMMEDIATE write-lock acquisition (busy_timeout up to
+        # 10s) must not block the event loop this coroutine runs on.
+        job_id = await asyncio.to_thread(start_rebuild_job, self.store)
+        if job_id is None:
             return
-        job_id = uuid4().hex[:12]
-        now = datetime.now().isoformat()
-        self.store.db.execute(
-            "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
-            "VALUES (?, NULL, 'processing', ?, ?)",
-            (job_id, now, now))
-        self.store.db.commit()
-        logger.info("Watcher self-heal: %d items with stale embedding sig, rebuild job %s",
-                    stale, job_id)
+        logger.info(
+            "Watcher self-heal: %d items with stale embedding sig, rebuild job %s", stale, job_id
+        )
         self._reembed_task = asyncio.create_task(self._run_reembed_job(embedder, job_id))
 
     async def _run_reembed_job(self, embedder, job_id: str) -> None:
@@ -171,12 +173,16 @@ class KnowledgeWatcher:
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = 'completed', items_processed = ?, "
                 "updated_at = ? WHERE id = ?",
-                (processed, datetime.now().isoformat(), job_id))
+                (processed, datetime.now().isoformat(), job_id),
+            )
             self.store.db.commit()
             sel().log_tool_invocation(
-                session_key="watcher", agent="knowledge-watcher",
-                tool_name="knowledge.batch_embed", outcome="completed",
-                resources=str({"count": processed, "rebuild": True, "source": "self_heal"}))
+                session_key="watcher",
+                agent="knowledge-watcher",
+                tool_name="knowledge.batch_embed",
+                outcome="completed",
+                resources=str({"count": processed, "rebuild": True, "source": "self_heal"}),
+            )
         except BaseException as exc:
             # CancelledError is a BaseException in 3.8+; finalize the row so the
             # single-flight guard can't be permanently blocked, then re-raise it.
@@ -186,14 +192,27 @@ class KnowledgeWatcher:
                 logger.debug("Watcher self-heal rebuild %s cancelled", job_id)
             else:
                 logger.exception("Watcher self-heal rebuild %s failed", job_id)
-            self.store.db.execute(
-                "UPDATE ingestion_jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
-                (status, str(exc), datetime.now().isoformat(), job_id))
-            self.store.db.commit()
-            sel().log_tool_invocation(
-                session_key="watcher", agent="knowledge-watcher",
-                tool_name="knowledge.batch_embed", outcome=status,
-                resources=str({"rebuild": True, "source": "self_heal"}), error=str(exc))
+            # Best-effort finalize: if this UPDATE itself raises (e.g. db locked while
+            # cancelling), it must not replace the CancelledError -- asyncio shutdown
+            # has to see the cancel, so guard the SQL and re-raise unconditionally.
+            try:
+                self.store.db.execute(
+                    "UPDATE ingestion_jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                    (status, str(exc), datetime.now().isoformat(), job_id),
+                )
+                self.store.db.commit()
+                sel().log_tool_invocation(
+                    session_key="watcher",
+                    agent="knowledge-watcher",
+                    tool_name="knowledge.batch_embed",
+                    outcome=status,
+                    resources=str({"rebuild": True, "source": "self_heal"}),
+                    error=str(exc),
+                )
+            except Exception:
+                logger.exception(
+                    "Watcher self-heal: best-effort finalize of %s also failed", job_id
+                )
             if is_cancel:
                 raise
 

@@ -4,6 +4,7 @@ import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { api } from '../api/client'
 import { StatCard } from '../components/ui'
+import { TunnelStatus } from '../components/TunnelStatus'
 import { MemoryTab, AgentCfgTab, KiroCrewCfgTab, UsageTab, PortabilityTab } from './overview'
 
 const tabs = ['memory', 'usage', 'kirocrewcfg', 'agentcfg', 'portability']
@@ -30,6 +31,7 @@ export default function OverviewPage() {
         ] as { label: string; value?: string | number | null; accent?: boolean }[]).map((s, i) => (
           <StatCard key={s.label} label={s.label} value={s.value} accent={s.accent} delay={i * 60} />
         ))}
+        <TunnelStatus delay={6 * 60} />
       </div>
         <div className="flex gap-1 mb-4 border-b border-border">
           {tabs.map(t => (

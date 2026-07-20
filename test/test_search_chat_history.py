@@ -42,6 +42,21 @@ class TestHelpers:
         assert mcp_core._extract_history_snippet([{"role": "user", "content": "abc"}], "") == ""
         assert mcp_core._extract_history_snippet([{"role": "user", "content": "abc"}], "   ") == ""
 
+    def test_snippet_full_casefold_match_is_delimited(self):
+        # The selection (str.casefold().find) and the wrap must use the SAME full
+        # casefolding: 'straße'.casefold() == 'strasse' matches 'STRASSE', but a
+        # re.IGNORECASE wrap would miss it and return an undelimited snippet.
+        msgs = [{"role": "user", "content": "DIE STRASSE IST LANG"}]
+        snip = mcp_core._extract_history_snippet(msgs, "straße")
+        assert "<<<STRASSE>>>" in snip
+
+    def test_casefold_match_span_maps_source_indices(self):
+        # Multi-char fold: the returned span indexes the SOURCE string so the
+        # wrap never splits a character.
+        span = mcp_core._casefold_match_span("DIE STRASSE IST LANG", "straße".casefold())
+        assert span == (4, 11)
+        assert mcp_core._casefold_match_span("abc", "zzz") is None
+
     def test_incognito_detection(self):
         assert mcp_core._history_is_incognito({"memory_mode": "incognito"})
         assert mcp_core._history_is_incognito({"memory_mode": "temporary"})
@@ -112,10 +127,28 @@ class TestSearchChatHistoryHandler:
     def test_get_chat_session_returns_transcript(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         _seed_sessions(tmp_path)
-        out = mcp_core._call_tool_inner(
-            "get_chat_session", {"session_key": "dashboard_chat-1"}
-        )
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
         assert "redis.timeout" in out
+
+    def test_legacy_metadataless_session_still_surfaces(self, tmp_path, monkeypatch):
+        # A legacy session file whose first line is a message (predates the
+        # metadata line) yields {} from get_metadata. Search must NOT drop it:
+        # get_chat_session serves such files fine, so excluding them would hide
+        # readable conversations from search.
+        import json
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        sessions = tmp_path / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        legacy = sessions / "dashboard_chat-legacy.jsonl"
+        legacy.write_text(
+            json.dumps({"role": "user", "content": "the legacy widget still works"}) + "\n",
+            encoding="utf-8",
+        )
+        cl = ConversationLog(base_dir=sessions)
+        assert cl.get_metadata("dashboard_chat-legacy") == {}  # no metadata line
+        out = mcp_core._call_tool_inner("search_chat_history", {"query": "legacy widget"})
+        assert "dashboard_chat-legacy" in out
 
     def test_get_chat_session_refuses_incognito(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
@@ -215,16 +248,13 @@ class TestSessionKeySafety:
             assert "Invalid session_key" in out
 
     def test_get_chat_session_redacts_key_on_not_found(self, tmp_path, monkeypatch):
-        # AutoSDE security-controls: the not_found early return echoes the
-        # LLM-supplied key — it MUST pass through dual redaction so a crafted
-        # credential-bearing key isn't reflected unredacted.
+        # The not_found early return must never reflect the LLM-supplied key —
+        # a crafted credential-bearing key must not appear in the output.
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         _seed_sessions(tmp_path)
-        out = mcp_core._call_tool_inner(
-            "get_chat_session", {"session_key": "AKIAIOSFODNN7EXAMPLE"}
-        )
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "AKIAIOSFODNN7EXAMPLE"})
         assert "AKIAIOSFODNN7EXAMPLE" not in out
-        assert "REDACTED" in out
+        assert "fp:" in out  # not-found now returns a fingerprint, not the raw/echoed key
 
 
 class TestGetChatSessionWorkspaceGate:
@@ -263,3 +293,88 @@ class TestGetChatSessionWorkspaceGate:
             "get_chat_session", {"session_key": "dashboard_chat-beta", "all_workspaces": True}
         )
         assert "secret beta content" in out
+
+
+class TestPostMergeHardening:
+    """Post-merge security-review hardening regressions."""
+
+    # Redact BEFORE inserting <<<>>> markers so a query that is a substring
+    # of a secret in stored content can't split the token and defeat redaction.
+    def test_snippet_redacts_credential_even_when_query_is_prefix(self):
+        content = "the cred AKIAIOSFODNN7EXAMPLE was rotated"
+        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], "AKIA")
+        assert "AKIAIOSFODNN7EXAMPLE" not in snip
+        assert "REDACTED" in snip
+
+    # Casefold length expansion (ß→ss) must not misalign the wrap.
+    def test_snippet_casefold_length_expansion_aligned(self):
+        content = "die Straße is the street"
+        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], "straße")
+        # The exact matched original text is wrapped, nothing swallowed/shifted.
+        assert "<<<Straße>>>" in snip
+
+    # Snippet must come from user/assistant content, not a tool trace.
+    def test_snippet_skips_tool_role(self):
+        msgs = [
+            {"role": "tool", "content": "[trace] redis health probe ok status=200"},
+            {"role": "user", "content": "how do I tune the redis timeout?"},
+        ]
+        snip = mcp_core._extract_history_snippet(msgs, "redis")
+        assert "trace" not in snip
+        assert "tune the" in snip
+
+    # A non-string workspace value must bucket to "default", not compare
+    # unequal and silently hide the session.
+    def test_ws_bucket_normalizes_non_string(self):
+        assert mcp_core._ws_bucket(["alpha"]) == "default"
+        assert mcp_core._ws_bucket(None) == "default"
+        assert mcp_core._ws_bucket("") == "default"
+        assert mcp_core._ws_bucket("alpha") == "alpha"
+
+    # An impossible calendar date must error, not silently return unfiltered.
+    def test_impossible_date_errors(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        _seed_sessions(tmp_path)
+        out = mcp_core._call_tool_inner(
+            "search_chat_history", {"query": "redis", "before": "2026-02-30"}
+        )
+        assert "Invalid 'before' date" in out
+
+    # The not-found path must NOT echo the raw key (markdown injection);
+    # it returns a fingerprint instead.
+    def test_not_found_does_not_reflect_raw_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        _seed_sessions(tmp_path)
+        payload = "click[here](mailto:attacker-example)"
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": payload})
+        assert payload not in out
+        assert "fp:" in out
+
+    # ".." as a substring (not a path component) must NOT be rejected, so
+    # search and read agree on which keys are valid.
+    def test_dotdot_substring_key_allowed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = ConversationLog(base_dir=tmp_path / "sessions")
+        (tmp_path / "sessions").mkdir(parents=True, exist_ok=True)
+        cl.append("dashboard_chat-2..3", "user", "redis notes here")
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-2..3"})
+        assert "Invalid session_key" not in out
+        assert "redis notes here" in out
+
+    # Many high-score cross-workspace decoys must not starve a real
+    # default-bucket caller match ranked below the old limit*3 window.
+    def test_no_starvation_from_cross_workspace_decoys(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        sessions = tmp_path / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        cl = ConversationLog(base_dir=sessions)
+        # 35 alpha-workspace decoys that score very high on "widget"
+        for i in range(35):
+            cl.append(f"decoy-{i}", "user", ("widget " * 30))
+            cl.update_metadata(f"decoy-{i}", {"workspace": "alpha"})
+        # one real default-bucket match
+        cl.append("real", "user", "the widget bug we discussed")
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "")
+        out = mcp_core._call_tool_inner("search_chat_history", {"query": "widget", "limit": 5})
+        assert "real" in out
+        assert "decoy-" not in out

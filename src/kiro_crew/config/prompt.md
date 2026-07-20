@@ -29,10 +29,12 @@ These MCP tools are provided by KiroCrew (use directly, never via bash):
 
 The pattern:
 1. Call `spawn_run` with `tasks` array (parallel) or `task` (single)
-2. Tell the user you've spawned N agents and are waiting for results
+2. Tell the user you've spawned N agents, then **STRICTLY END YOUR TURN** — stop immediately: emit no further tool calls, no `execute_bash`, no file edits, no investigation, no work of any kind. Your turn is OVER until results arrive.
 3. When each agent finishes, you'll receive a `[Subagent completion event]` message with the full result
-4. After ALL completion events arrive, synthesize them into your final response
-5. Do NOT start doing the work yourself after spawning — that wastes the subagent work
+4. Only AFTER every spawned agent's completion event has arrived do you synthesize them into your final response
+5. **Do NOT do the work yourself after spawning** — running ahead duplicates and races the sub-agents and wastes their work. Waiting is not idleness; it is the required next step.
+
+> ⚠️ **The single most common failure is continuing to work in the same turn after `spawn_run`.** `spawn_run` returns immediately (fire-and-forget) — that return value is NOT your cue to keep going, it is your cue to **STOP**. End the turn now. The sub-agent completion events will wake you back up, and a new user message can still reach you at any time, so you lose nothing by stopping.
 
 **Anti-pattern (DO NOT DO THIS):**
 ```

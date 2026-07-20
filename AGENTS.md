@@ -422,6 +422,10 @@ should always use the MCP tool equivalents.
 | — | `artifact_folder_move` | kirocrew-core |
 | — | `artifact_folder_delete` | kirocrew-core |
 | — | `artifact_move` | kirocrew-core |
+| — | `artifact_get_comments` | kirocrew-core |
+| — | `artifact_post_comment` | kirocrew-core |
+| — | `artifact_mark_review` | kirocrew-core |
+| — | `artifact_delete_comment` | kirocrew-core |
 | — | `browser_navigate` | playwright |
 | — | `browser_click` | playwright |
 | — | `browser_snapshot` | playwright |

@@ -17,8 +17,7 @@ from kiro_crew.sandbox import (
     _STRICT_DIRS,
     _build_launcher_script,
     _build_seatbelt_profile,
-    _is_native_kiro,
-    _resolve_real_kiro_bin,
+    _resolve_agent_executable,
     _ssh_supports_accept_new,
     detect_backend,
     namespace_argv,
@@ -409,7 +408,7 @@ class TestSandboxExecArgv:
 
 
 class TestNamespaceArgv:
-    @patch("kiro_crew.sandbox._resolve_real_kiro_bin", return_value="/usr/local/bin/kiro-cli")
+    @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
     def test_wraps_with_python_launcher(self, mock_resolve):
         result = namespace_argv(["kiro-cli", "acp"], "strict")
         assert result[0] == sys.executable
@@ -419,7 +418,7 @@ class TestNamespaceArgv:
         # Cleanup temp file
         os.unlink(result[1])
 
-    @patch("kiro_crew.sandbox._resolve_real_kiro_bin", return_value="/usr/local/bin/kiro-cli")
+    @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
     def test_launcher_script_is_executable(self, mock_resolve):
         result = namespace_argv(["kiro-cli"], "strict")
         launcher_path = result[1]
@@ -450,221 +449,40 @@ class TestSshSupportsAcceptNew:
         _ssh_supports_accept_new.cache_clear()
 
 
-class TestResolveRealKiroBin:
-    @staticmethod
-    def _mk_native(path: Path) -> Path:
-        """Create an executable file with a valid Mach-O 64-bit magic header."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 60)
-        path.chmod(0o755)
-        return path
+class TestAgentExecutableResolver:
+    def test_default_resolver_is_identity(self):
+        assert _resolve_agent_executable("/usr/local/bin/kiro-cli") == "/usr/local/bin/kiro-cli"
 
-    def test_native_magic_is_platform_specific(self, tmp_path):
-        """ELF valid only on Linux, Mach-O (incl. FAT_MAGIC_64) only on macOS."""
-        elf = tmp_path / "e" / "kiro-cli"
-        elf.parent.mkdir(parents=True)
-        elf.write_bytes(b"\x7fELF" + b"\x00" * 60)
-        elf.chmod(0o755)
-        fat64 = tmp_path / "u" / "kiro-cli"
-        fat64.parent.mkdir(parents=True)
-        fat64.write_bytes(b"\xca\xfe\xba\xbf" + b"\x00" * 60)  # FAT_MAGIC_64
-        fat64.chmod(0o755)
-        with patch("kiro_crew.sandbox.sys.platform", "darwin"):
-            assert _is_native_kiro(fat64) is True  # universal binary accepted
-            assert _is_native_kiro(elf) is False  # ELF rejected on macOS
-        with patch("kiro_crew.sandbox.sys.platform", "linux"):
-            assert _is_native_kiro(elf) is True
-            assert _is_native_kiro(fat64) is False  # Mach-O rejected on Linux
+    def test_edition_resolver_can_replace_executable(self):
+        resolver = MagicMock()
+        resolver.resolve_executable.return_value = "/opt/agent/bin/kiro-cli"
+        context = MagicMock()
+        context.agent_executable = resolver
+        with patch("kiro_crew.sandbox.current_context", return_value=context):
+            result = _resolve_agent_executable("/usr/local/bin/kiro-cli")
+        assert result == "/opt/agent/bin/kiro-cli"
+        resolver.resolve_executable.assert_called_once_with("/usr/local/bin/kiro-cli")
 
-    def test_native_check_respects_hooks_prefix_block(self, tmp_path):
-        """If the hooks-backed prefix read refuses the path (sensitive target or
-        symlink race), the candidate is rejected without classifying it native."""
-        native = self._mk_native(tmp_path / "kiro-cli")
-        with patch("kiro_crew.sandbox.sys.platform", "darwin"), patch(
-            "kiro_crew.hooks.safe_read_prefix", return_value=None
-        ):
-            assert _is_native_kiro(native) is False
-
-    def test_non_kiro_binary_returns_unchanged(self):
-        assert _resolve_real_kiro_bin("/usr/bin/python3") == "/usr/bin/python3"
-
-    def test_kiro_cli_fallback_when_no_real_binary(self, tmp_path):
-        # Empty home + non-existent shim → every strategy misses → unchanged.
-        with patch("kiro_crew.sandbox.Path.home", return_value=tmp_path), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
-        ):
-            result = _resolve_real_kiro_bin("/usr/local/bin/kiro-cli")
+    def test_transient_resolver_failure_preserves_original(self):
+        resolver = MagicMock()
+        resolver.resolve_executable.side_effect = RuntimeError("resolver unavailable")
+        context = MagicMock()
+        context.agent_executable = resolver
+        with patch("kiro_crew.sandbox.current_context", return_value=context):
+            result = _resolve_agent_executable("/usr/local/bin/kiro-cli")
         assert result == "/usr/local/bin/kiro-cli"
 
-    def test_does_not_resolve_planted_higher_version_from_toolbox(self, tmp_path):
-        """Security: a higher-version binary planted in the user-writable toolbox
-        dir must NOT be selected — resolution follows only the trusted symlink."""
-        home = tmp_path
-        tb = home / ".toolbox" / "tools" / "kiro-cli"
-        trusted = self._mk_native(
-            tb / "2.13.0" / "Kiro CLI.app" / "Contents" / "MacOS" / "kiro-cli"
-        )
-        # Trusted installer symlink → the active version.
-        link = home / ".local" / "bin" / "kiro-cli"
-        link.parent.mkdir(parents=True)
-        link.symlink_to(trusted)
-        # Attacker plants a higher version in the user-writable toolbox dir.
-        planted = self._mk_native(
-            tb / "99.0.0" / "Kiro CLI.app" / "Contents" / "MacOS" / "kiro-cli"
-        )
-        # Supplied path is the aim-sandbox shim (not native), forcing fallback.
-        shim = home / "shimdir" / "kiro-cli"
-        shim.parent.mkdir(parents=True)
-        shim.write_text('#!/bin/bash\nexec aim sandbox --client kiro-cli "$@"\n')
-        shim.chmod(0o755)
-        with patch("kiro_crew.sandbox.Path.home", return_value=home), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
-        ):
-            result = _resolve_real_kiro_bin(str(shim))
-        assert result == str(trusted)
-        assert result != str(planted)
+    def test_composition_failure_propagates(self):
+        from kiro_crew.platform.context import PlatformCompositionError
 
-    def test_supplied_native_path_wins_over_local_bin(self, tmp_path):
-        """An explicit native path is honored before ~/.local/bin (no stale override)."""
-        home = tmp_path
-        self._mk_native(home / ".local" / "bin" / "kiro-cli")
-        supplied = self._mk_native(home / "custom" / "kiro-cli")
-        with patch("kiro_crew.sandbox.Path.home", return_value=home), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
+        resolver = MagicMock()
+        resolver.resolve_executable.side_effect = PlatformCompositionError("companion unavailable")
+        context = MagicMock()
+        context.agent_executable = resolver
+        with patch("kiro_crew.sandbox.current_context", return_value=context), pytest.raises(
+            PlatformCompositionError
         ):
-            result = _resolve_real_kiro_bin(str(supplied))
-        assert result == str(supplied)
-
-    def test_symlink_shim_resolves_to_native_target(self, tmp_path):
-        """A symlink shim is followed straight to the native .app binary."""
-        home = tmp_path
-        real = self._mk_native(
-            home
-            / ".toolbox"
-            / "tools"
-            / "kiro-cli"
-            / "2.13.0"
-            / "Kiro CLI.app"
-            / "Contents"
-            / "MacOS"
-            / "kiro-cli"
-        )
-        link = home / ".local" / "bin" / "kiro-cli"
-        link.parent.mkdir(parents=True)
-        link.symlink_to(real)
-        with patch("kiro_crew.sandbox.Path.home", return_value=home), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
-        ):
-            result = _resolve_real_kiro_bin(str(link))
-        assert result == str(real)
-
-    def test_explicit_non_toolbox_script_override_is_honored(self, tmp_path):
-        """A non-toolbox 'kiro-cli' script override must NOT be replaced by a
-        toolbox install (preserves the KIROCREW_KIRO_BIN override contract)."""
-        home = tmp_path
-        # A toolbox install exists and would otherwise be selected.
-        self._mk_native(
-            home
-            / ".toolbox"
-            / "tools"
-            / "kiro-cli"
-            / "2.13.0"
-            / "Kiro CLI.app"
-            / "Contents"
-            / "MacOS"
-            / "kiro-cli"
-        )
-        override = home / "custom" / "kiro-cli"
-        override.parent.mkdir(parents=True)
-        override.write_text("#!/bin/bash\necho fake-kiro\n")  # not an aim-sandbox shim
-        override.chmod(0o755)
-        with patch("kiro_crew.sandbox.Path.home", return_value=home), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
-        ):
-            result = _resolve_real_kiro_bin(str(override))
-        assert result == str(override)
-
-    def test_non_executable_target_is_rejected(self, tmp_path):
-        """A non-executable candidate is rejected by the exec-bit guard, so
-        resolution falls back to the supplied path unchanged."""
-        home = tmp_path
-        target = (
-            home
-            / ".toolbox"
-            / "tools"
-            / "kiro-cli"
-            / "2.13.0"
-            / "Kiro CLI.app"
-            / "Contents"
-            / "MacOS"
-            / "kiro-cli"
-        )
-        target.parent.mkdir(parents=True)
-        target.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 60)  # native magic, but NOT +x
-        link = home / ".local" / "bin" / "kiro-cli"
-        link.parent.mkdir(parents=True)
-        link.symlink_to(target)
-        with patch("kiro_crew.sandbox.Path.home", return_value=home), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
-        ):
-            result = _resolve_real_kiro_bin(str(link))
-        assert result == str(link)
-
-    def test_reresolves_after_symlink_repoint_retaining_old(self, tmp_path):
-        """A toolbox upgrade that repoints the symlink but RETAINS the old
-        install must still resolve to the new active version (no stale value)."""
-        home = tmp_path
-        tb = home / ".toolbox" / "tools" / "kiro-cli"
-        old = self._mk_native(
-            tb / "2.13.0" / "Kiro CLI.app" / "Contents" / "MacOS" / "kiro-cli"
-        )
-        link = home / ".local" / "bin" / "kiro-cli"
-        link.parent.mkdir(parents=True)
-        link.symlink_to(old)
-        with patch("kiro_crew.sandbox.Path.home", return_value=home), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
-        ):
-            assert _resolve_real_kiro_bin(str(link)) == str(old)
-            # Upgrade: new version installed, symlink repointed, OLD kept on disk.
-            new = self._mk_native(
-                tb / "2.14.0" / "Kiro CLI.app" / "Contents" / "MacOS" / "kiro-cli"
-            )
-            link.unlink()
-            link.symlink_to(new)
-            # The old install still exists and is still native — a stale cache
-            # would return it; a fresh resolution returns the new active version.
-            assert old.exists()
-            assert _resolve_real_kiro_bin(str(link)) == str(new)
-
-    def test_unresolved_fallback_is_not_cached(self, tmp_path):
-        """A miss (no real binary) must NOT be cached, so a later install is picked up."""
-        home = tmp_path
-        shim = home / "shimdir" / "kiro-cli"
-        shim.parent.mkdir(parents=True)
-        shim.write_text('#!/bin/bash\nexec aim sandbox --client kiro-cli "$@"\n')
-        shim.chmod(0o755)
-        with patch("kiro_crew.sandbox.Path.home", return_value=home), patch(
-            "kiro_crew.sandbox.sys.platform", "darwin"
-        ):
-            # First call: nothing installed → fallback to shim unchanged.
-            assert _resolve_real_kiro_bin(str(shim)) == str(shim)
-            # kiro-cli gets installed mid-process (trusted symlink appears).
-            real = self._mk_native(
-                home
-                / ".toolbox"
-                / "tools"
-                / "kiro-cli"
-                / "2.13.0"
-                / "Kiro CLI.app"
-                / "Contents"
-                / "MacOS"
-                / "kiro-cli"
-            )
-            link = home / ".local" / "bin" / "kiro-cli"
-            link.parent.mkdir(parents=True)
-            link.symlink_to(real)
-            # Must re-resolve (miss was not cached), not return the stale fallback.
-            assert _resolve_real_kiro_bin(str(shim)) == str(real)
+            _resolve_agent_executable("/usr/local/bin/kiro-cli")
 
 
 class TestSandboxNoWarningWhenExpected:

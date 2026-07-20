@@ -46,6 +46,7 @@ class TestDefaultContext:
         assert ctx.sandbox.strict_dirs() == list(sandbox._STRICT_DIRS)
         assert ctx.sandbox.cc_dirs() == list(sandbox._CC_DIRS)
         assert set(ctx.agent_runtime.managed_mcp_servers()) == set(agent._MANAGED_MCP_SERVERS)
+        assert ctx.agent_executable.resolve_executable("/usr/bin/kiro-cli") == "/usr/bin/kiro-cli"
         assert ctx.registry.public_git_hosts() == registry._PUBLIC_GIT_HOSTS
         assert ctx.tunnel.enabled() is False
         assert ctx.telemetry.frontend_rum_config() is None

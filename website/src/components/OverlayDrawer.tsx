@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 interface Props {
   open: boolean
@@ -13,9 +13,15 @@ interface Props {
 }
 
 const EASE = [0.32, 0.72, 0, 1] as const
-const DUR = 0.25
 
 export default function OverlayDrawer({ open, width, dragging, morph, className, children }: Props) {
+  const reduce = useReducedMotion()
+  // Gesture end settles from the live presentation value via a critically
+  // damped spring (no overshoot, no visible jump) — never a fixed ease tween.
+  // Reduced motion: drop the spring for a short opacity-only settle.
+  const settle = reduce
+    ? { duration: 0.2 }
+    : { type: 'spring' as const, bounce: 0, duration: 0.35 }
   return (
     <AnimatePresence initial={false}>
       {open && (
@@ -27,9 +33,9 @@ export default function OverlayDrawer({ open, width, dragging, morph, className,
           transition={
             dragging
               ? { duration: 0 }
-              : morph
+              : morph && !reduce
                 ? { width: { duration: 0.32, ease: EASE }, opacity: { duration: 0.12, ease: EASE } }
-                : { duration: DUR, ease: EASE }
+                : settle
           }
           className={`shrink-0 py-2 overflow-hidden ${className || ''}`}
         >

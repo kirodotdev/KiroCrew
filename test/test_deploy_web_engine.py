@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from kiro_crew.apps.builtins.deploy_web import engine
+from kiro_crew.deploy import engine
 
 
 class FakeAWS:

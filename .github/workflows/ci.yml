@@ -26,12 +26,23 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        with:
+          enable-cache: true
+          # This repo has no uv.lock (pip/pyproject-managed), so point the
+          # cache key at the files that define the dependency set. Without
+          # this, setup-uv defaults to globbing **/uv.lock, finds nothing,
+          # and errors: "No file matched to [**/uv.lock]".
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[voice]" --group dev
+        # uv resolves/installs the heavy deps far faster than pip and caches
+        # across runs. --system targets the setup-python interpreter (no venv);
+        # --group pulls [dependency-groups].dev from pyproject.
+        run: uv pip install --system -e ".[voice]" --group dev
 
       # black --check is still disabled: a bulk format pass (~406 files) has not
       # been run yet. Do it as a standalone formatting PR, then re-enable:
@@ -53,24 +64,55 @@ jobs:
     name: Backend Tests
     runs-on: ubuntu-latest
     strategy:
+      # Don't cancel sibling shards when one fails -- we want the full failure
+      # picture across the suite, not just the first shard to break.
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.12"]
+        # Duration-balanced shards (pytest-split). 4 groups x 2 Python = 8
+        # parallel jobs, each on its own runner (4 cores via -n auto). To add
+        # shards, extend this list AND bump SHARD_COUNT to match -- mind the
+        # ~20 concurrent-job ceiling for public repos.
+        group: [1, 2, 3, 4]
+    env:
+      SHARD_COUNT: 4
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        with:
+          enable-cache: true
+          # This repo has no uv.lock (pip/pyproject-managed), so point the
+          # cache key at the files that define the dependency set. Without
+          # this, setup-uv defaults to globbing **/uv.lock, finds nothing,
+          # and errors: "No file matched to [**/uv.lock]".
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[voice,desktop]" --group dev
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
 
-      - name: Run tests
+      - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # pytest-split slices the suite into SHARD_COUNT balanced groups. With a
+        # committed .test_durations file the split is balanced by *recorded time*,
+        # and brand-new tests are auto-assigned the average duration (distributed
+        # with no manual work); without that file it falls back to an even split
+        # by test count. -n auto still parallelizes within each shard across the
+        # runner's cores -- sharding scales across runners, -n auto across cores.
+        #
+        # Coverage runs only on 3.12 (fast sys.monitoring path); each shard emits
+        # a partial data file merged later by the coverage-combine job. 3.10
+        # passes --no-cov (overriding setup.cfg's forced --cov) for a trace-free,
+        # faster run.
         run: |
-          pytest -q -n auto --timeout=120 --cov=kiro_crew --cov-report=xml \
+          pytest -q -n auto --timeout=120 \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            ${{ matrix.python-version == '3.12' && '--cov=kiro_crew' || '--no-cov' }} \
             --deselect=test/test_script_hooks.py \
             --deselect=test/test_cron_script.py \
             --deselect=test/test_run_aim_path.py
@@ -78,8 +120,63 @@ jobs:
         #   test_script_hooks, test_cron_script: Linux namespace sandbox (unshare NEWNS)
         #   test_run_aim_path: `aim` CLI binary (Amazon-internal tool)
 
-      - name: Upload coverage
+      - name: Stage shard coverage data
         if: matrix.python-version == '3.12'
+        # Fold any xdist parallel data files into a single .coverage (no-op if
+        # pytest-cov already combined this shard), then name it per-shard so the
+        # combine job can merge all shards with `coverage combine`.
+        run: |
+          coverage combine 2>/dev/null || true
+          test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
+          mv .coverage ".coverage.${{ matrix.group }}"
+
+      - name: Upload shard coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-shard-${{ matrix.group }}
+          path: .coverage.${{ matrix.group }}
+          # upload-artifact v4 excludes dotfiles unless this is set.
+          include-hidden-files: true
+          if-no-files-found: error
+
+  coverage-combine:
+    name: Coverage Combine
+    needs: backend-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install coverage
+        run: uv pip install --system coverage==7.10.6
+
+      - name: Download shard coverage data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true
+
+      - name: Combine into unified coverage.xml
+        # The downloaded .coverage.<group> files are parallel data files;
+        # `coverage combine` merges them. -o pins the output path (setup.cfg's
+        # [coverage:xml] otherwise redirects it under build/coverage/).
+        run: |
+          coverage combine
+          coverage xml -o coverage.xml
+          coverage report
+
+      - name: Upload combined coverage
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-backend
@@ -121,6 +218,22 @@ jobs:
       - name: Copy/paste detection
         working-directory: website
         run: npx jscpd .
+
+  cfn-lint:
+    name: CloudFormation Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint deploy templates
+        run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
 
   frontend-test:
     name: Frontend Tests

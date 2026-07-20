@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent, AcpPromptStats
@@ -511,6 +512,7 @@ class TestAcpSessionProviderClientCompat:
         handle = _make_handle()
         runtime = _make_runtime()
         from pathlib import Path
+
         runtime._work_dir = Path("/home/user/workspace")
         provider = AcpSessionProvider(handle, runtime)
         assert provider._work_dir == Path("/home/user/workspace")
@@ -768,16 +770,30 @@ class TestAcpSessionProviderRuntimeDeadTranslation:
             lambda p: p.set_model("m"),
             lambda p: p.set_mode("kirocrew"),
         ],
-        ids=["approve_tool", "reject_tool", "send_command",
-             "set_config_option", "compact", "set_model", "set_mode"],
+        ids=[
+            "approve_tool",
+            "reject_tool",
+            "send_command",
+            "set_config_option",
+            "compact",
+            "set_model",
+            "set_mode",
+        ],
     )
     @pytest.mark.asyncio
     async def test_runtime_dead_translates_to_process_died(self, call):
         from kiro_crew.acp.client import AcpProcessDied
 
         handle = _make_handle()
-        for m in ("approve_tool", "reject_tool", "send_command",
-                  "set_config_option", "compact", "set_model", "set_mode"):
+        for m in (
+            "approve_tool",
+            "reject_tool",
+            "send_command",
+            "set_config_option",
+            "compact",
+            "set_model",
+            "set_mode",
+        ):
             setattr(handle, m, AsyncMock(side_effect=AcpRuntimeDead("dead")))
         runtime = _make_runtime()
         runtime.saw_not_logged_in = lambda: False
@@ -858,3 +874,137 @@ class TestAcpSessionProviderContractParity:
         provider = AcpSessionProvider(handle, runtime)
         await provider.approve_tool("req", option_id="allow_always")
         handle.approve_tool.assert_awaited_once_with("req", option_id="allow_always")
+
+
+class TestNewConversation:
+    """AcpSessionProvider.new_conversation — the cheap warm-reset primitive the
+    workflow session pool relies on. Correctness matters more than speed here: a
+    buggy reset would leak one workflow step's context into the next. Asserts it
+    (1) creates a FRESH session on the SAME runtime and swaps the handle,
+    (2) DESTROYS the old session (frees context — the isolation guarantee),
+    (3) raises AcpProcessDied on a dead runtime so the pool self-heals, and
+    (4) creates-before-destroys so a failed create leaves the old handle usable."""
+
+    def _runtime_with_new_session(self, alive: bool = True):
+        runtime = _make_runtime(alive=alive)
+        runtime._work_dir = "/tmp/ws"
+        runtime._agent = "kirocrew"
+        new_handle = _make_handle(session_id="fresh-session-2")
+        runtime.create_session = AsyncMock(return_value=new_handle)
+        return runtime, new_handle
+
+    @pytest.mark.asyncio
+    async def test_creates_fresh_session_on_same_runtime_and_swaps_handle(self):
+        old = _make_handle(session_id="old-session-1")
+        runtime, new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        # Fresh session/new on the SAME runtime (cwd+agent from the runtime).
+        runtime.create_session.assert_awaited_once_with(cwd="/tmp/ws", agent="kirocrew")
+        # Handle swapped to the fresh session → next prompt starts clean.
+        assert provider._handle is new_handle
+        assert provider.session_id == "fresh-session-2"
+
+    @pytest.mark.asyncio
+    async def test_destroys_old_session_to_free_context(self):
+        old = _make_handle(session_id="old-session-1")
+        runtime, _ = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        # The isolation guarantee: the prior session is torn down on the shared
+        # process (frees its transcript/context + MCP children — no cross-task bleed).
+        old.destroy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_raises_when_runtime_dead(self):
+        old = _make_handle(session_id="old-session-1")
+        runtime, _ = self._runtime_with_new_session(alive=False)
+        provider = AcpSessionProvider(old, runtime)
+
+        with pytest.raises(AcpProcessDied):
+            await provider.new_conversation()
+        # No attempt to create a session on a dead runtime; old handle untouched.
+        runtime.create_session.assert_not_awaited()
+        assert provider._handle is old
+
+    @pytest.mark.asyncio
+    async def test_create_before_destroy_keeps_old_handle_on_failure(self):
+        old = _make_handle(session_id="old-session-1")
+        runtime, _ = self._runtime_with_new_session()
+        runtime.create_session = AsyncMock(side_effect=RuntimeError("session/new boom"))
+        provider = AcpSessionProvider(old, runtime)
+
+        with pytest.raises(RuntimeError):
+            await provider.new_conversation()
+        # Create failed → provider still points at the ORIGINAL live session
+        # (never a window referencing a terminated one), and old was NOT destroyed.
+        assert provider._handle is old
+        old.destroy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_success_survives_old_destroy_failure(self):
+        """A failure destroying the OLD session must not fail the reset — the new
+        session is already live and swapped in (best-effort cleanup)."""
+        old = _make_handle(session_id="old-session-1")
+        old.destroy = AsyncMock(side_effect=RuntimeError("terminate boom"))
+        runtime, new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()  # must NOT raise
+        assert provider._handle is new_handle
+
+    @pytest.mark.asyncio
+    async def test_reapplies_configured_model_to_fresh_session(self):
+        """A fresh session/new reverts to the agent-default model, so a warm
+        worker configured with a NON-default model must have it re-applied on
+        every reset — else every reused task silently runs on the wrong model."""
+        old = _make_handle(session_id="old-session-1")
+        old.model = "claude-opus-4-8"  # the configured non-default model
+        runtime, new_handle = self._runtime_with_new_session()
+        new_handle.set_model = AsyncMock()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        # The fresh session is re-pinned to the configured model.
+        new_handle.set_model.assert_awaited_once_with("claude-opus-4-8")
+
+    @pytest.mark.asyncio
+    async def test_default_model_sentinel_not_reapplied(self):
+        """The "auto" sentinel means "let kiro pick per agent config" — no
+        set_model call, matching the cold-start handshake."""
+        old = _make_handle(session_id="old-session-1")
+        old.model = "auto"
+        runtime, new_handle = self._runtime_with_new_session()
+        new_handle.set_model = AsyncMock()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        new_handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_model_reapply_failure_tears_down_and_raises(self):
+        """A set_model failure on the fresh session must NOT commit a wrong-model
+        handle: the fresh session is torn down and the call raises so the caller
+        (WorkerPool) hard-resets. Committing it would silently run every later
+        pooled step on the default model."""
+        from kiro_crew.acp.client import AcpError
+
+        old = _make_handle(session_id="old-session-1")
+        old.model = "claude-opus-4-8"
+        runtime, new_handle = self._runtime_with_new_session()
+        new_handle.set_model = AsyncMock(side_effect=RuntimeError("set_model boom"))
+        new_handle.destroy = AsyncMock()
+        provider = AcpSessionProvider(old, runtime)
+
+        with pytest.raises(AcpError):
+            await provider.new_conversation()
+        # Fresh (wrong-model) session was torn down; the old handle is NOT
+        # destroyed and stays the provider's handle for the hard-reset fallback.
+        new_handle.destroy.assert_awaited_once()
+        assert provider._handle is old

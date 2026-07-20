@@ -641,6 +641,87 @@ def stat_identity(raw: str) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
+def _fd_real_path(fd: int) -> str | None:
+    """Real filesystem path of an OPEN descriptor (Linux/macOS), else None."""
+    import os
+
+    try:
+        return os.readlink(f"/proc/self/fd/{fd}")  # Linux
+    except OSError:
+        pass
+    try:
+        import fcntl
+
+        if hasattr(fcntl, "F_GETPATH"):  # macOS
+            buf = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+            return buf.split(b"\x00", 1)[0].decode()
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def safe_read_file_bytes_nolink(raw: str, within_root: str | None = None) -> bytes | None:
+    """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
+
+    R30 F1: staging must pin its hardlink check to the SAME inode it reads.
+    A caller that lstat()s the path and then opens it by name leaves a race
+    window where the file is swapped for a hardlink to a sensitive file
+    (e.g. ``~/.aws/config``) between the check and the open. Here the open
+    happens first (``O_NOFOLLOW``), then ``fstat()`` on the descriptor —
+    the inode that is validated is exactly the inode that is read:
+    ``st_nlink > 1`` or a non-regular file type is rejected.
+
+    R33 F1: when ``within_root`` is given, the OPENED descriptor's real path
+    (via ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS) must resolve
+    inside that root and must not be sensitive. ``O_NOFOLLOW`` only guards the
+    FINAL path component — a nested directory swapped for a symlink between
+    the tree walk and the open would silently escape the approved tree. The
+    fd-path check is pinned to the inode actually opened, so no check-to-use
+    window remains. If the fd's real path cannot be determined, fail closed.
+
+    Returns file content as bytes, or None if the path is rejected,
+    hardlinked, non-regular, escaping ``within_root``, or unreadable.
+    """
+    import os
+    import stat as _stat
+
+    path = validate_file_path(raw)
+    if path is None:
+        return None
+
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if st.st_nlink > 1 or not _stat.S_ISREG(st.st_mode):
+            return None
+        if within_root is not None:
+            fd_real = _fd_real_path(fd)
+            if fd_real is None:
+                return None  # cannot verify containment -> fail closed
+            root_real = os.path.realpath(within_root)
+            if os.path.commonpath([fd_real, root_real]) != root_real:
+                return None  # opened inode escapes the approved tree
+            if is_sensitive_path(fd_real):
+                return None
+        with os.fdopen(fd, "rb") as fh:
+            data = fh.read(MAX_FILE_BYTES + 1)
+        fd = -1  # consumed by fdopen
+        if len(data) > MAX_FILE_BYTES:
+            raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
+        return data
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def safe_read_prefix(raw: str, n: int) -> bytes | None:
     """Read the first *n* bytes of a file through is_sensitive_path enforcement.
 

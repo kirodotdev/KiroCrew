@@ -158,7 +158,11 @@ def _provider_effectively_alive(provider: Any) -> bool:
     copy of this decision because it also evicts the stale entry and emits
     path-specific logging; that copy must stay in sync with this helper.
     """
-    alive = provider.is_process_alive() if hasattr(provider, "is_process_alive") else provider.is_alive()
+    alive = (
+        provider.is_process_alive()
+        if hasattr(provider, "is_process_alive")
+        else provider.is_alive()
+    )
     if (
         not alive
         and ClaudeCodeProvider is not None
@@ -232,6 +236,7 @@ _CHANNEL_PREFIX = "channel:"
 _SIDE_PREFIX = "side:"
 
 # Stateless session-key prefixes — skip resume across restarts.
+_WORKFLOW_POOL_PREFIX = "wf-pool:"
 _STATELESS_PREFIXES = (
     "cron:",
     _SUBAGENT_PREFIX,
@@ -239,6 +244,13 @@ _STATELESS_PREFIXES = (
     _CHANNEL_PREFIX,
     "secretary:",
     _SIDE_PREFIX,
+    # Warm workflow-pool workers (workflows/agent_pool.py) are per-run ephemeral
+    # sessions reset between tasks via provider.new_conversation(); they must
+    # NEVER persist a session_map entry or resume a prior transcript. Without
+    # this, the pool's hard-reset fallback (new_conversation failed -> reset +
+    # re-acquire) would resume the prior task's conversation via session/load,
+    # leaking cross-task context — violating the pool's isolation guarantee.
+    _WORKFLOW_POOL_PREFIX,
 )
 
 # Background session key — cron and lessons share this session.
@@ -735,7 +747,8 @@ class SessionManager:
                     raise
                 logger.warning(
                     "get_bg_session: _bg runtime died, respawning (attempt %d/%d)",
-                    attempt + 1, max_retries,
+                    attempt + 1,
+                    max_retries,
                 )
                 async with self._bg_runtime_lock:
                     if self._bg_runtime is not None and not self._bg_runtime.is_alive():
@@ -790,7 +803,8 @@ class SessionManager:
                     except Exception:
                         logger.debug(
                             "get_subagent_runtime: dead runtime kill failed for %s",
-                            parent_session_key, exc_info=True,
+                            parent_session_key,
+                            exc_info=True,
                         )
                 agent = agent or self._get_session_agent(parent_session_key) or "kirocrew"
                 # Mirror the parent's security posture (sandbox + MCP gateway +
@@ -805,7 +819,10 @@ class SessionManager:
                     attempt += 1
                     logger.warning(
                         "Subagent runtime spawn failed for %s (attempt %d/%d), retrying",
-                        parent_session_key, attempt, max_retries + 1, exc_info=True,
+                        parent_session_key,
+                        attempt,
+                        max_retries + 1,
+                        exc_info=True,
                     )
                     continue
                 self._subagent_runtimes[parent_session_key] = runtime
@@ -949,9 +966,7 @@ class SessionManager:
         # Cold path: open a fresh session on the run's shared runtime. Runtime
         # I/O (get_subagent_runtime spawn + create_session) is kept OUTSIDE the
         # global lock to avoid pinning it across subprocess/RPC work.
-        runtime = await self._get_or_bootstrap_run_runtime(
-            parent_session_key, agent=agent, cwd=cwd
-        )
+        runtime = await self._get_or_bootstrap_run_runtime(parent_session_key, agent=agent, cwd=cwd)
         handle = await runtime.create_session(cwd=cwd or None, agent=agent or None)
         provider = AcpSessionProvider(handle, runtime)
 
@@ -1893,7 +1908,9 @@ class SessionManager:
                 try:
                     await _dup_provider.shutdown()
                 except Exception:
-                    logger.warning("Failed to shut down duplicate provider for %s", key, exc_info=True)
+                    logger.warning(
+                        "Failed to shut down duplicate provider for %s", key, exc_info=True
+                    )
             await _won_race_sess.semaphore.acquire()
             # Re-validate after acquiring, mirroring the fast path: the winning
             # session may have been recycled/reaped while we waited on its
@@ -1903,9 +1920,8 @@ class SessionManager:
             # cleanly) rather than handing back a stale/dead provider.
             async with self._lock:
                 _wsess = _won_race_sess
-                _still_valid = (
-                    self._sessions.get(key) is _wsess
-                    and _provider_effectively_alive(_wsess.provider)
+                _still_valid = self._sessions.get(key) is _wsess and _provider_effectively_alive(
+                    _wsess.provider
                 )
             if _still_valid:
                 return _won_race_sess.provider, False, False
@@ -1955,9 +1971,7 @@ class SessionManager:
                     raw_pid = _cc_proc.pid
             pid = raw_pid if isinstance(raw_pid, int) else None
             raw_children = getattr(client, "_child_pids", None) if client else None
-            child_pids: dict = (
-                dict(raw_children) if isinstance(raw_children, dict) else {}
-            )
+            child_pids: dict = dict(raw_children) if isinstance(raw_children, dict) else {}
             # Lazy import to avoid circular dependency with acp.client.
             # Imported unconditionally so _kill_escaped_children is always
             # defined for the post-shutdown sweep below.
@@ -2142,7 +2156,8 @@ class SessionManager:
                 except asyncio.TimeoutError:
                     logger.warning(
                         "Session %s recycle: turn still active after %.0fs, forcing recycle",
-                        key, _COMPACT_TIMEOUT_SECS,
+                        key,
+                        _COMPACT_TIMEOUT_SECS,
                     )
             try:
                 async with self._lock:
@@ -2600,7 +2615,8 @@ class SessionManager:
                 elapsed = time.monotonic() - t0
                 logger.info(
                     "stop_turn outcome=soft-acked session=%s elapsed=%.2fs",
-                    key, elapsed,
+                    key,
+                    elapsed,
                 )
                 # kiro-cli discards cancelled turns from its conversation log,
                 # so the next prompt must re-inject the cancelled turn context.
@@ -2616,9 +2632,10 @@ class SessionManager:
                 return "idle"
             # timeout or error → escalate to hard kill
             logger.info(
-                "stop_turn outcome=escalated-to-hard session=%s "
-                "cancel_result=%r elapsed=%.2fs",
-                key, outcome, time.monotonic() - t0,
+                "stop_turn outcome=escalated-to-hard session=%s " "cancel_result=%r elapsed=%.2fs",
+                key,
+                outcome,
+                time.monotonic() - t0,
             )
 
         # --- Hard kill path ---
@@ -2631,7 +2648,8 @@ class SessionManager:
         elapsed = time.monotonic() - t0
         logger.info(
             "stop_turn outcome=hard-done session=%s elapsed=%.2fs",
-            key, elapsed,
+            key,
+            elapsed,
         )
         # Keep a strong reference — the event loop holds only a weak ref,
         # and without this the task could be GC'd mid-respawn.
@@ -2686,7 +2704,9 @@ class SessionManager:
                 logger.warning(
                     "abort-push skipped for %s: no runtime pid/socket resolved "
                     "(pid=%r socket=%r) — in-flight tool calls will not be cancelled",
-                    key, pid, socket_path,
+                    key,
+                    pid,
+                    socket_path,
                 )
         except Exception:
             logger.debug("_send_abort_for_session failed for %s", key, exc_info=True)
@@ -2873,25 +2893,19 @@ class SessionManager:
                 if sweep_ok:
                     # Identify candidates in thread (blocking I/O)
                     candidates = await asyncio.get_running_loop().run_in_executor(
-                        maintenance_executor(),
-                        find_orphan_mcp_candidates, sweep_pids
+                        maintenance_executor(), find_orphan_mcp_candidates, sweep_pids
                     )
                     # Re-verify against fresh active PIDs before killing
                     if candidates:
-                        fresh_pids, fresh_ok = _collect_active_pids(
-                            self._sessions
-                        )
+                        fresh_pids, fresh_ok = _collect_active_pids(self._sessions)
                         fresh_pids.update(self._pool_pids())
                         fresh_pids.update(self._in_flight_pids())
                         fresh_pids.update(self._companion_runtime_pids())
                         if fresh_ok:
-                            confirmed = [
-                                p for p in candidates if p not in fresh_pids
-                            ]
+                            confirmed = [p for p in candidates if p not in fresh_pids]
                             if confirmed:
                                 await asyncio.get_running_loop().run_in_executor(
-                                    maintenance_executor(),
-                                    kill_orphan_mcps, confirmed
+                                    maintenance_executor(), kill_orphan_mcps, confirmed
                                 )
                         else:
                             # Distinguish "reaper skipped" from "no orphans":

@@ -145,6 +145,8 @@ export interface McpApplyChange {
 
 export interface ChatSlot {
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null
+  /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
+  webapp_metadata?: WebAppMetadata
   // Board fields
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean
   // Soft-stop state machine
@@ -329,10 +331,49 @@ export interface ForkMetadata {
   forked_at: string
 }
 
+/** One provider-neutral remote listing row, as returned by
+ * GET /api/remote-artifacts/{provider}/browse. Inert in the public edition —
+ * the endpoint 404s until a companion registers a provider.
+ *
+ * Fields fall into two groups:
+ *  - The documented backend RemoteListing core (external_id, title, owner,
+ *    view_url, updated_at, snippet) plus the handler's local_slug annotation —
+ *    always present on a contract-faithful provider.
+ *  - Optional companion extensions (tags, visibility, current_version,
+ *    editable) beyond the base RemoteListing contract. A provider that only
+ *    serializes the core dataclass omits these, so any UI gated on them (e.g.
+ *    the Clone shortcut, which requires `editable`) simply doesn't render. */
+export interface RemoteArtifact {
+  /** The provider's stable id (clone/fork routes key on it). */
+  external_id: string
+  title: string
+  owner?: string
+  /** The provider's human link for the remote copy. */
+  view_url?: string
+  /** Best-effort ISO/epoch string for sort/display. */
+  updated_at?: string
+  snippet?: string
+  /** Companion extension (not in the base RemoteListing contract). */
+  tags?: string[]
+  /** Companion extension (not in the base RemoteListing contract). */
+  visibility?: string
+  /** Companion extension (not in the base RemoteListing contract). */
+  current_version?: number
+  /** Set by the browse handler: the local slug if this remote artifact is
+   * already cloned/forked onto this device (else null). */
+  local_slug?: string | null
+  /** Companion extension (not in the base RemoteListing contract).
+   * Positive-only hint: the caller can edit the remote copy, so a Clone
+   * shortcut is offered. NOT an enforcement gate — the provider remains
+   * sole authority at push time. A core-only provider omits it, so Clone is
+   * not shown (only Fork). */
+  editable?: boolean
+}
+
 export interface Artifact {
   slug: string
   name: string
-  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text'
+  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp'
   /** Provenance/origin bucket. Historically chat|cron|subagent|manual|import;
    * now also carries the actual session origin (dashboard|slack|cli|task-runner|
    * unknown), so treated as an open string. */
@@ -370,6 +411,8 @@ export interface Artifact {
   /** User pin/favorite mark. Metadata-only (no version bump). Drives the
    * All | Pinned filter on the Artifacts page. */
   pinned?: boolean
+  /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
+  webapp_metadata?: WebAppMetadata
 }
 
 /** A non-code document produced during a chat session — the virtual entries
@@ -452,4 +495,54 @@ export interface ArtifactComment {
   anchor_orphaned?: boolean
   created_at: string
   updated_at: string
+}
+
+// ── WebApp Artifact types (kind="webapp") ────────────────────────────────────
+
+export interface WebAppDeployTarget {
+  provider: string;
+  account: string;
+  region: string;
+  public_url: string;
+  profile: string;
+}
+
+export interface WebAppArchitecture {
+  tier: string;
+  frontend: string;
+  backend: string;
+  state: string;
+  resources: Array<{ type: string; id: string }>;
+}
+
+export interface WebAppLifecycle {
+  created_at: string;
+  expires_at: string | null;
+  persistent: boolean;
+  ttl_hours: number;
+  status: string;
+}
+
+export interface WebAppCost {
+  model: string;
+  window_hours: number;
+  estimates: Array<{ views: number; usd: number }>;
+  idle_usd: number;
+  note: string;
+}
+
+export interface WebAppTeardown {
+  method: string;
+  handle: string;
+  reversible: boolean;
+}
+
+export interface WebAppMetadata {
+  slug: string;
+  origin_session: string;
+  deploy_target: WebAppDeployTarget;
+  architecture: WebAppArchitecture;
+  lifecycle: WebAppLifecycle;
+  cost: WebAppCost;
+  teardown: WebAppTeardown;
 }

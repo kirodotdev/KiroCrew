@@ -208,6 +208,24 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     return resolved, None
 
 
+def _is_descendant(folders: list[dict], *, ancestor_id: str, folder_id: str) -> bool:
+    """True if `folder_id` is `ancestor_id` or lies anywhere under it.
+
+    Walks parent_id links upward from `folder_id` with a visited-set guard
+    so pre-existing corrupt cycles in folders.json can't hang the request.
+    """
+    by_id = {f["id"]: f for f in folders}
+    seen: set[str] = set()
+    cur: str | None = folder_id
+    while cur and cur not in seen:
+        if cur == ancestor_id:
+            return True
+        seen.add(cur)
+        node = by_id.get(cur)
+        cur = str(node.get("parent_id") or "") if node else None
+    return False
+
+
 async def api_chat_folder_create(request: web.Request) -> web.Response:
     """POST /api/chat/folders — create a project folder."""
     state: DashboardState = request.app["state"]
@@ -259,25 +277,46 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    # Validate ALL submitted fields into a pending-changes dict BEFORE mutating
+    # ``folder`` — otherwise an early field (e.g. name) is persisted while a later
+    # field (e.g. an invalid/cyclic parent_id) returns 400, leaving the rejected
+    # request's partial mutation live for the next successful save.
+    changes: dict[str, object] = {}
     if "name" in body:
         new_name = str(body["name"]).strip()[:100]
         if not new_name:
             return web.json_response({"error": "name required"}, status=400)
-        folder["name"] = new_name
+        changes["name"] = new_name
     if "collapsed" in body:
-        folder["collapsed"] = bool(body["collapsed"])
+        changes["collapsed"] = bool(body["collapsed"])
     if "hidden" in body:
-        folder["hidden"] = bool(body["hidden"])
+        changes["hidden"] = bool(body["hidden"])
     if "order" in body:
-        folder["order"] = int(body["order"])
+        changes["order"] = int(body["order"])
     if "default_agent" in body:
         val = body["default_agent"]
-        folder["default_agent"] = str(val).strip() if val is not None else ""
+        changes["default_agent"] = str(val).strip() if val is not None else ""
+    if "parent_id" in body:
+        # Re-parent: move this folder into another folder, or to the top
+        # level ("" / null). Reject self-parenting and cycles (the new
+        # parent must not be the folder itself or any of its descendants).
+        new_parent = str(body["parent_id"] or "")
+        if new_parent:
+            if new_parent == fid:
+                return web.json_response({"error": "folder cannot be its own parent"}, status=400)
+            if not any(f["id"] == new_parent for f in state._folders):
+                return web.json_response({"error": "parent folder not found"}, status=400)
+            if _is_descendant(state._folders, ancestor_id=fid, folder_id=new_parent):
+                return web.json_response(
+                    {"error": "cannot move a folder into its own descendant"},
+                    status=400,
+                )
+        changes["parent_id"] = new_parent
     if "project_dir" in body:
         pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
         if err:
             return web.json_response({"error": err}, status=400)
-        folder["project_dir"] = pd
+        changes["project_dir"] = pd
     if "icon" in body and body.get("regenerate_icon"):
         # Mutually exclusive: a manual icon would be saved and returned, then the
         # background regeneration would silently overwrite it. Reject the
@@ -293,7 +332,9 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         icon_val = str(raw_icon).strip() if raw_icon is not None else ""
         if icon_val and not _is_single_emoji(icon_val):
             return web.json_response({"error": "icon must be a single emoji"}, status=400)
-        folder["icon"] = icon_val[:16]
+        changes["icon"] = icon_val[:16]
+    # All fields validated — apply atomically.
+    folder.update(changes)
     if body.get("regenerate_icon"):
         # "Reset to auto" — re-run the LLM emoji generator in the background.
         # _generate_folder_icon saves + pushes a slots update on success.

@@ -279,3 +279,129 @@ class TestSessionKeyHeaderError:
         assert "error" in result
         assert "rename" in result["error"].lower()
         mock_urlopen.assert_not_called()
+
+
+# --- deploy_artifact MCP tool (item 6 R18) ---
+
+class TestDeployArtifactMCPTool:
+    """Tests for the deploy_artifact MCP tool handler."""
+
+    def test_deploy_artifact_preview_only(self):
+        """deploy_artifact is preview-only: never passes confirm or override_scan."""
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            mock_post.return_value = {
+                "requires_confirm": True,
+                "public": True,
+                "bytes": 4096,
+                "scan": "clean",
+                "site_id": "my-app",
+            }
+
+            result = _call_tool("deploy_artifact", {
+                "site_id": "my-app",
+                "artifact_slug": "my-demo",
+            })
+
+            mock_post.assert_called_once()
+            call_path, call_body = mock_post.call_args[0]
+            assert call_path == "/api/deploy/deploy"
+            assert call_body["site_id"] == "my-app"
+            assert call_body["artifact_slug"] == "my-demo"
+            # Preview-only: confirm and override_scan must NEVER be in the body
+            assert "confirm" not in call_body
+            assert "override_scan" not in call_body
+            assert "preview" in result.lower() or "confirm" in result.lower()
+            assert "dashboard" in result.lower()
+
+    def test_deploy_artifact_rejects_confirm_param(self):
+        """confirm param is rejected via schema — returns controlled error string."""
+        result = _call_tool("deploy_artifact", {
+            "site_id": "my-app",
+            "artifact_slug": "x",
+            "confirm": True,
+        })
+        assert result.startswith("Error:")
+        assert "unknown field" in result or "confirm" in result
+
+    def test_deploy_artifact_rejects_override_scan_param(self):
+        """override_scan param is rejected via schema — returns controlled error string."""
+        result = _call_tool("deploy_artifact", {
+            "site_id": "my-app",
+            "artifact_slug": "x",
+            "override_scan": True,
+        })
+        assert result.startswith("Error:")
+        assert "unknown field" in result or "override_scan" in result
+
+    def test_deploy_artifact_restricted_denial(self):
+        """deploy_artifact returns error when restricted-session denies."""
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            mock_post.return_value = {
+                "error": "restricted session cannot perform this operation"
+            }
+
+            result = _call_tool("deploy_artifact", {
+                "site_id": "s",
+                "artifact_slug": "a",
+            })
+
+            assert "Error:" in result
+            assert "restricted" in result
+
+    def test_deploy_artifact_blocked_by_scan(self):
+        """deploy_artifact returns scan-blocked response.
+
+        R24: credential findings are a HARD block; non-credential findings
+        persist a pending entry flagged for human override.
+        """
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            # Credential-class: hard block, no pending.
+            mock_post.return_value = {
+                "blocked": True,
+                "count": 2,
+                "credential": True,
+                "findings": "AKIA found, .pem found",
+            }
+            result = _call_tool("deploy_artifact", {
+                "site_id": "my-app",
+                "local_dir": "/tmp/test-site",
+            })
+            assert "BLOCKED" in result
+            assert "2" in result
+
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+                patch("kiro_crew.deploy.pending.add_pending") as mock_pending:
+            # Non-credential: overridable — pending entry with the flag.
+            mock_post.return_value = {
+                "blocked": True,
+                "count": 1,
+                "findings": "internal-host reference",
+            }
+            result = _call_tool("deploy_artifact", {
+                "site_id": "my-app",
+                "local_dir": "/tmp/test-site",
+            })
+            assert "blocked by scan" in result
+            assert "Pending confirmations" in result
+            assert mock_pending.call_count == 1
+            assert mock_pending.call_args[0][0]["override_scan_required"] is True
+
+    def test_deploy_artifact_ttl_in_preview(self):
+        """ttl_hours is forwarded to the API and shown in preview."""
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            mock_post.return_value = {
+                "requires_confirm": True,
+                "public": True,
+                "bytes": 500,
+                "scan": "clean",
+            }
+
+            result = _call_tool("deploy_artifact", {
+                "site_id": "test",
+                "artifact_slug": "art",
+                "ttl_hours": 24,
+            })
+
+            call_body = mock_post.call_args[0][1]
+            assert call_body["ttl_hours"] == 24
+            assert "24" in result

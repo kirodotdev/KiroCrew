@@ -25,6 +25,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
     from kiro_crew.platform.interfaces import (
+        AgentExecutableResolver,
         AgentRuntime,
         AppRegistryPolicy,
         AppsLoader,
@@ -94,6 +95,7 @@ class PlatformContext:
     providers: "ProviderRegistry"
     publish: "PublishRegistry"
     agent_runtime: "AgentRuntime"
+    agent_executable: "AgentExecutableResolver"
     sandbox: "SandboxPolicy"
     credentials: "CredentialPolicy"
     security: "PolicyAuthority"

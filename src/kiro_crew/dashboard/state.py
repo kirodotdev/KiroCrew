@@ -312,6 +312,21 @@ CRON_NOTIFY_PREFIX = "[Cron notification from "
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
+# One-shot synthesis turn fired after ALL sub-agents in a fan-out complete and
+# each result has been processed in its own turn (see gateway._subagent_done arm
+# + chat_runner drain/idle branch). Its visible reply is the consolidated,
+# user-facing summary. Rendered as an "inject" message (not a user bubble); the
+# prefix marks it as a synthetic continuation so it is NOT mirrored to linked
+# surfaces (Slack/Telegram) as though the user typed it.
+SUBAGENT_SYNTHESIS_PREFIX = "[SYSTEM] Sub-agent synthesis:"
+SUBAGENT_SYNTHESIS_PROMPT = (
+    f"{SUBAGENT_SYNTHESIS_PREFIX} all sub-agents you spawned have completed and each result was "
+    "processed above. Produce a single consolidated synthesis as your reply for the user: "
+    "(1) restate the original goal you spawned the sub-agents for, (2) synthesize the combined "
+    "findings across all of them (do not just repeat each result in turn), and (3) give concrete "
+    "recommended next actions or decisions. This is the user-facing deliverable — keep it clear "
+    "and actionable."
+)
 # Synthetic continuation injected after a recoverable tool refusal (host-gate
 # policy deny or the read-only bash gate) ended a turn early. Carries the
 # refusal reason back to the model so it can adapt instead of stalling for the
@@ -611,6 +626,8 @@ class _ChatSlot:
         "pinned",
         "tags",
         "_pending_subagent_failures",
+        "_pending_synthesis",
+        "_subagent_deliveries_inflight",
         "_recovery_retrigger_count",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
@@ -716,6 +733,17 @@ class _ChatSlot:
         self.pinned: bool = False  # pinned to top of sidebar
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         self._pending_subagent_failures: list[str] = []
+        # Fix 2 (B1): armed by gateway when the LAST sub-agent of a fan-out
+        # completes; consumed once by chat_runner's drain/idle branch to fire a
+        # single post-fan-out synthesis turn. Cleared if a user message drains
+        # first (user takes over).
+        self._pending_synthesis: bool = False
+        # Fix 2 (B1) race guard: number of sub-agent completion deliveries
+        # currently in flight for this slot (incremented in gateway._subagent_done
+        # from entry until the completion is queued/launched). The synthesis
+        # fire-gate requires this to be 0 so a concurrently-finishing sibling
+        # can't let an earlier turn fire synthesis before its result lands.
+        self._subagent_deliveries_inflight: int = 0
         self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
@@ -1466,17 +1494,38 @@ class DashboardState:
         except Exception:
             self._log.warning("WS broadcast failed for approval resolution", exc_info=True)
 
+    def resolve_state_approval(self, approval_id: str, approved: bool) -> bool:
+        """Resolve ONLY a state-level (background: cron/subagent/gateway) approval.
+
+        Does NOT scan slot-level futures — so it carries no cross-slot authority.
+        Callers that have already located the owning slot under a session-identity
+        guard (e.g. the dashboard slot-approve handler's fallback) MUST use this
+        rather than :meth:`resolve_approval`: a bare id-match slot scan would let a
+        request-id collision resolve an unrelated slot's pending tool, bypassing
+        the owner's session-identity check. Returns False if no state-level future
+        owns ``approval_id``.
+        """
+        fut = self._approval_futures.get(approval_id)
+        if fut and not fut.done():
+            fut.set_result(approved)
+            self._audit_and_broadcast_approval("state", approval_id, approved)
+            return True
+        return False
+
     def resolve_approval(self, approval_id: str, approved: bool) -> bool:
         """Resolve a pending approval. Returns False if not found.
 
         State-level futures receive ``bool`` (consumed by gateway, which converts to str).
         Slot-level futures receive ``str`` ("approved"/"rejected", consumed by channel.py).
+
+        This scans slot-level futures by bare id-match with NO session-identity
+        check, so it is safe only for callers that legitimately own the id
+        (native gateway / Slack click / session-scoped handler). A caller that
+        addresses one slot but may hold a colliding id from another MUST use
+        :meth:`resolve_state_approval` instead (see the slot-approve handler).
         """
         decision = "approved" if approved else "rejected"
-        fut = self._approval_futures.get(approval_id)
-        if fut and not fut.done():
-            fut.set_result(approved)
-            self._audit_and_broadcast_approval("state", approval_id, approved)
+        if self.resolve_state_approval(approval_id, approved):
             return True
         # Also check slot-level approval futures (chat tool approvals)
         for slot in self._slots.values():
