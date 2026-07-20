@@ -32,6 +32,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.workflows.runner import WorkflowRunner
 from kiro_crew.workflows.validate import validate
@@ -183,19 +184,51 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _authorized(self, method: str, raw_body: bytes) -> bool:
+        """Verify the gateway's X-KiroCrew-Proxy HMAC before dispatch (CWE-306).
+
+        Health stays unauthenticated (the gateway probes the backend directly,
+        unsigned). The signature binds the raw request body.
+        """
+        route = self.path.rstrip("/")
+        if route in ("", "/health", "/api", "/api/health"):
+            return True
+        if verify_proxy_request(
+            self.headers.get("X-KiroCrew-Proxy", ""),
+            method=method,
+            target=self.path,
+            body=raw_body,
+        ):
+            return True
+        self._send(401, {"error": "unauthorized"})
+        return False
+
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-        if self.path.rstrip("/") == "/health":
+        route = self.path.rstrip("/")
+        if route in ("/health", "/api/health"):
             self._send(200, {"status": "ok"})
-        elif self.path.rstrip("/") == "/examples":
+            return
+        if not self._authorized("GET", b""):
+            return
+        if route in ("/examples", "/api/examples"):
             self._send(200, handle_examples())
         else:
             self._send(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-        body = self._read_body()
-        if self.path.rstrip("/") == "/validate":
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length > 0 else b""
+        if not self._authorized("POST", raw):
+            return
+        try:
+            obj = json.loads(raw) if raw else {}
+            body = obj if isinstance(obj, dict) else {}
+        except json.JSONDecodeError:
+            body = {}
+        route = self.path.rstrip("/")
+        if route in ("/validate", "/api/validate"):
             self._send(200, handle_validate(body))
-        elif self.path.rstrip("/") == "/run":
+        elif route in ("/run", "/api/run"):
             self._send(200, handle_run(body))
         else:
             self._send(404, {"error": "not found"})

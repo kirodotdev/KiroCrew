@@ -7598,9 +7598,12 @@ class TestForkSlot:
 
         async with TestClient(TestServer(app_obj)) as client:
             resp = await client.post("/api/chat/slots/src/fork", json={})
-            assert resp.status == 403
+            # Cross-app access now returns 404 (indistinguishable from a missing
+            # slot) to prevent slot enumeration — the true reason is still
+            # recorded server-side via SEL (asserted below).
+            assert resp.status == 404
             data = await resp.json()
-            assert "does not own" in data["error"]
+            assert data["error"] == "not found"
 
         # denied event logged
         denied_calls = [

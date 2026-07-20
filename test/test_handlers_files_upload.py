@@ -251,28 +251,11 @@ async def test_upload_corrupted_docx_emits_zipfile_false_diagnostic(
             "wordprocessingml.document"
         ),
     )
-    with caplog.at_level(
-        logging.INFO, logger="kiro_crew.dashboard.handlers.files",
-    ):
-        async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.post("/api/upload/file", data=form)
-            # The handler still returns 200; corruption detection is
-            # the job of downstream parse, not the upload endpoint.
-            # The diagnostic line is what triages corruption later.
-            assert resp.status == 200, await resp.text()
-    diagnostics = [
-        r for r in caplog.records if "upload.file diagnostic" in r.getMessage()
-    ]
-    assert diagnostics, (
-        "Expected diagnostic for corrupted-but-named-.docx upload; got: "
-        f"{[r.getMessage() for r in caplog.records]}"
-    )
-    msg = diagnostics[0].getMessage()
-    # Upload pipeline preserved bytes (the corruption was source-side).
-    assert "match=True" in msg, msg
-    # The actual signal: the bytes are NOT a valid zip archive.
-    assert "is_zipfile=False" in msg, msg
-    # Magic reflects whatever was uploaded; pin to ASCII 'this' = 74686973
-    # so a refactor that swapped to a different slice is caught.
-    assert "magic=74686973" in msg, msg
-    assert "ext=.docx" in msg, msg
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        # A .docx whose bytes aren't a valid zip is now REJECTED at the upload
+        # boundary by the magic-byte content gate (CWE-434), before any write —
+        # a bogus / masquerading file no longer reaches disk.
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert "does not match its type" in body["error"]

@@ -361,7 +361,9 @@ class TestRewindSlot:
             resp = await api_chat_slot_rewind(fake_request)
         except _web.HTTPException as exc:
             resp = exc
-        assert resp.status == 403
+        # Cross-app access returns 404 (indistinguishable from a missing slot)
+        # to prevent slot enumeration; SEL still records the true reason.
+        assert resp.status == 404
 
 
 class TestRewindChainedHistory:

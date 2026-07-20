@@ -163,10 +163,22 @@ def _get_vector_store(state: DashboardState):
 
 
 async def api_memory_semantic(request: web.Request) -> web.Response:
-    """GET /api/memory/semantic — list all semantic memory entries."""
+    """GET /api/memory/semantic — list semantic memory entries (paginated).
+
+    Server-capped via ``min(limit, 1000)`` + ``offset`` so a single GET can't
+    serialize the whole (continuously-written) semantic table (CWE-770). The
+    bound is generous (≈4 MB worst case at the 4 KB per-value limit) so the
+    dashboard memory card's client-side filter keeps full coverage for typical
+    single-user stores; a store larger than this needs server-side search.
+    """
     store = _get_vector_store(request.app["state"])
+    try:
+        limit = min(int(request.query.get("limit", "1000")), 1000)
+        offset = int(request.query.get("offset", "0"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "limit/offset must be integers"}, status=400)
     entries = []
-    for e in store.get_all_semantic():
+    for e in store.get_all_semantic(limit=limit, offset=offset):
         d = {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))}
         entries.append(_redact_memory_field(d))
     return web.json_response({"entries": entries})

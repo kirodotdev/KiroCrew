@@ -419,8 +419,11 @@ async def _handle_settings(request: web.Request) -> web.Response:
         await _audit_settings("denied")
         return web.json_response({"ok": False, "error": str(exc)}, status=400)
     except Exception as exc:
-        logger.warning("settings write failed: %s", exc, exc_info=True)
-        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+        corr = uuid.uuid4().hex[:12]
+        logger.warning("settings write failed [%s]: %s", corr, exc, exc_info=True)
+        return web.json_response(
+            {"ok": False, "error": "internal error", "id": corr}, status=500
+        )
 
 
 async def _handle_namespaces(request: web.Request) -> web.Response:

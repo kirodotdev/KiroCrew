@@ -1441,11 +1441,34 @@ async def _poll_workflow_campaign(campaign_id: str, state: Any) -> None:
 # --- HTTP handlers ---
 
 
+async def _read_json_body(request: web.Request):
+    """Parse a JSON object body, or return a 400 ``web.Response``.
+
+    aiohttp's ``request.json()`` raises ``json.JSONDecodeError`` on a malformed
+    body; without this a client input error becomes an unhandled 500 (CWE-703).
+    Also type-checks the decoded body is a dict so downstream ``.get()``/``[]``
+    access can't raise AttributeError/KeyError on a valid-JSON non-object.
+    Callers: ``body = await _read_json_body(request); if isinstance(body,
+    web.Response): return body``.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "request body must be a JSON object"}, status=400
+        )
+    return body
+
+
 async def _handle_validate(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
     _audit("campaign_validate", "*")
-    body = await request.json()
+    body = await _read_json_body(request)
+    if isinstance(body, web.Response):
+        return body
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, validate_campaign, body)
     return web.json_response(result)
@@ -1572,7 +1595,9 @@ async def _grill_expand_children(
 async def _handle_grill_expand(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
-    body = await request.json()
+    body = await _read_json_body(request)
+    if isinstance(body, web.Response):
+        return body
     question = (body.get("question") or "").strip()
     if len(question) < 20:
         return web.json_response({"error": "Question too short"}, status=400)
@@ -1615,7 +1640,9 @@ async def _handle_grill_expand(request: web.Request) -> web.Response:
 async def _handle_create(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
-    body = await request.json()
+    body = await _read_json_body(request)
+    if isinstance(body, web.Response):
+        return body
     loop = asyncio.get_running_loop()
     v = await loop.run_in_executor(None, validate_campaign, body)
     if not v["can_start"]:
@@ -1676,7 +1703,9 @@ async def _handle_action(request: web.Request) -> web.Response:
     cid = request.match_info["id"]
     if not _validate_campaign_id(cid):
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
-    body = await request.json()
+    body = await _read_json_body(request)
+    if isinstance(body, web.Response):
+        return body
     action = body.get("action")
     status_map = {
         "start": CampaignStatus.RUNNING,
@@ -1823,7 +1852,9 @@ async def _handle_nudge(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    body = await request.json()
+    body = await _read_json_body(request)
+    if isinstance(body, web.Response):
+        return body
     text = body.get("text", "")
     if not text:
         return web.json_response({"error": "text required"}, status=400)
@@ -2168,7 +2199,9 @@ async def _handle_add_question(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    body = await request.json()
+    body = await _read_json_body(request)
+    if isinstance(body, web.Response):
+        return body
     text = (body.get("text") or "").strip()
     if not text:
         return web.json_response({"error": "text required"}, status=400)

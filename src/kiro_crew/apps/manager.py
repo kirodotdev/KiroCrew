@@ -895,6 +895,21 @@ def register_external_app(
     if not _check_path_safety(name):
         return AppResult(ok=False, error=f"unsafe app name: {name!r}")
 
+    # Enforce the canonical lowercase-ASCII kebab-case form on the
+    # self-registration path (CWE-178). Admission normalizes with
+    # NFKC+casefold+strip, but the backend below stores/resolves the app by the
+    # RAW name (app_dir(name), _write_installed(name), write_app_secret(name)),
+    # so without this an admitted "Safe-App"/"safe-app "/Unicode-equivalent
+    # would diverge from the approved identity. install_app/update_app already
+    # gate on KEBAB_RE via AppManifest; this closes the register_external gap.
+    from kiro_crew.apps.manifest import KEBAB_RE
+
+    if not KEBAB_RE.match(name):
+        return AppResult(
+            ok=False, name=name,
+            error=f"invalid app name (must be lowercase kebab-case): {name!r}",
+        )
+
     # Admission: register_external_app writes enabled=True and is HTTP-reachable
     # (POST /api/apps/register), so it is an install+enable path and MUST be
     # gated too — otherwise a banned/non-allowlisted app can self-register and

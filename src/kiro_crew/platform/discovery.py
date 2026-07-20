@@ -112,6 +112,24 @@ def discover_companion_context(
     decision = evaluate_admission(ep, policy)
     if not decision.allowed:
         logger.error("plugin %r rejected by admission policy: %s", ep.name, decision.reason)
+        # Land the DENY on the immutable audit trail, not just the app log —
+        # plugin admission is an authorization-decision chokepoint (ban /
+        # allowlist / invalid-signature / capability-ceiling). Mirrors the
+        # fail-closed SEL emit in platform/admission.py (CWE-778). Best-effort:
+        # this runs on the bootstrap path where SEL may not be fully wired.
+        try:
+            from kiro_crew.sel import sel
+
+            sel().log_api_access(
+                caller="_host",
+                operation="plugin.admission",
+                outcome="denied",
+                source="apps.admission",
+                resources=f"plugin={ep.name}",
+                error=decision.reason,
+            )
+        except Exception:
+            logger.debug("plugin-admission DENY SEL emit unavailable", exc_info=True)
         raise PluginAdmissionError(
             f"plugin {ep.name!r} rejected by admission policy: {decision.reason}"
         )

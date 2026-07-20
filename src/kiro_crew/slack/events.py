@@ -1242,6 +1242,22 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _safe_log(text: str) -> str:
+    """Sanitize free-form, user-controlled Slack text before logging.
+
+    Strips CR/LF/tab to prevent log-forging (CWE-117) then redacts exfil URLs
+    and credentials so customer prompt content isn't written verbatim to the
+    app log (CWE-532). Mirrors the redaction the rest of this module already
+    applies to other logged content.
+    """
+    if not text:
+        return text
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text
+
+
 async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     """Route ``/kirocrew <sub-command>`` via :data:`SLASH_REGISTRY`.
 
@@ -1251,7 +1267,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     cmd_text = payload.get("text", "").strip()
     caller_id = payload.get("user_id", "")
     response_url = payload.get("response_url", "")
-    logger.info("Slash command: %s %s (caller=%s)", cmd, cmd_text, caller_id)
+    logger.info("Slash command: %s %s (caller=%s)", cmd, _safe_log(cmd_text), caller_id)
 
     async def _respond(text: str, blocks: list[dict] | None = None) -> None:
         if not response_url:
@@ -2160,7 +2176,11 @@ async def _route_message(
     # surfaces a `_CHALLENGE_REDIRECT_ENABLED` gate or a `send_channel_challenge`
     # call here, DROP that hunk — see skills/meshclaw-sync/SKILL.md.
     logger.info(
-        "Message from %s in %s (activation=%s): %s", sender_id, channel, activation, text[:80]
+        "Message from %s in %s (activation=%s): %s",
+        sender_id,
+        channel,
+        activation,
+        _safe_log(text[:80]),
     )
 
     # ── Queue check: if session is busy, enqueue instead of blocking ──

@@ -79,7 +79,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 source="app_isolation", resources=f"slot={name}",
                 error="app cannot rewind unscoped or unowned slot",
             )
-            return web.json_response({"error": "app cannot rewind this slot"}, status=403)
+            # 404 (not 403): indistinguishable from a missing slot —
+            # anti-enumeration (CWE-204); true reason logged via SEL above.
+            return web.json_response({"error": "not found"}, status=404)
 
     try:
         body = await request.json()

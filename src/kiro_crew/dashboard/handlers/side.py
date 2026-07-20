@@ -221,7 +221,7 @@ def _check_slot_ownership(
             error="app cannot access unscoped slots",
         )
         return web.json_response(
-            {"error": "app cannot access unscoped slots"}, status=403,
+            {"error": "not found"}, status=404,
         )
     if slot._app != request_app:
         sel().log_api_access(
@@ -232,8 +232,10 @@ def _check_slot_ownership(
             resources=f"slot={slot.key}",
             error="app does not own this slot",
         )
+        # 404 (not 403) so a foreign/unscoped slot is indistinguishable from a
+        # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
         return web.json_response(
-            {"error": "app does not own this slot"}, status=403,
+            {"error": "not found"}, status=404,
         )
     return None
 

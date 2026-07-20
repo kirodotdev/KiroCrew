@@ -475,6 +475,15 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
 
     # Spawn process — use manifest backend type if available, fall back to heuristic
     env = minimal_env(PORT=str(port), KIROCREW_APP_NAME=app_name)
+    # Inject the per-app proxy secret so the backend can verify the
+    # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
+    # (CWE-306). Without it the loopback backend would trust any local caller.
+    try:
+        _proxy_secret = (root / ".app_secret").read_text().strip()
+        if _proxy_secret:
+            env["KIROCREW_PROXY_SECRET"] = _proxy_secret
+    except OSError:
+        pass
     entry_str = str(entry) if entry else entry_point
 
     # Prefer explicit backend type from manifest over content sniffing

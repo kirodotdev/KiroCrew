@@ -36,9 +36,11 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.hooks import safe_read_file_bytes
 from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 from kiro_crew.security import is_sensitive_path
@@ -588,16 +590,42 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), fmt % args)
 
     # ----- routing -----
+    def _authorized_or_health(self, method: str) -> bool:
+        """Verify the gateway's X-KiroCrew-Proxy HMAC before dispatch (CWE-306).
+
+        The health endpoint stays unauthenticated because the gateway's own
+        liveness probe (apps/backend.py) hits the backend directly, unsigned.
+        A read-only GET carries no body, so the signed body hash is sha256(b"").
+        """
+        route = urllib.parse.urlparse(self.path).path.rstrip("/")
+        if route in ("", "/health", "/api", "/api/health"):
+            return True
+        if verify_proxy_request(
+            self.headers.get("X-KiroCrew-Proxy", ""),
+            method=method,
+            target=self.path,
+            body=b"",
+        ):
+            return True
+        _sel_audit("proxy_auth_failed", self.path, outcome="denied")
+        self._json(401, {"error": "unauthorized"})
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self._authorized_or_health("GET"):
+            return
         try:
             self._dispatch("GET")
         except PathError as exc:
             if exc.status == 403:
                 _sel_audit("access_denied", self.path, outcome="denied")
             self._json(exc.status, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("GET %s failed", self.path)
-            self._json(500, {"error": str(exc)})
+        except Exception:  # noqa: BLE001
+            corr = uuid.uuid4().hex[:12]
+            logger.exception("GET %s failed [%s]", self.path, corr)
+            # Generic body + correlation id — do not echo raw exception text to
+            # the (reverse-proxied, browser-facing) client (CWE-209).
+            self._json(500, {"error": "internal error", "id": corr})
 
     def _dispatch(self, method: str) -> None:
         url = urllib.parse.urlparse(self.path)

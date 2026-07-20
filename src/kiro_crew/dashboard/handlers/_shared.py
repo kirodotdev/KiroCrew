@@ -698,13 +698,25 @@ def read_skill_file(skill_root: Path, rel_path: str) -> tuple[str, str | None]:
         return "", "read failed"
 
 
+def _read_session_key(request: "Any") -> str:
+    """Read and normalize the ``X-Session-Key`` header for authz comparisons.
+
+    Strips surrounding whitespace so the authorization gate matches the
+    canonical stored key form and the routing endpoints (which already
+    ``.strip()``). A trailing space / stray whitespace must not let a
+    restricted or read-blocked session slip past the restricted-key set or the
+    slot lookup (CWE-178/180 — inconsistent normalization in an auth context).
+    """
+    return request.headers.get("X-Session-Key", "").strip()
+
+
 def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
     """Check if request comes from an ephemeral (incognito) or temporary (guest) session.
 
     Reads X-Session-Key header (set by browser and MCP subprocesses).
     Returns True if the session should be blocked from memory operations.
     """
-    sk = request.headers.get("X-Session-Key", "")
+    sk = _read_session_key(request)
     if not sk:
         return False
     if sk == "dashboard:ui":
@@ -725,7 +737,7 @@ def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
 
 def _blocks_reads_session(state: DashboardState, request: "Any") -> bool:
     """Check if request comes from a temporary session that blocks memory reads."""
-    sk = request.headers.get("X-Session-Key", "")
+    sk = _read_session_key(request)
     if not sk or sk == "dashboard:ui":
         return False
     slot_name = sk.split(":", 1)[-1] if ":" in sk else sk

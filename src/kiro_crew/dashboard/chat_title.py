@@ -313,7 +313,7 @@ async def _generate_title_via_kiro(
         logger.debug("Title generation skipped — no usable messages")
         return ""
 
-    logger.debug("Title generation prompt (%d chars): %s", len(prompt), prompt[:120])
+    logger.debug("Title generation prompt (%d chars)", len(prompt))
     session = await state.sessions.get_bg_session()
     text = ""
     try:

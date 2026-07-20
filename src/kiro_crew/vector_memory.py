@@ -472,11 +472,21 @@ class VectorMemoryStore:
         ).fetchone()
         return dict(row) if row else None
 
-    def get_all_semantic(self) -> list[dict]:
-        """Get all active semantic memory entries."""
-        rows = self.db.execute(
-            "SELECT * FROM semantic_memory WHERE is_deleted = 0 ORDER BY key"
-        ).fetchall()
+    def get_all_semantic(self, limit: int | None = None, offset: int = 0) -> list[dict]:
+        """Get active semantic memory entries.
+
+        A ``limit`` (with optional ``offset``) bounds the result so callers such
+        as the ``/api/memory/semantic`` endpoint can't serialize the entire
+        (unbounded, continuously-written) table in one response (CWE-770).
+        ``limit=None`` preserves the return-everything behavior for internal
+        callers (consolidation, export, audit).
+        """
+        sql = "SELECT * FROM semantic_memory WHERE is_deleted = 0 ORDER BY key"
+        params: tuple = ()
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params = (int(limit), int(offset))
+        rows = self.db.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def set_semantic(

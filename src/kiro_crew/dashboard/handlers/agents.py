@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,18 @@ _VALID_PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$")
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
 logger = logging.getLogger(__name__)
+
+
+def _err500(exc: BaseException) -> web.Response:
+    """Return a generic 500 with a correlation id; log the detail server-side.
+
+    Browser-facing 5xx bodies must not echo raw backend exception text
+    (CWE-209). The short correlation id ties the sanitized client response to
+    the full server-side log line (which retains the traceback).
+    """
+    corr = uuid.uuid4().hex[:12]
+    logger.error("agents handler error [%s]", corr, exc_info=exc)
+    return web.json_response({"error": "internal error", "id": corr}, status=500)
 
 
 def _sel():
@@ -418,7 +431,7 @@ async def api_agent_config(request: web.Request) -> web.Response:
             await _h._reset_all_sessions(request)
             return web.json_response({"ok": True, "applied": True})
         except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+            return _err500(exc)
     # GET
     try:
         data = json.loads(agent_config_path.read_text(encoding="utf-8"))
@@ -558,7 +571,7 @@ async def api_aim_mcp_list(request: web.Request) -> web.Response:
             return web.json_response({"error": out[:500]}, status=500)
         return web.json_response({"installed": out.strip()})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_mcp_install(request: web.Request) -> web.Response:
@@ -584,7 +597,7 @@ async def api_aim_mcp_install(request: web.Request) -> web.Response:
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_mcp_uninstall(request: web.Request) -> web.Response:
@@ -610,7 +623,7 @@ async def api_aim_mcp_uninstall(request: web.Request) -> web.Response:
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_skills_list(request: web.Request) -> web.Response:
@@ -623,7 +636,7 @@ async def api_aim_skills_list(request: web.Request) -> web.Response:
             return web.json_response({"error": out[:500]}, status=500)
         return web.json_response({"skills": out.strip()})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_skills_install(request: web.Request) -> web.Response:
@@ -651,7 +664,7 @@ async def api_aim_skills_install(request: web.Request) -> web.Response:
         state.push_refresh("agents")
         return web.json_response({"ok": True, "package": package})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_skills_uninstall(request: web.Request) -> web.Response:
@@ -674,7 +687,7 @@ async def api_aim_skills_uninstall(request: web.Request) -> web.Response:
         state.push_refresh("agents")
         return web.json_response({"ok": True, "package": package})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_agents_installed(request: web.Request) -> web.Response:
@@ -1211,7 +1224,7 @@ async def api_aim_agents_list(request: web.Request) -> web.Response:
             return web.json_response({"error": out[:500]}, status=500)
         return web.json_response({"output": out.strip()})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_agents_install(request: web.Request) -> web.Response:
@@ -1265,7 +1278,7 @@ async def api_aim_agents_install(request: web.Request) -> web.Response:
         state.push_refresh("agents")
         return web.json_response({"ok": True, "package": package, "output": out.strip()})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_agents_uninstall(request: web.Request) -> web.Response:
@@ -1343,7 +1356,7 @@ async def api_aim_agents_uninstall(request: web.Request) -> web.Response:
         _regen_conductor()
         return web.json_response({"ok": True, "package": package})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_update(request: web.Request) -> web.Response:
@@ -1405,7 +1418,7 @@ async def api_aim_update(request: web.Request) -> web.Response:
         state.push_refresh("agents")
         return web.json_response({"ok": True, "output": out.strip()})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 async def api_aim_mcp_registry(request: web.Request) -> web.Response:
@@ -1448,7 +1461,7 @@ async def api_aim_mcp_registry(request: web.Request) -> web.Response:
             )
         return web.json_response({"servers": entries})
     except Exception as exc:
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
 
 # ── KiroCrew Agent CRUD API ──
@@ -1820,7 +1833,7 @@ async def api_cc_aim_missing(request: web.Request) -> web.Response:
         missing = await asyncio.to_thread(installed_kiro_packages_missing_from_cc)
     except Exception as exc:
         logger.warning("cc aim missing query failed", exc_info=True)
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
     return web.json_response({"missing": missing})
 
 
@@ -1843,7 +1856,7 @@ async def api_cc_aim_sync(request: web.Request) -> web.Response:
             targets = await asyncio.to_thread(installed_kiro_packages_missing_from_cc)
     except Exception as exc:
         logger.warning("cc aim sync target resolution failed", exc_info=True)
-        return web.json_response({"error": str(exc)[:500]}, status=500)
+        return _err500(exc)
 
     invalid = [p for p in targets if not _VALID_PACKAGE_RE.match(p) or ".." in p]
     if invalid:

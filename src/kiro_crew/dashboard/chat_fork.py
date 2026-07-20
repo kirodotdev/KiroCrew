@@ -64,14 +64,18 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 source="app_isolation", resources=f"slot={name}",
                 error="app cannot fork unscoped slots",
             )
-            return web.json_response({"error": "app cannot fork unscoped slots"}, status=403)
+            return web.json_response({"error": "not found"}, status=404)
         if slot._app != request_app:
             sel().log_api_access(
                 caller=request_app, operation="chat.slot_fork", outcome="denied",
                 source="app_isolation", resources=f"slot={name}",
                 error="app does not own this slot",
             )
-            return web.json_response({"error": "app does not own this slot"}, status=403)
+            # Return 404 (not 403) so a slot owned by another app / an unscoped
+            # slot is indistinguishable from a non-existent one — prevents an
+            # app-scoped caller enumerating slots across the isolation boundary
+            # (CWE-204). The true reason is recorded server-side via SEL above.
+            return web.json_response({"error": "not found"}, status=404)
 
     if slot.memory_mode != "persistent":
         sel().log_api_access(

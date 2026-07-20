@@ -2739,6 +2739,7 @@ def canonicalize_ip(s: str) -> str:
 _IP_CANDIDATE_RE = re.compile(
     r"(?:"
     r"::ffff:[0-9a-fA-Fx.:]+|"  # IPv6-mapped
+    r"[0-9a-fA-F]{1,4}:[0-9a-fA-F:]{2,}|"  # native IPv6 literal (colon run, e.g. fd00:ec2::254)
     r"0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-Fx]+)*|"  # Hex (with possible dotted)
     # inet_aton "short" forms the OS resolver / curl accept (a.b.c and a.b),
     # where the trailing component packs the remaining low-order bytes. These
@@ -2754,6 +2755,10 @@ _IP_CANDIDATE_RE = re.compile(
 )
 
 _IMDS_IP = "169.254.169.254"
+# Native IPv6 IMDS endpoint (dual-stack EC2). The IPv4 gate above misses this
+# because canonicalize_ip returns native IPv6 unchanged; mirrors embeddings.py's
+# SSRF gate which also blocks it (CWE-918 dual-stack parity).
+_IMDS_IPV6 = "fd00:ec2::254"
 
 # HTTP tools that can fetch IMDS -- broader than just curl/wget
 _HTTP_TOOLS_RE = re.compile(
@@ -2774,6 +2779,10 @@ def _check_imds_access(command: str) -> str | None:
     if not candidates:
         return None
 
+    try:
+        imds_v6: ipaddress.IPv6Address | None = ipaddress.ip_address(_IMDS_IPV6)  # type: ignore[assignment]
+    except ValueError:  # pragma: no cover - constant is a valid literal
+        imds_v6 = None
     for candidate in candidates:
         canonical = canonicalize_ip(candidate)
         if canonical == _IMDS_IP:
@@ -2783,6 +2792,18 @@ def _check_imds_access(command: str) -> str | None:
                 f"Blocked: command accesses IMDS endpoint "
                 f"(169.254.169.254 via encoding '{candidate}')"
             )
+        # Native IPv6 IMDS endpoint (fd00:ec2::254) — reachable over IPv6 on
+        # dual-stack hosts; the IPv4 canonicalization above never matches it.
+        # ipaddress equality normalizes compressed/expanded forms.
+        if imds_v6 is not None:
+            try:
+                if ipaddress.ip_address(candidate.strip("[]")) == imds_v6:
+                    return (
+                        f"Blocked: command accesses IMDS endpoint "
+                        f"(fd00:ec2::254 via '{candidate}')"
+                    )
+            except ValueError:
+                pass
     return None
 
 

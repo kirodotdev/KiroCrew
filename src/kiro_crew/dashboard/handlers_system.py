@@ -345,10 +345,11 @@ def _collect_system_metrics() -> dict[str, object]:
 
     # Local IP address
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        data["ip"] = s.getsockname()[0]
-        s.close()
+        # Context manager guarantees the socket fd is closed on every path,
+        # including when connect()/getsockname() raise (CWE-772 fd leak).
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            data["ip"] = s.getsockname()[0]
     except Exception:
         data["ip"] = "127.0.0.1"
 

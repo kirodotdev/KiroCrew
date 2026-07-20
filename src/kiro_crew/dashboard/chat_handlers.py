@@ -169,7 +169,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 resources=f"slot={slot.key}",
                 error="app cannot access unscoped slots",
             )
-            return web.json_response({"error": "app cannot access unscoped slots"}, status=403)
+            return web.json_response({"error": "not found"}, status=404)
         elif request_app != slot._app:
             sel().log_api_access(
                 caller=request_app,
@@ -179,7 +179,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 resources=f"slot={slot.key}",
                 error="app does not own this slot",
             )
-            return web.json_response({"error": "app does not own this slot"}, status=403)
+            return web.json_response({"error": "not found"}, status=404)
 
     if slot.agent not in (None, ""):
         # Slot already has an agent — only reject explicit mismatches (non-empty different agent).
@@ -1146,7 +1146,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
             resources=f"slot={name}",
             error="app does not own this slot",
         )
-        return web.json_response({"error": "app does not own this slot"}, status=403)
+        return web.json_response({"error": "not found"}, status=404)
     if request_app and not slot._app:
         sel().log_api_access(
             caller=request_app,
@@ -1156,7 +1156,9 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
             resources=f"slot={name}",
             error="app cannot delete unscoped slots",
         )
-        return web.json_response({"error": "app cannot delete unscoped slots"}, status=403)
+        # 404 (not 403): a foreign/unscoped slot is indistinguishable from a
+        # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
+        return web.json_response({"error": "not found"}, status=404)
 
     # Remove from dict before async operations
     state._slots.pop(name, None)
@@ -1829,7 +1831,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                     resources=f"slot={existing.key}",
                     error="app cannot access unscoped slots",
                 )
-                return web.json_response({"error": "app cannot access unscoped slots"}, status=403)
+                return web.json_response({"error": "not found"}, status=404)
             elif request_app != existing._app:
                 sel().log_api_access(
                     caller=request_app,
@@ -1839,7 +1841,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                     resources=f"slot={existing.key}",
                     error="app does not own this slot",
                 )
-                return web.json_response({"error": "app does not own this slot"}, status=403)
+                return web.json_response({"error": "not found"}, status=404)
         total = len(existing.messages)
         recent = existing.messages[-200:] if total > 200 else existing.messages
         prepared = _prepare_messages(recent, existing.running)
@@ -2402,7 +2404,7 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
                 resources=f"slot={name}",
                 error="app cannot access unscoped slots",
             )
-            return web.json_response({"error": "app cannot access unscoped slots"}, status=403)
+            return web.json_response({"error": "not found"}, status=404)
         elif request_app != slot._app:
             sel().log_api_access(
                 caller=request_app,
@@ -2412,7 +2414,7 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
                 resources=f"slot={name}",
                 error="app does not own this slot",
             )
-            return web.json_response({"error": "app does not own this slot"}, status=403)
+            return web.json_response({"error": "not found"}, status=404)
 
     try:
         body = await request.json()

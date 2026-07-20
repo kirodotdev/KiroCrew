@@ -768,6 +768,44 @@ def _write_file_restricted(path: Path, data: bytes) -> None:
         os.close(fd)
 
 
+# Magic-byte signatures for content-type validation at the upload boundary
+# (CWE-434). The extension is attacker-controlled, so binary types are verified
+# against their file signature BEFORE the bytes are written. Text formats (and
+# SVG, which is XML) have no reliable magic and remain gated by the extension
+# allowlist only.
+_ZIP_CONTAINER_EXTS = {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
+_MAGIC_PREFIXES: dict[str, tuple[bytes, ...]] = {
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
+    ".gif": (b"GIF87a", b"GIF89a"),
+    ".bmp": (b"BM",),
+    ".pdf": (b"%PDF-",),
+    ".gz": (b"\x1f\x8b",),
+}
+
+
+def _content_matches_ext(ext: str, data: bytes) -> bool:
+    """Best-effort magic-byte check that ``data`` matches the claimed ``ext``.
+
+    Returns False only when the signature is KNOWN and does not match, so an
+    attacker can't store arbitrary bytes (e.g. an HTML/script payload) under an
+    allowed binary extension (CWE-434). Unknown / text extensions (and ``.svg``)
+    return True — there is no reliable signature — and stay gated by the
+    extension allowlist alone.
+    """
+    if ext in _ZIP_CONTAINER_EXTS:
+        # OOXML / ODF / zip all begin with a local-file-header, empty-archive,
+        # or spanned-archive PK signature.
+        return data[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+    if ext == ".webp":
+        return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    prefixes = _MAGIC_PREFIXES.get(ext)
+    if prefixes is None:
+        return True  # text / svg / unknown — nothing to enforce
+    return any(data.startswith(p) for p in prefixes)
+
+
 async def api_upload_file(request: web.Request) -> web.Response:
     """POST /api/upload/file — cross-platform multipart file upload.
 
@@ -845,6 +883,22 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         {"error": f"File too large (max {_MAX_UPLOAD_BYTES // 1024 // 1024}MB)"},
                         status=413,
                     )
+            # Content-signature gate (CWE-434): verify magic bytes match the
+            # claimed extension BEFORE writing, so an allowed extension can't
+            # smuggle arbitrary/binary content (e.g. a .png that is really HTML).
+            if not _content_matches_ext(ext, bytes(data)):
+                _cleanup()
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="upload.file",
+                    outcome="rejected",
+                    source="dashboard",
+                    resources=f"file:{fname} reason:content_signature_mismatch:{ext}",
+                )
+                return web.json_response(
+                    {"error": f"File content does not match its type: {ext}"},
+                    status=400,
+                )
             # UUID prefix guarantees uniqueness even within a single request
             dest = _UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_name}"
             if not dest.resolve().is_relative_to(_UPLOAD_DIR.resolve()):

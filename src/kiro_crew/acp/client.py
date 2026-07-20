@@ -4146,7 +4146,11 @@ class AcpClient:
             )
 
         logger.info("Permission requested for tool: %s (req=%s)", title, request_id)
-        logger.debug("Permission toolCall payload: %s", tool_call)
+        if logger.isEnabledFor(logging.DEBUG):
+            _tc_redacted = repr(tool_call)
+            _tc_redacted, _ = redact_exfiltration_urls(_tc_redacted)
+            _tc_redacted, _ = redact_credentials(_tc_redacted)
+            logger.debug("Permission toolCall payload: %s", _tc_redacted)
         return AcpEvent(
             kind=EVENT_PERMISSION_REQUEST,
             request_id=request_id,
