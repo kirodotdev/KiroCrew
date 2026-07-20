@@ -1,0 +1,173 @@
+name: Notarize macOS (reusable)
+
+# Reusable workflow: notarize + staple an already-CDSigner-signed macOS app.
+# Called by nightly.yml (channel: nightly) and release.yml (channel:
+# insider | stable). See docs/signing-runbook.md for the full chain and the
+# credential rotation procedure.
+#
+# Key properties:
+#   - Consumes the signed zip CDSigner wrote to signed/<...>; never touches
+#     unsigned artifacts.
+#   - The Apple credential is fetched from AWS Secrets Manager at runtime
+#     (kirocrew/signing/apple-notary) via the same OIDC role used for
+#     signing. The password is masked and scoped to a single step; it is
+#     never persisted to GITHUB_ENV, files, or logs.
+#   - Fails closed: Gatekeeper assessment (spctl) must report
+#     "Notarized Developer ID" or the job fails. On an Invalid notarization
+#     the itemized Apple log is printed for diagnosis.
+#   - Writes the update feed AFTER stapling. Un-notarized artifacts must
+#     never appear in the update feed for the same reason unsigned ones
+#     must not: clients would auto-update to a build Gatekeeper blocks.
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Release channel: nightly | insider | stable"
+        required: true
+        type: string
+      version:
+        description: "Version label used in S3 keys and the feed"
+        required: true
+        type: string
+      signed_zip_key:
+        description: "S3 key of the CDSigner-signed zip (signed/<channel>/<version>/<App>.zip)"
+        required: true
+        type: string
+      write_feed:
+        description: "Write feed/<channel>/latest-mac.json pointing at the notarized artifact"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  notarize:
+    name: Notarize + staple (${{ inputs.channel }})
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      SIGNED_ZIP_KEY: ${{ inputs.signed_zip_key }}
+    steps:
+      - name: Configure AWS credentials
+        if: env.HAS_SIGNING_SECRETS
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Download signed artifact
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          mkdir -p work
+          aws s3 cp "s3://${{ secrets.AWS_SIGNING_BUCKET }}/${SIGNED_ZIP_KEY}" work/signed.zip --only-show-errors
+          ls -la work/
+
+      # The credential lives in Secrets Manager (never GitHub secrets --
+      # Amazon custody, CloudTrail audit, rotation lifecycle). It is fetched,
+      # masked, used, and discarded inside this single step.
+      - name: Notarize with Apple notary service
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id kirocrew/signing/apple-notary \
+            --query SecretString --output text)
+          APPLE_ID=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['apple_id'])")
+          APPLE_PW=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['password'])")
+          TEAM_ID=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['team_id'])")
+          echo "::add-mask::$APPLE_PW"
+          unset SECRET_JSON
+
+          echo "Submitting to Apple notary service (team $TEAM_ID)..."
+          set +e
+          SUBMIT_OUT=$(xcrun notarytool submit work/signed.zip \
+            --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" \
+            --wait --timeout 30m 2>&1)
+          RC=$?
+          set -e
+          echo "$SUBMIT_OUT"
+          SUBMISSION_ID=$(echo "$SUBMIT_OUT" | awk '/^  id: /{print $2; exit}')
+
+          if [ $RC -ne 0 ] || ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
+            echo "Notarization was not Accepted. Fetching the itemized Apple log..."
+            if [ -n "$SUBMISSION_ID" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" || true
+            fi
+            exit 1
+          fi
+          echo "Notarization Accepted: $SUBMISSION_ID"
+
+      - name: Staple and verify
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          mkdir -p work/stapled && cd work/stapled
+          unzip -q ../signed.zip
+          APP=$(find . -maxdepth 1 -name "*.app" | head -1)
+          [ -n "$APP" ] || { echo "No .app found in signed zip"; exit 1; }
+
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+          ASSESS=$(spctl --assess --type execute --verbose "$APP" 2>&1)
+          echo "$ASSESS"
+          echo "$ASSESS" | grep -q "Notarized Developer ID" || {
+            echo "Gatekeeper assessment did not report 'Notarized Developer ID' -- failing closed."
+            exit 1
+          }
+
+          # ditto preserves the resource fork carrying the stapled ticket.
+          /usr/bin/ditto -c -k --keepParent "$APP" ../notarized.zip
+          echo "APP_NAME=$(basename "$APP" .app)" >> "$GITHUB_ENV"
+
+      - name: Upload notarized artifact to S3
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          KEY="notarized/${CHANNEL}/${VERSION}/${APP_NAME}.zip"
+          aws s3 cp work/notarized.zip "s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}" --only-show-errors
+          echo "NOTARIZED_KEY=${KEY}" >> "$GITHUB_ENV"
+          echo "Notarized artifact: s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}"
+
+      # Feed points at the NOTARIZED artifact -- written only after the
+      # spctl gate above passed.
+      - name: Write update feed
+        if: env.HAS_SIGNING_SECRETS && inputs.write_feed
+        run: |
+          cat > /tmp/latest-mac.json <<EOF
+          {
+            "version": "${VERSION}",
+            "url": "https://${{ secrets.AWS_SIGNING_BUCKET }}.s3.us-west-2.amazonaws.com/${NOTARIZED_KEY}",
+            "name": "${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          aws s3 cp /tmp/latest-mac.json \
+            "s3://${{ secrets.AWS_SIGNING_BUCKET }}/feed/${CHANNEL}/latest-mac.json" \
+            --content-type application/json
+          echo "Feed written: feed/${CHANNEL}/latest-mac.json -> ${NOTARIZED_KEY}"
+
+      - name: Attach notarized artifact to workflow run
+        if: env.HAS_SIGNING_SECRETS
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: KiroCrew-notarized-${{ inputs.channel }}-${{ inputs.version }}
+          path: work/notarized.zip
+          retention-days: 14
+
+      - name: Summary
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          {
+            echo "## Notarization (${CHANNEL})"
+            echo "- Version: ${VERSION}"
+            echo "- Input: \`${SIGNED_ZIP_KEY}\`"
+            echo "- Output: \`${NOTARIZED_KEY}\` (stapled, Gatekeeper-verified)"
+          } >> "$GITHUB_STEP_SUMMARY"

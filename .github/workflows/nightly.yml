@@ -165,6 +165,8 @@ jobs:
     name: Publish Nightly
     needs: [version, build-wheel, build-desktop]
     runs-on: ubuntu-latest
+    outputs:
+      signed_zip_key: ${{ steps.sign.outputs.signed_zip_key }}
     permissions:
       id-token: write
       contents: read
@@ -235,6 +237,7 @@ jobs:
           fi
 
       - name: Sign with CDSigner
+        id: sign
         if: env.HAS_CDSIGNER && env.APP_PATH != ''
         env:
           AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
@@ -243,32 +246,11 @@ jobs:
         run: |
           bash packaging/signing/sign.sh "$APP_PATH" nightly "$VERSION"
           echo "SIGNED_ZIP=signed/$(basename "$APP_PATH" .app).zip" >> "$GITHUB_ENV"
+          echo "signed_zip_key=signed/nightly/${VERSION}/$(basename "$APP_PATH" .app).zip" >> "$GITHUB_OUTPUT"
 
-      # ── Write update feed ─────────────────────────────────────────────────
-      # Only writes the feed AFTER signing completes. Unsigned artifacts must
-      # never appear in the update feed — clients would auto-update to a build
-      # that macOS Gatekeeper blocks. When CDSigner is not configured, the
-      # workflow stops at uploading to pre-signed/ and the feed is unchanged.
-
-      - name: Write update feed
-        if: env.HAS_CDSIGNER && env.SIGNED_ZIP != ''
-        run: |
-          CHANNEL="nightly"
-          BUCKET="${{ secrets.AWS_SIGNING_BUCKET }}"
-          ZIP_KEY="${SIGNED_ZIP}"
-
-          # Write latest-mac.json (Squirrel.Mac format)
-          cat > /tmp/latest-mac.json <<EOF
-          {
-            "version": "${VERSION}",
-            "url": "https://${BUCKET}.s3.us-west-2.amazonaws.com/${ZIP_KEY}",
-            "name": "${VERSION}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          aws s3 cp /tmp/latest-mac.json "s3://${BUCKET}/feed/${CHANNEL}/latest-mac.json" \
-            --content-type application/json
-          echo "Feed written: feed/${CHANNEL}/latest-mac.json → ${ZIP_KEY}"
+      # The update feed is written by the notarize job (notarize-macos.yml)
+      # AFTER stapling. Un-notarized artifacts must never appear in the feed --
+      # clients would auto-update to a build macOS Gatekeeper blocks.
 
       - name: Summary
         run: |
@@ -294,3 +276,18 @@ jobs:
       version: ${{ needs.version.outputs.nightly_version }}
       wheel_artifact: nightly-wheel
     secrets: inherit
+
+  notarize:
+    name: Notarize macOS
+    needs: [version, publish]
+    if: needs.publish.outputs.signed_zip_key != ''
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/notarize-macos.yml
+    secrets: inherit
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      signed_zip_key: ${{ needs.publish.outputs.signed_zip_key }}
+      write_feed: true
