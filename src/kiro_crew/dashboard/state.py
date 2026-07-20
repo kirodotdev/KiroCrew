@@ -638,6 +638,7 @@ class _ChatSlot:
         "_stale_recovery_retries",
         "_tool_stall_retries",
         "_transient_5xx_retries",
+        "_posttoken_retry_used",
         "_empty_response_retries",
         "_batch_rejected",
         "_compaction_fail_streak",
@@ -767,6 +768,11 @@ class _ChatSlot:
         # ConnectionReset) retries on the interactive stream path. Distinct
         # budget from prompt-busy / pipe-death; reset on a completed turn.
         self._transient_5xx_retries: int = 0
+        # One-shot guard for the post-token (text-only) transient retry: a turn
+        # that has already streamed answer tokens may be re-prompted at most
+        # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
+        # completed turn alongside _transient_5xx_retries (Mesh-2150).
+        self._posttoken_retry_used: bool = False
         self._empty_response_retries: int = 0
         self._batch_rejected: bool = False
         # Per-turn compaction-status failure tracking (Mesh compaction-spam

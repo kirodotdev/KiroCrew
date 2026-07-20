@@ -146,6 +146,20 @@ from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_u
 
 logger = logging.getLogger(__name__)
 
+# Re-queued after a post-token transient backend error. This CONTINUE
+# instruction (NOT the original prompt) is dispatched onto the SAME live ACP
+# session — which still holds the interrupted turn's context (original prompt,
+# partial assistant text, and any completed tool results). It tells the model to
+# resume from where it stopped rather than restart, so completed work and tool
+# side effects are never redone.
+_POSTTOKEN_RECOVER_MSG = (
+    "The previous response was interrupted partway through by a transient "
+    "backend error. The work already done above (including any completed tool "
+    "results) is preserved in the conversation. Continue from where it stopped "
+    "to finish the original request — do NOT restart from scratch and do NOT "
+    "re-run steps or tools that already completed successfully."
+)
+
 
 def drain_pending_context(slot: "_ChatSlot") -> str:
     """Drain ``slot._pending_context`` into a prepend-ready context prefix.
@@ -1735,6 +1749,16 @@ async def _run_chat(
     # backend 5xx is only retried while this is False, so a re-prompt can't
     # double-stream text or re-run a side-effecting tool (Mesh-2150).
     _turn_emitted = False
+    # Refresh the one-shot post-token recovery allowance at the START of a
+    # GENUINE new user turn, so each real user message gets exactly one recovery.
+    # A repeated post-token 5xx that happens DURING recovery must NOT recover
+    # again (infinite loop), so the synthetic recovery turn — detected by the
+    # incoming message being the recover instruction — deliberately does NOT
+    # refresh the allowance and inherits the True flag set when recovery was
+    # enqueued (finding #3). Suppressed/nested recoveries never set the flag, so
+    # this reset is a no-op for them and a later real turn can still recover.
+    if message != _POSTTOKEN_RECOVER_MSG:
+        slot._posttoken_retry_used = False
     _pending_tools: dict[str, str] = {}  # tool_call_id -> tool_name
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
     # reconciled from `_kiro.dev/subagent/list_update` (one card per sub-agent).
@@ -3776,6 +3800,12 @@ async def _run_chat(
             slot._stale_recovery_retries = 0
             slot._tool_stall_retries = 0
             slot._transient_5xx_retries = 0
+            # NOTE: slot._posttoken_retry_used is intentionally NOT reset here.
+            # The one-shot post-token recovery allowance is refreshed at the
+            # START of a GENUINE new user turn (see the gated reset near
+            # `_turn_emitted = False`), never on the synthetic recovery turn.
+            # Resetting it on the recovery turn's completion would let a repeated
+            # post-token 5xx during recovery re-queue forever (finding #3).
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for slot %s", slot.key)
@@ -4030,6 +4060,85 @@ async def _run_chat(
                 # depth>0 (nested turn): don't re-queue — surface a clean
                 # transient status; the live session stays resumable.
                 slot.append("error", "⟳ Backend hiccup — please retry.", "msg msg-err")
+        elif (
+            _turn_emitted
+            and acp_error_is_transient(exc)
+            and not slot._posttoken_retry_used
+        ):
+            # Post-token transient 5xx: assistant tokens and/or tool calls
+            # already streamed this turn (_turn_emitted). Rather than fail-fast,
+            # we RECOVER by re-prompting the SAME live session with a CONTINUE
+            # instruction. The live ACP/kiro-cli process is still alive and holds
+            # the interrupted turn's full context — original prompt, streamed
+            # partial text, and any completed tool results — so the model resumes
+            # from where it stopped instead of restarting. This is why the
+            # tool-call case is no longer fail-fast: the continue prompt tells the
+            # model NOT to re-run tools that already completed, so a post-tool
+            # transient recovers safely (the model reads prior tool results and
+            # continues) instead of double-running a side-effecting tool. We allow
+            # EXACTLY ONE such retry per turn (_posttoken_retry_used one-shot).
+            #
+            # ACCEPTED TRADEOFF (finding #1, owner decision — do NOT re-add a
+            # tool-call fail-fast guard): a mid-stream 5xx is rare, and the
+            # CONTINUE instruction explicitly tells the model to resume rather
+            # than re-run completed tools. A residual double-execution risk
+            # remains only for a tool that was still IN FLIGHT (dispatched but not
+            # yet completed) when the 5xx hit a side-effecting/destructive tool;
+            # the owner accepts that narrow risk rather than failing the whole
+            # turn fast. This is deliberate — recovering the turn is preferred.
+            #
+            # ONE-SHOT ACCOUNTING (finding #3): the allowance is consumed ONLY
+            # when a recovery is actually enqueued (set immediately before the
+            # queue_insert below, AFTER the eligibility check + backoff). Setting
+            # it here — before the Stop-suppressed / nested / cancel-during-sleep
+            # gates — would wrongly burn the allowance on paths that never
+            # recover, denying a LATER turn its one legitimate recovery. Loop
+            # prevention still holds: a re-failure DURING the recovery turn takes
+            # the exception path (which never resets the flag) and the synthetic
+            # recovery turn is excluded from the per-turn reset, so the flag stays
+            # True across the recovery and a repeat post-token 5xx surfaces
+            # instead of re-queueing forever.
+            #
+            # APPEND-ONLY design: never retract the streamed partial. We PRESERVE
+            # it — finalize it as a normal assistant message exactly like the
+            # terminal else: branch — then surface a brief recovery notice, then
+            # (if eligible) auto-retry ONCE by re-queueing the CONTINUE
+            # instruction (NOT the original message). The user sees an append-only
+            # sequence:
+            #   [partial] [recover notice] [continued answer]
+            # with nothing removed. No frontend reconcile / SSE gate is needed —
+            # append-only is correct for both WebSocket and SSE clients.
+            # Persisting the partial BEFORE the backoff sleep means a cancel
+            # (Stop) during the sleep simply leaves partial+notice shown, no loss.
+            # Persist the streamed partial as a real assistant message (copy of
+            # the terminal else: persist pattern): redact, strip the live chunk
+            # messages, then append the finalized assistant bubble.
+            if assistant_text:
+                _safe, _ = redact_exfiltration_urls(assistant_text)
+                _safe, _ = redact_credentials(_safe)
+                slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+                slot.append("assistant", _safe, "msg msg-a")
+            # Surface a brief recovery notice (one append).
+            slot.append("error", "⟳ Backend hiccup — recovering…", "msg msg-err")
+            if not _should_suppress_requeue(slot) and _prompt_depth == 0:
+                _delay = transient_retry_delay(1)  # single short backoff (one-shot)
+                logger.info(
+                    "Transient backend 5xx AFTER emit in slot %s — one-shot "
+                    "CONTINUE re-prompt of live session in %.1fs: %s",
+                    slot.key, _delay, _msg[:80],
+                )
+                # Back off, then re-queue the CONTINUE instruction onto the SAME
+                # live session (no reset). The partial + notice are already shown;
+                # the model resumes from the preserved context and appends the
+                # continued answer as a new message below. Consume the one-shot
+                # allowance HERE — only a real enqueue burns it (finding #3).
+                await asyncio.sleep(_delay)
+                slot._posttoken_retry_used = True
+                slot.queue_insert(0, _POSTTOKEN_RECOVER_MSG)
+            # else: Stop active (_should_suppress_requeue) or nested turn
+            # (_prompt_depth != 0) — do NOT requeue; partial + notice already
+            # shown, so the streamed answer survives in the transcript. The
+            # allowance is left UNconsumed so a later turn can still recover once.
         else:
             if assistant_text:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
