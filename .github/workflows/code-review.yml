@@ -134,9 +134,22 @@ jobs:
           fetch-depth: 0
 
       - name: Install woke
+        env:
+          WOKE_VERSION: "0.19.0"
+          WOKE_SHA256: "db5ed0906c81323a8c478cc57e00301dbf184db7a0293d70ba9f4729b6169d8c"
         run: |
-          curl -sSfL https://raw.githubusercontent.com/get-woke/woke/main/install.sh \
-            | bash -s -- -b /usr/local/bin
+          asset="woke-${WOKE_VERSION}-linux-amd64.tar.gz"
+          archive="${RUNNER_TEMP}/${asset}"
+          bin_dir="${RUNNER_TEMP}/woke-bin"
+          curl -sSfL \
+            "https://github.com/get-woke/woke/releases/download/v${WOKE_VERSION}/${asset}" \
+            -o "$archive"
+          printf '%s  %s\n' "$WOKE_SHA256" "$archive" | sha256sum -c -
+          mkdir -p "$bin_dir"
+          tar -xzf "$archive" -C "$bin_dir" --strip-components=1 \
+            "woke-${WOKE_VERSION}-linux-amd64/woke"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+          "$bin_dir/woke" --version
 
       - name: Scan only changed lines
         env:

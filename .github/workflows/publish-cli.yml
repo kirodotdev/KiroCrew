@@ -102,8 +102,37 @@ jobs:
           fi
           CDN_BASE="${CDN_BASE%/}"
           PREFIX="cli/${CHANNEL}/${WHEEL_VERSION}"
-          aws s3 cp "$WHEEL_PATH" "s3://${BUCKET}/${PREFIX}/${WHEEL_NAME}"
-          aws s3 cp "${SUMS_DIR}/SHA256SUMS" "s3://${BUCKET}/${PREFIX}/SHA256SUMS"
+          # Conditional writes (If-None-Match: *): a versioned wheel key is IMMUTABLE.
+          # CloudFront caches cli/* as immutable, so republishing a key with different
+          # bytes leaves stale wheels on some edges while the no-cache manifest is
+          # fresh -> sha256 mismatch for some clients. A republish attempt gets HTTP
+          # 412. Retry idempotency: a job retry after a later-step failure re-uploads
+          # the same bytes -- on 412 we compare content and continue when identical,
+          # failing only on a genuine different-bytes republish.
+          put_immutable() {
+            key="$1"; body="$2"
+            if aws s3api put-object --bucket "${BUCKET}" --key "$key" \
+                --body "$body" --if-none-match '*' > /dev/null 2> /tmp/put_err; then
+              return 0
+            fi
+            if ! grep -q "PreconditionFailed" /tmp/put_err; then
+              cat /tmp/put_err >&2; return 1   # real error (creds, network), not 412
+            fi
+            # Compare via the CDN (no extra IAM needed): under the If-None-Match
+            # invariant an existing key was written exactly once, so the CDN's
+            # copy -- cached or origin-fetched -- is the only content that has
+            # ever existed at this key. This also compares against exactly the
+            # bytes clients receive.
+            curl -fsSL --retry 3 -o /tmp/existing "${CDN_BASE}/${key}"
+            if [ "$(sha256sum /tmp/existing | awk '{print $1}')" = "$(sha256sum "$body" | awk '{print $1}')" ]; then
+              echo "::notice::$key already exists with identical content (idempotent retry); skipping"
+              return 0
+            fi
+            echo "::error::$key exists with DIFFERENT content -- refusing to republish an immutable versioned key"
+            return 1
+          }
+          put_immutable "${PREFIX}/${WHEEL_NAME}" "$WHEEL_PATH"
+          put_immutable "${PREFIX}/SHA256SUMS" "${SUMS_DIR}/SHA256SUMS"
 
           WHEEL_URL="${CDN_BASE}/${PREFIX}/${WHEEL_NAME}"
 

@@ -45,7 +45,12 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    resource_limit_preexec,
+    scrub_agent_denied_env,
+    wrap_argv,
+)
 from kiro_crew.session_pid import (
     _track_pid,
     _track_session_pid,
@@ -412,6 +417,15 @@ class AcpRuntime:
         env = {**os.environ}
         if self._extra_env:
             env.update(self._extra_env)
+
+        # Parent-level scrub of gateway-owned channel credentials. The default
+        # auto/standard sandbox launcher strips _AGENT_DENIED_ENV_KEYS only for
+        # cc/strict, and this path copies a raw os.environ + wrap_argv (not
+        # sandboxed_spawn_argv), so without this the Slack/WeCom/Telegram tokens
+        # seeded into os.environ by load_credentials() would be inherited by the
+        # agent subprocess on the default tier. Leaves the AWS/SSH env the
+        # standard sandbox intentionally exposes untouched.
+        env = scrub_agent_denied_env(env)
 
         env["PATH"] = augmented_path(env.get("PATH", ""))
         resolve_krb5_ccname(env)
