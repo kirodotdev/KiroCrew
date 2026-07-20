@@ -1,44 +1,22 @@
-import { safeSetItem } from '../utils/safeStorage'
-import React, { useState, useEffect, useCallback, useRef, memo } from 'react'
-import { motion } from 'framer-motion'
-import { X, ArrowUpDown, Plus, TerminalSquare } from 'lucide-react'
+import { useEffect, useCallback, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { useAppDispatch, useAppSelector } from '../store'
-import {
-  closeCliPanel,
-  setCliPanelPosition,
-  addSession,
-  removeSession,
-  setActiveSession,
-  renameSession,
-  setSessions,
-  loadLabels,
-  saveLabels,
-  removeLabel,
-  type TerminalSession,
-} from '../store/terminalSlice'
-import { useTerminalWs } from '../hooks/useTerminalWs'
-import { setActiveTerminalSession } from '../utils/terminalRegistry'
-import { usePointerDrag, rubberband } from '../hooks/usePointerDrag'
+import { useMutation } from '@tanstack/react-query'
+import { ensureTerminalConnection, disposeTerminalConnection } from '../utils/terminalRegistry'
 
-const HEIGHT_KEY = 'kirocrew-terminal-height'
-const WIDTH_KEY = 'kirocrew-terminal-width'
-const MIN_H = 120
-const MIN_W = 300
-const DEFAULT_H = 280
-const DEFAULT_W = 420
-
-/* ── Per-session xterm instance cache ── */
+/* ── Per-session xterm instance cache ──
+ * Keyed by PTY session id. Instances persist across tab switches / chat
+ * switches (so scrollback + cursor survive), and are only torn down when the
+ * owning terminal TAB is closed (disposeTerminalSession). */
 const termCache = new Map<string, { term: Terminal; fit: FitAddon }>()
 
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
   const style = getComputedStyle(document.documentElement)
   return {
-    background:          style.getPropertyValue('--bg-elevated').trim()   || '#1e1e2e',
+    background:          style.getPropertyValue('--bg').trim()            || '#1e1e2e',
     foreground:          style.getPropertyValue('--text').trim()          || '#cdd6f4',
     cursor:              style.getPropertyValue('--accent').trim()        || '#89b4fa',
     selectionBackground: style.getPropertyValue('--accent-subtle').trim() || '#313244',
@@ -51,6 +29,41 @@ function refreshTermThemes() {
   for (const { term } of termCache.values()) {
     term.options.theme = theme
   }
+}
+
+/* ── Theme observer: a single module-level observer keeps every cached
+ * terminal's colours in sync with the app theme. Initialised once on the
+ * first terminal mount (multiple terminal tabs must not each spawn one). */
+let _themeObserver: MutationObserver | null = null
+let _themeRaf = 0
+/** Coalesce multiple theme signals into one refresh, after the CSSOM settles. */
+function scheduleTermThemeRefresh() {
+  if (_themeRaf) return
+  _themeRaf = requestAnimationFrame(() => { _themeRaf = 0; refreshTermThemes() })
+}
+function ensureThemeObserver() {
+  if (_themeObserver || typeof document === 'undefined') return
+  // A terminal's xterm colours are a construction-time snapshot (canvas, not
+  // CSS), so they must be re-read on TWO distinct theme signals:
+  //  (1) built-in themes / mode swaps flip <html data-theme> — an attribute change;
+  //  (2) CUSTOM themes only resolve their vars once useTheme injects a
+  //      <style id="mc-custom-theme-*"> into <head> (async, after the theme query
+  //      loads). data-theme's VALUE doesn't change then, so an attribute-only
+  //      observer misses it and the terminal stays on the boot-default palette.
+  // The attribute filter catches (1); watching <head> childList catches (2).
+  _themeObserver = new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === 'attributes') { scheduleTermThemeRefresh(); return }
+      for (const n of r.addedNodes) {
+        if (n instanceof HTMLStyleElement && n.id.startsWith('mc-custom-theme-')) {
+          scheduleTermThemeRefresh()
+          return
+        }
+      }
+    }
+  })
+  _themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  _themeObserver.observe(document.head, { childList: true })
 }
 
 function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon } {
@@ -79,78 +92,32 @@ function destroyTerm(id: string) {
   }
 }
 
-/** Refit all cached terminals (called after animation/resize). */
-function refitAll() {
-  for (const entry of termCache.values()) {
-    entry.fit.fit()
-  }
+/**
+ * Tear down a terminal tab's LOCAL state: close its persistent WS and dispose
+ * the cached xterm instance. Killing the backend PTY is a separate server call
+ * routed through useDeleteTerminalSession() (per the use-react-query guideline);
+ * SidePanel.handleCloseTab fires both.
+ */
+export function disposeTerminalSession(sessionId: string): void {
+  disposeTerminalConnection(sessionId)
+  destroyTerm(sessionId)
 }
 
-/* ── Session chip (memoized) ── */
-const SessionChip = memo(function SessionChip({
-  session,
-  active,
-  onSelect,
-  onClose,
-  onRename,
-}: {
-  session: TerminalSession
-  active: boolean
-  onSelect: () => void
-  onClose: (e: React.MouseEvent | React.KeyboardEvent) => void
-  onRename: (label: string) => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(session.label)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => { if (editing) inputRef.current?.select() }, [editing])
-
-  const commit = () => {
-    setEditing(false)
-    const trimmed = draft.trim()
-    if (trimmed && trimmed !== session.label) onRename(trimmed)
-    else setDraft(session.label)
-  }
-
-  return (
-    <button
-      onClick={onSelect}
-      onDoubleClick={() => { setDraft(session.label); setEditing(true) }}
-      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] whitespace-nowrap shrink-0 transition-colors ${
-        active
-          ? 'bg-accent/20 text-accent border border-accent/40'
-          : 'bg-bg-subtle text-text-muted border border-border hover:bg-bg-hover'
-      }`}
-    >
-      <TerminalSquare size={12} />
-      {editing ? (
-        <input
-          ref={inputRef}
-          aria-label="Rename tab"
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setDraft(session.label); setEditing(false) } }}
-          className="w-[80px] bg-transparent border-none outline-none text-[13px] p-0"
-          onClick={e => e.stopPropagation()}
-        />
-      ) : (
-        <span className="max-w-[120px] truncate">{session.label}</span>
-      )}
-      <span
-        role="button"
-        tabIndex={0}
-        aria-label="Close tab"
-        onClick={onClose}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClose(e) } }}
-        className="ml-0.5 hover:text-red-400 transition-colors"
-      >
-        <X size={10} />
-      </span>
-    </button>
-  )
-})
+/**
+ * React Query mutation that kills a terminal's backend PTY
+ * (DELETE /api/terminal/sessions/:id). Best-effort — a failed delete is
+ * backstopped by the server-side orphan reaper — but routing it through a
+ * mutation gives it the standard write lifecycle instead of a bare fetch.
+ * Local teardown stays synchronous in disposeTerminalSession().
+ */
+export function useDeleteTerminalSession() {
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`Failed to delete terminal session (${res.status})`)
+    },
+  })
+}
 
 /**
  * Force xterm to re-measure the character cell, then refit. xterm measures the
@@ -180,7 +147,7 @@ export function remeasureAndFit(term: Terminal, fit: FitAddon): void {
 }
 
 /* ── Terminal view for one session ── */
-function TerminalView({ sessionId, visible }: { sessionId: string; visible: boolean }) {
+function TerminalView({ sessionId, cwd, visible }: { sessionId: string; cwd?: string; visible: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
 
@@ -193,7 +160,12 @@ function TerminalView({ sessionId, visible }: { sessionId: string; visible: bool
   // per cached term/fit, so the effects below don't re-subscribe.
   const doRefit = useCallback(() => remeasureAndFit(term, fit), [term, fit])
 
-  useTerminalWs(sessionId, term, fit)
+  // Persistent per-session WS: created once and kept alive across tab/chat/
+  // panel/route unmounts; torn down only on explicit tab close. Unmounting this
+  // component no longer disconnects — the module-level manager owns the socket.
+  useEffect(() => {
+    ensureTerminalConnection(sessionId, term, fit, cwd)
+  }, [sessionId, term, fit, cwd])
 
   // Attach terminal to DOM
   useEffect(() => {
@@ -246,7 +218,8 @@ function TerminalView({ sessionId, visible }: { sessionId: string; visible: bool
     return () => { cancelled = true }
   }, [term, doRefit]) // stable — term/doRefit come from the per-session cache
 
-  // xterm instances persist in termCache across panel close/open — only destroyed on explicit tab close
+  // xterm instances persist in termCache across tab switches — only destroyed
+  // on explicit tab close via disposeTerminalSession.
 
   return (
     <div
@@ -257,237 +230,22 @@ function TerminalView({ sessionId, visible }: { sessionId: string; visible: bool
   )
 }
 
-/* ── Main panel ── */
-export default function CliPanel({ embedded = false }: { embedded?: boolean } = {}) {
-  const dispatch = useAppDispatch()
-  const { position, sessions, activeSessionId } = useAppSelector(s => s.terminal)
-  const isBottom = position === 'bottom'
-
-  function readSize(bottom: boolean): number {
-    const key = bottom ? HEIGHT_KEY : WIDTH_KEY
-    const min = bottom ? MIN_H : MIN_W
-    const def = bottom ? DEFAULT_H : DEFAULT_W
-    const v = parseInt(localStorage.getItem(key) || '', 10)
-    return !isNaN(v) && v >= min ? v : def
-  }
-
-  const [size, setSize] = useState(() => readSize(isBottom))
-  const [prevPosition, setPrevPosition] = useState(position)
-
-  // Reset size when position changes (synchronous, no useEffect needed)
-  if (position !== prevPosition) {
-    setPrevPosition(position)
-    setSize(readSize(isBottom))
-  }
-
-  const MAX_TABS = 3
-
-  function createSession() {
-    if (sessions.length >= MAX_TABS) {
-      // Brief visual feedback — could be a toast, but console + title flash is zero-dep
-      const btn = document.querySelector('[title="New terminal"]')
-      if (btn) {
-        btn.classList.add('text-red-400')
-        setTimeout(() => btn.classList.remove('text-red-400'), 1000)
-      }
-      return
-    }
-    const id = Math.random().toString(36).slice(2, 10)
-    dispatch(addSession({ id, label: 'bash' }))
-  }
-
-  useEffect(() => {
-    let cancelled = false
-    async function reconnect() {
-      try {
-        const r = await fetch('/api/terminal/sessions')
-        if (cancelled) return
-        if (!r.ok) { createSession(); return }
-        const data = await r.json()
-        const alive = (data.sessions ?? []).filter((s: { alive: boolean }) => s.alive)
-        if (alive.length === 0) { createSession(); return }
-        const labels = loadLabels()
-        const restored: TerminalSession[] = alive.map((s: { session_id: string }) => ({
-          id: s.session_id,
-          label: labels[s.session_id] || 'bash',
-        }))
-        // Clean labels for dead sessions
-        const aliveIds = new Set(alive.map((s: { session_id: string }) => s.session_id))
-        for (const id of Object.keys(labels)) {
-          if (!aliveIds.has(id)) removeLabel(id)
-        }
-        if (!cancelled) dispatch(setSessions(restored))
-      } catch {
-        if (!cancelled) createSession()
-      }
-    }
-    if (sessions.length === 0) reconnect()
-    return () => { cancelled = true }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Refresh terminal theme colors when the user switches themes
-  useEffect(() => {
-    const observer = new MutationObserver(() => refreshTermThemes())
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
-  }, [])
-
-  useEffect(() => {
-    setActiveTerminalSession(activeSessionId)
-  }, [activeSessionId])
-
-  // Stable callbacks for SessionChip (prevent re-renders)
-  const handleSelect = useCallback((id: string) => dispatch(setActiveSession(id)), [dispatch])
-  const handleClose = useCallback((id: string, e: React.MouseEvent | React.KeyboardEvent) => {
-    e.stopPropagation()
-    // Optimistic: instant UI cleanup, backend delete is fire-and-forget
-    destroyTerm(id)
-    removeLabel(id)
-    dispatch(removeSession(id))
-    fetch(`/api/terminal/sessions/${id}`, { method: 'DELETE' }).catch(() => {})
-  }, [dispatch])
-  const handleRename = useCallback((id: string, label: string) => {
-    dispatch(renameSession({ id, label }))
-    const labels = loadLabels()
-    labels[id] = label
-    saveLabels(labels)
-  }, [dispatch])
-
-  // ── Resize drag — use refs for size to avoid recreating on every pixel ──
-  const sizeRef = useRef(size)
-  sizeRef.current = size
-  const isBottomRef = useRef(isBottom)
-  isBottomRef.current = isBottom
-
-  // Size captured at pointer-down so live moves are computed from a stable origin.
-  const dragStartSize = useRef(size)
-
-  const bounds = () => {
-    const bottom = isBottomRef.current
-    const min = bottom ? MIN_H : MIN_W
-    // Cap the panel so it can't swallow the whole viewport; leave `min` for the rest of the UI.
-    const max = Math.max(min, (bottom ? window.innerHeight : window.innerWidth) - min)
-    return { min, max }
-  }
-
-  // Pointer Events (mouse + touch) via the shared hook. Grows the panel as the
-  // splitter is dragged toward the panel's anchored edge; rubber-bands past max.
-  const drag = usePointerDrag({
-    threshold: 6,
-    onStart: () => { dragStartSize.current = sizeRef.current },
-    onMove: ({ dx, dy }) => {
-      const { min, max } = bounds()
-      // Bottom panel is anchored to the viewport bottom → dragging up (dy < 0) grows it;
-      // right panel is anchored to the right edge → dragging left (dx < 0) grows it.
-      const raw = dragStartSize.current - (isBottomRef.current ? dy : dx)
-      let next = raw
-      if (raw > max) next = max + rubberband(raw - max, max) // progressive resistance past the cap
-      else if (raw < min) next = min                          // hard floor (matches prior behavior)
-      setSize(next)
-    },
-    onEnd: () => {
-      setSize(s => {
-        const { min, max } = bounds()
-        const clamped = Math.min(max, Math.max(min, s)) // settle back inside [min, max]
-        safeSetItem(isBottomRef.current ? HEIGHT_KEY : WIDTH_KEY, String(clamped))
-        return clamped
-      })
-    },
-  })
-
+/**
+ * One terminal tab in the activity bar: a single shell bound to `sessionId`,
+ * spawned in `cwd` (the chat's working directory, if any). The tab chip owns
+ * identity + close, so this is header-less — it just hosts the xterm view.
+ * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
+ * bucket; the module-level termCache keeps them warm across tab/chat switches.
+ */
+export default function CliPanel({ sessionId, cwd, visible = true }: {
+  sessionId: string
+  cwd?: string
+  visible?: boolean
+}) {
+  useEffect(() => { ensureThemeObserver() }, [])
   return (
-    <motion.div
-      initial={embedded ? false : (isBottom ? { height: 0, width: '100%' } : { width: 0, height: '100%' })}
-      animate={embedded ? { width: '100%', height: '100%' } : (isBottom ? { height: size, width: '100%' } : { width: size, height: '100%' })}
-      exit={embedded ? undefined : (isBottom ? { height: 0, width: '100%' } : { width: 0, height: '100%' })}
-      transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
-      onAnimationComplete={refitAll}
-      className={embedded ? 'w-full h-full overflow-hidden bg-bg' : `shrink-0 overflow-hidden border border-border rounded-lg bg-bg ${isBottom ? 'ml-0 mr-2 mb-2 mt-0' : 'ml-0 mr-2 my-2'}`}
-      style={embedded ? undefined : (isBottom ? undefined : { minWidth: MIN_W })}
-    >
-      <div
-        className="flex flex-col overflow-hidden relative w-full h-full"
-      >
-        {/* Resize handle — a Pointer-Events drag splitter (mouse + touch) carrying
-            the correct role="separator"/aria-orientation semantics. The rule treats
-            "separator" as non-interactive, so the drag handlers are flagged despite
-            the role being the ARIA-correct choice for a resizer. Only rendered when
-            floating/docked, not as a SidePanel tab. */}
-        {!embedded && (
-        <div
-          role="separator"
-          aria-orientation={isBottom ? 'horizontal' : 'vertical'}
-          aria-label="Resize terminal panel"
-          className={`absolute z-20 group/drag touch-none ${
-            isBottom
-              ? 'left-0 right-0 top-0 h-[6px] cursor-ns-resize'
-              : 'left-0 top-0 bottom-0 w-[6px] cursor-col-resize'
-          }`}
-          {...drag}
-        >
-          <div
-            className={`absolute transition-colors duration-200 bg-transparent group-hover/drag:bg-accent ${
-              isBottom ? 'left-0 right-0 top-0 h-[2px]' : 'left-0 top-0 bottom-0 w-[2px]'
-            }`}
-          />
-        </div>
-        )}
-
-        {/* Header */}
-        <div className="flex items-center gap-1.5 px-3 h-9 shrink-0 border-b border-border">
-          <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-none">
-            {sessions.map(s => (
-              <SessionChip
-                key={s.id}
-                session={s}
-                active={s.id === activeSessionId}
-                onSelect={() => handleSelect(s.id)}
-                onClose={(e) => handleClose(s.id, e)}
-                onRename={(label) => handleRename(s.id, label)}
-              />
-            ))}
-            <button
-              onClick={createSession}
-              aria-label={sessions.length >= MAX_TABS ? `Max ${MAX_TABS} terminals` : 'New terminal'}
-              className={`p-1 rounded transition-colors shrink-0 ${sessions.length >= MAX_TABS ? 'text-text-muted/40 cursor-not-allowed' : 'text-text-muted hover:text-text-strong hover:bg-bg-hover'}`}
-              title={sessions.length >= MAX_TABS ? `Max ${MAX_TABS} terminals` : 'New terminal'}
-            >
-              <Plus size={14} />
-            </button>
-          </div>
-
-          <button
-            onClick={() => dispatch(setCliPanelPosition(isBottom ? 'right' : 'bottom'))}
-            className={`p-1 rounded text-text-muted hover:text-text-strong hover:bg-bg-hover transition-colors ${embedded ? 'hidden' : ''}`}
-            title={`Move to ${isBottom ? 'right' : 'bottom'}`}
-            aria-label={`Move to ${isBottom ? 'right' : 'bottom'}`}
-          >
-            <ArrowUpDown size={14} />
-          </button>
-          <button
-            onClick={() => dispatch(closeCliPanel())}
-            className={`p-1 rounded text-text-muted hover:text-text-strong hover:bg-bg-hover transition-colors ${embedded ? 'hidden' : ''}`}
-            title="Close terminal"
-            aria-label="Close terminal"
-          >
-            <X size={14} />
-          </button>
-        </div>
-
-        {/* Terminal views */}
-        <div className="flex-1 min-h-0 relative overflow-hidden">
-          {sessions.map(s => (
-            <TerminalView key={s.id} sessionId={s.id} visible={s.id === activeSessionId} />
-          ))}
-          {sessions.length === 0 && (
-            <div className="flex items-center justify-center h-full text-text-muted text-sm">
-              <button onClick={createSession} className="hover:text-accent transition-colors">
-                + New Terminal
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </motion.div>
+    <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
+      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} />
+    </div>
   )
 }
