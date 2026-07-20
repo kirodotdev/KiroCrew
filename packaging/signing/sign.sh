@@ -16,7 +16,8 @@
 #   1. Packages the .app into a tar.gz with entitlements metadata
 #   2. Uploads to pre-signed/{channel}/{version}/ in S3
 #   3. Submits a signing request to CDSigner API
-#   4. Polls until signing + notarization completes
+#   4. Polls until signing completes (CDSigner signs only; notarization is a
+#      separate post-signing step via notarytool)
 #   5. Downloads the signed artifact to signed/ locally
 #   6. Verifies the signature
 #
@@ -70,12 +71,33 @@ mkdir -p "$PACKAGE_DIR/SIGNING_METADATA"
 # Copy the .app
 cp -R "$APP_PATH" "$PACKAGE_DIR/${APP_NAME}.app"
 
+# Strip pre-existing ad-hoc signatures from nested Mach-Os (macOS only --
+# codesign is unavailable elsewhere). electron-builder and the Python
+# runtime ship arm64 binaries with mandatory linker ad-hoc signatures;
+# stripping them first lets CDSigner apply clean Developer ID signatures
+# to every explicitly-listed embedded binary.
+if [ "$(uname -s)" = "Darwin" ]; then
+  STRIPPED=0
+  while IFS= read -r MACHO; do
+    codesign --remove-signature "$MACHO" 2>/dev/null && STRIPPED=$((STRIPPED + 1)) || true
+  done < <(python3 "$SCRIPT_DIR/generate-manifest.py" --list-machos "$PACKAGE_DIR/${APP_NAME}.app")
+  log "Stripped ad-hoc signatures from ${STRIPPED} nested Mach-O binaries"
+fi
+
 # Copy entitlements
 cp "$SCRIPT_DIR/Entitlements.entitlements" "$PACKAGE_DIR/SIGNING_METADATA/Entitlements.entitlements"
 
-# Create tar.gz
+# Create tar.gz. On macOS, suppress AppleDouble (._*) entries and
+# xattr/ACL/flag metadata -- bsdtar embeds them by default and CDSigner's
+# artifact security scan rejects archives containing them. GNU tar on the
+# Linux CI runners never emits this metadata (flags kept Darwin-only since
+# GNU tar does not know --no-mac-metadata).
 TAR_PATH="$WORK_DIR/${APP_NAME}.tar.gz"
-( cd "$PACKAGE_DIR" && tar czf "$TAR_PATH" "${APP_NAME}.app" SIGNING_METADATA/ )
+TAR_FLAGS=()
+if [ "$(uname -s)" = "Darwin" ]; then
+  TAR_FLAGS=(--no-xattrs --no-mac-metadata --no-acls --no-fflags)
+fi
+( cd "$PACKAGE_DIR" && COPYFILE_DISABLE=1 tar "${TAR_FLAGS[@]+"${TAR_FLAGS[@]}"}" -czf "$TAR_PATH" "${APP_NAME}.app" SIGNING_METADATA/ )
 
 TAR_SIZE=$(du -h "$TAR_PATH" | cut -f1)
 log "Package created: ${TAR_SIZE}"
@@ -91,12 +113,20 @@ aws s3 cp "$TAR_PATH" "s3://${AWS_SIGNING_BUCKET}/${INPUT_KEY}" --quiet || {
 # ── 3. Submit signing request ───────────────────────────────────────────────
 log "Submitting CDSigner request..."
 
-# Build manifest from template
-MANIFEST=$(cat "$SCRIPT_DIR/manifest-template.json" \
-  | sed "s|\${SIGNER_ACCESS_ROLE_ARN}|${AWS_SIGNER_ROLE_ARN}|g" \
-  | sed "s|\${SIGNING_BUCKET}|${AWS_SIGNING_BUCKET}|g" \
-  | sed "s|\${INPUT_KEY}|${INPUT_KEY}|g" \
-  | sed "s|\${OUTPUT_KEY}|${OUTPUT_KEY}|g")
+# Build the manifest with full nested Mach-O coverage. Notarization requires
+# every nested binary (embedded Python backend, Squirrel ShipIt) to be
+# Developer-ID signed; generate-manifest.py enumerates them from the actual
+# .app so the list never goes stale as backend dependencies change.
+MANIFEST=$(SIGNER_ACCESS_ROLE_ARN="${AWS_SIGNER_ROLE_ARN}" \
+  SIGNING_BUCKET="${AWS_SIGNING_BUCKET}" \
+  INPUT_KEY="${INPUT_KEY}" \
+  OUTPUT_KEY="${OUTPUT_KEY}" \
+  python3 "$SCRIPT_DIR/generate-manifest.py" \
+    "$SCRIPT_DIR/manifest-template.json" \
+    "$PACKAGE_DIR/${APP_NAME}.app") || {
+  echo "ERROR: manifest generation failed" >&2
+  exit 4
+}
 
 # CD Signer ad-hoc signing API v2: POST /v2/sign-tasks. awscurl SigV4-signs
 # from the AWS credential chain (env vars, incl. AWS_SESSION_TOKEN) -- no
