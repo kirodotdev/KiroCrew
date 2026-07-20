@@ -931,6 +931,17 @@ class KnowledgeConfig:
             "(UI/dashboards, not documents) and svg has no reader support.",
         ),
     )
+    max_ingest_file_mb: float = field(
+        default=100.0,
+        metadata=_meta(
+            "Max Ingest File Size (MB)",
+            "Per-file size cap for Knowledge Library ingestion. Oversized files "
+            "are skipped with a WARNING naming the file instead of being chunked "
+            "-- chunking a very large file (e.g. a tens-of-MB CSV->MD conversion) "
+            "is CPU-bound and previously hung gateway startup. Set 0 to disable "
+            "the cap.",
+        ),
+    )
     embed_timeout_secs: float = field(
         default=10.0,
         metadata=_meta(
@@ -2810,6 +2821,16 @@ class KiroCrewConfig:
                     )
                     if isinstance(k, str)
                 ],
+                max_ingest_file_mb=(
+                    float(mb)
+                    if isinstance(
+                        (mb := knowledge_data.get("max_ingest_file_mb", 100.0)),
+                        (int, float),
+                    )
+                    and not isinstance(mb, bool)
+                    and mb >= 0
+                    else 100.0
+                ),
                 embed_timeout_secs=float(knowledge_data.get("embed_timeout_secs", 10.0)),
                 embed_content_budget=int(knowledge_data.get("embed_content_budget", 0)),
                 pool_idle_ttl_secs=(

@@ -1147,6 +1147,7 @@
           "html",
           "json"
         ],
+        "max_ingest_file_mb": 100.0,
         "embed_timeout_secs": 10.0,
         "embed_content_budget": 0,
         "pool_idle_ttl_secs": 300
@@ -1198,6 +1199,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "knowledge.max_ingest_file_mb",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max Ingest File Size (MB)",
+      "help": "Per-file size cap for Knowledge Library ingestion. Oversized files are skipped with a WARNING naming the file instead of being chunked -- chunking a very large file (e.g. a tens-of-MB CSV->MD conversion) is CPU-bound and previously hung gateway startup. Set 0 to disable the cap.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 100.0
     },
     {
       "path": "knowledge.embed_timeout_secs",
