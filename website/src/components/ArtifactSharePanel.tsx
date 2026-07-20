@@ -239,6 +239,12 @@ export function ArtifactSharePanel({
             </span>
           </div>
         )}
+        {selDesc?.available === false && (
+          <div className="mb-3 text-[11.5px] text-muted">
+            {providerLabel(provider)} tooling isn&apos;t installed yet — it installs automatically
+            on your first publish (may take a moment).
+          </div>
+        )}
         {programmable ? (
           <>
             <div className="flex flex-wrap gap-1.5 mb-3">

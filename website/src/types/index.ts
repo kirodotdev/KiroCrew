@@ -303,6 +303,9 @@ export interface PublishProviderDescriptor {
   capabilities: string[]
   kind_support: 'native' | 'converted' | 'degraded' | 'unsupported'
   capable: boolean
+  /** False => tooling not installed yet; installs automatically on first publish.
+   *  Optional: older gateways omit it (treat as available). */
+  available?: boolean
   sharing_model: {
     supports_private: boolean
     supports_shared: boolean

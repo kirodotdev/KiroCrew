@@ -29,6 +29,7 @@ const ARTIFACTORY_DESC: PublishProviderDescriptor = {
   capabilities: ['content_versions', 'sharing'],
   kind_support: 'native',
   capable: true,
+  available: true,
   sharing_model: {
     supports_private: true,
     supports_shared: true,
@@ -55,6 +56,7 @@ const CHORUS_DESC: PublishProviderDescriptor = {
   capabilities: ['content_versions', 'comments_write', 'realtime'],
   kind_support: 'native',
   capable: true,
+  available: true,
   sharing_model: {
     supports_private: true,
     supports_shared: true,
@@ -81,6 +83,7 @@ const MARKBIN_DESC: PublishProviderDescriptor = {
   capabilities: ['content_versions', 'content_pull', 'sharing', 'comments_write'],
   kind_support: 'native',
   capable: true,
+  available: true,
   sharing_model: {
     supports_private: true,
     supports_shared: false,
@@ -205,6 +208,20 @@ describe('ArtifactSharePanel — unpublished', () => {
     expect(screen.getByText('Private')).toBeInTheDocument()
     expect(screen.getByText('Public')).toBeInTheDocument()
     expect(screen.queryByText('Shared')).not.toBeInTheDocument()
+  })
+
+  it('hints that a not-yet-installed provider installs on first publish', async () => {
+    mockProviders([{ ...MARKBIN_DESC, available: false }])
+    render(<ArtifactSharePanel artifact={makeArtifact()} />, { wrapper })
+    expect(await screen.findByText(/installs automatically on your first publish/i)).toBeInTheDocument()
+  })
+
+  it('shows no install hint when the available field is omitted (older gateway)', async () => {
+    const { available: _available, ...legacy } = MARKBIN_DESC
+    mockProviders([legacy as PublishProviderDescriptor])
+    render(<ArtifactSharePanel artifact={makeArtifact()} />, { wrapper })
+    expect(await screen.findByText('Publish to MarkBin')).toBeInTheDocument()
+    expect(screen.queryByText(/installs automatically/i)).not.toBeInTheDocument()
   })
 })
 
