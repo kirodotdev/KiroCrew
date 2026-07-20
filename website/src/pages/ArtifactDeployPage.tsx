@@ -2,7 +2,7 @@ import { useState } from 'react'
 import Clickable from '../components/Clickable'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, XCircle, Rocket, Plus, Star } from 'lucide-react'
+import { Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, ChevronLeft, Lock, CheckCircle, XCircle, Rocket, Plus, Star } from 'lucide-react'
 import type { Artifact } from '../types'
 import { PageHeader, Card, CardTitle, StatCard, Btn, Input, Toggle , Badge} from '../components/ui'
 import StyledSelect from '../components/StyledSelect'
@@ -211,6 +211,15 @@ export default function ArtifactDeployPage() {
     <>
       <PageHeader title="Artifact Deploy" subtitle="One console for deploying artifacts to your own AWS — set up access, check health, and manage everything deployed." />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0" style={{ color: 'var(--text)' }}>
+
+      {/* Back-navigation: Artifact Deploy is a sub-surface of Artifacts, not a
+          standalone page — give users a clear path back to the library. */}
+      <Link
+        to="/artifacts"
+        className="inline-flex items-center gap-1 mb-4 text-[12.5px] font-medium text-muted hover:text-text no-underline"
+      >
+        <ChevronLeft size={15} /> Back to Artifacts
+      </Link>
 
       {/* StatCard row — mirrors AgentsPage/ArtifactsPage pattern */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">

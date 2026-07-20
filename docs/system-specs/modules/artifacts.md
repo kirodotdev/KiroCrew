@@ -229,7 +229,7 @@ The Artifacts page is a single unified, searchable table with two conceptual
 inputs, distinguished by the leading **star** column:
 
 - **Starred artifacts** — real, saved artifacts with `pinned=true`. The
-  **Starred** view (default) shows only these; the star toggles `pinned` via
+  **Starred** view shows only these; the star toggles `pinned` via
   `PATCH /api/artifacts/{slug}/pin` (metadata-only, no version bump).
 - **Session documents** — a *virtual* firehose of non-code documents the agent
   produced across chats (from message `file_changes`), surfaced only in the
@@ -238,6 +238,10 @@ inputs, distinguished by the leading **star** column:
   pinned, file-backed artifact via `POST /api/artifacts/materialize`
   ("Virtual All + materialize-on-save"). Search matches name/source (incl. the
   originating session title); the file-type filter applies to both inputs.
+
+The page opens on the **All** view by default. The Starred/All selection is
+persisted per-browser (`localStorage['mc-artifacts-pinned-only']`), so a user
+who last chose **Starred** resumes there on their next visit.
 
 Materialization is authorization-gated: the requested path must appear in the
 recorded chat `file_changes` (never an arbitrary client path), and the read is

@@ -1135,7 +1135,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [filter, setFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<string>('')
-  const [pinnedOnly, setPinnedOnly] = useState(true)
+  // Default to "All" artifacts, but remember the last visit's choice: if the
+  // user last selected "Starred", start there again.
+  const [pinnedOnly, setPinnedOnly] = useState(
+    () => localStorage.getItem('mc-artifacts-pinned-only') === '1',
+  )
   const [view, setView] = useState<'grid' | 'table'>(
     () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
   )
@@ -1537,7 +1541,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label="Filter starred">
               <button
                 type="button"
-                onClick={() => setPinnedOnly(true)}
+                onClick={() => { setPinnedOnly(true); safeSetItem('mc-artifacts-pinned-only', '1') }}
                 aria-pressed={pinnedOnly}
                 className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none inline-flex items-center gap-1 ${pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
               >
@@ -1545,7 +1549,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               </button>
               <button
                 type="button"
-                onClick={() => setPinnedOnly(false)}
+                onClick={() => { setPinnedOnly(false); safeSetItem('mc-artifacts-pinned-only', '0') }}
                 aria-pressed={!pinnedOnly}
                 className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none ${!pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
               >

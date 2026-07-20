@@ -1044,7 +1044,7 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "description": "Autonomous multi-step task execution — compose ideas, generate plans, and run them to completion",
         "author": "kirocrew",
         "tags": ["tasks", "autonomy", "execution"],
-        "defaultEnabled": False,
+        "defaultEnabled": True,
         "iconUrl": "/app-assets/projects/icon.svg",
         "heroImage": "/app-assets/projects/hero-light.svg",
         "heroImageDark": "/app-assets/projects/hero-dark.svg",
@@ -1288,6 +1288,14 @@ def register_builtin_apps() -> int:
         else:
             # Use defaultEnabled from definition (defaults to True for backward compat)
             default_enabled = app_data.get("defaultEnabled", True)
+            # Governance chokepoint. enable_app() normally enforces the ``apps``
+            # activation allowlist, but a *default-enabled* builtin is persisted
+            # here on first registration and never routes through enable_app() —
+            # which would let it bypass a host deny-by-default policy. Re-apply the
+            # same gate so a governance-denied app registers DISABLED. This is a
+            # no-op for default-disabled builtins (the historical case).
+            if default_enabled and _app_activation_denied(name):
+                default_enabled = False
             meta = InstalledApp(
                 name=name,
                 version=app_data["version"],
