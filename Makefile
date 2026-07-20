@@ -36,7 +36,14 @@ backend:
 	    echo "  → recreating $(VENV) (existing interpreter < 3.10)"; rm -rf $(VENV); fi; \
 	  test -x $(VENV)/bin/python || "$$PY" -m venv $(VENV)
 	$(PIP) install --upgrade pip setuptools wheel
-	KIROCREW_SKIP_FRONTEND=1 $(PIP) install -e ".[dev]"
+	# --prefer-binary: on hosts below the modern manylinux baseline (e.g. Amazon
+	# Linux 2, glibc 2.26) the newest release of a compiled dep may ship only a
+	# manylinux_2_28 wheel + an sdist. Without this flag pip picks the newest
+	# version and builds the sdist from source, which fails (no toolchain / old
+	# GCC / missing -dev headers). --prefer-binary makes pip take an older
+	# prebuilt wheel instead. No-op where the newest deps already have a usable
+	# wheel (macOS, AL2023).
+	KIROCREW_SKIP_FRONTEND=1 $(PIP) install --prefer-binary -e ".[dev]"
 	bash packaging/resign-macos-libs.sh $(VENV)/bin/python
 
 test: build
