@@ -194,7 +194,11 @@ surface is **inert in the public edition**: the provider registry is empty, so
 503, and the frontend gates the entire remote section + `UpstreamSyncBanner` on
 a non-empty `GET /api/artifacts/publish-providers` result (zero remote pixels /
 requests with no provider). A companion registers providers via the CPP publish
-seam. Governance: `publish_sync` has NO internal gate and `push_version` is
+seam. The picker includes a provider whenever `available() or installable()`
+(`PublishProvider.installable()` defaults `False`; a companion provider whose
+`ensure_ready()` self-installs on first publish overrides it to `True`), and
+each row carries an `available` flag so the FE can hint install-on-first-use for
+a not-yet-installed but installable destination. Governance: `publish_sync` has NO internal gate and `push_version` is
 ungated, so the two egress-arming routes go through
 `_publish_governance_denied` (fail-closed `capabilities.publish ∩
 destinations:<provider>`) BEFORE dispatch — `overwrite-remote` on the resolved
