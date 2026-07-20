@@ -52,7 +52,15 @@ if str(_APP_ROOT) not in sys.path:
 # dir is hyphenated, so these are not auto-discovered packages). Imported at the
 # top per the top-level-imports guideline; the sys.path setup above executes at
 # module load, so this resolves on first import.
-from sage_lib import learning, pipeline, review_driver, review_pool, store  # noqa: E402
+from sage_lib import (  # noqa: E402,E501
+    adapters,
+    learning,
+    pipeline,
+    results,
+    review_driver,
+    review_pool,
+    store,
+)
 
 # In-memory run registry, most-recent first. Bounded so it can't grow unbounded.
 # Holds lightweight run descriptors the page polls; on-disk result records carry
@@ -60,6 +68,11 @@ from sage_lib import learning, pipeline, review_driver, review_pool, store  # no
 _RUNS: list[dict[str, Any]] = []
 _RUNS_MAX = 25
 _LOCK = asyncio.Lock()
+# Serializes whole review runs. run_review clears + writes the SHARED data/results
+# dir and the report index, so two overlapping runs (from /review and /review-repo,
+# or two /review-repo calls) would clobber each other's records/report. Concurrent
+# starts queue on this lock instead of interleaving.
+_RUN_LOCK = asyncio.Lock()
 # Guards copy-on-write updates to a run's per-change ``progress`` map, which the
 # (threaded) driver writes and the /runs handler reads concurrently.
 _PROGRESS_LOCK = threading.Lock()
@@ -140,6 +153,39 @@ async def _record(run: dict) -> None:
         _save_runs()
 
 
+def _dedup_changes_under_lock(run: dict, changes: list[str]) -> list[str]:
+    """Re-filter a repo-review run's ``changes`` against the CURRENT reviewed index,
+    dropping any PR already reviewed at the exact head SHA this run intended to
+    review. Called under ``_RUN_LOCK`` to close the TOCTOU where two concurrent
+    repo-reviews both deduped against a stale index before the lock (the second
+    would otherwise re-review + re-post a PR the first just delivered).
+
+    No-op for forced runs and pasted-link runs (no ``head_shas``). Keeps
+    ``run['changes'|'change_ids'|'head_shas']`` consistent with the kept subset so
+    ``_record_reviewed`` still round-trips. Sync (reads the index) — call via a
+    thread from the event loop.
+    """
+    head_shas = run.get("head_shas") or {}
+    if run.get("force") or not head_shas:
+        return changes
+    index = results.read_reviewed()
+    kept: list[str] = []
+    kept_shas: dict[str, str] = {}
+    for url in changes:
+        rkey = review_driver.reviewed_key_for(url)
+        intended = head_shas.get(rkey, "")
+        rec = index.get(rkey) or {}
+        if intended and rec.get("head_sha") == intended:
+            continue   # a concurrent run already reviewed this exact head
+        kept.append(url)
+        if rkey in head_shas:
+            kept_shas[rkey] = head_shas[rkey]
+    run["changes"] = kept
+    run["change_ids"] = [review_driver.change_id_for(c) for c in kept]
+    run["head_shas"] = kept_shas
+    return kept
+
+
 async def _run_review_bg(run: dict, changes: list[str]) -> None:
     """Run the (blocking) driver in a worker thread; update the run record.
 
@@ -150,23 +196,49 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
     card, no ``:lock:``, no Slack relay) and warm workers are reused across CRs
     with a clean-slate reset between them. We just surface the driver's summary."""
     try:
-        # Bridge the threaded driver to the async pool running on THIS (gateway)
-        # event loop. The pool is a lazily-created process-wide singleton.
-        loop = asyncio.get_running_loop()
-        pool = review_pool.get_pool()
-        dispatch = review_pool.make_sync_dispatch(loop, pool)
+        # Serialize whole runs (see _RUN_LOCK): concurrent starts queue here rather
+        # than interleaving over the shared results dir / report index.
+        async with _RUN_LOCK:
+            # TOCTOU guard (Codex Finding 2): the dedup in _handle_review_repo ran
+            # BEFORE this lock, so a concurrent repo-review that finished first may
+            # have just recorded some of these PRs. Re-dedup against the now-current
+            # reviewed index under the lock so we never re-review + re-post a PR that
+            # another run already delivered. No-op for forced / pasted-link runs.
+            changes = await asyncio.to_thread(_dedup_changes_under_lock, run, changes)
+            if not changes:
+                run["summary"] = {"ok": True, "changes": 0,
+                                  "note": "all PRs already reviewed by a concurrent run"}
+                run["status"] = "done"
+                return
+            # Bridge the threaded driver to the async pool running on THIS (gateway)
+            # event loop. The pool is a lazily-created process-wide singleton.
+            loop = asyncio.get_running_loop()
+            pool = review_pool.get_pool()
+            dispatch = review_pool.make_sync_dispatch(loop, pool)
 
-        summary = await asyncio.to_thread(
-            review_driver.run_review, changes,  # type: ignore[attr-defined]
-            dispatch=dispatch, progress=_make_progress(run),
-        )
-        run["summary"] = summary
-        run["report_slug"] = summary.get("report_slug") or run.get("report_slug")
-        # "done" even if some changes failed — the failures are surfaced in the
-        # summary; "error" is reserved for the driver itself blowing up.
-        run["status"] = "done" if summary.get("ok") else "error"
-        if not summary.get("ok"):
-            run["error"] = summary.get("error", "review failed")
+            # Bracket the batch: begin_batch() lazily spawns the ONE shared runtime;
+            # end_batch() (in finally) kills it once this run's reviews all drain — so
+            # the subprocess (and its memory) lives exactly as long as the batch.
+            await pool.begin_batch()
+            try:
+                summary = await asyncio.to_thread(
+                    review_driver.run_review, changes,  # type: ignore[attr-defined]
+                    dispatch=dispatch, progress=_make_progress(run),
+                )
+            finally:
+                await pool.end_batch()
+            run["summary"] = summary
+            run["report_slug"] = summary.get("report_slug") or run.get("report_slug")
+            # "done" even if some changes failed — the failures are surfaced in the
+            # summary; "error" is reserved for the driver itself blowing up.
+            run["status"] = "done" if summary.get("ok") else "error"
+            if not summary.get("ok"):
+                run["error"] = summary.get("error", "review failed")
+            else:
+                # Durable dedup index: record each reviewed PR's head SHA so a later
+                # repo-review skips it until its head changes. Only repo-review runs
+                # carry head_shas; pasted-link runs skip this (no-op).
+                await asyncio.to_thread(_record_reviewed, run)
     except Exception as exc:  # pragma: no cover - defensive
         run["status"] = "error"
         run["error"] = str(exc)
@@ -223,6 +295,176 @@ async def _handle_review(request: web.Request) -> web.Response:
     return web.json_response(
         {"run_id": run["run_id"], "changes": changes, "status": "running"}
     )
+
+
+def _record_reviewed(run: dict) -> None:
+    """Upsert this run's SUCCESSFULLY-reviewed PRs into the durable dedup index
+    (by head SHA), so a later repo-review skips them until their head changes.
+
+    Only PRs whose deep review actually ran + recorded are marked — a gate crash,
+    no-verdict, or dispatch failure must NOT be written to the index, otherwise the
+    next non-forced repo-review would silently skip a PR that was never really
+    reviewed. (``run_review`` returns ``ok=True`` for any run with >=1 change even
+    when individual changes failed, so we intersect ``head_shas`` with the
+    per-change outcomes rather than trusting the run-level ok.) Best-effort — a
+    failure here never fails the run. No-op for runs without a ``head_shas`` map
+    (i.e. pasted-link reviews, where we don't know each PR's head SHA)."""
+    shas = run.get("head_shas") or {}
+    if not shas:
+        return
+    per_change = (run.get("summary") or {}).get("per_change") or []
+    # per_change records carry the (lossy) change_id; head_shas is keyed by the
+    # collision-free reviewed key. Map change_id -> reviewed key via the run's
+    # parallel `changes` (URLs) so we can intersect the two keyings and index
+    # ONLY the PRs whose deep review recorded a result AND whose draft was
+    # actually delivered are indexed. `post_ok` alone is insufficient: it only
+    # means the poster AGENT's turn ended normally, not that `gh api` succeeded
+    # (a 422 / network error can still end the turn cleanly). So additionally
+    # require the poster to have persisted at least the EXPECTED comment count
+    # (`posted_comments >= posting_expected`, both written by the deep-review
+    # branch). A failed/partial post leaves posted_comments below expected -> the
+    # PR is NOT indexed and is re-reviewed next time (fail-safe: re-review, never
+    # silent-skip a PR that was never really delivered).
+    changes = run.get("changes") or []
+    cid_to_rkey = {
+        review_driver.change_id_for(u): review_driver.reviewed_key_for(u)
+        for u in changes
+    }
+    reviewed_ok = {
+        cid_to_rkey.get(r.get("change_id"))
+        for r in per_change
+        if r.get("deep_reviewed") and r.get("post_ok")
+        and (r.get("posted_comments") or 0) >= (r.get("posting_expected") or 1)
+    }
+    reviewed_ok.discard(None)
+    now = _now()
+    rid = run.get("run_id", "")
+    entries = {rkey: {"head_sha": sha, "reviewed_at": now, "run_id": rid}
+               for rkey, sha in shas.items() if sha and rkey in reviewed_ok}
+    if not entries:
+        return
+    try:
+        results.mark_reviewed(entries)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("code-review-sage: failed to update reviewed index", exc_info=True)
+
+
+async def _list_repo_prs(repo: str) -> tuple[str, list[dict]]:
+    """Resolve owner/repo from a repo URL and enumerate its OPEN PRs (via `gh`).
+    Returns ``("<owner>/<repo>", prs)``. Raises ValueError for a bad URL and
+    RuntimeError for a `gh` failure (mapped to 400/502 by the handlers)."""
+    owner, name = adapters.parse_repo_url(repo)   # raises on non-GitHub / no owner/repo
+    prs = await asyncio.to_thread(pipeline.list_open_prs, owner, name)
+    return f"{owner}/{name}", prs
+
+
+async def _handle_repo_prs(request: web.Request) -> web.Response:
+    """GET .../repo-prs?repo=<url> — list a repo's OPEN PRs annotated with
+    reviewed / not-reviewed / stale (by head SHA). Does NOT start a review."""
+    repo = (request.query.get("repo") or "").strip()
+    if not repo:
+        return web.json_response({"error": "missing ?repo=<github repo url>"}, status=400)
+    try:
+        slug, prs = await _list_repo_prs(repo)
+    except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
+        return web.json_response({"error": f"invalid repo url: {e}"}, status=400)
+    except Exception as e:  # gh not authed / network / repo not found
+        return web.json_response({"error": str(e)}, status=502)
+    index = await asyncio.to_thread(results.read_reviewed)
+    out = []
+    for pr in prs:
+        url = pr.get("url", "")
+        cid = review_driver.change_id_for(url)      # display / response field only
+        # Read the dedup index with the SAME collision-free key it is written
+        # under (reviewed_key_for), NOT the lossy change-id — otherwise every
+        # reviewed PR reads back as "new" (read/write key mismatch).
+        rkey = review_driver.reviewed_key_for(url)
+        rec = index.get(rkey) or {}
+        stored = rec.get("head_sha") or ""
+        cur = pr.get("head_sha") or ""
+        out.append({
+            **pr, "change_id": cid,
+            "reviewed": bool(stored) and stored == cur,
+            "reviewed_stale": bool(stored) and stored != cur,
+            "reviewed_at": rec.get("reviewed_at", ""),
+        })
+    return web.json_response({"repo": slug, "prs": out, "count": len(out)})
+
+
+async def _handle_review_repo(request: web.Request) -> web.Response:
+    """POST .../review-repo — review all OPEN PRs of a repo in one batch.
+
+    Body: ``{"repo": "<github repo url>", "force": bool}``. By default only PRs
+    NOT yet reviewed at their current head SHA are queued; ``force=true`` reviews
+    ALL open PRs regardless of the dedup index."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    repo = str(body.get("repo") or "").strip()
+    # Strict boolean: only a literal JSON `true` forces a full re-review. A string
+    # ("false"), object, or number must NOT accidentally bypass dedup and trigger a
+    # costly review of every open PR.
+    force = body.get("force") is True
+    if not repo:
+        return web.json_response({"error": "missing 'repo' (a github repo url)"}, status=400)
+    try:
+        slug, prs = await _list_repo_prs(repo)
+    except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
+        return web.json_response({"error": f"invalid repo url: {e}"}, status=400)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=502)
+
+    index = await asyncio.to_thread(results.read_reviewed)
+    changes: list[str] = []
+    head_shas: dict[str, str] = {}
+    skipped = 0
+    for pr in prs:
+        url = pr.get("url") or ""
+        if not url:
+            continue
+        # Dedup by a COLLISION-FREE canonical key (NOT the lossy change-id, which
+        # sanitizes '-'->'_' and would let acme/service-api and acme/service_api
+        # share one reviewed.json entry). head_shas is keyed the same way so
+        # _record_reviewed round-trips against this index.
+        rkey = review_driver.reviewed_key_for(url)
+        cur = pr.get("head_sha") or ""
+        if not force:
+            rec = index.get(rkey) or {}
+            if rec.get("head_sha") and rec.get("head_sha") == cur:
+                skipped += 1
+                continue   # already reviewed at this exact head SHA
+        changes.append(url)
+        head_shas[rkey] = cur
+
+    if not changes:
+        return web.json_response({
+            "repo": slug, "changes": [], "skipped": skipped, "status": "noop",
+            "message": "all open PRs already reviewed at their current head "
+                       "(use force=true to re-review all)",
+        })
+
+    run: dict[str, Any] = {
+        "run_id": uuid.uuid4().hex[:12],
+        "repo": slug,
+        "changes": changes,
+        "change_ids": [review_driver.change_id_for(c) for c in changes],
+        "head_shas": head_shas,        # consumed by _record_reviewed on success
+        "force": force,                # skip the under-lock re-dedup for a forced run
+        "status": "running",
+        "started_at": _now(),
+        "progress": {},
+    }
+    await _record(run)
+    task = asyncio.create_task(_run_review_bg(run, changes))
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
+    return web.json_response({
+        "run_id": run["run_id"], "repo": slug,
+        "changes": changes, "skipped": skipped, "status": "running",
+    })
 
 
 async def _handle_runs(request: web.Request) -> web.Response:
@@ -303,6 +545,7 @@ def _load_review_section() -> dict:
         "model": review.get("model") or None,
         "effort": review.get("effort", ""),
         "active_namespaces": review.get("active_namespaces") or ["default"],
+        "max_concurrent": review_pool.effective_max_concurrent(),
     }
 
 
@@ -344,6 +587,15 @@ def _write_review_section(patch: dict) -> dict:
             avail = set(learning.list_namespaces())
             cleaned = [str(n) for n in ns if str(n) in avail]
             review["active_namespaces"] = cleaned or ["default"]
+    if "max_concurrent" in patch:
+        # How many reviews run at once on the shared runtime. Clamped to
+        # [1, MAX_CONCURRENT_CEIL] so "review all" can fan out without letting a
+        # user set an unbounded value that would saturate the host.
+        try:
+            mc = int(patch["max_concurrent"])
+        except (TypeError, ValueError):
+            raise ValueError("max_concurrent must be an integer")
+        review["max_concurrent"] = max(1, min(mc, review_pool.MAX_CONCURRENT_CEIL))
 
     cfg["review"] = review
     tmp = cfg_path.with_name(cfg_path.name + ".tmp")
@@ -377,6 +629,7 @@ async def _handle_settings(request: web.Request) -> web.Response:
                 "efforts": list(review_pool.VALID_EFFORTS),
                 "namespaces": namespaces,
                 "reviewer": reviewer,
+                "max_concurrent_max": review_pool.MAX_CONCURRENT_CEIL,
             }
         return web.json_response(await asyncio.to_thread(_build_settings_response))
     # PUT
@@ -412,6 +665,7 @@ async def _handle_settings(request: web.Request) -> web.Response:
             "model": review.get("model") or None,
             "effort": review.get("effort", ""),
             "active_namespaces": review.get("active_namespaces") or ["default"],
+            "max_concurrent": review.get("max_concurrent") or review_pool.effective_max_concurrent(),
         }})
     except ValueError as exc:
         # Bad client input (e.g. unknown model) — a 4xx, not a server fault.
@@ -544,6 +798,8 @@ def register_routes(app: web.Application) -> None:
         logger.warning("code-review-sage: ensure_layout failed at startup", exc_info=True)
     _load_runs()  # restore durable job status (mark orphaned 'running' as 'interrupted')
     app.router.add_post("/api/apps/code-review-sage/review", _handle_review)
+    app.router.add_post("/api/apps/code-review-sage/review-repo", _handle_review_repo)
+    app.router.add_get("/api/apps/code-review-sage/repo-prs", _handle_repo_prs)
     app.router.add_get("/api/apps/code-review-sage/runs", _handle_runs)
     app.router.add_get("/api/apps/code-review-sage/settings", _handle_settings)
     app.router.add_put("/api/apps/code-review-sage/settings", _handle_settings)

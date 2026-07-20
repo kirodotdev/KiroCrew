@@ -190,7 +190,10 @@ class TestConfigDrivenSettings(unittest.TestCase):
             cfg["review"]["effort"] = "ludicrous"
             cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
             with patch.object(store, "app_root", return_value=root):
-                self.assertEqual(review_pool._get_review_settings()["effort"], "max")
+                # An invalid stored effort is sanitized back to the default
+                # (_DEFAULT_EFFORT = "" = inherit the model/provider default).
+                self.assertEqual(review_pool._get_review_settings()["effort"],
+                                 review_pool._DEFAULT_EFFORT)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

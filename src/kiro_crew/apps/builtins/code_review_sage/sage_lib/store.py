@@ -66,6 +66,8 @@ DEFAULT_CONFIG: dict[str, object] = {
         "max_review_rounds": 3,  # Phase-2 convergence rounds per change; re-review
                                  # until a round adds no new findings or this cap is
                                  # hit. Maximizes first-pass recall (>=1).
+        "max_concurrent": 5,     # max reviews running at once on the shared runtime
+                                 # (clamped to [1, 30]); "review all" can raise it.
     },
     "sensitive_globs": DEFAULT_SENSITIVE_GLOBS,
     "rule_packs": DEFAULT_RULE_PACKS,

@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -71,6 +72,59 @@ def parse_batch(text: str) -> list[str]:
             seen.add(key)
             out.append(link)
     return out
+
+
+def list_open_prs(owner: str, repo: str, *, timeout: float = 60.0) -> list[dict]:
+    """Enumerate a repo's OPEN pull requests via the authenticated ``gh`` CLI.
+
+    Deterministic backbone (no LLM): runs ``gh api`` with a LIST argv (never
+    ``shell=True``). ``owner``/``repo`` are constrained to ``[^/]+`` by
+    ``adapters.parse_repo_url`` before this is called and are interpolated only
+    into the ``gh api`` PATH argument (which `gh` treats as an API path, not a
+    shell command), so there is no shell-injection surface. Returns
+    ``[{url, number, head_sha, title}]`` in GitHub's order. Raises
+    ``RuntimeError`` (with the stderr tail) if `gh` is missing, unauthenticated,
+    times out, or the repo can't be read."""
+    path = f"repos/{owner}/{repo}/pulls?state=open&per_page=100"
+    argv = [
+        "gh", "api", path, "--paginate",
+        "--jq", ".[] | {url: .html_url, number: .number, "
+                "head_sha: .head.sha, title: .title}",
+    ]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, check=False)
+    except FileNotFoundError as e:
+        raise RuntimeError("the `gh` CLI is not installed on this host") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"`gh` timed out listing open PRs for {owner}/{repo}") from e
+    if proc.returncode != 0:
+        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        raise RuntimeError(
+            f"gh api failed for {owner}/{repo} (exit {proc.returncode}): {tail}")
+    prs: list[dict] = []
+    for line in (proc.stdout or "").splitlines():   # --jq emits JSONL
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        prs.append({
+            "url": obj.get("url") or "",
+            "number": obj.get("number"),
+            "head_sha": obj.get("head_sha") or "",
+            "title": obj.get("title") or "",
+        })
+    # Non-silent: gh returned 0 but produced non-empty, unparseable output (e.g. a
+    # gh build that pretty-prints jq). Don't masquerade that as "no open PRs".
+    if not prs and (proc.stdout or "").strip():
+        raise RuntimeError(
+            f"could not parse `gh` output for {owner}/{repo} "
+            "(expected one JSON object per line)")
+    return prs
 
 
 # ---------------------------------------------------------------------------

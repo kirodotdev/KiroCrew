@@ -288,7 +288,7 @@ Subprocess lifecycle:
 
 ### Worker-pool tool audit (`audit_source`)
 
-The `audit_source` constructor param (default `None`) tags an `AcpClient` that runs tools **outside** the chat_runner / SubagentManager audit loop — App / worker-pool clients (code-review-sage, knowledge `llm_pool`) whose tool calls would otherwise never reach the security audit log. When set, `_maybe_audit_tool_call()` emits a per-tool-call SEL `tool_invocation` record; when `None` (chat / subagent clients) it is a no-op so those paths never double-log. The `sel().log_tool_invocation` call is offloaded onto `subprocess_executor()` (so SEL-backend I/O can never block the event loop) and bounded by `asyncio.wait_for(..., _SEL_AUDIT_TIMEOUT_SECONDS=5.0)`; a timeout or any SEL failure is swallowed (logged at `WARNING`) so tool dispatch always proceeds.
+The `audit_source` constructor param (default `None`) tags an `AcpClient` that runs tools **outside** the chat_runner / SubagentManager audit loop — the knowledge `llm_pool` worker-pool client, whose tool calls would otherwise never reach the security audit log. When set, `_maybe_audit_tool_call()` emits a per-tool-call SEL `tool_invocation` record; when `None` (chat / subagent clients) it is a no-op so those paths never double-log. The `sel().log_tool_invocation` call is offloaded onto `subprocess_executor()` (so SEL-backend I/O can never block the event loop) and bounded by `asyncio.wait_for(..., _SEL_AUDIT_TIMEOUT_SECONDS=5.0)`; a timeout or any SEL failure is swallowed (logged at `WARNING`) so tool dispatch always proceeds. **Note:** Code Review Sage's `ReviewPool` used to be an `audit_source` `AcpClient` consumer here, but it migrated to the shared `AcpRuntime` path (see "Additional consumers" above) — the runtime layer has no `audit_source`, so the pool re-emits the same per-tool SEL `tool_invocation` audit itself from `sage_lib/review_pool.py` (preserving audit parity).
 
 ## Image Support
 
@@ -324,5 +324,12 @@ Every kiro session runs on `AcpRuntime` + `AcpSessionHandle`:
 `_start_kiro_runtime()` for the kiro backend, wrapping an `AcpSessionHandle` in
 `AcpSessionProvider` — so main chat, dashboard, cron, and subagents all run on
 the runtime rather than a per-session `AcpClient`. Additional consumers:
-`AcpRuntime` also powers the `_bg` pool and (when `agent.session_sharing` is on)
-the shared parent+subagents runtime. See `providers.md` and `subagent.md`.
+`AcpRuntime` also powers the `_bg` pool, (when `agent.session_sharing` is on)
+the shared parent+subagents runtime, and **Code Review Sage's `ReviewPool`**
+(`apps/builtins/code_review_sage/sage_lib/review_pool.py`) — one batch-scoped
+`AcpRuntime` multiplexing one `AcpSessionHandle` per PR under a concurrency
+semaphore (`review.max_concurrent`, default 5, ceiling 30), spawned on batch
+start and `kill()`ed when the batch drains, with each per-PR session
+`destroy()`ed on completion for context isolation. Because the runtime layer has
+no `audit_source`, the pool re-emits the equivalent per-tool SEL audit itself
+(see the `audit_source` note above). See `providers.md` and `subagent.md`.

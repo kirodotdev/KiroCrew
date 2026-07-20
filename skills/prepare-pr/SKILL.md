@@ -1,8 +1,8 @@
 ---
 name: prepare-pr
-description: End-to-end prepares a pull request for review — commits local changes, syncs with the base branch, squashes to a single commit, opens or updates the PR, then polls CI + code-review bots for up to 10 rounds and fixes every legitimate High/Medium finding and build failure until the PR is review-ready. Use when the user says "prepare PR", "prep the PR", "ship this PR", "get the PR review-ready", "raise/open/update a PR", or "make my changes ready for review".
+description: End-to-end drives working-tree changes to a review-ready pull request — commit, sync base, squash to one commit, open/update the PR — then, for a full-loop request, KEEPS RUNNING IN-SESSION (poll CI + code-review bots in ~5-min rounds, up to 10) fixing every legitimate High/Medium finding and build failure until the PR is review-ready (never merges). Two modes chosen from the user's wording. FULL LOOP (commit through drive-green, staying in-session until review-ready) when the user says "prepare PR/CR", "prep/ship this PR", "get the PR review-ready", "make it green", "make my changes ready for review", "handle/address the review comments", "fix CI", or "keep going until it's green". PREPARE-ONLY (commit, push, one status snapshot, stop) when the user says "update the PR", "push my changes", "sync my branch", "just update the body/description", or "don't wait for CI". Do NOT load for merging/landing a PR, plain git commit/push with no PR intent, or code-authoring requests.
 always: false
-triggers: prepare pr, prep pr, prepare pull request, ship pr, raise pr, open pr, create pr, update pr, get pr ready, review ready pr, prepare cr, prepare code review
+triggers: prepare pr, prep pr, prepare pull request, ship pr, ship this pr, raise pr, open pr, create pr, update pr, get pr ready, get the pr review ready, review ready pr, make it green, make the pr green, drive pr green, handle review comments, address review comments, fix ci, pr ci failing, poll ci, keep going until green, prepare cr, prep cr, prepare code review, ship cr
 ---
 
 # Prepare PR
@@ -13,7 +13,7 @@ Drive whatever is in the working tree to a **clean, review-ready PR**: commit �
 ## Usage
 Trigger when the user wants a change turned into a reviewable PR, or an existing PR made green/clean. Pick the scope from their wording:
 - **Prepare-only (Phases 0–1, then STOP):** "update the PR", "push my changes", "sync my branch", "just update the body", "don't wait for CI". Run preflight → commit → sync → squash → reconcile description → push, take **one** `pr_status.py` snapshot, report, stop. No polling, no fixing.
-- **Full loop (Phases 0–4):** "prepare PR", "make it review-ready/green", "handle the review comments", "ship this PR".
+- **Full loop (Phases 0–4):** "prepare PR", "make it review-ready/green", "handle the review comments", "ship this PR", "fix CI", "keep going until it's green". Runs preflight → commit → sync → squash → push → then **stays in this session** polling CI + review bots in ~5-min rounds and fixing every legitimate High/Medium finding + build failure, until the PR is review-ready or it escalates. Do NOT stop after the first snapshot for a full-loop request.
 - **Ambiguous → default to prepare-only**, report status once, and ask before entering the poll-and-fix loop. Never silently commit the user to 10 rounds.
 
 Do **not** merge/land a PR — that is the user's separate, explicit call.
@@ -64,7 +64,9 @@ The scripts are stdlib **Python 3** (run with `python3`; no third-party deps), p
 6. **Create/update PR.** New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>` (body from `$SKILL_DIR/assets/pr-body-template.md`). Existing → `gh pr edit` to keep title/body matching the diff. Capture the PR number/URL.
 
 ### Phase 2 — Poll (full loop only; max 10 rounds, ~5 min)
-Loop on `python3 $SKILL_DIR/scripts/pr_status.py <pr#>`: **10** → `wait(seconds=300, reason="Round N/10 …")` then re-poll; **20** → Phase 3; **0** → Phase 4. A round is complete only when every required check has finished **and** every bot has posted. For long/unattended runs, drive the same loop from a **Heartbeat** task instead of holding the session.
+**Keep the loop running in THIS session** — this is the default and the expected behavior of a full-loop request. Loop on `python3 $SKILL_DIR/scripts/pr_status.py <pr#>`: **10** → `wait(seconds=300, reason="Round N/10 …")` then re-poll (the `wait` tool holds the session alive across the round without ending your turn); **20** → Phase 3; **0** → Phase 4. A round is complete only when every required check has finished **and** every bot has posted. Do not end the turn between rounds — chain `wait` → re-poll → act until convergence or escalation. The 10-round / escalation caps (Phase 4) bound it so "keep running" never means "run forever".
+
+> **Heartbeat is a FALLBACK, not the default.** Only hand the loop to a Heartbeat task if the session genuinely cannot stay open (the user explicitly asks you to detach, or you must free the session for other work). Otherwise keep polling in-session — a detached heartbeat loses the working context and is harder to follow. If you do fall back to heartbeat, say so explicitly.
 
 ### Phase 3 — Triage & fix (on exit 20)
 `python3 $SKILL_DIR/scripts/pr_findings.py <pr#>`, then fix in this order and re-push (`--force-with-lease`, still one commit):

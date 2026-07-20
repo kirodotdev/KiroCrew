@@ -12,9 +12,15 @@ import json
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 
 from sage_lib import store
+
+# Serializes the read-merge-write of the reviewed index so two overlapping
+# repo-review runs (finalizing on separate threads) can't clobber each other's
+# entries. The write itself is atomic; this guards the read+merge before it.
+_REVIEWED_LOCK = threading.Lock()
 
 REQUIRED_TOP = ("schema", "version", "change_id", "platform", "repo_identity", "phase1")
 REQUIRED_PHASE1 = ("gate_verdict", "design_risk", "criticality")
@@ -24,6 +30,54 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 def results_dir(root: Path | None = None) -> Path:
     return store.data_dir(root) / "results"
+
+
+def reviewed_path(root: Path | None = None) -> Path:
+    """Durable cross-run 'already reviewed' index (repo-review dedup).
+
+    A single flat file ``data/reviewed.json`` keyed by change id ->
+    ``{head_sha, reviewed_at, run_id}``. UNLIKE the per-change result records
+    (transient scratch the driver clears after each run), this index is durable
+    and is the source of truth for skipping PRs whose head SHA has not changed
+    since their last review."""
+    return store.data_dir(root) / "reviewed.json"
+
+
+def read_reviewed(root: Path | None = None) -> dict:
+    """Load the reviewed index; ``{}`` if missing or unreadable."""
+    try:
+        return json.loads(reviewed_path(root).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_reviewed(index: dict, root: Path | None = None) -> Path:
+    """Atomically write the reviewed index (mode 0600), mirroring write_result."""
+    store.ensure_layout(root)
+    path = reviewed_path(root)
+    data = json.dumps(index, indent=2).encode("utf-8")
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return path
+
+
+def mark_reviewed(entries: dict, root: Path | None = None) -> Path:
+    """Upsert ``entries`` ({change_id: {head_sha, reviewed_at, run_id}}) into the
+    durable index (read-merge-atomic-write, serialized by ``_REVIEWED_LOCK`` so
+    overlapping runs merge instead of clobber). Returns the index path."""
+    with _REVIEWED_LOCK:
+        idx = read_reviewed(root)
+        idx.update(entries)
+        return write_reviewed(idx, root)
 
 
 def safe_change_id(change_id: str) -> str:

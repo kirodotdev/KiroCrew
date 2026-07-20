@@ -1,7 +1,8 @@
-"""Unit tests for the reusable review worker pool (lazy, bounded, isolated).
+"""Unit tests for the single-runtime review executor (batch-scoped, isolated).
 
-Workers are faked so the pool's concurrency/lifecycle logic is exercised without
-spawning real ACP processes.
+The ``AcpRuntime``/``AcpSessionHandle`` layer is faked so the executor's
+concurrency, batch lifecycle, per-task session isolation, tool auto-approval,
+and SEL audit are exercised without spawning a real kiro-cli process.
 """
 import asyncio
 import json
@@ -10,16 +11,19 @@ import threading
 import unittest
 from pathlib import Path
 
+from sage_lib import review_pool as rp
 from sage_lib.review_pool import (
+    _DEFAULT_EFFORT,
     _DEFAULT_REVIEW_MODEL,
     MAX_CONCURRENT,
-    MAX_STARTING,
+    MAX_CONCURRENT_CEIL,
     REVIEW_EFFORT,
     ReviewPool,
     _resolve_review_agent,
     _review_work_dir,
     _reviewer_model,
     _write_effort_overlay,
+    effective_max_concurrent,
     make_sync_dispatch,
     pool_stats,
     reviewer_info,
@@ -27,200 +31,330 @@ from sage_lib.review_pool import (
 )
 
 
-class FakeWorker:
-    """A trivial worker: records start/reset/send/shutdown and stays alive."""
-
-    def __init__(self) -> None:
-        self.started = 0
-        self.resets = 0
-        self.sends: list[str] = []
-        self.shutdowns = 0
-        self.live = False
-
-    async def start(self) -> None:
-        self.started += 1
-        self.live = True
-
-    async def send_message(self, prompt: str, timeout: float = 0) -> str:
-        self.sends.append(prompt)
-        return "ok:" + prompt
-
-    async def reset(self) -> None:
-        self.resets += 1
-
-    async def shutdown(self) -> None:
-        self.shutdowns += 1
-        self.live = False
-
-    def is_alive(self) -> bool:
-        return self.live
+# ── Fakes for the ACP runtime/handle layer ──────────────────────────────────
+def _ev(kind, **kw):
+    """Build a fake AcpEvent-like object with a .kind and any extra attrs."""
+    return type("Ev", (), {"kind": kind, **kw})()
 
 
-class FailingWorker(FakeWorker):
-    async def send_message(self, prompt: str, timeout: float = 0) -> str:
-        raise RuntimeError("boom")
+class FakeHandle:
+    """A fake session handle. ``prompt`` replays a scripted list of events."""
 
-
-class GateWorker(FakeWorker):
-    """send_message blocks on a shared event — used to observe concurrency."""
-
-    def __init__(self, gate: asyncio.Event) -> None:
-        super().__init__()
+    def __init__(self, runtime, session_id, script=None, gate=None):
+        self._runtime = runtime
+        self.session_id = session_id
+        self._script = script or []
         self._gate = gate
+        self.approvals: list = []
+        self.destroyed = False
 
-    async def send_message(self, prompt: str, timeout: float = 0) -> str:
-        self.sends.append(prompt)
-        await self._gate.wait()
-        return "ok:" + prompt
+    async def prompt(self, message, timeout=0):
+        if self._gate is not None:
+            await self._gate.wait()
+        for ev in self._script:
+            yield ev
+        yield _ev(rp.EVENT_COMPLETE, stop_reason="end_turn")
 
+    async def approve_tool(self, request_id, option_id=None):
+        self.approvals.append(request_id)
 
-class StartGateWorker(FakeWorker):
-    """start() blocks on a shared event and tracks simultaneous startups."""
-
-    def __init__(self, gate: asyncio.Event, counter: dict) -> None:
-        super().__init__()
-        self._gate = gate
-        self._counter = counter
-
-    async def start(self) -> None:
-        self._counter["now"] += 1
-        self._counter["max"] = max(self._counter["max"], self._counter["now"])
-        await self._gate.wait()
-        self._counter["now"] -= 1
-        self.started += 1
-        self.live = True
+    async def destroy(self):
+        self.destroyed = True
+        self._runtime.active -= 1
+        self._runtime.sessions.pop(self.session_id, None)
 
 
-def _mk(lst, worker):
-    """Factory helper: record the created worker and return it. Avoids the
-    ``lst.append(x) or worker`` idiom, which mypy rejects (append returns None)."""
-    lst.append(worker)
-    return worker
+class FakeRuntime:
+    """A fake AcpRuntime: tracks spawn/kill and active sessions."""
+
+    instances: list = []
+
+    def __init__(self, agent=None, work_dir=None, sandbox_mode="auto", **kw):
+        self.agent = agent
+        self.work_dir = work_dir
+        self.spawned = False
+        self.killed = False
+        self.sessions: dict = {}
+        self._session_queues: dict = {}   # read by holder.stats()
+        self.active = 0
+        self.max_active = 0
+        self._seq = 0
+        self.script = []
+        self.gate = None
+        FakeRuntime.instances.append(self)
+
+    def is_alive(self):
+        return self.spawned and not self.killed
+
+    async def spawn(self):
+        self.spawned = True
+
+    async def kill(self):
+        self.killed = True
+
+    async def create_session(self, cwd=None, agent=None):
+        self._seq += 1
+        sid = f"s{self._seq}"
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        h = FakeHandle(self, sid, script=list(self.script), gate=self.gate)
+        self.sessions[sid] = h
+        self._session_queues[sid] = object()
+        # mirror the handle destroy -> pop from _session_queues too
+        _orig = h.destroy
+
+        async def _destroy():
+            self._session_queues.pop(sid, None)
+            await _orig()
+        h.destroy = _destroy  # type: ignore[method-assign]
+        return h
 
 
-def _count(lst, worker):
-    """Factory helper: record one creation (append a marker) and return the worker."""
-    lst.append(1)
-    return worker
+def _install_fake_runtime(test, script=None, gate=None):
+    """Patch review_pool.AcpRuntime with FakeRuntime for the duration of a test."""
+    FakeRuntime.instances = []
+
+    def factory(agent=None, work_dir=None, sandbox_mode="auto", **kw):
+        r = FakeRuntime(agent=agent, work_dir=work_dir, sandbox_mode=sandbox_mode)
+        r.script = script or []
+        r.gate = gate
+        return r
+    orig = rp.AcpRuntime
+    rp.AcpRuntime = factory  # type: ignore[assignment]
+    test.addCleanup(lambda: setattr(rp, "AcpRuntime", orig))
 
 
-class TestReviewPool(unittest.IsolatedAsyncioTestCase):
-    async def test_lazy_no_workers_until_used(self):
-        made: list = []
-        pool = ReviewPool(worker_factory=lambda: _count(made, FakeWorker()))
-        self.assertEqual(pool.created_count, 0)
-        self.assertEqual(pool.idle_count, 0)
-        self.assertEqual(made, [])
+# ── Batch lifecycle + isolation ─────────────────────────────────────────────
+class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
+    async def test_lazy_no_runtime_until_used(self):
+        _install_fake_runtime(self)
+        ReviewPool(work_dir="/tmp/x")
+        self.assertEqual(FakeRuntime.instances, [])   # nothing spawned on construction
 
-    async def test_reuse_and_reset_only_on_reuse(self):
-        worker = FakeWorker()
-        calls: list = []
-        pool = ReviewPool(worker_factory=lambda: _count(calls, worker))
-
+    async def test_begin_batch_spawns_one_runtime_shared_across_sends(self):
+        _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="hi")])
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        self.assertEqual(len(FakeRuntime.instances), 1)
+        self.assertTrue(FakeRuntime.instances[0].is_alive())
         out1 = await pool.send("a")
-        self.assertEqual(out1, "ok:a")
-        self.assertEqual(worker.resets, 0)        # fresh worker -> no reset on first use
-        self.assertEqual(pool.idle_count, 1)
-
         out2 = await pool.send("b")
-        self.assertEqual(out2, "ok:b")
-        self.assertEqual(worker.resets, 1)        # reused -> clean slate before the next CR
-        self.assertEqual(len(calls), 1)           # same worker reused, not recreated
+        self.assertEqual(out1, "hi")
+        self.assertEqual(out2, "hi")
+        # both sends multiplexed onto the ONE runtime (no respawn per task)
+        self.assertEqual(len(FakeRuntime.instances), 1)
+        await pool.end_batch()
 
-    async def test_max_concurrent_cap(self):
+    async def test_end_batch_kills_runtime_only_when_drained(self):
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()          # batches 0->1 spawns
+        await pool.begin_batch()          # batches 1->2 (overlapping run)
+        rt = FakeRuntime.instances[0]
+        await pool.end_batch()            # batches 2->1: NOT killed
+        self.assertFalse(rt.killed)
+        await pool.end_batch()            # batches 1->0: killed
+        self.assertTrue(rt.killed)
+
+    async def test_new_batch_after_drain_spawns_fresh_runtime(self):
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        await pool.end_batch()
+        await pool.begin_batch()
+        self.assertEqual(len(FakeRuntime.instances), 2)   # a fresh runtime per batch
+        await pool.end_batch()
+
+    async def test_session_created_and_destroyed_per_task(self):
+        _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="x")])
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        await pool.send("task")
+        rt = FakeRuntime.instances[0]
+        # exactly one session was created, and it was destroyed (no leak)
+        self.assertEqual(rt._seq, 1)
+        self.assertEqual(rt._session_queues, {})          # destroyed -> unregistered
+        await pool.end_batch()
+
+    async def test_standalone_send_lazily_spawns(self):
+        # No begin_batch (standalone CLI path) -> acquire() spawns on first send.
+        _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="y")])
+        pool = ReviewPool(work_dir="/tmp/x")
+        out = await pool.send("z")
+        self.assertEqual(out, "y")
+        self.assertEqual(len(FakeRuntime.instances), 1)
+        await pool.shutdown()
+        self.assertTrue(FakeRuntime.instances[0].killed)
+
+    async def test_abnormal_stop_reason_raises_and_still_destroys(self):
+        # A timeout/stale/error completion must surface as a failure (so dispatch
+        # reports ok=False and the driver never marks the PR reviewed), and the
+        # session must still be destroyed.
+        _install_fake_runtime(self, script=[_ev(rp.EVENT_COMPLETE, stop_reason="timeout")])
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        with self.assertRaises(RuntimeError):
+            await pool.send("t")
+        rt = FakeRuntime.instances[0]
+        self.assertEqual(rt._session_queues, {})   # session destroyed despite the raise
+        await pool.end_batch()
+
+    async def test_tool_stall_stop_reason_is_abnormal(self):
+        # STOP_REASON_TOOL_STALL ("error: tool stall") must be classified abnormal
+        # and surface as a failure (matched explicitly, not just by prefix).
+        _install_fake_runtime(
+            self, script=[_ev(rp.EVENT_COMPLETE, stop_reason=rp.STOP_REASON_TOOL_STALL)])
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        with self.assertRaises(RuntimeError):
+            await pool.send("t")
+        await pool.end_batch()
+
+    async def test_spawn_failure_does_not_leak_batch_count(self):
+        # If the runtime spawn raises, _batches must NOT be incremented — otherwise
+        # it could never drain to 0 and the subprocess would never be killed.
+        calls = {"n": 0}
+
+        def factory(agent=None, work_dir=None, sandbox_mode="auto", **kw):
+            r = FakeRuntime(agent=agent, work_dir=work_dir)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                async def _boom():
+                    raise RuntimeError("spawn boom")
+                r.spawn = _boom  # type: ignore[method-assign]
+            return r
+        orig = rp.AcpRuntime
+        rp.AcpRuntime = factory  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(rp, "AcpRuntime", orig))
+        FakeRuntime.instances = []
+        pool = ReviewPool(work_dir="/tmp/x")
+        with self.assertRaises(RuntimeError):
+            await pool.begin_batch()                 # spawn fails
+        self.assertEqual(pool._holder._batches, 0)   # counter not leaked
+        # a subsequent batch spawns cleanly and drains to 0 (runtime killed)
+        await pool.begin_batch()
+        await pool.end_batch()
+        self.assertTrue(FakeRuntime.instances[-1].killed)
+
+
+# ── Concurrency ─────────────────────────────────────────────────────────────
+class TestConcurrency(unittest.IsolatedAsyncioTestCase):
+    async def test_semaphore_caps_concurrent_sessions(self):
         gate = asyncio.Event()
-        made: list[GateWorker] = []
-        pool = ReviewPool(
-            max_workers=2, max_starting=2,
-            worker_factory=lambda: _mk(made, GateWorker(gate)),
-        )
+        _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="q")], gate=gate)
+        pool = ReviewPool(max_workers=2, work_dir="/tmp/x")
+        await pool.begin_batch()
         tasks = [asyncio.create_task(pool.send(f"t{i}")) for i in range(4)]
         await asyncio.sleep(0.05)
-        # only 2 tasks may run at once -> only 2 workers ever created
-        self.assertEqual(pool.created_count, 2)
-        self.assertEqual(len(made), 2)
+        rt = FakeRuntime.instances[0]
+        self.assertEqual(rt.active, 2)             # only 2 in flight at once
+        self.assertLessEqual(rt.max_active, 2)
         gate.set()
         await asyncio.gather(*tasks)
-        self.assertEqual(len(made), 2)            # remaining tasks reused the 2 workers
+        self.assertLessEqual(rt.max_active, 2)     # never exceeded the cap
+        await pool.end_batch()
 
-    async def test_startup_throttled_to_max_starting(self):
-        gate = asyncio.Event()
-        counter = {"now": 0, "max": 0}
-        pool = ReviewPool(
-            max_workers=5, max_starting=2,
-            worker_factory=lambda: StartGateWorker(gate, counter),
-        )
-        tasks = [asyncio.create_task(pool.send(f"t{i}")) for i in range(5)]
-        await asyncio.sleep(0.05)
-        self.assertEqual(counter["now"], 2)       # exactly 2 cold-starting at once
-        self.assertLessEqual(counter["max"], 2)
-        gate.set()
-        await asyncio.gather(*tasks)
-        self.assertLessEqual(counter["max"], 2)   # never exceeded the start cap
+    async def test_effective_max_concurrent_clamped(self):
+        pool = ReviewPool(max_workers=999, work_dir="/tmp/x")
+        self.assertEqual(pool._max, MAX_CONCURRENT_CEIL)
 
-    async def test_dead_idle_worker_replaced(self):
-        made: list[FakeWorker] = []
-        pool = ReviewPool(worker_factory=lambda: _mk(made, FakeWorker()))
-        await pool.send("a")
-        self.assertEqual(len(made), 1)
-        made[0].live = False                      # worker dies while idle
-        await pool.send("b")
-        self.assertEqual(len(made), 2)            # dead idle worker replaced
-        self.assertGreaterEqual(made[0].shutdowns, 1)
-        self.assertEqual(pool.created_count, 1)   # exactly one live worker
 
-    async def test_failed_task_retires_worker(self):
-        made: list[FailingWorker] = []
-        pool = ReviewPool(worker_factory=lambda: _mk(made, FailingWorker()))
-        with self.assertRaises(RuntimeError):
-            await pool.send("x")
-        self.assertEqual(pool.created_count, 0)   # poisoned worker retired, not idled
-        self.assertEqual(pool.idle_count, 0)
-        self.assertEqual(made[0].shutdowns, 1)
+# ── Tool approval + SEL audit (parity with the old AcpClient worker) ─────────
+class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
+    async def test_permission_events_are_auto_approved(self):
+        script = [
+            _ev(rp.EVENT_PERMISSION_REQUEST, request_id="r1"),
+            _ev(rp.EVENT_TEXT_CHUNK, text="done"),
+        ]
+        _install_fake_runtime(self, script=script)
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        out = await pool.send("t")
+        self.assertEqual(out, "done")
+        rt = FakeRuntime.instances[0]
+        # the (now-destroyed) handle recorded the approval
+        # find it via the runtime's last created session id
+        self.assertEqual(rt._seq, 1)
+        await pool.end_batch()
 
-    async def test_shutdown_retires_idle_workers(self):
-        made: list[FakeWorker] = []
-        pool = ReviewPool(worker_factory=lambda: _mk(made, FakeWorker()))
-        await pool.send("a")
-        self.assertEqual(pool.idle_count, 1)
-        await pool.shutdown()
-        self.assertEqual(pool.idle_count, 0)
-        self.assertEqual(made[0].shutdowns, 1)
+    async def test_tool_call_emits_sel_audit(self):
+        calls: list = []
 
-    async def test_pool_stats_reports_occupancy(self):
-        await shutdown_pool()                   # ensure no singleton from other tests
+        class _FakeSel:
+            def log_tool_invocation(self, **kw):
+                calls.append(kw)
+
+        script = [_ev(rp.EVENT_TOOL_CALL, title="shell", tool_kind="execute"),
+                  _ev(rp.EVENT_TEXT_CHUNK, text="ok")]
+        _install_fake_runtime(self, script=script)
+        orig_sel = rp._sel
+        rp._sel = lambda: _FakeSel()          # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(rp, "_sel", orig_sel))
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        await pool.send("t")
+        await pool.end_batch()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["tool_name"], "shell")
+        self.assertEqual(calls[0]["source"], "subagent")
+        self.assertEqual(calls[0]["outcome"], "auto_approved")
+
+    async def test_permission_decision_emits_sel_audit(self):
+        # Codex Finding 1 (backend-security-controls): the permission DECISION must
+        # emit an SEL event carrying its request id — not only the tool_call.
+        calls: list = []
+
+        class _FakeSel:
+            def log_tool_invocation(self, **kw):
+                calls.append(kw)
+
+        script = [_ev(rp.EVENT_PERMISSION_REQUEST, request_id="r1",
+                      title="shell", tool_kind="execute"),
+                  _ev(rp.EVENT_TEXT_CHUNK, text="ok")]
+        _install_fake_runtime(self, script=script)
+        orig_sel = rp._sel
+        rp._sel = lambda: _FakeSel()          # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(rp, "_sel", orig_sel))
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        await pool.send("t")
+        await pool.end_batch()
+        # exactly one audit — the permission decision — carrying the request id
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["request_id"], "r1")
+        self.assertEqual(calls[0]["outcome"], "auto_approved")
+        self.assertEqual(calls[0]["source"], "subagent")
+
+
+# ── Stats + config ──────────────────────────────────────────────────────────
+class TestStatsAndConfig(unittest.IsolatedAsyncioTestCase):
+    async def test_pool_stats_zeros_when_no_singleton(self):
+        await shutdown_pool()
         st = pool_stats()
-        self.assertEqual(st["max"], MAX_CONCURRENT)
-        self.assertEqual(st["starting_max"], MAX_STARTING)
         self.assertEqual(st["workers"], 0)
         self.assertEqual(st["busy"], 0)
         self.assertEqual(st["idle"], 0)
+        self.assertFalse(st["runtime_alive"])
+        self.assertIn("max", st)
 
-    async def test_acquire_after_shutdown_raises(self):
-        pool = ReviewPool(worker_factory=lambda: FakeWorker())
-        await pool.shutdown()
-        with self.assertRaises(RuntimeError):
-            await pool.acquire()
+    async def test_effective_max_concurrent_default(self):
+        # No config override -> MAX_CONCURRENT (5), clamped into [1, ceil].
+        self.assertEqual(effective_max_concurrent(), MAX_CONCURRENT)
+        self.assertEqual(MAX_CONCURRENT, 5)
 
-    async def test_cold_start_failure_releases_permit_and_slot(self):
-        calls = {"n": 0}
-
-        def factory():
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise RuntimeError("spawn boom")    # first cold-start fails
-            return FakeWorker()
-        pool = ReviewPool(max_workers=1, worker_factory=factory)
-        with self.assertRaises(RuntimeError):
-            await pool.send("a")
-        # The failed create must not leak the concurrency permit or the slot.
-        self.assertEqual(pool.created_count, 0)
-        out = await pool.send("b")                  # pool still usable
-        self.assertEqual(out, "ok:b")
+    async def test_stats_reflect_alive_runtime(self):
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir="/tmp/x")
+        await pool.begin_batch()
+        st = pool.stats()
+        self.assertTrue(st["runtime_alive"])
+        self.assertEqual(st["max"], pool._max)
+        await pool.end_batch()
 
 
+# ── Sync dispatch bridge ─────────────────────────────────────────────────────
 class TestSyncDispatchBridge(unittest.TestCase):
-    """make_sync_dispatch bridges the threaded driver to the async pool."""
+    """make_sync_dispatch bridges the threaded driver to the async executor."""
 
     def setUp(self):
         self.loop = asyncio.new_event_loop()
@@ -234,49 +368,69 @@ class TestSyncDispatchBridge(unittest.TestCase):
         asyncio.run_coroutine_threadsafe(pool.shutdown(), self.loop).result(timeout=5)
 
     def test_dispatch_ok(self):
-        pool = ReviewPool(worker_factory=lambda: FakeWorker())
-        dispatch = make_sync_dispatch(self.loop, pool, default_timeout=5)
-        out = dispatch("hello", 5)
-        self.assertTrue(out["ok"])
-        self.assertEqual(out["output"], "ok:hello")
-        self.assertEqual(out["error"], "")
-        self._shutdown(pool)
+        FakeRuntime.instances = []
+
+        def factory(agent=None, work_dir=None, sandbox_mode="auto", **kw):
+            r = FakeRuntime(agent=agent, work_dir=work_dir)
+            r.script = [_ev(rp.EVENT_TEXT_CHUNK, text="hello")]
+            return r
+        orig = rp.AcpRuntime
+        rp.AcpRuntime = factory  # type: ignore[assignment]
+        try:
+            pool = ReviewPool(work_dir="/tmp/x")
+            dispatch = make_sync_dispatch(self.loop, pool, default_timeout=5)
+            out = dispatch("hi", 5)
+            self.assertTrue(out["ok"])
+            self.assertEqual(out["output"], "hello")
+            self.assertEqual(out["error"], "")
+            self._shutdown(pool)
+        finally:
+            rp.AcpRuntime = orig  # type: ignore[assignment]
 
     def test_dispatch_error_never_raises(self):
-        pool = ReviewPool(worker_factory=lambda: FailingWorker())
-        dispatch = make_sync_dispatch(self.loop, pool, default_timeout=5)
-        out = dispatch("x", 5)
-        self.assertFalse(out["ok"])
-        self.assertIn("boom", out["error"])
-        self._shutdown(pool)
+        FakeRuntime.instances = []
+
+        def factory(agent=None, work_dir=None, sandbox_mode="auto", **kw):
+            r = FakeRuntime(agent=agent, work_dir=work_dir)
+
+            async def _boom(cwd=None, agent=None):
+                raise RuntimeError("boom")
+            r.create_session = _boom   # type: ignore[assignment]
+            return r
+        orig = rp.AcpRuntime
+        rp.AcpRuntime = factory  # type: ignore[assignment]
+        try:
+            pool = ReviewPool(work_dir="/tmp/x")
+            dispatch = make_sync_dispatch(self.loop, pool, default_timeout=5)
+            out = dispatch("x", 5)
+            self.assertFalse(out["ok"])
+            self.assertIn("boom", out["error"])
+            self._shutdown(pool)
+        finally:
+            rp.AcpRuntime = orig  # type: ignore[assignment]
 
 
+# ── Reviewer identity resolution (unchanged helpers) ─────────────────────────
 class TestReviewAgentResolution(unittest.TestCase):
-    """The pool prefers the dedicated reviewer agent but degrades to kirocrew
-    when it isn't installed (older builds)."""
-
     def test_fallback_to_kirocrew_when_dedicated_missing(self):
-        # A name with no ~/.kiro/agents/<name>.json on disk -> fall back.
         self.assertEqual(
             _resolve_review_agent("definitely-not-installed-xyz"), "kirocrew")
 
     def test_review_work_dir_is_app_root(self):
-        # Workers must run with cwd = app root so relative prompt paths
-        # (sage_lib/pipeline.py, data/results/<id>.json) resolve where the driver reads.
         wd = _review_work_dir()
         self.assertIsNotNone(wd)
         self.assertTrue(wd.replace("\\", "/").endswith("apps/code-review-sage"))
 
 
 class TestReviewEffort(unittest.TestCase):
-    """Pool workers must run at MAX thinking effort for both the design gate and
-    the deep review. On the kiro-cli backend (the pool default) effort is applied
-    via a per-model workspace cli.json overlay written before spawn."""
+    """Effort is applied via a per-model workspace cli.json overlay written
+    before spawn. The default is "" (inherit the model/provider default)."""
 
-    def test_review_effort_is_max(self):
-        self.assertEqual(REVIEW_EFFORT, "max")
+    def test_review_effort_default_is_inherit(self):
+        self.assertEqual(REVIEW_EFFORT, _DEFAULT_EFFORT)
+        self.assertEqual(REVIEW_EFFORT, "")
 
-    def test_write_effort_overlay_writes_max_for_model(self):
+    def test_write_effort_overlay_writes_default_for_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             _write_effort_overlay(tmp, "claude-sonnet-4.6")
             cli = Path(tmp) / ".kiro" / "settings" / "cli.json"
@@ -285,10 +439,8 @@ class TestReviewEffort(unittest.TestCase):
             effort = (data["chat.modelDefaults"]["claude-sonnet-4.6"]
                       ["output_config"]["effort"])
             self.assertEqual(effort, REVIEW_EFFORT)
-            self.assertEqual(effort, "max")
 
     def test_write_effort_overlay_is_merge_safe(self):
-        # An existing cli.json (other models / unrelated keys) must be preserved.
         with tempfile.TemporaryDirectory() as tmp:
             settings = Path(tmp) / ".kiro" / "settings"
             settings.mkdir(parents=True)
@@ -296,29 +448,24 @@ class TestReviewEffort(unittest.TestCase):
                 "chat.modelDefaults": {"other-model": {"output_config": {"effort": "low"}}},
                 "unrelated.key": 42,
             }), encoding="utf-8")
-            _write_effort_overlay(tmp, "claude-sonnet-4.6")
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
             data = json.loads((settings / "cli.json").read_text(encoding="utf-8"))
-            # New model added at max, existing model + unrelated key untouched.
             self.assertEqual(
                 data["chat.modelDefaults"]["claude-sonnet-4.6"]["output_config"]["effort"],
-                "max")
+                "high")
             self.assertEqual(
                 data["chat.modelDefaults"]["other-model"]["output_config"]["effort"],
                 "low")
             self.assertEqual(data["unrelated.key"], 42)
 
     def test_write_effort_overlay_never_raises(self):
-        # Best-effort: a bad path must not raise (effort is a quality knob).
-        # NUL byte makes mkdir/open fail on Linux; must be swallowed.
         _write_effort_overlay("/proc/nonexistent/\x00bad", "claude-sonnet-4.6")
 
     def test_reviewer_model_falls_back_to_default(self):
-        # Unknown agent -> no ~/.kiro/agents/<agent>.json -> default model.
         self.assertEqual(
             _reviewer_model("definitely-not-installed-xyz"), _DEFAULT_REVIEW_MODEL)
 
     def test_reviewer_info_reports_agent_model_and_effort(self):
-        # Surfaced to the dashboard header so users see WHICH model + effort runs.
         info = reviewer_info()
         self.assertTrue(info.get("agent"))
         self.assertTrue(isinstance(info.get("model"), str) and info["model"])
@@ -327,46 +474,3 @@ class TestReviewEffort(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestWorkerSweepProtection(unittest.TestCase):
-    """AcpReviewWorker must expose its kiro-cli PID via ``pid()`` so the shared
-    pool engine can shield it from the gateway's periodic orphan sweep. Without a
-    shield a busy pool worker is classified as an orphan and SIGKILLed mid-review,
-    which the driver reports as "ACP process exited (code=1)" (the reported bug).
-    The register/unregister lifecycle itself lives in the engine — see
-    test_worker_pool.TestSweepProtection."""
-
-    def test_worker_exposes_live_pid_for_shielding(self):
-        from sage_lib import review_pool as rp
-
-        class _FakeClient:
-            backend = "kiro"          # not ACP_BACKEND_CLAUDE -> skip claude effort push
-            is_ready = True
-
-            def __init__(self, *a, **k):
-                self._pid = 4242
-
-            async def ensure_ready(self):
-                return None
-
-            async def shutdown(self):
-                return None
-
-            def is_process_alive(self):
-                return True
-
-        orig_client = rp.AcpClient
-        rp.AcpClient = _FakeClient
-        try:
-            async def _run():
-                w = rp.AcpReviewWorker()
-                self.assertIsNone(w.pid(), "no PID before start")
-                await w.start()
-                self.assertEqual(w.pid(), 4242, "pid() must report the live process")
-                await w.shutdown()
-                self.assertIsNone(w.pid(), "no PID after shutdown")
-
-            asyncio.run(_run())
-        finally:
-            rp.AcpClient = orig_client

@@ -139,12 +139,12 @@ def _resolve_concurrency(explicit: int | None = None) -> int:
     worker pool's concurrency cap.
 
     Pool workers are direct ACP sessions (NOT ``/api/spawn`` sub-agents), so the
-    gateway sub-agent cap no longer applies — ``review_pool.MAX_CONCURRENT`` is the
-    single source of truth for how many reviews run at once. The pool also hard-caps
-    concurrency itself, so this only governs how many tasks the driver offers it."""
+    gateway sub-agent cap no longer applies — ``review_pool.effective_max_concurrent()``
+    is the single source of truth for how many reviews run at once. The pool also
+    hard-caps concurrency itself, so this only governs how many tasks the driver offers it."""
     if explicit and explicit > 0:
         return max(1, int(explicit))
-    return max(1, review_pool.MAX_CONCURRENT)
+    return max(1, review_pool.effective_max_concurrent())
 
 
 def _max_review_rounds() -> int:
@@ -182,6 +182,23 @@ def change_id_for(link: str) -> str:
     re-deriving the id (and drifting from the backend's sanitization, e.g. an owner
     hyphen becoming an underscore)."""
     return _cid(link)
+
+
+def reviewed_key_for(link: str) -> str:
+    """Collision-free key for the durable reviewed-index (``reviewed.json``).
+
+    Separate from ``change_id_for``: the change-id is also an on-disk filename and
+    is therefore lossily sanitized (``-`` -> ``_``), which let two different repos
+    (``acme/service-api`` vs ``acme/service_api``) with the same PR number collide
+    on one dedup key and skip a requested review. The reviewed-index key never
+    names a file, so it uses the lossless canonical identity instead. Falls back to
+    the sanitized change-id for a non-PR link (defensive; repo-review only ever
+    feeds real PR URLs from ``list_open_prs``)."""
+    try:
+        owner, repo, number = pipeline.adapters.github_pr_parts(link)
+        return pipeline.adapters.github_review_key(owner, repo, number)
+    except pipeline.adapters.AdapterParseError:
+        return results.safe_change_id(link)
 
 
 def _fetch_instruction(link: str) -> str:
