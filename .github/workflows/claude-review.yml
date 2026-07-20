@@ -40,13 +40,22 @@ jobs:
           git show "$BASE_SHA:AUTOSDE.yaml" > .review-base-rules/AUTOSDE.yaml 2>/dev/null || echo "# (no backend AUTOSDE rules on base)" > .review-base-rules/AUTOSDE.yaml
           git show "$BASE_SHA:website/AUTOSDE.yaml" > .review-base-rules/website-AUTOSDE.yaml 2>/dev/null || echo "# (no frontend AUTOSDE rules on base)" > .review-base-rules/website-AUTOSDE.yaml
 
+      # Dependabot PRs run with a read-only token and NO access to repo
+      # secrets / OIDC, so the AWS role assumption below can never succeed —
+      # it errors, the review step is skipped, and the gate fails closed on
+      # every Dependabot PR. Skip the credential + review steps for Dependabot
+      # and let the gate pass (see "Gate on Claude review"). Dependency bumps
+      # are mechanical and remain covered by the non-AI gates (Semgrep,
+      # Dependency Audit, CodeQL, build/tests).
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        if: github.actor != 'dependabot[bot]'
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
       - name: Claude review
         id: review
+        if: github.actor != 'dependabot[bot]'
         uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
@@ -260,7 +269,15 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           SO: ${{ steps.review.outputs.structured_output }}
+          ACTOR: ${{ github.actor }}
         run: |
+          # Dependabot PRs skip the review step above (no secrets/OIDC access).
+          # Pass the gate green rather than fail closed — dependency bumps are
+          # covered by Semgrep, Dependency Audit, CodeQL and the build/tests.
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "Dependabot PR ($ACTOR): Claude AI review skipped (no Bedrock secrets/OIDC). Passing gate."
+            exit 0
+          fi
           if [ "$REVIEW_OUTCOME" != "success" ]; then
             echo "::error::Claude review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
             exit 1
