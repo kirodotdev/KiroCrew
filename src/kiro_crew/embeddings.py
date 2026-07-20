@@ -89,17 +89,17 @@ _DOWNLOAD_BACKOFF_BASE_SECS = 60.0
 _DOWNLOAD_BACKOFF_CAP_SECS = 1800.0
 # Escape hatch for tests/CI: never kick a 610MB model download from a test run.
 _SKIP_DOWNLOAD_ENV = "KIROCREW_SKIP_MODEL_DOWNLOAD"
-# Distribution: public CloudFront CDN in front of the KiroCrew release bucket —
-# plain HTTPS, no git access and no cloud SDK required. The sha256 pin above is
-# the trust anchor for every source, so a tampered CDN object can only fail
-# verification. Resolution order: KIROCREW_EMBED_MODEL_URL env, then the
-# memory.embed_model_url config knob, then this default. Ops: upload the GGUF
-# (sha256 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439) to
-# s3://kirocrew-updates-116101834266/models/qwen3-embedding-0.6b-q8_0.gguf
-# before release — the URL basename intentionally differs from the on-disk
-# _GGUF_FILENAME (the sha pin, not the name, is the integrity gate).
+# Distribution: public CloudFront CDN in front of the SHARED model bucket
+# (meshclaw-models-116101834266) — the same object MeshClaw serves, so both
+# products fetch one canonical, sha256-verified GGUF instead of maintaining
+# duplicate copies. Plain HTTPS, no git access and no cloud SDK required. The
+# sha256 pin above is the trust anchor for every source, so a tampered CDN
+# object can only fail verification. Resolution order: KIROCREW_EMBED_MODEL_URL
+# env, then the memory.embed_model_url config knob, then this default. The URL
+# basename (qwen3-embedding-0.6b.gguf) intentionally differs from the on-disk
+# _GGUF_FILENAME — the sha pin, not the name, is the integrity gate.
 _MODEL_URL_ENV = "KIROCREW_EMBED_MODEL_URL"
-_DEFAULT_MODEL_URL = "https://d28nxu9if70cmc.cloudfront.net/models/qwen3-embedding-0.6b-q8_0.gguf"
+_DEFAULT_MODEL_URL = "https://d35dbuobhek1fm.cloudfront.net/qwen3-embedding-0.6b.gguf"
 _HTTP_TIMEOUT_SECS = 1800  # 610MB at >=340KB/s; slower links retry with backoff
 _HTTP_CHUNK_BYTES = 1 << 20
 # Written by the HTTP downloader every ~16MB so the status endpoint can report
