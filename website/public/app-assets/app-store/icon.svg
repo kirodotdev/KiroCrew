@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <rect x="2" y="2" width="9" height="9" rx="2.5" fill="#6366f1"/>
-  <rect x="13" y="2" width="9" height="9" rx="2.5" fill="#10b981"/>
-  <rect x="2" y="13" width="9" height="9" rx="2.5" fill="#f97316"/>
-  <rect x="13" y="13" width="9" height="9" rx="2.5" fill="#ec4899"/>
-  <circle cx="6.5" cy="6.5" r="1.8" fill="#fff" fill-opacity="0.9"/>
-  <circle cx="17.5" cy="6.5" r="1.8" fill="#fff" fill-opacity="0.9"/>
-  <circle cx="6.5" cy="17.5" r="1.8" fill="#fff" fill-opacity="0.9"/>
-  <circle cx="17.5" cy="17.5" r="1.8" fill="#fff" fill-opacity="0.9"/>
+  <rect x="2" y="2" width="9" height="9" rx="2.5" fill="var(--ico-a, currentColor)"/>
+  <rect x="13" y="2" width="9" height="9" rx="2.5" fill="var(--ico-a, currentColor)" fill-opacity="0.75"/>
+  <rect x="2" y="13" width="9" height="9" rx="2.5" fill="var(--ico-a, currentColor)" fill-opacity="0.75"/>
+  <rect x="13" y="13" width="9" height="9" rx="2.5" fill="var(--ico-b, currentColor)"/>
+  <circle cx="6.5" cy="6.5" r="1.8" fill="var(--ico-b, currentColor)"/>
+  <circle cx="17.5" cy="6.5" r="1.8" fill="var(--ico-b, currentColor)"/>
+  <circle cx="6.5" cy="17.5" r="1.8" fill="var(--ico-b, currentColor)"/>
+  <circle cx="17.5" cy="17.5" r="1.8" fill="var(--ico-a, currentColor)"/>
 </svg>

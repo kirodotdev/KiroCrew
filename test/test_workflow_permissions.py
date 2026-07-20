@@ -71,16 +71,31 @@ class TestNightlyPermissions:
             "contents": "read",
             "id-token": "write",
         }
+        # Caller job for the reusable notarize workflow: a workflow_call
+        # callee can never exceed the caller job's permissions, so the
+        # caller must grant id-token explicitly.
+        assert _permission_block(lines, "  notarize:") == {
+            "id-token": "write",
+            "contents": "read",
+        }
 
 
 class TestReleasePermissions:
-    def test_only_release_job_has_write_and_oidc_permissions(self) -> None:
+    def test_release_jobs_follow_least_privilege_split(self) -> None:
+        """The signing job holds AWS creds (id-token) but must not hold
+        contents:write; the GitHub-Release job holds contents:write but must
+        not hold AWS creds. Keeping the two capabilities in separate jobs
+        means a compromise of either job cannot both exfiltrate via AWS and
+        tamper with the repo/release."""
         lines = _lines("release.yml")
 
         assert _workflow_permissions("release.yml") == {"contents": "read"}
         assert _permission_block(lines, "  build-wheel:") is None
         assert _permission_block(lines, "  build-desktop:") is None
         assert _permission_block(lines, "  release:") == {
-            "contents": "write",
+            "contents": "read",
             "id-token": "write",
+        }
+        assert _permission_block(lines, "  github-release:") == {
+            "contents": "write",
         }

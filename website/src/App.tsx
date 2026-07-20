@@ -40,6 +40,7 @@ import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
+import AppIcon from './components/AppIcon'
 import Clickable from './components/Clickable'
 import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
@@ -365,7 +366,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
 }) {
   const navigate = useNavigate()
-  const iconEl = <span className={`w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent' : 'opacity-70'}`}>{icon}</span>
+  const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip } = useNavTip<HTMLDivElement>(collapsed)
   const activate = () => { onClick?.(); (onClickOverride || (() => navigate(path)))() }
   return (
@@ -400,7 +401,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
           style={{ top: tip.top, left: tip.left, height: tip.height }}
         >
-          <span className={`w-4 h-4 flex items-center justify-center shrink-0 ${active ? 'text-accent' : ''}`}>{icon}</span>
+          <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 ${active ? 'text-accent is-lit' : ''}`}>{icon}</span>
           {label}
         </div>,
         document.body
@@ -859,7 +860,7 @@ export default function App() {
             // the builtin lucide glyph, then the generic package icon.
             const customIconUrl = a.manifest?.iconUrl || ''
             const baseIcon = customIconUrl
-              ? <img src={customIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
+              ? <AppIcon iconUrl={customIconUrl} icon={iconName} size={16} />
               : page.iconUrl
                 ? <img src={'/apps/' + a.name + '/ui/' + page.iconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
                 : isBuiltin && BUILTIN_ICONS[iconName]
@@ -1112,6 +1113,14 @@ export default function App() {
     isMacElectron &&
     !macFullscreen &&
     visibleInstanceTabs(instancesData?.instances ?? [], instanceWarm).length > 0
+  // Tell the Electron main process which strip is topmost so it can center the
+  // native traffic lights against the 32px instance bar (when shown) instead of
+  // the 52px header — otherwise the buttons sit ~10px below the tab row.
+  useEffect(() => {
+    if (!isMacElectron) return
+    const api = (window as { electronAPI?: { setInstanceBarInset?: (on: boolean) => void } }).electronAPI
+    api?.setInstanceBarInset?.(macInstanceBarInset)
+  }, [macInstanceBarInset])
   const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb })), refetchInterval: metricsOpen ? 30_000 : false, enabled: metricsOpen })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
