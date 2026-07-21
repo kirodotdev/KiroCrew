@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 IS_WINDOWS: bool = sys.platform == "win32"
 IS_POSIX: bool = not IS_WINDOWS
 IS_LINUX: bool = sys.platform == "linux"
+IS_MACOS: bool = sys.platform == "darwin"
 
 # Portable signal constants — signal.SIGKILL is undefined on Windows.
 SIGKILL: int = getattr(signal, "SIGKILL", 9)

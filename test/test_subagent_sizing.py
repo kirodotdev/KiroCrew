@@ -494,6 +494,9 @@ class TestAvailableMemoryClamp:
     def test_clamps_to_cgroup_when_smaller(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
+        # Force the Linux branch so the clamp logic runs regardless of test host.
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 100.0))
         monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: 14.0)
         assert sub._available_memory_gb() == pytest.approx(14.0, abs=0.01)
@@ -501,13 +504,17 @@ class TestAvailableMemoryClamp:
     def test_unconstrained_uses_host(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 100.0))
         monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: -1.0)
         assert sub._available_memory_gb() == pytest.approx(100.0, abs=0.01)
 
-    def test_non_linux_fails_open(self, monkeypatch) -> None:
+    def test_linux_unreadable_fails_open(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, -1.0))
         # cgroup not even consulted when host is unreadable
         assert sub._available_memory_gb() == -1.0
@@ -516,6 +523,8 @@ class TestAvailableMemoryClamp:
         """End-to-end: a 6 GB cgroup cap on a big host caps the count via memory."""
         import kiro_crew.subagent as sub
 
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 174.7))
         monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: 4.0)  # headroom 4 GB
         monkeypatch.setattr(sub.os, "cpu_count", lambda: 48)
@@ -523,10 +532,79 @@ class TestAvailableMemoryClamp:
         # mem_term = floor(4*0.8/0.315)=10 ; cpu_term=48 → min 10, clamp(10,3,16)=10
         assert compute_max_subagents(cfg) == 10
 
+    # --- platform dispatch -------------------------------------------------
+
+    def test_macos_branch_uses_macos_probe(self, monkeypatch) -> None:
+        """On macOS, dispatch delegates to the vm_stat probe (not /proc)."""
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", True)
+        monkeypatch.setattr(sub, "_macos_available_memory_gb", lambda: 42.0)
+        assert sub._available_memory_gb() == 42.0
+
+    def test_unsupported_platform_fails_open(self, monkeypatch) -> None:
+        """A platform with no probe yet (e.g. Windows) fails open to -1.0."""
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
+        assert sub._available_memory_gb() == -1.0
+
 
 # ---------------------------------------------------------------------------
 # Queued-spawn parameter preservation + reap-drains-queue (round-2 bugfix)
 # ---------------------------------------------------------------------------
+
+
+class TestMacosMemoryProbe:
+    """macOS available-memory calc, exercised via the mockable page-count seam.
+
+    The Mach ``host_statistics64`` reader itself is macOS-only (pragma: no
+    cover, validated live against vm_stat); these tests drive the surrounding
+    GB math + failure handling deterministically on any host.
+    """
+
+    def test_computes_available_gb_from_pages(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 16384)  # 16 KiB pages
+        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 200000)
+        expected = round(200000 * 16384 / (1024 ** 3), 2)
+        assert sub._macos_available_memory_gb() == pytest.approx(expected, abs=0.01)
+
+    def test_none_page_count_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 16384)
+        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: None)
+        assert sub._macos_available_memory_gb() == -1.0
+
+    def test_zero_page_count_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 16384)
+        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 0)
+        assert sub._macos_available_memory_gb() == -1.0
+
+    def test_sysconf_error_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        def _boom(_n):
+            raise ValueError("SC_PAGE_SIZE unavailable")
+
+        monkeypatch.setattr(sub.os, "sysconf", _boom)
+        assert sub._macos_available_memory_gb() == -1.0
+
+    def test_nonpositive_page_size_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 0)
+        # _macos_vm_reclaimable_pages must not even be consulted
+        monkeypatch.setattr(
+            sub, "_macos_vm_reclaimable_pages", lambda: pytest.fail("should not run")
+        )
+        assert sub._macos_available_memory_gb() == -1.0
 
 
 class TestQueuedSpawnParamsPreserved:

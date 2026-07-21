@@ -27,6 +27,28 @@ Priority (highest wins): **per-spawn `max_turns`** → **config `agent.subagent_
 
 A value of `0` means "not set" and falls through to the next level. Implemented as `info.max_turns or self._default_turn_limit or _TURN_LIMIT` in `_run_subagent()`.
 
+### Concurrency Auto-Sizing — Memory Probe (per platform)
+
+When `agent.max_subagents == 0`, `compute_max_subagents()` sizes the cap from
+host memory and CPU, clamped to `[3, agent.subagent_auto_max]`. The
+available-memory term is read by `_available_memory_gb()`, which is dispatched
+per operating system (see `dynamic-subagent-sizing.md`):
+
+- **Linux** — `/proc/meminfo` `MemAvailable`, then clamped by cgroup headroom.
+- **macOS** — reclaimable memory (free + inactive + speculative + purgeable
+  pages) via the Mach `host_statistics64` syscall through `ctypes`/`libSystem`
+  (`_macos_vm_reclaimable_pages`), combined with the `os.sysconf` page size.
+  This is **in-process, non-blocking, no subprocess** — required because the
+  probe runs on the gateway event loop at startup and the spawn-audit guard
+  rejects unrouted subprocess spawns.
+- **Other (e.g. Windows)** — no probe yet; returns `-1.0` and the cap fails
+  open to the legacy floor of 3.
+
+Limitation: the per-spawn `spawn_min_memory_gb` admission gate
+(`check_memory_available`) still reads `/proc/meminfo` and so remains inert
+(fails open) on non-Linux hosts. Auto-sizing and the runtime gate are
+independent guards; unifying them is out of scope for the sizing probe.
+
 ## APIs
 
 ### `SubagentManager.__init__(sessions, ctx_builder, on_done, max_concurrent)`

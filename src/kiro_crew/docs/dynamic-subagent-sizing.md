@@ -116,9 +116,16 @@ memory floor. They are independent guards.
 
 ## Notes
 
-- Stdlib only — reads `/proc/meminfo`, `/proc/<pid>/stat`, and cgroup limits.
-  No new dependencies.
-- On non-Linux hosts the readers fail open (the cap falls back to the configured
-  value), so behavior is unchanged there.
+- Stdlib only — no new dependencies. Memory/CPU are read per platform:
+  Linux reads `/proc/meminfo`, `/proc/<pid>/stat`, and cgroup limits; macOS
+  reads *available* memory in-process via the Mach `host_statistics64` syscall
+  through `ctypes`/`libSystem` (free + inactive + speculative + purgeable
+  pages × page size) — no subprocess, so it is safe on the gateway event loop
+  and passes the spawn-audit guard.
+- On platforms with no probe yet (e.g. Windows) the readers fail open and the
+  cap falls back to the configured value.
+  NOTE: the per-spawn `spawn_min_memory_gb` admission gate still reads
+  `/proc/meminfo` and therefore remains inert (fails open) on non-Linux hosts —
+  auto-sizing and the runtime gate are independent guards.
 - Design rationale and worked examples:
   `~/.kirocrew/workspace/dynamic-subagent-sizing.md`.

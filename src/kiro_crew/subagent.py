@@ -10,6 +10,7 @@ No spawn recursion: subagents cannot spawn other subagents.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
 import math
 import os
@@ -322,19 +323,149 @@ _LEGACY_DEFAULT_MAX = 3
 
 
 def _available_memory_gb() -> float:
-    """Effective available memory (GB) = ``min(MemAvailable, cgroup headroom)``.
+    """Effective available memory (GB), dispatched per operating system.
 
-    Returns -1.0 when host memory is unreadable (non-Linux / read error) so the
-    caller fails open to the legacy default. The cgroup clamp is a no-op on
-    unconstrained hosts (no controller / unlimited).
+    Each OS reports "available" memory through a different, non-portable
+    interface, so the probe is a small per-platform branch. Every branch
+    returns a best-effort available-GB figure, or ``-1.0`` when this platform
+    has no probe yet / the read failed — in which case the caller
+    (``compute_max_subagents``) fails open to the legacy default cap.
+
+        • Linux  — ``/proc/meminfo`` ``MemAvailable`` (via ``check_memory_available``),
+                   then clamped by cgroup headroom so a container's limit binds.
+        • macOS  — reclaimable memory via Mach ``host_statistics64`` (ctypes,
+                   in-process, no subprocess); see ``_macos_available_memory_gb``.
+                   No cgroups.
+        • other  — no probe yet → ``-1.0`` (fail open).
+
+    NOTE (adding a new OS): implement a ``_<os>_available_memory_gb()`` helper
+    returning GB or -1.0, add an ``IS_<OS>`` flag to ``platform_compat``, and
+    wire one branch below. Keep the -1.0 fail-open contract so an unmeasurable
+    host degrades to the safe legacy default rather than over-spawning.
     """
-    _ok, host_gb = check_memory_available(min_gb=0.0)
-    if host_gb <= 0:
-        return host_gb  # unreadable → caller fails open
-    cg_gb = _cgroup_available_gb()
-    if cg_gb < 0:
-        return host_gb  # no cgroup cap (unconstrained / non-Linux)
-    return min(host_gb, cg_gb)
+    if platform_compat.IS_LINUX:
+        _ok, host_gb = check_memory_available(min_gb=0.0)
+        if host_gb <= 0:
+            return host_gb  # unreadable → caller fails open
+        cg_gb = _cgroup_available_gb()
+        if cg_gb < 0:
+            return host_gb  # no cgroup cap (unconstrained)
+        return min(host_gb, cg_gb)
+    if platform_compat.IS_MACOS:
+        return _macos_available_memory_gb()
+    # Unsupported platform (e.g. Windows): no probe yet → fail open.
+    return -1.0
+
+
+def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
+    """Reclaimable memory in **pages** via Mach ``host_statistics64``, or ``None``.
+
+    macOS-only. Excluded from coverage because the Linux CI fleet cannot execute
+    the Mach path; validated live against ``vm_stat`` on Apple silicon (matches
+    within live-fluctuation noise). Reads in-process through ``ctypes`` /
+    ``libSystem`` — **no subprocess** — so it is safe on the gateway event loop
+    and passes the spawn-audit guard.
+
+    Reclaimable ≈ ``free + inactive + speculative + purgeable`` page classes:
+    memory that can back a new allocation without swapping (the closest analogue
+    to Linux ``MemAvailable``). Wired/active/compressed pages are excluded.
+    Returns ``None`` on any failure (non-macOS ``libSystem`` absent, non-zero
+    ``kern_return_t``) so the caller falls back to the legacy default.
+    """
+    try:
+        libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
+    except OSError:
+        return None  # not macOS / libSystem unavailable
+
+    natural_t = ctypes.c_uint  # natural_t is 32-bit on macOS
+    u64 = ctypes.c_uint64
+
+    # Leading fields of vm_statistics64_data_t (<mach/vm_statistics.h>) in
+    # declaration order, so the byte layout matches what the kernel fills. Only
+    # free/inactive/speculative/purgeable are read, but the full struct is
+    # declared so the element count handed to host_statistics64 is exact.
+    class _VMStatistics64(ctypes.Structure):
+        _fields_ = [
+            ("free_count", natural_t),
+            ("active_count", natural_t),
+            ("inactive_count", natural_t),
+            ("wire_count", natural_t),
+            ("zero_fill_count", u64),
+            ("reactivations", u64),
+            ("pageins", u64),
+            ("pageouts", u64),
+            ("faults", u64),
+            ("cow_faults", u64),
+            ("lookups", u64),
+            ("hits", u64),
+            ("purges", u64),
+            ("purgeable_count", natural_t),
+            ("speculative_count", natural_t),
+            ("decompressions", u64),
+            ("compressions", u64),
+            ("swapins", u64),
+            ("swapouts", u64),
+            ("compressor_page_count", natural_t),
+            ("throttled_count", natural_t),
+            ("external_page_count", natural_t),
+            ("internal_page_count", natural_t),
+            ("total_uncompressed_pages_in_compressor", u64),
+        ]
+
+    HOST_VM_INFO64 = 4  # flavor selector for host_statistics64
+
+    try:
+        libc.mach_host_self.restype = ctypes.c_uint
+        libc.host_statistics64.restype = ctypes.c_int
+        libc.host_statistics64.argtypes = [
+            ctypes.c_uint,
+            ctypes.c_int,
+            ctypes.POINTER(_VMStatistics64),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        stats = _VMStatistics64()
+        count = ctypes.c_uint(ctypes.sizeof(_VMStatistics64) // ctypes.sizeof(ctypes.c_int))
+        kern_return = libc.host_statistics64(
+            libc.mach_host_self(),
+            HOST_VM_INFO64,
+            ctypes.byref(stats),
+            ctypes.byref(count),
+        )
+    except (AttributeError, OSError, ValueError):
+        return None
+    if kern_return != 0:  # non-zero kern_return_t → failure
+        return None
+
+    return (
+        stats.free_count
+        + stats.inactive_count
+        + stats.speculative_count
+        + stats.purgeable_count
+    )
+
+
+def _macos_available_memory_gb() -> float:
+    """macOS available-memory probe (GB), or ``-1.0`` on failure.
+
+    Combines the in-process Mach reclaimable-page count
+    (``_macos_vm_reclaimable_pages``) with the page size from ``os.sysconf``.
+    macOS has no ``/proc/meminfo`` and ``os.sysconf`` exposes only *total*
+    physical pages (no ``SC_AVPHYS_PAGES``), so the Mach VM statistics are the
+    only cheap, non-blocking source of *available* memory — which the sizing
+    formula needs so a memory-pressured Mac is not handed an inflated cap. Any
+    read failure returns -1.0 so the caller falls back to the legacy default.
+    """
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError):
+        return -1.0
+    if page_size <= 0:
+        return -1.0
+    pages = _macos_vm_reclaimable_pages()
+    if pages is None or pages <= 0:
+        return -1.0
+    avail_gb = pages * page_size / (1024 ** 3)
+    return round(avail_gb, 2) if avail_gb > 0 else -1.0
 
 
 # Values at/above this are the kernel's "no limit" sentinel (PAGE_COUNTER_MAX).
