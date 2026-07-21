@@ -182,10 +182,20 @@ SEL logging) and is a genuine crash-fix on Windows. This is a characterization o
 into the ported fork comment (which stays faithful to upstream's wording). No
 fork-side divergence.
 
-### Batch-49 left-out + notes (dual-repo sync 2026-07-20)
+### Batch-51 left-out + notes (dual-repo sync 2026-07-21)
 
-Window backend `42ad7707..bb3901c8`, frontend `f20f5fada..cfa63fc`. 8 ported
-(5 backend + 3 frontend); the non-keepers:
+Window backend `f5b3f76c..507ad772` (3 commits), frontend `cfa63fc..50a1f96`
+(1 commit). **3 ported (2 backend + 1 frontend); 1 SKIP.** Branch
+`sync/beta-2026-07-21-batch51` off `origin/main` `b0158449`. Ported keepers:
+`405da128` (Stop hooks get the full final assistant segment on stdin), `507ad772`
+(macOS kiro-cli ≥ 2.13 internal-sandbox mutual exclusion in `wrap_argv`),
+`50a1f96` (frontend — edit schedule of script/command crons).
+
+| Upstream SHA | Repo | Verdict | Why |
+|---|---|---|---|
+| [`7c0447c4`](https://code.amazon.com/packages/MeshClaw/commits/7c0447c4f3a56c2a86b6bb6c7ab27e950dc7548d) | backend | **SKIP_INTERNAL** | fix(dashboard): redirect legacy **AIM** `artifactory-mcp` installs to the internal **Toolbox** installer. Confined to absent internal infra: `aim_update.py` is an empty no-op stub in the fork (AIM package manager removed), `install_artifactory_mcp` + `_TOOLBOX_LAUNCHER` (imported from `artifactory_client`) are absent, and every added `dashboard/handlers/agents.py` hunk is gated on the `AIM_INSTALL_REDIRECTS` table (redirecting `aim mcp install` → Toolbox). The fork's `api_aim_mcp_install` already 503s in OSS (no `aim` binary). No generic hunk — the shared `agents.py` handler change is entirely inside the redirect branch. cr [CR-290752205](https://code.amazon.com/reviews/CR-290752205). |
+
+**KEEP-with-reconcile note (batch-51, [`507ad772`](https://code.amazon.com/packages/MeshClaw/commits/507ad772540db0f44b8983f23e22031392fe6874)):** this is a real crash-fix for the fork's OWN kiro-cli backend (kiro-cli ≥ 2.13's in-process sandbox can't nest in the fork's seatbelt on macOS → EPERM crash-loop), so it is KEEP, not SKIP — `~/.kiro` is the kiro-cli directory (present; distinct from `~/.kirocrew`) and the settings filename `amazon-internal.json` is the inert literal kiro-cli ships (kept verbatim per the "a NAME is not a verdict" rule). Fork adaptations vs upstream: the settings read uses a **deferred** `from kiro_crew.hooks import safe_read_file` inside `kiro_internal_sandbox_enabled()` (the fork's `sandbox.py` deliberately carries no top-level `hooks` import — it dropped upstream's `safe_read_prefix` import when it moved argv0 magic-sniffing to the `agent_executable` CPP seam), and `_spawns_kiro_cli` keys on the `kiro-cli` basename via `_resolve_kiro_bin`'s convention. Touches `sandbox.py wrap_argv` (governance-colliding per SKILL) — verified `test_governance_*` + full `test_sandbox_argv.py` (338 passed). Spec `docs/system-specs/modules/security.md` updated in the same batch.
 
 | Upstream SHA | Repo | Verdict | Why |
 |---|---|---|---|
