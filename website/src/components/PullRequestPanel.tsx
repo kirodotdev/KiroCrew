@@ -570,10 +570,10 @@ export default function PullRequestPanel({
       {query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />Loading source provider…</div>}
       {query.error && (
         <div className="flex-1 flex items-center justify-center px-6">
-          <div className="max-w-sm text-center">
-            <AlertCircle className="lucide-inline mx-auto text-danger mb-2" />
+          <div className="max-w-md flex flex-col items-center">
+            <AlertCircle className="lucide-inline text-danger mb-2" />
             <div className="text-[13px] font-medium text-text">Could not load this pull request</div>
-            <div className="text-[12px] text-muted mt-1">{query.error instanceof Error ? query.error.message : String(query.error)}</div>
+            <div className="mt-2 w-full max-h-64 overflow-y-auto rounded-md bg-bg-hover/50 border border-border px-3 py-2 text-left text-[12px] text-muted whitespace-pre-wrap break-words font-mono leading-relaxed">{query.error instanceof Error ? query.error.message : String(query.error)}</div>
             <Btn type="button" onClick={handleRefresh} className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" />Retry</Btn>
           </div>
         </div>

@@ -272,10 +272,21 @@ export class ApiError extends Error {
  * message only ever shows after the QueryClient's 429 retry ladder
  * (api/queryClient.ts) is exhausted.
  */
-const friendlyErrText = (status: number, body: string): string => {
+export const friendlyErrText = (status: number, body: string): string => {
   if (status === 429) {
     return 'Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. '
       + 'The dashboard retries automatically; if this persists, wait a few seconds and reload.'
+  }
+  // Backends return errors as {"error": "…"} (or detail/message). Unwrap the
+  // field so the UI shows the human message with its real newlines, not the
+  // raw JSON envelope with escaped \n and \".
+  const trimmed = body.trim()
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      const msg = parsed?.error ?? parsed?.detail ?? parsed?.message
+      if (typeof msg === 'string' && msg.trim()) return msg
+    } catch { /* not JSON — fall through to raw body */ }
   }
   return body
 }

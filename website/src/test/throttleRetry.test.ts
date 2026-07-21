@@ -72,7 +72,7 @@ describe('j helper 429 mapping', () => {
     expect((err as ApiError).message).not.toContain('throttlingReasons')
   })
 
-  it('preserves the raw body for non-429 errors', async () => {
+  it('unwraps a non-429 JSON error body to the human message', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
       '{"error": "boom"}',
       { status: 500 },
@@ -80,6 +80,17 @@ describe('j helper 429 mapping', () => {
     const err = await api.kiroUsage().catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ApiError)
     expect((err as ApiError).status).toBe(500)
-    expect((err as ApiError).message).toBe('{"error": "boom"}')
+    expect((err as ApiError).message).toBe('boom')
+  })
+
+  it('preserves a non-JSON raw body for non-429 errors', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      'plain boom',
+      { status: 500 },
+    )))
+    const err = await api.kiroUsage().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(500)
+    expect((err as ApiError).message).toBe('plain boom')
   })
 })
