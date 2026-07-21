@@ -242,11 +242,22 @@ def _resolve_provider_executable(executable: str) -> str:
         except ValueError:
             continue
     provider = "GitHub" if executable == "gh" else "GitLab"
+    managed_dir = os.path.dirname(_PROVIDER_EXECUTABLE_CANDIDATES[executable][0])
     raise SourceProviderError(
-        f"The {provider} CLI ({executable}) was not found in an agent-unwritable "
-        "system location. Install a root-owned, canonical copy whose entire path "
-        f"is not writable by the gateway user, authenticate it with `{executable} "
-        f"auth login`, or set {override_name} to that trusted absolute path."
+        f"The {provider} CLI ({executable}) could not be found in a location this "
+        f"panel trusts. This panel runs {executable} unattended with your "
+        f"{provider} credentials, so -- unlike chat or your terminal -- it only "
+        f"accepts a root-owned {executable} whose full path your user cannot write "
+        "(a Homebrew or otherwise user-owned copy is intentionally refused here, "
+        "even though it works elsewhere). If it is already installed, promote it "
+        "to a trusted location (needs sudo), then reload this panel:\n"
+        f"  sudo mkdir -p {managed_dir}\n"
+        f'  sudo cp "$(command -v {executable})" {managed_dir}/{executable}\n'
+        f"  sudo chown -R root {managed_dir}\n"
+        f"  sudo chmod 755 {managed_dir}/{executable}\n"
+        f"Your existing `{executable} auth login` credentials are reused "
+        f"automatically. Alternatively, set {override_name} to an already-trusted "
+        "absolute path."
     )
 
 

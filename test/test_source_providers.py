@@ -68,6 +68,32 @@ def test_provider_executable_ignores_workspace_path(monkeypatch, tmp_path) -> No
     assert str(malicious) not in seen
 
 
+def test_provider_executable_not_found_gives_setup_guidance(monkeypatch) -> None:
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.setattr(
+        source,
+        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        {"gh": ("/usr/local/libexec/kirocrew/gh",), "glab": ("/usr/local/libexec/kirocrew/glab",)},
+    )
+
+    def reject(_candidate: str) -> str:
+        raise ValueError("path does not exist")
+
+    monkeypatch.setattr(source, "_validate_provider_executable", reject)
+
+    with pytest.raises(source.SourceProviderError) as excinfo:
+        source._resolve_provider_executable("gh")
+
+    message = str(excinfo.value)
+    # Names the managed target dir and gives copy/paste sudo setup steps.
+    assert "/usr/local/libexec/kirocrew" in message
+    assert 'sudo cp "$(command -v gh)" /usr/local/libexec/kirocrew/gh' in message
+    assert "sudo chown -R root /usr/local/libexec/kirocrew" in message
+    # Points at the override and reassures auth carries over.
+    assert "KIROCREW_GH_BIN" in message
+    assert "gh auth login" in message
+
+
 def test_provider_executable_rejects_relative_override(monkeypatch) -> None:
     monkeypatch.setenv("KIROCREW_GH_BIN", "workspace/bin/gh")
 
