@@ -229,9 +229,9 @@ export default function SidePanel({
           h-[52px] matches the app header row so the two bars align.
           side-panel-strip punches the strip out of the Electron window-drag
           region (see index.css) so chips receive pointer events. */}
-      {/* No border-b: the strip runs flush into each tab's own toolbar
-          — the toolbar carries the divider to the content. */}
-      <div className="side-panel-strip flex items-center gap-1.5 h-[52px] shrink-0 pl-2 pr-1.5">
+      {/* border-b gives the strip a tab-bar baseline; chips stay centered
+          pills (bordered when active) floating above it. */}
+      <div className="side-panel-strip flex items-center gap-1.5 h-[52px] shrink-0 pl-2 pr-1.5 border-b border-border">
         <Reorder.Group
           axis="x"
           values={tabs}
@@ -488,19 +488,19 @@ function TabChip({ tab, active, onSelect, onClose }: { tab: PanelTab; active: bo
       aria-selected={active}
       onClick={onSelect}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose() } }}
-      className={`group flex items-center gap-2 h-8 pl-3 pr-1.5 rounded-lg cursor-pointer shrink-0 min-w-[150px] max-w-[240px] select-none transition-colors ${
-        active ? 'bg-bg-elevated text-text-strong' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
+      className={`group relative flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full cursor-pointer shrink-0 max-w-[240px] select-none border transition-colors ${
+        active ? 'bg-bg-elevated border-border text-text-strong shadow-sm' : 'bg-transparent border-transparent text-muted hover:text-text hover:bg-bg-hover'
       }`}
     >
       <span className="shrink-0 opacity-80">{KIND_ICON[tab.kind]}</span>
-      <span className="flex-1 min-w-0 text-[12.5px] truncate text-left">
+      <span className="min-w-0 text-[12.5px] truncate text-left">
         {tab.kind === 'terminal' && tab.sessionId
           ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
           : tab.title}
       </span>
       <button
         onClick={(e) => { e.stopPropagation(); onClose() }}
-        className={`shrink-0 flex items-center justify-center w-5 h-5 rounded-md transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+        className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
         title="Close tab"
         aria-label="Close tab"
       >
