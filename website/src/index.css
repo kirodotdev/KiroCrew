@@ -1378,7 +1378,6 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @media (max-width: 767px) {
   .mobile-sessions-overlay .sidebar-inner { width: 100% !important; }
   .mobile-sessions-overlay .sidebar-resize-handle { display: none !important; }
-  .mobile-sessions-overlay .sidebar-toggle-tip { display: none !important; }
 }
 
 /* ── Diff panel header: theme-conditional bg/border to match Monaco vs/vs-dark ── */
