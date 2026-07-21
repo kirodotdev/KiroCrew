@@ -7,6 +7,20 @@ import os
 ARCC_REGISTRY = ""
 ARCC_TOOLBOX_PACKAGE = ""
 
+# Positive-identity marker injected into the environment of every subprocess
+# tree KiroCrew spawns (the ACP provider, MCP probes, gateway pool backends).
+# Children inherit the environment, so marking the provider process
+# transitively marks every MCP server it launches. The untracked-orphan sweep
+# (``session_pid.py``) reads it back from ``/proc/<pid>/environ`` to positively
+# identify escaped MCP launcher processes whose *cmdline* carries no KiroCrew
+# fingerprint (e.g. ``npx @playwright/mcp`` -> node) without ever risking a
+# kill of a user's own identically-named processes. Constant by design: it must
+# never vary per session/agent, both so the check is a simple presence test and
+# so injecting it into MCP-gateway backend env cannot split pooled-backend
+# identity (PoolKey hashes env).
+KIROCREW_SPAWNED_ENV = "KIROCREW_SPAWNED"
+KIROCREW_SPAWNED_VALUE = "1"
+
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ
 # .get(...))`` — a bare bool() treats ``"0"``/``"false"`` as truthy, which for a

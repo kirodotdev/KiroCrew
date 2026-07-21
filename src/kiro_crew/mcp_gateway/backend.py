@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
+from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
@@ -1500,6 +1501,12 @@ async def spawn_backend(
         "spawning backend pool=%s command=%s args=%s",
         pool_key.human_readable(), command, redact(" ".join(args)),
     )
+    # Positive-identity marker for the orphan sweep. Safe re: the pooled-backend
+    # PoolKey invariant — the marker is a compile-time constant, so it is
+    # identical for every key and cannot split or collapse pooled-backend
+    # identity (unlike a per-session value, which would be a correctness bug).
+    spawn_env = dict(env)
+    spawn_env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
     process = await asyncio.create_subprocess_exec(
         command,
         *args,
@@ -1507,7 +1514,7 @@ async def spawn_backend(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=work_dir,
-        env=dict(env),
+        env=spawn_env,
         start_new_session=True,
         limit=READ_BUFFER_LIMIT_BYTES,
     )

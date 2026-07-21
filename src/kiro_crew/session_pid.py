@@ -22,6 +22,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
+from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.providers.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -888,6 +889,18 @@ _GATEWAY_MARKERS = (
     b"kiro_crew.__main__",
 )
 
+# MCP launcher cmdline shapes that carry NO KiroCrew fingerprint (a user's own
+# shell can produce identical cmdlines), so matching them requires the
+# ``KIROCREW_SPAWNED`` environ marker as positive identity — the public fork's
+# only fingerprint-less launcher is the public ``@playwright/mcp`` server, which
+# runs as ``npx @playwright/mcp`` -> node (see ``mcp_playwright_proxy``): neither
+# its argv0 (``npx``/``node``) nor its args mention KiroCrew, so a grandchild
+# escaping the probe/session tree evades the cmdline-fingerprint sweep entirely.
+_MARKED_MCP_LAUNCHER_MARKERS = (
+    b"@playwright/mcp",  # ``npx @playwright/mcp`` (npx shim + node server)
+    b"mcp start-server",  # generic ``<launcher> mcp start-server <name>`` shims
+)
+
 
 def _our_orphan_pids() -> list[int]:
     """PIDs owned by current user whose parent is init (pid 1) or systemd --user.
@@ -986,6 +999,55 @@ def _is_orphan_mcp(cmdline: bytes) -> bool:
     return any(any(marker in a for marker in _MCP_ENTRYPOINT_MARKERS) for a in args[1:])
 
 
+def _is_marked_mcp_launcher(cmdline: bytes) -> bool:
+    """True if cmdline looks like a fingerprint-less MCP launcher (e.g. ``npx``).
+
+    NOT sufficient on its own — the caller MUST pair this with
+    :func:`_env_has_kirocrew_marker` because a user's own shell produces
+    identical cmdlines. NULs are normalized to spaces first so the multi-token
+    markers match both the Linux NUL-separated ``/proc`` form and the macOS
+    space-separated ``ps`` form.
+    """
+    normalized = cmdline.replace(b"\x00", b" ")
+    if any(marker in normalized for marker in _GATEWAY_MARKERS):
+        return False
+    return any(marker in normalized for marker in _MARKED_MCP_LAUNCHER_MARKERS)
+
+
+def _env_has_kirocrew_marker(pid: int) -> bool:
+    """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
+
+    Reads ``/proc/<pid>/environ`` (exec-time environment, same-UID readable).
+    Linux-only and FAIL-CLOSED: any read failure — and every non-Linux
+    platform, where there is no reliable same-UID environ read — returns
+    ``False`` so the marked-launcher sweep path never kills without positive
+    identity. macOS/Windows keep the pre-existing cmdline-marker-only behavior.
+    """
+    if sys.platform != "linux":
+        return False
+    needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
+    try:
+        environ = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return False
+    return needle in environ.split(b"\x00")
+
+
+def _is_sweepable_orphan_mcp(pid: int, cmdline: bytes) -> bool:
+    """Positive-identity gate for the orphan sweep (find AND pre-kill re-verify).
+
+    Two independent paths:
+    1. cmdline carries a KiroCrew fingerprint (:func:`_is_orphan_mcp`) —
+       the pre-existing behavior, works on Linux and macOS.
+    2. cmdline is a fingerprint-less MCP launcher shape AND the process
+       environ carries the ``KIROCREW_SPAWNED`` marker (catches escaped
+       ``npx @playwright/mcp`` trees; Linux-only, fail-closed elsewhere).
+    """
+    if _is_orphan_mcp(cmdline):
+        return True
+    return _is_marked_mcp_launcher(cmdline) and _env_has_kirocrew_marker(pid)
+
+
 def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
     """Scan process table for orphaned MCP processes not in any active set.
 
@@ -1027,7 +1089,7 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
             continue
         if pid_age < _ORPHAN_MIN_AGE_SECONDS:
             continue
-        if not _is_orphan_mcp(cmdline):
+        if not _is_sweepable_orphan_mcp(pid, cmdline):
             continue
         candidates.append(pid)
 
@@ -1099,7 +1161,7 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                     stderr=subprocess.DEVNULL,
                     timeout=2,
                 )
-            if not _is_orphan_mcp(cmdline):
+            if not _is_sweepable_orphan_mcp(pid, cmdline):
                 continue
             pgid = os.getpgid(pid)
             if pgid == pid and pgid != my_pgid and pgid > 1:

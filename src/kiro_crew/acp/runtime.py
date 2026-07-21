@@ -43,6 +43,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
 )
+from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sandbox import (
@@ -429,6 +430,10 @@ class AcpRuntime:
 
         env["PATH"] = augmented_path(env.get("PATH", ""))
         resolve_krb5_ccname(env)
+        # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
+        # server it spawns inherit this, so escaped launcher trees (``npx
+        # @playwright/mcp`` -> node) are identifiable as ours.
+        env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
 
         self._process = await asyncio.create_subprocess_exec(
             *argv,

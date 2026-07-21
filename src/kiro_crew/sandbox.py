@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
+from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.platform import current_context
 
 try:
@@ -1599,7 +1600,13 @@ def sandboxed_spawn_argv(
     # to the scrubbed env here so ``strip_python_env=True`` holds regardless of
     # whether a backend is available.
     extra = _PYTHON_ENV_PREFIXES if strip_python_env else None
-    return wrapped, scrub_env(env, extra_prefixes=extra), cleanup
+    scrubbed = scrub_env(env, extra_prefixes=extra)
+    # Positive-identity marker for the orphan sweep: every tree spawned through
+    # this chokepoint (and its descendants, via env inheritance) is identifiable
+    # as KiroCrew-spawned even when its cmdline carries no KiroCrew fingerprint
+    # (e.g. ``npx @playwright/mcp``).
+    scrubbed[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+    return wrapped, scrubbed, cleanup
 
 
 # ── cgroup v2 scope enforcement (fork bomb + memory DoS) ──

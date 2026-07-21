@@ -88,6 +88,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     TurnUsage,
 )
+from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import (
@@ -1632,6 +1633,10 @@ class AcpClient:
         # (e.g. amazon-quick-mcp) fail without it. Covers the session agent and
         # all ACP-provider subagents, which spawn through this same path.
         resolve_krb5_ccname(env)
+        # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
+        # server it spawns inherit this, so escaped launcher trees (``npx
+        # @playwright/mcp`` -> node) are identifiable as ours.
+        env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
 
         # Process-group isolation for clean tree-kill. Pass both flags explicitly
         # (NOT via **dict unpack — that breaks mypy's Popen overload resolution on

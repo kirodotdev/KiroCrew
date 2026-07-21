@@ -2002,3 +2002,156 @@ class TestProbeServerBannerTolerance:
         assert result.status == "ok"
         assert result.tools == ["read"]
         assert "Expecting value" not in result.error
+
+
+# ── Probe process-group reap tests ───────────
+
+
+class TestProbeGroupReap:
+    """probe_server must own and reap a dedicated process group so launcher
+    grandchildren (npx shim -> node MCP server) cannot leak."""
+
+    def _make_mock_proc(self, pid: int = 4242) -> AsyncMock:
+        proc = AsyncMock()
+        proc.pid = pid
+        proc.returncode = None
+        proc.stdin = MagicMock()
+        proc.stdin.close = MagicMock()
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        proc.stdout = AsyncMock()
+        proc.stdout.readline = AsyncMock(return_value=b"")
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_spawn_uses_start_new_session_on_posix(self) -> None:
+        """The probe child must be its own session/process-group leader."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.IS_POSIX:
+            pytest.skip("POSIX-only spawn flag")
+        proc = self._make_mock_proc()
+        server = McpServerInfo(name="test", command="echo")
+
+        with (
+            patch(
+                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
+                return_value=proc,
+            ) as mock_exec,
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.os.killpg"),
+        ):
+            await probe_server(server)
+
+        assert mock_exec.call_args.kwargs.get("start_new_session") is True
+
+    @pytest.mark.asyncio
+    async def test_teardown_reaps_process_group(self) -> None:
+        """Even after a graceful leader exit, the whole group is SIGKILLed —
+        a leader-only kill leaves npx/node grandchildren alive (the leaked
+        MCP-tree accumulation)."""
+        import signal as _signal
+
+        from kiro_crew import platform_compat
+
+        if not platform_compat.IS_POSIX:
+            pytest.skip("killpg is POSIX-only")
+        proc = self._make_mock_proc(pid=5151)
+        server = McpServerInfo(name="test", command="echo")
+
+        with (
+            patch(
+                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
+                return_value=proc,
+            ),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.os.killpg") as mock_killpg,
+        ):
+            await probe_server(server)
+
+        mock_killpg.assert_called_once_with(5151, _signal.SIGKILL)
+
+    @pytest.mark.asyncio
+    async def test_teardown_tolerates_empty_group(self) -> None:
+        """ESRCH (group already empty) must not surface as a probe error."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.IS_POSIX:
+            pytest.skip("killpg is POSIX-only")
+        proc = self._make_mock_proc()
+        server = McpServerInfo(name="test", command="echo")
+
+        with (
+            patch(
+                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
+                return_value=proc,
+            ),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.os.killpg", side_effect=ProcessLookupError),
+        ):
+            result = await probe_server(server)
+
+        # teardown error handling must not clobber the probe result
+        assert result.name == "test"
+
+    @pytest.mark.asyncio
+    async def test_teardown_refuses_non_int_pid(self) -> None:
+        """Mock/sentinel pids must never coerce into killpg(1) == init."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.IS_POSIX:
+            pytest.skip("killpg is POSIX-only")
+        proc = self._make_mock_proc()
+        proc.pid = MagicMock()  # non-int stand-in
+        server = McpServerInfo(name="test", command="echo")
+
+        with (
+            patch(
+                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
+                return_value=proc,
+            ),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+            patch("kiro_crew.mcp_discovery.os.killpg") as mock_killpg,
+        ):
+            await probe_server(server)
+
+        mock_killpg.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_real_grandchild_is_reaped(self, monkeypatch, tmp_path) -> None:
+        """End-to-end: a probed 'server' that forks a grandchild and never
+        answers must leave NO survivors after the probe returns."""
+        import time as _time
+
+        from kiro_crew import platform_compat
+
+        if not platform_compat.IS_POSIX:
+            pytest.skip("process groups are POSIX-only")
+
+        grandchild_pid_file = tmp_path / "grandchild.pid"
+        # Fake launcher: forks a long-lived grandchild (same process group),
+        # writes its pid, then sleeps without ever answering the handshake —
+        # modeling a launcher shim wedged mid-cold-start.
+        script = tmp_path / "fake_launcher.sh"
+        script.write_text(
+            "#!/bin/sh\n" "sleep 300 &\n" f"echo $! > {grandchild_pid_file}\n" "sleep 300\n"
+        )
+        script.chmod(0o755)
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery._get_probe_timeout", lambda: 1)
+        server = McpServerInfo(name="fake", command=str(script))
+        result = await probe_server(server)
+        assert result.status == "error"  # timed out, as designed
+
+        deadline = _time.monotonic() + 5
+        gc_pid = int(grandchild_pid_file.read_text().strip())
+        while _time.monotonic() < deadline:
+            # Windows-safe liveness probe (a raw os.kill(pid, 0) TERMINATES the
+            # target on Windows — the platform_compat rule); this test is
+            # POSIX-gated, but route through the shim to stay consistent.
+            if platform_compat.pid_liveness(gc_pid) == platform_compat.PID_DEAD:
+                break  # grandchild reaped — pass
+            _time.sleep(0.1)
+        else:
+            platform_compat.kill_pid(gc_pid, platform_compat.SIGKILL)  # cleanup
+            pytest.fail("grandchild survived probe teardown — process-group reap regressed")

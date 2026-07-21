@@ -16,6 +16,29 @@
 #                so frontend sync is by CONTENT within the post-snapshot window, not a
 #                clean SHA range. This SHA records the upstream tip last triaged.
 
+# --- DEFER rescue (2026-07-21, branch sync/mcp-probe-reap-8fb38539) -----------
+# Boundary SHAs UNCHANGED (this rescues already-in-window DEFERs; no new triage
+# window). 8fb38539 [backend] PORTED (PARTIAL) — fix(mcp) reap probe process
+# groups + positively-ID escaped launcher trees (Mesh-2302 / CR-290696321). Two
+# generic-security fixes: (1) mcp_discovery.probe_server now start_new_session=
+# platform_compat.IS_POSIX + os.killpg(pid,SIGKILL) teardown (int/>1 guard) so
+# npx @playwright/mcp -> node grandchildren can't leak; (2) constant
+# KIROCREW_SPAWNED=1 env marker at every spawn site (sandboxed_spawn_argv,
+# AcpRuntime, AcpClient._spawn, mcp_gateway/backend.py spawn_backend) read back
+# from /proc/<pid>/environ (Linux-only, fail-closed) so fingerprint-less
+# launcher orphans are sweepable (_is_sweepable_orphan_mcp, find+kill phases).
+# PARTIAL de-Amazon: DROPPED providers/claude_code.py spawn hunk (module absent);
+# launcher cmdline markers de-Amazoned aim -> @playwright/mcp + generic
+# mcp start-server. Ledger correction: mcp_gateway/backend.py IS present in the
+# fork (only claude_code dropped). 24 tests ported (probe reap incl. real-
+# grandchild e2e via platform_compat.pid_liveness not raw os.kill(pid,0); marked-
+# launcher predicates; environ marker real-child /proc; find/kill integration;
+# spawn-site drift-guard registry sans claude_code). ALSO closed two stale
+# DEFERs verified ALREADY_PRESENT in-tree: 3e5d7132 (type-unsafe workflow-script
+# rejection — workflows/validate.py ships it via fork PR #57), f8383887
+# (deploy_web/workflows hero SVGs — fork PR #26 app-assets/ architecture; both
+# workflows heroes exist, deploy_web declares no heroImage). See left-out.md.
+#
 # --- Batch-50 (backend-only sync 2026-07-20, folded into PR #90) --------------
 # Same branch sync/beta-2026-07-20-batch49 = OPEN PR #90 (batch-49 folded in).
 # Backend window bb3901c8..f5b3f76c (3 commits), frontend ZERO new (frontend-beta

@@ -1050,3 +1050,236 @@ class TestPidGoneOrUnmanaged:
             return_value=platform_compat.PID_ALIVE,
         ):
             assert _pid_gone_or_unmanaged(4242) is False
+
+
+# ── Marked-launcher orphan sweep tests ───────────
+
+
+class TestMarkedMcpLauncherPredicates:
+    """Positive-ID sweep path for fingerprint-less MCP launchers (npx)."""
+
+    def test_matches_npx_playwright_null_separated(self) -> None:
+        from kiro_crew.session_pid import _is_marked_mcp_launcher
+
+        cmdline = b"npx\x00@playwright/mcp\x00--headless"
+        assert _is_marked_mcp_launcher(cmdline) is True
+
+    def test_matches_npx_playwright_space_separated(self) -> None:
+        """macOS ps output is space-separated — substring match covers both."""
+        from kiro_crew.session_pid import _is_marked_mcp_launcher
+
+        cmdline = b"/usr/local/bin/node /usr/lib/node_modules/@playwright/mcp/cli.js"
+        assert _is_marked_mcp_launcher(cmdline) is True
+
+    def test_matches_generic_start_server(self) -> None:
+        from kiro_crew.session_pid import _is_marked_mcp_launcher
+
+        cmdline = b"/bin/sh\x00-c\x00some-launcher mcp start-server slack-mcp"
+        assert _is_marked_mcp_launcher(cmdline) is True
+
+    def test_rejects_peer_gateway(self) -> None:
+        from kiro_crew.session_pid import _is_marked_mcp_launcher
+
+        cmdline = b"python3\x00-m\x00kiro_crew.mcp_gateway.gatewayd\x00mcp start-server"
+        assert _is_marked_mcp_launcher(cmdline) is False
+
+    def test_rejects_unrelated_process(self) -> None:
+        from kiro_crew.session_pid import _is_marked_mcp_launcher
+
+        assert _is_marked_mcp_launcher(b"vim\x00notes-about-mcp.md") is False
+
+    def test_sweepable_requires_env_marker_for_marked_launcher(self) -> None:
+        """npx cmdline WITHOUT the environ marker is NOT sweepable."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_mcp
+
+        cmdline = b"npx\x00@playwright/mcp\x00--headless"
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=False):
+            assert _is_sweepable_orphan_mcp(1234, cmdline) is False
+
+    def test_sweepable_with_env_marker(self) -> None:
+        from kiro_crew.session_pid import _is_sweepable_orphan_mcp
+
+        cmdline = b"npx\x00@playwright/mcp\x00--headless"
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
+            assert _is_sweepable_orphan_mcp(1234, cmdline) is True
+
+    def test_fingerprinted_cmdline_never_reads_environ(self) -> None:
+        """The pre-existing marker path must not depend on the environ read."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_mcp
+
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker") as mock_env:
+            assert _is_sweepable_orphan_mcp(1, b"kirocrew_sandbox_abc\x00--stdio") is True
+        mock_env.assert_not_called()
+
+
+class TestEnvHasKirocrewMarker:
+    """/proc/<pid>/environ positive-identity read."""
+
+    def test_non_linux_fails_closed(self) -> None:
+        from kiro_crew.session_pid import _env_has_kirocrew_marker
+
+        with patch("kiro_crew.session_pid.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            assert _env_has_kirocrew_marker(os.getpid()) is False
+
+    def test_read_failure_fails_closed(self) -> None:
+        from kiro_crew.session_pid import _env_has_kirocrew_marker
+
+        with (
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", side_effect=PermissionError),
+        ):
+            mock_sys.platform = "linux"
+            assert _env_has_kirocrew_marker(1) is False
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
+    def test_real_child_with_marker(self) -> None:
+        """End-to-end: a real child spawned with the marker is identified.
+
+        Polls briefly: /proc/<pid>/environ shows the parent's environment
+        until the child completes exec (production is immune — the sweep's
+        min-age guard runs long after exec).
+        """
+        import time
+
+        from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+        from kiro_crew.session_pid import _env_has_kirocrew_marker
+
+        env = {**os.environ, KIROCREW_SPAWNED_ENV: KIROCREW_SPAWNED_VALUE}
+        proc = subprocess.Popen(["sleep", "30"], env=env)
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if _env_has_kirocrew_marker(proc.pid):
+                    break
+                time.sleep(0.05)
+            assert _env_has_kirocrew_marker(proc.pid) is True
+        finally:
+            proc.kill()
+            proc.wait()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
+    def test_real_child_without_marker(self) -> None:
+        from kiro_crew.constants import KIROCREW_SPAWNED_ENV
+        from kiro_crew.session_pid import _env_has_kirocrew_marker
+
+        env = {k: v for k, v in os.environ.items() if k != KIROCREW_SPAWNED_ENV}
+        proc = subprocess.Popen(["sleep", "30"], env=env)
+        try:
+            assert _env_has_kirocrew_marker(proc.pid) is False
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+class TestMarkedLauncherSweepIntegration:
+    """find + kill phases honor the marked-launcher positive-ID path."""
+
+    def test_find_includes_marked_npx_orphan(self) -> None:
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[700]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=b"npx\x00@playwright/mcp\x00--headless"),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=300.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == [700]
+
+    def test_find_excludes_unmarked_npx_orphan(self) -> None:
+        """A user's own npx process (no environ marker) is never a candidate."""
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[710]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=b"npx\x00@playwright/mcp\x00--headless"),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=300.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=False),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+
+    def test_kill_reverify_honors_marked_launcher(self) -> None:
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        with (
+            patch("os.getpgrp", return_value=1000),
+            patch("os.getpgid", return_value=720),
+            patch("os.killpg") as mock_killpg,
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=b"npx\x00@playwright/mcp\x00--headless"),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+        ):
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([720])
+
+        assert killed == 1
+        mock_killpg.assert_called_once_with(720, signal.SIGKILL)
+
+    def test_kill_reverify_skips_unmarked_launcher(self) -> None:
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        with (
+            patch("os.getpgrp", return_value=1000),
+            patch("os.getpgid", return_value=730),
+            patch("os.killpg") as mock_killpg,
+            patch("os.kill") as mock_kill,
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=b"npx\x00@playwright/mcp\x00--headless"),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=False),
+        ):
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([730])
+
+        assert killed == 0
+        mock_killpg.assert_not_called()
+        mock_kill.assert_not_called()
+
+
+class TestSpawnedMarkerInjection:
+    """Every provider/MCP spawn site injects the KIROCREW_SPAWNED marker."""
+
+    def test_sandboxed_spawn_argv_injects_marker(self) -> None:
+        from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+        from kiro_crew.sandbox import sandboxed_spawn_argv
+
+        with (
+            patch("kiro_crew.sandbox.wrap_argv", return_value=(["echo"], None)),
+            patch("kiro_crew.sandbox.cgroup_scope_argv", side_effect=lambda a: a),
+        ):
+            _, env, _ = sandboxed_spawn_argv(["echo"], env={"PATH": "/bin"})
+
+        assert env.get(KIROCREW_SPAWNED_ENV) == KIROCREW_SPAWNED_VALUE
+
+    def test_spawn_site_source_registry(self) -> None:
+        """Drift guard: the marker constant must appear at every known
+        provider/MCP spawn-env build site. A new spawn site that replaces the
+        inherited environment must add itself here AND inject the marker.
+
+        The fork is KiroACP-only, so upstream's ``providers/claude_code.py``
+        spawn site is intentionally absent from this list (the module is
+        deleted in the public fork)."""
+        src_root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+        spawn_sites = [
+            "sandbox.py",
+            "acp/runtime.py",
+            "acp/client.py",
+            "mcp_gateway/backend.py",
+        ]
+        for rel in spawn_sites:
+            content = (src_root / rel).read_text(encoding="utf-8")
+            assert "KIROCREW_SPAWNED_ENV" in content, (
+                f"{rel} no longer injects the KIROCREW_SPAWNED marker — "
+                "escaped MCP trees from this site become unsweepable"
+            )

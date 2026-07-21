@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from typing import Any
 
 import aiohttp
 
+from kiro_crew import platform_compat
 from kiro_crew.env import augmented_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -677,6 +679,11 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             stderr=asyncio.subprocess.PIPE,
             env=env,
             limit=1024 * 1024,  # 1 MB — some MCP servers return large responses
+            # POSIX: setsid so the probe owns a dedicated process group and
+            # teardown can killpg launcher grandchildren (a leader-only kill
+            # leaked ``npx @playwright/mcp`` -> node trees). Windows: silently
+            # ignored (mirrors AcpRuntime / AcpClient._spawn).
+            start_new_session=platform_compat.IS_POSIX,
             preexec_fn=resource_limit_preexec(),
         )
 
@@ -819,6 +826,31 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except Exception:
                     pass
+        if proc is not None and platform_compat.IS_POSIX:
+            # Reap the probe's ENTIRE process group. The child was spawned with
+            # start_new_session=True, so pgid == proc.pid and the group holds
+            # any grandchildren the launcher forked (``npx`` / ``node`` shim ->
+            # real MCP server). A leader-only kill — and even a graceful leader
+            # exit — leaves those grandchildren alive, accumulating one leaked
+            # tree per failed probe per discovery cycle. Race-free even after
+            # the leader was reaped: a PID in use as a pgid cannot be recycled
+            # while any group member lives, so killpg hits only our group or
+            # raises ESRCH on an empty one. The int/>1 guard mirrors
+            # _sync_kill_provider: a mock stand-in pid must never coerce this
+            # into killpg(1) == init.
+            probe_pid = proc.pid
+            if isinstance(probe_pid, int) and probe_pid > 1:
+                try:
+                    os.killpg(probe_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # group already empty — nothing leaked
+                except OSError:
+                    logger.debug(
+                        "Probe group reap failed for %s (pgid %s)",
+                        server.name,
+                        probe_pid,
+                        exc_info=True,
+                    )
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)
 
