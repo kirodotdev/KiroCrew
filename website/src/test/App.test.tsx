@@ -13,6 +13,7 @@ vi.mock('../pages/AgentsPage', () => ({ default: () => <div data-testid="agents-
 vi.mock('../pages/ProjectsPage', () => ({ default: () => <div data-testid="projects-page">ProjectsPage</div> }))
 vi.mock('../pages/LogsPage', () => ({ default: () => <div data-testid="logs-page">LogsPage</div> }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => <div data-testid="mc-agents-page">MCAgentsPage</div> }))
+vi.mock('../pages/CapabilitiesPage', () => ({ default: () => <div data-testid="capabilities-page">CapabilitiesPage</div> }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => <div data-testid="notifications-page">NotificationsPage</div> }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => <div data-testid="schedule-page">SchedulePage</div> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
@@ -69,9 +70,9 @@ describe('App routing', () => {
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
   })
 
-  it('renders agents page at /agents', () => {
+  it('redirects /agents to the Agent Capabilities panel', () => {
     renderWithProviders(<App />, { route: '/agents' })
-    expect(screen.getByTestId('mc-agents-page')).toBeInTheDocument()
+    expect(screen.getByTestId('capabilities-page')).toBeInTheDocument()
   })
 
   it('renders projects page at /projects', () => {
@@ -96,9 +97,16 @@ describe('App routing', () => {
 
   it('renders nav items', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    expect(screen.getByText('Chat')).toBeInTheDocument()
-    expect(screen.getByText('Agents')).toBeInTheDocument()
+    expect(screen.getByText('Sessions')).toBeInTheDocument()
+    expect(screen.getByText('Agent Capabilities')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
+    // The App Store now rides the Apps section header as an accent link.
+    expect(screen.getByText('Explore')).toBeInTheDocument()
+    // The bottom-pinned contact row with its three external links.
+    expect(screen.getByText('Contact Us')).toBeInTheDocument()
+    expect(screen.getByLabelText('Kiro website (kiro.dev)')).toBeInTheDocument()
+    expect(screen.getByLabelText('KiroCrew GitHub repository')).toBeInTheDocument()
+    expect(screen.getByLabelText('Kiro Discord community')).toBeInTheDocument()
   })
 
   it('renders the registry-derived Artifacts and Knowledge nav items', () => {
@@ -205,7 +213,7 @@ describe('App routing', () => {
     const store = createTestStore()
     renderWithProviders(<App />, { route: '/chat', store })
     // Let the (empty) mount fetch settle; the app is absent.
-    await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Sessions')).toBeInTheDocument())
     expect(screen.queryByText('Late App')).not.toBeInTheDocument()
     // Simulate a `kirocrew update` restart: the WS connects, drops, reconnects.
     // Only the reconnect (after a drop) refetches the Apps nav — the rail
@@ -288,10 +296,10 @@ describe('App routing', () => {
     })
     // The icon-only row still names itself for assistive tech via aria-label,
     // since the visible text only mounts on hover (no permanent DOM text node).
-    expect(screen.getByLabelText('Chat')).toBeInTheDocument()
+    expect(screen.getByLabelText('Sessions')).toBeInTheDocument()
     // Hover the first row -> its portaled label text should mount.
     fireEvent.mouseEnter(rows[0])
-    expect(await screen.findByText('Chat')).toBeInTheDocument()
+    expect(await screen.findByText('Sessions')).toBeInTheDocument()
     // Leave -> label begins fade-out (still present until the timer).
     fireEvent.mouseLeave(rows[0])
   })
@@ -312,7 +320,7 @@ describe('App routing', () => {
     expect(rows[0].getAttribute('tabindex')).toBe('0')
     // Focus -> the portaled label mounts (parity with hover).
     fireEvent.focus(rows[0])
-    expect(await screen.findByText('Chat')).toBeInTheDocument()
+    expect(await screen.findByText('Sessions')).toBeInTheDocument()
     // Blur -> begins fade-out (still mounted until the unmount timer).
     fireEvent.blur(rows[0])
     // Enter activates without throwing (navigates to the row's route).
@@ -357,22 +365,39 @@ describe('App routing', () => {
     localStorage.removeItem('mc-nav')
   })
 
-  it('keeps the collapse control beside the brand and hides the Main group heading', () => {
+  it('hosts the collapse control in the nav menu row and hides the Main group heading', () => {
     localStorage.removeItem('mc-nav')
     renderWithProviders(<App />, { route: '/chat' })
 
-    const brand = screen.getByText('Kiro Crew')
     const logo = screen.getByAltText('Kiro Crew')
-    const collapse = screen.getByRole('button', { name: 'Collapse sidebar' })
-    expect(brand.parentElement?.parentElement).toContainElement(collapse)
     expect(logo).toHaveClass('w-9', 'h-9')
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    // The sidebar toggle moved from the topbar into the rail's menu row:
+    // a hamburger plus (expanded only) a panel-left-close collapse control.
+    const collapse = within(nav).getByRole('button', { name: 'Collapse sidebar' })
+    expect(within(nav).getByRole('button', { name: 'Toggle sidebar' })).toBeInTheDocument()
     expect(within(nav).queryByText('Main')).not.toBeInTheDocument()
 
     fireEvent.click(collapse)
-    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    // Collapsed: the panel-left-close control unmounts, only the hamburger stays.
+    expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('1')
+    localStorage.removeItem('mc-nav')
+  })
+
+  it('hides the Contact Us row when the sidebar is collapsed', () => {
+    localStorage.removeItem('mc-nav')
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    const contact = within(nav).getByText('Contact Us')
+    expect(contact).toBeVisible()
+    fireEvent.click(within(nav).getByRole('button', { name: 'Collapse sidebar' }))
+    // The row folds away (max-h-0 + opacity-0 + inert) instead of unmounting.
+    const wrapper = contact.closest('[class*="max-h-0"]')
+    expect(wrapper).not.toBeNull()
+    expect(wrapper).toHaveAttribute('inert')
     localStorage.removeItem('mc-nav')
   })
 
@@ -380,12 +405,12 @@ describe('App routing', () => {
     safeSetItem('mc-nav', '1')
     renderWithProviders(<App />, { route: '/chat' })
 
-    const expand = screen.getByRole('button', { name: 'Expand sidebar' })
-    const requestFeature = screen.getByRole('button', { name: 'Request a Feature' })
-    expect(expand.parentElement).toContainElement(requestFeature)
+    // Collapsed: brand shrinks to the icon but Request a Feature stays.
+    expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
 
-    fireEvent.click(expand)
-    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    fireEvent.click(within(nav).getByRole('button', { name: 'Expand sidebar' }))
+    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('0')
     localStorage.removeItem('mc-nav')

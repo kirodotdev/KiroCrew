@@ -77,7 +77,7 @@ test.describe('Navigation E2E Tests', () => {
   test('sidebar navigation persists across pages', async ({ page }) => {
     // Navigation should be visible on Overview page - use sidebar locator
     await page.goto('/overview', { waitUntil: 'domcontentloaded' })
-    await expect(page.locator('nav[aria-label="Main navigation"]').getByText('Chat')).toBeVisible()
+    await expect(page.locator('nav[aria-label="Main navigation"]').getByText('Sessions')).toBeVisible()
 
     // Navigation should be visible on the Developer page (was /system, now
     // /developer?tab=system — kept consistent with system.spec.ts).

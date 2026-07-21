@@ -268,7 +268,7 @@ export default function AppsPage() {
 
   return (
     <>
-      <PageHeader title="App Store" subtitle="Discover, install, and manage agentic apps" />
+      <PageHeader title="Apps" subtitle="Discover, install, and manage agentic apps" />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
 
         {/* Stats */}

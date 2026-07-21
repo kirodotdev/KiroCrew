@@ -7,11 +7,10 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Users, Plug, Settings, ClipboardCheck } from 'lucide-react'
+import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Users, Settings, ClipboardCheck, LayoutGrid } from 'lucide-react'
 import { createSelector } from '@reduxjs/toolkit'
 import { registerBuiltinSurface } from './registry'
 import type { RootState } from '../store'
-import AppIcon from '../components/AppIcon'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
@@ -25,7 +24,7 @@ const selectUnacknowledgedNotificationCount = createSelector(
 registerBuiltinSurface({
   navId: 'chat',
   route: '/chat',
-  label: 'Chat',
+  label: 'Sessions',
   icon: <MessageSquare size={16} />,
   group: 'Main',
   // Slot-bearing: default chat slots have surface === '' (or no mode set).
@@ -75,26 +74,13 @@ registerBuiltinSurface({
 registerBuiltinSurface({
   navId: 'apps',
   route: '/apps',
-  label: 'App Store',
-  icon: <AppIcon iconUrl="/app-assets/app-store/icon.svg" size={16} />,
+  label: 'Explore',
+  icon: <LayoutGrid size={16} />,
   group: 'Apps',
-})
-
-// ── Platform ───────────────────────────────────────────────────────────────
-registerBuiltinSurface({
-  navId: 'agents',
-  route: '/agents',
-  label: 'Agents',
-  icon: <Users size={16} />,
-  group: 'Platform',
-})
-
-registerBuiltinSurface({
-  navId: 'capabilities',
-  route: '/capabilities',
-  label: 'Capabilities',
-  icon: <Plug size={16} />,
-  group: 'Platform',
+  // Rendered by App.tsx as the accent link in the "Apps" section-header row
+  // (expanded) / an icon row (collapsed) — not a regular rail list item.
+  // Route, badge wiring, and onboarding anchor stay intact.
+  hiddenFromNav: true,
 })
 
 // Instances (multi-instance management) is configured under Settings → Instances
@@ -121,6 +107,18 @@ registerBuiltinSurface({
 })
 
 // ── Bottom ─────────────────────────────────────────────────────────────────
+// Agents + Capabilities merged into one bottom-pinned "Agent Capabilities"
+// destination. The /capabilities secondary panel hosts Agents (bindings),
+// Agent Templates, Integrations (MCP), Skills, Hooks, and Prompts;
+// /agents redirects there (see App.tsx routes).
+registerBuiltinSurface({
+  navId: 'capabilities',
+  route: '/capabilities',
+  label: 'Agent Capabilities',
+  icon: <Users size={16} />,
+  group: 'Bottom',
+})
+
 registerBuiltinSurface({
   navId: 'settings',
   route: '/settings',

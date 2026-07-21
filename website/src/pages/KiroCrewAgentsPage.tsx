@@ -122,7 +122,7 @@ function WorkspaceModal({
   )
 }
 
-export default function KiroCrewAgentsPage() {
+export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } = {}) {
   const provider = useProvider()
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
 
@@ -216,8 +216,8 @@ export default function KiroCrewAgentsPage() {
 
   return (
     <>
-      <PageHeader title="Agents" subtitle="Manage agent → workspace → memory store bindings" />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      {!embedded && <PageHeader title="Agents" subtitle="Manage agent → workspace → memory store bindings" />}
+      <div className={`${embedded ? '' : 'px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
           <StatCard label="Total Agents" value={agents.length} accent />
           <StatCard label="Default" value={defaultAgent || '—'} />

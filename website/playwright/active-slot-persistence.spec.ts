@@ -29,8 +29,8 @@ test.describe('Active slot persistence across mode switches', () => {
     await autopilot.click()
     await page.waitForURL('**/orchestrated**')
 
-    // Switch back to Chat
-    await nav.getByText('Chat').click()
+    // Switch back to Sessions (the chat surface)
+    await nav.getByText('Sessions').click()
     await page.waitForURL('**/chat**')
     await expect(page.locator('.session-row').first()).toBeVisible({ timeout: 10000 })
 

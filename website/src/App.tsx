@@ -26,7 +26,8 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Keyboard, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelRight, Lightbulb } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelRight, PanelLeftClose, Globe, LayoutGrid, Lightbulb } from 'lucide-react'
+import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import OnboardingFlow from './components/OnboardingFlow'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
@@ -46,7 +47,6 @@ import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
-import KiroCrewAgentsPage from './pages/KiroCrewAgentsPage'
 import ProjectsPage from './pages/ProjectsPage'
 import LogsPage from './pages/LogsPage'
 import HooksPage from './pages/HooksPage'
@@ -1300,6 +1300,23 @@ export default function App() {
   const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
   const needsFixedHeight = isChat || activePath === '/settings' || activePath === '/developer' || activePath === '/capabilities'
 
+  // Render one standard nav row (used by the top-fixed mains, the Apps list,
+  // and the bottom-fixed section). Active-state, mobile close, chat pin
+  // toggle, and badge wiring are identical across sections.
+  const renderNavRow = (n: { path: string; id: string; label: string; icon: React.ReactNode }) => (
+    <NavItem
+      navId={n.id}
+      path={n.path}
+      label={n.label}
+      icon={n.icon}
+      active={n.path === '/apps' ? activePath === '/apps' : (activePath === n.path || activePath.startsWith(n.path + '/'))}
+      collapsed={effectiveCollapsed}
+      onClick={closeMobileNav}
+      onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
+      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={appBadges} />}
+    />
+  )
+
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
@@ -1373,33 +1390,15 @@ export default function App() {
             </button>
           )}
           {!isMobile && effectiveCollapsed ? (
-            <button
-              type="button"
-              className="group flex items-center justify-center w-[74px] h-full cursor-pointer bg-transparent border-none p-0 shrink-0"
-              onClick={toggleNav}
-              title="Expand sidebar"
-              aria-label="Expand sidebar"
-            >
-              <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 group-hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
+            <div className="flex items-center justify-center w-[74px] h-full shrink-0">
+              <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
               <span className="sr-only">{botName}</span>
-            </button>
+            </div>
           ) : (
-            <>
-              <div className="flex items-center gap-2.5 min-w-0 opacity-100">
-                <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 hover:rotate-[-8deg] hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
-                <span className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap">{botName}</span>
-              </div>
-              {!isMobile && (
-                <button
-                  className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"
-                  onClick={toggleNav}
-                  title="Collapse sidebar"
-                  aria-label="Collapse sidebar"
-                >
-                  <Menu size={16} />
-                </button>
-              )}
-            </>
+            <div className="flex items-center gap-2.5 min-w-0 opacity-100">
+              <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 hover:rotate-[-8deg] hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
+              <span className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap">{botName}</span>
+            </div>
           )}
           {/* Keep Request a Feature visible beside the brand in both desktop sidebar states. */}
           {!isMobile && <>
@@ -1642,70 +1641,90 @@ export default function App() {
         role="navigation"
         aria-label="Main navigation"
       >
-        {/* Scrolls vertically in BOTH expanded and collapsed (icon-only) modes —
-         *  collapsed hover labels are portaled to <body> (see NavItem/NavToggle)
-         *  so this vertical clip never chops them at the rail edge. Vertical only
-         *  (overflow-x-hidden) and overscroll-y-none kills the macOS rubber-band
-         *  bounce when scrolling past the ends. scrollbar-none + scrollbarWidth
-         *  hide the scrollbar here (where scrolling actually happens) across
-         *  Firefox, modern WebKit, and older Safari (<16). */}
-        <div className="flex flex-col h-full px-2 pt-2 pb-4 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none" style={{ scrollbarWidth: 'none' }}>
-        {(['Main', 'Platform', 'Apps'] as const).map(group => (
-          <motion.div
-            className="grid gap-0.5"
-            key={group}
-            animate={{ marginBottom: effectiveCollapsed ? 32 : 12 }}
-            transition={{ duration: 0.2 }}
-          >
-            <AnimatePresence initial={false}>
-              {!effectiveCollapsed && group !== 'Main' && (
-                <motion.div
-                  key={`header-${group}`}
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.15 }}
-                  className="overflow-hidden"
-                >
-                  <div className="nav-section flex items-center gap-2 px-2.5 py-1.5 text-[13px] font-medium text-muted">{group}</div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+        {/* Top-fixed: menu row + primary destinations + Apps section header.
+            The sidebar toggle lives HERE (menu row), not in the topbar. */}
+        <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
+          <div className={`flex items-center py-2 pl-3 pr-3 ${effectiveCollapsed ? '' : 'justify-between'}`}>
+            <button
+              className="flex items-center justify-center p-1.5 -m-1.5 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"
+              onClick={toggleNav}
+              title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={effectiveCollapsed ? 'Expand sidebar' : 'Toggle sidebar'}
+              aria-expanded={!effectiveCollapsed}
+            >
+              <Menu size={16} />
+            </button>
+            {!effectiveCollapsed && (
+              <button
+                className="flex items-center justify-center p-1.5 -m-1.5 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"
+                onClick={toggleNav}
+                title="Collapse sidebar"
+                aria-label="Collapse sidebar"
+              >
+                <PanelLeftClose size={16} />
+              </button>
+            )}
+          </div>
+          {NAV_ITEMS.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
+          {/* Apps section header. "Explore" (the App Store) rides the header
+              row in accent when expanded; collapsed it becomes a regular
+              muted icon row like its neighbors. No shared-layout fly-across:
+              the header link simply unmounts and the collapsed row fades in
+              and slides up into place. */}
+          {!effectiveCollapsed ? (
+            <div className="nav-section flex items-center justify-between gap-2 pl-3 pr-1 pt-3 pb-1">
+              <span className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden">Apps</span>
+              <Clickable
+                data-onboarding-nav="apps"
+                onClick={() => { closeMobileNav?.(); navigate('/apps') }}
+                className={`flex items-center gap-1.5 px-1.5 py-1 rounded-md cursor-pointer text-[12px] font-medium whitespace-nowrap transition-colors ${activePath === '/apps' ? 'text-accent bg-accent-subtle' : 'text-accent hover:bg-bg-hover'}`}
+                aria-label="Explore Apps"
+              >
+                <LayoutGrid size={14} className="shrink-0" />
+                Explore
+              </Clickable>
+            </div>
+          ) : (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+            >
+              <NavItem
+                navId="apps"
+                path="/apps"
+                label="Explore"
+                icon={<LayoutGrid size={16} />}
+                active={activePath === '/apps'}
+                collapsed
+                onClick={closeMobileNav}
+                badge={<NavBadge navId="apps" collapsed appBadges={appBadges} />}
+              />
+            </motion.div>
+          )}
+        </div>
+
+        {/* Apps list: scrolls in its OWN frame when many apps are enabled —
+            the top (menu/mains/header) and bottom sections stay pinned.
+            Collapsed hover labels are portaled to <body> (see NavItem /
+            NavToggle) so this vertical clip never chops them at the rail
+            edge. overscroll-y-none kills the macOS rubber-band bounce;
+            scrollbar-none + scrollbarWidth hide the scrollbar across
+            Firefox, modern WebKit, and older Safari (<16). */}
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none px-2" style={{ scrollbarWidth: 'none' }}>
+          <div className="grid gap-0.5">
             {(() => {
-              const isAppsGroup = group === 'Apps'
-              const fullList = isAppsGroup ? sortedAppGroup : NAV_ITEMS.filter(n => n.group === group)
+              const fullList = sortedAppGroup
               // Collapse a long Apps list behind a "N more" toggle (both expanded
               // and collapsed modes). Keep the active item visible even when it's
               // in the overflow, so navigation state is never hidden.
-              const overflowing = isAppsGroup && !appsExpanded && fullList.length > APPS_NAV_LIMIT
+              const overflowing = !appsExpanded && fullList.length > APPS_NAV_LIMIT
               const visible = overflowing
                 ? fullList.filter((n, i) => i < APPS_NAV_LIMIT || activePath === n.path || activePath.startsWith(n.path + '/'))
                 : fullList
               const hiddenCount = fullList.length - visible.length
-              // Render one nav row for app `n` (used both in-list and, for the
-              // Apps group, inside the DragOverlay ghost).
-              const renderNavItem = (n: typeof fullList[number]) => (
-                <NavItem
-                  navId={n.id}
-                  path={n.path}
-                  label={n.label}
-                  icon={n.icon}
-                  active={n.path === '/apps' ? activePath === '/apps' : (activePath === n.path || activePath.startsWith(n.path + '/'))}
-                  collapsed={effectiveCollapsed}
-                  onClick={closeMobileNav}
-                  onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
-                  badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={appBadges} />}
-                />
-              )
-              // Non-Apps groups: static rows, no drag. Wrapper div preserves the
-              // grid child structure (one direct child per item).
-              if (!isAppsGroup) {
-                return (<>
-                {visible.map(n => <div key={n.id}>{renderNavItem(n)}</div>)}
-                </>)
-              }
-              // Apps group: dnd-kit sortable. Rows reflow to open a gap as one is
-              // dragged; the source dims and a DragOverlay renders the ghost.
+              // Apps rows are dnd-kit sortable. Rows reflow to open a gap as one
+              // is dragged; the source dims and a DragOverlay renders the ghost.
               // SortableContext/DndContext add no DOM wrapper, so the parent grid
               // gap is unchanged.
               //
@@ -1729,12 +1748,12 @@ export default function App() {
               <DndContext sensors={appDndSensors} collisionDetection={closestCenter} onDragStart={handleAppDragStart} onDragEnd={handleAppDragEnd} onDragCancel={handleAppDragCancel}>
                 <SortableContext items={sortableRows.map(n => n.id)} strategy={verticalListSortingStrategy}>
                   {sortableRows.map(n => (
-                    <SortableAppNavRow key={n.id} id={n.id}>{renderNavItem(n)}</SortableAppNavRow>
+                    <SortableAppNavRow key={n.id} id={n.id}>{renderNavRow(n)}</SortableAppNavRow>
                   ))}
                 </SortableContext>
                 {/* Pulled-in active overflow row(s): static, non-draggable. */}
-                {pulledInRows.map(n => <div key={n.id} role="presentation">{renderNavItem(n)}</div>)}
-                <DragOverlay>{activeApp ? renderNavItem(activeApp) : null}</DragOverlay>
+                {pulledInRows.map(n => <div key={n.id} role="presentation">{renderNavRow(n)}</div>)}
+                <DragOverlay>{activeApp ? renderNavRow(activeApp) : null}</DragOverlay>
               </DndContext>
               {/* Show the toggle whenever the list is collapsible, NOT only when
                *  hiddenCount > 0 — otherwise navigating to an app that's the sole
@@ -1751,15 +1770,19 @@ export default function App() {
               )}
               </>)
             })()}
-          </motion.div>
-        ))}
+          </div>
+        </div>
 
-        {/* Developer & Settings — pushed to bottom */}
+        {/* Bottom-fixed: Agent Capabilities, Developer (only when dev mode is
+            enabled), Settings, and the Contact Us row. Pinned to the
+            rail's bottom edge — the Apps frame above absorbs the scroll. */}
         {(() => {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
+          const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
           const devPath = '/developer'
           return (
-            <div className="mt-auto grid gap-0.5">
+            <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
+              <div>{renderNavRow(cap)}</div>
               {devMode && (() => {
                 const dotClass = effectiveCollapsed
                   ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10 animate-pulse'
@@ -1777,15 +1800,6 @@ export default function App() {
                 )
               })()}
               <NavItem
-                path="#"
-                label="Shortcuts"
-                icon={<Keyboard size={16} />}
-                active={false}
-                collapsed={effectiveCollapsed}
-                onClick={closeMobileNav}
-                onClickOverride={toggleShortcutsModal}
-              />
-              <NavItem
                 path={s.path}
                 label={s.label}
                 icon={s.icon}
@@ -1794,17 +1808,20 @@ export default function App() {
                 onClick={closeMobileNav}
                 badge={updateAvailable ? <span title="Update available" className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
               />
+              {/* Contact Us — icon links to kiro.dev, the GitHub repo,
+                  and the Discord community. Hidden while the rail is collapsed
+                  (folds away via max-height so the collapse stays smooth). */}
+              <div {...(effectiveCollapsed ? { inert: '' } : {})} className={`overflow-hidden transition-all duration-200 ${effectiveCollapsed ? 'max-h-0 opacity-0' : 'max-h-16 opacity-100 mt-1'}`}>
+                <div className="flex items-center gap-1 border-t border-border-strong pl-3 pr-1 pt-2.5 pb-0.5 whitespace-nowrap">
+                  <span className="text-[13px] text-muted flex-1 overflow-hidden">Contact Us</span>
+                  <a href="https://kiro.dev" target="_blank" rel="noopener noreferrer" title="Kiro website" aria-label="Kiro website (kiro.dev)" className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><Globe size={15} /></a>
+                  <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title="GitHub repository" aria-label="KiroCrew GitHub repository" className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><GithubIcon size={15} /></a>
+                  <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title="Discord community" aria-label="Kiro Discord community" className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
+                </div>
+              </div>
             </div>
           )
         })()}
-
-        {/* Watermark */}
-        <div {...(effectiveCollapsed ? { inert: '' } : {})} className={`overflow-hidden transition-all duration-200 ${effectiveCollapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-40 opacity-100 mt-2'}`}>
-              <div className="border-t pt-2 pb-2 px-1 whitespace-nowrap" style={{ borderColor: 'var(--muted)' }}>
-                <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" className="text-[13px] text-muted/60 hover:text-accent transition-colors inline-block">GitHub</a>
-              </div>
-        </div>
-        </div>
       </motion.nav>
       )}
       </AnimatePresence>
@@ -1820,8 +1837,9 @@ export default function App() {
             <Route path="/knowledge" element={<ErrorBoundary><KnowledgePage /></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings?tab=overview" replace />} />
             <Route path="/schedule" element={<SchedulePage />} />
-            <Route path="/agents" element={<KiroCrewAgentsPage />} />
-            <Route path="/mc-agents" element={<Navigate to="/agents" replace />} />
+            {/* Agents merged into the Agent Capabilities panel (first tab). */}
+            <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
+            <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/logs" element={<LogsPage />} />

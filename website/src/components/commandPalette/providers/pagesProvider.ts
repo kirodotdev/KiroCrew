@@ -62,6 +62,10 @@ interface PageEntry {
  * the right place via the router.
  */
 const EXTRA_PAGES: readonly PageEntry[] = [
+  // The App Store surface is `hiddenFromNav` (it renders as the Apps-header
+  // "Explore" accent link, not a rail row), so it must be listed here to
+  // stay reachable from the palette.
+  { key: 'apps', title: 'Explore', route: '/apps', icon: inlineIcon(LayoutGrid) },
   { key: 'logs', title: 'Logs', route: '/logs', icon: inlineIcon(ScrollText) },
   { key: 'developer', title: 'Developer', route: '/developer', icon: inlineIcon(Code2) },
   { key: 'hooks', title: 'Hooks', route: '/hooks', icon: inlineIcon(Webhook) },
