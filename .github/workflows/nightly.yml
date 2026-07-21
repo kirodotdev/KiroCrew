@@ -34,7 +34,6 @@ jobs:
       - name: Compute version
         id: stamp
         run: |
-          DATE=$(date -u +%Y%m%d)
           # Wheel stamp includes HHMM so re-running a nightly on the same UTC date can
           # never republish an existing version key with different bytes. CloudFront
           # caches cli/* as immutable (CACHING_OPTIMIZED); a republished key leaves
@@ -46,14 +45,19 @@ jobs:
           STAMP=$(date -u +%Y%m%d%H%M%S)
           BASE=$(grep -m1 '__version__' src/kiro_crew/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
           # Desktop/Squirrel needs semver; the pip wheel needs PEP 440. Emit both:
-          #   nightly_version (semver):  <base>-nightly.<date>  -> Electron app + S3 build path
-          #   wheel_version   (PEP 440): <base>.dev<date+HHMMSS> -> pip wheel, unique per RUN (see below)
+          #   nightly_version (semver):  <base>-nightly.<date+HHMMSS> -> Electron app + S3 build path
+          #   wheel_version   (PEP 440): <base>.dev<date+HHMMSS>      -> pip wheel, unique per RUN (see below)
+          # The desktop stamp carries the same seconds precision as the wheel:
+          # a date-only stamp meant two nightlies on one UTC date overwrote the
+          # same signed/<channel>/<version>/ and notarized/<channel>/<version>/
+          # keys (the exact republish class #62 fixed for cli/*), which becomes
+          # a CloudFront edge-divergence bug the day mac artifacts go public.
           # The old shared "-nightly.<date>" is invalid PEP 440, so setuptools normalized
           # every nightly wheel down to the base version (all became 0.1.0). ".dev<date>"
           # is valid PEP 440 and keeps nightly wheels uniquely versioned.
-          echo "version=${BASE}-nightly.${DATE}" >> "$GITHUB_OUTPUT"
+          echo "version=${BASE}-nightly.${STAMP}" >> "$GITHUB_OUTPUT"
           echo "wheel_version=${BASE}.dev${STAMP}" >> "$GITHUB_OUTPUT"
-          echo "Nightly (semver): ${BASE}-nightly.${DATE}"
+          echo "Nightly (semver): ${BASE}-nightly.${STAMP}"
           echo "Wheel (PEP 440):  ${BASE}.dev${STAMP}"
 
   build-wheel:
