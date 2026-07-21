@@ -1418,6 +1418,15 @@ def token_auth_middleware(
                     _embed_parent_port = _epp
             except Exception:
                 session_exp = 0.0
+            # Expose the frame-ancestors parent-port claim to the response-header
+            # layer NOW, BEFORE the link nonce is revoked below. The FIRST framed
+            # instance document is loaded via ``?token=`` and the browser enforces
+            # that response's ``frame-ancestors``; re-validating the (about-to-be-
+            # revoked) link token in server._extra_frame_ancestors would return
+            # None and fall back to bare ``'self'`` (blank pane). Signature is
+            # already verified above; this only carries the loopback parent port.
+            if _embed_parent_port:
+                request["embed_parent_port"] = _embed_parent_port
             # Token→session exchange (CWE-613 / secure token handling): NEVER
             # reuse the one-time URL/link token string as the long-lived session
             # cookie. The link token is exposed in URLs, Slack messages, terminal

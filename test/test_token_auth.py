@@ -308,6 +308,11 @@ async def test_embed_parent_port_claim_survives_session_exchange() -> None:
     # … that nonetheless preserves the frame-ancestors parent-port claim, so the
     # cookie-authenticated framed document still authorizes the parent origin.
     assert token_embed_parent_port(cookie_header.value) == 5476
+    # And the middleware stashed the validated parent port on the request BEFORE
+    # revoking the link nonce, so the first ?token= framed document's header
+    # (server._extra_frame_ancestors) sees it even though the link token is now
+    # revoked (PR #129 follow-up — the first-hit blank-pane fix).
+    req.__setitem__.assert_any_call("embed_parent_port", "5476")
 
 
 # -- Property 7: Cookie not re-set when already matching --

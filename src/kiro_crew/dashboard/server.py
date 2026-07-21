@@ -294,31 +294,39 @@ def _extra_frame_ancestors(
     (embedding) dashboard's port — its ``KIROCREW_PORT`` — so the embedded remote
     authorizes exactly that loopback parent origin as a CSP frame-ancestor. The
     claim is carried through the link→session token exchange into the session
-    cookie (see token_auth_middleware), and this reader consults the query token
-    first, then that cookie, so it works for both the initial link hit and every
-    subsequent cookie-authenticated framed document load. The port is expanded to
-    the loopback hosts (the desktop app may load on any of them). Exact origins
-    only — **never a wildcard, never a hardcoded port** — and gated on a
-    validly-signed token, so a random local page (which has no token) can never
-    get its origin into ``frame-ancestors`` (clickjacking, CSE SEC-016). Empty
-    (default ``'self'`` + ``X-Frame-Options`` posture) for any request without
-    such a token. See docs/system-specs/modules/security.md.
+    cookie (see token_auth_middleware), which also stashes the validated port on
+    the request BEFORE it revokes the link nonce. This reader prefers that stashed
+    value, then the query token, then the ``mc_token_<port>`` cookie — so it works
+    for the first ``?token=`` framed document (whose link nonce is revoked by the
+    exchange) AND every subsequent cookie-authenticated framed load. The port is
+    expanded to the loopback hosts (the desktop app may load on any of them).
+    Exact origins only — **never a wildcard, never a hardcoded port** — and gated
+    on a validly-signed token, so a random local page (which has no token) can
+    never get its origin into ``frame-ancestors`` (clickjacking, CSE SEC-016).
+    Empty (default ``'self'`` + ``X-Frame-Options`` posture) for any request
+    without such a token. See docs/system-specs/modules/security.md.
     """
     if request is None:
         return []
-    # The connect link token carries the claim only on its FIRST hit (``?token=``);
-    # token_auth_middleware then exchanges it for a fresh session cookie
-    # (``mc_token_<port>``) that every subsequent framed document load presents
-    # instead. So read the claim from the query token when present and otherwise
-    # from that cookie — mirroring the middleware's own extraction — or the
-    # steady-state framed load (cookie, no query token) would always fall back to
-    # bare ``'self'`` and the embedded pane would never render.
-    token = request.query.get("token") or ""
-    if not token:
-        port_fallback = app.get("port", _DEFAULT_PORT) if app is not None else _DEFAULT_PORT
-        cookie_port = _cookie_port_from_host(request, port_fallback)
-        token = request.cookies.get(f"mc_token_{cookie_port}", "")
-    port = token_embed_parent_port(token)
+    # Prefer the claim the auth middleware validated and stashed on the request:
+    # it is set BEFORE the link→session exchange revokes the link nonce, so the
+    # first ``?token=`` framed document (whose header the browser enforces) still
+    # carries the parent origin. Fall back to the query token, then the
+    # ``mc_token_<port>`` session cookie (steady-state cookie-authenticated
+    # framed loads), mirroring token_auth_middleware's own extraction.
+    port: int | None = None
+    stashed = request.get("embed_parent_port")
+    if isinstance(stashed, str) and stashed.isdigit():
+        _p = int(stashed)
+        if 1 <= _p <= 65535:
+            port = _p
+    if port is None:
+        token = request.query.get("token") or ""
+        if not token:
+            port_fallback = app.get("port", _DEFAULT_PORT) if app is not None else _DEFAULT_PORT
+            cookie_port = _cookie_port_from_host(request, port_fallback)
+            token = request.cookies.get(f"mc_token_{cookie_port}", "")
+        port = token_embed_parent_port(token)
     if port is None:
         return []
     return [

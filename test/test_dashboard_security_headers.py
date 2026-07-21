@@ -207,6 +207,27 @@ class TestApplySecurityHeaders:
         assert "http://127.0.0.1:5476" in frame_anc
         assert "X-Frame-Options" not in resp.headers
 
+    def test_frame_ancestors_prefers_request_stashed_claim(self, monkeypatch) -> None:
+        """PR #129 follow-up: on the FIRST ``?token=`` framed document the
+        link→session exchange revokes the link nonce, so re-validating the query
+        token here returns None and the header would fall back to bare 'self'
+        (the browser enforces THIS response's frame-ancestors → blank pane).
+        token_auth_middleware stashes the validated parent port on the request
+        BEFORE revoking; this reader must prefer it. Simulate: request carries the
+        stashed claim but NO usable query token/cookie (reader returns None)."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.server.token_embed_parent_port", lambda token: None
+        )
+        request = make_mocked_request("GET", "/?token=revoked-link-token")
+        request["embed_parent_port"] = "5476"  # what the middleware stashed
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
+        assert "http://localhost:5476" in frame_anc
+        assert "http://127.0.0.1:5476" in frame_anc
+        assert "X-Frame-Options" not in resp.headers
+
     def test_frame_ancestors_default_without_embed_token(self, monkeypatch) -> None:
         """A request with no valid embed-parent token (or none at all) keeps the
         default posture: frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN.
