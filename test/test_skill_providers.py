@@ -299,3 +299,76 @@ class TestSkillsShTagsCoercion:
         with patch("kiro_crew.skill_providers.skillsh._sync_fetch_json", return_value=payload):
             results = await SkillsShProvider().search("g")
         assert results[0].tags == ["docker", "ci"]
+
+
+class TestSkillsShDownloadUrl:
+    """A skills.sh id is an owner/repo/skill PATH; its slashes are real path
+    segments that must reach the /api/download/{owner}/{repo}/{skill} route.
+    Percent-encoding them (safe="") collapsed the id into a single segment,
+    missed the API route, and skills.sh returned its HTML SPA page instead of
+    the JSON bundle, so a skill install surfaced as "not found or empty on
+    skillsh". fetch_skill_bundle() now keeps the slashes (safe="/") while still
+    rejecting traversal and encoding query/fragment metacharacters."""
+
+    @pytest.mark.asyncio
+    async def test_download_url_preserves_path_slashes(self):
+        captured = {}
+
+        def fake_fetch(url):
+            captured["url"] = url
+            return {"files": [{"path": "SKILL.md", "contents": "# ok"}]}
+
+        with patch(
+            "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+            side_effect=fake_fetch,
+        ):
+            bundle = await SkillsShProvider().fetch_skill_bundle(
+                "vercel-labs/agent-skills/vercel-react-best-practices"
+            )
+
+        assert bundle == [("SKILL.md", "# ok")]
+        assert captured["url"] == (
+            "https://skills.sh/api/download/"
+            "vercel-labs/agent-skills/vercel-react-best-practices"
+        )
+        assert "%2F" not in captured["url"]
+
+    @pytest.mark.asyncio
+    async def test_download_url_still_encodes_query_and_fragment(self):
+        captured = {}
+
+        def fake_fetch(url):
+            captured["url"] = url
+            return {"files": [{"path": "SKILL.md", "contents": "# ok"}]}
+
+        with patch(
+            "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+            side_effect=fake_fetch,
+        ):
+            await SkillsShProvider().fetch_skill_bundle("owner/repo/a b?x=1#f")
+
+        # Legit path slashes survive; smuggling metacharacters are encoded.
+        assert "/download/owner/repo/" in captured["url"]
+        assert "%20" in captured["url"]  # space
+        assert "%3F" in captured["url"]  # ?
+        assert "%23" in captured["url"]  # #
+
+    @pytest.mark.asyncio
+    async def test_download_rejects_traversal_ids(self):
+        calls = {"n": 0}
+
+        def fake_fetch(url):
+            calls["n"] += 1
+            return {"files": [{"path": "SKILL.md", "contents": "x"}]}
+
+        with patch(
+            "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+            side_effect=fake_fetch,
+        ):
+            p = SkillsShProvider()
+            assert await p.fetch_skill_bundle("../../etc/passwd") is None
+            assert await p.fetch_skill_bundle("/abs/path") is None
+            assert await p.fetch_skill_bundle("owner//repo") is None
+            assert await p.fetch_skill_bundle("") is None
+
+        assert calls["n"] == 0  # malformed ids never reach the network

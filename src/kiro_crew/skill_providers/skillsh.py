@@ -156,10 +156,20 @@ class SkillsShProvider:
         Returns a list of (relative_path, content) tuples, or None on failure.
         Uses GET /api/download/{id} which returns all skill files.
         """
-        # Percent-encode the id (safe="") so a crafted value can't smuggle
-        # path segments or a query string into the URL — same treatment
-        # search() gives its query parameter.
-        url = f"{self._config.api_base}/download/{urllib.parse.quote(skill_id, safe='')}"
+        # The skills.sh id is an "owner/repo/skill" path whose slashes are real
+        # path segments. The download route is /api/download/{owner}/{repo}/{skill},
+        # so the slashes MUST survive into the URL (safe="/"). Encoding them
+        # (safe="") collapses the id into a single segment, misses the API route,
+        # and skills.sh returns its HTML SPA page instead of the JSON bundle, so
+        # the install surfaces as "not found or empty on skillsh". We still block
+        # traversal and smuggling: reject any empty, "." or ".." segment (which
+        # also covers a leading, trailing, or doubled slash), and quote() keeps
+        # encoding "?", "#", space, and similar so a query string cannot be
+        # smuggled in.
+        if not skill_id or any(seg in ("", ".", "..") for seg in skill_id.split("/")):
+            logger.debug("Rejecting malformed skill_id for download: %r", skill_id)
+            return None
+        url = f"{self._config.api_base}/download/{urllib.parse.quote(skill_id, safe='/')}"
         data = await _fetch_json(url)
         if data is None:
             return None
