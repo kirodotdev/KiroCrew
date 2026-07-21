@@ -173,6 +173,40 @@ class TestApplySecurityHeaders:
         # X-Frame-Options omitted so it cannot contradict the cross-port allowlist
         assert "X-Frame-Options" not in resp.headers
 
+    def test_frame_ancestors_reads_embed_parent_from_session_cookie(self, monkeypatch) -> None:
+        """PR #118 follow-up: the framed document authenticates via the
+        ``mc_token_<port>`` session cookie, NOT a ``?token=`` query param
+        (token_auth_middleware exchanges the connect link token for that cookie).
+        The reader MUST consult the cookie — otherwise every steady-state framed
+        load falls back to bare frame-ancestors 'self' and the embedded pane
+        never renders (the exact blank-pane bug). Reproduced live: a cookie
+        carrying the claim previously yielded 'self'."""
+        from kiro_crew.dashboard.state import _DEFAULT_PORT
+
+        # Stub the (separately unit-tested) signed-claim reader; the point of
+        # THIS test is that the cookie value reaches it (no query token present).
+        seen: dict[str, str] = {}
+
+        def _fake_reader(token: str) -> int | None:
+            seen["token"] = token
+            return 5476 if token else None
+
+        monkeypatch.setattr("kiro_crew.dashboard.server.token_embed_parent_port", _fake_reader)
+        request = make_mocked_request(
+            "GET",
+            "/",
+            headers={"Cookie": f"mc_token_{_DEFAULT_PORT}=sessioncookietoken"},
+        )
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        # The cookie value (not an empty query token) reached the claim reader.
+        assert seen["token"] == "sessioncookietoken"
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
+        assert "http://localhost:5476" in frame_anc
+        assert "http://127.0.0.1:5476" in frame_anc
+        assert "X-Frame-Options" not in resp.headers
+
     def test_frame_ancestors_default_without_embed_token(self, monkeypatch) -> None:
         """A request with no valid embed-parent token (or none at all) keeps the
         default posture: frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN.

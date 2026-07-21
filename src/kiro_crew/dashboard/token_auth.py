@@ -1401,11 +1401,21 @@ def token_auth_middleware(
         session_token = token
         if not from_cookie:
             _link_nonce = ""
+            _embed_parent_port = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
                 session_exp = float(data.get("session_exp", 0.0))
                 _link_nonce = str(data.get("nonce", ""))
+                # Carry the multi-instance frame-ancestors claim (the embedding
+                # parent dashboard's port) THROUGH the exchange. The framed
+                # document is authenticated by the session cookie minted below,
+                # so without this the cookie would drop the claim and the CSP
+                # reader (server._extra_frame_ancestors) would fall back to bare
+                # ``'self'`` — the blank embedded-pane bug.
+                _epp = data.get("embed_parent_port")
+                if isinstance(_epp, str) and _epp:
+                    _embed_parent_port = _epp
             except Exception:
                 session_exp = 0.0
             # Token→session exchange (CWE-613 / secure token handling): NEVER
@@ -1422,7 +1432,13 @@ def token_auth_middleware(
             _remaining = int(session_exp - time.time()) if session_exp else MAX_SESSION_TTL_SECS
             if _remaining > 0:
                 session_token = generate_token(
-                    user_id, ttl_seconds=_remaining, app=app_name, register_nonce=False
+                    user_id,
+                    ttl_seconds=_remaining,
+                    app=app_name,
+                    register_nonce=False,
+                    extra=(
+                        {"embed_parent_port": _embed_parent_port} if _embed_parent_port else None
+                    ),
                 )
             # Kill the link token AS A COOKIE. Exchange alone is not enough: the
             # link token still carries the 20h ``session_exp``, so a captured

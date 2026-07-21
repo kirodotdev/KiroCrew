@@ -286,6 +286,30 @@ async def test_cookie_set_on_query_param_auth() -> None:
     assert cookie_header["path"] == "/"
 
 
+@pytest.mark.asyncio
+async def test_embed_parent_port_claim_survives_session_exchange() -> None:
+    """PR #118 follow-up: the connect link token carries an embed_parent_port
+    claim, but token_auth_middleware exchanges the link token for a fresh
+    session cookie (CWE-613, never reuse the URL token). That exchange MUST
+    carry the claim across, or the cookie the framed document actually presents
+    drops it and server._extra_frame_ancestors falls back to bare
+    frame-ancestors 'self' — the blank embedded-pane bug."""
+    mw = token_auth_middleware()
+    token = generate_token("embeduser", ttl_seconds=300, extra={"embed_parent_port": "5476"})
+    req = _make_request(query={"token": token}, remote="10.0.0.1")
+
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+
+    cookie_header = resp.cookies.get("mc_token_5476")
+    assert cookie_header is not None
+    # Distinct re-minted session token (CWE-613 exchange) …
+    assert cookie_header.value != token
+    # … that nonetheless preserves the frame-ancestors parent-port claim, so the
+    # cookie-authenticated framed document still authorizes the parent origin.
+    assert token_embed_parent_port(cookie_header.value) == 5476
+
+
 # -- Property 7: Cookie not re-set when already matching --
 
 

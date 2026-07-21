@@ -124,6 +124,7 @@ from kiro_crew.dashboard.port_reclaim import (
 )
 from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
+    _cookie_port_from_host,
     _is_spa_shell_request,
     token_auth_middleware,
     token_embed_parent_port,
@@ -283,23 +284,41 @@ _IMMUTABLE_PATH_PREFIXES = ("/assets/",)
 _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 
-def _extra_frame_ancestors(request: "web.Request | None") -> list[str]:
+def _extra_frame_ancestors(
+    request: "web.Request | None", app: "web.Application | None" = None
+) -> list[str]:
     """Exact parent origins (beyond ``'self'``) permitted to frame this dashboard.
 
     Read from the ``embed_parent_port`` claim of the request's signed token: the
     multi-instance connect flow mints the remote token carrying the *parent*
     (embedding) dashboard's port — its ``KIROCREW_PORT`` — so the embedded remote
     authorizes exactly that loopback parent origin as a CSP frame-ancestor. The
-    port is expanded to the loopback hosts (the desktop app may load on any of
-    them). Exact origins only — **never a wildcard, never a hardcoded port** — and
-    gated on a validly-signed token, so a random local page (which has no token)
-    can never get its origin into ``frame-ancestors`` (clickjacking, CSE SEC-016).
-    Empty (default ``'self'`` + ``X-Frame-Options`` posture) for any request
-    without such a token. See docs/system-specs/modules/security.md.
+    claim is carried through the link→session token exchange into the session
+    cookie (see token_auth_middleware), and this reader consults the query token
+    first, then that cookie, so it works for both the initial link hit and every
+    subsequent cookie-authenticated framed document load. The port is expanded to
+    the loopback hosts (the desktop app may load on any of them). Exact origins
+    only — **never a wildcard, never a hardcoded port** — and gated on a
+    validly-signed token, so a random local page (which has no token) can never
+    get its origin into ``frame-ancestors`` (clickjacking, CSE SEC-016). Empty
+    (default ``'self'`` + ``X-Frame-Options`` posture) for any request without
+    such a token. See docs/system-specs/modules/security.md.
     """
     if request is None:
         return []
-    port = token_embed_parent_port(request.query.get("token", ""))
+    # The connect link token carries the claim only on its FIRST hit (``?token=``);
+    # token_auth_middleware then exchanges it for a fresh session cookie
+    # (``mc_token_<port>``) that every subsequent framed document load presents
+    # instead. So read the claim from the query token when present and otherwise
+    # from that cookie — mirroring the middleware's own extraction — or the
+    # steady-state framed load (cookie, no query token) would always fall back to
+    # bare ``'self'`` and the embedded pane would never render.
+    token = request.query.get("token") or ""
+    if not token:
+        port_fallback = app.get("port", _DEFAULT_PORT) if app is not None else _DEFAULT_PORT
+        cookie_port = _cookie_port_from_host(request, port_fallback)
+        token = request.cookies.get(f"mc_token_{cookie_port}", "")
+    port = token_embed_parent_port(token)
     if port is None:
         return []
     return [
@@ -362,7 +381,7 @@ def _apply_security_headers(
     # a wildcard, never a hardcoded port. Lets the desktop app frame an embedded
     # instance dashboard across loopback ports, while any local page without a
     # validly-signed token stays blocked (clickjacking).
-    extra_ancestors = _extra_frame_ancestors(request)
+    extra_ancestors = _extra_frame_ancestors(request, app)
     frame_ancestors = " ".join(["'self'", *extra_ancestors])
     resp.headers.setdefault(
         "Content-Security-Policy",
