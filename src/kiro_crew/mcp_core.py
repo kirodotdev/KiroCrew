@@ -3420,6 +3420,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         version = d.get("version", 1)
         name = d.get("name", args.get("name", ""))
         kind = d.get("kind", args.get("kind", "widget"))
+        # FU-3: the artifact-deploy skill requires webapp producers to fill
+        # projected cost estimates at save time, but nothing enforced it —
+        # field-tested agents skipped it and the card's cost area rendered
+        # blank until deploy. Attach a soft warning hint (never a hard
+        # reject: existing flows must keep working) so the agent
+        # self-corrects on the next turn.
+        cost_hint = ""
+        wm = args.get("webapp_metadata")
+        if kind == "webapp" and isinstance(wm, dict):
+            cost = wm.get("cost") or {}
+            if not (isinstance(cost, dict) and cost.get("estimates")):
+                cost_hint = (
+                    "\n\n⚠️  webapp_metadata.cost.estimates is empty — the "
+                    "artifact card's cost area will render blank. Call "
+                    "`artifact_update` with projected what-if estimates "
+                    "(e.g. views buckets with usd amounts) per the "
+                    "artifact-deploy skill contract."
+                )
         # Widgets re-surface via the re-emit tag; only non-widgets need the link.
         ref_link = "" if kind == "widget" else f"{_artifact_ref_link(slug, name)}\n\n"
         return (
@@ -3427,6 +3445,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{ref_link}"
             f"{_artifact_reemit_hint(slug, name, kind)}"
             f"{dedup_hint}"
+            f"{cost_hint}"
         )
 
     if name == "artifact_get":

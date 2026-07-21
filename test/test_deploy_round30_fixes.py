@@ -60,9 +60,10 @@ class TestF1NolinkRead:
 
 class TestF2ReaperAccountId:
     def test_reaper_env_supplies_account_id(self):
-        doc = yaml.safe_load(
-            (TEMPLATES / "reaper.yaml").read_text().replace("!Ref ", "REF ").replace("!GetAtt ", "GETATT ").replace("!Sub ", "SUB ")
-        )
+        import re
+        raw = (TEMPLATES / "reaper.yaml").read_text()
+        sanitized = re.sub(r"!(Ref|GetAtt|Sub|Not|Equals|If|Select|Join|And|Or|Condition)\b", r"\1", raw)
+        doc = yaml.safe_load(sanitized)
         fn = doc["Resources"]["ReaperFn"]["Properties"]
         env = fn["Environment"]["Variables"]
         assert "ACCOUNT_ID" in env, "reaper Lambda must receive ACCOUNT_ID (role cannot call STS)"

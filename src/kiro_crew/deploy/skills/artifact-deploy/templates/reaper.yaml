@@ -17,6 +17,16 @@ Parameters:
   ScheduleRate:
     Type: String
     Default: 'rate(1 hour)'
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional. When set, a CloudWatch alarm on reaper Lambda errors notifies
+      this address via SNS. A reaper that fires on schedule but throws every
+      run otherwise fails SILENTLY while expired deployments leak forever.
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
 
 Resources:
 
@@ -181,6 +191,38 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt Schedule.Arn
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      Subscription:
+        - Endpoint: !Ref AlarmEmail
+          Protocol: email
+      Tags:
+        - Key: 'kirocrew:managed'
+          Value: 'true'
+
+  ReaperErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmEmail
+    Properties:
+      AlarmDescription: >-
+        Reaper Lambda is throwing. Expired kirocrew deployments are NOT being
+        cleaned up; investigate the function logs.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ReaperFn
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
 
 Outputs:
   ReaperFunctionName:

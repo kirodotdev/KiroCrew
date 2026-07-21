@@ -4,7 +4,7 @@
 # non-persistent deploys. Reliable: runs in-account on a timer, no local creds.
 #
 # Usage:
-#   install-reaper.sh [--rate 'rate(1 hour)'] [--profile P] [--region R]
+#   install-reaper.sh [--rate 'rate(1 hour)'] [--profile P] [--region R] [--alarm-email you@example.com]
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_common.sh"
@@ -16,6 +16,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --rate)    RATE="$2"; shift 2;;
   --profile) PROFILE="$2"; shift 2;;
   --region)  REGION="$2"; shift 2;;
+  --alarm-email) ALARM_EMAIL="$2"; shift 2;;
   -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
   *) echo "unknown arg: $1" >&2; exit 2;;
 esac; done
@@ -72,8 +73,13 @@ aws_cli cloudformation deploy \
   --template-file "$TEMPLATE" \
   --capabilities CAPABILITY_NAMED_IAM \
   --no-fail-on-empty-changeset \
-  --parameter-overrides Bucket="$BUCKET" DistributionId="$DIST_ID" CodeBucket="$BUCKET" CodeKey="$key" ScheduleRate="$RATE"
+  --parameter-overrides Bucket="$BUCKET" DistributionId="$DIST_ID" CodeBucket="$BUCKET" CodeKey="$key" ScheduleRate="$RATE" AlarmEmail="${ALARM_EMAIL:-}"
 
 echo ""
 echo "✅ reaper installed: Lambda kirocrew-deploy-reaper runs $RATE in-account."
+if [[ -n "${ALARM_EMAIL:-}" ]]; then
+  echo "   Errors alarm wired to $ALARM_EMAIL (confirm the SNS subscription email)."
+else
+  echo "   TIP: rerun with --alarm-email you@example.com to get notified if the reaper starts failing silently."
+fi
 echo "   Test one run:  aws lambda invoke --function-name kirocrew-deploy-reaper /tmp/reap.json --profile <p> --region <r> && cat /tmp/reap.json"

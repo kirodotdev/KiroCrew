@@ -251,8 +251,13 @@ def test_reaper_template_includes_engine_arch_permissions():
 
     class _CfnLoader(yaml.SafeLoader):
         pass
-    for tag in ("!Sub", "!Ref", "!GetAtt", "!If", "!Select", "!Join"):
-        _CfnLoader.add_constructor(tag, lambda loader, node: loader.construct_scalar(node))
+    for tag in ("!Sub", "!Ref", "!GetAtt", "!If", "!Select", "!Join",
+                "!Not", "!Equals", "!Condition", "!And", "!Or"):
+        _CfnLoader.add_constructor(
+            tag, lambda loader, node: loader.construct_sequence(node)
+            if isinstance(node, yaml.SequenceNode)
+            else loader.construct_scalar(node)
+        )
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "reaper.yaml"
     with open(template_path) as f:

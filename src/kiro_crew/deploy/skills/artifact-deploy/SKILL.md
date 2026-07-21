@@ -62,7 +62,13 @@ create the artifact immediately (before any deploy) via
 `artifact_save(name, content=<one-line human summary>, kind="webapp", webapp_metadata=…)`.
 For a not-yet-deployed app: fill `architecture` (intended tiers) + `cost`
 (projected from the model), set `lifecycle.status="draft"`, and leave
-`deploy_target.public_url` empty — the card then shows the Deploy button. (The
+`deploy_target.public_url` empty — the card then shows the Deploy button.
+Filling `cost.estimates` is REQUIRED (empty estimates render a blank cost area
+on the card; `artifact_save` warns when you skip it). For the unit prices, GET
+`/api/deploy/pricing?profile=<name>` on the gateway — it returns live AWS
+Pricing API rates for the profile's region (`source: "live"`) or the fallback
+table when the API is unreachable; multiply into per-bucket what-if totals
+(e.g. 1,000 / 100,000 / 1,000,000 views). (The
 MCP `artifact_save` tool accepts `kind="webapp"` + `webapp_metadata`.) Deploy — via this
 skill or the card's Deploy button — fills in the rest.
 

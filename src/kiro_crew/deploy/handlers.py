@@ -30,6 +30,7 @@ from aiohttp import web
 from kiro_crew.config.paths import config_dir
 from kiro_crew.deploy import engine
 from kiro_crew.deploy import iam as iam_mod
+from kiro_crew.deploy import pricing as pricing_mod
 from kiro_crew.deploy import profiles as profiles_mod
 from kiro_crew.deploy.render import render_standalone
 from kiro_crew.deploy.scan import Finding, is_credential_finding, scan_content, summarize
@@ -169,6 +170,21 @@ DATA_DIR = _data_dir()
 CONFIG_PATH = DATA_DIR / "config.json"
 DEFAULT_REGION = engine.DEFAULT_REGION
 _SITE_ID_MAX = 64
+
+
+def _reaper_remediation(profile: str, region: str) -> str:
+    """Exact operator command for the finite-TTL reaper precondition (FU-1).
+
+    Rendered with the request's real profile/region so the 409 payload is
+    directly actionable. Installing the reaper is an operator step by design
+    (the stack creates an IAM role, which KiroCrew never does itself).
+    """
+    parts = ["install-reaper.sh"]
+    if profile:
+        parts += ["--profile", profile]
+    if region:
+        parts += ["--region", region]
+    return " ".join(parts)
 
 
 def _audit(action: str, site_id: str, outcome: str, *, error: str = "") -> None:
@@ -965,11 +981,17 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             pass
 
         if not manifest_bucket and ttl_hours != 0:
-            return 409, {"error": (
-                "Finite-TTL deploys require the reaper base stack "
-                "(kirocrew-deploy-base). Use ttl_hours=0 for persistent "
-                "or install the reaper (install-reaper.sh)."
-            )}
+            # FU-1: precondition failures render the EXACT operator command
+            # with the request's real profile/region so remediation is
+            # copy-paste, not archaeology.
+            return 409, {
+                "error": (
+                    "Finite-TTL deploys require the reaper base stack "
+                    "(kirocrew-deploy-base). Use ttl_hours=0 for persistent "
+                    "or install the reaper (install-reaper.sh)."
+                ),
+                "remediation": _reaper_remediation(profile, region),
+            }
 
         # F3: Finite-TTL also requires the reaper Lambda stack (separate from base)
         if ttl_hours != 0:
@@ -985,11 +1007,14 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             except Exception:  # noqa: BLE001
                 reaper_rc = 1
             if reaper_rc != 0:
-                return 409, {"error": (
-                    "Finite-TTL deploys require the reaper stack "
-                    "(kirocrew-deploy-reaper). Install the reaper "
-                    "(install-reaper.sh) or use ttl_hours=0 for persistent."
-                )}
+                return 409, {
+                    "error": (
+                        "Finite-TTL deploys require the reaper stack "
+                        "(kirocrew-deploy-reaper). Install the reaper "
+                        "(install-reaper.sh) or use ttl_hours=0 for persistent."
+                    ),
+                    "remediation": _reaper_remediation(profile, region),
+                }
 
         result = await asyncio.to_thread(engine.deploy, site_id, src_dir, profile, region)
         _audit("deploy", site_id, "ok")
@@ -1269,7 +1294,7 @@ def _is_internal_secret_request(request: web.Request) -> bool:
 # F1: default-deny allowlist for internal-secret callers.
 # Only these handler operations are reachable via MCP tool path (X-Internal-Secret).
 # ANY new handler added to register_routes is DENIED unless explicitly listed here.
-_INTERNAL_ALLOWED_HANDLERS: frozenset[str] = frozenset({"deploy", "list"})
+_INTERNAL_ALLOWED_HANDLERS: frozenset[str] = frozenset({"deploy", "list", "pricing"})
 
 _INTERNAL_DENIED_ATTR = "_internal_denied"
 
@@ -1430,6 +1455,31 @@ async def _handle_verify(request: web.Request) -> web.Response:
         # like every other registry mutation in this file.
         _audit("profile_verify", profile, "allowed")
     return web.json_response(_sanitize_response({**result, "profile": profile}))  # R26 F2
+
+
+async def _handle_pricing(request: web.Request) -> web.Response:
+    """Live unit prices for cost estimates (NEW-1, Joe R1 follow-up).
+
+    Read-only: queries the AWS Pricing API through the resolved profile and
+    returns per-unit USD prices with a ``source`` marker (``live`` vs
+    ``fallback``). Estimate consumers (skill contract, cost surfaces) use
+    these instead of the hardcoded MVP table when available. Failures of any
+    kind degrade to the fallback table -- an estimate must never 500.
+    """
+    denied = _deny_restricted(request, "pricing")
+    if denied:
+        return denied
+    query = dict(request.rel_url.query)
+    try:
+        profile, region = await _resolve_profile(query)
+    except _ProfileResolveError as e:
+        return web.json_response(e.payload, status=400)
+    prices = await asyncio.to_thread(pricing_mod.get_unit_prices, profile, region)
+    _audit("pricing", profile, "allowed")
+    return web.json_response(_sanitize_response({
+        "region": region,
+        "prices": prices.to_dict(),
+    }))
 
 
 # --- profile control plane (§ multi-profile) --------------------------------
@@ -2178,6 +2228,7 @@ def register_routes(app: web.Application) -> None:
     r.add_delete("/api/deploy/profiles/{name}", _handle_profiles_delete)
     r.add_get("/api/deploy/iam-policy", _handle_iam_policy)
     r.add_post("/api/deploy/verify", _handle_verify)
+    r.add_get("/api/deploy/pricing", _handle_pricing)
     r.add_post("/api/deploy/deploy", _handle_deploy)
     r.add_post("/api/deploy/recall", _handle_recall)
     r.add_post("/api/deploy/destroy", _handle_destroy)
@@ -2208,6 +2259,7 @@ def register_routes(app: web.Application) -> None:
         "pending_list": _handle_pending_list,
         "pending_confirm": _handle_pending_confirm,
         "pending_dismiss": _handle_pending_dismiss,
+        "pricing": _handle_pricing,
     }
     for op_name, handler in _REGISTERED_HANDLERS.items():
         if op_name in _INTERNAL_ALLOWED_HANDLERS:

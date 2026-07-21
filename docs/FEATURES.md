@@ -452,6 +452,18 @@ Persistent, versioned artifacts for chat-rendered widgets, code files, and docum
 - **Auto-dedup** — atomic dedup on `source_path` at API layer (200=bumped existing vs 201=created new)
 - **CLI** — `kirocrew artifact list/show/save/update/delete/versions`
 
+### Artifact Deploy
+
+One-click deploy of webapp artifacts into the user's own AWS account with a global public HTTPS link (Vercel-like), default TTL, and promote-to-persistent.
+
+- **Own-account model** — KiroCrew orchestrates via a named AWS profile; resources (S3 + CloudFront, optional Lambda/DynamoDB) live in the user's account
+- **TTL + reaper** — finite-TTL deploys require the in-account reaper stack; tag-gated cleanup that can only touch `kirocrew:managed` resources
+- **Live preview cards** — browser-framed artifact cards render the app's local copy through a sandboxed, token-gated gateway channel; deployed sites embed the remote page when provably framable
+- **Deploy console** — sidebar surface for AWS profiles (register/verify), fleet view, cost estimates (labelled *not a bill*), and teardown
+- **IAM keystone** — KiroCrew never writes IAM; policies are generated for the operator to apply
+
+See [artifact-deploy.md](artifact-deploy.md) for the full guide.
+
 ### Snapshot & Restore
 
 Portable backup and restore of KiroCrew state for migration between machines.
