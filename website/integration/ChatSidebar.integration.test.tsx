@@ -96,6 +96,26 @@ describe('ChatSidebar Folder Grouping', () => {
     expect(createButton).not.toHaveTextContent('New chat')
   })
 
+  it('shows provider logos on pull request chips', async () => {
+    const slotsWithSources = [
+      {
+        ...baseSlots[0],
+        source_links: [
+          { provider: 'github' as const, number: 113, url: 'https://github.com/kirodotdev/KiroCrew/pull/113', state: 'merged' as const },
+          { provider: 'gitlab' as const, number: 7, url: 'https://gitlab.com/acme/service/-/merge_requests/7' },
+        ],
+      },
+    ]
+    renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithSources} />)
+
+    const githubChip = (await screen.findByText('#113')).closest('span')
+    const gitlabChip = screen.getByText('!7').closest('span')
+    expect(githubChip?.querySelector('[data-provider-mark="github"]')).toBeInTheDocument()
+    expect(gitlabChip?.querySelector('[data-provider-mark="gitlab"]')).toBeInTheDocument()
+    expect(githubChip?.querySelector('[aria-label="Merged"]')).toHaveClass('text-aim')
+    expect(githubChip).not.toHaveTextContent('Merged')
+  })
+
   it('shows new folder action in the create menu', async () => {
     const user = userEvent.setup()
     renderWithProviders(<ChatSidebar {...defaultProps} />)

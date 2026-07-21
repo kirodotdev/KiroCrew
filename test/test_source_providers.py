@@ -142,6 +142,32 @@ def test_provider_executable_accepts_root_owned_nonwritable_canonical_path(
     assert source._validate_provider_executable(str(executable)) == str(executable)
 
 
+def test_provider_executable_rejects_user_managed_homebrew_location(monkeypatch) -> None:
+    candidate = "/opt/homebrew/bin/gh"
+    validate = MagicMock(side_effect=ValueError("path contains a symlink"))
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.setattr(
+        source,
+        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        {"gh": (candidate,), "glab": ("/usr/bin/glab",)},
+    )
+    monkeypatch.setattr(source, "_validate_provider_executable", validate)
+
+    with pytest.raises(source.SourceProviderError) as exc_info:
+        source._resolve_provider_executable("gh")
+
+    message = str(exc_info.value)
+    assert "GitHub CLI (gh)" in message
+    assert "user-owned copy is intentionally refused" in message
+    assert "sudo mkdir -p /opt/homebrew/bin" in message
+    assert 'sudo cp "$(command -v gh)" /opt/homebrew/bin/gh' in message
+    assert "sudo chown -R root /opt/homebrew/bin" in message
+    assert "`gh auth login` credentials are reused automatically" in message
+    assert "KIROCREW_GH_BIN" in message
+    assert "{executable}" not in message
+    validate.assert_called_once_with(candidate)
+
+
 def test_provider_executable_rejects_effectively_writable_root_path(monkeypatch, tmp_path) -> None:
     executable = tmp_path / "glab"
     executable.write_text("#!/bin/sh\nexit 0\n")
@@ -1573,10 +1599,76 @@ async def test_local_token_carries_embed_parent_port_claim(monkeypatch) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_local_token_uses_local_owner_subject_without_configured_owner(monkeypatch) -> None:
+    from kiro_crew.dashboard.handlers import core
+
+    generate = MagicMock(return_value="local-token")
+    audit = MagicMock()
+    monkeypatch.setattr(core, "generate_token", generate)
+    monkeypatch.setattr(core, "_sel", lambda: audit)
+    app = web.Application()
+    app["local_secret"] = "local-secret"
+    state = MagicMock()
+    state.owner_id = ""
+    app["state"] = state
+    app.router.add_get("/api/token/local", core.api_token_local)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get(
+            "/api/token/local?ttl=15m", headers={"X-Local-Secret": "local-secret"}
+        )
+        assert response.status == 200
+        payload = await response.json()
+
+    assert payload == {"token": "local-token", "expires_in": 900}
+    generate.assert_called_once_with("local-app", ttl_seconds=900, extra=None)
+
+
+@pytest.mark.parametrize("subject", ["local-app", "local-startup"])
+@pytest.mark.asyncio
+async def test_local_dashboard_subjects_can_read_without_configured_owner(
+    monkeypatch, subject
+) -> None:
+    pull = {"url": "https://github.com/acme/repo/pull/12", "checks": []}
+    fetch_pull = AsyncMock(return_value=pull)
+    fetch_checks = AsyncMock(return_value=[])
+    resolve = AsyncMock(return_value=None)
+    monkeypatch.setattr(source, "fetch_pull_request", fetch_pull)
+    monkeypatch.setattr(source, "fetch_pull_request_checks", fetch_checks)
+    monkeypatch.setattr(source, "resolve_pull_request_thread", resolve)
+
+    app = _app(user=subject, owner_id="")
+    async with TestClient(TestServer(app)) as client:
+        detail_response = await client.post("/api/source/pull-request", json={"url": pull["url"]})
+        checks_response = await client.post(
+            "/api/source/pull-request/checks", json={"url": pull["url"]}
+        )
+        resolve_response = await client.post(
+            "/api/source/pull-request/resolve",
+            json={"url": pull["url"], "threadId": "PRRT_thread1"},
+        )
+
+        assert detail_response.status == 200
+        assert await detail_response.json() == pull
+        assert checks_response.status == 200
+        assert await checks_response.json() == {"checks": []}
+        assert resolve_response.status == 403
+
+    fetch_pull.assert_awaited_once_with(pull["url"], refresh=False)
+    fetch_checks.assert_awaited_once_with(pull["url"])
+    resolve.assert_not_awaited()
+
+    request = _ResolveRequest()
+    request.app["state"].owner_id = ""
+    request._claims["user"] = subject
+    assert source.is_owner_dashboard_request(request)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     ("app_kwargs", "reason"),
     [
-        ({"owner_id": ""}, "owner_not_configured"),
+        ({"owner_id": "", "user": "U_OTHER"}, "owner_not_configured"),
         ({"include_app_claim": False}, "app_token_not_allowed"),
         ({"app_name": None}, "app_token_not_allowed"),
         ({"app_name": "app-X"}, "app_token_not_allowed"),
@@ -1637,9 +1729,7 @@ async def test_read_handler_allows_local_token_when_no_owner_configured(
     monkeypatch.setattr(source, "fetch_pull_request", fetch)
     url = "https://github.com/acme/repo/pull/1"
 
-    async with TestClient(
-        TestServer(_app(owner_id="", user="local-app", app_name=""))
-    ) as client:
+    async with TestClient(TestServer(_app(owner_id="", user="local-app", app_name=""))) as client:
         response = await client.post("/api/source/pull-request", json={"url": url})
         assert response.status == 200
         assert (await response.json()) == {"ok": True}
@@ -1656,9 +1746,7 @@ async def test_read_handler_denies_non_local_subject_when_no_owner(
     fetch = AsyncMock()
     monkeypatch.setattr(source, "fetch_pull_request", fetch)
 
-    async with TestClient(
-        TestServer(_app(owner_id="", user="U_OWNER", app_name=""))
-    ) as client:
+    async with TestClient(TestServer(_app(owner_id="", user="U_OWNER", app_name=""))) as client:
         response = await client.post(
             "/api/source/pull-request", json={"url": "https://github.com/acme/repo/pull/1"}
         )
@@ -1669,15 +1757,15 @@ async def test_read_handler_denies_non_local_subject_when_no_owner(
 
 
 @pytest.mark.asyncio
-async def test_resolve_handler_denies_local_token_when_no_owner(monkeypatch, _mock_source_sel) -> None:
+async def test_resolve_handler_denies_local_token_when_no_owner(
+    monkeypatch, _mock_source_sel
+) -> None:
     """The local no-owner fallback is scoped to reads: the resolve *mutation*
     stays owner-only, so a local-app token with no owner still fails closed."""
     resolve = AsyncMock()
     monkeypatch.setattr(source, "resolve_pull_request_thread", resolve)
 
-    async with TestClient(
-        TestServer(_app(owner_id="", user="local-app", app_name=""))
-    ) as client:
+    async with TestClient(TestServer(_app(owner_id="", user="local-app", app_name=""))) as client:
         response = await client.post(
             "/api/source/pull-request/resolve",
             json={"url": "https://github.com/acme/repo/pull/1", "threadId": "PRRT_1"},

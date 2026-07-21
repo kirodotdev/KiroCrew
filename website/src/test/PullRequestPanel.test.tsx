@@ -100,8 +100,42 @@ describe('PullRequestPanel', () => {
     expect(await screen.findByText('new')).toBeInTheDocument()
     expect(screen.getByText('old')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /All checks passed/i })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /PR #12/i })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /MR !7/i })).toBeInTheDocument()
+    const githubTab = screen.getByRole('tab', { name: /PR #12/i })
+    const gitlabTab = screen.getByRole('tab', { name: /MR !7/i })
+    expect(githubTab).toBeInTheDocument()
+    expect(gitlabTab).toBeInTheDocument()
+    expect(githubTab.querySelector('[data-provider-mark="github"]')).toBeInTheDocument()
+    expect(gitlabTab.querySelector('[data-provider-mark="gitlab"]')).toBeInTheDocument()
+  })
+
+  it('shows an actionable warning when the local GitHub CLI is not logged in', async () => {
+    mockApi.pullRequestSource.mockRejectedValueOnce(
+      new Error('{"error":"not logged into any GitHub hosts. Run `gh auth login`, then retry."}'),
+    )
+
+    renderPanel()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('GitHub CLI login required')
+    expect(alert).toHaveTextContent('Kiro Crew uses your local provider CLI')
+    expect(alert).toHaveTextContent('gh auth login')
+    expect(alert).not.toHaveTextContent('{"error"')
+  })
+
+  it('preserves trusted-install guidance when the local CLI is unavailable', async () => {
+    mockApi.pullRequestSource.mockRejectedValueOnce(
+      new Error('{"error":"The local GitHub CLI (gh) was not found in a trusted system location. Install a root-owned `gh` at `/usr/local/libexec/kirocrew/gh`, run `gh auth login`, then retry."}'),
+    )
+
+    renderPanel()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Could not load this pull request')
+    expect(alert).toHaveTextContent('Install a root-owned')
+    expect(alert).toHaveTextContent('/usr/local/libexec/kirocrew/gh')
+    expect(alert).toHaveTextContent('gh auth login')
+    expect(alert).not.toHaveTextContent('GitHub CLI login required')
+    expect(alert).not.toHaveTextContent('{"error"')
   })
 
   it('caps rendered source tabs at the per-slot limit', () => {

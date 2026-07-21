@@ -1107,20 +1107,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const sourceLinks = sourceLinkIndex.current.update(activeSlot, messages)
   const [selectedSourceUrl, setSelectedSourceUrl] = useState('')
 
-  // Auto-open the per-slot Changes view only for newly detected source URLs.
-  // Seen state survives panel close, slot switches, route remounts, and reloads,
-  // so a historical PR cannot override a persisted panel dismissal.
+  // Add and focus the per-slot Changes tab for newly detected source URLs,
+  // but leave panel visibility under explicit user control.
   const [seenSourceUrls] = useState(loadSeenPullRequestLinks)
   useEffect(() => {
     if (recordNewPullRequestLinks(seenSourceUrls, activeSlot, sourceLinks)) {
       persistSeenPullRequestLinks(seenSourceUrls)
       tabsCtl.openView('changes')
-      dispatch(openActivityPanel())
     }
-    // tabsCtl/open state are intentionally not dependencies: this effect reacts
-    // only to source discovery, not to panel focus or close operations.
+    // tabsCtl is intentionally not a dependency: this effect reacts only to
+    // source discovery, not tab focus or panel visibility changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, sourceLinks, dispatch, seenSourceUrls])
+  }, [activeSlot, sourceLinks, seenSourceUrls])
 
   useEffect(() => {
     // An uncached slot temporarily has no messages while its history hydrates.

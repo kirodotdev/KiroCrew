@@ -9,7 +9,6 @@ import {
   Circle,
   ExternalLink,
   GitCommitHorizontal,
-  GitPullRequest,
   Loader,
   MessageSquare,
   RefreshCw,
@@ -31,6 +30,8 @@ import { parseUnifiedDiff } from '../utils/parseUnifiedDiff'
 import hljs from '../utils/hljs'
 import DOMPurify from 'dompurify'
 import { DIFF_BG, DIFF_FG } from '../utils/diffUtils'
+import GithubLogo from './icons/GithubLogo'
+import GitlabLogo from './icons/GitlabLogo'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import { Btn } from './ui'
@@ -53,6 +54,26 @@ type SourceTab = 'changes' | 'description' | 'commits' | 'checks' | 'reviews'
 function age(value: string): string {
   const ms = Date.parse(value)
   return timeAgo(Number.isFinite(ms) ? ms / 1000 : 0)
+}
+
+export function pullRequestErrorDetails(error: unknown): {
+  message: string
+  loginCommand: 'gh auth login' | 'glab auth login' | ''
+} {
+  let message = error instanceof Error ? error.message : String(error || '')
+  try {
+    const payload = JSON.parse(message) as { error?: unknown }
+    if (typeof payload.error === 'string') message = payload.error
+  } catch {
+    // Provider and network errors may already be plain text.
+  }
+  const authenticationFailure = /\b(?:not logged in(?:to)?|unauthenticated|authentication (?:failed|required)|requires authentication)\b/i.test(message)
+  const loginCommand = authenticationFailure && /(?:`|\b)gh auth login(?:`|\b)/i.test(message)
+    ? 'gh auth login'
+    : authenticationFailure && /(?:`|\b)glab auth login(?:`|\b)/i.test(message)
+      ? 'glab auth login'
+      : ''
+  return { message, loginCommand }
 }
 
 function safeExternalUrl(value: string): string | undefined {
@@ -428,6 +449,7 @@ export default function PullRequestPanel({
     refetchOnReconnect: false,
   })
   const source = query.data
+  const queryError = pullRequestErrorDetails(query.error)
   const sourceUrl = safeExternalUrl(source?.url || '')
   const sourceHasPendingChecks = Boolean(
     source?.checks.some(check => check.bucket === 'pending'),
@@ -561,7 +583,7 @@ export default function PullRequestPanel({
             className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
             title={item.url}
           >
-            <GitPullRequest className="lucide-inline shrink-0" />
+            {item.provider === 'github' ? <GithubLogo size={13} className="shrink-0" /> : <GitlabLogo size={13} className="shrink-0" />}
             <span>{item.provider === 'github' ? 'PR' : 'MR'} {item.provider === 'github' ? '#' : '!'}{item.number}</span>
           </Btn>
         ))}
@@ -570,10 +592,21 @@ export default function PullRequestPanel({
       {query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />Loading source provider…</div>}
       {query.error && (
         <div className="flex-1 flex items-center justify-center px-6">
-          <div className="max-w-md flex flex-col items-center">
-            <AlertCircle className="lucide-inline text-danger mb-2" />
-            <div className="text-[13px] font-medium text-text">Could not load this pull request</div>
-            <div className="mt-2 w-full max-h-64 overflow-y-auto rounded-md bg-bg-hover/50 border border-border px-3 py-2 text-left text-[12px] text-muted whitespace-pre-wrap break-words font-mono leading-relaxed">{query.error instanceof Error ? query.error.message : String(query.error)}</div>
+          <div role="alert" className="max-w-md flex flex-col items-center">
+            <AlertCircle className={`lucide-inline mb-2 ${queryError.loginCommand ? 'text-warn' : 'text-danger'}`} />
+            <div className="text-[13px] font-medium text-text">
+              {queryError.loginCommand
+                ? `${queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab'} CLI login required`
+                : 'Could not load this pull request'}
+            </div>
+            {queryError.loginCommand ? (
+              <>
+                <div className="text-[12px] text-muted mt-1 text-center">Kiro Crew uses your local provider CLI to load pull requests. Run this command in your terminal, then retry.</div>
+                <code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text">{queryError.loginCommand}</code>
+              </>
+            ) : (
+              <div className="mt-2 w-full max-h-64 overflow-y-auto rounded-md bg-bg-hover/50 border border-border px-3 py-2 text-left text-[12px] text-muted whitespace-pre-wrap break-words font-mono leading-relaxed">{queryError.message}</div>
+            )}
             <Btn type="button" onClick={handleRefresh} className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" />Retry</Btn>
           </div>
         </div>

@@ -9,13 +9,14 @@
  *   (fixes the mobile->desktop race that stranded the panel inline).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, act, waitFor, screen } from '@testing-library/react'
+import { render, renderHook, act, waitFor, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { toggleActivity } from '../store/chatSlice'
+import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
+import { switchSlot, toggleActivity } from '../store/chatSlice'
 
 // --- Stub child components (same scaffold as ChatPage.embedded test) ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -102,6 +103,47 @@ function renderChat(store = createTestStore()) {
   )
   return { store, queryClient, ...utils }
 }
+
+describe('ChatPage — pull request panel discovery', () => {
+  beforeEach(() => {
+    setWindowWidth(1400)
+    localStorage.clear()
+    __resetPanelTabs()
+  })
+
+  it('selects the Changes tab for a detected pull request without opening the panel', async () => {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('request-pr', 'slot-pr'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-pr',
+        messages: [{
+          role: 'assistant',
+          content: 'Review https://github.com/kirodotdev/KiroCrew/pull/119',
+          cls: '',
+        }],
+        running: false,
+        hasMore: false,
+        total: 1,
+        queue: [],
+      }, 'request-pr', 'slot-pr'))
+    })
+    const panelTabs = renderHook(() => usePanelTabs('slot-pr'))
+
+    renderChat(store)
+
+    await waitFor(() => {
+      expect(panelTabs.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+      expect(panelTabs.result.current.activeId).toBe('changes')
+    })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(screen.queryByTestId('side-panel')).not.toBeInTheDocument()
+
+    act(() => { store.dispatch(toggleActivity()) })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(await screen.findByTestId('side-panel')).toBeInTheDocument()
+  })
+})
 
 describe('ChatPage — responsive activity panel auto-collapse', () => {
   beforeEach(() => setWindowWidth(1400))
