@@ -55,6 +55,7 @@ agent backend and Slack credentials.
 | Cooperative Stop | Soft-stop with cancel ack before hard kill (preserves session state) |
 | Streaming STT | Live speech-to-text partials in dashboard input (Whisper local; AWS Transcribe optional) |
 | Memory Modes | Per-session persistent, incognito, or temporary memory |
+| [Feature Tips](feature-tips.md) | Occasional personalized tips above the composer pointing at features you have not used yet |
 | TUI | Terminal UI with Ink (React for CLI) — alternative to web dashboard |
 | [Queued-Message Editing](dashboard.md) | Edit, reorder, or cancel a chat message waiting in the queue before it runs |
 

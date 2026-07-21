@@ -54,12 +54,29 @@ work with cron jobs daily, tip about cron features first.
 3. BUT note some features are context-independent (theme, split view, keyboard shortcuts) \
 and may be suggested regardless of recent activity.
 
+TONE — this is the most important rule. The reader is a developer mid-task; write \
+like the product documentation, not like marketing:
+- State plainly what the feature does and when it is useful. Nothing else.
+- NO superlatives or hype ("powerful", "amazing", "supercharge", "game-changing", \
+"effortlessly", "unlock", "transform", "revolutionize").
+- NO exclamation marks. NO emoji. NO rhetorical questions ("Did you know...?", \
+"Tired of...?").
+- Do not oversell outcomes. "Runs independent tasks in parallel" is right; \
+"Get results 10x faster" is wrong.
+- Model the register on these real doc one-liners:
+  "Schedule recurring tasks — 'every weekday at 9am give me a pipeline briefing'"
+  "Spawn parallel background workers for fan-out research and multi-package work"
+  "Persistent preferences, project context, and learned corrections across sessions"
+
 Each tip must have:
 - id: a short kebab-case identifier (e.g. "cron-scheduling-tip")
+- title: the feature's plain name or its core action, under 60 chars \
+(e.g. "Schedule recurring reports", not "Never miss a beat with cron!")
 - feature: the feature name from the catalog
-- title: attention-grabbing title (under 60 chars)
-- body: 1-2 sentence explanation of what it does
-- why: 1 sentence explaining why THIS user specifically would benefit (reference their actual workflow)
+- body: 1-2 sentences stating what it does, ideally with one concrete usage example
+- why: 1 factual sentence connecting it to THIS user's actual recent workflow \
+(name the specific activity; if the connection is weak, pick a different feature \
+rather than inventing one)
 - doc: the doc filename from the catalog
 - cta_prompt: a ready-to-send chat message demonstrating the feature
 

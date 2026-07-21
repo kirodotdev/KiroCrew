@@ -24,6 +24,7 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "dashboard.md",
         "deploy-web.md",
         "dynamic-subagent-sizing.md",
+        "feature-tips.md",
         "getting-started.md",
         "knowledge-library-how-it-works.md",
         "memory-and-learning.md",
