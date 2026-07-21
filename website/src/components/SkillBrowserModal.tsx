@@ -467,7 +467,7 @@ function SkillDetailPanel({
       </div>
 
       {phase?.step === 'error' && (
-        <div className="mb-3 p-2 rounded bg-red-500/10 border border-red-500/30 text-xs text-red-400">
+        <div className="mb-3 p-2 rounded bg-danger-subtle border border-danger/30 text-xs text-danger">
           {phase.message}
         </div>
       )}

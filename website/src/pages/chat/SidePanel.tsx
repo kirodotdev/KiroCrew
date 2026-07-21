@@ -223,7 +223,7 @@ export default function SidePanel({
     <div className="h-full shrink-0 flex flex-col bg-bg border-l border-border overflow-hidden relative" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
       {/* Left-edge resize handle */}
       <div className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" onMouseDown={onDragStart}>
-        <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent" />
+        <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
       </div>
       {/* Tab strip — drag chips horizontally to reorder (framer Reorder).
           h-[52px] matches the app header row so the two bars align.

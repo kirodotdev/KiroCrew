@@ -135,7 +135,7 @@ export default function SkillsTab() {
         onClick={() => selectSkill(s)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectSkill(s) } }}
         className={`flex flex-col gap-0.5 px-3 py-2.5 rounded-md cursor-pointer mb-1 transition-colors ${
-          isSel ? 'bg-accent-subtle' : 'bg-bg-elevated hover:bg-bg-hover'
+          isSel ? 'list-selected bg-accent-subtle' : 'bg-bg-elevated hover:bg-bg-hover'
         }`}
       >
         <div className="flex items-center gap-1.5 min-w-0">

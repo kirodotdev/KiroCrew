@@ -13,7 +13,7 @@ const STATUS_DOT: Record<string, { color: string; label: ReactNode; key: string 
   in_progress: { color: '#f59e32', label: <><StatusDot color="#f59e32" /> Running</>, key: 'in_progress' },
   reviewing: { color: '#f59e32', label: <><StatusDot color="#f59e32" /> Reviewing</>, key: 'reviewing' },
   passed: { color: '#22c55e', label: <><StatusDot color="#22c55e" /> Done</>, key: 'passed' },
-  failed: { color: '#ef4444', label: <><StatusDot color="#ef4444" /> Failed</>, key: 'failed' },
+  failed: { color: 'var(--danger)', label: <><StatusDot color="var(--danger)" /> Failed</>, key: 'failed' },
   skipped: { color: '#9ca3af', label: <><SkipForward className="lucide-inline" /> Skipped</>, key: 'skipped' },
   cancelled: { color: '#9ca3af', label: <><Square className="lucide-inline" /> Cancelled</>, key: 'cancelled' },
   cancelling: { color: '#f59e32', label: <><Hourglass className="lucide-inline" /> Cancelling</>, key: 'cancelling' },
@@ -136,7 +136,7 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
                 <foreignObject x={n.x} y={n.y + NODE_H + 4} width={NODE_W} height={24}>
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
                     <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'approve'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: '#22c55e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> Approve</button>
-                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'reject'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: '#ef4444', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><X size={10} /> Deny</button>
+                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'reject'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><X size={10} /> Deny</button>
                   </div>
                 </foreignObject>
               )}

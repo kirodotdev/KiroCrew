@@ -235,16 +235,16 @@ interface SettingsButtonGroupProps {
 export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled }: SettingsButtonGroupProps) {
   return (
     <SettingsField label={label} description={description} hint={hint}>
-      <div className="flex items-center gap-1.5">
+      <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit">
         {options.map(o => (
           <button
             key={o.value}
             type="button"
             disabled={disabled}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${
               value === o.value
-                ? 'bg-accent-subtle text-accent border-accent'
-                : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
+                ? 'bg-bg-hover text-accent'
+                : 'bg-transparent text-muted hover:text-text'
             } disabled:opacity-40 disabled:cursor-not-allowed`}
             onClick={() => !disabled && onChange(o.value)}
           >

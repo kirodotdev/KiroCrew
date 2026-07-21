@@ -179,7 +179,7 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
             keyboard gesture for a 6px handle); role="separator" is the correct
             ARIA role. */
         <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-20 group/drag" style={{ touchAction: 'none' }} {...drag}>
-          <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent" />
+          <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
         </div>
       )}
       {customHeader ?? (<>

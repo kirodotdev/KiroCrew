@@ -95,7 +95,7 @@ function AgentButton({ a, active, isDefault, activeRef, onSelect, activeProjectP
         title={isNotFound ? 'Project path not found. Rescan to restore.' : isOtherProject ? `Switch to ${folderName} to use this agent` : undefined}
         className={`w-full text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md transition-all
           ${isNotFound || isOtherProject ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
-          ${active ? 'bg-accent-subtle' : (!isNotFound && !isOtherProject) ? 'hover:bg-bg-hover' : ''}
+          ${active ? 'list-selected bg-accent-subtle' : (!isNotFound && !isOtherProject) ? 'hover:bg-bg-hover' : ''}
         `}
         onClick={handleClick}
       >

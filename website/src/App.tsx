@@ -125,7 +125,7 @@ const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
 
 /** Usage color class: green (<70%), yellow (70-90%), red (>90%). */
 export function metricColor(pct: number): string {
-  return pct > 0.9 ? 'text-danger' : pct > 0.7 ? 'text-warn' : 'text-accent'
+  return pct > 0.9 ? 'text-danger' : pct > 0.7 ? 'text-warn' : 'text-muted'
 }
 export const memColorClass = metricColor
 
@@ -389,7 +389,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       whileHover={collapsed ? undefined : { scale: 1.02 }}
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      className={`group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+      className={`nav-item group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -1667,7 +1667,7 @@ export default function App() {
                   transition={{ duration: 0.15 }}
                   className="overflow-hidden"
                 >
-                  <div className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] font-medium text-muted">{group}</div>
+                  <div className="nav-section flex items-center gap-2 px-2.5 py-1.5 text-[13px] font-medium text-muted">{group}</div>
                 </motion.div>
               )}
             </AnimatePresence>

@@ -351,13 +351,15 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
               </div>
             </div>
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center">
+            <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit">
             {(['semantic','episodic','audit','inspector'] as const).map(v => (
-              <Btn key={v} onClick={() => { setView(v); if (v === 'episodic') loadEpisodic(); if (v === 'audit') loadEvents(); if (v === 'inspector') loadPreview() }}
-                className={view === v ? '!border-accent !text-accent' : ''}>{
+              <button key={v} onClick={() => { setView(v); if (v === 'episodic') loadEpisodic(); if (v === 'audit') loadEvents(); if (v === 'inspector') loadPreview() }}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === v ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}>{
                   v === 'inspector' ? <><Search className="lucide-inline" /> Inspector</> : v[0].toUpperCase() + v.slice(1)
-                }</Btn>
+                }</button>
             ))}
+            </div>
             <div className="flex gap-2 ml-auto">
               {!stats?.migrated && stats?.has_legacy_memory && !migrateResult?.semantic && (
                 <Btn disabled={migrating} onClick={async () => { setMigrating(true); setMigrateResult(null); const r = await api.vectorMigrate().catch(() => ({ error: 'Migration failed' })); setMigrateResult(r); setMigrating(false); await load() }}>

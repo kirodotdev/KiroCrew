@@ -2960,7 +2960,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           </div>
         )}
         {uploadNotice && (
-          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--info) 45%, transparent)' }}>
+          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--accent) 45%, transparent)' }}>
             <span className="text-sm text-text flex-1">{uploadNotice}</span>
             <button onClick={() => setUploadNotice('')} aria-label="Dismiss notice" className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
@@ -3020,7 +3020,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   <Clickable className="flex items-center gap-1" onClick={() => { if (activeSlot && generatingTitleSlots.has(activeSlot)) return; setEditingTitle(true); setTitleDraft(title) }}>
                     {currentSlot?.memory_mode === 'incognito' && <span title="Incognito — memory writes disabled"><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                     {currentSlot?.memory_mode === 'temporary' && <span title="Temporary — no memory reads or writes"><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
-                    <TypewriterText text={title} className="text-sm font-semibold text-muted font-mono truncate max-w-[40vw]" />
+                    <TypewriterText text={title} className="session-header-title text-sm font-semibold text-muted font-mono truncate max-w-[40vw]" />
                     <Pen size={13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 transition-opacity" />
                   </Clickable>
                   {activeSlot && (generatingTitleSlots.has(activeSlot) ? <Loader size={16} className="shrink-0 text-accent animate-spin" /> : <Btn aria-label="Regenerate title with LLM" className="shrink-0 text-muted opacity-0 group-hover/header:opacity-40 hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0" title="Regenerate title with LLM" onClick={e => { e.stopPropagation(); if (!activeSlot || generatingTitleSlots.has(activeSlot)) return; const slot = activeSlot; setGeneratingTitleSlots(prev => new Set(prev).add(slot)); api.generateTitle(slot).then(r => { /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */ if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title })) }).catch(e => {

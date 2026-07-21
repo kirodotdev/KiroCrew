@@ -1580,7 +1580,7 @@ function ChatSidebar({
     const agentMeta = installedAgents.find(a => a.name === agentName)
     const isAim = agentMeta?.source === 'aim'
     const isBuiltin = agentMeta?.source === 'builtin'
-    const agentColor = isAim ? 'text-[var(--aim)]' : isBuiltin ? 'text-muted' : 'text-accent'
+    const agentColor = isAim ? 'text-[var(--aim)]' : isBuiltin ? 'text-muted' : 'text-muted'
     const isActive = activeSlot === s.key
     const isOut = poppedOut.has(s.key)
     const recent = recentRank.get(s.key)
@@ -1672,7 +1672,7 @@ function ChatSidebar({
             <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--info)' }} title="Agent finished — your turn" />
           )}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className={`text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
+            <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
               {pinned.has(s.key) && <span className="shrink-0" title="Pinned"><Pin size={10} className="text-accent" /></span>}
               <AnimatePresence mode="wait">
                 <motion.span key={agentName || 'empty'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="truncate">{agentName || '\u00A0'}</motion.span>
@@ -1995,7 +1995,7 @@ function ChatSidebar({
       {/* Header */}
       <div className="flex justify-between items-center px-2 h-12">
         <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-8' : ''}`}>
-          {!tinyHeader && <span className="text-[13px] font-medium text-muted uppercase tracking-[.04em] truncate">Sessions</span>}
+          {!tinyHeader && <span className="sessions-panel-title text-[13px] font-medium text-muted uppercase tracking-[.04em] truncate">Sessions</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>
@@ -2818,7 +2818,7 @@ function ChatSidebar({
                   const meta = installedAgents.find(a => a.name === agentName)
                   if (meta?.source === 'aim') return 'text-[var(--aim)]'
                   if (meta?.source === 'builtin') return 'text-muted'
-                  return 'text-accent'
+                  return 'text-muted'
                 }
                 const historyRow = (s: (typeof sortedHistory)[number]) => {
                   const displayDate = fmtRelativeTime(s.modified ?? s.created)
@@ -2855,7 +2855,7 @@ function ChatSidebar({
                         }
                       </span>
                       <div className="flex-1 min-w-0 overflow-hidden">
-                        <div className={`text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
+                        <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
                           <span className="truncate">{agentName || '\u00A0'}</span>
                           {s.clean_mode
                             ? <span className="text-accent" title="Clean — agent-only, no KiroCrew context or MCP"><Droplet size={10} /></span>

@@ -49,7 +49,7 @@ function TaskGroup({ icon, label, items, onTaskClick, color, opacity, showError,
           <span>{icon}</span>
           <span style={{ flex: 1, fontSize: 13, opacity: opacity ?? 1 }}>Task {t.index}: {t.title}</span>
           {pendingEditIndexes?.has(t.index) && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e32', flexShrink: 0 }} />}
-          {showError && t.error && <span style={{ fontSize: 11, color: '#ef4444', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.error}</span>}
+          {showError && t.error && <span style={{ fontSize: 11, color: 'var(--danger)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.error}</span>}
         </div>
       ))}
     </div>

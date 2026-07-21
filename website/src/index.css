@@ -632,53 +632,53 @@
 }
 
 [data-theme="kiro-dark"]{
-  --bg:#0a0a0c;--bg-accent:#0d0d10;--bg-elevated:#141418;--bg-hover:#1e1e24;
-  --card:#111114;--card-fg:#f4f4f5;--card-hl:rgba(255,255,255,.04);
-  --panel:#0a0a0c;--panel-strong:#141418;
-  --chrome:rgba(10,10,12,.95);
-  --text:#e4e4e7;--text-strong:#fafafa;--muted:#71717a;--muted-strong:#52525b;
-  --border:#1e1e24;--border-strong:#2e2e36;--border-hover:#3f3f4a;
-  --accent:#8b7ec8;--accent-hover:#a599d4;--accent-subtle:rgba(139,126,200,.15);
-  --accent-glow:rgba(139,126,200,.3);--ring:#7c6fba;
-  --ok:#22c55e;--ok-subtle:rgba(34,197,94,.12);
-  --warn:#eab308;--warn-subtle:rgba(234,179,8,.12);
-  --danger:#ef4444;--danger-subtle:rgba(239,68,68,.12);
-  --info:#a78bfa;
-  --aim:#c084fc;--aim-subtle:rgba(192,132,252,.15);
-  --clarify:#eab308;--clarify-subtle:rgba(234,179,8,.08);
+  --bg:#19161d;--bg-accent:#1c1922;--bg-elevated:#211d25;--bg-hover:#28242e;
+  --card:#211d25;--card-fg:#f2f1f4;--card-hl:rgba(255,255,255,.04);
+  --panel:#211d25;--panel-strong:#28242e;
+  --chrome:rgba(25,22,29,.95);
+  --text:#dcdadf;--text-strong:#f2f1f4;--muted:#938f9b;--muted-strong:#5e5966;
+  --border:#352f3d;--border-strong:#4a464f;--border-hover:#5e5966;
+  --accent:#8e48ff;--accent-fg:#ffffff;--accent-hover:#9f63ff;--accent-subtle:rgba(178,127,255,.18);
+  --accent-glow:rgba(142,72,255,.3);--ring:#8e48ff;
+  --ok:#008543;--ok-subtle:rgba(0,133,67,.15);
+  --warn:#e0b94d;--warn-subtle:rgba(224,185,77,.12);
+  --danger:#f94359;--danger-subtle:rgba(249,67,89,.12);
+  --info:#6f9ae0;
+  --aim:#c19aff;--aim-subtle:rgba(193,154,255,.15);
+  --clarify:#e0b94d;--clarify-subtle:rgba(224,185,77,.08);
   --diff-add:rgba(46,160,67,.15);--diff-add-text:#7ee787;
-  --diff-del:rgba(248,81,73,.15);--diff-del-text:#ffa198;
-  --diff-hunk:rgba(139,126,200,.15);--diff-hunk-text:#a599d4;
+  --diff-del:rgba(249,67,89,.15);--diff-del-text:#ffa198;
+  --diff-hunk:rgba(159,99,255,.15);--diff-hunk-text:#b07fff;
   --diff-meta-text:#e6edf3;
   --shadow-sm:0 1px 2px rgba(0,0,0,.3);
   --shadow-md:0 4px 12px rgba(0,0,0,.35),0 0 0 1px rgba(255,255,255,.02);
   --shadow-lg:0 12px 28px rgba(0,0,0,.45);
-  --json-key:#a599d4;--json-str:#7ee787;--json-num:#c084fc;--json-bool:#ef4444;
+  --json-key:#b07fff;--json-str:#7ee787;--json-num:#c19aff;--json-bool:#f94359;
   color-scheme:dark;
 }
 [data-theme="kiro-light"]{
   --bg:#f5f3f7;--bg-accent:#ece8f0;--bg-elevated:#ffffff;--bg-hover:#e4dfe9;
-  --card:#ffffff;--card-fg:#1a1625;--card-hl:rgba(0,0,0,.03);
+  --card:#ffffff;--card-fg:#19161d;--card-hl:rgba(0,0,0,.03);
   --panel:#f5f3f7;--panel-strong:#ece8f0;
   --chrome:rgba(245,243,247,.95);
-  --text:#4a4458;--text-strong:#1a1625;--muted:#8a839a;--muted-strong:#6b6480;
+  --text:#4a464f;--text-strong:#19161d;--muted:#5e5966;--muted-strong:#4a464f;
   --border:#d8d2e0;--border-strong:#c4bcd0;--border-hover:#a99fc0;
-  --accent:#6b5ba8;--accent-hover:#7d6fba;--accent-subtle:rgba(107,91,168,.12);
-  --accent-glow:rgba(107,91,168,.15);--ring:#6b5ba8;
-  --ok:#16a34a;--ok-subtle:rgba(22,163,74,.1);
-  --warn:#a16207;--warn-subtle:rgba(161,98,7,.1);
-  --danger:#e11d48;--danger-subtle:rgba(225,29,72,.1);
-  --info:#7c3aed;
-  --aim:#9333ea;--aim-subtle:rgba(147,51,234,.12);
-  --clarify:#a16207;--clarify-subtle:rgba(161,98,7,.06);
+  --accent:#8e48ff;--accent-fg:#ffffff;--accent-hover:#7a35e0;--accent-subtle:rgba(142,72,255,.12);
+  --accent-glow:rgba(142,72,255,.15);--ring:#8e48ff;
+  --ok:#008543;--ok-subtle:rgba(0,133,67,.12);
+  --warn:#a38a00;--warn-subtle:rgba(163,138,0,.1);
+  --danger:#d92544;--danger-subtle:rgba(217,37,68,.1);
+  --info:#285092;
+  --aim:#8041e6;--aim-subtle:rgba(128,65,230,.12);
+  --clarify:#a38a00;--clarify-subtle:rgba(163,138,0,.06);
   --diff-add:rgba(22,163,74,.12);--diff-add-text:#15803d;
-  --diff-del:rgba(225,29,72,.12);--diff-del-text:#be123c;
-  --diff-hunk:rgba(107,91,168,.12);--diff-hunk-text:#6b5ba8;
-  --diff-meta-text:#1a1625;
+  --diff-del:rgba(217,37,68,.12);--diff-del-text:#be123c;
+  --diff-hunk:rgba(128,65,230,.12);--diff-hunk-text:#723acc;
+  --diff-meta-text:#19161d;
   --shadow-sm:0 1px 2px rgba(0,0,0,.06);
   --shadow-md:0 4px 12px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);
   --shadow-lg:0 12px 28px rgba(0,0,0,.12);
-  --json-key:#6b5ba8;--json-str:#16a34a;--json-num:#7c3aed;--json-bool:#e11d48;
+  --json-key:#723acc;--json-str:#16a34a;--json-num:#8041e6;--json-bool:#d92544;
   color-scheme:light;
 }
 
@@ -1162,6 +1162,41 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .msg-content code{font-family:var(--mono);font-size:.9em}
 .msg-content :not(pre)>code{background:rgba(0,0,0,.15);padding:.15em .4em;border-radius:4px;overflow-wrap:break-word;word-break:break-all}
 [data-mode="light"] .msg-content :not(pre)>code{background:rgba(0,0,0,.06)}
+/* Kiro theme: inline code = neutral elevated surface (Prey/750) + light-purple text (Figma 3906:185658) */
+[data-theme="kiro-dark"] .msg-content :not(pre)>code{background:#28242e;color:#c19aff}
+[data-theme="kiro-light"] .msg-content :not(pre)>code{background:var(--bg-hover);color:#723acc}
+/* Kiro dark: brighten message links — #8e48ff (=accent, same as the button fill) reads dull as thin
+   text on the dark bg, so step up to Purple/300 for equal perceived vibrancy. Scoped to Kiro. */
+[data-theme="kiro-dark"] .msg-content a{color:#b07fff;text-decoration-color:rgba(176,127,255,.45)}
+/* Kiro dark: accent FOREGROUND (icons, spinners, accent text) reads dull/blue as thin strokes at
+   #8e48ff, so brighten the text-accent utility to Purple/300. Fills (bg-accent, e.g. buttons) are a
+   separate utility and stay #8e48ff. More-specific rules (e.g. .nav-active .text-accent) still win. */
+[data-theme="kiro-dark"] .text-accent{color:#b07fff}
+/* Kiro theme: selected nav item + session row = neutral surface (Prey/700) with purple text/icon,
+   not a purple-tinted fill (Figma SessionTitle 2010:46988). Hover stays --bg-hover (Prey/750). */
+[data-theme="kiro-dark"] .nav-active,[data-theme="kiro-dark"] .session-row.session-active,[data-theme="kiro-dark"] .list-selected{background:#352f3d;color:#c19aff;border-color:#4a464f}
+[data-theme="kiro-dark"] .nav-active .text-accent{color:#c19aff}
+[data-theme="kiro-light"] .nav-active,[data-theme="kiro-light"] .session-row.session-active,[data-theme="kiro-light"] .list-selected{background:#d8d2e0;color:#723acc;border-color:#c4bcd0}
+[data-theme="kiro-light"] .nav-active .text-accent{color:#723acc}
+/* Kiro theme: lift unselected nav labels + section headers to Prey/300 (#c1bec6, ~9.8:1) per the
+   Figma settings-panel guideline (was Prey/400 #938f9b ~5.7:1). Inactive icons inherit this color
+   (they only carry opacity-70), lifting them from ~3.4:1 to ~5.6:1. Active items keep .nav-active. */
+[data-theme="kiro-dark"] .nav-item:not(.nav-active),[data-theme="kiro-dark"] .nav-section{color:#c1bec6}
+/* Kiro theme: lift the chat-header session title and the "Sessions" panel title from muted grey to
+   primary text (var(--text) = Prey/200 #dcdadf in dark) — titles were dim at ~5.7:1; now ~9-10:1. */
+[data-theme="kiro-dark"] .session-header-title,[data-theme="kiro-light"] .session-header-title,
+[data-theme="kiro-dark"] .sessions-panel-title,[data-theme="kiro-light"] .sessions-panel-title{color:var(--text)}
+/* Kiro dark: panel resize-handle highlight is a thin line, so match it to the brightened thin-accent
+   (#B07FFF) rather than the #8E48FF fill it inherits from bg-accent. Only applies while dragging-hover. */
+[data-theme="kiro-dark"] .group\/drag:hover .resize-accent{background-color:#b07fff}
+/* Kiro dark: queued-message bar matches the Figma "Waiting for input" snackbar (1793:25695) —
+   semi-transparent olive bg + Yellow/800 border + Yellow/100 text. */
+[data-theme="kiro-dark"] .queue-card{background-color:#2a2810;border-color:#5c5500;color:#fff7cc}
+/* Kiro theme: session agent-label ("default") gets a purple tint matching the accent foreground
+   (#B07FFF). The last-message subtitle is intentionally NOT tinted here — it keeps its default grey
+   and only turns purple (text-accent → #B07FFF) while the session is running, so both share one tint. */
+[data-theme="kiro-dark"] .session-agent-label{color:#b07fff}
+[data-theme="kiro-light"] .session-agent-label{color:#8e48ff}
 .msg-content pre{background:rgba(0,0,0,.15);border-radius:var(--radius-sm);padding:10px 12px;overflow-x:auto;margin:4px 0;font-size:0.8125rem;font-family:var(--mono);line-height:1.5}
 [data-mode="light"] .msg-content pre{background:rgba(0,0,0,.04)}
 /* Reset pre inside new code/diff block components */

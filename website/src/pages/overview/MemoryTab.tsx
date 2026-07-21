@@ -70,9 +70,9 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     scheduleClear(() => setConsolidateMsg(''), 4000)
   }
   return (<>
-    <div className="flex items-center gap-2 mb-4">
-      <Btn onClick={() => setView('table')} className={view === 'table' ? '!border-accent !text-accent' : ''}><ClipboardList className="lucide-inline" /> Table</Btn>
-      <Btn onClick={() => setView('graph')} className={view === 'graph' ? '!border-accent !text-accent' : ''}><Network className="lucide-inline" /> Graph</Btn>
+    <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated mb-4 w-fit">
+      <button onClick={() => setView('table')} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === 'table' ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}><ClipboardList className="lucide-inline" /> Table</button>
+      <button onClick={() => setView('graph')} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === 'graph' ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}><Network className="lucide-inline" /> Graph</button>
     </div>
     {view === 'graph' ? <MemoryGraphTab /> : <>
     <Card><CardTitle>Memory Settings <InfoTip text="Controls how conversation history is consolidated into memory." /></CardTitle>

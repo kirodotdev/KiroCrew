@@ -241,7 +241,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     const key = a.package || a.name; (g[key] ||= []).push(a); return g
                   }, {})
                   const renderAgent = (a: typeof installed[0], showDelete?: boolean) => (
-                    <Clickable key={`${a.name}-${a.project_path || ''}`} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name, a.project_path); setSelectedAgent(d) } catch { setSelectedAgent(a) } }}>
+                    <Clickable key={`${a.name}-${a.project_path || ''}`} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name, a.project_path); setSelectedAgent(d) } catch { setSelectedAgent(a) } }}>
                       <span
                         role="button"
                         tabIndex={a.source === 'project' ? -1 : 0}
@@ -263,7 +263,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                           <span className="text-[11px] text-muted font-mono">{a.model}</span>
                         </div>
                       </div>
-                      {showDelete && <button className="text-[10px] text-danger/50 hover:text-danger-fg hover:bg-danger px-1 py-0.5 rounded border border-danger/20 hover:border-danger/30 transition-all shrink-0" title={`Delete ${a.name}`} aria-label={`Delete ${a.name}`} onClick={e => { e.stopPropagation(); if (confirm(`Delete agent "${a.name}"? This removes the config file.`)) deleteAgentMut.mutate(a.name) }}><X className="lucide-inline" /></button>}
+                      {showDelete && <button className="text-[10px] text-muted hover:text-danger-fg hover:bg-danger px-1 py-0.5 rounded border border-border hover:border-danger/40 transition-all shrink-0" title={`Delete ${a.name}`} aria-label={`Delete ${a.name}`} onClick={e => { e.stopPropagation(); if (confirm(`Delete agent "${a.name}"? This removes the config file.`)) deleteAgentMut.mutate(a.name) }}><X className="lucide-inline" /></button>}
                     </Clickable>
                   )
                   return (<>

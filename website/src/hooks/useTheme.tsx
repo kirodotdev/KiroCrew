@@ -134,7 +134,7 @@ export const THEMES: ThemeEntry[] = [
   { value: 'gruvbox', label: '🍦 Gruvbox' },
   { value: 'ice', label: '🧊 Ice' },
   { value: 'amoled', label: '🖤 AMOLED' },
-  { value: 'kiro', label: '🔮 Kiro' },
+  { value: 'kiro', label: '👻 Kiro' },
   { value: 'intellij', label: '😶‍🌫️ IntelliJ' },
   { value: 'highcontrast', label: '🔆 High Contrast' },
   { value: 'lumon', label: '🛗 Lumon' },

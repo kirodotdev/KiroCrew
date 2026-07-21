@@ -110,7 +110,7 @@ export default function McpRegistryCard() {
           }</>
         : install.isPending && install.variables === s.id
           ? <span className="text-[12px] text-accent animate-pulse">Installing…</span>
-          : <button className="px-3 py-1 rounded-md text-[12px] font-semibold bg-accent/10 text-accent border border-accent/30 hover:bg-accent hover:text-accent-fg transition-all cursor-pointer" disabled={install.isPending} onClick={e => { e.stopPropagation(); install.mutate(s.id) }}>Install</button>
+          : <Btn disabled={install.isPending} onClick={e => { e.stopPropagation(); install.mutate(s.id) }}>Install</Btn>
       }
       </div>
     </div>
@@ -140,7 +140,7 @@ export default function McpRegistryCard() {
               <div className="h-3 w-5/6 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5, animationDelay: `${i * 80 + 300}ms` }} />
               <div className="h-3 w-2/3 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.4, animationDelay: `${i * 80 + 400}ms` }} />
             </div>
-            <div className="mt-2.5 pt-2 border-t border-border/50"><div className="h-7 w-16 rounded-md animate-pulse" style={{ background: 'var(--border)', animationDelay: `${i * 80 + 500}ms` }} /></div>
+            <div className="mt-2.5 pt-2 border-t border-border"><div className="h-7 w-16 rounded-md animate-pulse" style={{ background: 'var(--border)', animationDelay: `${i * 80 + 500}ms` }} /></div>
           </div>
         ))}</div> : filtered.length === 0 ? (
           <div className="text-[13px] text-muted py-2">{servers.length === 0 ? 'No servers in registry' : 'No matches'}</div>
@@ -153,7 +153,7 @@ export default function McpRegistryCard() {
                 <div className="text-[13px] font-semibold text-text leading-tight">{s.title || s.id}</div>
                 <div className="text-[11px] text-muted font-mono mt-0.5">{s.id}</div>
               </div>
-              {s.tier === 'Recommended' && <span className="px-1.5 py-[1px] rounded-full text-[11px] font-bold bg-accent/15 text-accent border border-accent/30 shrink-0 whitespace-nowrap"><Star className="lucide-inline" /> recommended</span>}
+              {s.tier === 'Recommended' && <span className="px-1.5 py-[1px] rounded-full text-[11px] font-bold bg-bg-elevated text-muted border border-border shrink-0 whitespace-nowrap"><Star className="lucide-inline" /> recommended</span>}
               {s.tier === 'Supported' && <span className="px-1.5 py-[1px] rounded-full text-[11px] font-bold bg-muted/15 text-muted border border-muted/30 shrink-0">supported</span>}
             </div>
             {s.description && (
@@ -161,7 +161,7 @@ export default function McpRegistryCard() {
                 {summaryFromDescription(s.description)}
               </div>
             )}
-            <div className="mt-2.5 pt-2 border-t border-border/50">
+            <div className="mt-2.5 pt-2 border-t border-border">
               {renderActions(s)}
             </div>
           </motion.div>

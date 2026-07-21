@@ -210,7 +210,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                 }}
                 exit={{ y: y + 40, zIndex: 50, borderBottomWidth: 1, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, transition: SPRING }}
                 transition={SPRING}
-                className="absolute top-0 left-0 right-0 bg-warn border border-warn/20 px-3 py-2 text-[13px] text-warn-fg"
+                className="queue-card absolute top-0 left-0 right-0 bg-warn/15 border border-warn/40 px-3 py-2 text-[13px] text-warn"
                 style={{ transformOrigin: 'bottom center', height: CARD_H, zIndex }}
               >
                 <span className="flex items-center gap-1.5 h-full">
