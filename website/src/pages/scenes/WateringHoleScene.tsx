@@ -15,7 +15,7 @@ import { SCENE_SCALE } from './config'
 import { useEffect, useRef } from 'react'
 import type { AgentSource } from '../../hooks/useAgentSync'
 import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneStateCache'
-import { sceneFont, drawLabel, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
+import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_MS, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 
@@ -37,6 +37,7 @@ interface Animal {
   homeX: number; homeY: number
   x: number; y: number; tx: number; ty: number
   running: boolean; detail: string
+  lastMessage: string; msgAt: number
   facing: 'right' | 'left'
   activity: Activity
   actTimer: number; actLimit: number
@@ -126,7 +127,7 @@ export default function WateringHoleScene({ agents, visible = true }: Props) {
   const animalsRef = useRef<Animal[]>([])
   const ripplesRef = useRef<{ x: number; y: number; r: number; life: number }[]>([])
   const visibleRef = useRef(visible)
-  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, animalsRef, W, H, SERENGETI_THEME)
+  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, animalsRef, W, H, SERENGETI_THEME, 10, undefined, agents)
 
   /* ── Sync agents → animals ── */
   useEffect(() => {
@@ -142,6 +143,7 @@ export default function WateringHoleScene({ agents, visible = true }: Props) {
       if (!prev) return
       prev.name = src.name
       prev.detail = src.detail
+      if ((src.lastMessage || '') !== prev.lastMessage) { prev.lastMessage = src.lastMessage || ''; prev.msgAt = Date.now() }
       // If kind flipped (rare), just reset activity to idle so we don't get
       // an animal stuck mid-activity. Species stays fixed (hashed from id).
       if (prev.kind !== src.kind) {
@@ -176,6 +178,7 @@ export default function WateringHoleScene({ agents, visible = true }: Props) {
         y: known ? home.y : home.y,
         tx: home.x, ty: home.y,
         running: src.running, detail: src.detail,
+          lastMessage: src.lastMessage || '', msgAt: 0,
         facing: home.x < HOLE.cx ? 'right' : 'left',
         activity: 'idle',
         // A new agent that arrives already running should start wandering on
@@ -640,13 +643,20 @@ export default function WateringHoleScene({ agents, visible = true }: Props) {
         role: 'status', color: a.running ? '#7fbb3d' : '#aaa', align: 'center', scale: S,
       })
 
-      // Name + detail below the animal
+      // Real-message speech bubble — appears when the session's latest message changes
+      if (a.lastMessage && Date.now() - a.msgAt < SPEECH_BUBBLE_MS) {
+        const msgAge = Date.now() - a.msgAt
+        const msgAlpha = msgAge > SPEECH_BUBBLE_MS - 1000 ? (SPEECH_BUBBLE_MS - msgAge) / 1000 : 1
+        drawSpeechBubble(T, a.lastMessage, (a.x + 9) * S, (labelY - 4) * S, { scale: S, alpha: msgAlpha })
+      }
+
+      // Name + detail below the animal (name wraps up to ~45 chars)
       const nameY = a.y + 32
-      drawLabel(T, a.name, (a.x + 9) * S, nameY * S, {
-        role: 'name', weight: 'bold', color: '#fff', align: 'center', scale: S,
+      const nameLines = drawLabel(T, a.name, (a.x + 9) * S, nameY * S, {
+        role: 'name', weight: 'bold', color: '#fff', align: 'center', scale: S, maxWidth: 64 * S,
       })
       if (a.detail) {
-        drawLabel(T, a.detail, (a.x + 9) * S, (nameY + 6) * S, {
+        drawLabel(T, a.detail, (a.x + 9) * S, (nameY + 6) * S + (nameLines - 1) * sceneLineHeight('name'), {
           role: 'detail', color: '#dcd2b8', align: 'center', scale: S,
         })
       }

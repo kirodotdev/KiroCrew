@@ -64,7 +64,7 @@ export default function UnderwaterLabScene({ agents, visible = true }: Props) {
   const jellyRef = useRef<Jelly[]>([])
   const sonarMsgRef = useRef('')
   const visibleRef = useRef(visible)
-  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, diversRef, W, H, UNDERWATER_THEME)
+  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, diversRef, W, H, UNDERWATER_THEME, 10, undefined, agents)
 
   /* ── Init sea life ── */
   useEffect(() => {

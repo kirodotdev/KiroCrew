@@ -49,7 +49,7 @@ export default function NeuralConstellationScene({ agents, visible = true }: Pro
   const nebulaeRef = useRef<Nebula[]>([])
   const wavesRef = useRef<EnergyWave[]>([])
   const shootingRef = useRef<ShootingStar[]>([])
-  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, nodesRef, W, H, NEURAL_THEME)
+  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, nodesRef, W, H, NEURAL_THEME, 10, undefined, agents)
 
   /* ── Init background elements ── */
   useEffect(() => {

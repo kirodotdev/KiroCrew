@@ -2,7 +2,7 @@ import { SCENE_SCALE } from './config'
 import { useEffect, useRef } from 'react'
 import type { AgentSource } from '../../hooks/useAgentSync'
 import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneStateCache'
-import { sceneFont, drawLabel, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
+import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_MS, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 
@@ -15,6 +15,7 @@ interface Wizard {
   benchIdx: number; color: string; robeColor: string
   running: boolean; detail: string
   hatBob: number; castTimer: number; activity: 'entering' | 'bench' | 'circle' | 'shelf'
+  lastMessage: string; msgAt: number
 }
 interface MagicParticle {
   x: number; y: number; vx: number; vy: number
@@ -66,7 +67,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
   const particlesRef = useRef<MagicParticle[]>([])
   const spellRef = useRef<{ text: string; x: number; y: number; life: number } | null>(null)
   const visibleRef = useRef(visible)
-  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, wizardsRef, W, H, WIZARD_THEME)
+  const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, wizardsRef, W, H, WIZARD_THEME, 10, undefined, agents)
 
   /* ── Sync agents → wizards ── */
   useEffect(() => {
@@ -77,6 +78,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
       const prev = existing.find(w => w.id === src.id)
       if (prev) {
         prev.name = src.name; prev.running = src.running; prev.detail = src.detail; prev.kind = src.kind
+        if ((src.lastMessage || '') !== prev.lastMessage) { prev.lastMessage = src.lastMessage || ''; prev.msgAt = Date.now() }
         newWizards.push(prev)
       } else {
         const benchIdx = BENCH_POSITIONS.findIndex((_, bi) => !existing.some(w => w.benchIdx === bi) && !newWizards.some(w => w.benchIdx === bi))
@@ -91,6 +93,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
           benchIdx, color: ROBE_COLORS[i % ROBE_COLORS.length],
           robeColor: HAT_COLORS[i % HAT_COLORS.length],
           running: src.running, detail: src.detail,
+          lastMessage: src.lastMessage || '', msgAt: 0,
           hatBob: Math.random() * Math.PI * 2, castTimer: 0,
           activity: known ? 'bench' : 'entering',
         })
@@ -404,13 +407,20 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
 
       // Status
       drawLabel(T, w.running ? 'casting' : 'resting', (bx + 4) * S, (by - 18 + bob) * S, { role: 'status', color: w.running ? '#4f4' : '#888', bgColor: 'rgba(0,0,0,0.5)', align: 'center', scale: S })
+      // Real-message speech bubble — appears when the session's latest message changes
+      if (w.lastMessage && Date.now() - w.msgAt < SPEECH_BUBBLE_MS) {
+        const msgAge = Date.now() - w.msgAt
+        const msgAlpha = msgAge > SPEECH_BUBBLE_MS - 1000 ? (SPEECH_BUBBLE_MS - msgAge) / 1000 : 1
+        drawSpeechBubble(T, w.lastMessage, (bx + 4) * S, (by - 22 + bob) * S, { scale: S, alpha: msgAlpha })
+      }
 
-      // Name
-      drawLabel(T, w.name, (bx + 4) * S, (by + 16) * S, { role: 'name', weight: 'bold', color: '#fff', align: 'center', scale: S })
+
+      // Name (wraps up to ~45 chars)
+      const nameLines = drawLabel(T, w.name, (bx + 4) * S, (by + 16) * S, { role: 'name', weight: 'bold', color: '#fff', align: 'center', scale: S, maxWidth: 64 * S })
 
       // Detail
       if (w.detail) {
-        drawLabel(T, w.detail, (bx - 2) * S, (by + 20) * S, { role: 'detail', color: '#999', scale: S })
+        drawLabel(T, w.detail, (bx - 2) * S, (by + 20) * S + (nameLines - 1) * sceneLineHeight('name'), { role: 'detail', color: '#999', scale: S })
       }
     }
 

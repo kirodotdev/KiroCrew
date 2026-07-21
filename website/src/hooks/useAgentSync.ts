@@ -11,13 +11,19 @@ export interface AgentSource {
   kind: 'slot' | 'cron' | 'spawn'
   running: boolean
   detail: string
+  /** Real latest message preview for chat slots (empty for crons/spawns) */
+  lastMessage?: string
+  /** True when the session is waiting for user input */
+  waitingForInput?: boolean
+  /** Pending tool approval blocking the session, if any */
+  pendingApproval?: { tool: string; requestId: string } | null
 }
 
 const MAX_AGENTS = 8
 const CRON_POLL_MS = 5000
 const SPAWN_POLL_MS = 3000
 
-function shortName(s: string, max = 10): string {
+function shortName(s: string, max = 45): string {
   if (s.length <= max) return s
   return s.slice(0, max - 1) + '…'
 }
@@ -30,6 +36,11 @@ export function useAgentSync() {
     id: 'slot-' + sl.key, name: shortName(sl.title || sl.key),
     label: sl.agent || 'default', kind: 'slot' as const,
     running: sl.running, detail: sl.messages + ' msgs',
+    lastMessage: sl.last_message || '',
+    waitingForInput: !!sl.waiting_for_input,
+    pendingApproval: sl.pending_approval_info
+      ? { tool: sl.pending_approval_info.tool, requestId: sl.pending_approval_info.request_id }
+      : null,
   })), [slots])
 
   useEffect(() => {
@@ -57,7 +68,7 @@ export function useAgentSync() {
       try {
         const spawnData = await api.spawnList() as SubagentInfo[]
         spawnResult = spawnData.filter(s => !s.done).slice(0, 3).map(sp => ({
-          id: 'spawn-' + sp.id, name: shortName(sp.task, 8),
+          id: 'spawn-' + sp.id, name: shortName(sp.task, 45),
           label: 'spawn', kind: 'spawn' as const,
           running: !sp.done, detail: sp.done ? 'done' : 'running',
         }))

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { Building2, Brain, Wand2, Waves, Rocket, Sparkles, TreePine } from 'lucide-react'
+import { Building2, Brain, Wand2, Waves, Rocket, Sparkles, TreePine, Ghost } from 'lucide-react'
 
-export type SceneKey = 'office' | 'panda' | 'neural' | 'wizard' | 'underwater' | 'mission' | 'serengeti'
+export type SceneKey = 'office' | 'panda' | 'neural' | 'wizard' | 'underwater' | 'mission' | 'serengeti' | 'ghost'
 
 export interface SceneMeta {
   key: SceneKey
@@ -18,6 +18,7 @@ export const SCENES: SceneMeta[] = [
   { key: 'underwater', label: 'Deep Lab', icon: <Waves className="lucide-inline" />, desc: 'Underwater station' },
   { key: 'mission', label: 'Mission Control', icon: <Rocket className="lucide-inline" />, desc: 'NASA ops center' },
   { key: 'serengeti', label: 'Watering Hole', icon: <TreePine className="lucide-inline" />, desc: 'Serengeti savanna with giraffes, warthogs, and elephants' },
+  { key: 'ghost', label: 'Kiro Haunt', icon: <Ghost className="lucide-inline" />, desc: 'Kiro ghosts in hats, glasses, and capes' },
 ]
 
 export const SCENE_STORAGE_KEY = 'mc-agent-scene'

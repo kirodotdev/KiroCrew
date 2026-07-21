@@ -19,7 +19,8 @@ export default function MissionControlScene({ agents, visible = true }: { agents
   const winUpdateRef = useRef(0)
   const [, setCount] = useState(0)
   const { canvasProps, tooltipEl } = useSceneInteraction(canvasRef, agentsRef, W, H, MC_THEME, 10,
-    (a) => { const { level, title } = getLevel(parseInt(a.detail || '0') || 0); return <div style={{ color: '#888' }}>Lv.{level} {title}</div> }
+    (a) => { const { level, title } = getLevel(parseInt(a.detail || '0') || 0); return <div style={{ color: '#888' }}>Lv.{level} {title}</div> },
+    agents,
   )
 
   useEffect(() => { visibleRef.current = visible }, [visible])
