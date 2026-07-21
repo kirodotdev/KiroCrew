@@ -1181,7 +1181,16 @@ async def run_script_hook(
         # circular import: sandbox → registry → apps → hooks, so import at call time
         from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
-        env = {**os.environ, "KIROCREW_HOOK_EVENT": hook.event, "KIROCREW_HOOK_CONTEXT": context}
+        # The env var is bounded by ARG_MAX — a multi-KB Stop segment there can
+        # fail subprocess creation (~32K on Windows). Cap the ENV copy only; the
+        # full context still reaches the hook via the stdin JSON payload
+        # (Stop -> hook_event["assistant_text"]) and drove matcher evaluation.
+        env_context = context[:500] if hook.event == HOOK_EVENT_STOP else context
+        env = {
+            **os.environ,
+            "KIROCREW_HOOK_EVENT": hook.event,
+            "KIROCREW_HOOK_CONTEXT": env_context,
+        }
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
         if platform_compat.IS_WINDOWS:
             argv = ["cmd", "/c", hook.command]
@@ -1360,6 +1369,12 @@ class ScriptHookStore:
         emitted into the hook_event payload so hook scripts can attribute tool
         calls to the specific agent/session that fired them. Parent contexts
         (dashboard chat, generic LLM helpers) leave them as ``None``.
+
+        For the Stop event, the full ``context`` (the final assistant segment) is
+        used for matcher evaluation and echoed to stdin as ``assistant_text``;
+        only the ``KIROCREW_HOOK_CONTEXT`` env var is length-capped downstream in
+        ``run_script_hook`` (ARG_MAX safety), so a hook keying on the tail of the
+        segment reads it from stdin JSON rather than the truncated env var.
         """
         import os
 
@@ -1368,6 +1383,13 @@ class ScriptHookStore:
         hook_event: dict = {"hook_event_name": event, "cwd": os.getcwd()}
         if event == HOOK_EVENT_USER_PROMPT_SUBMIT and context:
             hook_event["prompt"] = context
+        elif event == HOOK_EVENT_STOP:
+            # Echo the final assistant segment to stdin so a hook keying on the
+            # tail — e.g. the harness [OPTIONS:] line, past the env var's cap —
+            # reads the whole thing here rather than the truncated env var.
+            # Unconditional (even when "") so an empty/no-output Stop turn still
+            # carries the key and a hook that always reads it never KeyErrors.
+            hook_event["assistant_text"] = context
         if tool_name:
             hook_event["tool_name"] = tool_name
         if tool_input is not None:

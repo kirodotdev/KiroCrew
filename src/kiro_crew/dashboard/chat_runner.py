@@ -3803,9 +3803,15 @@ async def _run_chat(
                     "text": f"Turn complete: {_prompt_stats.event_count} events, {len(_prompt_stats.tool_calls)} tool calls, context {round(pct)}%",  # type: ignore[attr-defined]
                 },
             )
-        _stop_text = redact_exfiltration_urls(assistant_text[:500])[0]
-        _stop_text = redact_credentials(_stop_text)[0]
-        await _fire(HOOK_EVENT_STOP, _stop_text)
+        # Pass the full redacted final assistant segment (text after the last
+        # tool call, end-of-turn plan/OPTIONS processing applied) to Stop hooks.
+        # fire() matches Stop hooks against this and puts it on stdin as
+        # ``assistant_text``; run_script_hook caps ONLY the KIROCREW_HOOK_CONTEXT
+        # env var (ARG_MAX safety). Previously this was sliced to [:500] here,
+        # which hid the tail — e.g. the harness [OPTIONS:] line — from both the
+        # matcher and the hook body.
+        _final = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+        await _fire(HOOK_EVENT_STOP, _final)
 
         # ── Tool-refusal recovery ──────────────────────────────────────────
         # A recoverable refusal (host-gate policy deny or the read-only bash

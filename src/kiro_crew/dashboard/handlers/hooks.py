@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -188,7 +189,9 @@ async def api_hook_toggle(request: web.Request) -> web.Response:
 
 async def api_hook_test(request: web.Request) -> web.Response:
     """POST /api/hooks/{hook_id}/test — execute hook and return output."""
-    from kiro_crew.hooks import run_script_hook  # noqa: F811
+    # circular import: kiro_crew.hooks pulls dashboard state at module load, so
+    # this handler defers the import to call time (matches _get_hook_store above).
+    from kiro_crew.hooks import HOOK_EVENT_STOP, run_script_hook  # noqa: F811
 
     store = _get_hook_store(request.app["state"])
     hook_id = request.match_info["hook_id"]
@@ -203,7 +206,18 @@ async def api_hook_test(request: web.Request) -> web.Response:
     context = sanitize_string(raw_context)
     if len(context) > 10000:  # Max context length for hook test
         context = context[:10000]
-    result = await run_script_hook(hook, context)
+    # Mirror ScriptHookStore.fire()'s Stop payload so a Stop hook reading the
+    # stdin ``assistant_text`` key (the full segment; the env var is capped at
+    # 500 in run_script_hook) is testable through this endpoint too. Other
+    # events keep the default payload (run_script_hook builds it when None).
+    hook_event = None
+    if hook.event == HOOK_EVENT_STOP:
+        hook_event = {
+            "hook_event_name": hook.event,
+            "cwd": os.getcwd(),
+            "assistant_text": context,
+        }
+    result = await run_script_hook(hook, context, hook_event)
     _sel().log_tool_invocation(
         session_key="dashboard:hook_test",
         agent="kirocrew",
