@@ -110,8 +110,5 @@ docs/APP_DEVELOPER_GUIDE.md
 runs.json
 .review/
 
-# Working/draft documents (not for CR)
-docs/working/
-
 # Scrub-lint alias list (internal, not published)
 scripts/.scrub-aliases.txt

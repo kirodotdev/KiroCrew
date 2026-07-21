@@ -6,7 +6,6 @@ import { api } from '../api/client'
 import { useProvider } from '../providers'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge, SearchInput, StatCard, PageHeader } from '../components/ui'
 import InfoTip from '../components/InfoTip'
-import ScanProjectsModal from '../components/ScanProjectsModal'
 import StyledSelect from '../components/StyledSelect'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
@@ -164,8 +163,6 @@ export default function KiroCrewAgentsPage() {
   const [editMs, setEditMs] = useState('')
   const [wsModalTarget, setWsModalTarget] = useState<'create' | 'edit' | null>(null)
 
-  const [scanOpen, setScanOpen] = useState(false)
-
   const handleWsCreated = useCallback((newName: string) => {
     const target = wsModalTarget
     setWsModalTarget(null)
@@ -261,7 +258,6 @@ export default function KiroCrewAgentsPage() {
         <Card>
           <div className="flex items-center gap-2 mb-2">
             <CardTitle>Agents</CardTitle>
-            <Btn primary onClick={() => setScanOpen(true)} className="ml-auto text-[11px]">Scan Projects</Btn>
           </div>
           <div className="mb-3"><SearchInput placeholder="Filter agents…" value={filter} onChange={e => setFilter(e.target.value)} /></div>
           <div className="overflow-x-auto">
@@ -277,11 +273,10 @@ export default function KiroCrewAgentsPage() {
                 {filtered.length === 0 ? (
                   <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">No agents</td></tr>
                 ) : filtered.map((a) => (
-                  <tr key={`${a.name}-${a.project_path || 'global'}`} className="hover:bg-bg-hover transition-colors">
+                  <tr key={a.name} className="hover:bg-bg-hover transition-colors">
                     <td className="px-2.5 py-2 border-b border-border text-sm font-mono font-semibold">
                       {a.name}
                       {a.name === defaultAgent && <> <Badge variant="ok">default</Badge></>}
-                      {a.project_path && <div className="text-[11px] text-muted font-normal truncate max-w-[200px]" title={a.project_path}>{a.project_path}</div>}
                     </td>
                     {editing === a.name ? (
                       <>
@@ -325,7 +320,6 @@ export default function KiroCrewAgentsPage() {
           </div>
         </Card>
       </div>
-      <ScanProjectsModal open={scanOpen} onClose={() => setScanOpen(false)} onSuccess={refetchAgents} />
       {wsModalTarget && (
         <WorkspaceModal
           workspaceOptions={workspaceOptions}

@@ -22,8 +22,6 @@ from kiro_crew.aim_agents import (
     install_cc_plugin,
     installed_kiro_packages_missing_from_cc,
     list_agents,
-    load_registry,
-    scan_directory,
 )
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
@@ -41,7 +39,6 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.env import augmented_path
 from kiro_crew.executors import discovery_executor
-from kiro_crew.security import is_sensitive_path
 
 _VALID_PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$")
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
@@ -699,7 +696,7 @@ async def api_agents_installed(request: web.Request) -> web.Response:
     # json.loads over ~/.kiro/agents — blocking filesystem work that, on a large
     # agents dir (network home, many project-registry agents), can stall the
     # event loop past the loop-stall watchdog when a browser loads the dashboard.
-    # Offload to the discovery pool, same as api_agents_rescan and /api/skills.
+    # Offload to the discovery pool, same as /api/skills.
     def _collect() -> list[Any]:
         agents = list(list_agents())
         agents.sort(key=lambda a: (0 if a.name == "kirocrew" else 1, a.name))
@@ -815,122 +812,6 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
                 },
             )
     return merged
-
-
-async def api_agents_rescan(request: web.Request) -> web.Response:
-    """POST /api/agents/rescan — rescan project directories for agents.
-
-    Accepts optional JSON body: {"paths": ["/path/to/scan"]}
-    If no paths provided, reloads from existing registry.
-    """
-    paths: list[str] = []
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    raw_paths = body.get("paths", None)
-    if raw_paths is not None and not isinstance(raw_paths, list):
-        _sel().log_api_access(
-            caller="dashboard",
-            operation="agents_rescan",
-            outcome="denied",
-            source="api_agents_rescan",
-            resources="",
-            error="paths must be an array",
-        )
-        return web.json_response({"error": "paths must be an array"}, status=400)
-
-    paths_provided = raw_paths is not None
-    paths = [p for p in (raw_paths or []) if isinstance(p, str) and p.strip()]
-
-    if paths_provided and not paths:
-        _sel().log_api_access(
-            caller="dashboard",
-            operation="agents_rescan",
-            outcome="denied",
-            source="api_agents_rescan",
-            resources="",
-            error="paths contained no valid string entries",
-        )
-        return web.json_response({"error": "paths contained no valid string entries"}, status=400)
-
-    # Validate each path: reject control chars, null bytes, overlong paths,
-    # filesystem roots, and anything outside Path.home().
-    _home = Path.home().resolve()
-    safe_paths: list[str] = []
-    rejected: list[dict] = []  # type: ignore[type-arg]  # {path, reason}
-    for p in paths:
-        if len(p) > 4096 or any(c in p for c in "\x00\n\r"):
-            rejected.append({"path": p[:100], "reason": "invalid path (control characters or too long)"})
-            continue
-        try:
-            resolved = Path(p).expanduser().resolve()
-        except (OSError, ValueError):
-            rejected.append({"path": p, "reason": "invalid path"})
-            continue
-        # Must be under HOME — scanning outside the user's home doesn't make
-        # sense for project agent discovery and prevents accidental filesystem walks.
-        if resolved == Path(resolved.anchor) or (
-            _home not in resolved.parents and resolved != _home
-        ):
-            rejected.append({"path": p, "reason": "path must be under your home directory"})
-            continue
-        if is_sensitive_path(str(resolved)):
-            rejected.append({"path": p, "reason": "sensitive path"})
-            continue
-        safe_paths.append(str(resolved))
-
-    # Emit SEL for any rejected paths regardless of whether some were valid.
-    if rejected:
-        _sel().log_api_access(
-            caller="dashboard",
-            operation="agents_rescan",
-            outcome="denied",
-            source="api_agents_rescan",
-            resources=", ".join(r["path"] for r in rejected)[:200],
-            error=f"{len(rejected)} path(s) rejected: " + "; ".join(r["reason"] for r in rejected[:3]),
-        )
-
-    discovered: list[dict] = []  # type: ignore[type-arg]
-    if safe_paths:
-        for p in safe_paths:
-            for a in await asyncio.to_thread(scan_directory, p):
-                discovered.append(a.to_dict())
-    elif not paths_provided:
-        # No paths field at all — fallback to registry rescan
-        for project_path in list(load_registry().keys()):
-            for a in await asyncio.to_thread(scan_directory, project_path):
-                discovered.append(a.to_dict())
-    else:
-        # All user-provided paths were rejected (invalid, outside HOME, or sensitive)
-        _sel().log_api_access(
-            caller="dashboard",
-            operation="agents_rescan",
-            outcome="denied",
-            source="api_agents_rescan",
-            resources=", ".join(r["path"] for r in rejected)[:200],
-            error="all paths rejected",
-        )
-        return web.json_response({"error": "no valid paths to scan", "rejected": rejected}, status=400)
-
-    _sel().log_api_access(
-        caller="dashboard",
-        operation="agents_rescan",
-        outcome="ok",
-        source="api_agents_rescan",
-        resources=", ".join(safe_paths) if safe_paths else "<registry>",
-    )
-
-    # Discovery pool (not asyncio.to_thread's DEFAULT executor, which shares the
-    # loop's DNS pool) — same off-loop discipline as api_agents_installed.
-    agents = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(),
-        lambda: sorted(list_agents(), key=lambda a: (0 if a.name == "kirocrew" else 1, a.name)),
-    )
-    return web.json_response({
-        "discovered": len(discovered),
-        "agents": [a.to_dict() for a in agents],
-    })
 
 
 async def api_models(request: web.Request) -> web.Response:
@@ -1115,52 +996,6 @@ async def api_agent_detail(request: web.Request) -> web.Response:
             patch_body = await request.json()
         except (json.JSONDecodeError, ValueError):
             return web.json_response({"error": "invalid JSON"}, status=400)
-
-    # When project_path is provided, check the project registry FIRST.
-    # Without this, a same-name global agent would always win, causing the
-    # user to see (and potentially edit) the wrong file.
-    # NOTE (ported faithfully from upstream CR-282242202): the registry value
-    # shape changed to {name, state, agents:[{file, agent_name}]}, so iterating
-    # the value as a flat list of filenames here is a latent upstream
-    # mismatch carried verbatim — left as-is to keep the upstream fix portable.
-    if request.method == "GET":
-        project_path_filter = request.query.get("project_path", "")
-        if project_path_filter:
-            for proj_path, filenames in load_registry().items():
-                if proj_path != project_path_filter:
-                    continue
-                for fname in filenames:
-                    if fname == f"{name}.json" or fname.replace(".json", "") == name:
-                        p = Path(proj_path) / ".kiro" / "agents" / fname
-                        if p.is_file():
-                            try:
-                                real = p.resolve(strict=True)
-                            except OSError:
-                                continue
-                            if is_sensitive_path(str(real)):
-                                _sel().log_api_access(
-                                    caller="dashboard",
-                                    operation="agent_detail",
-                                    outcome="denied",
-                                    source="api_agent_detail",
-                                    resources=str(real),
-                                    error="sensitive path rejected",
-                                )
-                                continue
-                            try:
-                                data = json.loads(real.read_text(encoding="utf-8"))
-                                data["_project_path"] = proj_path
-                                _sel().log_api_access(
-                                    caller="dashboard",
-                                    operation="agent_detail",
-                                    outcome="ok",
-                                    source="api_agent_detail",
-                                    resources=str(real),
-                                )
-                                return web.json_response(data)
-                            except (json.JSONDecodeError, OSError):
-                                continue
-            return web.json_response({"error": "not found"}, status=404)
 
     for f in KIRO_AGENTS_DIR.glob("*.json"):
         try:
@@ -1473,28 +1308,6 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     agents = [
         {"name": name, **dataclasses.asdict(agent_cfg)} for name, agent_cfg in cfg.agents.items()
     ]
-    # Append discovered project agents not already in config
-    try:
-        config_keys = {(a["name"], "") for a in agents}
-        project_agents = await asyncio.to_thread(
-            lambda: list(list_agents(include_project=True))
-        )
-        for pa in project_agents:
-            if pa.source == "project" and (pa.name, pa.project_path) not in config_keys:
-                agents.append({
-                    "name": pa.name,
-                    "kiro_agent": pa.name,
-                    "workspace": "default",
-                    "memory_store": "default",
-                    "description": pa.description,
-                    "source": "project",
-                    "project_path": pa.project_path,
-                    "project_name": pa.project_name,
-                    "project_state": pa.project_state,
-                })
-                config_keys.add((pa.name, pa.project_path))
-    except Exception:
-        logger.warning("Failed to append project agents to agent list", exc_info=True)
 
     # Reorder by usage frequency (most-used first). Derived read-only from chat
     # history; degrade to config-insertion order on any failure so the dropdown
@@ -1554,7 +1367,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     pruned: list[str] = []
     try:
         aim_agents = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), lambda: list(list_agents(include_project=False))
+            discovery_executor(), lambda: list(list_agents())
         )
         aim_names = {a.name for a in aim_agents}
 

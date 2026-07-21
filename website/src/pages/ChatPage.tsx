@@ -579,14 +579,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
 
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(installedAgents)
-  // Also match project folder name in filter
-  const filteredAgents = agentFilter
-    ? installedAgents.filter(a => {
-        const lf = agentFilter.toLowerCase()
-        const folderName = (a.project_name || a.project_path?.split('/').pop() || '').toLowerCase()
-        return a.name.toLowerCase().includes(lf) || folderName.includes(lf)
-      })
-    : filteredAgentsByName
+  const filteredAgents = filteredAgentsByName
   const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
     queryKey: ['available-models', provider.id],
     queryFn: async () => {
@@ -604,9 +597,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     filteredCount: filteredAgents.length,
     onEnterSingleMatch: () => {
       const a = filteredAgents[0]
-      const isNotFound = a.project_state === 'not_found'
-      const isOtherProject = a.source === 'project' && a.project_path !== (currentSlot?.project || undefined)
-      if (!isNotFound && !isOtherProject) { switchAgent(a.name, a.project_path); setAgentDropdown(false) }
+      if (a) { switchAgent(a.name); setAgentDropdown(false) }
     },
     closeToTrigger: () => setAgentDropdown(false),
   })
@@ -2057,24 +2048,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     const n = store.getState().notifications.items.find(x => x.approval_id === aid)
     if (n) dispatch(removeNotificationByTs(n.ts))
   }, [dispatch])
-  const switchAgent = useCallback(async (agentName: string, projectPath?: string) => {
+  const switchAgent = useCallback(async (agentName: string) => {
     if (!activeSlot) {
       setPendingAgent(agentName)
-      // Preserve project context so it's applied via chatSlotProject after slot creation.
-      // Always set (even empty) so switching to a global agent clears stale project state.
-      setPendingProject(projectPath || '')
       const mc = installedAgents.find(a => a.name === agentName)
       const templateName = provider.resolveAgentTemplate(mc || { name: agentName })
       queryClient.fetchQuery({ queryKey: ['resolved-model', templateName, provider.id], queryFn: () => provider.resolveModel(templateName) })
         .then(m => setPendingModel(m)).catch(() => setPendingModel(''))
       return
     }
-    await api.chatSlotAgent(activeSlot, agentName, projectPath)
+    await api.chatSlotAgent(activeSlot, agentName)
     setAgentDropdown(false)
     // queryClient, setAgentDropdown, and the setPending* setters are all stable
     // (react-query client / useState setters / useCallback([])), so listing them
     // satisfies the linter without re-creating this callback.
-  }, [activeSlot, installedAgents, provider, queryClient, setAgentDropdown, setPendingAgent, setPendingModel, setPendingProject])
+  }, [activeSlot, installedAgents, provider, queryClient, setAgentDropdown, setPendingAgent, setPendingModel])
   const switchModel = useCallback(async (modelName: string) => {
     const val = modelName === 'auto' ? '' : modelName
     if (!activeSlot) { setPendingModel(val); return }
@@ -3504,7 +3492,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   <Input ref={agentInputRef} type="text" aria-label="Filter agents" placeholder="Type to filter…" value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px] font-mono" />
                 </div>
                 <div role="listbox" aria-label="Agent list" className="overflow-y-auto max-h-[280px]">
-                <AgentDropdownList agents={filteredAgents} activeAgent={currentSlot?.agent || 'default'} activeProjectPath={currentSlot?.project || undefined} defaultAgent={defaultAgent} onSelect={(name, projectPath) => { switchAgent(name, projectPath); setAgentDropdown(false) }} filter={agentFilter} />
+                <AgentDropdownList agents={filteredAgents} activeAgent={currentSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); setAgentDropdown(false) }} filter={agentFilter} />
                 </div>
               </div>,
               document.body

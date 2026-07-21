@@ -25,7 +25,7 @@ def generate_conductor_skill(skills_loader) -> Path:
     2. Auto-seed metadata for agents without a .md file
     3. Build rich SKILL.md with delegation guidelines + roster
     """
-    agents = [a for a in list_agents(include_project=False) if a.name not in _EXCLUDE]
+    agents = [a for a in list_agents() if a.name not in _EXCLUDE]
 
     # Auto-seed metadata from agent description if missing.
     for a in agents:

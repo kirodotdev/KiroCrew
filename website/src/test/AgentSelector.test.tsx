@@ -38,7 +38,7 @@ describe('AgentSelector', () => {
     render(<AgentSelector agents={agents} defaultAgent="coding" value="coding" onChange={onChange} />)
     fireEvent.click(screen.getByLabelText('Switch agent'))
     fireEvent.click(screen.getByText('oncall'))
-    expect(onChange).toHaveBeenCalledWith('oncall', undefined)
+    expect(onChange).toHaveBeenCalledWith('oncall')
   })
 
   it('uses defaultAgent when value is empty', () => {

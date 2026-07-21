@@ -421,8 +421,7 @@ export const api = {
   mcpProbeCache: () => fetch('/api/mcp/probe').then(j),
   // Agents
   agentsInstalled: () => fetch('/api/agents/installed').then(j),
-  agentDetail: (name: string, projectPath?: string) => fetch('/api/agents/detail/' + encodeURIComponent(name) + (projectPath ? '?project_path=' + encodeURIComponent(projectPath) : '')).then(j),
-  agentsRescan: (paths?: string[]) => post('/api/agents/rescan', paths ? { paths } : {}).then(j) as Promise<{ discovered: number; agents: unknown[] }>,
+  agentDetail: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name)).then(j),
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
   agentMetadata: (name: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name)).then(j),
@@ -439,8 +438,8 @@ export const api = {
   effortLevels: (slot?: string) =>
     fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
   slashCommands: () => fetch('/api/slash-commands').then(j),
-  chatSlotAgent: (slot: string, agent: string, projectPath?: string) =>
-    post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent, ...(projectPath ? { project_path: projectPath } : {}) }).then(j),
+  chatSlotAgent: (slot: string, agent: string) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent }).then(j),
   chatSlotModel: (slot: string, model: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j),
   chatSlotsModel: (model: string, skip_running: boolean) =>

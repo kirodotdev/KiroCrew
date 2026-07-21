@@ -1529,10 +1529,6 @@ Examples:
     ws_delete = ws_sub.add_parser("delete", help="Delete a workspace")
     ws_delete.add_argument("name", help="Workspace name to delete")
 
-    # scan
-    scan_parser = sub.add_parser("scan", help="Scan directories for project agents (.kiro/agents/)")
-    scan_parser.add_argument("paths", nargs="+", help="Directories to scan for .kiro/agents/")
-
     # app
     app_parser = sub.add_parser(
         "app",
@@ -1886,8 +1882,6 @@ Examples:
         _handle_agent(args)
     elif args.command == "workspace":
         _handle_workspace(args)
-    elif args.command == "scan":
-        _handle_scan(args)
     elif args.command == "app":
         _handle_app(args)
     elif args.command == "aim":
@@ -1909,7 +1903,6 @@ from kiro_crew.cli_commands import (  # noqa: E402
     _handle_agent,
     _handle_aim,
     _handle_app,
-    _handle_scan,
     _handle_workspace,
     _learn,
     _memory_cmd,

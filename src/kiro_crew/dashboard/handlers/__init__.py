@@ -71,7 +71,6 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     api_agent_metadata_get,
     api_agent_metadata_put,
     api_agents_installed,
-    api_agents_rescan,
     api_aim_agents_install,
     api_aim_agents_list,
     api_aim_agents_uninstall,

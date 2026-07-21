@@ -1283,7 +1283,6 @@ async def start_dashboard(
     app.router.add_delete("/api/workspaces/{name}", handlers.api_workspaces_delete)
     # Agents
     app.router.add_get("/api/agents/installed", handlers.api_agents_installed)
-    app.router.add_post("/api/agents/rescan", handlers.api_agents_rescan)
     app.router.add_get("/api/models", handlers.api_models)
     app.router.add_get("/api/effort-levels", handlers.api_effort_levels)
     app.router.add_get("/api/slash-commands", handlers.api_slash_commands)

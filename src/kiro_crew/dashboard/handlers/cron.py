@@ -5,25 +5,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from datetime import datetime, timezone
-from pathlib import Path as _Path
 from typing import Any
 from zoneinfo import available_timezones
 
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.aim_agents import auto_register_project as _auto_register_project
-from kiro_crew.aim_agents import find_agent_file as _find_agent_file
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.llm_helpers import stream_and_collect
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
     CHANNEL_ID_RE,
@@ -220,68 +216,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
         job = state.crons.add_job(name, message, cron_expr=cron_expr, channel=channel)
     else:
         return web.json_response({"error": "schedule, every, or cron required"}, status=400)
-    project_path = (body.get("project_path") or "").strip()
     strict_schedule = body.get("strict_schedule", False)
     hide_in_chat = body.get("hide_in_chat", False)
-    # Validate: global agent + project_path is invalid (spec §10)
-    if project_path and not agent_id:
-        return web.json_response(
-            {"error": "project_path requires a non-empty agent"},
-            status=400,
-        )
-    if project_path and agent_id:
-        resolved = str(_Path(project_path).expanduser().resolve())
-        if not os.path.isdir(resolved):
-            _sel().log_api_access(
-                caller="dashboard",
-                operation="cron.create",
-                outcome="denied",
-                source="api_cron_create",
-                resources=project_path,
-                error="project_path is not a directory",
-            )
-            return web.json_response({"error": "project_path is not a directory"}, status=400)
-        if is_sensitive_path(resolved):
-            _sel().log_api_access(
-                caller="dashboard",
-                operation="cron.create",
-                outcome="denied",
-                source="api_cron_create",
-                resources=resolved,
-                error="sensitive project_path rejected",
-            )
-            return web.json_response({"error": "project_path rejected as sensitive"}, status=403)
-        agents_dir = _Path(resolved) / ".kiro" / "agents"
-        if not _find_agent_file(agents_dir, agent_id):
-            _sel().log_api_access(
-                caller="dashboard",
-                operation="cron.create",
-                outcome="denied",
-                source="api_cron_create",
-                resources=resolved,
-                error=f"agent {agent_id!r} not found in project",
-            )
-            return web.json_response(
-                {"error": f"agent {agent_id!r} not found in project {project_path!r}"},
-                status=404,
-            )
-        # Auto-register the project now that we've validated it
-        try:
-            _auto_register_project(resolved)
-        except Exception:
-            pass
-        _sel().log_api_access(
-            caller="dashboard",
-            operation="cron.create",
-            outcome="ok",
-            source="api_cron_create",
-            resources=resolved,
-        )
-    if agent_id or project_path or model_val or approval_mode or silent or timezone_val or strict_schedule or hide_in_chat:
+    if agent_id or model_val or approval_mode or silent or timezone_val or strict_schedule or hide_in_chat:
         if agent_id:
             job.agent_id = agent_id
-        if project_path:
-            job.project_path = resolved
         if model_val:
             job.model = model_val
         if approval_mode:
@@ -409,79 +348,6 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["agent_id"] = (body["agent"] or "").strip()
     elif "agent_id" in body:
         kwargs["agent_id"] = (body["agent_id"] or "").strip()
-    if "project_path" in body:
-        raw_pp = (body["project_path"] or "").strip()
-        resolved_pp = ""
-        if raw_pp:
-            # Validate: global agent + project_path is invalid (spec §10)
-            # Check new agent_id from this update, falling back to existing job agent_id
-            effective_agent = kwargs.get("agent_id", "").strip()
-            if not effective_agent:
-                # Try to get the existing job's agent_id via job_id
-                existing_job = next(
-                    (j for j in state.crons.list_jobs(include_disabled=True) if j.id == job_id),
-                    None,
-                )
-                if existing_job:
-                    effective_agent = existing_job.agent_id or ""
-            if not effective_agent:
-                _sel().log_api_access(
-                    caller="dashboard",
-                    operation="cron.update",
-                    outcome="denied",
-                    source="api_cron_update",
-                    resources=raw_pp,
-                    error="project_path requires a non-empty agent",
-                )
-                return web.json_response(
-                    {"error": "project_path requires a non-empty agent"},
-                    status=400,
-                )
-            resolved_pp = str(_Path(raw_pp).expanduser().resolve())
-            if not os.path.isdir(resolved_pp):
-                _sel().log_api_access(
-                    caller="dashboard",
-                    operation="cron.update",
-                    outcome="denied",
-                    source="api_cron_update",
-                    resources=raw_pp,
-                    error="project_path is not a directory",
-                )
-                return web.json_response({"error": "project_path is not a directory"}, status=400)
-            if is_sensitive_path(resolved_pp):
-                _sel().log_api_access(
-                    caller="dashboard",
-                    operation="cron.update",
-                    outcome="denied",
-                    source="api_cron_update",
-                    resources=resolved_pp,
-                    error="sensitive project_path rejected",
-                )
-                return web.json_response({"error": "project_path rejected as sensitive"}, status=403)
-            agent_id_for_pp = kwargs.get("agent_id", "").strip()
-            if agent_id_for_pp:
-                agents_dir_pp = _Path(resolved_pp) / ".kiro" / "agents"
-                if not _find_agent_file(agents_dir_pp, agent_id_for_pp):
-                    _sel().log_api_access(
-                        caller="dashboard",
-                        operation="cron.update",
-                        outcome="denied",
-                        source="api_cron_update",
-                        resources=resolved_pp,
-                        error=f"agent {agent_id_for_pp!r} not found in project",
-                    )
-                    return web.json_response(
-                        {"error": f"agent {agent_id_for_pp!r} not found in project {raw_pp!r}"},
-                        status=404,
-                    )
-            _sel().log_api_access(
-                caller="dashboard",
-                operation="cron.update",
-                outcome="ok",
-                source="api_cron_update",
-                resources=resolved_pp,
-            )
-        kwargs["project_path"] = resolved_pp
     if "model" in body:
         model_raw = body["model"]
         if model_raw is not None and not isinstance(model_raw, str):

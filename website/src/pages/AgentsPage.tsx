@@ -6,7 +6,6 @@ import { useAppSelector } from '../store'
 import { api } from '../api/client'
 import type { SubagentInfo } from '../types'
 import Clickable from '../components/Clickable'
-import ScanProjectsModal from '../components/ScanProjectsModal'
 import { AimBadge, StatCard, PageHeader, EmptyState, Btn, Input } from '../components/ui'
 import ModelDropdownList from '../components/ModelDropdownList'
 import { LAYOUT } from '../components/layout'
@@ -43,7 +42,6 @@ interface InstalledAgent {
   mcp_servers: string[]
   package?: string
   filename?: string
-  project_path?: string
 }
 
 /**
@@ -197,8 +195,6 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   const spawnClearMut = useMutation({ mutationFn: () => api.spawnClear(), onSuccess: () => refetchSpawn() })
   const spawnDeleteMut = useMutation({ mutationFn: (id: string) => api.spawnDelete(id), onSuccess: () => refetchSpawn() })
 
-  const [scanOpen, setScanOpen] = useState(false)
-
   const toggleDefaultMut = useMutation({
     mutationFn: (next: string) => api.setDefaultAgent(next),
     onSuccess: () => refetchDefault(),
@@ -230,7 +226,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
           </div>
         ) : installed.length > 0 && (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 animate-rise shadow-sm hover:border-border-strong hover:shadow-md transition-all overflow-hidden">
-            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">Installed Agents <InfoTip text={`Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).`} /> <Btn primary onClick={() => setScanOpen(true)} className="ml-auto text-[11px]">Scan Projects</Btn></h3></div>
+            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">Installed Agents <InfoTip text={`Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).`} /></h3></div>
             <div className="flex" style={{ height: `${LAYOUT.AGENT_LIST_HEIGHT}px` }}>
               {/* Agent list — scrollable */}
               <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-2">
@@ -241,22 +237,21 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     const key = a.package || a.name; (g[key] ||= []).push(a); return g
                   }, {})
                   const renderAgent = (a: typeof installed[0], showDelete?: boolean) => (
-                    <Clickable key={`${a.name}-${a.project_path || ''}`} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name, a.project_path); setSelectedAgent(d) } catch { setSelectedAgent(a) } }}>
+                    <Clickable key={a.name} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name); setSelectedAgent(d) } catch { setSelectedAgent(a) } }}>
                       <span
                         role="button"
-                        tabIndex={a.source === 'project' ? -1 : 0}
-                        aria-label={a.source === 'project' ? 'Project agents cannot be set as the global default. Set per-folder defaults in folder settings.' : defaultAgent === a.name ? 'Remove default agent' : 'Set as default agent'}
-                        className={`text-[13px] shrink-0 transition-colors ${a.source === 'project' ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'} ${defaultAgent === a.name ? 'text-warn' : 'text-muted hover:text-warn'}`}
-                        title={a.source === 'project' ? 'Project agents cannot be set as the global default. Set per-folder defaults in folder settings.' : defaultAgent === a.name ? 'Remove default agent' : 'Set as default agent'}
-                        onClick={e => { e.stopPropagation(); if (a.source !== 'project') toggleDefault(a.name) }}
-                        onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && a.source !== 'project') { e.preventDefault(); e.stopPropagation(); toggleDefault(a.name) } }}
+                        tabIndex={0}
+                        aria-label={defaultAgent === a.name ? 'Remove default agent' : 'Set as default agent'}
+                        className={`text-[13px] shrink-0 transition-colors cursor-pointer ${defaultAgent === a.name ? 'text-warn' : 'text-muted hover:text-warn'}`}
+                        title={defaultAgent === a.name ? 'Remove default agent' : 'Set as default agent'}
+                        onClick={e => { e.stopPropagation(); toggleDefault(a.name) }}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleDefault(a.name) } }}
                       >{defaultAgent === a.name ? <Star className="lucide-inline" /> : <StarOff className="lucide-inline" />}</span>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 mb-0.5">
                           <span className="text-[13px] font-mono font-semibold text-text truncate">{a.name}</span>
                           <AimBadge source={a.source} />
                         </div>
-                        {a.project_path && <div className="text-[11px] text-muted truncate mb-0.5" title={a.project_path}>{a.project_path}</div>}
                         <div className="flex gap-2 mt-0.5">
                           {a.skills.length > 0 && <span className="text-[11px] text-muted"><Brain className="lucide-inline" />{a.skills.length}</span>}
                           {a.mcp_servers.length > 0 && <span className="text-[11px] text-muted"><Plug className="lucide-inline" />{a.mcp_servers.length}</span>}
@@ -339,8 +334,6 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
             </div>
           </div>
         )}
-        {/* Scan Projects Modal */}
-        <ScanProjectsModal open={scanOpen} onClose={() => setScanOpen(false)} onSuccess={refetchInstalled} />
         {/* Context Window Usage */}
         <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
           <h3 className="text-sm font-semibold text-text-strong mb-3.5 flex items-center gap-1.5">Context Window Usage <InfoTip text={`Live context window utilization per active ${provider.labels.sessionProcess} session. Custom agents show their configured model. Compaction triggers at 90%.`} /></h3>

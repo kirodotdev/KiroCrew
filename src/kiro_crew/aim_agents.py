@@ -2,9 +2,7 @@
 
 Provides ``list_agents()`` which returns metadata about all installed
 agents, including KiroCrew's own agent and any agents shipped by
-locally-installed skill packages (agent config files on disk). It also
-merges project-scoped agents discovered under ``{project}/.kiro/agents/``
-and recorded in the persisted registry.
+locally-installed skill packages (agent config files on disk).
 
 Also provides CC (Claude Code) plugin discovery helpers:
 - ``list_cc_plugins()`` — installed CC plugin package names (reads disk)
@@ -27,28 +25,16 @@ import json
 import logging
 import os
 import re
-import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
-from kiro_crew.config.loader import config_dir  # noqa: E402 (avoid circular at module load)
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel as _sel
 
 logger = logging.getLogger(__name__)
 
 _KIRO_AGENTS_DIR = Path.home() / ".kiro" / "agents"
-
-# ~/.kiro is kiro-cli's own configuration directory — it is NOT a project dir.
-# We must never scan it or register anything inside it as a project agent source.
-# Reason: if a user scans from ~ or ~/Documents, os.walk descends into ~/.kiro/agents/
-# and finds kirocrew.json, registering it as a project agent at project_path=$HOME.
-# That creates a duplicate "kirocrew" entry (global + project) with the same name but
-# different project_path keys, which triggers the 409 ambiguity check and breaks the
-# kirocrew switch entirely until the user manually deletes the registry entry.
-_KIRO_HOME_DIR = (Path.home() / ".kiro").resolve()
 _CC_PLUGINS_DIR = Path.home() / ".aim" / "cc-plugins"
 
 _VALID_PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$")
@@ -60,11 +46,11 @@ _KIROCREW_AIM_PACKAGES = {"KiroCrewAICapabilities"}
 # list_agents() reads and JSON-parses every ~/.kiro/agents/*.json on each call.
 # Hot callers (agent picker, per-turn agent resolution) call it repeatedly, so an
 # uncached scan over 100+ AIM-installed agent files blocks the asyncio event loop.
-# Cache the parsed result keyed by (dir, include_project) and reuse it while a cheap
-# stat-only directory signature (file count + newest mtime + registry mtime) is
-# unchanged — that signature detects adds, removals, and in-place edits.
-_ListAgentsSig = tuple[tuple[int, int], int]
-_LIST_AGENTS_CACHE: dict[tuple[str, bool], tuple[_ListAgentsSig, list[AimAgent]]] = {}
+# Cache the parsed result keyed by directory and reuse it while a cheap stat-only
+# directory signature (file count + newest mtime) is unchanged — that signature
+# detects adds, removals, and in-place edits.
+_ListAgentsSig = tuple[int, int]
+_LIST_AGENTS_CACHE: dict[str, tuple[_ListAgentsSig, list[AimAgent]]] = {}
 
 
 @dataclass
@@ -77,11 +63,8 @@ class AimAgent:
     model: str
     skills: list[str] = field(default_factory=list)
     mcp_servers: list[str] = field(default_factory=list)
-    source: str = "builtin"  # "aim" | "kirocrew" | "builtin" | "project"
+    source: str = "builtin"  # "aim" | "kirocrew" | "builtin"
     package: str = ""  # AIM package name (e.g. "Customer360GenAIContext")
-    project_path: str = ""  # project root for contextual launch
-    project_name: str = ""  # display name (basename of project_path)
-    project_state: str = "ok"  # "ok" | "not_found" — from registry state field
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -103,528 +86,11 @@ def _extract_skills(data: dict[str, Any]) -> list[str]:
     return skills
 
 
-def find_agent_file(agents_dir: Path, agent_name: str) -> Path | None:
-    """Find the JSON file for *agent_name* inside *agents_dir*.
-
-    Matches on the ``name`` field inside each JSON file — not the filename stem —
-    mirroring kiro-cli's own resolution logic for ``--agent <name>``.
-    Returns the first matching file path, or None if not found.
-    """
-    if not agents_dir.is_dir():
-        return None
-    for f in agents_dir.glob("*.json"):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("name") == agent_name:
-                return f
-        except (OSError, ValueError):
-            continue
-    return None
-
-
-def _registry_path() -> Path:
-    """Path to the project agent registry file."""
-    return config_dir() / "project_agents.json"
-
-
-# ── Registry entry type ──
-# Each project entry: {"name": str, "state": "ok"|"not_found", "agents": [{"file": str, "agent_name": str}]}
-# agent_name is cached from the JSON name field to avoid file reads at display time.
-
-_REGISTRY_STATE_OK = "ok"
-_REGISTRY_STATE_NOT_FOUND = "not_found"
-
-
-def _parse_registry_entry(raw: Any, project_path: str) -> dict | None:
-    """Parse and validate a single registry entry, returning normalised dict or None."""
-    if isinstance(raw, list):
-        # Old format: list of filenames — migrate on read. agent_name will be
-        # populated by the gateway startup pass; use "" as placeholder.
-        return {
-            "name": Path(project_path).name,
-            "state": _REGISTRY_STATE_OK,
-            "agents": [{"file": f, "agent_name": ""} for f in raw if isinstance(f, str)],
-        }
-    if not isinstance(raw, dict):
-        return None
-    agents_raw = raw.get("agents", [])
-    agents: list[dict] = []
-    for entry in agents_raw if isinstance(agents_raw, list) else []:
-        if isinstance(entry, dict) and isinstance(entry.get("file"), str):
-            agents.append({
-                "file": entry["file"],
-                "agent_name": entry.get("agent_name", "") if isinstance(entry.get("agent_name"), str) else "",
-            })
-        elif isinstance(entry, str):
-            # Partial migration — file only, no agent_name yet
-            agents.append({"file": entry, "agent_name": ""})
-    return {
-        "name": raw.get("name") or Path(project_path).name,
-        "state": raw.get("state") if raw.get("state") in (_REGISTRY_STATE_OK, _REGISTRY_STATE_NOT_FOUND) else _REGISTRY_STATE_OK,
-        "agents": agents,
-    }
-
-
-def load_registry() -> dict[str, dict]:
-    """Load the project agent registry.
-
-    Registry format:
-        {"/abs/path/ProjectA": {"name": "ProjectA", "state": "ok",
-                                 "agents": [{"file": "dev.json", "agent_name": "dev"}]}}
-
-    Handles old list-of-filenames format transparently (migrates on read).
-    Returns {} on corruption or missing file.
-    """
-    p = _registry_path()
-    if not p.is_file():
-        return {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            logger.warning("Project agent registry has unexpected root type — returning empty")
-            return {}
-        result: dict[str, dict] = {}
-        for k, v in data.items():
-            if not isinstance(k, str):
-                continue
-            entry = _parse_registry_entry(v, k)
-            if entry is not None:
-                result[k] = entry
-        return result
-    except json.JSONDecodeError:
-        logger.warning("Project agent registry is corrupted — returning empty. Rescan to restore.")
-        return {}
-    except OSError:
-        logger.debug("Failed to read project agent registry")
-        return {}
-
-
-def _write_registry(registry: dict[str, dict]) -> None:
-    """Write registry to disk. Caller MUST hold the registry lock."""
-    p = _registry_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix="registry-", suffix=".tmp", dir=p.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(registry, indent=2))
-        os.replace(tmp_name, p)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
-def save_registry(data: dict) -> None:
-    """Write raw registry data to disk without locking.
-
-    Accepts both old format (``{path: [filenames]}`` list-of-strings) and new
-    format (``{path: {name, state, agents}}`` dict).  Used primarily in tests to
-    seed fixture data; ``load_registry`` handles format migration on read.
-    """
-    p = _registry_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix="registry-", suffix=".tmp", dir=p.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, indent=2))
-        os.replace(tmp_name, p)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
-def update_registry(project_path: str, agent_entries: list[dict]) -> None:
-    """Atomically add/update one project entry in the registry.
-
-    *agent_entries* is a list of ``{"file": str, "agent_name": str}`` dicts.
-    Lock covers the full load+modify+write sequence.
-    """
-    p = _registry_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = p.with_suffix(".lock")
-    with open(lock_path, "w") as lock_fh, platform_compat.file_lock(
-        lock_fh.fileno(), exclusive=True
-    ):
-        registry = load_registry()
-        existing = registry.get(project_path, {})
-        registry[project_path] = {
-            "name": Path(project_path).name,
-            "state": _REGISTRY_STATE_OK,
-            "agents": agent_entries,
-        }
-        # Preserve existing name if user customised it (future-proof)
-        if isinstance(existing.get("name"), str) and existing["name"]:
-            registry[project_path]["name"] = existing["name"]
-        _write_registry(registry)
-
-
-def remove_from_registry(project_path: str) -> None:
-    """Atomically remove one project entry from the registry.
-
-    Idempotent: no-op (and no write) when the key is absent, including on corrupt re-read.
-    """
-    p = _registry_path()
-    if not p.is_file():
-        return
-    lock_path = p.with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as lock_fh, platform_compat.file_lock(
-        lock_fh.fileno(), exclusive=True
-    ):
-        registry = load_registry()
-        if project_path in registry:
-            del registry[project_path]
-            _write_registry(registry)
-
-
-def refresh_registry_startup() -> None:
-    """Gateway startup pass: stat all paths, refresh state + agent_name.
-
-    Called once at gateway start. Combines two operations in a single pass:
-    1. Stat each registered project path — set state to ok/not_found
-    2. For ok entries, re-read agent files to refresh cached agent_name
-
-    Writes back only if any entry changed.
-    """
-    registry = load_registry()
-    if not registry:
-        return
-
-    changed = False
-    updated: dict[str, dict] = {}
-
-    for project_path, entry in registry.items():
-        agents_dir = Path(project_path) / ".kiro" / "agents"
-        new_state = _REGISTRY_STATE_OK if agents_dir.is_dir() else _REGISTRY_STATE_NOT_FOUND
-        new_agents: list[dict] = []
-
-        if new_state == _REGISTRY_STATE_OK:
-            for agent_entry in entry.get("agents", []):
-                fname = agent_entry.get("file", "")
-                if not fname:
-                    continue
-                f = agents_dir / fname
-                agent_name = agent_entry.get("agent_name", "")
-                if f.is_file():
-                    try:
-                        data = json.loads(f.read_text(encoding="utf-8"))
-                        if isinstance(data, dict) and isinstance(data.get("name"), str):
-                            agent_name = data["name"]
-                    except Exception:
-                        pass
-                if agent_name or fname:
-                    new_agents.append({"file": fname, "agent_name": agent_name})
-        else:
-            new_agents = entry.get("agents", [])
-
-        new_entry = {
-            "name": entry.get("name") or Path(project_path).name,
-            "state": new_state,
-            "agents": new_agents,
-        }
-        if new_entry != entry:
-            changed = True
-        updated[project_path] = new_entry
-
-    if changed:
-        p = _registry_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = p.with_suffix(".lock")
-        with open(lock_path, "w") as lock_fh, platform_compat.file_lock(
-            lock_fh.fileno(), exclusive=True
-        ):
-            # Re-read under lock to avoid overwriting concurrent updates
-            # (e.g. update_registry called between the unlocked read above and here)
-            fresh = load_registry()
-            for project_path, new_entry in updated.items():
-                if project_path in fresh:
-                    # Only update state+agents; preserve any concurrent additions to other fields
-                    fresh[project_path]["state"] = new_entry["state"]
-                    fresh[project_path]["agents"] = new_entry["agents"]
-                    fresh[project_path]["name"] = new_entry["name"]
-                # Don't re-add entries removed by concurrent remove_from_registry()
-            _write_registry(fresh)
-        logger.debug("registry_startup_pass: refreshed %d entries", len(updated))
-
-
-_SCAN_PRUNE = frozenset({
-    "node_modules", "__pycache__", "build", "dist", ".git", ".hg",
-    ".cache", "env", "venv", ".venv", ".tox", "target", ".gradle",
-    ".idea", ".vs", "out", ".next", ".nuxt",
-    # Large user-data / vendor trees
-    "vendor", ".cargo", "Library", "Pods", "Applications", ".rustup",
-})
-
-_SCAN_MAX_DEPTH = 8
-_SCAN_MAX_ENTRIES = 50_000
-
-
-def scan_directory(
-    root: str | Path,
-    max_depth: int = _SCAN_MAX_DEPTH,
-    max_entries: int = _SCAN_MAX_ENTRIES,
-) -> list[AimAgent]:
-    """Scan a directory tree for projects with .kiro/agents/ and register them.
-
-    Uses os.walk with smart pruning — skips hidden dirs, node_modules, build
-    artifacts, venvs, and common large user-data directories.
-
-    Stops at *max_depth* levels below *root* and aborts with a warning if the
-    cumulative directory-entry count exceeds *max_entries*, preventing runaway
-    scans of very large trees.
-
-    Returns the list of newly discovered project agents.
-    """
-    root = Path(root).expanduser().resolve()
-    if not root.is_dir():
-        return []
-    if is_sensitive_path(str(root)):
-        logger.warning("Refusing to scan sensitive path: %s", root)
-        _sel().log_api_access(
-            caller="aim_agents",
-            operation="scan_directory",
-            outcome="denied",
-            source="scan_directory",
-            resources=str(root),
-            error="sensitive path rejected",
-        )
-        return []
-
-    discovered: list[AimAgent] = []
-    root_depth = len(root.parts)
-    entries_seen = 0
-
-    for dirpath, dirnames, _filenames in os.walk(root):
-        current_depth = len(Path(dirpath).parts) - root_depth
-        if current_depth >= max_depth:
-            dirnames.clear()
-            continue
-
-        # Prune hidden dirs and known dead-ends
-        dirnames[:] = [
-            d for d in dirnames
-            if not d.startswith(".") or d == ".kiro"
-        ]
-        dirnames[:] = [d for d in dirnames if d not in _SCAN_PRUNE]
-
-        # Count files too: os.scandir() enumerates dirs and files in one syscall,
-        # so a dir with 100k files costs as much as 100k dirs. Counting both ensures
-        # the abort fires on wide flat trees, not just deep ones. A name-based or
-        # extension-based heuristic would miss legitimate project roots with many files.
-        entries_seen += len(dirnames) + len(_filenames)
-        if entries_seen > max_entries:
-            logger.warning(
-                "scan_directory aborted at %s: %d entries scanned (limit %d)",
-                dirpath, entries_seen, max_entries,
-            )
-            break
-
-        # Check if this directory IS a .kiro/agents/ dir
-        p = Path(dirpath)
-        if p.name == "agents" and p.parent.name == ".kiro":
-            # Guard: never register ~/.kiro or anything nested inside it as a project.
-            # ~/.kiro IS the global kiro-cli config dir — not a project root.
-            # We explicitly allow .kiro dirs during the walk (to find project agents),
-            # but we must stop before treating ~/.kiro/agents/ itself as a project.
-            # is_relative_to covers subdirs too (e.g. ~/.kiro/subdir/.kiro/agents/).
-            if p.parent.resolve().is_relative_to(_KIRO_HOME_DIR) or p.parent.resolve() == _KIRO_HOME_DIR:
-                dirnames.clear()
-                _sel().log_api_access(
-                    caller="aim_agents",
-                    operation="scan_directory",
-                    outcome="denied",
-                    source="scan_directory",
-                    resources=str(p.parent.resolve()),
-                    error="~/.kiro is not a project directory",
-                )
-                continue
-            project_path = str(p.parent.parent)
-            agent_files: list[str] = []
-            for f in p.glob("*.json"):
-                if f.name.startswith("._"):
-                    continue
-                try:
-                    real = f.resolve(strict=True)
-                except OSError:
-                    continue
-                if is_sensitive_path(str(real)):
-                    logger.debug("Skipping sensitive project agent: %s", f)
-                    _sel().log_api_access(
-                        caller="aim_agents",
-                        operation="scan_directory",
-                        outcome="denied",
-                        source="scan_directory",
-                        resources=str(real),
-                        error="sensitive path rejected",
-                    )
-                    continue
-                agent_files.append(f.name)  # record filename regardless of parse
-                try:
-                    raw = real.read_bytes()
-                    try:
-                        text = raw.decode("utf-8")
-                    except (UnicodeDecodeError, ValueError):
-                        logger.debug("Skipping non-UTF-8 agent config: %s", f)
-                        continue
-                    data = json.loads(text)
-                    if not isinstance(data, dict):
-                        continue
-                    mcp_raw = data.get("mcpServers") or {}
-                    resolved_agent_name = data.get("name") or f.stem
-                    agent = AimAgent(
-                        name=resolved_agent_name,
-                        filename=f.name,
-                        description=data.get("description", ""),
-                        model=data.get("model", "auto"),
-                        skills=_extract_skills(data),
-                        mcp_servers=list(mcp_raw.keys()) if isinstance(mcp_raw, dict) else [],
-                        source="project",
-                        project_path=project_path,
-                    )
-                    discovered.append(agent)
-                    agent_files[-1] = {"file": f.name, "agent_name": resolved_agent_name}  # type: ignore
-                except Exception:
-                    logger.debug("Skipping invalid project agent: %s", f)
-            # Filter: agent_files may contain strings (failed-parse) or dicts (successful)
-            # Build proper list for registry
-            registry_entries: list[dict] = []
-            for item in agent_files:
-                if isinstance(item, dict):
-                    registry_entries.append(item)
-                elif isinstance(item, str):
-                    registry_entries.append({"file": item, "agent_name": ""})
-            if registry_entries:
-                update_registry(project_path, registry_entries)
-            # Don't recurse into .kiro/agents/
-            dirnames.clear()
-
-    return discovered
-
-
-def auto_register_project(project_path: str) -> None:
-    """Directly read {project}/.kiro/agents/ and update the registry for that project only.
-
-    No os.walk — reads one directory. Called on project-set to populate the
-    registry instantly without a full tree scan.
-
-    Guards against ~/.kiro being passed as project_path (would register $HOME as a project
-    and create duplicate kirocrew entries triggering 409 on every agent switch).
-    """
-    root = Path(project_path).expanduser().resolve()
-    # Defense-in-depth: refuse to treat ~/.kiro (the global kiro-cli config dir) as a project.
-    if root.is_relative_to(_KIRO_HOME_DIR) or root == _KIRO_HOME_DIR.parent:
-        logger.debug("Refusing to register ~/.kiro parent as project: %s", root)
-        _sel().log_api_access(
-            caller="aim_agents",
-            operation="auto_register_project",
-            outcome="denied",
-            source="auto_register_project",
-            resources=str(root),
-            error="~/.kiro is not a project directory",
-        )
-        return
-    if is_sensitive_path(str(root)):
-        _sel().log_api_access(
-            caller="aim_agents",
-            operation="auto_register_project",
-            outcome="denied",
-            source="auto_register_project",
-            resources=str(root),
-            error="sensitive root path rejected",
-        )
-        return
-    agents_dir = root / ".kiro" / "agents"
-    if not agents_dir.is_dir():
-        return
-    filenames: list[str] = []
-    for f in agents_dir.glob("*.json"):
-        if f.name.startswith("._"):
-            continue
-        try:
-            real = f.resolve(strict=True)
-        except OSError:
-            continue
-        if is_sensitive_path(str(real)):
-            _sel().log_api_access(
-                caller="aim_agents",
-                operation="auto_register_project",
-                outcome="denied",
-                source="auto_register_project",
-                resources=str(real),
-                error="sensitive path rejected",
-            )
-            continue
-        filenames.append(f.name)
-    if filenames:
-        # Read agent names for registry cache
-        agent_entries: list[dict] = []
-        for fname in filenames:
-            f = agents_dir / fname
-            agent_name = ""
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and isinstance(data.get("name"), str):
-                    agent_name = data["name"]
-            except Exception:
-                pass
-            agent_entries.append({"file": fname, "agent_name": agent_name})
-        update_registry(str(root), agent_entries)
-        logger.debug("Auto-registered %d agent(s) for %s", len(filenames), root)
-
-
-def _load_project_agents() -> list[AimAgent]:
-    """Load all project agents from the persisted registry (no file reads).
-
-    Uses cached ``agent_name`` and ``state`` from the registry.
-    The ``state`` field distinguishes ok (selectable) from not_found (grayed).
-    Gateway startup pass refreshes both fields.
-    """
-    registry = load_registry()
-    agents: list[AimAgent] = []
-    for project_path, entry in registry.items():
-        if not isinstance(entry, dict):
-            continue
-        # Guard: never surface ~/.kiro as a project (defensive read-time check)
-        try:
-            if Path(project_path).resolve().is_relative_to(_KIRO_HOME_DIR):
-                continue
-        except (OSError, ValueError):
-            pass
-        state = entry.get("state", _REGISTRY_STATE_OK)
-        project_name = entry.get("name") or Path(project_path).name
-        for agent_entry in entry.get("agents", []):
-            if not isinstance(agent_entry, dict):
-                continue
-            fname = agent_entry.get("file", "")
-            agent_name = agent_entry.get("agent_name", "") or Path(fname).stem
-            if not fname or not agent_name:
-                continue
-            agents.append(
-                AimAgent(
-                    name=agent_name,
-                    filename=fname,
-                    description="",
-                    model="auto",
-                    source="project",
-                    project_path=project_path,
-                    project_name=project_name,
-                    project_state=state,
-                )
-            )
-    return agents
-
-
-def _dir_signature(d: Path, include_project: bool) -> _ListAgentsSig:
-    """Cheap stat-only signature of the agents dir (+ project registry).
+def _dir_signature(d: Path) -> _ListAgentsSig:
+    """Cheap stat-only signature of the agents dir.
 
     Captures the JSON file count and newest mtime — enough to detect adds,
-    removals, and in-place edits without reading or parsing any file — plus
-    the project-registry mtime when project agents are included. Used to
+    removals, and in-place edits without reading or parsing any file. Used to
     invalidate the :func:`list_agents` result cache.
     """
     count = 0
@@ -643,13 +109,7 @@ def _dir_signature(d: Path, include_project: bool) -> _ListAgentsSig:
                     max_mtime = m
     except OSError:
         pass
-    reg_mtime = 0
-    if include_project:
-        try:
-            reg_mtime = _registry_path().stat().st_mtime_ns
-        except OSError:
-            reg_mtime = 0
-    return ((count, max_mtime), reg_mtime)
+    return (count, max_mtime)
 
 
 def clear_list_agents_cache() -> None:
@@ -661,26 +121,20 @@ def clear_list_agents_cache() -> None:
     _LIST_AGENTS_CACHE.clear()
 
 
-def list_agents(
-    agents_dir: Path | None = None,
-    include_project: bool = True,
-) -> list[AimAgent]:
+def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
     """Scan ~/.kiro/agents/*.json for all installed agents.
-
-    When *include_project* is True (default), also includes project-scoped
-    agents from the persisted registry (populated by ``scan_directory``).
 
     Returns a list of ``AimAgent`` objects sorted by name. Each agent
     corresponds to a kiro-cli agent config file that can be selected
     via ``session/set_mode`` in the ACP protocol.
 
-    Results are cached per (directory, include_project) and reused while the
-    directory signature is unchanged, so repeated calls avoid re-reading and
-    re-parsing every agent JSON on the event loop.
+    Results are cached per directory and reused while the directory signature
+    is unchanged, so repeated calls avoid re-reading and re-parsing every agent
+    JSON on the event loop.
     """
     d = agents_dir or _KIRO_AGENTS_DIR
-    cache_key = (str(d), include_project)
-    signature = _dir_signature(d, include_project)
+    cache_key = str(d)
+    signature = _dir_signature(d)
     cached = _LIST_AGENTS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature:
         return list(cached[1])
@@ -756,24 +210,14 @@ def list_agents(
                 logger.debug("Skipping invalid agent config: %s", f)
                 continue
 
-    # Merge project agents from registry
-    if include_project:
-        try:
-            agents.extend(_load_project_agents())
-        except Exception:
-            logger.warning("Failed to load project agents", exc_info=True)
-
-    # Deduplicate: project agents with a project_path are keyed by name+path
-    # (allows same-name agents in different projects). A project agent also
-    # shadows any global agent with the same name.
+    # Deduplicate by name — prefer AIM-installed (has package) over fallback
     seen: dict[str, AimAgent] = {}
     for a in agents:
-        key = f"{a.name}:{a.project_path}" if a.project_path else a.name
-        existing = seen.get(key)
+        existing = seen.get(a.name)
         if existing is None:
-            seen[key] = a
+            seen[a.name] = a
         elif a.package and not existing.package:
-            seen[key] = a
+            seen[a.name] = a
         elif a.package and existing.package:
             logger.warning(
                 "Duplicate agent name '%s' from packages '%s' and '%s'; keeping '%s'",

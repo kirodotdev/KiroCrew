@@ -33,7 +33,6 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
   const [tz, setTz] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [error, setError] = useState('')
   const [agent, setAgent] = useState('')
-  const [projectPath, setProjectPath] = useState('')
   const [channel, setChannel] = useState('')
   const [approvalMode, setApprovalMode] = useState('')
   const [silent, setSilent] = useState(false)
@@ -45,7 +44,6 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
   const [editSchedule, setEditSchedule] = useState('')
   const [editTz, setEditTz] = useState('')
   const [editAgent, setEditAgent] = useState('')
-  const [editProjectPath, setEditProjectPath] = useState('')
   const [editChannel, setEditChannel] = useState('')
   const [editError, setEditError] = useState('')
   const { running, actionError, runNow, openInChat } = useCronActions(load)
@@ -64,7 +62,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
   const toggleDay = (d: number) => setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort())
   const openEdit = (j: CronJob) => {
     setEditing(j); setEditName(j.name); setEditMsg(j.message)
-    setEditSchedule(j.schedule || ''); setEditTz(j.timezone || 'UTC'); setEditAgent(j.agent || ''); setEditProjectPath(j.project_path || ''); setEditChannel(j.channel || ''); setEditError('')
+    setEditSchedule(j.schedule || ''); setEditTz(j.timezone || 'UTC'); setEditAgent(j.agent || ''); setEditChannel(j.channel || ''); setEditError('')
   }
   const saveEdit = async () => {
     if (!editing) return
@@ -73,7 +71,6 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
     if (editName !== editing.name) body.name = editName
     if (editMsg !== editing.message) body.message = editMsg
     if (editAgent !== (editing.agent || '')) body.agent_id = editAgent
-    if (editProjectPath !== (editing.project_path || '')) body.project_path = editProjectPath
     if (editChannel !== (editing.channel || '')) body.channel = editChannel
     if (editSchedule !== (editing.schedule || '')) {
       const parts = editSchedule.trim().split(/\s+/)
@@ -94,7 +91,6 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
     setError('')
     if (!name || !msg) { setError('Name and message are required'); return }
     const body: Record<string, string | number | boolean> = { name, message: msg, agent }
-    if (projectPath) body.project_path = projectPath
     if (channel) body.channel = channel
     if (approvalMode) body.approval_mode = approvalMode
     if (silent) body.silent = true
@@ -110,7 +106,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
     }
     const res = await api.createCron(body)
     if (res.error) { setError(res.error); return }
-    setName(''); setMsg(''); setDays([]); setIntervalVal(1); setError(''); setChannel(''); setApprovalMode(''); setSilent(false); setProjectPath(''); load()
+    setName(''); setMsg(''); setDays([]); setIntervalVal(1); setError(''); setChannel(''); setApprovalMode(''); setSilent(false); load()
   }
   return (<>
     {noCrons && <div className="bg-yellow-900/30 border border-yellow-700/50 text-yellow-200 px-4 py-2 rounded-lg mb-3 text-sm"><AlertTriangle className="lucide-inline" /> Cron execution disabled (<code className="text-yellow-300">--no-crons</code>) — jobs are managed by another instance</div>}
@@ -120,7 +116,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
         <div className="flex gap-2 items-center flex-wrap">
           <Input placeholder="Job name" value={name} onChange={e => setName(e.target.value)} />
           <Input placeholder="Message / task" style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
-          <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} activeProjectPath={projectPath} onChange={(name, pp) => { setAgent(name); setProjectPath(pp || '') }} />
+          <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
           <Input placeholder="Channel ID (optional)" style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
@@ -195,7 +191,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
               {(editing?.timezone && !TIMEZONES.includes(editing.timezone) ? [editing.timezone, ...TIMEZONES] : TIMEZONES).map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
             </select>
             <span className="text-sm text-muted">Agent</span>
-            <AgentSelector agents={agents} defaultAgent={defaultAgent} value={editAgent} activeProjectPath={editProjectPath} onChange={(name, pp) => { setEditAgent(name); setEditProjectPath(pp || '') }} />
+            <AgentSelector agents={agents} defaultAgent={defaultAgent} value={editAgent} onChange={(name) => setEditAgent(name)} />
             <label htmlFor="cron-edit-channel" className="text-sm text-muted">Channel ID</label>
             <Input id="cron-edit-channel" aria-label="Channel ID" value={editChannel} onChange={e => setEditChannel(e.target.value)} placeholder="Optional" />
             {/* eslint-enable jsx-a11y/label-has-for */}

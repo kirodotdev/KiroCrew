@@ -1032,17 +1032,6 @@ class GatewayOrchestrator:
         except Exception:
             logger.warning("Agent config install failed", exc_info=True)
 
-        # Gateway startup pass: refresh registry state + agent_name cache
-        try:
-            from kiro_crew.aim_agents import (
-                refresh_registry_startup,  # deferred import to avoid an import-time cycle (aim_agents -> config.loader)
-            )
-
-            refresh_registry_startup()
-            logger.debug("Project agent registry refreshed")
-        except Exception:
-            logger.warning("Project agent registry refresh failed", exc_info=True)
-
         self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
         factory = build_provider_factory(self._cfg)
 

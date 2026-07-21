@@ -21,7 +21,6 @@ from pathlib import Path
 from kiro_crew.aim_agents import (
     install_cc_plugin,
     installed_kiro_packages_missing_from_cc,
-    scan_directory,
 )
 from kiro_crew.apps.bridges import (
     deregister_app,
@@ -450,28 +449,6 @@ def _cleanup_app_crons_from_scheduler(app_name: str) -> int:
     if removed:
         print(f"  removed {removed} cron job(s) from scheduler")
     return removed
-
-
-def _handle_scan(args: argparse.Namespace) -> None:
-    """Scan directories for project agents (.kiro/agents/)."""
-    total: list[str] = []
-    for path in args.paths:
-        agents = scan_directory(path)
-        for a in agents:
-            total.append(f"  {a.name} ({a.project_path})")
-    sel().log_api_access(
-        caller="cli",
-        operation="scan_directory",
-        outcome="ok",
-        source="cli",
-        resources=", ".join(args.paths),
-    )
-    if total:
-        print(f"Discovered {len(total)} project agent(s):")
-        for line in total:
-            print(line)
-    else:
-        print("No project agents found.")
 
 
 def _handle_app(args: argparse.Namespace) -> None:

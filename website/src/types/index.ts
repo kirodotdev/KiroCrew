@@ -40,7 +40,7 @@ export interface CronJob {
   enabled: boolean; schedule: string; last_status: string
   cron_expr?: string | null; every?: number | null; every_secs?: number | null
   at?: number | null; created_ts?: number | null
-  agent?: string; model?: string; project_path?: string; channel?: string; approval_mode?: string; silent?: boolean
+  agent?: string; model?: string; channel?: string; approval_mode?: string; silent?: boolean
   strict_schedule?: boolean
   /** When true, this cron's runs do not appear as a chat session in the active
    * session list (results still go to Slack/notifications + History). Default false. */

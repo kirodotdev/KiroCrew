@@ -28,7 +28,6 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
     state.file_indexes = MagicMock()
-    state._background_tasks = set()
     state.file_indexes.acquire = AsyncMock()
     state.file_indexes.release = AsyncMock()
     return state

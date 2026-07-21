@@ -124,7 +124,6 @@ class CronJob:
     # When agent_sequence is set, it takes precedence over agent_id.
     # The execution logic runs agents in order; see Phase 3.
     agent_sequence: list[str] = field(default_factory=list)
-    project_path: str = ""  # project root for project-scoped agent (empty = global agent)
     env: dict[str, str] = field(default_factory=dict)  # per-job environment variables
     timeout_secs: int = _JOB_TIMEOUT_SECS
     strict_schedule: bool = False  # when True, skip jitter and fire exactly on schedule
@@ -821,8 +820,6 @@ class CronService:
                     job.message = kwargs["message"]
                 if "agent_id" in kwargs:
                     job.agent_id = kwargs["agent_id"] or ""
-                if "project_path" in kwargs:
-                    job.project_path = kwargs["project_path"] or ""
                 if "channel" in kwargs:
                     job.channel = kwargs["channel"] or None
                 if "approval_mode" in kwargs:

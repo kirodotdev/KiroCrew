@@ -1726,13 +1726,6 @@ class ChannelConfig:
         default="",
         metadata=_meta("Agent", "Agent override for this channel (empty = default)."),
     )
-    project_path: str = field(
-        default="",
-        metadata=_meta(
-            "Project Path",
-            "Project directory for project-scoped agent (empty = global agent).",
-        ),
-    )
     thread_follow: bool = field(
         default=True,
         metadata=_meta(
@@ -1749,7 +1742,6 @@ class ChannelConfig:
         return cls(
             activation=activation,
             agent=data.get("agent", ""),
-            project_path=data.get("project_path", ""),
             thread_follow=data.get("thread_follow", True),
         )
 
