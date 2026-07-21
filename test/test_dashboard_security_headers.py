@@ -11,6 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.dashboard.server import _apply_security_headers
 
@@ -112,9 +113,12 @@ class TestApplySecurityHeaders:
         csp = resp.headers["Content-Security-Policy"]
         assert "default-src 'self'" in csp
         assert "object-src 'none'" in csp
-        # No loopback wildcards in frame-src when instances is disabled
+        # No loopback wildcards anywhere by default: frame-src is unextended
+        # (instances disabled) and frame-ancestors is bare 'self' (no operator
+        # parent origin opted in).
         assert "http://127.0.0.1:*" not in csp
         assert "http://localhost:*" not in csp
+        assert "frame-ancestors 'self'" in csp
 
     def test_csp_frame_src_allows_cloudfront_previews(self) -> None:
         """Webapp artifact live previews iframe the deployed CloudFront site
@@ -130,9 +134,10 @@ class TestApplySecurityHeaders:
             assert "https://*" + " " not in frame_src  # no bare https wildcard
 
     def test_defense_in_depth_headers_present(self) -> None:
-        """P475357944 (CWE-1021/693/200/319): the global pipeline sets
+        """P475357944 (CWE-1021/693/200/319): by default the pipeline sets
         clickjacking / MIME-sniffing / referrer / HSTS headers + CSP
-        frame-ancestors."""
+        frame-ancestors 'self'. With no embed parent token, the posture is
+        unchanged: bare 'self' + X-Frame-Options."""
         resp = _make_response()
         _apply_security_headers(resp, _make_app(with_instances=False))
         assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
@@ -140,6 +145,47 @@ class TestApplySecurityHeaders:
         assert resp.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
         assert "max-age=31536000" in resp.headers["Strict-Transport-Security"]
         assert "frame-ancestors 'self'" in resp.headers["Content-Security-Policy"]
+
+    def test_frame_ancestors_trusts_token_embed_parent(self, monkeypatch) -> None:
+        """When the request's signed token carries an embed_parent_port claim (the
+        parent desktop app's port, minted at connect), frame-ancestors lists that
+        EXACT loopback origin (all loopback hosts at that port) so the cross-port
+        multi-instance embed renders. Never a wildcard, never a hardcoded port;
+        X-Frame-Options is omitted so SAMEORIGIN can't refuse the cross-port
+        embed."""
+        # Focused header-logic test: stub the (separately unit-tested) signed
+        # claim reader so we don't re-mint a real token here.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.server.token_embed_parent_port",
+            lambda token: 5476 if token else None,
+        )
+        request = make_mocked_request("GET", "/?token=deadbeef")
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(
+            d for d in csp.split(";") if d.strip().startswith("frame-ancestors")
+        )
+        assert "'self'" in frame_anc
+        assert "http://localhost:5476" in frame_anc
+        assert "http://127.0.0.1:5476" in frame_anc
+        assert "*" not in frame_anc  # exact origins only, no wildcard
+        # X-Frame-Options omitted so it cannot contradict the cross-port allowlist
+        assert "X-Frame-Options" not in resp.headers
+
+    def test_frame_ancestors_default_without_embed_token(self, monkeypatch) -> None:
+        """A request with no valid embed-parent token (or none at all) keeps the
+        default posture: frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN.
+        A random local page has no signed token, so it can never inject an
+        ancestor (CSE SEC-016 clickjacking)."""
+        # Real reader returns None for a request with no token → default posture.
+        request = make_mocked_request("GET", "/")
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'self'" in csp
+        assert "localhost:3000" not in csp
+        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
 
     def test_csp_extends_frame_src_when_instances_enabled(self) -> None:
         resp = _make_response()

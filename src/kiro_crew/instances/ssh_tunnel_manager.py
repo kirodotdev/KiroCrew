@@ -40,6 +40,11 @@ from dataclasses import dataclass
 
 import aiohttp
 
+# The local (embedding) gateway's configured port — carried into the minted
+# remote token as the CSP frame-ancestor parent origin so the embedded pane can
+# be framed by this desktop app on whatever KIROCREW_PORT it runs on (no
+# hardcoded port, no wildcard). See server._extra_frame_ancestors.
+from kiro_crew.config.loader import DASHBOARD_PORT as _LOCAL_DASHBOARD_PORT
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_INTERVAL
@@ -571,7 +576,10 @@ class SshTunnelManager:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ps", "-axww", "-o", "pid=,command=",
+                "ps",
+                "-axww",
+                "-o",
+                "pid=,command=",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -714,6 +722,7 @@ class SshTunnelManager:
                     remote_bin=remote_bin,
                     ttl=inst.ttl,
                     remote_port=inst.remote_port,
+                    embed_parent_port=_LOCAL_DASHBOARD_PORT,
                 )
             except TokenMintError as e:
                 await tunnel.stop()
@@ -806,9 +815,11 @@ class SshTunnelManager:
         self._recovery_tasks.add(task)
         task.add_done_callback(self._recovery_tasks.discard)
         task.add_done_callback(
-            lambda t: logger.error("Self-heal task crashed: %s", t.exception())
-            if not t.cancelled() and t.exception()
-            else None
+            lambda t: (
+                logger.error("Self-heal task crashed: %s", t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
         )
 
     async def _recover_after(self, instance_id: str, delay: float) -> None:
@@ -906,7 +917,11 @@ class SshTunnelManager:
         logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
         try:
             token = await self._mint_token(
-                ssh_host, remote_bin=remote_bin, ttl=inst.ttl, remote_port=inst.remote_port
+                ssh_host,
+                remote_bin=remote_bin,
+                ttl=inst.ttl,
+                remote_port=inst.remote_port,
+                embed_parent_port=_LOCAL_DASHBOARD_PORT,
             )
         except TokenMintError as e:
             logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
@@ -995,9 +1010,11 @@ class SshTunnelManager:
         self._recovery_tasks.add(task)
         task.add_done_callback(self._recovery_tasks.discard)
         task.add_done_callback(
-            lambda t: logger.error("Diagnosis task crashed for %s: %s", instance_id, t.exception())
-            if not t.cancelled() and t.exception()
-            else None
+            lambda t: (
+                logger.error("Diagnosis task crashed for %s: %s", instance_id, t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
         )
 
     def get_token(self, instance_id: str) -> str:
@@ -1085,9 +1102,16 @@ class SshTunnelManager:
         task = asyncio.create_task(self._token_refresh_loop(instance_id))
         self._refresh_tasks[instance_id] = task
         task.add_done_callback(
-            lambda t: logger.error("Token refresh task crashed for %s: %s", instance_id, t.exception())
-            if not t.cancelled() and t.exception()
-            else None
+            # False positive (below): only the instance id + exception are logged,
+            # never the token. The message contains the word "Token" (the task's
+            # name), which trips the heuristic; this module never logs token values
+            # (a documented invariant — mint/refresh keep tokens off stderr/logs).
+            lambda t: (
+                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+                logger.error("Token refresh task crashed for %s: %s", instance_id, t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
         )
 
     async def _token_refresh_loop(self, instance_id: str) -> None:
@@ -1134,7 +1158,11 @@ class SshTunnelManager:
             return False
         try:
             token = await self._mint_token(
-                ssh_host, remote_bin=remote_bin, ttl=inst.ttl, remote_port=inst.remote_port
+                ssh_host,
+                remote_bin=remote_bin,
+                ttl=inst.ttl,
+                remote_port=inst.remote_port,
+                embed_parent_port=_LOCAL_DASHBOARD_PORT,
             )
         except TokenMintError as e:
             logger.warning("Proactive token refresh failed for %s: %s", instance_id, e)

@@ -140,6 +140,9 @@ def _token(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     url = f"http://localhost:{port}/api/token/local?ttl={args.ttl}"
+    epp = getattr(args, "embed_parent_port", None)
+    if epp:
+        url += f"&embed_parent_port={int(epp)}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:

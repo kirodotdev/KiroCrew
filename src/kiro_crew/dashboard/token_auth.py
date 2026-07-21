@@ -165,9 +165,7 @@ class RevokedNonceStore:
         try:
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            logger.warning(
-                "could not read revoked-nonce store; starting empty", exc_info=True
-            )
+            logger.warning("could not read revoked-nonce store; starting empty", exc_info=True)
             return
         now = time.time()
         with self._lock:
@@ -185,9 +183,7 @@ class RevokedNonceStore:
             return
         with self._lock:
             data = {
-                "revoked_nonces": [
-                    {"nonce": n, "exp": exp} for n, exp in self._revoked.items()
-                ]
+                "revoked_nonces": [{"nonce": n, "exp": exp} for n, exp in self._revoked.items()]
             }
             try:
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -351,7 +347,15 @@ _state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRE
 # endpoint (sandboxed preview iframes carry no cookies). See
 # dashboard/handlers/webapp_preview.py for the full security model.
 _BYPASS_PREFIXES = ("/assets/", "/static/", "/fonts/", "/artifact-app/")
-_BYPASS_EXACT = {"/logo.png", "/manifest.json", "/sw.js", "/pcm-worklet.js", "/api/token/local", "/api/shutdown", "/api/theme/boot"}
+_BYPASS_EXACT = {
+    "/logo.png",
+    "/manifest.json",
+    "/sw.js",
+    "/pcm-worklet.js",
+    "/api/token/local",
+    "/api/shutdown",
+    "/api/theme/boot",
+}
 
 # Anchored bypass for installed-app static UI bundles only (federated-app
 # RFC §3.8). Matches /apps/{name}/ui/<anything>, where {name} is the
@@ -625,6 +629,34 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         if not valid:
             return False, "", reason
     return True, data.get("sub", ""), ""
+
+
+def token_embed_parent_port(token: str) -> int | None:
+    """Return the ``embed_parent_port`` claim from a validly-signed token, or None.
+
+    Drives the CSP ``frame-ancestors`` allowlist for the multi-instance embed: the
+    parent dashboard's port (the embedding desktop app's ``KIROCREW_PORT``) is
+    carried as a signed claim minted at connect time, so the embedded remote can
+    authorize exactly that loopback parent origin to frame it — no hardcoded port,
+    no wildcard. Verifies HMAC signature + session expiry + revocation gen (a
+    forged/revoked token yields None). The single-use link-nonce is intentionally
+    NOT required: the claim is read on every framed document load for the life of
+    the session, so it is validated on the cookie/session path.
+    """
+    if not token:
+        return None
+    valid, _uid, _reason = validate_token(token, use_session_exp=True)
+    if not valid:
+        return None
+    try:
+        data = json.loads(_b64url_decode(token.split(".", 1)[0]))
+    except Exception:
+        return None
+    raw = data.get("embed_parent_port")
+    if not isinstance(raw, str) or not raw.isdigit():
+        return None
+    port = int(raw)
+    return port if 1 <= port <= 65535 else None
 
 
 def validate_token_with_app(
@@ -1023,9 +1055,7 @@ def app_token_path_allowed(app_name: str, path: str) -> bool:
     return any(_api_pattern_matches(p, path) for p in _app_api_allowlist(app_name))
 
 
-def _enforce_app_scope(
-    request: web.Request, app_name: str, path: str
-) -> web.Response | None:
+def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:
     """Return a 403 response if an app token is out of scope, else None.
 
     No-op for dashboard-user tokens (empty *app_name*).
@@ -1085,9 +1115,7 @@ def token_auth_middleware(
     # and never block the loop. (no-blocking-call-on-event-loop)
     _get_revoked_store()
 
-    def _extract_and_validate_token(
-        request: web.Request, _port: int
-    ) -> tuple[bool, str, str, str]:
+    def _extract_and_validate_token(request: web.Request, _port: int) -> tuple[bool, str, str, str]:
         """Extract token from query param or cookie and validate it.
 
         Returns ``(valid, user_id, reason, app_name)``. Used by internal-path
@@ -1352,7 +1380,12 @@ def token_auth_middleware(
                 # Distinct outcome (NOT "ok"): keep forged-token navigations
                 # detectable by SEL anomaly detection while still serving the
                 # secret-free shell.
-                _log_auth(request, "", "shell_unauth_invalid_token", f"SPA shell served (invalid token: {reason})")
+                _log_auth(
+                    request,
+                    "",
+                    "shell_unauth_invalid_token",
+                    f"SPA shell served (invalid token: {reason})",
+                )
                 return await spa_shell_handler(request)  # type: ignore[operator]
             _log_auth(request, "", "denied", reason)
             return _deny(request, reason)
@@ -1386,9 +1419,7 @@ def token_auth_middleware(
             # window closes; the cookie is an unrelated string. Per-session
             # revocation still works because the minted token carries its own
             # nonce (see RevokedNonceStore / api_auth_logout).
-            _remaining = (
-                int(session_exp - time.time()) if session_exp else MAX_SESSION_TTL_SECS
-            )
+            _remaining = int(session_exp - time.time()) if session_exp else MAX_SESSION_TTL_SECS
             if _remaining > 0:
                 session_token = generate_token(
                     user_id, ttl_seconds=_remaining, app=app_name, register_nonce=False
@@ -1405,17 +1436,11 @@ def token_auth_middleware(
             # working within the 5-minute window (it just re-exchanges for a
             # fresh session cookie each time). Guarded by is_revoked so repeated
             # exchanges of the same link don't re-write the denylist file.
-            if (
-                _link_nonce
-                and session_exp
-                and not _get_revoked_store().is_revoked(_link_nonce)
-            ):
+            if _link_nonce and session_exp and not _get_revoked_store().is_revoked(_link_nonce):
                 # revoke() does synchronous file I/O (mkdir/write/chmod/replace);
                 # offload so it never blocks the event loop. is_revoked above is
                 # an in-memory check and is cheap enough to run inline.
-                await asyncio.to_thread(
-                    _get_revoked_store().revoke, _link_nonce, session_exp
-                )
+                await asyncio.to_thread(_get_revoked_store().revoke, _link_nonce, session_exp)
             # Bind the SESSION token (what becomes the cookie) to the client IP,
             # not the consumed URL token.
             bind_token_ip(session_token, client_ip, session_exp)

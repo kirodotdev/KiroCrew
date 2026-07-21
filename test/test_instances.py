@@ -429,7 +429,7 @@ class TestSshTunnelArgvCompression:
             captured["compression"] = compression
             return _FakeTunnel(*a, compression=compression, **k)
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             return "SECRET_TOK"
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
@@ -467,7 +467,7 @@ class TestSshTunnelManager:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -534,7 +534,7 @@ class TestSshTunnelManager:
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -1311,7 +1311,7 @@ class TestSelfHealRefreshRestart:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             return "TOK"
 
         return reg, SshTunnelManager(
@@ -1546,7 +1546,7 @@ class TestSelfHealRefreshRestart:
         # instance gets an invalid re-minted token.
         seen: list = []
 
-        async def capturing_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def capturing_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             seen.append(remote_port)
             return "TOK"
 
@@ -1750,7 +1750,7 @@ class TestPortMirror:
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": port_free)
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             return "TOK"
 
         return SshTunnelManager(reg, mint_token=ok_mint, tunnel_factory=factory)
@@ -1836,7 +1836,7 @@ class TestLastError:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -1869,7 +1869,7 @@ class TestLastError:
     async def test_retained_on_mint_failure_after_teardown(self, tmp_path):
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -1885,7 +1885,7 @@ class TestLastError:
 
         calls = {"n": 0}
 
-        async def flaky_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def flaky_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise TokenMintError("first attempt fails")
@@ -1903,7 +1903,7 @@ class TestLastError:
     async def test_cleared_on_explicit_disconnect(self, tmp_path):
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -1930,7 +1930,7 @@ class TestStatusForRetainedError:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -1944,7 +1944,7 @@ class TestStatusForRetainedError:
         from kiro_crew.dashboard.handlers_instances import _status_for
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -2000,7 +2000,7 @@ class TestStartupRevive:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -2032,7 +2032,7 @@ class TestStartupRevive:
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def mint(host, *, remote_bin="", ttl="20h", remote_port=None):
+        async def mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
             if "bad" in host:
                 raise TokenMintError("unreachable")
             return "SECRET_TOK"

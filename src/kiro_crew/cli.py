@@ -1332,6 +1332,17 @@ Examples:
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
     )
     token_parser.add_argument("--ttl", default="20h", help="Token TTL, e.g. 1h, 30m (default: 20h)")
+    token_parser.add_argument(
+        "--embed-parent-port",
+        type=int,
+        default=None,
+        help=(
+            "Parent dashboard port to authorize as a CSP frame-ancestor for the "
+            "multi-instance embed (the embedding gateway's KIROCREW_PORT). Loopback "
+            "origins at this port may frame this dashboard; omit for the default "
+            "'self'-only policy."
+        ),
+    )
 
     # status
     status_parser = sub.add_parser("status", help="Show runtime stats")

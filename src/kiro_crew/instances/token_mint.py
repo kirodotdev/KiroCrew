@@ -35,7 +35,7 @@ DEFAULT_REMOTE_BIN = "$HOME/.local/bin/kirocrew"
 # Non-interactive SSH shells don't source ~/.zshrc, so PATH may be minimal. Each
 # candidate is a full path the remote shell can exec directly.
 REMOTE_BIN_CANDIDATES: tuple[str, ...] = (
-    "$HOME/.local/bin/kirocrew",              # install.sh / source install
+    "$HOME/.local/bin/kirocrew",  # install.sh / source install
     "$HOME/.kirocrew-app/.venv/bin/kirocrew",  # one-liner installer venv
 )
 
@@ -99,18 +99,27 @@ def _validate_port(port: int | None) -> int | None:
     return p
 
 
-def _token_subcommand(ttl: str | None, port: int | None = None) -> str:
+def _token_subcommand(
+    ttl: str | None, port: int | None = None, embed_parent_port: int | None = None
+) -> str:
     """Return the ``kirocrew token`` subcommand (ttl/port pre-validated).
 
     ``--port`` is essential when the remote gateway isn't on the default 7777:
     ``kirocrew token`` calls its own dashboard to mint, so the port must match
     the instance's ``remote_port`` or the mint fails with "connection refused".
+
+    ``--embed-parent-port`` carries the *parent* (embedding) dashboard's port so
+    the minted token authorizes exactly that loopback origin as a CSP
+    frame-ancestor — how the multi-instance embed renders across ports without a
+    hardcoded port or a wildcard.
     """
     cmd = "token"
     if ttl:
         cmd += f" --ttl {ttl}"
     if port:
         cmd += f" --port {port}"
+    if embed_parent_port:
+        cmd += f" --embed-parent-port {embed_parent_port}"
     return cmd
 
 
@@ -161,6 +170,7 @@ def build_remote_token_command(
     candidates: tuple[str, ...] = REMOTE_BIN_CANDIDATES,
     ttl: str | None = None,
     port: int | None = None,
+    embed_parent_port: int | None = None,
 ) -> str:
     """Pick the remote command for the user's stored ``remote_bin``.
 
@@ -172,7 +182,10 @@ def build_remote_token_command(
     if ttl is not None:
         ttl = _validate_ttl(ttl)
     port = _validate_port(port)
-    return build_remote_command(remote_bin, _token_subcommand(ttl, port), candidates)
+    embed_parent_port = _validate_port(embed_parent_port)
+    return build_remote_command(
+        remote_bin, _token_subcommand(ttl, port, embed_parent_port), candidates
+    )
 
 
 def _build_ssh_argv(ssh_host: str, remote_command: str) -> list[str]:
@@ -201,6 +214,7 @@ async def mint_remote_token(
     remote_bin: str = "",
     ttl: str = "20h",
     remote_port: int | None = None,
+    embed_parent_port: int | None = None,
     timeout_secs: float = _DEFAULT_MINT_TIMEOUT_SECS,
 ) -> str:
     """SSH to *ssh_host*, run ``kirocrew token``, and return the parsed JWT.
@@ -208,12 +222,18 @@ async def mint_remote_token(
     *remote_port* is passed to ``kirocrew token --port`` so the remote mint
     targets the gateway the instance actually runs on (not the default 7777).
 
+    *embed_parent_port* is passed to ``kirocrew token --embed-parent-port`` so the
+    minted token authorizes the parent (embedding) dashboard's loopback origin as
+    a CSP frame-ancestor — how the embedded pane renders across ports.
+
     Raises :class:`TokenMintError` on connection failure, a non-zero remote
     exit, a timeout, or if no token can be parsed from stdout. The token itself
     is never logged.
     """
     ttl = _validate_ttl(ttl)
-    remote_command = build_remote_token_command(remote_bin, ttl=ttl, port=remote_port)
+    remote_command = build_remote_token_command(
+        remote_bin, ttl=ttl, port=remote_port, embed_parent_port=embed_parent_port
+    )
     argv = _build_ssh_argv(ssh_host, remote_command)
     logger.info("Minting token on %s (ttl=%s)", ssh_host, ttl)  # no token in logs
 
@@ -234,9 +254,7 @@ async def mint_remote_token(
             await proc.wait()
         except ProcessLookupError:
             pass
-        raise TokenMintError(
-            f"timed out minting token on {ssh_host} after {timeout_secs}s"
-        ) from e
+        raise TokenMintError(f"timed out minting token on {ssh_host} after {timeout_secs}s") from e
 
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace").strip()

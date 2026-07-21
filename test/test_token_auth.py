@@ -27,6 +27,7 @@ from kiro_crew.dashboard.token_auth import (
     revoke_access_cookie,
     revoke_all_sessions,
     token_auth_middleware,
+    token_embed_parent_port,
     try_consume,
     validate_token,
     validate_token_with_app,
@@ -1920,3 +1921,23 @@ async def test_deploy_path_prefix_matching() -> None:
         req = _make_request(path=path, headers={"X-Internal-Secret": secret})
         resp = await mw(req, _ok_handler)
         assert resp.status == 200, f"expected 200 for {path}, got {resp.status}"
+
+
+def test_token_embed_parent_port_roundtrip() -> None:
+    """A token minted with the embed_parent_port claim reads back as that int —
+    the signed carrier for the multi-instance CSP frame-ancestor parent origin."""
+    tok = generate_token("local-app", extra={"embed_parent_port": "5476"})
+    assert token_embed_parent_port(tok) == 5476
+
+
+def test_token_embed_parent_port_absent_forged_or_oob() -> None:
+    """No claim, a forged signature, an empty token, and an out-of-range port all
+    yield None so a random local page can never inject a frame-ancestor."""
+    assert token_embed_parent_port(generate_token("local-app")) is None
+    assert token_embed_parent_port("") is None
+    # Forged: appending to a valid token breaks the HMAC signature.
+    forged = generate_token("local-app", extra={"embed_parent_port": "5476"}) + "x"
+    assert token_embed_parent_port(forged) is None
+    # Out-of-range port claim is rejected.
+    oob = generate_token("local-app", extra={"embed_parent_port": "70000"})
+    assert token_embed_parent_port(oob) is None

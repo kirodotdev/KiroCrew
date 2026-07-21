@@ -184,11 +184,13 @@ async def api_theme_boot(request: web.Request) -> web.Response:
     only the workspace-level theme preference and onboarded flag.
     """
     cfg = KiroCrewConfig.load()
-    return web.json_response({
-        "mode": cfg.dashboard.theme_mode or "",
-        "color": cfg.dashboard.theme_color or "",
-        "onboarded": cfg.dashboard.onboarded,
-    })
+    return web.json_response(
+        {
+            "mode": cfg.dashboard.theme_mode or "",
+            "color": cfg.dashboard.theme_color or "",
+            "onboarded": cfg.dashboard.onboarded,
+        }
+    )
 
 
 async def api_theme_config(request: web.Request) -> web.Response:
@@ -199,11 +201,13 @@ async def api_theme_config(request: web.Request) -> web.Response:
     """
     cfg = KiroCrewConfig.load()
     if request.method == "GET":
-        return web.json_response({
-            "mode": cfg.dashboard.theme_mode or "",
-            "color": cfg.dashboard.theme_color or "",
-            "onboarded": cfg.dashboard.onboarded,
-        })
+        return web.json_response(
+            {
+                "mode": cfg.dashboard.theme_mode or "",
+                "color": cfg.dashboard.theme_color or "",
+                "onboarded": cfg.dashboard.onboarded,
+            }
+        )
 
     # PUT
     body = await request.json()
@@ -231,11 +235,13 @@ async def api_theme_config(request: web.Request) -> web.Response:
     if changed:
         cfg.save()
 
-    return web.json_response({
-        "mode": cfg.dashboard.theme_mode or "",
-        "color": cfg.dashboard.theme_color or "",
-        "onboarded": cfg.dashboard.onboarded,
-    })
+    return web.json_response(
+        {
+            "mode": cfg.dashboard.theme_mode or "",
+            "color": cfg.dashboard.theme_color or "",
+            "onboarded": cfg.dashboard.onboarded,
+        }
+    )
 
 
 async def pwa_file(request: web.Request) -> web.StreamResponse:
@@ -342,7 +348,11 @@ async def api_stt_config(request: web.Request) -> web.Response:
             stt["provider"] = body["provider"]
         if "model" in body and body["model"] in _STT_MODEL_SIZES:
             stt["model"] = body["model"]
-        if "mlx_model" in body and isinstance(body["mlx_model"], str) and body["mlx_model"] in _STT_MLX_MODELS:
+        if (
+            "mlx_model" in body
+            and isinstance(body["mlx_model"], str)
+            and body["mlx_model"] in _STT_MLX_MODELS
+        ):
             stt["mlx_model"] = body["mlx_model"]
         if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
             stt["transcribe_region"] = body["transcribe_region"]
@@ -899,9 +909,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             val = agent_settings["max_subagents"]
             hard_cap = persisted_hard_cap
             if isinstance(val, bool) or not isinstance(val, int) or val < 0 or val > hard_cap:
-                return _deny(
-                    f"max_subagents must be an integer between 0 (auto) and {hard_cap}"
-                )
+                return _deny(f"max_subagents must be an integer between 0 (auto) and {hard_cap}")
             agent["max_subagents"] = val
             applied.append("max_subagents")
         # Boolean toggles
@@ -1107,7 +1115,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             if slot.model:
                 slot.model = ""
         state.push_slots_update()
-        logger.info("Provider switched to %s — config rebuilt, factory reloaded, slot models cleared", value)
+        logger.info(
+            "Provider switched to %s — config rebuilt, factory reloaded, slot models cleared", value
+        )
 
     # If completion-keep mode or budget changed, propagate to the live
     # SubagentManager so the next subagent to complete uses the new value.
@@ -1174,7 +1184,15 @@ async def api_token_local(request: web.Request) -> web.Response:
             ttl = parsed
     state = request.app.get("state")
     owner_id = str(getattr(state, "owner_id", "") or "")
-    token = generate_token(owner_id or "local-app", ttl_seconds=ttl)
+    # Optional multi-instance embed claim: the parent (embedding) dashboard's
+    # port, so the embedded remote can authorize exactly that loopback parent
+    # origin in CSP frame-ancestors (see server._extra_frame_ancestors). Minted
+    # only via this local-secret-gated endpoint; validated as a loopback port.
+    extra: dict[str, str] = {}
+    epp = request.query.get("embed_parent_port", "")
+    if epp.isdigit() and 1 <= int(epp) <= 65535:
+        extra["embed_parent_port"] = str(int(epp))
+    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=extra or None)
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="token.local",

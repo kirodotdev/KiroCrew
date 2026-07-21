@@ -1516,7 +1516,35 @@ async def test_local_token_uses_configured_owner_subject(monkeypatch) -> None:
         payload = await response.json()
 
     assert payload == {"token": "owner-token", "expires_in": 900}
-    generate.assert_called_once_with("U_OWNER", ttl_seconds=900)
+    generate.assert_called_once_with("U_OWNER", ttl_seconds=900, extra=None)
+
+
+@pytest.mark.asyncio
+async def test_local_token_carries_embed_parent_port_claim(monkeypatch) -> None:
+    """?embed_parent_port=<port> is baked into the token as a signed claim so the
+    embedded remote can authorize that loopback parent origin in frame-ancestors."""
+    from kiro_crew.dashboard.handlers import core
+
+    generate = MagicMock(return_value="owner-token")
+    monkeypatch.setattr(core, "generate_token", generate)
+    monkeypatch.setattr(core, "_sel", lambda: MagicMock())
+    app = web.Application()
+    app["local_secret"] = "local-secret"
+    state = MagicMock()
+    state.owner_id = "U_OWNER"
+    app["state"] = state
+    app.router.add_get("/api/token/local", core.api_token_local)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get(
+            "/api/token/local?ttl=15m&embed_parent_port=5476",
+            headers={"X-Local-Secret": "local-secret"},
+        )
+        assert response.status == 200
+
+    generate.assert_called_once_with(
+        "U_OWNER", ttl_seconds=900, extra={"embed_parent_port": "5476"}
+    )
 
 
 @pytest.mark.parametrize(
