@@ -14,9 +14,20 @@ const CRON_DOW_TO_GRID: Record<number, number> = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5,
 
 
 
+/** Job execution kind. 'message' runs the agent; 'script'/'command' are
+ * LLM-less (Python callable / shell) and have no message, agent, or approval. */
+export type JobKind = 'message' | 'script' | 'command'
+
+/** Derive the execution kind of a job from which field it carries. */
+export function jobKindOf(job?: CronJob): JobKind {
+  if (job?.script) return 'script'
+  if (job?.command) return 'command'
+  return 'message'
+}
+
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
+  if (!job) return { name: '', message: '', agent: '', model: '', projectPath: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([sh])/); if (!m) return 3600; return m[2] === 'h' ? parseInt(m[1]) * 3600 : parseInt(m[1]) })()
   const intUnit = secs >= 86400 ? 'days' as const : secs >= 3600 ? 'hours' as const : 'minutes' as const
@@ -33,7 +44,7 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', projectPath: job.project_path || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', projectPath: job.project_path || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -43,14 +54,25 @@ function buildBody(
   setError: (e: string) => void,
   isEdit = false,
 ): Record<string, string | number | boolean> | null {
-  if (!f.name || !f.message) { setError('Name and message are required'); return null }
-  const body: Record<string, string | number | boolean> = { name: f.name, message: f.message, agent: f.agent }
-  if (f.projectPath) body.project_path = f.projectPath
-  // Edit mode always sends model so clearing an override ("" = inherit)
-  // persists; create mode omits it when empty like other optional fields.
-  if (isEdit || f.model) body.model = f.model
+  const isLlmless = f.jobKind === 'script' || f.jobKind === 'command'
+  // Script/command crons have no agent message — only the agent/message kind
+  // requires one. For LLM-less jobs we omit message/agent/model/approval entirely
+  // so the partial PATCH preserves the script/command binding (the update endpoint
+  // does not accept script/command, so we never send them — only the fields it
+  // supports: schedule, channel, silent, strict, hide-in-chat, timezone).
+  if (!f.name) { setError('Name is required'); return null }
+  if (!isLlmless && !f.message) { setError('Message is required'); return null }
+  const body: Record<string, string | number | boolean> = { name: f.name }
+  if (!isLlmless) {
+    body.message = f.message
+    body.agent = f.agent
+    if (f.projectPath) body.project_path = f.projectPath
+    // Edit mode always sends model so clearing an override ("" = inherit)
+    // persists; create mode omits it when empty like other optional fields.
+    if (isEdit || f.model) body.model = f.model
+    if (f.approvalMode) body.approval_mode = f.approvalMode
+  }
   if (f.channel) body.channel = f.channel
-  if (f.approvalMode) body.approval_mode = f.approvalMode
   body.silent = f.silent
   body.strict_schedule = f.strictSchedule
   body.hide_in_chat = f.hideInChat
@@ -115,9 +137,14 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
   const [saving, setSavingState] = useState(false)
   const setSaving = (v: boolean) => { setSavingState(v); onSavingChange?.(v) }
 
+  // Execution kind is fixed by the job being edited (script/command/message);
+  // the create form has no job, so it is always the agent-message kind.
+  const jobKind = defaults.jobKind
+  const isLlmless = jobKind === 'script' || jobKind === 'command'
+
   const submit = async () => {
     setError(''); setSaving(true)
-    const f = { name, message: msg, agent, model, projectPath, channel, approvalMode, silent, strictSchedule, hideInChat, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
+    const f = { name, message: msg, agent, model, projectPath, channel, approvalMode, silent, strictSchedule, hideInChat, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
     const body = buildBody(f, tz, setError, !!job)
     if (!body) { setSaving(false); return }
     try {
@@ -212,11 +239,16 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
 
       {/* Vertical-only: agent, channel, actions */}
       {vertical && (<>
+        {/* Agent and Approval are agent/message concepts — script/command crons
+            run no LLM, so hide them (consistent with the LLM-less create surface). */}
+        {!isLlmless && (<>
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">Agent</span>
           <span className="text-[11px] text-muted/70">Which agent handles this job. Leave default for the primary agent.</span>
           <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} activeProjectPath={projectPath} onChange={(name, pp) => { setAgent(name); setProjectPath(pp || '') }} />
         </div>
+        </>)}
+        {!isLlmless && (
         <div className="flex flex-col gap-1">
           <label className="text-[12px] text-muted font-medium">Model</label>
           <span className="text-[11px] text-muted/70">Override the model for this job. Leave on &quot;Inherit&quot; to use the agent or global default.</span>
@@ -226,11 +258,13 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
             {modelList.map(m => <option key={m.name} value={m.name}>{m.description || m.name}</option>)}
           </select>
         </div>
+        )}
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">Channel ID</span>
           <span className="text-[11px] text-muted/70">Slack channel to post results to. Leave empty for DM.</span>
           <Input id="jobform-channel" aria-label="Channel ID" value={channel} onChange={e => setChannel(e.target.value)} placeholder="Optional" />
         </div>
+        {!isLlmless && (
         <label htmlFor="jobform-approval" className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">Approval</span>
           <span className="text-[11px] text-muted/70">How tool calls are approved during execution</span>
@@ -238,6 +272,7 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
             <option value="">Default</option><option value="auto">Auto-approve</option>
           </select>
         </label>
+        )}
         <SettingsToggle
           label="Silent mode"
           description="Suppress automatic message delivery. The agent controls when to notify."
