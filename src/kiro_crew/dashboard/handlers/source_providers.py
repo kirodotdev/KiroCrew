@@ -1162,7 +1162,7 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
 
 async def api_pull_request_source(request: web.Request) -> web.Response:
     """Owner-only POST ``/api/source/pull-request`` with ``{url, refresh?}``."""
-    denied = _authorize_owner_request(request, "source.pull_request.read")
+    denied = _authorize_owner_request(request, "source.pull_request.read", allow_local_no_owner=True)
     if denied is not None:
         return denied
     try:
@@ -1193,7 +1193,7 @@ async def api_pull_request_source(request: web.Request) -> web.Response:
 
 async def api_pull_request_checks(request: web.Request) -> web.Response:
     """Owner-only POST ``/api/source/pull-request/checks`` with ``{url}``."""
-    denied = _authorize_owner_request(request, "source.pull_request.checks")
+    denied = _authorize_owner_request(request, "source.pull_request.checks", allow_local_no_owner=True)
     if denied is not None:
         return denied
     try:
@@ -1319,12 +1319,28 @@ def _audit_source_api(
         logger.debug("SEL source API audit failed", exc_info=True)
 
 
-def _authorize_owner_request(request: web.Request, operation: str) -> web.Response | None:
-    """Require an explicit dashboard-user claim matching the configured owner."""
+def _authorize_owner_request(
+    request: web.Request, operation: str, *, allow_local_no_owner: bool = False
+) -> web.Response | None:
+    """Require an explicit dashboard-user claim matching the configured owner.
+
+    When no owner is configured, the deployment is a local single-user install
+    (``owner_id`` is only set during Slack/owner setup). For **read-only**
+    operations (``allow_local_no_owner=True``), the endpoint is already gated by
+    ``token_auth`` and the local dashboard token carries subject ``local-app``
+    with an empty ``app`` claim — allow *that* local session so viewing a PR diff
+    does not require Slack setup; app tokens and any other subject still fail
+    closed. Mutations (e.g. resolving a review thread) pass the default
+    ``allow_local_no_owner=False`` and stay owner-only. Once an owner IS
+    configured (shared / Slack / multi-user), the strict owner match applies to
+    every operation.
+    """
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
     if not owner_id:
+        if allow_local_no_owner and request.get("app") == "" and caller == "local-app":
+            return None
         _audit_source_api(request, operation, "denied", "owner_not_configured")
         return web.json_response({"error": "forbidden"}, status=403)
     if "app" not in request or request["app"] != "":

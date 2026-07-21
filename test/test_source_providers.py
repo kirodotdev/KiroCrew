@@ -1572,6 +1572,68 @@ async def test_read_handlers_require_explicit_owner_dashboard_claims(
     assert secret not in str(call)
 
 
+@pytest.mark.asyncio
+async def test_read_handler_allows_local_token_when_no_owner_configured(
+    monkeypatch, _mock_source_sel
+) -> None:
+    """Local single-user install (no owner): the local dashboard token
+    (subject ``local-app``, empty app claim) may use the credential-backed
+    provider so viewing a PR diff does not require Slack/owner setup."""
+    fetch = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(source, "fetch_pull_request", fetch)
+    url = "https://github.com/acme/repo/pull/1"
+
+    async with TestClient(
+        TestServer(_app(owner_id="", user="local-app", app_name=""))
+    ) as client:
+        response = await client.post("/api/source/pull-request", json={"url": url})
+        assert response.status == 200
+        assert (await response.json()) == {"ok": True}
+
+    fetch.assert_awaited_once_with(url, refresh=False)
+
+
+@pytest.mark.asyncio
+async def test_read_handler_denies_non_local_subject_when_no_owner(
+    monkeypatch, _mock_source_sel
+) -> None:
+    """No owner + a non ``local-app`` subject (e.g. a stale owner-minted token)
+    still fails closed — the fallback is scoped to the genuine local token."""
+    fetch = AsyncMock()
+    monkeypatch.setattr(source, "fetch_pull_request", fetch)
+
+    async with TestClient(
+        TestServer(_app(owner_id="", user="U_OWNER", app_name=""))
+    ) as client:
+        response = await client.post(
+            "/api/source/pull-request", json={"url": "https://github.com/acme/repo/pull/1"}
+        )
+        assert response.status == 403
+        assert (await response.json()) == {"error": "forbidden"}
+
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_handler_denies_local_token_when_no_owner(monkeypatch, _mock_source_sel) -> None:
+    """The local no-owner fallback is scoped to reads: the resolve *mutation*
+    stays owner-only, so a local-app token with no owner still fails closed."""
+    resolve = AsyncMock()
+    monkeypatch.setattr(source, "resolve_pull_request_thread", resolve)
+
+    async with TestClient(
+        TestServer(_app(owner_id="", user="local-app", app_name=""))
+    ) as client:
+        response = await client.post(
+            "/api/source/pull-request/resolve",
+            json={"url": "https://github.com/acme/repo/pull/1", "threadId": "PRRT_1"},
+        )
+        assert response.status == 403
+        assert (await response.json()) == {"error": "forbidden"}
+
+    resolve.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("handler", "fetch_name", "operation"),
     [
