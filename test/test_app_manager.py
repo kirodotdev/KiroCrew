@@ -914,3 +914,210 @@ class TestCleanupMigratedBuiltin:
         assert "already migrated" in result.message
         # File was NOT deleted
         assert (app_path / INSTALLED_META_FILENAME).exists()
+
+
+# ---------------------------------------------------------------------------
+# _copy_app_tree — symlink / denylist / off-loop regression tests
+# (app install used to run a raw follow-symlinks copytree on the event loop;
+# a large `build` symlink target froze the loop until the watchdog killed
+# the gateway)
+# ---------------------------------------------------------------------------
+
+class TestCopyAppTree:
+    def test_symlink_escaping_source_root_omitted(self, tmp_path, app_home):
+        """A symlink resolving outside the app source is omitted — never
+        followed (no multi-GB walk) and never preserved (nothing in the
+        installed tree can point at e.g. ~/.ssh)."""
+        src = _make_app_source(tmp_path)
+        big = tmp_path / "big-target"
+        big.mkdir()
+        for i in range(20):
+            (big / f"file{i}.bin").write_text("x" * 1024)
+        (src / "assets-link").symlink_to(big)
+
+        result = install_app(src)
+        assert result.ok, result.error
+
+        from kiro_crew.apps.manager import app_dir
+
+        dest = app_dir("test-app")
+        assert not (dest / "assets-link").exists()
+        assert not (dest / "assets-link").is_symlink()
+        # Target contents were not copied anywhere in the installed tree.
+        copied_files = [p for p in dest.rglob("*") if p.is_file() and not p.is_symlink()]
+        assert not any("file0.bin" in str(p) for p in copied_files)
+
+    def test_symlink_inside_source_root_preserved(self, tmp_path, app_home):
+        """An in-tree symlink is preserved — and an ABSOLUTE in-tree link is
+        rewritten to a relative link targeting the installed copy, so the
+        installed app never depends on the original source directory."""
+        import os
+        import shutil as _shutil
+
+        src = _make_app_source(tmp_path)
+        (src / "shared").mkdir()
+        (src / "shared" / "common.js").write_text("export {}")
+        (src / "alias").symlink_to(src / "shared")  # absolute in-tree link
+
+        result = install_app(src)
+        assert result.ok, result.error
+
+        from kiro_crew.apps.manager import app_dir
+
+        dest = app_dir("test-app")
+        link = dest / "alias"
+        assert link.is_symlink()
+        # Rewritten relative — must not embed an absolute path to the source.
+        assert not os.path.isabs(os.readlink(link))
+        # Resolves inside the installed tree and stays usable even after the
+        # original source directory is gone.
+        _shutil.rmtree(src)
+        assert (link / "common.js").is_file()
+        assert link.resolve().is_relative_to(dest.resolve())
+
+    def test_denylist_dirs_dropped_runtime_payload_kept(self, tmp_path, app_home):
+        src = _make_app_source(tmp_path)
+        (src / "ui" / "node_modules").mkdir(parents=True)
+        (src / "ui" / "node_modules" / "junk.js").write_text("junk")
+        (src / "ui" / "dist").mkdir(parents=True)
+        (src / "ui" / "dist" / "index.mjs").write_text("export {}")
+        (src / ".git").mkdir()
+        (src / ".git" / "config").write_text("[core]")
+        (src / "__pycache__").mkdir()
+        (src / "__pycache__" / "x.pyc").write_bytes(b"\x00")
+        # A real `build/` dir is NOT denylisted: the manifest may reference
+        # runtime paths anywhere under the app root, so it must survive.
+        # (A `build` *symlink* is neutralized by symlinks=True instead.)
+        (src / "build").mkdir()
+        (src / "build" / "artifact.txt").write_text("built")
+
+        result = install_app(src)
+        assert result.ok, result.error
+
+        from kiro_crew.apps.manager import app_dir
+
+        dest = app_dir("test-app")
+        assert not (dest / "ui" / "node_modules").exists()
+        assert not (dest / ".git").exists()
+        assert not (dest / "__pycache__").exists()
+        assert (dest / "build" / "artifact.txt").is_file()
+        assert (dest / "ui" / "dist" / "index.mjs").is_file()
+
+    def test_lifecycle_lock_is_per_app(self):
+        from kiro_crew.apps.manager import app_lifecycle_lock
+
+        lock_a = app_lifecycle_lock("app-a")
+        assert app_lifecycle_lock("app-a") is lock_a
+        assert app_lifecycle_lock("app-b") is not lock_a
+
+    @pytest.mark.asyncio
+    async def test_install_off_loop_does_not_block_event_loop(self, tmp_path, app_home):
+        """Heartbeat latency stays low while a many-file install runs off-loop."""
+        import asyncio
+        import time
+
+        src = _make_app_source(tmp_path, name="fat-app")
+        payload = src / "payload"
+        payload.mkdir()
+        for i in range(2000):
+            (payload / f"f{i}.txt").write_text(str(i))
+
+        gaps: list[float] = []
+
+        async def heartbeat():
+            prev = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - prev)
+                prev = now
+
+        hb = asyncio.ensure_future(heartbeat())
+        try:
+            result = await asyncio.to_thread(install_app, src)
+        finally:
+            hb.cancel()
+        assert result.ok, result.error
+        # The watchdog threshold is 30s; anything close to that (or even 1s)
+        # would indicate the copy ran on the loop.
+        assert max(gaps) < 1.0
+
+    def test_orphaned_partial_install_self_heals(self, tmp_path, app_home):
+        """dest exists with junk but no installed metadata → fresh install wins."""
+        from kiro_crew.apps.manager import app_dir
+
+        orphan = app_dir("test-app")
+        orphan.mkdir(parents=True)
+        (orphan / "leftover.bin").write_text("partial copy from a crash")
+
+        src = _make_app_source(tmp_path)
+        result = install_app(src)
+        assert result.ok, result.error
+        assert not (orphan / "leftover.bin").exists()
+        assert (orphan / APP_MANIFEST_FILENAME).is_file()
+
+    def test_update_preserves_data_and_secret(self, tmp_path, app_home):
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        src = _make_app_source(tmp_path)
+        assert install_app(src).ok
+        dest = app_dir("test-app")
+        (dest / "data").mkdir(exist_ok=True)
+        (dest / "data" / "state.json").write_text('{"k": 1}')
+        secret = (dest / ".app_secret")
+        secret.write_text("s3cret")
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        result = update_app(v2)
+        assert result.ok, result.error
+        assert (dest / "data" / "state.json").read_text() == '{"k": 1}'
+        assert secret.read_text() == "s3cret"
+
+    def test_directory_junction_omitted(self, tmp_path, app_home, monkeypatch):
+        """Windows directory junctions (reparse points not reported by
+        islink) are omitted from the copy. Simulated by monkeypatching
+        os.path.isjunction since junctions don't exist on POSIX."""
+        import os
+
+        src = _make_app_source(tmp_path)
+        (src / "junction-dir").mkdir()
+        (src / "junction-dir" / "secret.txt").write_text("sensitive")
+
+        def fake_isjunction(p):
+            return os.path.basename(str(p)) == "junction-dir"
+
+        monkeypatch.setattr(os.path, "isjunction", fake_isjunction, raising=False)
+
+        result = install_app(src)
+        assert result.ok, result.error
+
+        from kiro_crew.apps.manager import app_dir
+
+        dest = app_dir("test-app")
+        assert not (dest / "junction-dir").exists()
+
+    def test_update_rejects_mismatched_source_name(self, tmp_path, app_home):
+        """expected_name guards against updating app A from app B's source."""
+        from kiro_crew.apps.manager import update_app
+
+        src = _make_app_source(tmp_path)
+        assert install_app(src).ok
+        other = _make_app_source(tmp_path / "other", name="other-app")
+
+        result = update_app(other, expected_name="test-app")
+        assert not result.ok
+        assert "does not match" in (result.error or "")
+
+    def test_shutil_error_rolls_back_cleanly(self, tmp_path, app_home, monkeypatch):
+        """shutil.Error (copytree aggregate, not an OSError) is caught and
+        reported as a failed AppResult instead of propagating."""
+        src = _make_app_source(tmp_path)
+
+        def failing_copytree(*args, **kwargs):
+            raise shutil.Error([("a", "b", "boom")])
+
+        monkeypatch.setattr(shutil, "copytree", failing_copytree)
+        result = install_app(src)
+        assert not result.ok
+        assert "failed to copy app files" in (result.error or "")
+        assert _read_installed("test-app") is None

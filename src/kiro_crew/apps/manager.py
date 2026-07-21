@@ -9,8 +9,10 @@ registration (agents, skills, crons) to bridge functions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -261,6 +263,114 @@ def _check_path_safety(path: str) -> bool:
     return ".." not in path and "/" not in path and "\\" not in path
 
 
+# Build-input / VCS directories never needed at runtime.  The app-kit runtime
+# layout is ``app.json`` + backend code + ``ui/dist/`` — ``node_modules`` is
+# npm build input and ``.git`` comes from cloned registry sources.
+# ``shutil.ignore_patterns`` matches by basename at every depth, so both
+# ``node_modules`` and ``ui/node_modules`` are dropped.  ``build`` is
+# deliberately NOT listed: the manifest may reference runtime paths anywhere
+# under the app root, and silently dropping a manifest-referenced directory
+# would record a successful install with missing files.  A ``build`` symlink
+# into a huge build tree is already neutralized by ``symlinks=True``.
+_COPY_IGNORE = ("node_modules", ".git", "__pycache__", ".venv")
+
+
+def _copy_app_tree(source: Path, dest: Path) -> None:
+    """Copy an app source tree for install/update.
+
+    - Symlinks are never followed. A symlink whose resolved target stays
+      inside ``source`` is preserved as a symlink (e.g. an in-tree relative
+      link); a symlink resolving OUTSIDE the source root is omitted
+      entirely.  This makes the historic failure mode (a ``build`` symlink
+      into a multi-GB build tree walked on copy) structurally impossible,
+      and it prevents a link like ``ui -> ~/.docker`` from either copying
+      or later serving sensitive files through the app UI route (same
+      intent as ``snapshot._copytree_safe``).
+    - ``ignore``: drop build-input/VCS dirs never needed at runtime.
+
+    Callers on the asyncio event loop must run this off-loop (executor /
+    ``asyncio.to_thread``) — a large copy is blocking filesystem I/O.
+    """
+    src_root = os.path.realpath(source)
+    # os.path.isjunction: Python 3.12+ (always False off-Windows). Windows
+    # directory junctions are reparse points NOT reported by islink(), and
+    # copytree would descend into them despite symlinks=True — omit them.
+    _isjunction = getattr(os.path, "isjunction", None)
+
+    def _ignore(dir_path: str, names: list[str]) -> set[str]:
+        skip = {n for n in names if n in _COPY_IGNORE}
+        for n in names:
+            if n in skip:
+                continue
+            p = os.path.join(dir_path, n)
+            if _isjunction is not None and _isjunction(p):
+                # Junctions cannot be preserved as links by copytree; never
+                # copy through one (it may point at a sensitive location).
+                logger.warning("Omitting directory junction in app source: %s", p)
+                skip.add(n)
+                continue
+            if os.path.islink(p):
+                try:
+                    target = os.path.realpath(p)
+                    escapes = os.path.commonpath([src_root, target]) != src_root
+                except ValueError:
+                    # commonpath raises for paths on different drives
+                    # (Windows) or mixed abs/rel — treat as escaping.
+                    escapes = True
+                if escapes:
+                    logger.warning(
+                        "Omitting symlink escaping app source root: %s", p
+                    )
+                    skip.add(n)
+        return skip
+
+    shutil.copytree(
+        source,
+        dest,
+        dirs_exist_ok=True,
+        symlinks=True,
+        ignore=_ignore,
+    )
+
+    # Rewrite preserved ABSOLUTE in-tree symlinks to relative form: an
+    # absolute link copied verbatim still points into the *source* tree, so
+    # the installed copy would silently depend on (and break with) the local
+    # source directory. Relative in-tree links are already correct as-is.
+    for root, dirs, files in os.walk(dest):
+        for n in dirs + files:
+            p = os.path.join(root, n)
+            if not os.path.islink(p):
+                continue
+            raw = os.readlink(p)
+            if not os.path.isabs(raw):
+                continue
+            rel_to_src = os.path.relpath(os.path.realpath(p), src_root)
+            os.remove(p)
+            os.symlink(
+                os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p
+            )
+
+
+# Per-app lifecycle locks, shared by every async entry point (registry
+# install, dashboard install/update/uninstall routes).  Once the blocking
+# copy runs off-loop, two concurrent operations on the same app could
+# otherwise race the installed-check against the copy — and update/uninstall
+# use shared move-aside names (``.{name}-data-tmp``), so an interleaving can
+# destroy preserved user data.  Different apps proceed in parallel.
+_LIFECYCLE_LOCKS: dict[str, "asyncio.Lock"] = {}
+
+
+def app_lifecycle_lock(name: str) -> "asyncio.Lock":
+    """Return the per-app asyncio lock guarding install/update/uninstall.
+
+    Must be called from (and the lock used on) the event loop thread; the
+    guarded blocking work itself runs off-loop via executor/``to_thread``.
+    """
+    if name not in _LIFECYCLE_LOCKS:
+        _LIFECYCLE_LOCKS[name] = asyncio.Lock()
+    return _LIFECYCLE_LOCKS[name]
+
+
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
@@ -387,8 +497,12 @@ def install_app(source: str | Path) -> AppResult:
             pass
 
         if dest.exists():
+            # No installed metadata for this app (checked above), yet the
+            # dest dir exists — an orphaned partial copy from a prior crash
+            # (e.g. hard kill mid-install). Remove and re-copy fresh.
+            logger.warning("Removing orphaned partial install at %s", dest)
             shutil.rmtree(dest)
-        shutil.copytree(source, dest, dirs_exist_ok=True)
+        _copy_app_tree(source, dest)
 
         # Restore preserved data/ (overwrite empty data/ from source package)
         if tmp_data.is_dir():
@@ -396,7 +510,7 @@ def install_app(source: str | Path) -> AppResult:
             if restored.exists():
                 shutil.rmtree(restored)
             shutil.move(str(tmp_data), str(restored))
-    except OSError as exc:
+    except (OSError, shutil.Error, ValueError) as exc:
         # Clean up partial install first
         if dest.exists():
             shutil.rmtree(dest, ignore_errors=True)
@@ -458,13 +572,17 @@ def install_app(source: str | Path) -> AppResult:
 # ---------------------------------------------------------------------------
 
 
-def update_app(source: str | Path) -> AppResult:
+def update_app(source: str | Path, *, expected_name: str | None = None) -> AppResult:
     """Update an already-installed app from a local directory path.
 
     1. Validate new manifest
     2. Preserve ``data/`` directory
     3. Replace app files
     4. Update ``installed.json``
+
+    ``expected_name``: when given, reject the update unless the source
+    manifest's ``name`` matches — callers that lock/route by app name must
+    not let a mismatched source mutate a different app.
     """
     source = Path(source).expanduser().resolve()
     if not source.is_dir():
@@ -476,6 +594,12 @@ def update_app(source: str | Path) -> AppResult:
 
     manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
     name = manifest.name
+    if expected_name is not None and name != expected_name:
+        return AppResult(
+            ok=False,
+            name=expected_name,
+            error=f"source manifest name {name!r} does not match app {expected_name!r}",
+        )
     dest = app_dir(name)
 
     # Guard against path traversal in manifest name
@@ -521,7 +645,7 @@ def update_app(source: str | Path) -> AppResult:
 
         # Replace app files
         shutil.rmtree(dest)
-        shutil.copytree(source, dest, dirs_exist_ok=True)
+        _copy_app_tree(source, dest)
 
         # Restore data
         if tmp_data.is_dir():
@@ -532,7 +656,7 @@ def update_app(source: str | Path) -> AppResult:
         # Restore secret
         if tmp_secret.is_file():
             shutil.move(str(tmp_secret), str(dest / ".app_secret"))
-    except OSError as exc:
+    except (OSError, shutil.Error, ValueError) as exc:
         # Attempt to restore on failure — each step independently wrapped
         try:
             if tmp_data.is_dir() and not data_dir.is_dir():

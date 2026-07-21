@@ -87,6 +87,21 @@ Before submitting to the registry:
 - [ ] README.md explains what the app does and how to use it
 - [ ] If you have `setup.onInstall`, test it on a clean machine
 
+### What gets copied at install time
+
+When KiroCrew installs or updates your app, it copies the source tree into
+`~/.kirocrew/apps/{name}/` with two safeguards:
+
+- **Symlinks are never followed.** A symlink whose target resolves inside
+  your app source tree is preserved as a symlink; a symlink resolving
+  outside the source tree is omitted from the installed copy entirely.
+  Committed runtime artifacts must be real files (or in-tree relative
+  links), never reachable only through an external symlink.
+- **Build-input and VCS directories are excluded**: `node_modules`, `.git`,
+  `__pycache__`, and `.venv` (at any depth) are dropped from the installed
+  copy. Serve your UI from the committed `ui/dist/` bundle — nothing your app
+  needs at runtime may live under those names.
+
 ### Repository structure
 
 Your app should live in its own Git repo (or a subdirectory of an existing repo):

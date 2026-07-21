@@ -41,6 +41,7 @@ from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
 from kiro_crew.apps.hooks_integration import on_app_disable, on_app_enable
 from kiro_crew.apps.manager import (
+    app_lifecycle_lock,
     apps_dir,
     cleanup_migrated_builtin,
     disable_app,
@@ -411,26 +412,43 @@ async def handle_install_app(request: web.Request) -> web.Response:
     # Check minKiroCrewVersion before installing
     source_path = Path(source).expanduser().resolve()
     manifest_path = source_path / "app.json"
+    lock_name = str(source_path)  # fallback lock key when manifest is unreadable
     if manifest_path.is_file():
         try:
             manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
             ver_err = _check_min_version(manifest_data)
             if ver_err:
                 return web.json_response({"error": ver_err}, status=400)
+            raw_name = manifest_data.get("name")
+            # Only a nonempty string is a usable lock key — anything else
+            # (list, dict, number) keeps the path fallback and is rejected
+            # by manifest validation inside install_app.
+            if isinstance(raw_name, str) and raw_name:
+                lock_name = raw_name
         except (json.JSONDecodeError, OSError):
             pass
 
-    result = install_app(source)
-    if not result.ok:
-        sel().log_api_access(caller="dashboard", operation="app_install", outcome="failed", resources=source, error=result.error)
-        return web.json_response(result.to_dict(), status=400)
-    invalidate_app_secret_cache(result.name)
+    # Per-app lifecycle lock (shared with registry installs), held across
+    # the whole install transaction — copy, registration, and backend start —
+    # so a concurrent uninstall cannot deregister between our copy and our
+    # register, leaving a running backend for a removed app.
+    async with app_lifecycle_lock(lock_name):
+        # Off-loop: the copy in install_app is blocking filesystem I/O that can
+        # take minutes on large source trees — running it on the loop would trip
+        # the loop-stall watchdog and kill the gateway.
+        result = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), install_app, source
+        )
+        if not result.ok:
+            sel().log_api_access(caller="dashboard", operation="app_install", outcome="failed", resources=source, error=result.error)
+            return web.json_response(result.to_dict(), status=400)
+        invalidate_app_secret_cache(result.name)
 
-    # Auto-register resources
-    reg = register_app(result.name)
-    # Spawn the backend now so the app is reachable without a gateway reboot
-    # (see _start_backend_after_install). No-op for backend-less apps.
-    await _start_backend_after_install(result.name)
+        # Auto-register resources
+        reg = register_app(result.name)
+        # Spawn the backend now so the app is reachable without a gateway reboot
+        # (see _start_backend_after_install). No-op for backend-less apps.
+        await _start_backend_after_install(result.name)
     sel().log_api_access(caller="dashboard", operation="app_install", outcome="completed", resources=result.name)
     return web.json_response({
         **result.to_dict(),
@@ -465,17 +483,20 @@ async def handle_update_app(request: web.Request) -> web.Response:
     # to avoid leaving the app in a broken state on failure.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
-        reg_install = await install_from_registry(registry_name)
-        if not reg_install.get("ok"):
-            sel().log_api_access(caller="dashboard", operation="app_update", outcome="failed", resources=name, error=reg_install.get("error", ""))
-            return web.json_response(reg_install, status=400)
-        # Install succeeded — now safe to swap resources
-        deregister_app(name)
-        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
-        if info.get("enabled"):
-            reg_result = register_app(name)
-            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
-            reg_install["registration"] = reg_result.to_dict()
+        # One lock across re-install + resource swap + backend restart
+        # (install_from_registry is lock-free internally).
+        async with app_lifecycle_lock(name):
+            reg_install = await install_from_registry(registry_name)
+            if not reg_install.get("ok"):
+                sel().log_api_access(caller="dashboard", operation="app_update", outcome="failed", resources=name, error=reg_install.get("error", ""))
+                return web.json_response(reg_install, status=400)
+            # Install succeeded — now safe to swap resources
+            deregister_app(name)
+            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+            if info.get("enabled"):
+                reg_result = register_app(name)
+                await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+                reg_install["registration"] = reg_result.to_dict()
         sel().log_api_access(caller="dashboard", operation="app_update", outcome="completed", resources=name)
         return web.json_response(reg_install)
 
@@ -484,24 +505,35 @@ async def handle_update_app(request: web.Request) -> web.Response:
             {"error": "source path required (not found in installed metadata)"}, status=400,
         )
 
-    # Deregister old resources before update
-    deregister_app(name)
-    await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+    # Per-app lifecycle lock: the deregister → stop → copy → re-register
+    # sequence must not interleave with another update/install/uninstall of
+    # the same app — update_app moves user data through a shared
+    # ``.{name}-data-tmp`` path, so an interleaving can destroy it.
+    # (The registry branch above locks inside install_from_registry.)
+    async with app_lifecycle_lock(name):
+        # Deregister old resources before update
+        deregister_app(name)
+        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
 
-    up_result = update_app(source)
-    if not up_result.ok:
-        # Re-register old resources on failure
-        register_app(name)
+        # Off-loop: blocking filesystem copy (see handle_install_app).
+        # expected_name makes update_app itself reject a source whose
+        # manifest names a different app than the one this lock guards.
+        up_result = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), lambda: update_app(source, expected_name=name)
+        )
+        if not up_result.ok:
+            # Re-register old resources on failure
+            register_app(name)
+            if info.get("enabled"):
+                await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+            sel().log_api_access(caller="dashboard", operation="app_update", outcome="failed", resources=name, error=up_result.error)
+            return web.json_response(up_result.to_dict(), status=400)
+
+        # Re-register with new manifest if app was enabled
+        up_reg = None
         if info.get("enabled"):
+            up_reg = register_app(name)
             await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
-        sel().log_api_access(caller="dashboard", operation="app_update", outcome="failed", resources=name, error=up_result.error)
-        return web.json_response(up_result.to_dict(), status=400)
-
-    # Re-register with new manifest if app was enabled
-    up_reg = None
-    if info.get("enabled"):
-        up_reg = register_app(name)
-        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
 
     sel().log_api_access(caller="dashboard", operation="app_update", outcome="completed", resources=name)
     resp: dict[str, Any] = up_result.to_dict()
@@ -651,63 +683,74 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         if script_output.get("failed"):
             uninstall_log.append("onUninstall script failed (exit code non-zero)")
 
-    # Step 2: Deregister resources (gateway-managed only)
-    if resources == "gateway":
-        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
-        # Clean up app-declared cron jobs from the scheduler before the
-        # per-app cron manifest is removed by deregister_app(). Mirrors the
-        # cleanup that on_app_disable performs on the disable path.
-        state = request.app.get("state")
-        cron_service = getattr(state, "crons", None) if state else None
-        if cron_service is not None:
-            try:
-                removed = deregister_app_crons_from_service(name, cron_service)
-                sel().log_api_access(
-                    caller="dashboard",
-                    operation="app_crons_deregister",
-                    outcome="completed",
-                    resources=f"app={name} removed={removed}",
-                )
-            except Exception as exc:
-                logger.warning("Cron cleanup failed for %s on uninstall: %s", name, exc)
-                sel().log_api_access(
-                    caller="dashboard",
-                    operation="app_crons_deregister",
-                    outcome="failed",
-                    resources=name,
-                    error=str(exc),
-                )
-        deregister_app(name)
+    # Per-app lifecycle lock, held across deregistration → dependency cleanup
+    # → file removal, so this sequence cannot interleave with a concurrent
+    # install/update of the same app (which holds the same lock across copy →
+    # registration → backend start). Without it, an install could re-register
+    # and start a backend between our deregister and our file removal.
+    async with app_lifecycle_lock(name):
+        # Step 2: Deregister resources (gateway-managed only)
+        if resources == "gateway":
+            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+            # Clean up app-declared cron jobs from the scheduler before the
+            # per-app cron manifest is removed by deregister_app(). Mirrors the
+            # cleanup that on_app_disable performs on the disable path.
+            state = request.app.get("state")
+            cron_service = getattr(state, "crons", None) if state else None
+            if cron_service is not None:
+                try:
+                    removed = deregister_app_crons_from_service(name, cron_service)
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="app_crons_deregister",
+                        outcome="completed",
+                        resources=f"app={name} removed={removed}",
+                    )
+                except Exception as exc:
+                    logger.warning("Cron cleanup failed for %s on uninstall: %s", name, exc)
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="app_crons_deregister",
+                        outcome="failed",
+                        resources=name,
+                        error=str(exc),
+                    )
+            deregister_app(name)
 
-    # Step 3: Clean dependencies (atomic classify + ledger update)
-    cleaned_deps: list[str] = []
-    if not keep_dependencies:
-        deps_data = manifest.get("dependencies", {})
-        aim_deps = deps_data.get("aim", {})
-        declared_deps: list[str] = []
-        for dep_type in ("mcp", "skills", "agents"):
-            for entry in aim_deps.get(dep_type, []):
-                dep_id = entry.get("id") if isinstance(entry, dict) else entry
-                if not dep_id:
-                    continue
-                declared_deps.append(f"aim/{dep_type}/{dep_id}")
+        # Step 3: Clean dependencies (atomic classify + ledger update)
+        cleaned_deps: list[str] = []
+        if not keep_dependencies:
+            deps_data = manifest.get("dependencies", {})
+            aim_deps = deps_data.get("aim", {})
+            declared_deps: list[str] = []
+            for dep_type in ("mcp", "skills", "agents"):
+                for entry in aim_deps.get(dep_type, []):
+                    dep_id = entry.get("id") if isinstance(entry, dict) else entry
+                    if not dep_id:
+                        continue
+                    declared_deps.append(f"aim/{dep_type}/{dep_id}")
 
-        from kiro_crew.apps.dependency_ledger import classify_and_clean_for_uninstall
-        classification = classify_and_clean_for_uninstall(
-            name, declared_deps, keep_specific=list(keep_specific),
+            from kiro_crew.apps.dependency_ledger import classify_and_clean_for_uninstall
+            classification = classify_and_clean_for_uninstall(
+                name, declared_deps, keep_specific=list(keep_specific),
+            )
+            removable = [
+                d for d in classification.get("removable", [])
+                if d.get("id") not in keep_specific
+            ]
+            if removable:
+                from kiro_crew.apps.dependencies import clean_dependencies
+                cleaned_deps = await clean_dependencies(name, removable)
+                if cleaned_deps:
+                    uninstall_log.append(f"Cleaned {len(cleaned_deps)} dependency(ies)")
+
+        # Step 4: Remove files. Off-loop: rmtree of a large installed tree is
+        # blocking filesystem I/O. (uninstall_app shares the
+        # ``.{name}-data-tmp`` move-aside path with install/update — covered
+        # by the lifecycle lock held above.)
+        result = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), lambda: uninstall_app(name, keep_data=keep_data)
         )
-        removable = [
-            d for d in classification.get("removable", [])
-            if d.get("id") not in keep_specific
-        ]
-        if removable:
-            from kiro_crew.apps.dependencies import clean_dependencies
-            cleaned_deps = await clean_dependencies(name, removable)
-            if cleaned_deps:
-                uninstall_log.append(f"Cleaned {len(cleaned_deps)} dependency(ies)")
-
-    # Step 4: Remove files
-    result = uninstall_app(name, keep_data=keep_data)
     if not result.ok:
         sel().log_api_access(caller="dashboard", operation="app_uninstall", outcome="failed", resources=name, error=result.error)
         return web.json_response(result.to_dict(), status=400)
@@ -750,116 +793,121 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     on_enable = (manifest.get("setup") or {}).get("onEnable", "")
     enable_timeout = int((manifest.get("setup") or {}).get("onEnableTimeout", 30))
 
-    result = enable_app(name)
-    if not result.ok:
-        sel().log_api_access(caller="dashboard", operation="app_enable", outcome="failed", resources=name, error=result.error)
-        return web.json_response(result.to_dict(), status=400)
+    # Per-app lifecycle lock: enable mutates metadata, registers resources,
+    # and starts the backend — must not interleave with a concurrent
+    # install/update/uninstall of the same app (e.g. enabling while an
+    # off-loop uninstall is deleting the app directory).
+    async with app_lifecycle_lock(name):
+        result = enable_app(name)
+        if not result.ok:
+            sel().log_api_access(caller="dashboard", operation="app_enable", outcome="failed", resources=name, error=result.error)
+            return web.json_response(result.to_dict(), status=400)
 
-    resp: dict[str, Any] = result.to_dict()
+        resp: dict[str, Any] = result.to_dict()
 
-    # Register resources if gateway-managed
-    if resources == "gateway":
-        reg = register_app(name)
-        backend = await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
-        # MCP re-registration is HEALTH-GATED (review CR-284432051). register_app ran before
-        # the backend was up, so an HTTP MCP server with backend.port:"auto" carries the
-        # manifest's illustrative port. The backend's health-check loop calls
-        # _gate_mcp_registration once /health passes, rewriting the url to the real allocated
-        # port (and scrubbing it if the backend never becomes healthy — the dead-url shape
-        # that broke kiro-cli). EXCEPTION: an adopted already-healthy instance runs no health
-        # loop, so register it synchronously here.
-        if backend is not None and getattr(backend, "healthy", False):
-            try:
-                reregister_app_mcp_servers(name, live_port=getattr(backend, "port", None))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("MCP re-registration after backend start failed for %s: %s", name, exc)
-        resp["registration"] = reg.to_dict()
-        if backend:
-            resp["backend"] = backend.to_dict()
+        # Register resources if gateway-managed
+        if resources == "gateway":
+            reg = register_app(name)
+            backend = await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+            # MCP re-registration is HEALTH-GATED (review CR-284432051). register_app ran before
+            # the backend was up, so an HTTP MCP server with backend.port:"auto" carries the
+            # manifest's illustrative port. The backend's health-check loop calls
+            # _gate_mcp_registration once /health passes, rewriting the url to the real allocated
+            # port (and scrubbing it if the backend never becomes healthy — the dead-url shape
+            # that broke kiro-cli). EXCEPTION: an adopted already-healthy instance runs no health
+            # loop, so register it synchronously here.
+            if backend is not None and getattr(backend, "healthy", False):
+                try:
+                    reregister_app_mcp_servers(name, live_port=getattr(backend, "port", None))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("MCP re-registration after backend start failed for %s: %s", name, exc)
+            resp["registration"] = reg.to_dict()
+            if backend:
+                resp["backend"] = backend.to_dict()
 
-    # Resolve declared dependencies (if any)
-    deps_data = manifest.get("dependencies")
-    if deps_data and isinstance(deps_data, dict):
-        deps = Dependencies.from_dict(deps_data)
-        dep_result = await _resolve_deps(name, deps)
-        sel().log_api_access(
-            caller="dashboard",
-            operation="app_enable_resolve_deps",
-            outcome="partial_failure" if dep_result.failed else "success",
-            resources=name,
-            error=str(dep_result.failed) if dep_result.failed else "",
-        )
-        dep_info: dict[str, Any] = {}
-        if dep_result.installed:
-            dep_info["installed"] = dep_result.installed
-        if dep_result.failed:
-            dep_info["failed"] = dep_result.failed
-        if dep_result.missing:
-            dep_info["missing"] = dep_result.missing
-        if dep_info:
-            resp["dependencies"] = dep_info
+        # Resolve declared dependencies (if any)
+        deps_data = manifest.get("dependencies")
+        if deps_data and isinstance(deps_data, dict):
+            deps = Dependencies.from_dict(deps_data)
+            dep_result = await _resolve_deps(name, deps)
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_enable_resolve_deps",
+                outcome="partial_failure" if dep_result.failed else "success",
+                resources=name,
+                error=str(dep_result.failed) if dep_result.failed else "",
+            )
+            dep_info: dict[str, Any] = {}
+            if dep_result.installed:
+                dep_info["installed"] = dep_result.installed
+            if dep_result.failed:
+                dep_info["failed"] = dep_result.failed
+            if dep_result.missing:
+                dep_info["missing"] = dep_result.missing
+            if dep_info:
+                resp["dependencies"] = dep_info
 
-    # Run onEnable script
-    if on_enable:
-        script_output = await _run_lifecycle_script(name, on_enable, timeout=enable_timeout)
-        if script_output.get("failed"):
-            # Rollback: disable the app again
-            if resources == "gateway":
-                await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
-                deregister_app(name)
-            disable_app(name)
-            sel().log_api_access(caller="dashboard", operation="app_enable", outcome="failed", resources=name, error="onEnable script failed")
-            from kiro_crew.security import redact_credentials
-            cleaned, _ = redact_credentials(script_output.get("output", ""))
-            return web.json_response({
-                "ok": False, "name": name,
-                "error": "onEnable script failed — app remains disabled",
-                "script_output": cleaned,
-            }, status=400)
-        resp["onEnable"] = {
-            "output": "",
-            "failed": False,
-        }
-        if script_output.get("output"):
-            from kiro_crew.security import redact_credentials
-            cleaned, _ = redact_credentials(script_output.get("output", ""))
-            resp["onEnable"]["output"] = cleaned
-        resp["onEnable"]["failed"] = script_output.get("failed", False)
+        # Run onEnable script
+        if on_enable:
+            script_output = await _run_lifecycle_script(name, on_enable, timeout=enable_timeout)
+            if script_output.get("failed"):
+                # Rollback: disable the app again
+                if resources == "gateway":
+                    await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+                    deregister_app(name)
+                disable_app(name)
+                sel().log_api_access(caller="dashboard", operation="app_enable", outcome="failed", resources=name, error="onEnable script failed")
+                from kiro_crew.security import redact_credentials
+                cleaned, _ = redact_credentials(script_output.get("output", ""))
+                return web.json_response({
+                    "ok": False, "name": name,
+                    "error": "onEnable script failed — app remains disabled",
+                    "script_output": cleaned,
+                }, status=400)
+            resp["onEnable"] = {
+                "output": "",
+                "failed": False,
+            }
+            if script_output.get("output"):
+                from kiro_crew.security import redact_credentials
+                cleaned, _ = redact_credentials(script_output.get("output", ""))
+                resp["onEnable"]["output"] = cleaned
+            resp["onEnable"]["failed"] = script_output.get("failed", False)
 
-    # Invoke Python lifecycle hooks (routes + on_startup) — runs AFTER shell scripts
-    try:
-        state = request.app.get("state")
-        hooks_result = await on_app_enable(
-            name, info,
-            cron_service=getattr(state, "crons", None),
-            broadcast_fn=getattr(state, "broadcast", None),
-        )
-        if hooks_result:
-            # Redact any sensitive content in health_status issues
-            if "health_status" in hooks_result:
-                hs = hooks_result["health_status"]
-                if "issues" in hs:
-                    hs["issues"] = [_redact_warning(i) for i in hs["issues"]]
-            resp["hooks"] = hooks_result
-    except Exception as exc:
-        logger.warning("Hook execution failed for %s: %s", name, exc)
-        resp.setdefault("warnings", []).append(_redact_warning(f"hooks failed: {exc}"))
-
-    # Sync config.json and start live service for builtin apps
-    origin = info.get("origin", "")
-    if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
+        # Invoke Python lifecycle hooks (routes + on_startup) — runs AFTER shell scripts
         try:
-            _sync_builtin_config(name, enabled=True)
-        except OSError as exc:
-            logger.warning("Failed to sync config.json for %s: %s", name, exc)
-            resp.setdefault("warnings", []).append(_redact_warning(f"config sync failed: {exc}"))
-        else:
-            svc_warn = await _notify_builtin_service(request, name)
-            if svc_warn:
-                resp.setdefault("warnings", []).append(_redact_warning(svc_warn))
+            state = request.app.get("state")
+            hooks_result = await on_app_enable(
+                name, info,
+                cron_service=getattr(state, "crons", None),
+                broadcast_fn=getattr(state, "broadcast", None),
+            )
+            if hooks_result:
+                # Redact any sensitive content in health_status issues
+                if "health_status" in hooks_result:
+                    hs = hooks_result["health_status"]
+                    if "issues" in hs:
+                        hs["issues"] = [_redact_warning(i) for i in hs["issues"]]
+                resp["hooks"] = hooks_result
+        except Exception as exc:
+            logger.warning("Hook execution failed for %s: %s", name, exc)
+            resp.setdefault("warnings", []).append(_redact_warning(f"hooks failed: {exc}"))
 
-    sel().log_api_access(caller="dashboard", operation="app_enable", outcome="completed", resources=name)
-    return web.json_response(resp)
+        # Sync config.json and start live service for builtin apps
+        origin = info.get("origin", "")
+        if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
+            try:
+                _sync_builtin_config(name, enabled=True)
+            except OSError as exc:
+                logger.warning("Failed to sync config.json for %s: %s", name, exc)
+                resp.setdefault("warnings", []).append(_redact_warning(f"config sync failed: {exc}"))
+            else:
+                svc_warn = await _notify_builtin_service(request, name)
+                if svc_warn:
+                    resp.setdefault("warnings", []).append(_redact_warning(svc_warn))
+
+        sel().log_api_access(caller="dashboard", operation="app_enable", outcome="completed", resources=name)
+        return web.json_response(resp)
 
 
 async def handle_disable_app(request: web.Request) -> web.Response:
@@ -881,65 +929,69 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     disable_timeout = int((manifest.get("setup") or {}).get("onDisableTimeout", 30))
     warnings: list[str] = []
 
-    # Run onDisable script first
-    if on_disable:
-        script_output = await _run_lifecycle_script(name, on_disable, timeout=disable_timeout)
-        if script_output.get("failed"):
-            from kiro_crew.security import redact_credentials
-            raw_output = script_output.get("output", "")[:200]
-            cleaned, _ = redact_credentials(raw_output)
-            warnings.append(f"onDisable script failed: {cleaned}")
-            logger.warning("onDisable failed for %s, proceeding with disable", name)
+    # Per-app lifecycle lock: disable stops the backend and deregisters
+    # resources — must not interleave with a concurrent install/update/
+    # uninstall/enable of the same app.
+    async with app_lifecycle_lock(name):
+        # Run onDisable script first
+        if on_disable:
+            script_output = await _run_lifecycle_script(name, on_disable, timeout=disable_timeout)
+            if script_output.get("failed"):
+                from kiro_crew.security import redact_credentials
+                raw_output = script_output.get("output", "")[:200]
+                cleaned, _ = redact_credentials(raw_output)
+                warnings.append(f"onDisable script failed: {cleaned}")
+                logger.warning("onDisable failed for %s, proceeding with disable", name)
 
-    # Invoke Python lifecycle hooks (on_shutdown + route deregistration + cron cleanup)
-    try:
-        hooks_result = await on_app_disable(name, info)
-        if hooks_result:
-            for k, v in hooks_result.items():
-                if k == "cron_cleanup" and isinstance(v, str):
-                    warnings.append(v)
-    except Exception as exc:
-        logger.warning("Hook disable failed for %s: %s", name, exc)
-        warnings.append(_redact_warning(f"hooks disable failed: {exc}"))
-
-    # Deregister resources if gateway-managed
-    if resources == "gateway":
-        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
-        deregister_app(name)
-
-    result = disable_app(name)
-    if not result.ok:
-        sel().log_api_access(caller="dashboard", operation="app_disable", outcome="failed", resources=name, error=result.error)
-        return web.json_response(result.to_dict(), status=400)
-
-    # Run builtin on_disable hook if available
-    if name in BUILTIN_NAMES:
+        # Invoke Python lifecycle hooks (on_shutdown + route deregistration + cron cleanup)
         try:
-            mod = importlib.import_module(f"kiro_crew.apps.builtins.{name}")
-            if hasattr(mod, "on_disable"):
-                mod.on_disable(request.app)
+            hooks_result = await on_app_disable(name, info)
+            if hooks_result:
+                for k, v in hooks_result.items():
+                    if k == "cron_cleanup" and isinstance(v, str):
+                        warnings.append(v)
         except Exception as exc:
-            logger.warning("on_disable hook for %s failed: %s", name, exc)
-            warnings.append(_redact_warning(f"on_disable hook failed: {exc}"))
+            logger.warning("Hook disable failed for %s: %s", name, exc)
+            warnings.append(_redact_warning(f"hooks disable failed: {exc}"))
 
-    # Sync config.json and stop live service for builtin apps
-    origin = info.get("origin", "")
-    if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
-        try:
-            _sync_builtin_config(name, enabled=False)
-        except OSError as exc:
-            logger.warning("Failed to sync config.json for %s: %s", name, exc)
-            warnings.append(_redact_warning(f"config sync failed: {exc}"))
-        else:
-            svc_warn = await _notify_builtin_service(request, name)
-            if svc_warn:
-                warnings.append(_redact_warning(svc_warn))
+        # Deregister resources if gateway-managed
+        if resources == "gateway":
+            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+            deregister_app(name)
 
-    sel().log_api_access(caller="dashboard", operation="app_disable", outcome="completed", resources=name)
-    resp = result.to_dict()
-    if warnings:
-        resp["warnings"] = warnings
-    return web.json_response(resp)
+        result = disable_app(name)
+        if not result.ok:
+            sel().log_api_access(caller="dashboard", operation="app_disable", outcome="failed", resources=name, error=result.error)
+            return web.json_response(result.to_dict(), status=400)
+
+        # Run builtin on_disable hook if available
+        if name in BUILTIN_NAMES:
+            try:
+                mod = importlib.import_module(f"kiro_crew.apps.builtins.{name}")
+                if hasattr(mod, "on_disable"):
+                    mod.on_disable(request.app)
+            except Exception as exc:
+                logger.warning("on_disable hook for %s failed: %s", name, exc)
+                warnings.append(_redact_warning(f"on_disable hook failed: {exc}"))
+
+        # Sync config.json and stop live service for builtin apps
+        origin = info.get("origin", "")
+        if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
+            try:
+                _sync_builtin_config(name, enabled=False)
+            except OSError as exc:
+                logger.warning("Failed to sync config.json for %s: %s", name, exc)
+                warnings.append(_redact_warning(f"config sync failed: {exc}"))
+            else:
+                svc_warn = await _notify_builtin_service(request, name)
+                if svc_warn:
+                    warnings.append(_redact_warning(svc_warn))
+
+        sel().log_api_access(caller="dashboard", operation="app_disable", outcome="completed", resources=name)
+        resp = result.to_dict()
+        if warnings:
+            resp["warnings"] = warnings
+        return web.json_response(resp)
 
 
 async def handle_open_app(request: web.Request) -> web.Response:
@@ -1033,35 +1085,39 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     if not name:
         return web.json_response({"error": "app name required"}, status=400)
 
-    result = await install_from_registry(name)
+    # One lock for the complete transaction: install_from_registry is
+    # lock-free internally (asyncio.Lock is not reentrant), so this is the
+    # single acquisition covering clone/build → copy → register → backend.
+    async with app_lifecycle_lock(name):
+        result = await install_from_registry(name)
 
-    # Redact install log and error before returning to client — build output
-    # may contain internal hostnames, package URLs, or credential fragments.
-    if result.get("log"):
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-        cleaned_log, _ = redact_exfiltration_urls(result["log"])
-        cleaned_log, _ = redact_credentials(cleaned_log)
-        result["log"] = cleaned_log
-    if result.get("error"):
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-        cleaned_err, _ = redact_exfiltration_urls(result["error"])
-        cleaned_err, _ = redact_credentials(cleaned_err)
-        result["error"] = cleaned_err
+        # Redact install log and error before returning to client — build output
+        # may contain internal hostnames, package URLs, or credential fragments.
+        if result.get("log"):
+            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            cleaned_log, _ = redact_exfiltration_urls(result["log"])
+            cleaned_log, _ = redact_credentials(cleaned_log)
+            result["log"] = cleaned_log
+        if result.get("error"):
+            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            cleaned_err, _ = redact_exfiltration_urls(result["error"])
+            cleaned_err, _ = redact_credentials(cleaned_err)
+            result["error"] = cleaned_err
 
-    if result.get("needsClientInstall"):
-        return web.json_response(result, status=200)
-    if not result.get("ok"):
-        sel().log_api_access(caller="dashboard", operation="app_registry_install", outcome="failed", resources=name, error=result.get("error", ""))
-        return web.json_response(result, status=400)
+        if result.get("needsClientInstall"):
+            return web.json_response(result, status=200)
+        if not result.get("ok"):
+            sel().log_api_access(caller="dashboard", operation="app_registry_install", outcome="failed", resources=name, error=result.get("error", ""))
+            return web.json_response(result, status=400)
 
-    # Auto-register resources
-    reg = register_app(result["name"])
-    # Spawn the backend now so apps with a server are reachable immediately —
-    # without this the backend only starts on the next gateway reboot (via
-    # start_enabled_app_backends), leaving the app's UI with "no reachable
-    # backend" until then. No-op for apps that declare no backend. Run in a
-    # thread because start_app_backend blocks on a health-check poll.
-    await _start_backend_after_install(result["name"])
+        # Auto-register resources
+        reg = register_app(result["name"])
+        # Spawn the backend now so apps with a server are reachable immediately —
+        # without this the backend only starts on the next gateway reboot (via
+        # start_enabled_app_backends), leaving the app's UI with "no reachable
+        # backend" until then. No-op for apps that declare no backend. Run in a
+        # thread because start_app_backend blocks on a health-check poll.
+        await _start_backend_after_install(result["name"])
     result["registration"] = reg.to_dict()
     sel().log_api_access(caller="dashboard", operation="app_registry_install", outcome="completed", resources=name)
     return web.json_response(result, status=201)
@@ -1137,10 +1193,22 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
             cleaned, _ = redact_credentials(cleaned)
             await _send_sse("log", cleaned)
 
-    # Run install + drain concurrently
-    install_task = asyncio.create_task(
-        install_from_registry(name, log_lines=streaming_log)
-    )
+    # Run install + drain concurrently. The complete lifecycle transaction —
+    # install, resource registration, backend start — runs under one per-app
+    # lock (install_from_registry is lock-free internally).
+    async def _locked_install() -> dict[str, Any]:
+        async with app_lifecycle_lock(name):
+            r = await install_from_registry(name, log_lines=streaming_log)
+            if r.get("ok") and not r.get("needsClientInstall"):
+                reg = register_app(r["name"])
+                # Spawn the backend immediately (see handle_registry_install) so
+                # the app is reachable without a gateway reboot. No-op for
+                # backend-less apps.
+                await _start_backend_after_install(r["name"])
+                r["registration"] = reg.to_dict()
+            return r
+
+    install_task = asyncio.create_task(_locked_install())
     drain_task = asyncio.create_task(_drain_queue())
 
     try:
@@ -1180,12 +1248,8 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         await resp.write_eof()
         return resp
 
-    # Auto-register resources (same as non-streaming endpoint)
-    reg = register_app(result["name"])
-    # Spawn the backend immediately (see handle_registry_install) so the app is
-    # reachable without a gateway reboot. No-op for backend-less apps.
-    await _start_backend_after_install(result["name"])
-    result["registration"] = reg.to_dict()
+    # Resource registration + backend start already ran inside the locked
+    # transaction above; result carries "registration".
     sel().log_api_access(caller="dashboard", operation="app_registry_install_stream", outcome="completed", resources=name)
     await _send_sse("done", json.dumps(result))
     await resp.write_eof()

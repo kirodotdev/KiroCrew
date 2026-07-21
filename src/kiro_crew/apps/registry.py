@@ -1037,7 +1037,6 @@ def app_source_dir(name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 _BUILD_TIMEOUT = 600  # 10 minutes — frontend bundlers / packagers can be slow
-_APP_LOCKS: dict[str, asyncio.Lock] = {}  # per-app serialization
 _KILL_GRACE_PERIOD = 5  # seconds to wait after SIGTERM before SIGKILL
 
 
@@ -1158,13 +1157,11 @@ async def _clone_build_app(
     Returns ``{"ok": True, "pkg_dir": <Path>}`` on success or
     ``{"ok": False, "error": ...}`` on failure.
     """
-    # Per-app lock — prevents two concurrent installs of the same app from
-    # racing on clone / build. Different apps can install in parallel.
-    if app_name not in _APP_LOCKS:
-        _APP_LOCKS[app_name] = asyncio.Lock()
-
-    async with _APP_LOCKS[app_name]:
-        return await _clone_build_app_locked(git_url, app_name, log_lines, branch=branch)
+    # Lock-free: the caller (route handler) holds app_lifecycle_lock(name)
+    # across the complete lifecycle transaction — clone/build, copy,
+    # registration, and backend startup — so nested acquisition here would
+    # deadlock (asyncio.Lock is not reentrant).
+    return await _clone_build_app_locked(git_url, app_name, log_lines, branch=branch)
 
 
 async def _clone_build_app_locked(
@@ -1586,11 +1583,17 @@ async def install_from_registry(
 
         # Kirocrew-managed: copy to ~/.kirocrew/apps/ and register resources
         log_lines.append("Installing app...")
+        # Lock-free: the route handler holds app_lifecycle_lock(name) across
+        # the whole transaction (clone/build → copy → register → backend
+        # start); asyncio.Lock is not reentrant, so no acquisition here.
         existing = get_app(name)
+        # Off-loop: install_app/update_app do a blocking filesystem copy
+        # that can take minutes on large source trees — on the loop it
+        # would trip the loop-stall watchdog and kill the gateway.
         if existing:
-            result = update_app(str(app_source))
+            result = await asyncio.to_thread(update_app, str(app_source))
         else:
-            result = install_app(str(app_source))
+            result = await asyncio.to_thread(install_app, str(app_source))
         log_lines.append(result.message or result.error or "done")
 
         # Mark source as registry-installed
