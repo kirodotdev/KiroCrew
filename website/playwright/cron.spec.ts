@@ -152,7 +152,9 @@ test.describe('Schedule (Cron) Page E2E Tests', () => {
   test('validates required fields', async ({ page }) => {
     await openForm(page)
     await page.getByRole('button', { name: /^create$/i }).click()
-    await expect(page.getByText(/name and message are required/i)).toBeVisible({ timeout: 3000 })
+    // Empty form → name checked first (message/agent/model/approval are only
+    // required for the agent-message kind, not script/command crons).
+    await expect(page.getByText(/name is required/i)).toBeVisible({ timeout: 3000 })
   })
 
   test('validates weekly mode requires day selection', async ({ page }) => {
