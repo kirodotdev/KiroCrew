@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import struct
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -80,6 +81,7 @@ class _TerminalSession:
     reader_task: asyncio.Task | None = None
     scrollback: bytearray = field(default_factory=bytearray)
     last_title: str | None = None  # last title pushed to the client (dedup)
+    last_cwd: str | None = None  # last cwd pushed to the client (dedup)
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -141,12 +143,44 @@ def _proc_comm(pid: int) -> str | None:
         return None
 
 
+# Trusted absolute locations for the lsof binary used by the macOS/BSD cwd
+# fallback. Resolving a bare "lsof" through inherited PATH would let anything
+# that can prepend a PATH entry (e.g. an activated workspace virtualenv's bin/)
+# hijack the spawn with gateway privileges, so we only ever execute these fixed
+# system paths and fail closed (no cwd frame) when none exists.
+_LSOF_PATHS = ("/usr/sbin/lsof", "/usr/bin/lsof")
+
+
 def _proc_cwd(pid: int) -> str | None:
-    """Current working directory of a process (Linux /proc). None if unavailable."""
+    """Current working directory of a process. Linux /proc first; on hosts
+    without /proc (macOS/BSD) falls back to `lsof -d cwd`, whose ``-Fn`` output
+    carries the path on an ``n``-prefixed line. Blocking (subprocess) — callers
+    must run this off the event loop (the title poller already does)."""
     try:
         return os.readlink(f"/proc/{pid}/cwd")
     except OSError:
+        pass
+    lsof = next((p for p in _LSOF_PATHS if os.path.isfile(p)), None)
+    if not lsof:
+        return None  # fail closed rather than resolve via PATH
+    try:
+        out = subprocess.run(
+            [lsof, "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout
+        for line in out.splitlines():
+            if line.startswith("n") and len(line) > 1:
+                return line[1:]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _session_cwd(sess: "_TerminalSession") -> str | None:
+    """Full current working directory of the session's shell, or None."""
+    if not platform_compat.IS_POSIX or sess.proc is None:
         return None
+    return _proc_cwd(sess.proc.pid)
 
 
 def _session_title(sess: "_TerminalSession") -> str | None:
@@ -318,6 +352,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             await ws.send_bytes(_redact_terminal(existing.scrollback))
         existing.ws = ws
         existing.last_ws_disconnect = None
+        # A fresh client starts with empty title/cwd state; clear the dedup
+        # markers so the next poll re-pushes both frames even when unchanged.
+        existing.last_title = None
+        existing.last_cwd = None
         sess = existing
         _sel().log_api_access(
             caller=caller,
@@ -547,6 +585,65 @@ async def api_terminal_create(request: web.Request) -> web.Response:
     )
 
 
+# Selection hand-off size cap. Generous for terminal selections (xterm buffers
+# are bounded anyway) while preventing a multi-megabyte POST from tying up the
+# redactors on the event loop's executor.
+_REDACT_MAX_BYTES = 256 * 1024
+
+
+async def api_terminal_redact(request: web.Request) -> web.Response:
+    """POST /api/terminal/redact — re-scan a COMPLETE terminal selection before
+    it is inserted into chat. Streaming output is redacted per read chunk, so a
+    credential straddling a chunk boundary can evade both scans; the selection
+    hand-off re-runs the redactors over the contiguous text. Callers MUST fail
+    closed: no chat insertion unless this returns 200 with redacted text."""
+    caller = request.get("user")
+    if not caller:
+        _sel().log_api_access(
+            caller="unknown",
+            operation="terminal.selection.redact",
+            outcome="denied",
+            source="dashboard",
+            resources=str(request.remote),
+        )
+        return web.Response(status=401, text="Unauthorized")
+    if not _is_enabled(request):
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.selection.redact",
+            outcome="denied",
+            source="dashboard",
+            resources="feature_disabled",
+        )
+        return web.Response(status=403, text="Terminal panel disabled")
+    try:
+        body = await request.json()
+        text = body["text"]
+        if not isinstance(text, str):
+            raise TypeError
+    except Exception:
+        return web.json_response({"error": "expected JSON body {text: string}"}, status=400)
+    if len(text.encode("utf-8", errors="replace")) > _REDACT_MAX_BYTES:
+        return web.json_response({"error": "selection too large"}, status=413)
+    # Same redactors as the streaming path (_redact_terminal), applied to the
+    # contiguous selection so boundary-straddling secrets cannot slip through.
+    # Run off-loop: the redactors are regex scans that scale with input size.
+    loop = asyncio.get_running_loop()
+
+    def _scan(t: str) -> str:
+        t, _ = redact_exfiltration_urls(t)
+        t, _ = redact_credentials(t)
+        return t
+
+    try:
+        redacted = await loop.run_in_executor(subprocess_executor(), _scan, text)
+    except Exception:
+        # Fail closed: the caller gets no text to insert.
+        logger.exception("terminal: selection redaction failed")
+        return web.json_response({"error": "redaction failed"}, status=500)
+    return web.json_response({"text": redacted})
+
+
 async def api_terminal_delete(request: web.Request) -> web.Response:
     """DELETE /api/terminal/sessions/{session_id} — kill a terminal session."""
     caller = request.get("user")
@@ -681,19 +778,38 @@ async def poll_terminal_titles(app: web.Application) -> None:
             for sess in list(registry.values()):
                 if sess is None or sess.ws is None or sess.ws.closed:
                     continue
-                # _session_title does blocking syscalls (tcgetpgrp ioctl, /proc
-                # reads) that can wedge on a D-state process or a stuck fs; run
-                # it off the loop on the subprocess pool (same rationale as the
-                # os.close offload in _kill_session) so one stuck read can never
-                # freeze the gateway event loop.
+                # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
+                # ioctl, /proc reads, lsof on macOS) that can wedge on a D-state
+                # process or a stuck fs; run them off the loop on the subprocess
+                # pool (same rationale as the os.close offload in _kill_session)
+                # so one stuck read can never freeze the gateway event loop.
+                # The WS can detach (sess.ws = None) while an executor probe is
+                # in flight — capture + revalidate the socket after EACH hop so
+                # a disconnect can never AttributeError the singleton poller.
                 title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
-                if not title or title == sess.last_title:
+                ws = sess.ws
+                if ws is None or ws.closed:
                     continue
-                sess.last_title = title
-                try:
-                    async with sess.send_lock:
-                        await sess.ws.send_str(json.dumps({"type": "title", "text": title}))
-                except (ConnectionResetError, RuntimeError, OSError):
-                    pass
+                if title and title != sess.last_title:
+                    sess.last_title = title
+                    try:
+                        async with sess.send_lock:
+                            await ws.send_str(json.dumps({"type": "title", "text": title}))
+                    except (ConnectionResetError, RuntimeError, OSError):
+                        pass
+                # Live cwd (full path) rides the same poll: the frontend uses it
+                # to attribute terminal output handed off to chat. Pushed only
+                # on change, like the title.
+                cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+                ws = sess.ws
+                if ws is None or ws.closed:
+                    continue
+                if cwd and cwd != sess.last_cwd:
+                    sess.last_cwd = cwd
+                    try:
+                        async with sess.send_lock:
+                            await ws.send_str(json.dumps({"type": "cwd", "path": cwd}))
+                    except (ConnectionResetError, RuntimeError, OSError):
+                        pass
     except asyncio.CancelledError:
         pass

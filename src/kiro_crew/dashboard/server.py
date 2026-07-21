@@ -1425,6 +1425,7 @@ async def start_dashboard(
     app.router.add_get("/api/ws/terminal/{session_id}", handlers.api_terminal_ws)
     app.router.add_post("/api/terminal/sessions", handlers.api_terminal_create)
     app.router.add_get("/api/terminal/sessions", handlers.api_terminal_list)
+    app.router.add_post("/api/terminal/redact", handlers.api_terminal_redact)
     app.router.add_delete("/api/terminal/sessions/{session_id}", handlers.api_terminal_delete)
     app.router.add_get("/api/taskrunner/refine", handlers.api_taskrunner_refine_status)
     app.router.add_post("/api/taskrunner/refine", handlers.api_taskrunner_refine)

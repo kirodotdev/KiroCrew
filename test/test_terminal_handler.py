@@ -324,6 +324,70 @@ class TestApiTerminalCreate:
 # ── api_terminal_delete ──
 
 
+class TestApiTerminalRedact:
+    """POST /api/terminal/redact — contiguous re-scan of a complete selection.
+    The streaming path redacts per 4096-byte read; a credential straddling a
+    chunk boundary evades both scans, so the hand-off re-scans the whole text
+    and the frontend fails closed unless this returns 200."""
+
+    def _req(self, body, user="testuser", enabled=True):
+        req = _make_request(user=user)
+        req.json = AsyncMock(return_value=body)
+        return req
+
+    @pytest.mark.asyncio
+    async def test_rejects_unauthenticated(self):
+        req = self._req({"text": "hello"}, user=None)
+        with patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_disabled(self):
+        req = self._req({"text": "hello"})
+        with patch.object(terminal, "_is_enabled", return_value=False), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_text(self):
+        req = self._req({"text": 42})
+        with patch.object(terminal, "_is_enabled", return_value=True):
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_oversized_selection(self):
+        req = self._req({"text": "x" * (terminal._REDACT_MAX_BYTES + 1)})
+        with patch.object(terminal, "_is_enabled", return_value=True):
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 413
+
+    @pytest.mark.asyncio
+    async def test_redacts_credentials_in_contiguous_text(self):
+        # The exact evasion the endpoint exists for: a secret that per-chunk
+        # scanning would have split. The contiguous scan must catch it.
+        secret = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        req = self._req({"text": f"config dump:\n{secret}\ndone"})
+        with patch.object(terminal, "_is_enabled", return_value=True):
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 200
+        out = json.loads(resp.text)["text"]
+        assert "wJalrXUtnFEMI" not in out
+
+    @pytest.mark.asyncio
+    async def test_fails_closed_on_redactor_error(self):
+        req = self._req({"text": "hello"})
+        with patch.object(terminal, "_is_enabled", return_value=True), \
+             patch.object(terminal, "redact_exfiltration_urls", side_effect=RuntimeError):
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 500
+        assert "hello" not in resp.text
+
+
 class TestApiTerminalDelete:
     @pytest.mark.asyncio
     async def test_rejects_unauthenticated(self):
@@ -1238,6 +1302,7 @@ class TestPollTerminalTitles:
         ws.closed = False
         sess = _make_session(session_id="s1", ws=ws)
         with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch.object(terminal, "_session_cwd", return_value=None), \
              patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
             await terminal.poll_terminal_titles(self._app(sess))
         assert sess.last_title == "vim"
@@ -1251,6 +1316,7 @@ class TestPollTerminalTitles:
         sess = _make_session(session_id="s1", ws=ws)
         sess.last_title = "vim"
         with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch.object(terminal, "_session_cwd", return_value=None), \
              patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
             await terminal.poll_terminal_titles(self._app(sess))
         ws.send_str.assert_not_awaited()
@@ -1261,6 +1327,7 @@ class TestPollTerminalTitles:
         ws.closed = False
         sess = _make_session(session_id="s1", ws=ws)
         with patch.object(terminal, "_session_title", return_value=None), \
+             patch.object(terminal, "_session_cwd", return_value=None), \
              patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
             await terminal.poll_terminal_titles(self._app(sess))
         ws.send_str.assert_not_awaited()
@@ -1280,6 +1347,7 @@ class TestPollTerminalTitles:
         ws.send_str = AsyncMock(side_effect=ConnectionResetError)
         sess = _make_session(session_id="s1", ws=ws)
         with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch.object(terminal, "_session_cwd", return_value=None), \
              patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
             await terminal.poll_terminal_titles(self._app(sess))  # must not raise
         assert sess.last_title == "vim"
@@ -1294,3 +1362,61 @@ class TestPollTerminalTitles:
         state = MagicMock(spec=[])  # no _terminal_sessions attribute
         with patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
             await terminal.poll_terminal_titles({"state": state})
+
+    @pytest.mark.asyncio
+    async def test_pushes_cwd_frame_on_change(self):
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        with patch.object(terminal, "_session_title", return_value=None), \
+             patch.object(terminal, "_session_cwd", return_value="/home/u/proj"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        assert sess.last_cwd == "/home/u/proj"
+        ws.send_str.assert_awaited_once()
+        assert json.loads(ws.send_str.call_args.args[0]) == {"type": "cwd", "path": "/home/u/proj"}
+
+    @pytest.mark.asyncio
+    async def test_skips_when_cwd_unchanged(self):
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        sess.last_cwd = "/home/u/proj"
+        with patch.object(terminal, "_session_title", return_value=None), \
+             patch.object(terminal, "_session_cwd", return_value="/home/u/proj"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        ws.send_str.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pushes_both_title_and_cwd_frames(self):
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch.object(terminal, "_session_cwd", return_value="/tmp/x"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        frames = [json.loads(c.args[0]) for c in ws.send_str.await_args_list]
+        assert {"type": "title", "text": "vim"} in frames
+        assert {"type": "cwd", "path": "/tmp/x"} in frames
+
+    @pytest.mark.asyncio
+    async def test_survives_ws_detach_during_probe(self):
+        # The WS can detach (sess.ws = None) while a blocking probe runs in the
+        # executor. The poller must revalidate after the hop — never send on the
+        # dead reference, never AttributeError (which would kill the singleton
+        # task for every terminal until restart).
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+
+        def detach_and_return_title(s):
+            s.ws = None  # disconnect lands mid-probe
+            return "vim"
+
+        with patch.object(terminal, "_session_title", side_effect=detach_and_return_title), \
+             patch.object(terminal, "_session_cwd", return_value="/tmp/x"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))  # must not raise
+        ws.send_str.assert_not_awaited()

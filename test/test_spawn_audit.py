@@ -153,6 +153,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers/files.py::api_upload",
         "dashboard/handlers/knowledge.py::_run_folder_dialog",
         "dashboard/handlers/mcp.py::api_mcp_remove",
+        # Terminal live-cwd probe on hosts without /proc (macOS/BSD): fixed
+        # `lsof -a -p <pid> -d cwd -Fn` list-argv (no shell=True) where <pid>
+        # is the gateway's own PTY child pid (an int from asyncio.subprocess),
+        # never agent input. Read-only introspection of our own process tree;
+        # sandboxing would break lsof's access to host process state.
+        "dashboard/handlers/terminal.py::_proc_cwd",
         "dashboard/handlers/terminal.py::api_terminal_ws",
         "dashboard/handlers/updates.py::_apply",
         "dashboard/handlers/updates.py::_do_update_check",

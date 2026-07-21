@@ -31,6 +31,17 @@ export function useTerminalEnabled(): boolean {
 const titles = new Map<string, string>()
 const titleListeners = new Map<string, Set<() => void>>()
 
+/* ── Per-session live cwd (full path, pushed by the backend title poller).
+ * Read imperatively at hand-off time (Send to chat), so a plain map with no
+ * subscription machinery is enough. */
+const cwds = new Map<string, string>()
+
+/** Live current working directory of a session's shell, if the backend has
+ *  reported one. Falls back to undefined (callers use the spawn cwd). */
+export function getTerminalCwd(sessionId: string): string | undefined {
+  return cwds.get(sessionId)
+}
+
 function setSessionTitle(sessionId: string, title: string) {
   if (titles.get(sessionId) === title) return
   titles.set(sessionId, title)
@@ -153,6 +164,7 @@ function connect(sessionId: string, c: Conn) {
       try {
         const m = JSON.parse(ev.data)
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
+        if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
       } catch { /* ignore non-JSON control frames */ }
     }
   }
@@ -202,6 +214,7 @@ export function disposeTerminalConnection(sessionId: string): void {
   unregisterTerminalWs(sessionId)
   titles.delete(sessionId)
   titleListeners.delete(sessionId)
+  cwds.delete(sessionId)
   // Drop any pending onTerminalReady callbacks. They're normally drained by
   // registerTerminalWs when the socket opens; if the tab is closed before the
   // WS ever connects, they'd otherwise leak in readyListeners indefinitely.

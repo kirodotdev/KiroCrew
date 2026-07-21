@@ -141,6 +141,29 @@ The dashboard uses a single WebSocket connection for all real-time events:
 chat streaming, status updates, notifications, slot changes, and log streaming.
 Reconnects automatically with exponential backoff — no page reload needed.
 
+## Terminal
+
+Terminal tabs in the chat side panel host a real shell (PTY) bound to the
+chat's working directory. Each session has its own WebSocket at
+`/api/ws/terminal/{sessionId}`. Binary frames carry raw PTY I/O; JSON text
+frames carry control messages:
+
+| Frame | Direction | Payload | Meaning |
+|---|---|---|---|
+| `resize` | client → server | `{cols, rows}` | Viewport size change |
+| `title` | server → client | `{text}` | Live tab title: foreground command name while one runs, else the shell cwd basename (polled ~1/s, pushed on change) |
+| `cwd` | server → client | `{path}` | The shell's full live working directory (same poll, pushed on change) |
+| `error` | server → client | `{message}` | Session-level failure |
+| `pong` | server → client | — | Keepalive reply |
+
+**Selection toolbar.** Highlighting text in a terminal shows a floating
+toolbar with **Send to chat** and **Copy**. Send to chat appends the selection
+to the chat composer draft (never overwrites the draft, never auto-sends),
+annotated with a `Terminal output (path):` header — using the live `cwd`
+value when the backend has reported one, else the terminal's spawn directory
+— and wrapped in a code fence so the agent reads it as literal output. Copy
+places the raw selection on the clipboard.
+
 ## Dark/Light Theme
 
 Toggle via the theme button in the topbar. Persists across sessions.

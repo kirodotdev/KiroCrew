@@ -1,10 +1,11 @@
-import { useEffect, useCallback, useRef } from 'react'
+import { useEffect, useLayoutEffect, useCallback, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
-import { ensureTerminalConnection, disposeTerminalConnection } from '../utils/terminalRegistry'
+import { MessageSquarePlus, Copy, Check } from 'lucide-react'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd } from '../utils/terminalRegistry'
 
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
@@ -147,9 +148,18 @@ export function remeasureAndFit(term: Terminal, fit: FitAddon): void {
 }
 
 /* ── Terminal view for one session ── */
-function TerminalView({ sessionId, cwd, visible }: { sessionId: string; cwd?: string; visible: boolean }) {
+function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: string; cwd?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
+  // Floating selection toolbar: anchored to where the drag ended (wrapper-
+  // relative px), carrying the captured text so the actions stay valid even
+  // after xterm clears its own selection.
+  const [sel, setSel] = useState<{ x: number; y: number; text: string } | null>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
+  const [sending, setSending] = useState<'idle' | 'busy' | 'failed'>('idle')
+  const toolbarRef = useRef<HTMLDivElement>(null)
 
   if (!entryRef.current) {
     entryRef.current = getOrCreateTerm(sessionId)
@@ -221,12 +231,168 @@ function TerminalView({ sessionId, cwd, visible }: { sessionId: string; cwd?: st
   // xterm instances persist in termCache across tab switches — only destroyed
   // on explicit tab close via disposeTerminalSession.
 
+  // Selection toolbar lifecycle. We show the toolbar on mouseup (the drag is
+  // finished and the selection is stable), anchored to the pointer, and hide it
+  // whenever the selection is cleared or the viewport scrolls (which would leave
+  // the toolbar floating over unrelated text). Text is snapshotted into state so
+  // the button handlers survive xterm clearing its own selection.
+  useEffect(() => {
+    const wrap = wrapperRef.current
+    if (!wrap) return
+    const onMouseUp = (e: MouseEvent) => {
+      // Defer one frame: xterm finalises the selection on its own mouseup
+      // handler, which may run after ours depending on listener order.
+      requestAnimationFrame(() => {
+        const text = term.hasSelection() ? term.getSelection() : ''
+        if (!text.trim()) { setSel(null); return }
+        const rect = wrap.getBoundingClientRect()
+        setCopied('idle')
+        setSending('idle')
+        setSel({ x: e.clientX - rect.left, y: e.clientY - rect.top, text })
+      })
+    }
+    wrap.addEventListener('mouseup', onMouseUp)
+    const selDisp = term.onSelectionChange(() => { if (!term.hasSelection()) setSel(null) })
+    const scrollDisp = term.onScroll(() => setSel(null))
+    return () => {
+      wrap.removeEventListener('mouseup', onMouseUp)
+      selDisp.dispose()
+      scrollDisp.dispose()
+    }
+  }, [term])
+
+  const dismissSelection = useCallback(() => {
+    term.clearSelection()
+    setSel(null)
+  }, [term])
+
+  // Clamp the toolbar fully inside the terminal pane. Ancestor containers use
+  // overflow-hidden, so any part that spills past an edge is clipped (the
+  // "cut off" bug). We measure the rendered toolbar, center it on the pointer
+  // horizontally but clamp both edges inside the pane, prefer sitting above the
+  // selection, and flip below when there isn't room above. Runs before paint so
+  // the toolbar never flashes at an unclamped position.
+  useLayoutEffect(() => {
+    if (!sel) { setPos(null); return }
+    const wrap = wrapperRef.current
+    const bar = toolbarRef.current
+    if (!wrap || !bar) return
+    const cw = wrap.clientWidth
+    const ch = wrap.clientHeight
+    const w = bar.offsetWidth
+    const h = bar.offsetHeight
+    const M = 8 // margin from the pane edges
+    const left = Math.max(M, Math.min(sel.x - w / 2, cw - w - M))
+    let top = sel.y - h - M            // preferred: above the pointer
+    if (top < M) top = sel.y + 16      // no room above → drop below the line
+    top = Math.max(M, Math.min(top, ch - h - M))
+    setPos({ left, top })
+  }, [sel])
+
+  const handleSendToChat = useCallback(async () => {
+    if (!sel?.text || !onSendToChat) return
+    setSending('busy')
+    // Server-side redaction of the COMPLETE selection before insertion.
+    // Streamed PTY output is redacted per read chunk, so a secret straddling
+    // a chunk boundary can evade both scans; the contiguous re-scan closes
+    // that gap. Fail closed: nothing is inserted unless redaction succeeds.
+    let redacted: string
+    try {
+      const res = await fetch('/api/terminal/redact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: sel.text }),
+      })
+      if (!res.ok) throw new Error(`redact ${res.status}`)
+      redacted = (await res.json()).text
+    } catch {
+      setSending('failed')
+      return // keep the selection + toolbar so the user can retry
+    }
+    setSending('idle')
+    // Annotate the handoff so the agent (and the reader) knows this is
+    // literal terminal output and where it came from. The fence keeps the
+    // output verbatim; backtick-runs inside are escaped by widening the
+    // fence beyond the longest run.
+    const runs = redacted.match(/`+/g)
+    const fence = '`'.repeat(Math.max(3, ...(runs?.map(r => r.length + 1) ?? [0])))
+    // Prefer the live cwd (backend polls the shell ~1/s) so the path is
+    // correct after the user cd's around; fall back to the spawn dir.
+    const path = getTerminalCwd(sessionId) ?? cwd
+    const header = path ? `Terminal output (\`${path}\`):` : 'Terminal output:'
+    onSendToChat(`${header}\n${fence}\n${redacted}\n${fence}`)
+    dismissSelection()
+  }, [sel, sessionId, cwd, onSendToChat, dismissSelection])
+
+  const handleCopy = useCallback(() => {
+    if (!sel?.text) return
+    // Confirm only after the write actually lands; a denied/unavailable
+    // clipboard shows "Copy failed" and keeps the selection so the user can
+    // fall back to the native copy shortcut.
+    const write = navigator.clipboard?.writeText(sel.text)
+    if (!write) { setCopied('failed'); return }
+    write.then(
+      () => {
+        setCopied('done')
+        // Keep the toolbar up briefly so the confirmation is visible.
+        setTimeout(dismissSelection, 900)
+      },
+      () => setCopied('failed'),
+    )
+  }, [sel, dismissSelection])
+
   return (
     <div
-      ref={containerRef}
-      className="flex-1 min-h-0 h-full overflow-hidden"
+      ref={wrapperRef}
+      className="relative flex-1 min-h-0 h-full overflow-hidden"
       style={{ display: visible ? 'block' : 'none' }}
-    />
+    >
+      <div ref={containerRef} className="w-full h-full overflow-hidden" />
+      {sel && (
+        // Positioning-only container; the interactive affordances are the
+        // native <button>s inside. The mouse handlers merely guard event
+        // bubbling to the wrapper, so this element carries no interactive role.
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+        <div
+          ref={toolbarRef}
+          className="absolute z-20 flex items-center gap-0.5 rounded-lg border border-border bg-bg-elevated p-0.5 shadow-lg transition-opacity"
+          style={{
+            left: pos?.left ?? 0,
+            top: pos?.top ?? 0,
+            // Hidden until measured/clamped so it never paints at the raw
+            // (potentially clipped) pointer position for a frame.
+            opacity: pos ? 1 : 0,
+            pointerEvents: pos ? 'auto' : 'none',
+          }}
+          // Keep the pointer interaction from bubbling back to the wrapper
+          // mouseup handler (which would re-evaluate and flicker the toolbar).
+          onMouseDown={e => e.preventDefault()}
+          onMouseUp={e => e.stopPropagation()}
+        >
+          {onSendToChat && (
+            <button
+              type="button"
+              onClick={handleSendToChat}
+              disabled={sending === 'busy'}
+              className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text hover:bg-bg-hover transition-colors ${sending === 'busy' ? 'opacity-60' : ''}`}
+              title={sending === 'failed' ? 'Redaction failed — retry' : 'Send selection to chat'}
+            >
+              <MessageSquarePlus className={`h-3.5 w-3.5 ${sending === 'failed' ? 'text-red-500' : ''}`} />
+              {sending === 'busy' ? 'Sending…' : sending === 'failed' ? 'Failed — retry' : 'Send to chat'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text hover:bg-bg-hover transition-colors"
+            title="Copy selection"
+          >
+            {copied === 'done' ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className={`h-3.5 w-3.5 ${copied === 'failed' ? 'text-red-500' : ''}`} />}
+            {copied === 'done' ? 'Copied' : copied === 'failed' ? 'Copy failed' : 'Copy'}
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -237,15 +403,16 @@ function TerminalView({ sessionId, cwd, visible }: { sessionId: string; cwd?: st
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, visible = true }: {
+export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat }: {
   sessionId: string
   cwd?: string
   visible?: boolean
+  onSendToChat?: (text: string) => void
 }) {
   useEffect(() => { ensureThemeObserver() }, [])
   return (
     <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
-      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} />
+      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} />
     </div>
   )
 }

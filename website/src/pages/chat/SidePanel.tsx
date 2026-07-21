@@ -384,6 +384,7 @@ export default function SidePanel({
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
                 onSubmitComments={onSubmitComments}
+                onTerminalSendToChat={onAddSourceToChat}
                 diffLineNumbers={diffLineNumbers}
                 setDiffLineNumbers={setDiffLineNumbers}
                 diffSideBySide={diffSideBySide}
@@ -402,16 +403,17 @@ export default function SidePanel({
  *  type on every SidePanel render, forcing React to unmount/remount the whole
  *  subtree — which reset editor state and re-fired xterm's focus-on-visible
  *  effect, stealing focus from the chat input on every keystroke. */
-function TabBody({ tab, active, onClose, onContentChange, onFileSave, onFileOpen, onSubmitComments, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, onClose, onContentChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; onClose: () => void
   onContentChange: (c: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string) => void
   onSubmitComments?: (m: string) => void
+  onTerminalSendToChat?: (text: string) => void
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
   diffSideBySide: boolean; setDiffSideBySide: (fn: (v: boolean) => boolean) => void
 }) {
-  if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} />
+  if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'file') {
     return (
       <MarkdownPanel
