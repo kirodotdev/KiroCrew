@@ -89,6 +89,13 @@ describe('ChatSidebar Folder Grouping', () => {
     expect(screen.queryByText('UNGROUPED')).not.toBeInTheDocument()
   })
 
+  it('shortens the primary create action label to New', () => {
+    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    const createButton = screen.getByRole('button', { name: 'New chat session' })
+    expect(createButton).toHaveTextContent('New')
+    expect(createButton).not.toHaveTextContent('New chat')
+  })
+
   it('shows new folder action in the create menu', async () => {
     const user = userEvent.setup()
     renderWithProviders(<ChatSidebar {...defaultProps} />)

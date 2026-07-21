@@ -86,7 +86,9 @@ export const SIDE_PANEL_RESERVED_W = 560
 export function measureSidePanelReservedW(): number {
   const header = document.querySelector('header.topbar-glass')
   if (!header) return SIDE_PANEL_RESERVED_W
-  const clusters = Array.from(header.children).filter(c => c.tagName !== 'A') as HTMLElement[]
+  const clusters = Array.from(header.children).filter(
+    c => c.tagName !== 'A' && !c.hasAttribute('data-topbar-overlay'),
+  ) as HTMLElement[]
   const content = clusters.reduce((sum, c) => sum + c.getBoundingClientRect().width, 0)
   const cs = getComputedStyle(header as HTMLElement)
   const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
@@ -171,7 +173,9 @@ export default function SidePanel({
     // the panel's own width, so this can't feed back into itself).
     const header = document.querySelector('header.topbar-glass')
     const ro = new ResizeObserver(recalc)
-    if (header) Array.from(header.children).forEach(c => ro.observe(c))
+    if (header) Array.from(header.children)
+      .filter(c => !c.hasAttribute('data-topbar-overlay'))
+      .forEach(c => ro.observe(c))
     return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
   }, [])
   const effectiveWidth = isMobile ? '100%' : Math.max(MIN_W, Math.min(width, maxW))

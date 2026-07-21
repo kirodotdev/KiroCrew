@@ -3568,11 +3568,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           {activityOpen && !search.isOpen && (
             <motion.div
               key="side-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 'auto' }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
-              className="h-full overflow-hidden flex justify-end"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 'auto', opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+              className="h-full overflow-visible flex justify-end"
             >
               <SidePanel
                 tabsCtl={tabsCtl}

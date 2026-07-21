@@ -51,6 +51,16 @@ describe('measureSidePanelReservedW', () => {
     expect(measureSidePanelReservedW()).toBe(756)
   })
 
+  it('excludes absolute topbar overlays so panel width does not feed back through search width', () => {
+    const header = mountHeader([300, 400])
+    const search = document.createElement('button')
+    search.setAttribute('data-topbar-overlay', '')
+    search.getBoundingClientRect = () => ({ width: 500, height: 36, top: 0, left: 0, right: 500, bottom: 36, x: 0, y: 0, toJSON: () => ({}) } as DOMRect)
+    header.appendChild(search)
+    // The absolute search does not consume flow space and must not inflate the reserve.
+    expect(measureSidePanelReservedW()).toBe(756)
+  })
+
   it('rounds up (Math.ceil) fractional cluster widths', () => {
     mountHeader([300.4, 400.3]) // 700.7+32+24 = 756.7 -> 757
     expect(measureSidePanelReservedW()).toBe(757)
