@@ -26,7 +26,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelRight, PanelLeftClose, Globe, LayoutGrid, Lightbulb } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelRight, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import OnboardingFlow from './components/OnboardingFlow'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -1913,6 +1913,14 @@ export default function App() {
             <p className="text-[11px] text-muted leading-relaxed mt-1">
               Monthly Kiro credit usage from <code className="font-mono">kiro-cli /usage</code> — across chat, agents, MCP, and subagents.
             </p>
+            <a
+              href="https://app.kiro.dev/settings/account"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline mt-1 self-start"
+            >
+              Manage account <ExternalLink size={12} />
+            </a>
           </div>
         )
       })()}
