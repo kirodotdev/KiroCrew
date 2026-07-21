@@ -996,20 +996,6 @@ class TestCleanupOrphanedMcpServersExtra:
         assert "77777" not in pid_file.read_text()
 
 
-def _find_dead_pid() -> int:
-    """Return a PID that is not currently running (best-effort, walks down)."""
-    pid = 999999
-    while pid > 1:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return pid
-        except PermissionError:
-            pass  # alive but another user — keep looking for a truly dead one
-        pid -= 1
-    return 999999
-
-
 class TestPidGoneOrUnmanaged:
     """`_pid_gone_or_unmanaged` decides whether it is safe to untrack a PID.
 
@@ -1019,12 +1005,20 @@ class TestPidGoneOrUnmanaged:
     ``platform_compat.pid_liveness`` (Windows-safe) rather than raw
     ``os.kill(pid, 0)``, so — unlike upstream 33da30e6 — an EPERM/unsignalable
     PID is RETAINED (fail-safe), not untracked.
+
+    The probe is mocked at ``platform_compat.pid_liveness`` (not a real dead
+    PID): a raw ``os.kill(pid, 0)`` walk to *find* a dead PID would itself be
+    the Windows-terminates-the-target footgun this fork forbids.
     """
 
     def test_dead_pid_is_safe_to_untrack(self) -> None:
         from kiro_crew.session_pid import _pid_gone_or_unmanaged
 
-        assert _pid_gone_or_unmanaged(_find_dead_pid()) is True
+        with patch(
+            "kiro_crew.platform_compat.pid_liveness",
+            return_value=platform_compat.PID_DEAD,
+        ):
+            assert _pid_gone_or_unmanaged(4242) is True
 
     def test_live_pid_under_our_uid_is_retained(self) -> None:
         # A live PID under our uid is retained (False) regardless of whether it
