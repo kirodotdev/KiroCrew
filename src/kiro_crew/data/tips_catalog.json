@@ -1,0 +1,124 @@
+{
+  "generated_at": "2026-07-20T04:11:37.659839+00:00",
+  "entries": [
+    {
+      "feature": "Agents & Configuration",
+      "title": "Agents & Configuration",
+      "summary": "KiroCrew uses agents for LLM interaction. Each agent is a JSON config that defines a model, system prompt, tools, and MCP servers. The default agent is `kirocrew`, but you can create your own custom agents.",
+      "doc": "agents.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Configuration Reference",
+      "title": "Configuration Reference",
+      "summary": "`~/.kirocrew/config.json` \u2014 main configuration file. Created automatically on first `kirocrew gateway` run.",
+      "doc": "configuration.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Cron Jobs & Scheduling",
+      "title": "Cron Jobs & Scheduling",
+      "summary": "KiroCrew can run tasks on a schedule \u2014 recurring checks, daily briefings, periodic monitoring, or one-shot reminders.",
+      "doc": "cron-and-scheduling.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Web Dashboard",
+      "title": "Web Dashboard",
+      "summary": "The dashboard is a React SPA at `http://localhost:5476` (or your configured URL). It provides chat, memory management, cron jobs, skills, agents, and system monitoring.",
+      "doc": "dashboard.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Artifact Deploy (deploy-web)",
+      "title": "Artifact Deploy (deploy-web)",
+      "summary": "Publish a KiroCrew artifact (HTML / Markdown / widget) to a public HTTPS URL on **your own AWS account** \u2014 private S3 + CloudFront + Origin Access Control (OAC). KiroCrew stores only your AWS **profile name**; it never sees, stores, or manages your credentials.",
+      "doc": "deploy-web.md",
+      "mtime": 1784517233.0
+    },
+    {
+      "feature": "Dynamic Sub-Agent Max Count",
+      "title": "Dynamic Sub-Agent Max Count",
+      "summary": "KiroCrew sizes the concurrent sub-agent cap **automatically** by default (`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from the host's actual memory and CPU, plus a per-agent cost KiroCrew *learns* from past runs. A fixed number is wrong in both directions \u2014 it wastes ca",
+      "doc": "dynamic-subagent-sizing.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Getting Started with KiroCrew",
+      "title": "Getting Started with KiroCrew",
+      "summary": "KiroCrew is an autonomous AI agent layer that runs on top of the kiro-cli (KiroACP) backend. It adds persistent memory, scheduled jobs, background subagents, self-learning, and multi-session orchestration. You interact with it via Slack DMs or a web dashboard.",
+      "doc": "getting-started.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Knowledge Library \u2014 How the Graph Works",
+      "title": "Knowledge Library \u2014 How the Graph Works",
+      "summary": "The Knowledge Library builds a graph from documents without embeddings. It uses LLM extraction to identify entities and their relationships, then connects them through shared entity names across chunks.",
+      "doc": "knowledge-library-how-it-works.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Memory & Learning",
+      "title": "Memory & Learning",
+      "summary": "KiroCrew has persistent memory that survives across sessions. It remembers your preferences, project context, daily activity, and corrections you teach it.",
+      "doc": "memory-and-learning.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Research Lab",
+      "title": "Research Lab",
+      "summary": "Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle campaigns: you define a research question, a **grill tree** interactively clarifies scope and sub-questions, then the system investigates cycle-by-cycle until it satisfies a success criterion or exhausts its cycle budget. Ea",
+      "doc": "research-lab.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Skills",
+      "title": "Skills",
+      "summary": "Skills are markdown files that give KiroCrew specialized knowledge for specific workflows. They live in `~/.kirocrew/skills/` as `SKILL.md` files.",
+      "doc": "skills.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Slack Integration",
+      "title": "Slack Integration",
+      "summary": "KiroCrew connects to Slack via Socket Mode. You interact with it through DMs or in channels where the bot is present.",
+      "doc": "slack-integration.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Subagents & Parallel Work",
+      "title": "Subagents & Parallel Work",
+      "summary": "KiroCrew can spawn background subagents to handle tasks in parallel. This is useful for fan-out work like reviewing multiple packages, running parallel searches, or delegating independent tasks.",
+      "doc": "subagents.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Task Runner",
+      "title": "Task Runner",
+      "summary": "The task runner executes multi-step autonomous tasks from spec files. It's useful for complex workflows that need structured execution with progress tracking.",
+      "doc": "task-runner.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "Telegram Integration",
+      "title": "Telegram Integration",
+      "summary": "Chat with your KiroCrew agent right from Telegram \u2014 on your phone, your laptop, anywhere. Create a bot, paste one token, and you're talking. Replies stream back live, with tappable option buttons.",
+      "doc": "telegram-integration.md",
+      "mtime": 1784488197.0
+    },
+    {
+      "feature": "Use Cases & Workflows",
+      "title": "Use Cases & Workflows",
+      "summary": "Real-world workflows from the KiroCrew community. These combine KiroCrew's capabilities \u2014 cron jobs, subagents, memory, Slack, and task runner \u2014 into end-to-end automation.",
+      "doc": "use-cases.md",
+      "mtime": 1784265640.0
+    },
+    {
+      "feature": "WeChat Integration",
+      "title": "WeChat Integration",
+      "summary": "Talk to your KiroCrew agent from WeChat \u2014 through a WeCom (\u4f01\u4e1a\u5fae\u4fe1) AI bot. Create the bot in your WeCom console, drop in two values, and you're chatting. Replies stream back live.",
+      "doc": "wechat-integration.md",
+      "mtime": 1784265640.0
+    }
+  ]
+}

@@ -137,6 +137,7 @@ from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.suggestions import api_suggestions
+from kiro_crew.tips import api_tips_feedback, api_tips_next, api_tips_status
 from kiro_crew.tunnel.setup import setup_tunnel
 
 if TYPE_CHECKING:
@@ -1078,6 +1079,11 @@ async def start_dashboard(
 
     # Suggestions (pre-computed contextual prompts)
     app.router.add_get("/api/suggestions", api_suggestions)
+
+    # Tips (feature discovery)
+    app.router.add_get("/api/tips/next", api_tips_next)
+    app.router.add_get("/api/tips/status", api_tips_status)
+    app.router.add_post("/api/tips/feedback", api_tips_feedback)
 
     # Memory
     app.router.add_get("/api/memory/preferences", handlers.api_memory_preferences)

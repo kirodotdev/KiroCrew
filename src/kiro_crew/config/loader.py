@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re as _re
 import uuid
@@ -172,12 +173,31 @@ def _safe_int(value: object, default: int) -> int:
         return default
 
 
-def _safe_float(value: object, default: float) -> float:
-    """Convert *value* to float, returning *default* on failure."""
+def _safe_float(
+    value: object,
+    default: float,
+    lo: float | None = None,
+    hi: float | None = None,
+) -> float:
+    """Convert *value* to float, returning *default* on failure, clamped to [lo, hi].
+
+    Non-finite results (NaN/Infinity) are replaced with *default* — NaN compares
+    false against any bound so it would silently bypass clamping (e.g. a
+    configured ``tips_cadence_hours: NaN`` would permanently suppress tips).
+    """
     try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
+        result = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: json parses arbitrarily large ints fine, but float()
+        # on a several-hundred-digit int raises — must not crash config load.
+        result = default
+    if not math.isfinite(result):
+        result = default
+    if lo is not None and result < lo:
+        result = lo
+    if hi is not None and result > hi:
+        result = hi
+    return result
 
 
 def _session_work_dir(session_key: str | None) -> Path:
@@ -1266,6 +1286,48 @@ class DashboardConfig:
             "Onboarded",
             "Whether the user has completed the dashboard onboarding flow. "
             "When true, the 'Choose your look' modal is skipped on first load.",
+        ),
+    )
+    tips_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Tips Enabled",
+            "Show feature tip cards while the agent is thinking.",
+        ),
+    )
+    tips_cadence_hours: float = field(
+        default=6.0,
+        metadata=_meta(
+            "Tips Cadence Hours",
+            "Minimum hours between showing a new tip.",
+        ),
+    )
+    tips_snooze_hours: float = field(
+        default=48.0,
+        metadata=_meta(
+            "Tips Snooze Hours",
+            "Hours before a snoozed tip becomes eligible again.",
+        ),
+    )
+    tips_recency_decay: float = field(
+        default=0.6,
+        metadata=_meta(
+            "Tips Recency Decay",
+            "Decay factor for weighted-random selection (0-1). Lower = stronger bias to newer tips.",
+        ),
+    )
+    tips_model: str = field(
+        default="claude-haiku-4.5",
+        metadata=_meta(
+            "Tips Model",
+            "Model ID for tips generation (pinned to Haiku-class for cost efficiency).",
+        ),
+    )
+    tips_explore_ratio: float = field(
+        default=0.2,
+        metadata=_meta(
+            "Tips Explore Ratio",
+            "Probability of picking a random catalog tip instead of personalized (0-1). Higher = more general discovery.",
         ),
     )
 
@@ -2970,6 +3032,12 @@ class KiroCrewConfig:
                 theme_color=dashboard_data.get("theme_color", ""),
                 recent_tint_count=_safe_int(dashboard_data.get("recent_tint_count", 0), 0),
                 onboarded=bool(dashboard_data.get("onboarded", False)),
+                tips_enabled=bool(dashboard_data.get("tips_enabled", True)),
+                tips_cadence_hours=_safe_float(dashboard_data.get("tips_cadence_hours", 6.0), 6.0, lo=0.0),
+                tips_snooze_hours=_safe_float(dashboard_data.get("tips_snooze_hours", 48.0), 48.0, lo=0.0),
+                tips_recency_decay=_safe_float(dashboard_data.get("tips_recency_decay", 0.6), 0.6, lo=0.0, hi=1.0),
+                tips_model=str(dashboard_data.get("tips_model", "claude-haiku-4.5")),
+                tips_explore_ratio=_safe_float(dashboard_data.get("tips_explore_ratio", 0.2), 0.2, lo=0.0, hi=1.0),
             ),
             tunnel=TunnelConfig(
                 enabled=bool(tunnel_data.get("enabled", False)),

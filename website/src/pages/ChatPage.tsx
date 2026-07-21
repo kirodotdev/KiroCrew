@@ -81,6 +81,8 @@ import SearchBar from '../components/SearchBar'
 import SearchResultsList from '../components/SearchResultsList'
 import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../utils/searchScroll'
 import QueueStack from '../components/QueueStack'
+import { runBelongsToSlot } from '../apps/workflows/runModel'
+import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage } from './chat'
@@ -449,6 +451,35 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const slotStopping = useAppSelector(s => s.chat.slotStopping)
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   const pendingQuestion = useAppSelector(s => s.chat.pendingQuestion)
+  // The ambient tip yields to functional surfaces that own the above-composer band
+  const tipSuppressed = useAppSelector(s =>
+    s.chat.messages.some(m => m.role === 'queued') ||
+    // Question card only renders for its OWNING slot (see the render-site
+    // slot check below) -- suppression must match, or a question pending in
+    // another running slot suppresses tips here forever (Codex round-31,
+    // same slot-ownership family as the workflowRuns fix in round-16).
+    (!!s.chat.pendingQuestion && s.chat.pendingQuestion.slot === s.chat.activeSlot) ||
+    // Active subagents render the progress bar in the same above-composer
+    // zone the floating tip occupies — the tip always yields (Raymond's
+    // hard constraint: never crowd the queue/subagent surfaces).
+    Object.values(s.chat.subagents).some(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending') ||
+    // Workflow runs render WorkflowProgressBar in the same band (Codex
+    // round-15) — but only runs belonging to THIS slot show a bar here, so
+    // filter by ownership or a terminal run parked in another slot would
+    // suppress tips everywhere forever (Codex round-16).
+    Object.values(s.chat.workflowRuns ?? {}).some(r => runBelongsToSlot(r.sessionKey, s.chat.activeSlot) && (r.status === 'running' || r.status === 'finished' || r.status === 'failed' || r.status === 'cancelled'))
+  ) || knowledgeFetch.loading || knowledgeFetch.results.length > 0
+  // Split View state is declared up here (not at its usage site) because the
+  // tip hook below must know about it: in split mode SessionGridView replaces
+  // the composer, TipCard never renders, and an unblocked hook would fetch a
+  // tip + record it as shown, silently burning the 6h cadence (Codex round-25).
+  const [splitMode, setSplitMode] = useState(false)
+  const [splitAnchor, setSplitAnchor] = useState<string | null>(null)
+  // Temporary sessions ("no memory reads or writes") must never show
+  // memory-personalized tips (Codex round-22).
+  const tipTemporary = useAppSelector(s => s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)?.memory_mode === 'temporary')
+  const tipBlocked = tipTemporary || splitMode || embedMode === 'sessions'
+  const { tip: activeTip, dismiss: dismissTip } = useTipTrigger(!!slotRunning, tipSuppressed, activeSlot, tipBlocked)
   const slotState = useAppSelector(s => s.chat.slotState)
   const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
@@ -1376,6 +1407,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     vScrollToBottomRef.current(instant ? 'auto' : 'smooth')
   }, [])
 
+  // Scroll compensation for the in-flow tip (Raymond 2026-07-21): mounting the
+  // tip shrinks the scroll viewport but does not itself re-anchor the scroll
+  // position, so when the user is parked at the bottom of a streaming turn the
+  // last line of text gets clipped under the container edge -- visually
+  // indistinguishable from the tip covering it. Re-anchor on mount AND on
+  // dismiss (double rAF: let the band's layout commit before measuring).
+  useEffect(() => {
+    if (!isAtBottomRef.current) return
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (isAtBottomRef.current) scrollBottom(true)
+      })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [activeTip, scrollBottom])
+
   // Navigate to a (possibly off-window) display index: mount it first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
   // Tracks the in-flight row-mount poll (below) so a newer navigation cancels
@@ -2112,8 +2159,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // preserved across navigation, and a member session opened on its own shows single
   // chat plus an "in split" badge that re-enters it (β model). `splitAnchor` is the
   // slot whose split we're showing (the one ⌘D'd from, or the badge's target).
-  const [splitMode, setSplitMode] = useState(false)
-  const [splitAnchor, setSplitAnchor] = useState<string | null>(null)
   // enterSplit opens Split View for `anchor`: SessionGridView restores anchor's saved
   // layout if one exists, else seeds [anchor | placeholder]. Closing back down to a
   // single session dissolves the layout and collapses to native chat (onCollapse).
@@ -3259,6 +3304,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 </div>
               )}
               <ChatInput
+              aboveComposer={
+                /* In-flow tip inside the composer's own width wrapper: shares
+                   the composer's exact box geometry (Raymond 2026-07-21: tip
+                   width must always match the input box) while still pushing
+                   chat content up like QueueStack (team decision: never cover
+                   thinking/output; queue and question card keep priority via
+                   tipSuppressed). */
+                <AnimatePresence>
+                  {activeTip && (
+                    <div className="pb-1.5">
+                      <TipCard tip={activeTip} onDismiss={dismissTip} />
+                    </div>
+                  )}
+                </AnimatePresence>
+              }
               value={input}
               onChange={setInput}
               onSend={() => send()}

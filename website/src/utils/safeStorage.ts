@@ -132,6 +132,21 @@ function warnDev(key: string, err: unknown): void {
  * Callers that need to know whether persistence succeeded can branch on the
  * return value; most can ignore it (best-effort persistence).
  */
+/**
+ * Non-throwing localStorage read. Returns null when storage access is denied
+ * (SecurityError in locked-down embedding contexts / browser policies) or
+ * unavailable — a read failure must degrade to "no cached value", never crash
+ * the caller (Codex round-20 on the tips 20-min gate read).
+ */
+export function safeGetItem(key: string): string | null {
+  if (typeof localStorage === 'undefined') return null
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 export function safeSetItem(key: string, value: string): boolean {
   if (typeof localStorage === 'undefined') return false
   try {

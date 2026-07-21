@@ -261,6 +261,21 @@ const j = async (r: Response) => {
   }
   return r.json()
 }
+
+/**
+ * Nullable variant of j(): preserves auth recovery + ApiError semantics but
+ * returns null on 204 (No Content). Used by tips endpoints.
+ */
+const jNullable = async (r: Response) => {
+  checkSessionExpired(r)
+  if (r.ok) removeAuthBanner()
+  if (r.status === 204) return null
+  if (!r.ok) {
+    const errText = await r.text()
+    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`)
+  }
+  return r.json()
+}
 // X-Session-Key ensures the server-side ephemeral gate always runs.
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
@@ -977,6 +992,11 @@ export const api = {
     const errText = await r.text()
     throw new ApiError(r.status, errText || `HTTP ${r.status}`)
   },
+
+  // Tips
+  tipsNext: () => get('/api/tips/next').then(jNullable) as Promise<{ tip: { id: string; feature: string; title: string; body: string; why: string; doc: string; cta_prompt: string } | null; glow: boolean } | null>,
+  tipsStatus: () => get('/api/tips/status').then(j) as Promise<{ enabled_config: boolean; opted_out: boolean; cadence_hours: number }>,
+  tipsFeedback: (id: string, action: 'shown' | 'ack' | 'dismiss' | 'snooze' | 'helpful' | 'optout' | 'optin') => post('/api/tips/feedback', { id, action }).then(j),
 }
 
 export interface AppPublishProvider {
