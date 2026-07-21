@@ -32,7 +32,7 @@ overwritten.
   `https://d28nxu9if70cmc.cloudfront.net` (`updates.kirocrew.dev` is not
   yet provisioned)
 
-**Feed (as built) — static file, no Lambda:** `notarize-macos.yml` writes
+**Feed (as built) — static file, no Lambda:** `sign-and-notarize.yml` writes
 `feed/{channel}/latest-mac.json` directly after the spctl gate. There is no
 Feed Lambda, no S3-event trigger, no 200/204 endpoint, and no CloudFront
 Function query routing: the client (`auto-update.js`) fetches the static
@@ -52,7 +52,7 @@ delta. Schema:
 `url` is the Squirrel auto-update payload (zip, mandatory). `dmg` is the
 first-install disk image for humans/website links; Squirrel ignores it.
 
-**macOS artifact flow (as built), all channels via `notarize-macos.yml`:**
+**macOS artifact flow (as built), all channels via `sign-and-notarize.yml`** (which folds the CDSigner sign job and the notarize job into one reusable workflow shared by `nightly.yml` and `release.yml`; the trigger files carry only version derivation and `uses:` calls)**:**
 
 1. CDSigner signs the .app (dynamic manifest covering every nested Mach-O)
 2. `notarytool` submit (app) → staple → `spctl` fail-closed gate

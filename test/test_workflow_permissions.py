@@ -56,30 +56,28 @@ def _workflow_permissions(name: str) -> dict[str, str]:
 
 
 class TestNightlyPermissions:
-    def test_only_publish_jobs_can_mint_oidc_tokens(self) -> None:
+    def test_only_publish_callers_can_mint_oidc_tokens(self) -> None:
         lines = _lines("nightly.yml")
 
         assert _workflow_permissions("nightly.yml") == {"contents": "read"}
         assert _permission_block(lines, "  version:") is None
+        # Build callers inherit the workflow-level contents:read only; the
+        # reusable build workflows request nothing more.
         assert _permission_block(lines, "  build-wheel:") is None
         assert _permission_block(lines, "  build-desktop:") is None
-        assert _permission_block(lines, "  publish:") == {
-            "id-token": "write",
-            "contents": "read",
-            "attestations": "write",
-        }
         assert _permission_block(lines, "  publish-cli:") == {
             "contents": "read",
             "id-token": "write",
             "attestations": "write",
         }
-        # Caller job for the reusable notarize workflow: a workflow_call
-        # callee can never exceed the caller job's permissions, so the
-        # caller must grant id-token explicitly. attestations:write is for
-        # the shipping-DMG provenance attestation inside notarize-macos.yml
-        # (the DMG is rebuilt there from the stapled app; the build-job DMG
-        # never ships and is attested nowhere).
-        assert _permission_block(lines, "  notarize:") == {
+        # Caller job for the reusable sign-and-notarize workflow: a
+        # workflow_call callee can never exceed the caller job's permissions,
+        # so the caller must grant id-token explicitly. attestations:write
+        # covers the sign job's wheel/sdist/AppImage provenance and the
+        # notarize job's shipping-DMG attestation (the DMG is rebuilt there
+        # from the stapled app; the build-job DMG never ships and is attested
+        # nowhere).
+        assert _permission_block(lines, "  sign-and-notarize:") == {
             "id-token": "write",
             "contents": "read",
             "attestations": "write",
@@ -88,7 +86,7 @@ class TestNightlyPermissions:
 
 class TestReleasePermissions:
     def test_release_jobs_follow_least_privilege_split(self) -> None:
-        """The signing job holds AWS creds (id-token) but must not hold
+        """The signing caller holds AWS creds (id-token) but must not hold
         contents:write; the GitHub-Release job holds contents:write but must
         not hold AWS creds. Keeping the two capabilities in separate jobs
         means a compromise of either job cannot both exfiltrate via AWS and
@@ -96,13 +94,46 @@ class TestReleasePermissions:
         lines = _lines("release.yml")
 
         assert _workflow_permissions("release.yml") == {"contents": "read"}
+        assert _permission_block(lines, "  version:") is None
         assert _permission_block(lines, "  build-wheel:") is None
         assert _permission_block(lines, "  build-desktop:") is None
-        assert _permission_block(lines, "  release:") == {
+        assert _permission_block(lines, "  publish-cli:") == {
             "contents": "read",
             "id-token": "write",
             "attestations": "write",
         }
+        assert _permission_block(lines, "  sign-and-notarize:") == {
+            "id-token": "write",
+            "contents": "read",
+            "attestations": "write",
+        }
         assert _permission_block(lines, "  github-release:") == {
             "contents": "write",
+        }
+
+
+class TestReusableWorkflowPermissions:
+    def test_build_workflows_are_read_only(self) -> None:
+        """The shared build workflows compile source into artifacts; they
+        must never hold OIDC or write capabilities."""
+        assert _workflow_permissions("build-wheel.yml") == {"contents": "read"}
+        assert _workflow_permissions("build-desktop.yml") == {"contents": "read"}
+
+    def test_sign_and_notarize_declares_exact_capabilities(self) -> None:
+        """The shared sign/notarize workflow needs OIDC (AWS signing role)
+        and attestations (provenance for the artifacts + shipping DMG) --
+        and nothing else. contents:write in particular must never appear
+        here (least-privilege split: the GitHub-Release job in release.yml
+        is the only writer)."""
+        assert _workflow_permissions("sign-and-notarize.yml") == {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
+
+    def test_publish_cli_declares_exact_capabilities(self) -> None:
+        assert _workflow_permissions("publish-cli.yml") == {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
         }

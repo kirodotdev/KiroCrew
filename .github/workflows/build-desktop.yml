@@ -1,0 +1,84 @@
+name: Build Desktop (reusable)
+
+# Reusable workflow: build the unsigned Electron desktop app for every
+# supported platform, stamped so app.getVersion() equals the update-feed
+# version (the auto-updater's client-side compare depends on this; a
+# mismatch means a permanent "update available" loop). Called by
+# nightly.yml and release.yml so the build recipe and the platform matrix
+# exist exactly once.
+#
+# Platform matrix (expand as support lands):
+#   - macOS arm64:  shipped (desktop app)
+#   - Linux x64:    shipped (AppImage)
+#   - Linux arm64:  TODO (Graviton, Raspberry Pi)
+#   - Windows x64:  TODO (blocked on kiro-cli Windows support)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Semver version to stamp (electron package.json + __init__.py)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-desktop:
+    name: Build Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            artifact-name: desktop-darwin-arm64
+          - os: ubuntu-22.04
+            artifact-name: desktop-linux-x64
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - name: Stamp version
+        env:
+          STAMP_VERSION: ${{ inputs.version }}
+        run: |
+          # BSD-sed-compatible -i.bak form: this step runs on macos-14 too.
+          sed -i.bak "s/__version__ = \".*\"/__version__ = \"${STAMP_VERSION}\"/" src/kiro_crew/__init__.py
+          rm -f src/kiro_crew/__init__.py.bak
+          # Stamp the Electron app: app.getVersion() (from the bundle's
+          # Info.plist, which electron-builder fills from package.json) must
+          # equal the feed version for the auto-updater's compare gate.
+          node -e "const fs=require('fs');const f='website/electron/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.STAMP_VERSION;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+          echo "Building desktop: ${STAMP_VERSION}"
+
+      - name: Build desktop app
+        run: make desktop
+        env:
+          # Unsigned here by design: CDSigner signs the .app downstream in
+          # sign-and-notarize.yml. Local certificate discovery must stay off.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: |
+            website/electron/dist/*.dmg
+            website/electron/dist/*.zip
+            website/electron/dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
