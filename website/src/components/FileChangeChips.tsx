@@ -189,7 +189,7 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff,
   if (!fileChanges?.length) return null
   const Chip = RENDERERS[style] ?? ExpandedChip
   return (
-    <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mb-1.5">
+    <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mt-2 mb-1.5">
       {fileChanges.map(fc => (
         // Markdown docs get the larger info card (with a Save action);
         // everything else keeps the compact pill from the user's setting.
