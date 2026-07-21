@@ -195,4 +195,105 @@ describe('useVirtualChat integration: follow / pin wiring', () => {
 
     expect(el.scrollTop).toBe(400)
   })
+
+  it('jumps instantly (no smooth glide) when bulk history hydration replaces a thin list', () => {
+    // The in-progress-conversation race: slot switches (sessionId flips), the
+    // history fetch is in flight, and a live WS streaming chunk lands FIRST —
+    // the list goes 0 → 1 and the slot-entry one-shot pin is consumed against
+    // that lone streaming bubble.
+    const { el, state, view } = render(
+      { scrollTop: 0, scrollHeight: 0, clientHeight: 400 },
+      [],
+      'bulk-hydration',
+    )
+    act(() => {
+      state.scrollHeight = 120
+      view.rerender({ items: mkItems(1), sessionId: 'bulk-hydration', getKey, externalScrollerRef: { current: el } })
+    })
+    expect(el.scrollTop).toBe(0) // content shorter than viewport
+
+    // Track HOW the scroller is driven from here: a smooth scrollTo is the
+    // "awkward paging" bug; the fix must land via an instant write.
+    let smoothCalls = 0
+    ;(el as unknown as { scrollTo: (o: { top: number; behavior?: string }) => void }).scrollTo = (o) => {
+      if (o.behavior === 'smooth') smoothCalls++
+      state.scrollTop = o.top
+    }
+
+    // The fetch resolves: the full conversation replaces the thin list
+    // (1 → 200 items, way past the overscan+1 bulk threshold).
+    act(() => {
+      state.scrollHeight = 24000
+      view.rerender({ items: mkItems(200), sessionId: 'bulk-hydration', getKey, externalScrollerRef: { current: el } })
+    })
+
+    // Instant force-pin to the true bottom — not a smooth glide.
+    expect(el.scrollTop).toBe(23600)
+    expect(smoothCalls).toBe(0)
+  })
+
+  it('bulk growth does NOT yank a user who scrolled up while history loads', () => {
+    const { el, state, view } = render(
+      { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 },
+      mkItems(8),
+      'bulk-no-yank',
+    )
+    expect(el.scrollTop).toBe(1600)
+
+    // User scrolls up to read — the scroll handler releases stick.
+    act(() => { state.scrollTop = 300; el.dispatchEvent(new Event('scroll')) })
+
+    // A bulk prepend lands (load-older page). Stick is released, so neither
+    // the bulk force-pin nor pinAuto may move the viewport.
+    act(() => {
+      state.scrollHeight = 12000
+      view.rerender({ items: mkItems(108), sessionId: 'bulk-no-yank', getKey, externalScrollerRef: { current: el } })
+    })
+
+    expect(el.scrollTop).toBe(300)
+  })
+
+  it('does NOT yank when the user scrolls up between the bulk pin and its settle frame', () => {
+    // rAF is queued by the bulk path's settle pin — capture it so the test
+    // controls exactly when the frame fires.
+    const frames: FrameRequestCallback[] = []
+    const origRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    }) as typeof requestAnimationFrame
+    try {
+      const { el, state, view } = render(
+        { scrollTop: 0, scrollHeight: 0, clientHeight: 400 },
+        [],
+        'bulk-settle-scrollup',
+      )
+      // The settle frame guards on el.isConnected — attach the scroller so
+      // the frame actually runs (other tests use a detached element because
+      // they only exercise synchronous pins).
+      document.body.appendChild(el)
+      act(() => {
+        state.scrollHeight = 120
+        view.rerender({ items: mkItems(1), sessionId: 'bulk-settle-scrollup', getKey, externalScrollerRef: { current: el } })
+      })
+      frames.length = 0 // drop entry-pin frames; only the bulk settle matters below
+
+      // Bulk hydration lands: synchronous force-pin to the bottom.
+      act(() => {
+        state.scrollHeight = 24000
+        view.rerender({ items: mkItems(200), sessionId: 'bulk-settle-scrollup', getKey, externalScrollerRef: { current: el } })
+      })
+      expect(el.scrollTop).toBe(23600)
+
+      // User scrolls up BEFORE the settle frame fires — stick is released.
+      act(() => { state.scrollTop = 5000; el.dispatchEvent(new Event('scroll')) })
+
+      // The settle frame must respect the released stick and not yank back.
+      act(() => { frames.forEach(cb => cb(0)); frames.length = 0 })
+      expect(el.scrollTop).toBe(5000)
+      el.remove()
+    } finally {
+      globalThis.requestAnimationFrame = origRaf
+    }
+  })
 })

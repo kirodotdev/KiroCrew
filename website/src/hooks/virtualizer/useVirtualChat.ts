@@ -538,9 +538,31 @@ export function useVirtualChat<T>(
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    const grew = itemCount > prevItemCountRef.current
+    const growth = itemCount - prevItemCountRef.current
     prevItemCountRef.current = itemCount
-    if (!grew) return
+    if (growth <= 0) return
+    // BULK growth while followed is history hydration, not streaming: the
+    // slot-detail fetch resolving and REPLACING a thin optimistic list (e.g.
+    // a lone WS streaming bubble that landed before the fetch — it consumed
+    // the slot-entry one-shot pin) with the full conversation. Routing that
+    // through pinAuto smooth-glides from the top across hundreds of
+    // virtualized rows, visibly "paging" through the conversation and often
+    // landing short while heights are still estimates. Treat it like slot
+    // entry instead: remount the tail window and force-pin instantly.
+    // Gated on stick so a "load older" prepend while the user reads history
+    // is never yanked to the bottom.
+    if (growth > overscan + 1 && stickRef.current) {
+      setWindowRange({ start: Math.max(0, itemCount - (overscan + 1)), end: itemCount })
+      forcePin()
+      const id = requestAnimationFrame(() => {
+        // Recheck stick: the user can scroll up between the synchronous pin
+        // and this frame — the scroll handler releases stick, and an
+        // unconditional forcePin here would yank them back and re-arm follow.
+        if (!el.isConnected || !stickRef.current) return
+        forcePin()
+      })
+      return () => cancelAnimationFrame(id)
+    }
     // Pin synchronously (pre-paint) so a new message appears at the bottom
     // without a flicker, then once more next frame after its real height is
     // known. Both go through the race-proof pinAuto.
@@ -550,7 +572,7 @@ export function useVirtualChat<T>(
       pinAuto()
     })
     return () => cancelAnimationFrame(id)
-  }, [itemCount, pinAuto, scrollerRef])
+  }, [itemCount, overscan, pinAuto, forcePin, scrollerRef])
 
   // ---- Slot entry: force the scroller to the true bottom ----
   // Runs after the new session's tail window has committed (windowRange reset
