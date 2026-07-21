@@ -187,8 +187,14 @@ describe('UserMessage', () => {
   })
 
   it('applies the accent bubble treatment only to a steered message', () => {
-    const { container } = render(<UserMessage content="steered" meta={{ steer: true }} messageTs="steer-ts-2" renderContent={renderContent} />)
-    const bubble = container.querySelector('.msg-content') as HTMLElement
-    expect(bubble.className).toContain('border-accent/40')
+    const { container: steered } = render(<UserMessage content="steered" meta={{ steer: true }} messageTs="steer-ts-2" renderContent={renderContent} />)
+    const steerBubble = steered.querySelector('.msg-content') as HTMLElement
+    expect(steerBubble.className).toContain('bg-accent-subtle')
+    expect(steerBubble.className).not.toContain('border-accent')
+
+    const { container: normal } = render(<UserMessage content="normal" messageTs="normal-ts-2" renderContent={renderContent} />)
+    const normalBubble = normal.querySelector('.msg-content') as HTMLElement
+    expect(normalBubble.className).toContain('bg-card')
+    expect(normalBubble.className).not.toContain('bg-accent-subtle')
   })
 })

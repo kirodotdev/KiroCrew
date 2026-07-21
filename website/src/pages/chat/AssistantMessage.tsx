@@ -69,10 +69,13 @@ function SteerAckChip({ summary }: { summary: string }) {
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: 'easeOut' }}
-      className="mt-2 inline-flex items-start gap-1.5 rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-1.5 text-[12px] leading-snug text-accent max-w-full"
+      className="mt-2 inline-flex flex-col items-start rounded-lg bg-accent-subtle px-2.5 py-1.5 text-[12px] leading-snug max-w-full"
     >
-      <Compass size={13} className="mt-0.5 shrink-0" />
-      <span className="min-w-0"><span className="font-semibold">Steered</span>{summary ? <span className="text-text"> — {summary}</span> : null}</span>
+      <span className="inline-flex items-center gap-1.5 text-accent">
+        <Compass size={13} className="shrink-0" />
+        <span className="font-semibold">Steered</span>
+      </span>
+      {summary ? <span className="text-text ml-[19px] mt-0.5">{summary}</span> : null}
     </motion.div>
   )
 }
@@ -183,7 +186,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           — including mid-stream — so the user sees the agent acknowledge the
           steer live, not only after the whole turn finishes. */}
       {steerAcks.length > 0 && (
-        <div className="flex flex-col items-start gap-1">
+        <div className="flex flex-col items-start gap-1 mb-2">
           {steerAcks.map((a, i) => <SteerAckChip key={i} summary={a} />)}
         </div>
       )}
