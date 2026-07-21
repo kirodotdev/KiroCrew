@@ -4334,7 +4334,9 @@ async def _run_chat(
             ):
                 slot._pending_synthesis = False
                 _syn = SUBAGENT_SYNTHESIS_PROMPT
-                slot.append("inject", _syn, "msg msg-inject")
+                # Do NOT echo the internal synthesis prompt into the transcript —
+                # it is an internal continuation, not user-facing text. Only its
+                # assistant reply (the consolidated summary) should be visible.
                 task = asyncio.create_task(
                     asyncio.wait_for(_run_chat(state, slot, _syn), timeout=CHAT_TURN_TIMEOUT)
                 )
