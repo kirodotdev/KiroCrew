@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu } from 'lucide-react'
+import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitPullRequest } from 'lucide-react'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -225,6 +225,14 @@ interface Slot {
   recent?: boolean
   tags?: string[]
   forked_from?: string | null
+  source_links?: Array<{
+    provider: 'github' | 'gitlab'
+    number: number
+    url: string
+    ci?: 'running' | 'passed' | 'failed' | null
+    state?: 'open' | 'draft' | 'merged' | 'closed'
+  }>
+  source_links_total?: number
 }
 
 interface HistoryItem {
@@ -544,7 +552,6 @@ function ChatSidebar({
 
   // Sidebar-only state
   const [slotFilter, setSlotFilter] = useState('')
-  const [tipDismissed, setTipDismissed] = useState(() => !!localStorage.getItem('mc-sidebar-tip-dismissed'))
   const [historyFilter, setHistoryFilter] = useState('')
   const historySearchResults = useDebouncedSessionSearch(historyFilter, s => s)
   // Which folder groups are collapsed in the grouped search-results view.
@@ -1725,6 +1732,27 @@ function ChatSidebar({
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
+            {s.source_links && s.source_links.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {s.source_links.map(link => (
+                  <span key={link.url} className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={link.url}>
+                    <GitPullRequest className="lucide-inline shrink-0" />
+                    {link.provider === 'github' ? `#${link.number}` : `!${link.number}`}
+                    {(link.state === 'merged' || link.state === 'closed') && (
+                      <span className={`capitalize ${link.state === 'merged' ? 'text-aim' : 'text-danger'}`}>{link.state}</span>
+                    )}
+                    {link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label="Checks running" />}
+                    {link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label="Checks passed" />}
+                    {link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label="Checks failed" />}
+                  </span>
+                ))}
+                {typeof s.source_links_total === 'number' && s.source_links_total > s.source_links.length && (
+                  <span className="inline-flex items-center px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={`${s.source_links_total - s.source_links.length} more pull request${s.source_links_total - s.source_links.length === 1 ? '' : 's'} in this session`}>
+                    +{s.source_links_total - s.source_links.length}
+                  </span>
+                )}
+              </div>
+            )}
             {s.tags && s.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">
                 {s.tags.map(tid => {
@@ -2002,7 +2030,7 @@ function ChatSidebar({
               disabled={creatingSlot}
               className={`flex items-center h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-accent-hover active:scale-95 transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
               onClick={() => { createChatMutation.mutate() }}
-              title="New chat" aria-label="New chat session" aria-busy={creatingSlot}>{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? 'Creating…' : 'New chat'}</span>}</button>
+              title="New chat" aria-label="New chat session" aria-busy={creatingSlot}>{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? 'Creating…' : 'New'}</span>}</button>
             <span className="w-px h-4 bg-accent-fg opacity-30" aria-hidden="true" />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -2693,12 +2721,6 @@ function ChatSidebar({
           </div>
         )}
       </LayoutGroup>
-
-      {/* Sidebar-hide tip */}
-      {!tipDismissed && <div className="sidebar-toggle-tip mx-2 mb-1 mt-1 px-3 py-2 rounded-lg bg-bg-elevated border text-[12px] text-text leading-relaxed flex items-start gap-2 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}>
-        <span className="flex-1">You can now toggle this sidebar<br/>Enable in <strong className="text-text-strong">Settings → Chat → Sidebar</strong>.</span>
-        <Btn aria-label="Dismiss sidebar tip" className="shrink-0 text-muted hover:text-text cursor-pointer bg-transparent border-none text-[14px] leading-none p-0" onClick={() => { safeSetItem('mc-sidebar-tip-dismissed', '1'); setTipDismissed(true) }}><X className="lucide-inline" /></Btn>
-      </div>}
 
       {/* When expanded: doubles as the resize handle (accent on hover, drag to resize, dbl-click to collapse).
           When collapsed: just a static 1px divider between sessions and the Older Sessions footer. */}

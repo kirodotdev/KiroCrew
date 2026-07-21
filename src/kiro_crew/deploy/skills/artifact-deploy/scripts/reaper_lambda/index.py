@@ -172,6 +172,23 @@ def _del_stack(slug):
     cfn.delete_stack(StackName=name)
 
 
+def _resolve_account_id():
+    """Resolve this account's id for ExpectedBucketOwner pinning (CWE-283).
+
+    reaper.yaml injects ACCOUNT_ID; fall back to STS. Returns "" if it cannot
+    be resolved so callers can fail closed rather than issue an owner-unpinned
+    destructive S3 call against a manifest-derived (attacker-writable) bucket
+    name that could have been re-registered in another account (bucket-sniping).
+    """
+    aid = os.environ.get("ACCOUNT_ID", "")
+    if not aid:
+        try:
+            aid = boto3.client("sts").get_caller_identity()["Account"]
+        except Exception:
+            aid = ""
+    return aid
+
+
 def _reap_engine_arch(man, slug, now):
     """Reap an engine-arch deployment: disable+delete distribution, empty+delete per-site bucket.
 
@@ -315,10 +332,20 @@ def _reap_engine_arch(man, slug, now):
 
     # Empty and delete the per-site bucket.
     if site_bucket:
+        # CWE-283 (bucket-sniping): pin every S3 call against the
+        # manifest-derived bucket to OUR account. site_bucket comes from the
+        # attacker-writable manifest; without ExpectedBucketOwner a bucket
+        # re-registered in another account (after ours was deleted) would pass
+        # the name regex + tag gate and be emptied/deleted cross-account. Fail
+        # closed if the owner can't be resolved rather than pin nothing.
+        _owner = _resolve_account_id()
+        if not _owner:
+            print(json.dumps({"engine_reap_no_account_id": slug, "bucket": site_bucket}))
+            return "reaping"
         # R19 F4: verify kirocrew:site tag matches the slug being reaped.
         # engine.py tags buckets at creation: kirocrew:site=<site_id>.
         try:
-            bucket_tag_resp = s3.get_bucket_tagging(Bucket=site_bucket)
+            bucket_tag_resp = s3.get_bucket_tagging(Bucket=site_bucket, ExpectedBucketOwner=_owner)
             bucket_tags = {t["Key"]: t["Value"] for t in bucket_tag_resp.get("TagSet", [])}
             # R20 F2: authorize against the S3 prefix slug ONLY — the
             # manifest body is attacker-writable and must not choose
@@ -354,11 +381,12 @@ def _reap_engine_arch(man, slug, now):
 
         try:
             paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=site_bucket):
+            for page in paginator.paginate(Bucket=site_bucket, ExpectedBucketOwner=_owner):
                 keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
                 if keys:
-                    s3.delete_objects(Bucket=site_bucket, Delete={"Objects": keys})
-            s3.delete_bucket(Bucket=site_bucket)
+                    s3.delete_objects(Bucket=site_bucket, Delete={"Objects": keys},
+                                      ExpectedBucketOwner=_owner)
+            s3.delete_bucket(Bucket=site_bucket, ExpectedBucketOwner=_owner)
         except botocore.exceptions.ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
             if code == "NoSuchBucket":

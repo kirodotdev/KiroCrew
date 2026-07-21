@@ -174,6 +174,18 @@ describe('ArtifactDeployPage (Artifact Deploy console)', () => {
     expect(launch!.message).toContain('Use the AWS profile "my-sandbox".')
   })
 
+  it('offers a Back-to-Artifacts navigation so the console is never a dead end', async () => {
+    renderPage(<ArtifactDeployPage />)
+    const back = await screen.findByRole('button', { name: /Back to Artifacts/i })
+    expect(back).toBeInTheDocument()
+  })
+
+  it('labels the cost stat as an estimate, never as a monthly bill', async () => {
+    renderPage(<ArtifactDeployPage />)
+    expect(await screen.findByText('Est. Cost (not a bill)')).toBeInTheDocument()
+    expect(screen.queryByText('Est. Monthly')).toBeNull()
+  })
+
   it('hides the Ready-to-deploy section when there are no drafts', async () => {
     mockFetch([deployedWebapp('kanban', 0.01)])
     renderPage(<ArtifactDeployPage />)

@@ -194,7 +194,11 @@ surface is **inert in the public edition**: the provider registry is empty, so
 503, and the frontend gates the entire remote section + `UpstreamSyncBanner` on
 a non-empty `GET /api/artifacts/publish-providers` result (zero remote pixels /
 requests with no provider). A companion registers providers via the CPP publish
-seam. Governance: `publish_sync` has NO internal gate and `push_version` is
+seam. The picker includes a provider whenever `available() or installable()`
+(`PublishProvider.installable()` defaults `False`; a companion provider whose
+`ensure_ready()` self-installs on first publish overrides it to `True`), and
+each row carries an `available` flag so the FE can hint install-on-first-use for
+a not-yet-installed but installable destination. Governance: `publish_sync` has NO internal gate and `push_version` is
 ungated, so the two egress-arming routes go through
 `_publish_governance_denied` (fail-closed `capabilities.publish ∩
 destinations:<provider>`) BEFORE dispatch — `overwrite-remote` on the resolved
@@ -478,10 +482,20 @@ Out of scope (separate tasks):
 
 ## WebApp Artifacts (`kind="webapp"`)
 
-A `webapp` artifact represents a *deployed application* rather than renderable
-content. It carries structured `webapp_metadata` (deploy target, architecture,
-lifecycle/TTL, cost estimate, teardown handle) and the dashboard renders it as
-an infrastructure control card instead of a preview iframe.
+A `webapp` artifact represents a *deployed application*. It carries structured
+`webapp_metadata` (deploy target, architecture, lifecycle/TTL, cost estimate,
+teardown handle, local app tree) and the dashboard renders it as a
+browser-framed app card: a live preview of the app plus deploy state, cost,
+and TTL panels.
+
+**Preview rendering (local-first fallback chain).** The card and the gallery
+thumbnail try, in order: (1) the **local preview channel** — the gateway
+serves the app's local copy (`webapp_metadata.app_dir`) through a token-gated
+static route, working for every lifecycle state including expired and
+not-yet-deployed; (2) a sandboxed iframe of the **live CloudFront deployment**
+(`framablePreviewUrl` gate: https + `<dist-id>.cloudfront.net` host shape
+only, mirrored by the server CSP `frame-src https://*.cloudfront.net`);
+(3) a status hero.
 
 ### WebApp Metadata Schema
 
@@ -492,6 +506,7 @@ an infrastructure control card instead of a preview iframe.
 | `deploy_target.region` | string | AWS region |
 | `deploy_target.public_url` | string | The live HTTPS URL |
 | `deploy_target.profile` | string | Named AWS CLI profile used |
+| `app_dir` | string | Absolute path of the local app tree that was/would be deployed. Set by the artifact author (the deploy API never sees the artifact and the directory together, so it cannot back-fill this). LLM-influenceable — re-validated against the allow-listed local roots at serve time. |
 | `architecture.tier` | enum | `"static"`, `"api"`, `"stateful"` |
 | `architecture.resources` | list | `[{type, id}]` — infrastructure resources |
 | `lifecycle.created_at` | string | ISO 8601 creation time |
@@ -501,6 +516,24 @@ an infrastructure control card instead of a preview iframe.
 | `lifecycle.status` | enum | `"draft"`, `"deploying"`, `"live"`, `"error"`, `"expired"` |
 | `teardown.method` | string | `"reaper-lambda"` |
 | `teardown.handle` | string | Reaper target handle |
+
+### Local Preview Channel
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/artifacts/{slug}/app-preview` | standard dashboard auth | Validate the artifact + `app_dir` and mint a short-lived (15 min) HMAC path token. Returns `{available, base}`; `{available: false}` for every miss (no oracle). |
+| `GET` | `/artifact-app/{slug}/{token}/{path}` | HMAC path token (auth-middleware bypass) | Serve one static file from the app's web root — **`app_dir/public` is mandatory** (deploy-contract layout); an app_dir without a contained `public/` directory reports the preview unavailable, it is never served directly. Sandboxed preview iframes carry no cookies, so the token IS the auth. |
+
+Serve-time security (fail-closed 404 for every rejection): allow-listed local
+roots (same list as the deploy publish path); `public` symlink must resolve
+inside the validated `app_dir`; full-resolution containment check per file
+(traversal + symlink escape); dotfile components never served; sensitive
+paths rejected (`is_sensitive_path`); reads go through the inode-pinned
+`safe_read_file_bytes_nolink(within_root=webroot)` helper; token HMAC binds
+`slug + webroot + exp` with a per-process secret; responses carry
+`Content-Security-Policy: sandbox allow-scripts` (opaque origin even outside
+the iframe) plus `nosniff` and `no-store`. All filesystem work runs off the
+event loop via `asyncio.to_thread`.
 
 ### Deploy Routes (`/api/deploy/*`)
 

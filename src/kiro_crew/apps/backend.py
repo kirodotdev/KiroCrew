@@ -27,7 +27,12 @@ from kiro_crew.apps.manager import _read_installed, app_dir, get_app_manifest, l
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import (
+    build_resource_limit_preexec,
+    cgroup_scope_argv,
+    resource_limit_preexec,
+    wrap_argv,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -111,6 +116,11 @@ class AppProcess:
 
 
 _processes: dict[str, AppProcess] = {}  # app_name -> AppProcess
+# Apps whose backends spawn real build workloads (vite/pip) and need the
+# elevated-but-finite NOFILE ceiling as the workload's ANCESTOR. Every other
+# app backend keeps the standard (operator-configurable) resource policy.
+_BUILD_CAPABLE_APPS = frozenset({"dev-fleet"})
+
 _lock = threading.Lock()
 
 
@@ -474,7 +484,27 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
             logger.warning("Failed to install deps for app %s: %s", app_name, exc)
 
     # Spawn process — use manifest backend type if available, fall back to heuristic
-    env = minimal_env(PORT=str(port), KIROCREW_APP_NAME=app_name)
+    # Pass the gateway's resolved config home explicitly: under pods or any
+    # KIROCREW_HOME override, the backend must read the SAME apps dir the
+    # gateway minted the app secret into — minimal_env() strips the var.
+    _platform_extra: dict[str, str] = {}
+    if os.environ.get("KIROCREW_PROJECT_DIR"):
+        # Platform var (same class as KIROCREW_HOME): the resolved project
+        # checkout. minimal_env() strips it; backends need it to locate the
+        # gateway's source checkout (e.g. dev-fleet worktree discovery).
+        _platform_extra["KIROCREW_PROJECT_DIR"] = os.environ["KIROCREW_PROJECT_DIR"]
+    for _k, _v in os.environ.items():
+        # Operator-declared trusted-binary overrides (unit-file owned):
+        # backends resolve credential-bearing tools through these instead of
+        # the inherited PATH; minimal_env() would otherwise strip them.
+        if _k.startswith("KIROCREW_DEVFLEET_BIN_"):
+            _platform_extra[_k] = _v
+    env = minimal_env(
+        PORT=str(port),
+        KIROCREW_APP_NAME=app_name,
+        KIROCREW_HOME=str(config_dir()),
+        **_platform_extra,
+    )
     # Inject the per-app proxy secret so the backend can verify the
     # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
     # (CWE-306). Without it the loopback backend would trust any local caller.
@@ -618,7 +648,13 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 env=env,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-                preexec_fn=resource_limit_preexec(),
+                # Build-capable apps get the elevated-but-finite NOFILE
+                # ceiling: the backend is the ANCESTOR of its build workloads
+                # (vite/pip) and a 1024 hard cap starves every descendant.
+                # All other apps keep the standard configured policy.
+                preexec_fn=(build_resource_limit_preexec()
+                            if app_name in _BUILD_CAPABLE_APPS
+                            else resource_limit_preexec()),
             )
         except OSError:
             log_fh.close()

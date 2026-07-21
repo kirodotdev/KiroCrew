@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useSwipeEdge } from '../hooks/useSwipeEdge'
 import { useAppSelector, useAppDispatch, store } from '../store'
@@ -18,6 +18,7 @@ import {
   requestStop, clearQuestionCard,
 } from '../store/chatSlice'
 import { removeNotificationByTs } from '../store/notificationsSlice'
+import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { interceptSlashCommand } from './chat/ChatInput'
 import { changeApprovalMode, sseSlotTitle } from '../store/dashboardSlice'
 import { api } from '../api/client'
@@ -80,6 +81,8 @@ import SearchBar from '../components/SearchBar'
 import SearchResultsList from '../components/SearchResultsList'
 import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../utils/searchScroll'
 import QueueStack from '../components/QueueStack'
+import { runBelongsToSlot } from '../apps/workflows/runModel'
+import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage } from './chat'
@@ -95,6 +98,12 @@ import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDra
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { findPrevUserMsgDisplayIdx } from '../utils/findPrevUserMsgDisplayIdx'
+import {
+  loadSeenPullRequestLinks,
+  persistSeenPullRequestLinks,
+  PullRequestLinkIndex,
+  recordNewPullRequestLinks,
+} from '../utils/pullRequestLinks'
 import { deriveFollowUpOptions } from '../utils/deriveFollowUpOptions'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
@@ -448,6 +457,35 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const slotStopping = useAppSelector(s => s.chat.slotStopping)
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   const pendingQuestion = useAppSelector(s => s.chat.pendingQuestion)
+  // The ambient tip yields to functional surfaces that own the above-composer band
+  const tipSuppressed = useAppSelector(s =>
+    s.chat.messages.some(m => m.role === 'queued') ||
+    // Question card only renders for its OWNING slot (see the render-site
+    // slot check below) -- suppression must match, or a question pending in
+    // another running slot suppresses tips here forever (Codex round-31,
+    // same slot-ownership family as the workflowRuns fix in round-16).
+    (!!s.chat.pendingQuestion && s.chat.pendingQuestion.slot === s.chat.activeSlot) ||
+    // Active subagents render the progress bar in the same above-composer
+    // zone the floating tip occupies — the tip always yields (Raymond's
+    // hard constraint: never crowd the queue/subagent surfaces).
+    Object.values(s.chat.subagents).some(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending') ||
+    // Workflow runs render WorkflowProgressBar in the same band (Codex
+    // round-15) — but only runs belonging to THIS slot show a bar here, so
+    // filter by ownership or a terminal run parked in another slot would
+    // suppress tips everywhere forever (Codex round-16).
+    Object.values(s.chat.workflowRuns ?? {}).some(r => runBelongsToSlot(r.sessionKey, s.chat.activeSlot) && (r.status === 'running' || r.status === 'finished' || r.status === 'failed' || r.status === 'cancelled'))
+  ) || knowledgeFetch.loading || knowledgeFetch.results.length > 0
+  // Split View state is declared up here (not at its usage site) because the
+  // tip hook below must know about it: in split mode SessionGridView replaces
+  // the composer, TipCard never renders, and an unblocked hook would fetch a
+  // tip + record it as shown, silently burning the 6h cadence (Codex round-25).
+  const [splitMode, setSplitMode] = useState(false)
+  const [splitAnchor, setSplitAnchor] = useState<string | null>(null)
+  // Temporary sessions ("no memory reads or writes") must never show
+  // memory-personalized tips (Codex round-22).
+  const tipTemporary = useAppSelector(s => s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)?.memory_mode === 'temporary')
+  const tipBlocked = tipTemporary || splitMode || embedMode === 'sessions'
+  const { tip: activeTip, dismiss: dismissTip } = useTipTrigger(!!slotRunning, tipSuppressed, activeSlot, tipBlocked)
   const slotState = useAppSelector(s => s.chat.slotState)
   const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
@@ -1074,6 +1112,46 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // render-gated behind !search.isOpen).
   const search = useMessageSearch(messages, activeSlot)
   const touchedFiles = useTouchedFiles(activeSlot ?? undefined)
+  const sourceLinkIndex = useRef(new PullRequestLinkIndex())
+  const sourceLinks = sourceLinkIndex.current.update(activeSlot, messages)
+  const [selectedSourceUrl, setSelectedSourceUrl] = useState('')
+
+  // Auto-open the per-slot Changes view only for newly detected source URLs.
+  // Seen state survives panel close, slot switches, route remounts, and reloads,
+  // so a historical PR cannot override a persisted panel dismissal.
+  const [seenSourceUrls] = useState(loadSeenPullRequestLinks)
+  useEffect(() => {
+    if (recordNewPullRequestLinks(seenSourceUrls, activeSlot, sourceLinks)) {
+      persistSeenPullRequestLinks(seenSourceUrls)
+      tabsCtl.openView('changes')
+      dispatch(openActivityPanel())
+    }
+    // tabsCtl/open state are intentionally not dependencies: this effect reacts
+    // only to source discovery, not to panel focus or close operations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSlot, sourceLinks, dispatch, seenSourceUrls])
+
+  useEffect(() => {
+    // An uncached slot temporarily has no messages while its history hydrates.
+    // Preserve the persisted strip until that source-of-truth load settles.
+    if (slotLoading) return
+    if (sourceLinks.length === 0) {
+      setSelectedSourceUrl('')
+      tabsCtl.closeTab('changes')
+      return
+    }
+    if (!sourceLinks.some(source => source.url === selectedSourceUrl)) {
+      setSelectedSourceUrl(sourceLinks[0].url)
+    }
+    // React to indexed sources, selection, and hydration completion only;
+    // tabsCtl changes identity as tabs move and must not retrigger source
+    // reconciliation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceLinks, selectedSourceUrl, slotLoading])
+
+  const addSourceCommentToChat = useCallback((text: string) => {
+    setInput(previous => previous.trim() ? `${previous.trimEnd()}\n\n${text}` : text)
+  }, [])
 
   // Auto-track files touched by tool calls (read, write, grep, glob)
   const lastToolLen = useRef(0)
@@ -1374,6 +1452,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const scrollBottom = useCallback((instant: boolean = false) => {
     vScrollToBottomRef.current(instant ? 'auto' : 'smooth')
   }, [])
+
+  // Scroll compensation for the in-flow tip (Raymond 2026-07-21): mounting the
+  // tip shrinks the scroll viewport but does not itself re-anchor the scroll
+  // position, so when the user is parked at the bottom of a streaming turn the
+  // last line of text gets clipped under the container edge -- visually
+  // indistinguishable from the tip covering it. Re-anchor on mount AND on
+  // dismiss (double rAF: let the band's layout commit before measuring).
+  useEffect(() => {
+    if (!isAtBottomRef.current) return
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (isAtBottomRef.current) scrollBottom(true)
+      })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [activeTip, scrollBottom])
 
   // Navigate to a (possibly off-window) display index: mount it first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
@@ -2013,6 +2107,75 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   }, [activeSlot, setPendingProject])
 
   const currentSlot = slots.find(s => s.key === activeSlot)
+  // Refs so the "run in terminal" listener (registered once) always sees the
+  // live panel controller + this chat's working directory.
+  const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
+  const currentProjectRef = useRef<string | undefined>(undefined)
+  currentProjectRef.current = currentSlot?.project || undefined
+  // "Run in terminal" (from chat code blocks): open a FRESH terminal tab in
+  // this chat and run the command in it, starting in the chat's working dir.
+  // The result is echoed back so the code-block button can show sent/failed.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {}
+      const code: string = detail.code
+      const reqId: string = detail.reqId
+      if (typeof code !== 'string' || !code) return
+      dispatch(openActivityPanel())
+      const sessionId = tabsCtlRef.current.openTerminal({ cwd: currentProjectRef.current })
+      let settled = false
+      const emit = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
+      }
+      if (!sessionId) { emit(false); return }
+      const unsub = onTerminalReady(sessionId, () => { emit(sendToTerminalSession(sessionId, code)) })
+      // Give the PTY time to connect; if it never does, report failure.
+      setTimeout(() => { unsub(); emit(false) }, 6000)
+    }
+    window.addEventListener('mc:run-in-terminal', handler)
+    return () => window.removeEventListener('mc:run-in-terminal', handler)
+  }, [dispatch])
+  // Cold-tab hydration: after a reload (or when restoring a slot's strip from
+  // the persisted panel-tabs store), file tabs come back as lightweight
+  // references with their heavy content stripped (content === undefined). Read
+  // it back declaratively with useQueries — one ['file-read', path] query per
+  // cold file tab (same key/shape as handleFileOpen so the cache dedupes).
+  // Once a tab's content is patched in it drops out of coldFileTabs and its
+  // query unsubscribes. Diff tabs are transient (not persisted — a restored
+  // diff can't reconstruct the original turn snapshot); artifact tabs
+  // self-hydrate via ArtifactPanel's own ['artifact', slug] query.
+  const coldFileTabs = useMemo(
+    () => tabsCtl.tabs.filter(t => t.kind === 'file' && t.path && t.content === undefined),
+    [tabsCtl.tabs],
+  )
+  const coldFileResults = useQueries({
+    queries: coldFileTabs.map(t => ({
+      queryKey: ['file-read', t.path!],
+      queryFn: async () => {
+        const res = await fetch(fileReadUrl(t.path!))
+        const text = res.ok
+          ? await res.text()
+          : res.status === 404 ? '_File not found on disk. It may have been moved or deleted._'
+          : '_Unable to read file._'
+        return { text, ok: res.ok }
+      },
+      staleTime: 10_000,
+    })),
+  })
+  // Mirror settled reads into the tab strip. useQueries owns the fetch
+  // lifecycle (error/retry/dedupe); this effect only writes results back, and
+  // the content===undefined guard keeps it idempotent (a hydrated tab leaves
+  // coldFileTabs, so it isn't re-patched).
+  useEffect(() => {
+    coldFileResults.forEach((r, i) => {
+      const t = coldFileTabs[i]
+      if (!t || t.content !== undefined) return
+      if (r.data) tabsCtl.patchTab(t.id, { content: r.data.text })
+      else if (r.isError) tabsCtl.patchTab(t.id, { content: '_Error reading file_' })
+    })
+  }, [coldFileResults, coldFileTabs, tabsCtl])
   // Session mode of the active slot. In the unified chat view the page-level
   // `mode` prop is always '' — the slot's own mode is the source of truth for
   // header identity (Autopilot icon + tooltip).
@@ -2042,8 +2205,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // preserved across navigation, and a member session opened on its own shows single
   // chat plus an "in split" badge that re-enters it (β model). `splitAnchor` is the
   // slot whose split we're showing (the one ⌘D'd from, or the badge's target).
-  const [splitMode, setSplitMode] = useState(false)
-  const [splitAnchor, setSplitAnchor] = useState<string | null>(null)
   // enterSplit opens Split View for `anchor`: SessionGridView restores anchor's saved
   // layout if one exists, else seeds [anchor | placeholder]. Closing back down to a
   // single session dissolves the layout and collapses to native chat (onCollapse).
@@ -2227,7 +2388,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // Bridge explicit view requests (e.g. the /side slash command dispatches
   // openActivityToTab('side')) into the tab model.
   const activityTab = useAppSelector(s => s.chat.activityTab)
+  // Skip the mount invocation: this bridge only reacts to a GENUINE activityTab
+  // change (e.g. the /side slash command via openActivityToTab). Firing on mount
+  // would re-open the activityTab view (Files by default) on top of the
+  // now-persisted strip every time ChatPage remounts after a route change.
+  const activityTabBridged = useRef(false)
   useEffect(() => {
+    if (!activityTabBridged.current) { activityTabBridged.current = true; return }
     if (activityOpen) tabsCtl.openView(activityTab === ('nav' as string) ? 'files' : activityTab)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activityTab])
@@ -2673,7 +2840,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // top-to-bottom. The header row ends at the slot's left edge,
   // so the top-bar right cluster (capsule, terminal, bell, gear) shifts left
   // when the panel opens. Null on mobile / embed frames -> inline fallback.
-  const [activitySlot, setActivitySlot] = useState<HTMLElement | null>(null)
+  //
+  // Seed the portal slot SYNCHRONOUSLY so the very first render after a
+  // ChatPage remount (e.g. switching back to /chat) already targets the
+  // full-height actbar grid column. An effect-only seed leaves activitySlot
+  // null for render 1, which falls back to the inline panel (rendered below
+  // the header) and then flashes: below-header -> disappear -> portal opens.
+  // The App shell (and its #activity-bar-slot) lives outside the router, so on
+  // route-nav back it's already in the DOM. The effect below stays as the
+  // fallback for cold load / mobile->desktop crossings where it isn't yet.
+  const [activitySlot, setActivitySlot] = useState<HTMLElement | null>(
+    () => (isMobile || embedMode) ? null : document.getElementById('activity-bar-slot'),
+  )
   useEffect(() => {
     if (isMobile || embedMode) { setActivitySlot(null); return }
     const el = document.getElementById('activity-bar-slot')
@@ -3172,6 +3350,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 </div>
               )}
               <ChatInput
+              aboveComposer={
+                /* In-flow tip inside the composer's own width wrapper: shares
+                   the composer's exact box geometry (Raymond 2026-07-21: tip
+                   width must always match the input box) while still pushing
+                   chat content up like QueueStack (team decision: never cover
+                   thinking/output; queue and question card keep priority via
+                   tipSuppressed). */
+                <AnimatePresence>
+                  {activeTip && (
+                    <div className="pb-1.5">
+                      <TipCard tip={activeTip} onDismiss={dismissTip} />
+                    </div>
+                  )}
+                </AnimatePresence>
+              }
               value={input}
               onChange={setInput}
               onSend={() => send()}
@@ -3447,7 +3640,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             )}
           </DetailPanel>
         )}
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {/* Inline side panel — mobile / embed frames where there's no actbar
             grid column. Desktop uses the actbar portal below. */}
         {activityOpen && !search.isOpen && !activitySlot && (
@@ -3464,6 +3657,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
               files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
+              sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
             />
           </motion.div>
@@ -3477,21 +3671,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           sync while the panel (right-anchored via justify-end) slides out from
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
-        <AnimatePresence>
+        <AnimatePresence initial={false}>
           {activityOpen && !search.isOpen && (
             <motion.div
               key="side-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 'auto' }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
-              className="h-full overflow-hidden flex justify-end"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 'auto', opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+              className="h-full overflow-visible flex justify-end"
             >
               <SidePanel
                 tabsCtl={tabsCtl}
                 subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
                 files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
+                sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               />
             </motion.div>

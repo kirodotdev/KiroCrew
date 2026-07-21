@@ -512,7 +512,20 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 async def api_chat_slots(request: web.Request) -> web.Response:
     """GET /api/chat/slots — list all chat slots."""
     state: DashboardState = request.app["state"]
-    return web.json_response(state.serialize_slots())
+    # Credential-backed check status is owner-only. Non-owner and app-token
+    # callers receive source links but neither cached status nor provider work.
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+        schedule_check_refresh,
+    )
+
+    include_check_status = is_owner_dashboard_request(request)
+    payloads = state.serialize_slots(include_check_status=include_check_status)
+    if include_check_status:
+        urls = [link["url"] for payload in payloads for link in payload.get("source_links", [])]
+        if urls:
+            schedule_check_refresh(urls, state.push_slots_update)
+    return web.json_response(payloads)
 
 
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
@@ -722,6 +735,7 @@ def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
         serialized = json.dumps(cls_data)
         msg["cls"] = serialized
         msg["content"] = serialized
+        slot.invalidate_source_links()
         slot._dirty = True
         found = True
         # Re-broadcast updated stop_event so frontend StopEventCard
@@ -1032,6 +1046,7 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     if content is None:
         return web.json_response({"error": "queue item not found"}, status=404)
     _remove_queued_by_id(slot.messages, queue_id)
+    slot.invalidate_source_links()
     _redacted = _redact_for_display(content)
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
     state.push_slots_update()
@@ -1070,6 +1085,7 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     if not slot.queue_edit_by_id(queue_id, content):
         return web.json_response({"error": "queue item not found"}, status=404)
     _edit_queued_by_id(slot.messages, queue_id, content)
+    slot.invalidate_source_links()
     _redacted = _redact_for_display(content)
     state.broadcast_ws("queue_edit", {"slot": name, "queue_id": queue_id, "content": _redacted})
     state.push_slots_update()
@@ -1127,6 +1143,7 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     reordered_msgs = [queued_by_id[qid] for qid in order if qid in queued_by_id]
     remaining_msgs = [m for m in queued_msgs if m not in reordered_msgs]
     slot.messages[:] = other_msgs + reordered_msgs + remaining_msgs
+    slot.invalidate_source_links()
     state.broadcast_ws(
         "queue_reorder", {"slot": name, "order": [item["id"] for item in slot._queue]}
     )

@@ -1,6 +1,12 @@
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
-import type { McpApplyChange, SessionDoc, PublishProviderDescriptor } from '../types'
+import type {
+  McpApplyChange,
+  PullRequestCheck,
+  PullRequestSource,
+  PublishProviderDescriptor,
+  SessionDoc,
+} from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { queryClient } from './queryClient'
 
@@ -255,6 +261,21 @@ const friendlyErrText = (status: number, body: string): string => {
 const j = async (r: Response) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
+  if (!r.ok) {
+    const errText = await r.text()
+    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+/**
+ * Nullable variant of j(): preserves auth recovery + ApiError semantics but
+ * returns null on 204 (No Content). Used by tips endpoints.
+ */
+const jNullable = async (r: Response) => {
+  checkSessionExpired(r)
+  if (r.ok) removeAuthBanner()
+  if (r.status === 204) return null
   if (!r.ok) {
     const errText = await r.text()
     throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`)
@@ -563,6 +584,9 @@ export const api = {
     return fetch('/api/stt/transcribe', { method: 'POST', body: fd }).then(j)
   },
   // Chat
+  pullRequestSource: (url: string, refresh = false) => post('/api/source/pull-request', { url, refresh }).then(j) as Promise<PullRequestSource>,
+  pullRequestChecks: (url: string) => post('/api/source/pull-request/checks', { url }).then(j) as Promise<{ checks: PullRequestCheck[] }>,
+  resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number) => {
     const p = new URLSearchParams()
@@ -977,6 +1001,11 @@ export const api = {
     const errText = await r.text()
     throw new ApiError(r.status, errText || `HTTP ${r.status}`)
   },
+
+  // Tips
+  tipsNext: () => get('/api/tips/next').then(jNullable) as Promise<{ tip: { id: string; feature: string; title: string; body: string; why: string; doc: string; cta_prompt: string } | null; glow: boolean } | null>,
+  tipsStatus: () => get('/api/tips/status').then(j) as Promise<{ enabled_config: boolean; opted_out: boolean; cadence_hours: number }>,
+  tipsFeedback: (id: string, action: 'shown' | 'ack' | 'dismiss' | 'snooze' | 'helpful' | 'optout' | 'optin') => post('/api/tips/feedback', { id, action }).then(j),
 }
 
 export interface AppPublishProvider {

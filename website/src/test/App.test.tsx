@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
-import App from '../App'
+import App, { calculateTopbarSearchLayout } from '../App'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import SegmentedControl from '../components/SegmentedControl'
+import { safeSetItem } from '../utils/safeStorage'
 
 // Mock all page components to isolate routing
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -318,9 +319,76 @@ describe('App routing', () => {
     fireEvent.keyDown(rows[0], { key: 'Enter' })
   })
 
-  it('renders KIRO CREW branding', () => {
+  it('renders Kiro Crew branding', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    expect(screen.getAllByText('KIRO CREW').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Kiro Crew').length).toBeGreaterThan(0)
+  })
+
+  it('opens Search Everywhere from the theme-aware shadowless header trigger', () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
+    expect(trigger).toHaveClass('rounded-lg', 'border-border', 'bg-card', 'shadow-none')
+    expect(trigger).not.toHaveClass('rounded-full')
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
+  })
+
+  it('reserves the larger topbar cluster before showing the centered search', () => {
+    expect(calculateTopbarSearchLayout(330, 180, 1200)).toEqual({ gutter: 342, visible: true })
+    expect(calculateTopbarSearchLayout(180, 505, 1570)).toEqual({ gutter: 517, visible: true })
+    expect(calculateTopbarSearchLayout(330, 180, 900)).toEqual({ gutter: 342, visible: false })
+  })
+
+  it('resizes the sidebar and main body together with a quick shell transition', () => {
+    localStorage.removeItem('mc-nav')
+    renderWithProviders(<App />, { route: '/chat' })
+
+    const shell = screen.getByTestId('dashboard-shell')
+    expect(shell).toHaveStyle({
+      gridTemplateColumns: '236px minmax(0,1fr) auto',
+      transition: 'none',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(shell).toHaveStyle({
+      gridTemplateColumns: '74px minmax(0,1fr) auto',
+      transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
+    })
+    localStorage.removeItem('mc-nav')
+  })
+
+  it('keeps the collapse control beside the brand and hides the Main group heading', () => {
+    localStorage.removeItem('mc-nav')
+    renderWithProviders(<App />, { route: '/chat' })
+
+    const brand = screen.getByText('Kiro Crew')
+    const logo = screen.getByAltText('Kiro Crew')
+    const collapse = screen.getByRole('button', { name: 'Collapse sidebar' })
+    expect(brand.parentElement?.parentElement).toContainElement(collapse)
+    expect(logo).toHaveClass('w-9', 'h-9')
+
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).queryByText('Main')).not.toBeInTheDocument()
+
+    fireEvent.click(collapse)
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(localStorage.getItem('mc-nav')).toBe('1')
+    localStorage.removeItem('mc-nav')
+  })
+
+  it('keeps Request a Feature visible beside the collapsed brand icon', () => {
+    safeSetItem('mc-nav', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+
+    const expand = screen.getByRole('button', { name: 'Expand sidebar' })
+    const requestFeature = screen.getByRole('button', { name: 'Request a Feature' })
+    expect(expand.parentElement).toContainElement(requestFeature)
+
+    fireEvent.click(expand)
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
+    expect(localStorage.getItem('mc-nav')).toBe('0')
+    localStorage.removeItem('mc-nav')
   })
 
   it('renders connection status', () => {

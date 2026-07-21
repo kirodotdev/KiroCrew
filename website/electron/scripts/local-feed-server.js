@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 /**
- * Local Squirrel.Mac update feed for Stage 3 auto-update testing.
+ * Local static update feed for Stage 3 auto-update testing.
  *
- * Binds 127.0.0.1 ONLY. Implements the Squirrel.Mac contract the app's
- * autoUpdater expects:
- *   GET /<anything>?version=X  -> 200 {url,name,notes,pub_date}  if X < latest
- *                              -> 204 (no content)               if X >= latest
- *   GET /download              -> streams the update .zip
+ * Binds 127.0.0.1 ONLY. Mirrors the production static-feed contract
+ * (CloudFront serving files CI wrote): the feed is a plain JSON document
+ * and the APP does the version compare client-side, engaging Squirrel only
+ * when the feed version differs from the running app. This server never
+ * returns 204 -- that behavior lives in the app now.
  *
- * The app's buildFeedUrl() appends ?platform=&channel=&version= ; this server
- * only reads `version` and compares against the served latest version.
+ *   GET /feed/<channel>/latest-mac.json -> 200 {version,url,name,pub_date}
+ *   GET /download                       -> streams the update .zip
  *
  * Usage:
- *   node local-feed-server.js --port 8799 --zip /path/Kiro-1.0.1-mac.zip --version 1.0.1
+ *   node local-feed-server.js --port 8799 --zip /path/KiroCrew.zip --version 0.1.0-nightly.20260722000000
+ *   KIROCREW_UPDATE_FEED=http://127.0.0.1:8799/feed <app binary>
+ *
+ * The app permits plain http for loopback hosts only (fetchFeedHttps), so
+ * this harness needs no TLS.
  */
 const http = require("http");
 const fs = require("fs");
@@ -30,17 +34,6 @@ if (!ZIP || !fs.existsSync(ZIP)) {
   process.exit(1);
 }
 
-// Minimal 3-part semver compare (ignores prerelease/build for the test).
-function cmpSemver(a, b) {
-  const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
-  const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
@@ -52,25 +45,26 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const reqVersion = u.searchParams.get("version") || "0.0.0";
-  if (cmpSemver(reqVersion, LATEST) < 0) {
+  if (u.pathname.endsWith("/latest-mac.json")) {
     const body = JSON.stringify({
+      version: LATEST,
       url: `http://127.0.0.1:${PORT}/download`,
       name: LATEST,
-      notes: `Stage 3 local test update to ${LATEST}`,
       pub_date: new Date().toISOString(),
     });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(body);
-    console.log(`[feed] version ${reqVersion} < ${LATEST} -> 200 update available`);
-  } else {
-    res.writeHead(204);
-    res.end();
-    console.log(`[feed] version ${reqVersion} >= ${LATEST} -> 204 up to date`);
+    console.log(`[feed] ${u.pathname} -> 200 latest=${LATEST} (app compares client-side)`);
+    return;
   }
+
+  res.writeHead(404);
+  res.end();
+  console.log(`[feed] ${u.pathname} -> 404 (expected /feed/<channel>/latest-mac.json or /download)`);
 });
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`[feed] listening on http://127.0.0.1:${PORT}`);
   console.log(`[feed] serving latest=${LATEST} from ${ZIP}`);
+  console.log(`[feed] point the app at it: KIROCREW_UPDATE_FEED=http://127.0.0.1:${PORT}/feed`);
 });

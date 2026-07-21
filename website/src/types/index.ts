@@ -144,13 +144,44 @@ export interface McpApplyChange {
 }
 
 export interface ChatSlot {
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab'; number: number; url: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed' }[]; source_links_total?: number
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
   // Board fields
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
+}
+
+export interface PullRequestCommit {
+  sha: string; title: string; body: string; author: string; date: string; url: string
+}
+
+export interface PullRequestCheck {
+  name: string; workflow: string; status: string; conclusion: string
+  bucket: 'passed' | 'skipped' | 'failed' | 'pending'; url: string
+  startedAt: string; completedAt: string
+}
+
+export interface PullRequestComment {
+  id: string; kind: 'comment' | 'review' | 'inline'; author: string; body: string
+  state: string; createdAt: string; url: string; path: string; line?: number | null
+  threadId?: string; resolvable?: boolean; resolved?: boolean
+}
+
+export interface PullRequestFile {
+  path: string; status: string; additions: number; deletions: number; patch: string
+}
+
+export interface PullRequestSource {
+  provider: 'github' | 'gitlab'; url: string; number: number; title: string
+  description: string; state: string; draft: boolean; mergedAt: string; updatedAt: string
+  headBranch: string; baseBranch: string; headSha: string; author: string
+  additions: number; deletions: number; changedFiles: number
+  commits: PullRequestCommit[]; checks: PullRequestCheck[]
+  comments: PullRequestComment[]; files: PullRequestFile[]
+  /** Sections potentially incomplete because a provider request failed or hit a page/output limit. */
+  partialSections?: string[]
 }
 
 export interface ChatFolder {
@@ -303,6 +334,9 @@ export interface PublishProviderDescriptor {
   capabilities: string[]
   kind_support: 'native' | 'converted' | 'degraded' | 'unsupported'
   capable: boolean
+  /** False => tooling not installed yet; installs automatically on first publish.
+   *  Optional: older gateways omit it (treat as available). */
+  available?: boolean
   sharing_model: {
     supports_private: boolean
     supports_shared: boolean
@@ -540,6 +574,8 @@ export interface WebAppTeardown {
 export interface WebAppMetadata {
   slug: string;
   origin_session: string;
+  /** Local copy of the app tree — powers the gateway's local preview channel. */
+  app_dir?: string;
   deploy_target: WebAppDeployTarget;
   architecture: WebAppArchitecture;
   lifecycle: WebAppLifecycle;

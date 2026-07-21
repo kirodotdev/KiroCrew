@@ -98,10 +98,60 @@ def github_pr_parts(link: str) -> tuple[str, str, str]:
     return owner, repo, number
 
 
+def parse_repo_url(link: str) -> tuple[str, str]:
+    """Parse ``(owner, repo)`` from a GitHub REPO URL (no ``/pull/``).
+
+    Mirrors ``detect_platform``'s PARSED-hostname allowlist (default-deny, ARCC
+    SSRF/allowlist guidance) but accepts a bare repo URL like
+    ``https://github.com/<owner>/<repo>`` so a batch of that repo's open PRs can
+    be enumerated. Raises ``UnsupportedPlatform`` for a non-GitHub host and
+    ``AdapterParseError`` when the owner/repo path segments are missing."""
+    if not link or not isinstance(link, str):
+        raise UnsupportedPlatform("empty or non-string repo link")
+    parsed = urlparse(link)
+    host = (parsed.hostname or "").lower()
+    if host not in {"github.com", "www.github.com"}:
+        raise UnsupportedPlatform(
+            f"unsupported repo host: {link!r} (expected a github.com repo URL)")
+    path = parsed.path or ""
+    if "/pull/" in path:
+        # A PR URL, not a repo URL — route the user to the paste flow so we don't
+        # silently review the PR's whole repo.
+        raise AdapterParseError(
+            f"that's a PR URL, not a repo URL: {link!r} (paste it in the PR box)")
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        raise AdapterParseError(f"not a GitHub repo link: {link!r}")
+    owner, repo = parts[0], re.sub(r"\.git$", "", parts[1])
+    _seg = re.compile(r"^[A-Za-z0-9._-]+$")
+    if owner in (".", "..") or repo in (".", "..") or not (_seg.match(owner) and _seg.match(repo)):
+        raise AdapterParseError(f"invalid owner/repo in {link!r}")
+    return owner, repo
+
+
 def github_change_id(owner: str, repo: str, number: str | int) -> str:
     """Filesystem-safe, platform-namespaced change id: ``GH-<owner>-<repo>-<n>``.
     Unlike a raw URL, this is a valid filename."""
     return f"GH-{_sanitize_seg(owner)}-{_sanitize_seg(repo)}-{number}"
+
+
+def github_review_key(owner: str, repo: str, number: str | int) -> str:
+    """Collision-free canonical identity for the durable reviewed-index key.
+
+    Distinct from ``github_change_id``: that value ALSO names an on-disk result
+    file, so it runs owner/repo through ``_sanitize_seg`` — which collapses ``-``
+    to ``_`` to keep ``-`` unambiguous as its segment delimiter. That sanitization
+    is lossy: ``acme/service-api`` and ``acme/service_api`` both become
+    ``GH-acme-service_api-<n>``, so two DIFFERENT repos with the same PR number
+    shared one ``reviewed.json`` key and clobbered each other's dedup record —
+    silently skipping a requested review when their PR heads happened to share a
+    commit SHA (as mirrored repos can).
+
+    This key never names a file, so it keeps owner/repo verbatim and joins with
+    ``/`` (a character GitHub owner/repo can never contain), giving a lossless,
+    unambiguous identity. Owner/repo are lower-cased because GitHub treats them
+    case-insensitively for identity."""
+    return f"github.com/{str(owner).lower()}/{str(repo).lower()}#{number}"
 
 
 # ---------------------------------------------------------------------------

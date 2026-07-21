@@ -15,10 +15,11 @@ to ``BENIGN_SPAWNS`` with a justification. This is the "lint or unit test
 asserting every subprocess spawn is either allow-listed as benign or routed
 through that wrapper" the finding asks for.
 
-The finding named three agent-influenced sites — the MCP server probe
+The agent-influenced sites — the MCP server probe
 (``mcp_discovery.probe_server``), the TaskRunner test command
-(``task_executor.run_tests``), and TaskRunner git operations
-(``git_coord._git`` / ``_is_git_repo``) — which are now routed through
+(``task_executor.run_tests``), TaskRunner git operations
+(``git_coord._git`` / ``_is_git_repo``), and authenticated source-provider
+fetches (``source_providers._run_json``) — are routed through
 ``sandboxed_spawn_argv`` and MUST stay routed (see
 ``test_agent_influenced_sites_are_routed``).
 
@@ -103,8 +104,25 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",
-        "apps/builtins/code_review_sage/tests/test_review_pool.py::test_worker_exposes_live_pid_for_shielding",
+        # gh-CLI open-PR enumeration: fixed `gh api` list-argv (no shell=True);
+        # owner/repo are validated to ^[A-Za-z0-9._-]+$ by adapters.parse_repo_url
+        # and only fill the API path (bounded to api.github.com). NOT sandboxed
+        # because gh needs the host's own authenticated credentials.
+        "apps/builtins/code_review_sage/sage_lib/pipeline.py::list_open_prs",
         "apps/builtins/workflows/server.py::handle_run",
+        # _start_run's worker spawns argv that is ALWAYS pre-wrapped by its
+        # callers through sandboxed_spawn_argv (sync wraps each step with
+        # per-step modes; provision wraps the pod CLI argv) and the spawn
+        # carries resource_limit_preexec() — routing again here would nest
+        # sandboxes. The chokepoint is applied at the call sites.
+        "apps/builtins/dev_fleet/server.py::worker",
+
+        # Dev Fleet builtin backend: async version routes all git/gh through
+        # _run_cmd which calls sandboxed_spawn_argv (the chokepoint). Only
+        # _resolve_primary_checkout uses subprocess.run directly (one-shot
+        # git rev-parse at startup, no agent input, no sandbox needed).
+        "apps/builtins/dev_fleet/server.py::_resolve_primary_checkout",
+        "apps/builtins/dev_fleet/server.py::worker",
         "apps/dependencies.py::_run_aim",
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",
@@ -315,13 +333,14 @@ def test_benign_allowlist_has_no_stale_entries():
 
 
 def test_agent_influenced_sites_are_routed():
-    """The three sites the finding names must stay routed through the sandbox."""
+    """Agent-influenced spawns must stay routed through the sandbox."""
     unrouted = _collect_unrouted_spawns()
     for key in (
         "mcp_discovery.py::probe_server",
         "task_executor.py::run_tests",
         "git_coord.py::_git",
         "git_coord.py::_is_git_repo",
+        "dashboard/handlers/source_providers.py::_run_json",
     ):
         assert key not in unrouted, (
             f"{key} must route its spawn through sandboxed_spawn_argv "

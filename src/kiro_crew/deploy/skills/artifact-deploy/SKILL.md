@@ -316,7 +316,8 @@ cannot).
   tokens (internal hostnames, corp identifiers) and
   refuse on a hit. This is public.
 - **BSC12/BSC9** — the bucket stays **private** (CloudFront OAC only);
-  CloudFront adds security headers (nosniff / SAMEORIGIN / HSTS) and enforces
+  CloudFront adds security headers (nosniff / HSTS / `frame-ancestors 'self'` +
+  loopback so the dashboard can live-preview the site) and enforces
   TLS 1.2+ via `redirect-to-https`.
 - **No auth** — MVP serves static content publicly with no auth. If the app
   expects a protected backend, warn the user.

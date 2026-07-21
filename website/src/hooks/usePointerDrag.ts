@@ -8,8 +8,6 @@ import { useCallback, useRef } from 'react'
  *   - tracks release velocity (for momentum handoff),
  *   - applies a movement threshold before committing to a drag (hysteresis),
  *   - survives the pointer leaving the element bounds (capture).
- *
- * See the `apple-design` skill for the principles these encode.
  */
 
 /**

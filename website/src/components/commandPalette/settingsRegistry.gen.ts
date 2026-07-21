@@ -69,6 +69,13 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.feature-tips",
+    "label": "Feature Tips",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.file-change-chips",
     "label": "File Change Chips",
     "description": "How file diff chips appear below assistant messages",

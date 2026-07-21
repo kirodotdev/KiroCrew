@@ -24,9 +24,13 @@ class _FakeSlot:
         self.agent = "kirocrew"
         self.messages: list[dict] = []
         self._dirty = False
+        self.source_links_invalidated = 0
 
     def append(self, role, content, cls_meta):
         self.messages.append({"role": role, "content": content, "cls": cls_meta})
+
+    def invalidate_source_links(self):
+        self.source_links_invalidated += 1
 
 
 class _FakeState:
@@ -107,6 +111,7 @@ class TestStopHandlerIdempotent:
         # After the handler, stop state should be back to idle and event_id cleared
         assert slot._stop_state == "idle"
         assert slot._stop_event_id is None
+        assert slot.source_links_invalidated == 1
 
 
 class TestInterruptHandlerIdempotent:

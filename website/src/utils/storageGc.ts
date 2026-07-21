@@ -15,6 +15,8 @@
 const SESSION_PREFIXES = [
   'vc_heights_',
   'kirocrew:touched-files:',
+  'mc-panel-tabs:',
+  'mc-activity-open:',
 ] as const
 
 /**

@@ -1035,7 +1035,10 @@ def test_reaper_engine_arch_happy_path(monkeypatch):
 
     assert result == "reaped"
     mock_cf.delete_distribution.assert_called_once_with(Id="E999", IfMatch="etag1")
-    mock_s3.delete_bucket.assert_called_once_with(Bucket="kirocrew-web-mysite")
+    # P476046789: destructive S3 calls now pin ExpectedBucketOwner (from ACCOUNT_ID).
+    mock_s3.delete_bucket.assert_called_once_with(
+        Bucket="kirocrew-web-mysite", ExpectedBucketOwner="123456789012"
+    )
     mock_s3.delete_object.assert_called_once()
 
 

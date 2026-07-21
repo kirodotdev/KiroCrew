@@ -201,6 +201,8 @@ describe('ChatPage — activity slot self-healing', () => {
     await waitFor(() => {
       const panel = screen.getByTestId('side-panel')
       expect(slot.contains(panel)).toBe(true)
+      expect(panel.parentElement).toHaveClass('overflow-visible')
+      expect(panel.parentElement).not.toHaveClass('overflow-hidden')
     })
   })
 })

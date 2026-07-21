@@ -1,10 +1,11 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import type { Artifact } from '../types'
+import { safeSetItem } from '../utils/safeStorage'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side' | 'terminal'
-/** All tab kinds: singleton views + on-demand document tabs. */
-export type TabKind = ViewKind | 'file' | 'diff' | 'artifact'
+export type ViewKind = 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'
+/** All tab kinds: singleton views + on-demand document/terminal tabs. */
+export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal'
 
 export interface PanelTab {
   id: string
@@ -20,42 +21,174 @@ export interface PanelTab {
   modified?: string
   artifactSlug?: string
   artifactKind?: Artifact['kind']
+  // ── terminal fields ──
+  /** PTY session id — one live shell per terminal tab. */
+  sessionId?: string
+  /** Working directory the shell spawns in (the chat's project dir, if any). */
+  cwd?: string
 }
 
 const VIEW_TITLES: Record<ViewKind, string> = {
-  files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
-  logs: 'Logs', side: 'Side', terminal: 'Terminal',
+  changes: 'Changes', files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
+  logs: 'Logs', side: 'Side',
 }
+
+/** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,
+ *  openTerminal focuses/reuses the most-recent terminal instead of spawning. */
+export const MAX_TERMINALS_PER_CHAT = 4
 
 const basename = (p: string) => p.split('/').pop() || p
 
 type Bucket = { tabs: PanelTab[]; activeId: string | null }
+type BySlot = Record<string, Bucket>
 /** Module-level so an empty strip yields STABLE tabs/activeId identities
  *  (a per-render fallback object would churn the hook's memoized return). */
 const EMPTY_BUCKET: Bucket = { tabs: [], activeId: null }
+
+/* ── Module-level, persisted panel-tab store ──────────────────────────────
+ * The strip must survive things that unmount ChatPage: activity-bar close,
+ * activity-tab switches, chat switches, full route changes (ChatPage is a
+ * route element), AND page reloads. Component-local useState died with the
+ * route. So the per-slot buckets live here at module scope (read via
+ * useSyncExternalStore) and are mirrored to localStorage. On reload the strip
+ * is rehydrated; terminal tabs reconnect to the still-live PTY (backend orphan
+ * window) and document tabs re-fetch their content lazily (see below). */
+
+const KEY_PREFIX = 'mc-panel-tabs:'          // one key per slot: mc-panel-tabs:<slot>
+const PERSIST_DEBOUNCE_MS = 300
+
+let store: BySlot = loadPersisted()
+const listeners = new Set<() => void>()
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb)
+  return () => { listeners.delete(cb) }
+}
+function getSnapshot(): BySlot { return store }
+
+/** Apply a transform to one slot's bucket, publish the new store, and persist.
+ *  A new top-level object is created only on real change so useSyncExternalStore
+ *  consumers re-render exactly when their store reference changes. */
+function mutateSlot(key: string, fn: (b: Bucket) => Bucket): void {
+  const prev = store[key] ?? { tabs: [], activeId: null }
+  const nextBucket = fn(prev)
+  if (nextBucket === prev) return
+  store = { ...store, [key]: nextBucket }
+  for (const cb of listeners) cb()
+  schedulePersist(key)
+}
+
+/** Strip heavy bodies (file/diff/artifact content) before persisting — those
+ *  can be MBs and blow the localStorage quota. Terminal + view tabs and all
+ *  tab METADATA (path / slug / sessionId / cwd / order / focus) are kept, so
+ *  document tabs restore as lightweight references and re-fetch their content
+ *  on demand; artifact tabs self-hydrate by slug via ArtifactPanel's query. */
+/** Lean single-bucket projection for persistence. Diff tabs are transient — a
+ *  restored diff can only re-fetch the CURRENT working-tree diff, never the
+ *  original turn snapshot, so it renders a misleading/unreliable diff; drop
+ *  them (they still survive in-memory across in-app nav, where content is
+ *  intact). Heavy content bodies are stripped (can be MBs). */
+function serializeBucket(b: Bucket): string {
+  const tabs = b.tabs
+    .filter(t => t.kind !== 'diff')
+    .map(t => { const copy = { ...t }; delete copy.content; return copy })
+  // If the focused tab was a dropped diff tab, refocus a surviving tab.
+  const activeId = tabs.some(t => t.id === b.activeId)
+    ? b.activeId
+    : (tabs.length ? tabs[tabs.length - 1].id : null)
+  return JSON.stringify({ activeId, tabs })
+}
+
+function loadPersisted(): BySlot {
+  if (typeof localStorage === 'undefined') return {}
+  const out: BySlot = {}
+  try {
+    // Load every per-slot bucket (mc-panel-tabs:<slot>). Tolerate shape drift:
+    // keep only well-formed buckets.
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (!k || !k.startsWith(KEY_PREFIX)) continue
+      const slot = k.slice(KEY_PREFIX.length)
+      if (!slot) continue
+      try {
+        const b = JSON.parse(localStorage.getItem(k) ?? 'null') as Partial<Bucket> | null
+        if (b && Array.isArray(b.tabs)) {
+          out[slot] = { tabs: b.tabs as PanelTab[], activeId: (b.activeId as string | null) ?? null }
+        }
+      } catch { /* skip malformed bucket */ }
+    }
+  } catch { /* enumerating storage can throw in locked-down envs */ }
+  return out
+}
+
+let persistTimer: ReturnType<typeof setTimeout> | undefined
+const dirtySlots = new Set<string>()
+/** Persist only the slots that actually changed (one key each), debounced.
+ *  Per-slot writes mean a GC'd slot key is never resurrected by an unrelated
+ *  slot's mutation */
+function schedulePersist(slot: string): void {
+  if (typeof window === 'undefined') return
+  dirtySlots.add(slot)
+  clearTimeout(persistTimer)
+  persistTimer = setTimeout(flushPersist, PERSIST_DEBOUNCE_MS)
+}
+function flushPersist(): void {
+  for (const slot of dirtySlots) {
+    const b = store[slot]
+    if (b) safeSetItem(KEY_PREFIX + slot, serializeBucket(b))
+    else if (typeof localStorage !== 'undefined') {
+      try { localStorage.removeItem(KEY_PREFIX + slot) } catch { /* ignore */ }
+    }
+  }
+  dirtySlots.clear()
+}
+
+/** Test-only: reset the module store (and its persisted copy) so each test
+ *  starts from a clean strip — the module store otherwise leaks across the
+ *  renderHook calls in a suite. */
+export function __resetPanelTabs(): void {
+  store = {}
+  clearTimeout(persistTimer)
+  dirtySlots.clear()
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const doomed: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k && k.startsWith(KEY_PREFIX)) doomed.push(k)
+      }
+      for (const k of doomed) localStorage.removeItem(k)
+    } catch { /* ignore */ }
+  }
+  for (const cb of listeners) cb()
+}
 
 /**
  * Tabbed side panel state. Replaces the old mutually-exclusive
  * usePanelState + useDiffPanel + activityTab model: every view (category views,
  * terminal) and every opened document (file / diff / artifact) is a tab in one
  * strip. Opening a document that's already open focuses its tab instead of
- * duplicating it. Content is held here rather than redux to keep large file
- * bodies out of the store.
+ * duplicating it. Content is held in the module store (not redux) to keep large
+ * file bodies out of the store.
  *
  * State is bucketed PER CHAT SLOT (`slotKey`): each chat has its own strip
  * (tabs, order, focused tab), and switching chats swaps the whole strip —
  * switching back restores it exactly. Tabs opened with no active slot live in
- * a shared fallback bucket. Buckets for deleted slots linger until reload
- * (bounded by session count; large file bodies are the only real weight).
+ * a shared fallback bucket.
+ *
+ * The backing store is MODULE-LEVEL + localStorage-persisted (see above), so
+ * the strip survives ChatPage unmounts (route changes) and page reloads. Only
+ * tab metadata is persisted; document-tab content is re-fetched lazily by the
+ * consumer after a reload (ChatPage's cold-tab hydration effect).
  */
 export function usePanelTabs(slotKey: string | null = null) {
   const key = slotKey ?? '__no_slot__'
-  const [bySlot, setBySlot] = useState<Record<string, Bucket>>({})
+  const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const { tabs, activeId } = bySlot[key] ?? EMPTY_BUCKET
 
   /** Apply a bucket transform to the CURRENT slot's strip. */
   const update = useCallback((fn: (b: Bucket) => Bucket) => {
-    setBySlot(prev => ({ ...prev, [key]: fn(prev[key] ?? { tabs: [], activeId: null }) }))
+    mutateSlot(key, fn)
   }, [key])
 
   /** Add tab if its id is absent, otherwise merge patch into the existing tab;
@@ -131,12 +264,33 @@ export function usePanelTabs(slotKey: string | null = null) {
   /** Replace the tab order wholesale (drag-to-reorder in the strip). */
   const setOrder = useCallback((next: PanelTab[]) => { update(b => ({ ...b, tabs: next })) }, [update])
 
+  /** Open a NEW terminal tab (its own PTY session). Unlike singleton views,
+   *  every call mints a fresh session so a chat can hold several shells; the
+   *  per-slot bucketing makes those sessions chat-specific automatically. At
+   *  the per-chat cap we focus (reuse) the most-recent terminal instead of
+   *  spawning another. Returns the session id to connect / run against. */
+  const openTerminal = useCallback((opts?: { cwd?: string }): string => {
+    const terms = tabs.filter(t => t.kind === 'terminal')
+    if (terms.length >= MAX_TERMINALS_PER_CHAT) {
+      const last = terms[terms.length - 1]
+      setActive(last.id)
+      return last.sessionId ?? ''
+    }
+    const sessionId = Math.random().toString(36).slice(2, 14)
+    upsert({
+      id: `terminal:${sessionId}`, kind: 'terminal',
+      title: opts?.cwd ? basename(opts.cwd) : 'Terminal',
+      sessionId, cwd: opts?.cwd,
+    })
+    return sessionId
+  }, [tabs, upsert, setActive])
+
   const activeTab = useMemo(() => tabs.find(t => t.id === activeId) ?? null, [tabs, activeId])
 
   return useMemo(() => ({
     tabs, activeId, activeTab,
-    openView, openFile, openDiff, openArtifact,
+    openView, openTerminal, openFile, openDiff, openArtifact,
     patchTab, closeTab, closeAll, setActive, setOrder,
     hasTabs: tabs.length > 0,
-  }), [tabs, activeId, activeTab, openView, openFile, openDiff, openArtifact, patchTab, closeTab, closeAll, setActive, setOrder])
+  }), [tabs, activeId, activeTab, openView, openTerminal, openFile, openDiff, openArtifact, patchTab, closeTab, closeAll, setActive, setOrder])
 }

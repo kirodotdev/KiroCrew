@@ -3565,7 +3565,11 @@ async def api_artifact_publish_providers(request: web.Request) -> web.Response:
     out: list[dict[str, Any]] = []
     for p in list_providers():
         try:
-            if not p.available():
+            avail = p.available()
+            # A not-yet-installed provider still shows when it can self-install
+            # on first publish (ensure_ready) — hiding it entirely would make
+            # the destination undiscoverable until the user installs by hand.
+            if not avail and not p.installable():
                 continue
             ks = p.kind_support(kind)
             sm = p.sharing_model()
@@ -3581,6 +3585,9 @@ async def api_artifact_publish_providers(request: web.Request) -> web.Response:
                 "capabilities": sorted(c.value for c in p.capabilities()),
                 "kind_support": ks.value,
                 "capable": ks != KindSupport.UNSUPPORTED,
+                # False + present in this list ⇒ installs on first publish; the
+                # FE may surface an "installs on first use" hint.
+                "available": avail,
                 "sharing_model": _sharing_model_dict(sm),
                 "sync_model": {
                     "authority": sy.authority,

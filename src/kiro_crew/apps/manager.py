@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
+import stat
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -1198,6 +1200,36 @@ def _edition_bundled_app_names() -> list[str]:
     )
 
 
+def _rmtree_dirfd(fd: int) -> None:
+    """Recursively delete the contents of an OPEN directory descriptor using
+    only dir_fd-relative operations — immune to rename/symlink swaps because
+    no absolute path is ever re-resolved."""
+    with os.scandir(fd) as it:
+        entries = list(it)
+    for entry in entries:
+        if entry.is_dir(follow_symlinks=False):
+            child = os.open(
+                entry.name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_DIRECTORY,
+                dir_fd=fd,
+            )
+            try:
+                _rmtree_dirfd(child)
+            finally:
+                os.close(child)
+            os.rmdir(entry.name, dir_fd=fd)
+        else:
+            os.unlink(entry.name, dir_fd=fd)
+
+
+def _dirfd_ops_supported() -> bool:
+    return (
+        os.open in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+        and os.rmdir in os.supports_dir_fd
+    )
+
+
 def register_builtin_apps() -> int:
     """Register built-in dashboard features as app entries.
 
@@ -1243,9 +1275,153 @@ def register_builtin_apps() -> int:
     _escalated = ["knowledge", "orchestrated", "board"]
     for esc_name in _escalated:
         esc_dir = app_dir(esc_name)
-        if esc_dir.is_dir():
-            shutil.rmtree(esc_dir, ignore_errors=True)
-            logger.info("Removed escalated app %r (now a built-in surface)", esc_name)
+        # Never follow a symlinked app dir: iterdir()/rmtree would land on the
+        # link target and delete data OUTSIDE the apps tree. Also require the
+        # resolved path to stay contained under apps_dir().
+        if esc_dir.is_symlink():
+            logger.warning(
+                "Skipping escalation cleanup for %r: app dir is a symlink", esc_name
+            )
+            continue
+        if not esc_dir.is_dir():
+            continue
+        try:
+            if not esc_dir.resolve().is_relative_to(apps_dir().resolve()):
+                logger.warning(
+                    "Skipping escalation cleanup for %r: resolves outside apps dir",
+                    esc_name,
+                )
+                continue
+        except OSError as exc:
+            logger.warning("Skipping escalation cleanup for %r: %s", esc_name, exc)
+            continue
+        # Only remove a POSITIVELY identified legacy builtin install: an
+        # unrelated local/registry/external app that merely shares the name
+        # must never be deleted (it may hold user code and secrets).
+        #
+        # PIN-FIRST (Codex R36): the app directory descriptor is pinned
+        # BEFORE any validation, and installed.json / data/ are inspected
+        # RELATIVE to that pinned descriptor. A rename swapping the directory
+        # between validation and deletion can therefore never redirect the
+        # delete: verdict and deletion refer to the same inode by
+        # construction.
+        if not _dirfd_ops_supported() or not hasattr(os, "O_DIRECTORY"):
+            # No POSIX dir_fd primitives (Windows): validation and deletion
+            # cannot be pinned to the same inode, so a rename between them
+            # could delete an unvalidated replacement directory. Fail
+            # closed — leave legacy-builtin cleanup to the operator here.
+            logger.info(
+                "Skipping escalation cleanup for %r: platform lacks dir_fd "
+                "primitives to pin validation to deletion — remove the "
+                "directory manually if no longer needed", esc_name,
+            )
+            continue
+        parent_fd = -1
+        fd = -1
+        try:
+            # Anchor at the trusted apps root, then open the app dir RELATIVE
+            # to that descriptor with O_NOFOLLOW: containment holds by
+            # construction and cannot be raced by renames/symlinks.
+            parent_fd = os.open(str(apps_dir()), os.O_RDONLY | os.O_DIRECTORY)
+            fd = os.open(
+                esc_name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_DIRECTORY,
+                dir_fd=parent_fd,
+            )
+            st = os.fstat(fd)
+            if not stat.S_ISDIR(st.st_mode):
+                raise OSError("not a directory")
+
+            # installed.json read through the pinned descriptor: O_NOFOLLOW
+            # + fstat-regular on the OPENED fd — a symlinked or mid-race
+            # swapped meta file is refused by the kernel atomically.
+            meta = None
+            meta_fd = -1
+            try:
+                meta_fd = os.open(
+                    INSTALLED_META_FILENAME,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=fd,
+                )
+                mst = os.fstat(meta_fd)
+                if not stat.S_ISREG(mst.st_mode):
+                    raise OSError("installed.json is not a regular file")
+                with os.fdopen(meta_fd, "r", encoding="utf-8") as fh:
+                    meta_fd = -1  # ownership transferred to fdopen
+                    meta = json.load(fh)
+            except (OSError, ValueError):
+                meta = None
+            finally:
+                if meta_fd >= 0:
+                    os.close(meta_fd)
+            if not isinstance(meta, dict) or meta.get("origin") != "builtin":
+                logger.info(
+                    "Keeping app dir %r during escalation cleanup: origin=%r "
+                    "is not a legacy builtin",
+                    esc_name,
+                    meta.get("origin") if isinstance(meta, dict) else None,
+                )
+                continue
+
+            # Preserve user data/ across the escalation — inspected through
+            # the same pinned descriptor. A symlinked data/ or any error we
+            # cannot classify fails closed (keep).
+            try:
+                data_fd = os.open(
+                    "data",
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_DIRECTORY,
+                    dir_fd=fd,
+                )
+                try:
+                    has_data = bool(os.listdir(data_fd))
+                finally:
+                    os.close(data_fd)
+            except (FileNotFoundError, NotADirectoryError):
+                has_data = False
+            except OSError as exc:
+                # Symlinked data/ (ELOOP) or unreadable — fail closed: keep.
+                logger.warning(
+                    "Skipping escalation cleanup for %r: cannot inspect data/: %s",
+                    esc_name, exc,
+                )
+                continue
+            if has_data:
+                # No partial deletion: keep everything and leave removal to
+                # the operator.
+                logger.info(
+                    "Keeping escalated builtin %r: data/ is non-empty — remove "
+                    "the directory manually if no longer needed", esc_name,
+                )
+                continue
+
+            _rmtree_dirfd(fd)
+            os.close(fd)
+            fd = -1
+            # Unlink the NAME only if the entry still refers to the pinned
+            # inode: a directory swapped in after the pin is left untouched
+            # (rmdir would also refuse a non-empty swap, but check anyway).
+            try:
+                st2 = os.stat(esc_name, dir_fd=parent_fd, follow_symlinks=False)
+                if (st2.st_ino, st2.st_dev) == (st.st_ino, st.st_dev):
+                    os.rmdir(esc_name, dir_fd=parent_fd)
+                    logger.info(
+                        "Removed escalated app %r (now a built-in surface)",
+                        esc_name,
+                    )
+                else:
+                    logger.warning(
+                        "Escalation cleanup for %r: directory entry changed "
+                        "after pin — leaving the new entry in place", esc_name,
+                    )
+            except FileNotFoundError:
+                pass
+        except OSError as exc:
+            logger.warning("Escalation cleanup failed for %r (kept): %s", esc_name, exc)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            if parent_fd >= 0:
+                os.close(parent_fd)
     # Discovered apps that aren't already in the hardcoded list
     extra = [a for a in discovered if a["name"] not in hardcoded_names]
     all_builtins = list(_BUILTIN_APPS) + extra

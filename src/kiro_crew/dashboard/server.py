@@ -101,6 +101,11 @@ from kiro_crew.dashboard.handlers.discover import (
     api_skills_discover_preview,
 )
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
+from kiro_crew.dashboard.handlers.source_providers import (
+    api_pull_request_checks,
+    api_pull_request_resolve,
+    api_pull_request_source,
+)
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
@@ -137,6 +142,7 @@ from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.suggestions import api_suggestions
+from kiro_crew.tips import api_tips_feedback, api_tips_next, api_tips_status
 from kiro_crew.tunnel.setup import setup_tunnel
 
 if TYPE_CHECKING:
@@ -244,8 +250,13 @@ _BASE_CSP = (
     "connect-src 'self' ws://localhost:* ws://127.0.0.1:*; "
     "media-src 'self' blob:; "
     "worker-src 'self' blob:; "
-    "frame-src 'self' blob:{frame_src_extra}; "
-    "object-src 'none'; base-uri 'self'"
+    # https://*.cloudfront.net: live preview iframes for deployed webapp
+    # artifacts (WebAppArtifactCard / WebAppThumb). The artifact-deploy
+    # contract only ever produces `<dist-id>.cloudfront.net` URLs; the FE
+    # additionally gates on that exact host shape (framablePreviewUrl) so a
+    # crafted webapp_metadata URL on any other host is never framed.
+    "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
 )
 
 _INSTANCES_FRAME_SRC_EXTRA = " http://127.0.0.1:* http://localhost:* http://*.localhost:*"
@@ -320,6 +331,19 @@ def _apply_security_headers(resp: web.StreamResponse, app: web.Application, path
         _BASE_CSP.format(frame_src_extra=frame_src_extra),
     )
     resp.headers.setdefault("Permissions-Policy", _PERMISSIONS_POLICY)
+    # Defense-in-depth browser headers (CWE-1021/693/200/319). All via
+    # setdefault so a handler can override. frame-ancestors 'self' (in the
+    # CSP above) is the modern clickjacking control; X-Frame-Options SAMEORIGIN
+    # is kept for older browsers. nosniff blocks MIME-confusion; Referrer-Policy
+    # avoids leaking the (token-bearing) dashboard URL cross-origin. HSTS is
+    # inert over the default loopback HTTP bind but protects HTTPS tunnel/desktop
+    # access, so it is set unconditionally (browsers ignore it on plain HTTP).
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault(
+        "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+    )
 
 
 def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
@@ -508,6 +532,8 @@ def _register_mcp_routes(app: web.Application) -> None:
     # Static sub-paths MUST precede the ``/{slug}`` dynamic route below, else
     # "session-docs" / "materialize" / "publish-providers" would be captured as
     # a slug (aiohttp matches routes in registration order).
+    from kiro_crew.dashboard.handlers.webapp_preview import register_webapp_preview_routes
+    register_webapp_preview_routes(app)
     app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)
@@ -1079,6 +1105,11 @@ async def start_dashboard(
     # Suggestions (pre-computed contextual prompts)
     app.router.add_get("/api/suggestions", api_suggestions)
 
+    # Tips (feature discovery)
+    app.router.add_get("/api/tips/next", api_tips_next)
+    app.router.add_get("/api/tips/status", api_tips_status)
+    app.router.add_post("/api/tips/feedback", api_tips_feedback)
+
     # Memory
     app.router.add_get("/api/memory/preferences", handlers.api_memory_preferences)
     app.router.add_put("/api/memory/preferences", handlers.api_memory_preferences)
@@ -1211,6 +1242,9 @@ async def start_dashboard(
 
     # Chat
     app.router.add_post("/api/chat", chat.api_chat)
+    app.router.add_post("/api/source/pull-request", api_pull_request_source)
+    app.router.add_post("/api/source/pull-request/checks", api_pull_request_checks)
+    app.router.add_post("/api/source/pull-request/resolve", api_pull_request_resolve)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
     app.router.add_post("/api/chat/slots/cleanup", chat.api_chat_slots_cleanup)
@@ -1523,8 +1557,12 @@ async def start_dashboard(
     # App token exchange (App Kit §5.1 — must be before auth middleware bypass)
     app.router.add_post("/api/apps/{name}/token", handlers.api_app_token)
 
-    # Register built-in apps (idempotent — surfaces baked-in features in App Store)
-    register_builtin_apps()
+    # Register built-in apps (idempotent — surfaces baked-in features in App Store).
+    # Runs on the executor: escalation cleanup can traverse/delete legacy app
+    # dirs, which must not block the event loop during startup.
+    await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), register_builtin_apps
+    )
 
     # One-time migration: disable stale deploy_web builtin installs (now core module).
     # Idempotent — logs once and silently succeeds if already gone.
@@ -1957,10 +1995,15 @@ async def start_dashboard(
     # Fire background MCP probe at startup (non-blocking)
     asyncio.create_task(handlers._bg_mcp_probe())
 
-    # Start terminal orphan reaper (kills PTYs with no WS for >5 min)
+    # Start terminal orphan reaper (kills PTYs with no WS past the reaper window)
     _reaper = asyncio.create_task(handlers.reap_orphaned_terminals(app))
     _reaper.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
     state._terminal_reaper = _reaper  # prevent GC
+
+    # Start terminal title poller (pushes live foreground-command / cwd titles)
+    _title_poller = asyncio.create_task(handlers.poll_terminal_titles(app))
+    _title_poller.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
+    state._terminal_title_poller = _title_poller  # prevent GC
 
     # Start periodic flush loop for crash protection (saves dirty slots every 5s)
     state.start_flush_loop()

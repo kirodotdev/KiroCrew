@@ -288,6 +288,17 @@ class PublishProvider(ABC):
         """
         return self.available()
 
+    def installable(self) -> bool:
+        """True when :meth:`ensure_ready` has a real automated install story,
+        so the provider is usable even while :meth:`available` is ``False``
+        (the first publish self-installs). Drives the share-panel picker: a
+        not-yet-installed but installable provider is still offered instead of
+        being hidden entirely. Default: ``False`` — only providers that
+        override :meth:`ensure_ready` with a self-install should return
+        ``True``.
+        """
+        return False
+
     @abstractmethod
     def view_url_for(self, external_id: str) -> str:
         """Fallback stable URL for an external id (used if publish omits one)."""

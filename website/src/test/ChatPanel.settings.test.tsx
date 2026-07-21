@@ -3,8 +3,10 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
-const { patchConfigMock } = vi.hoisted(() => ({
+const { patchConfigMock, tipsStatusMock, tipsFeedbackMock } = vi.hoisted(() => ({
   patchConfigMock: vi.fn(() => Promise.resolve({})),
+  tipsStatusMock: vi.fn(() => Promise.resolve({ enabled_config: true, opted_out: false })),
+  tipsFeedbackMock: vi.fn(() => Promise.resolve({ ok: true })),
 }))
 
 vi.mock('../api/client', () => ({
@@ -17,6 +19,8 @@ vi.mock('../api/client', () => ({
     updateDashboardConfig: () => Promise.resolve({}),
     updateVoiceConfig: () => Promise.resolve({}),
     updateSttConfig: () => Promise.resolve({}),
+    tipsStatus: tipsStatusMock,
+    tipsFeedback: tipsFeedbackMock,
   },
 }))
 
@@ -26,6 +30,59 @@ function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
 }
+
+describe('ChatPanel settings – Feature Tips toggle', () => {
+  beforeEach(() => {
+    tipsStatusMock.mockClear()
+    tipsFeedbackMock.mockClear()
+    tipsStatusMock.mockImplementation(() => Promise.resolve({ enabled_config: true, opted_out: false }))
+  })
+
+  it('renders the toggle reflecting server state (enabled, not opted out)', async () => {
+    wrap(<ChatPanel />)
+    expect(await screen.findByText('Feature Tips')).toBeInTheDocument()
+    await waitFor(() => expect(tipsStatusMock).toHaveBeenCalled())
+  })
+
+  it('fires optout when toggled off', async () => {
+    wrap(<ChatPanel />)
+    const label = await screen.findByText('Feature Tips')
+    await waitFor(() => expect(tipsStatusMock).toHaveBeenCalled())
+    fireEvent.click(label)
+    await waitFor(() => expect(tipsFeedbackMock).toHaveBeenCalledWith('', 'optout'))
+  })
+
+  it('fires optin when toggled back on from opted-out state', async () => {
+    tipsStatusMock.mockImplementation(() => Promise.resolve({ enabled_config: true, opted_out: true }))
+    wrap(<ChatPanel />)
+    const label = await screen.findByText('Feature Tips')
+    await waitFor(() => expect(tipsStatusMock).toHaveBeenCalled())
+    fireEvent.click(label)
+    await waitFor(() => expect(tipsFeedbackMock).toHaveBeenCalledWith('', 'optin'))
+  })
+
+  it('renders disabled with config hint when tips_enabled=false at config level', async () => {
+    tipsStatusMock.mockImplementation(() => Promise.resolve({ enabled_config: false, opted_out: false }))
+    wrap(<ChatPanel />)
+    expect(await screen.findByText(/Disabled by instance config/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Feature Tips'))
+    // Disabled toggle must not fire feedback
+    expect(tipsFeedbackMock).not.toHaveBeenCalled()
+  })
+
+  it('toggling the preference drops any cached tips-next query (Codex round-6)', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // Simulate a tip cached by a running Chat view before the user opts out
+    qc.setQueryData(['tips-next'], { tip: { id: 'stale', title: 'Stale' }, glow: true })
+    render(<QueryClientProvider client={qc}><ChatPanel /></QueryClientProvider>)
+    const label = await screen.findByText('Feature Tips')
+    await waitFor(() => expect(tipsStatusMock).toHaveBeenCalled())
+    fireEvent.click(label)
+    await waitFor(() => expect(tipsFeedbackMock).toHaveBeenCalledWith('', 'optout'))
+    // onSettled must remove the cached tip so Chat can't display it
+    await waitFor(() => expect(qc.getQueryData(['tips-next'])).toBeUndefined())
+  })
+})
 
 describe('ChatPanel settings – Subagents section', () => {
   beforeEach(() => {

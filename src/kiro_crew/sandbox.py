@@ -64,6 +64,7 @@ _STRICT_DIRS: list[str] = [
     ".gnupg",
     ".gpg",
     ".config/gcloud",
+    ".config/gh",
     ".azure",
     ".docker",
     ".kube",
@@ -1956,3 +1957,44 @@ def session_host_preexec() -> "Callable[[], None] | None":
 
         _SESSION_HOST_PREEXEC = _raise_nofile
     return _SESSION_HOST_PREEXEC  # type: ignore[return-value]
+
+
+# Build workloads (vite/npm/pip) legitimately hold thousands of descriptors —
+# the default 1024 NOFILE ceiling EMFILEs them while still being the right cap
+# for one-shot tools. Same policy, higher finite descriptor ceiling; every
+# other limit still comes from the operator config. Cached like the default.
+_BUILD_NOFILE_CEILING = 65536
+_BUILD_RESOURCE_PREEXEC: object = _UNSET
+
+
+def build_resource_limit_preexec() -> "Callable[[], None] | None":
+    """``resource_limit_preexec`` variant for build-class children.
+
+    Identical policy except ``max_open_files`` is raised to a still-finite
+    65536 (matching the gateway service's own ``LimitNOFILE``); an operator
+    ``resource_limits.max_open_files`` override higher than the default wins.
+    """
+    global _BUILD_RESOURCE_PREEXEC
+    if _BUILD_RESOURCE_PREEXEC is _UNSET:
+        if os.name != "posix":
+            _BUILD_RESOURCE_PREEXEC = None
+            return None
+        from kiro_crew.security import apply_resource_limits
+
+        cfg: dict | None = None
+        try:
+            from kiro_crew.config.loader import _raw_config
+
+            cfg = dict(_raw_config() or {})
+        except Exception:
+            cfg = {}
+        raw_limits = (cfg or {}).get("resource_limits")
+        limits = dict(raw_limits) if isinstance(raw_limits, dict) else {}
+        # Malformed operator values must not break the spawn — resource-limit
+        # handling elsewhere ignores bad values, so mirror that here and fall
+        # back to the ceiling (bools are ints in Python; exclude them).
+        raw = limits.get("max_open_files")
+        configured = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+        limits["max_open_files"] = max(configured, _BUILD_NOFILE_CEILING)
+        _BUILD_RESOURCE_PREEXEC = apply_resource_limits({**(cfg or {}), "resource_limits": limits})
+    return _BUILD_RESOURCE_PREEXEC  # type: ignore[return-value]

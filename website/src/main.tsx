@@ -22,6 +22,45 @@ import './app-sdk/shared-modules'
 // Initialize RUM as early as possible
 initRum(__APP_VERSION__)
 
+// Auto-recover from stale lazy-chunk errors after a frontend rebuild.
+// Vite fires `vite:preloadError` on window when a dynamic import() of a
+// hashed chunk 404s -- this happens when a tab loaded an old entry bundle
+// before a rebuild, then lazy-loads a page whose hash has since changed
+// (e.g. "Failed to fetch dynamically imported module: .../SomePage-<hash>.js").
+// Reloading pulls the fresh index.html + chunk map, which self-heals the tab.
+// Guarded by a short-lived sessionStorage timestamp so a genuinely-missing
+// chunk (persistent 404) can't trigger an infinite reload loop.
+window.addEventListener('vite:preloadError', (event) => {
+  const AT_KEY = 'vite-preload-reloaded-at'
+  const N_KEY = 'vite-preload-reload-count'
+  const COOLDOWN_MS = 10_000
+  const MAX_RELOADS = 3
+  let last = 0
+  let count = 0
+  try {
+    last = Number(sessionStorage.getItem(AT_KEY) || 0)
+    count = Number(sessionStorage.getItem(N_KEY) || 0)
+  } catch { /* storage blocked (privacy/partitioned) — treat as a first attempt */ }
+  // Bail (let the error surface via ErrorBoundary) if we reloaded very recently
+  // (tight-loop guard) OR have already reloaded too many times this session
+  // (a genuinely-missing chunk whose reload round-trip keeps exceeding the
+  // cooldown must not loop forever).
+  if (Date.now() - last < COOLDOWN_MS || count >= MAX_RELOADS) return
+  let persisted = false
+  try {
+    sessionStorage.setItem(AT_KEY, String(Date.now()))
+    sessionStorage.setItem(N_KEY, String(count + 1))
+    persisted = true
+  } catch { /* storage blocked */ }
+  // Only auto-reload if we could PERSIST the guard. If storage is blocked we
+  // cannot count reloads, so a genuinely-missing chunk would loop forever —
+  // let the error surface via ErrorBoundary instead.
+  if (!persisted) return
+  // Prevent Vite from throwing the unhandled preload error before we reload.
+  event.preventDefault()
+  window.location.reload()
+})
+
 // Accessibility: runtime DOM scanning in dev mode (logs violations to console)
 if (import.meta.env.DEV) {
   import('react-dom').then(ReactDOM => import('@axe-core/react').then(axe => axe.default(React, ReactDOM, 1000)))

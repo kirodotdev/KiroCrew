@@ -87,15 +87,27 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     from kiro_crew.dashboard.handlers import _log_ring, _update_info
 
     state: DashboardState = request.app["state"]
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+        schedule_check_refresh,
+    )
+
+    owner_request = is_owner_dashboard_request(request)
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
 
-    state.register_ws(ws)
+    state.register_ws(ws, owner=owner_request)
 
-    # Push current slots immediately so sidebar populates without waiting
+    # Push current slots immediately so sidebar populates without waiting.
     try:
-        slots_data = state.serialize_slots()
+        slots_data = state.serialize_slots(include_check_status=owner_request)
         await ws.send_json({"type": "slots", "data": slots_data, "yolo": state._yolo})
+        if owner_request:
+            urls = [
+                link["url"] for payload in slots_data for link in payload.get("source_links", [])
+            ]
+            if urls:
+                schedule_check_refresh(urls, state.push_slots_update)
     except Exception:
         pass
 
@@ -113,7 +125,11 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                     _cached_lessons = len(state.lessons.load_all())
                     _counts_ts = now
                 data = {
-                    **state.status_snapshot(cron_jobs=_cached_crons, lessons=_cached_lessons, update_available=bool(_update_info.get("available"))),
+                    **state.status_snapshot(
+                        cron_jobs=_cached_crons,
+                        lessons=_cached_lessons,
+                        update_available=bool(_update_info.get("available")),
+                    ),
                     "version": _local_version,
                     "platform": sys.platform,
                 }
@@ -147,10 +163,12 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                         state.subscribe_subagents(ws)
                         # Send snapshot of active subagents + done events for completed ones
                         if state.subagents:
+
                             def _r(t: str) -> str:
                                 t, _ = redact_exfiltration_urls(t)
                                 t, _ = redact_credentials(t)
                                 return t
+
                             for a in state.subagents.running:
                                 try:
                                     slot = a.parent_session_key.removeprefix("dashboard:")

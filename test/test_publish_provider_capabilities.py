@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from kiro_crew import publish_provider as pp
@@ -99,6 +101,15 @@ class TestListProviders:
             pp._FACTORIES.clear()
             pp._FACTORIES.update(saved_factories)
             reset_providers()
+
+
+class TestInstallable:
+    def test_abc_default_is_not_installable(self):
+        # A provider without a self-install story stays hidden when unavailable.
+        assert PublishProvider.installable(MagicMock(spec=PublishProvider)) is False
+
+    def test_minimal_provider_is_not_installable(self):
+        assert MinimalProvider().installable() is False
 
 
 class TestCommentAnchor:

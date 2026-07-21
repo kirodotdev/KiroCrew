@@ -4,9 +4,9 @@
 // deterministic two-stage review (POST /api/apps/code-review-sage/review). The
 // driver runs in-process, so the Phase 1 -> Phase 2 switch and finalize always
 // run. Findings post as a PENDING (draft) review the human submits on GitHub.
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ScanSearch, GitPullRequest, ExternalLink, Circle, Settings, Brain, Plus, Trash2 } from 'lucide-react'
+import { ScanSearch, GitPullRequest, ExternalLink, Circle, Settings, Brain, Plus, Trash2, FolderGit2, RefreshCw } from 'lucide-react'
 
 import { SendBtn } from '../../components/ui'
 import Clickable from '../../components/Clickable'
@@ -25,8 +25,15 @@ interface Run {
   started_at?: string
   finished_at?: string
 }
-interface Settings { model: string | null; effort: string; active_namespaces: string[] }
-interface SettingsResp { settings: Settings; models: string[]; efforts: string[]; namespaces: string[] }
+interface Settings { model: string | null; effort: string; active_namespaces: string[]; max_concurrent?: number }
+interface SettingsResp { settings: Settings; models: string[]; efforts: string[]; namespaces: string[]; max_concurrent_max?: number }
+
+// A single open PR of a repo, annotated by the backend with dedup status.
+interface RepoPr {
+  url: string; number: number; title: string; head_sha: string
+  change_id: string; reviewed: boolean; reviewed_stale: boolean; reviewed_at?: string
+}
+interface RepoPrsResp { repo: string; prs: RepoPr[]; count: number }
 
 interface NamespaceInfo { name: string; patterns: number; candidate: number; active: boolean }
 interface NamespacesResp { namespaces: NamespaceInfo[]; active: string[] }
@@ -46,8 +53,13 @@ const PHASE_LABEL: Record<string, string> = {
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  return r.json() as Promise<T>
+  // Prefer the backend's {error} message (mirrors sendJSON) so failures like
+  // "gh is not authenticated on the gateway host" reach the user, not "HTTP 502".
+  const data = await r.json().catch(() => null)
+  if (!r.ok || (data as { error?: string } | null)?.error) {
+    throw new Error((data as { error?: string } | null)?.error || `HTTP ${r.status}`)
+  }
+  return data as T
 }
 
 async function sendJSON(url: string, body: unknown, method = 'POST'): Promise<Record<string, unknown>> {
@@ -64,6 +76,9 @@ async function sendJSON(url: string, body: unknown, method = 'POST'): Promise<Re
 export default function CodeReviewSagePage() {
   const qc = useQueryClient()
   const [input, setInput] = useState('')
+  // Repo-review mode: enumerate a repo's open PRs and review the un-reviewed ones.
+  const [repoUrl, setRepoUrl] = useState('')
+  const [submittedRepo, setSubmittedRepo] = useState('')
 
   // React Query owns the fetch/loading/error/poll lifecycle. refetchInterval is
   // evaluated from the cached data, so a run that is already running on mount
@@ -84,6 +99,27 @@ export default function CodeReviewSagePage() {
     mutationFn: (links: string) => sendJSON(`${API}/review`, { links }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['code-review-sage-runs'] }),
   })
+
+  // Repo mode: list a repo's open PRs (with reviewed/updated/new status), and
+  // kick off a batch review of the un-reviewed ones (or ALL, when forced).
+  const { data: repoPrs, isFetching: repoLoading, error: repoQueryErr, refetch: refetchRepo } = useQuery({
+    queryKey: ['code-review-sage-repo-prs', submittedRepo],
+    queryFn: () => getJSON<RepoPrsResp>(`${API}/repo-prs?repo=${encodeURIComponent(submittedRepo)}`),
+    enabled: !!submittedRepo,
+  })
+  const reviewRepoMut = useMutation({
+    mutationFn: (body: { repo: string; force?: boolean }) => sendJSON(`${API}/review-repo`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['code-review-sage-runs'] }),
+  })
+
+  // When a run finishes, refresh the repo PR list so just-reviewed PRs stop
+  // showing as "new"/"updated" (the /repo-prs query is otherwise cached on
+  // submittedRepo and wouldn't re-fetch on its own).
+  useEffect(() => {
+    if (submittedRepo && run && run.status !== 'running') {
+      qc.invalidateQueries({ queryKey: ['code-review-sage-repo-prs', submittedRepo] })
+    }
+  }, [run?.status, run?.run_id, submittedRepo, qc])
 
   const saveMut = useMutation({
     mutationFn: (patch: Partial<Settings>) => sendJSON(`${API}/settings`, patch, 'PUT'),
@@ -138,13 +174,33 @@ export default function CodeReviewSagePage() {
     id,
     link: run?.changes?.[i],
   }))
-  const running = reviewMut.isPending || run?.status === 'running'
+  const running = reviewMut.isPending || reviewRepoMut.isPending || run?.status === 'running'
   const reviewErr = reviewMut.error instanceof Error ? reviewMut.error.message : ''
 
   const startReview = () => {
     const links = input.trim()
     if (!links || running) return
     reviewMut.mutate(links)
+  }
+
+  const repoErr = (repoQueryErr instanceof Error ? repoQueryErr.message : '')
+    || (reviewRepoMut.error instanceof Error ? reviewRepoMut.error.message : '')
+  const unreviewedCount = (repoPrs?.prs ?? []).filter(p => !p.reviewed).length
+  // The action buttons operate on the LISTED repo (submittedRepo), which can
+  // differ from what's currently typed in the box.
+  const staleList = !!submittedRepo && repoUrl.trim() !== submittedRepo
+  const listRepo = () => {
+    const u = repoUrl.trim()
+    if (!u) return
+    if (u === submittedRepo) refetchRepo()   // same URL -> force a real refresh
+    else setSubmittedRepo(u)
+  }
+  const reviewRepo = (force: boolean) => {
+    if (!submittedRepo || running) return
+    if (force && !confirm(
+      `Re-review ALL ${repoPrs?.count ?? 0} open PRs in ${submittedRepo}? `
+      + 'This ignores the reviewed history and can be costly.')) return
+    reviewRepoMut.mutate({ repo: submittedRepo, force })
   }
 
   return (
@@ -166,6 +222,74 @@ export default function CodeReviewSagePage() {
         <code>gh</code> is not authenticated on the gateway host.
       </div>
 
+      {/* Repo mode — enumerate a repo's open PRs and review the un-reviewed ones */}
+      <div className="border border-border rounded-md p-3 my-3.5">
+        <div className="text-[13px] font-medium flex items-center gap-1.5 mb-2">
+          <FolderGit2 size={14} /> Review a whole repository
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            value={repoUrl}
+            onChange={e => setRepoUrl(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') listRepo() }}
+            aria-label="Repository URL"
+            placeholder="https://github.com/<owner>/<repo>"
+            className="flex-1 box-border text-[13px] px-3 py-2 rounded-md bg-bg text-text border border-border font-mono"
+          />
+          <button onClick={listRepo} disabled={!repoUrl.trim() || repoLoading}
+            className="inline-flex items-center gap-1 text-xs px-2.5 py-2 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-30 cursor-pointer bg-transparent">
+            <RefreshCw size={12} className={repoLoading ? 'animate-spin' : ''} /> List open PRs
+          </button>
+        </div>
+        {repoErr && <div className="text-danger text-xs mt-2">{repoErr}</div>}
+        {repoLoading && !repoPrs && <div className="text-muted text-xs mt-2">Listing open PRs…</div>}
+        {staleList && (
+          <div className="text-warn text-[11px] mt-2">
+            Showing <span className="font-mono">{submittedRepo}</span> — click “List open PRs” to load the URL above.
+          </div>
+        )}
+        {repoPrs && (repoPrs.count === 0 ? (
+          <div className="text-muted text-xs mt-3">No open PRs in {repoPrs.repo}.</div>
+        ) : (
+          <div className="mt-3">
+            <div className="flex items-center gap-2.5 text-xs mb-2 flex-wrap">
+              <span className="text-muted">
+                {repoPrs.repo}: {repoPrs.count} open PR{repoPrs.count === 1 ? '' : 's'}, {unreviewedCount} not yet reviewed
+              </span>
+              <div className="ml-auto flex items-center gap-2">
+                <SendBtn onClick={() => reviewRepo(false)} disabled={running || unreviewedCount === 0}>
+                  {running ? 'Running…' : `Review ${unreviewedCount} new`}
+                </SendBtn>
+                <button onClick={() => reviewRepo(true)} disabled={running || repoPrs.count === 0}
+                  title="Re-review every open PR, ignoring the reviewed history"
+                  className="text-xs px-2.5 py-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-30 cursor-pointer bg-transparent">
+                  Force review all ({repoPrs.count})
+                </button>
+              </div>
+            </div>
+            <ul className="list-none p-0 max-h-64 overflow-auto">
+              {repoPrs.prs.map(pr => (
+                <li key={pr.change_id} className="flex items-center gap-2.5 text-xs py-1.5 border-b border-border">
+                  <a href={pr.url} target="_blank" rel="noreferrer" className="font-mono text-accent shrink-0">#{pr.number}</a>
+                  <span className="truncate text-text" title={pr.title}>{pr.title}</span>
+                  <span className="ml-auto shrink-0">
+                    {pr.reviewed
+                      ? <span className="text-accent text-[10px] border border-border rounded px-1.5 py-0.5">reviewed</span>
+                      : pr.reviewed_stale
+                        ? <span className="text-warn text-[10px] border border-border rounded px-1.5 py-0.5">updated</span>
+                        : <span className="text-muted text-[10px] border border-border rounded px-1.5 py-0.5">new</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="text-[11px] text-muted mt-1.5">
+              “new” = never reviewed · “updated” = reviewed before but the PR has new commits · “reviewed” = up to date.
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="text-[11px] text-muted mb-1.5">Or paste individual PR links:</div>
       <textarea
         value={input}
         onChange={e => setInput(e.target.value)}
@@ -179,7 +303,7 @@ export default function CodeReviewSagePage() {
         </SendBtn>
         {s && (
           <span className="ml-auto text-[11px] text-muted">
-            Model: {s.model || 'default'} · effort: {s.effort || 'default'}
+            Model: {s.model || 'default'} · effort: {s.effort || 'default'} · concurrency: {s.max_concurrent ?? 5}
           </span>
         )}
       </div>
@@ -253,6 +377,15 @@ export default function CodeReviewSagePage() {
                 className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
                 <option value="">Default (model/provider)</option>
                 {settings.efforts.map(ef => <option key={ef} value={ef}>{ef}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-muted" title="Max PRs reviewed at once on the shared runtime">
+              Concurrency{' '}
+              <select value={s?.max_concurrent ?? 5}
+                onChange={e => saveMut.mutate({ max_concurrent: Number(e.target.value) })}
+                className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
+                {Array.from({ length: settings.max_concurrent_max ?? 30 }, (_, i) => i + 1)
+                  .map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             </label>
           </div>

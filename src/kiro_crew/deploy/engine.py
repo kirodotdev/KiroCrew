@@ -290,6 +290,12 @@ def distribution_config(bucket: str, region: str, oac_id: str) -> dict[str, Any]
             "ViewerProtocolPolicy": "redirect-to-https",
             "Compress": True,
             "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",  # Managed-CachingOptimized
+            # AWS-managed SecurityHeadersPolicy: sends Strict-Transport-Security
+            # (max-age=31536000; includeSubDomains), X-Content-Type-Options
+            # nosniff, X-Frame-Options SAMEORIGIN, and Referrer-Policy on every
+            # response — without HSTS a MITM could downgrade the first request
+            # (CWE-319). Parity with base-stack.yaml's SecurityHeadersPolicy.
+            "ResponseHeadersPolicyId": "67f7725c-6f97-4210-82d7-5512b31e9d03",
         },
     }
 

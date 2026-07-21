@@ -116,6 +116,31 @@ class TestApplySecurityHeaders:
         assert "http://127.0.0.1:*" not in csp
         assert "http://localhost:*" not in csp
 
+    def test_csp_frame_src_allows_cloudfront_previews(self) -> None:
+        """Webapp artifact live previews iframe the deployed CloudFront site
+        (WebAppArtifactCard / WebAppThumb): https-only wildcard, present in
+        BOTH modes, and never a bare scheme wildcard."""
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            frame_src = next(d for d in csp.split(";") if d.strip().startswith("frame-src"))
+            assert "https://*.cloudfront.net" in frame_src
+            assert "http://*.cloudfront.net" not in frame_src
+            assert "https://*" + " " not in frame_src  # no bare https wildcard
+
+    def test_defense_in_depth_headers_present(self) -> None:
+        """P475357944 (CWE-1021/693/200/319): the global pipeline sets
+        clickjacking / MIME-sniffing / referrer / HSTS headers + CSP
+        frame-ancestors."""
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+        assert resp.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+        assert "max-age=31536000" in resp.headers["Strict-Transport-Security"]
+        assert "frame-ancestors 'self'" in resp.headers["Content-Security-Policy"]
+
     def test_csp_extends_frame_src_when_instances_enabled(self) -> None:
         resp = _make_response()
         _apply_security_headers(resp, _make_app(with_instances=True))

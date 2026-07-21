@@ -65,7 +65,6 @@ import DeveloperPage from './pages/DeveloperPage'
 import SchedulePage from './pages/SchedulePage'
 import { useUpdateSubscription } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
-import CliPanel from './components/CliPanel'
 import BrowserLiveView from './components/BrowserLiveView'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppsPage from './pages/AppsPage'
@@ -129,6 +128,14 @@ export function metricColor(pct: number): string {
   return pct > 0.9 ? 'text-danger' : pct > 0.7 ? 'text-warn' : 'text-accent'
 }
 export const memColorClass = metricColor
+
+const TOPBAR_SEARCH_GAP = 12
+const TOPBAR_SEARCH_MIN_WIDTH = 240
+
+export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: number, viewportWidth: number) {
+  const gutter = Math.ceil(Math.max(brandWidth, actionsWidth)) + TOPBAR_SEARCH_GAP
+  return { gutter, visible: viewportWidth - (gutter * 2) >= TOPBAR_SEARCH_MIN_WIDTH }
+}
 
 // Icon mapping for builtin apps (manifest icon name → React element)
 const BUILTIN_ICONS: Record<string, React.ReactElement> = {
@@ -702,9 +709,7 @@ export default function App() {
     refetchInterval: 30_000,
   })
   const approvalCount = pendingApprovals.filter((a: { id?: string }) => a.id?.startsWith('task-gate-')).length
-  const terminalOpen = useAppSelector(s => s.terminal.open)
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
-  const terminalPosition = useAppSelector(s => s.terminal.position)
   const { data: terminalConfig } = useQuery({
     queryKey: ['terminal-enabled'],
     queryFn: async () => {
@@ -764,6 +769,9 @@ export default function App() {
   useRumPageView()
   useNotificationSound()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
+  const [navLayoutPulse, setNavLayoutPulse] = useState(false)
+  const navLayoutPulseTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => { if (navLayoutPulseTimer.current) clearTimeout(navLayoutPulseTimer.current) }, [])
   const isMobile = useIsMobile()
   // Multi-instance: which instance fills the pane below the tab bar. null = Local
   // (the native dashboard); a non-null id means a remote instance's embedded
@@ -1083,6 +1091,14 @@ export default function App() {
   // Readout capsule collapse: clicking the connection dot folds the capsule
   // down to just the dot; clicking again restores the full readout.
   const [capsuleCollapsed, setCapsuleCollapsed] = usePersistedBool('mc-topbar-capsule-collapsed', false)
+  const [capsuleLayoutPulse, setCapsuleLayoutPulse] = useState(false)
+  const capsulePulseTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const pulseCapsuleLayout = useCallback(() => {
+    setCapsuleLayoutPulse(true)
+    clearTimeout(capsulePulseTimer.current)
+    capsulePulseTimer.current = setTimeout(() => setCapsuleLayoutPulse(false), 350)
+  }, [])
+  useEffect(() => () => clearTimeout(capsulePulseTimer.current), [])
   // Whether the window currently has room for the activity panel beside the
   // chat's reserved minimum. When it doesn't (the panel would be
   // force-collapsed anyway), the toggle button is disabled.
@@ -1108,6 +1124,14 @@ export default function App() {
     isMacElectron &&
     !macFullscreen &&
     visibleInstanceTabs(instancesData?.instances ?? [], instanceWarm).length > 0
+  // Tell the Electron main process which strip is topmost so it can center the
+  // native traffic lights against the 32px instance bar (when shown) instead of
+  // the 52px header — otherwise the buttons sit ~10px below the tab row.
+  useEffect(() => {
+    if (!isMacElectron) return
+    const api = (window as { electronAPI?: { setInstanceBarInset?: (on: boolean) => void } }).electronAPI
+    api?.setInstanceBarInset?.(macInstanceBarInset)
+  }, [macInstanceBarInset])
   const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb })), refetchInterval: metricsOpen ? 30_000 : false, enabled: metricsOpen })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
@@ -1234,13 +1258,43 @@ export default function App() {
 
   const toggleNav = () => {
     if (isMobile) { setMobileNavOpen(p => !p) }
-    else { setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next }) }
+    else {
+      if (navLayoutPulseTimer.current) clearTimeout(navLayoutPulseTimer.current)
+      setNavLayoutPulse(true)
+      navLayoutPulseTimer.current = setTimeout(() => setNavLayoutPulse(false), 180)
+      setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next })
+    }
   }
   // Close mobile nav on route change
   useEffect(() => { if (isMobile) setMobileNavOpen(false) }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
   // Reset mobile nav state when leaving mobile viewport
   useEffect(() => { if (!isMobile) setMobileNavOpen(false) }, [isMobile])
   const effectiveCollapsed = navCollapsed && !isMobile
+  const topbarBrandRef = useRef<HTMLDivElement>(null)
+  const topbarActionsRef = useRef<HTMLDivElement>(null)
+  const [topbarSearchLayout, setTopbarSearchLayout] = useState({ gutter: 360, visible: true })
+  useEffect(() => {
+    if (isMobile) return
+    const brand = topbarBrandRef.current
+    const actions = topbarActionsRef.current
+    if (!brand || !actions) return
+    const update = () => {
+      const brandWidth = brand.getBoundingClientRect().width
+      const actionsWidth = actions.getBoundingClientRect().width
+      if (brandWidth <= 0 || actionsWidth <= 0) return
+      const next = calculateTopbarSearchLayout(brandWidth, actionsWidth, window.innerWidth)
+      setTopbarSearchLayout(current => current.gutter === next.gutter && current.visible === next.visible ? current : next)
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(brand)
+    observer.observe(actions)
+    window.addEventListener('resize', update)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [isMobile])
   const closeMobileNav = isMobile ? () => setMobileNavOpen(false) : undefined
   const activePath = location.pathname
   const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
@@ -1282,8 +1336,19 @@ export default function App() {
       {/* Local pane: the native dashboard. Hidden (not unmounted) while a remote
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
-    <div className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)]' : 'grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[52px_minmax(0,1fr)]'}`}
-      style={{ gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar actbar" "nav content actbar"' }}>
+    <div
+      data-testid="dashboard-shell"
+      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)]' : 'grid-rows-[52px_minmax(0,1fr)]'}`}
+      style={{
+        gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar actbar" "nav content actbar"',
+        ...(!isMobile && {
+          gridTemplateColumns: `${effectiveCollapsed ? 74 : 236}px minmax(0,1fr) auto`,
+          transition: navLayoutPulse && !activityOpen
+            ? 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)'
+            : 'none',
+        }),
+      }}
+    >
 
       {/* Full-height activity bar slot: ChatPage portals its
           Activity panel here on desktop so it spans the window top-to-bottom
@@ -1295,21 +1360,48 @@ export default function App() {
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">Skip to content</a>
 
       {/* Topbar */}
-      <header className={`topbar-glass flex justify-between items-center ${isMobile ? 'pl-2 pr-2' : 'pl-5 pr-3'} z-[45]`} style={{ gridArea: 'topbar' }}>
-        <div className="flex items-center gap-3">
+      <header className="topbar-glass relative flex items-center pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
+        {/* Brand + collapse, aligned to the nav card's outer width. */}
+        <div
+          ref={topbarBrandRef}
+          className={`relative flex items-center h-full shrink-0 ${isMobile ? 'px-2 gap-3' : `${effectiveCollapsed ? 'justify-start px-0 gap-2' : 'px-5 gap-2'}`}`}
+          style={isMobile ? undefined : effectiveCollapsed ? { minWidth: 74 } : { minWidth: 236 }}
+        >
           {isMobile && (
-            <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text" onClick={toggleNav} aria-label="Open menu">
+            <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label="Open menu">
               <Menu size={20} />
             </button>
           )}
-          {/* w-auto (not the old fixed w-40): the hairline + Request a Feature
-              ghost should hug the wordmark, not float 160px out. */}
-          <div className="flex items-center gap-2.5 opacity-100 w-auto transition-all duration-300 ease-in-out">
-            <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-6' : 'w-7 h-7'} rounded-sm shrink-0 hover:rotate-[-8deg] hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
-            <span className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap">{botName.toUpperCase()}</span>
-          </div>
-          {/* Hairline + borderless Request a Feature ghost (Lightbulb) --
-              lives beside the wordmark per the pooled-top-bar design. */}
+          {!isMobile && effectiveCollapsed ? (
+            <button
+              type="button"
+              className="group flex items-center justify-center w-[74px] h-full cursor-pointer bg-transparent border-none p-0 shrink-0"
+              onClick={toggleNav}
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+            >
+              <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 group-hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
+              <span className="sr-only">{botName}</span>
+            </button>
+          ) : (
+            <>
+              <div className="flex items-center gap-2.5 min-w-0 opacity-100">
+                <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 hover:rotate-[-8deg] hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
+                <span className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap">{botName}</span>
+              </div>
+              {!isMobile && (
+                <button
+                  className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"
+                  onClick={toggleNav}
+                  title="Collapse sidebar"
+                  aria-label="Collapse sidebar"
+                >
+                  <Menu size={16} />
+                </button>
+              )}
+            </>
+          )}
+          {/* Keep Request a Feature visible beside the brand in both desktop sidebar states. */}
           {!isMobile && <>
             <span className="w-px h-4 bg-border shrink-0" aria-hidden="true" />
             <button
@@ -1320,7 +1412,20 @@ export default function App() {
             </button>
           </>}
         </div>
-        <div className="flex items-center gap-1.5 relative">
+        {!isMobile && topbarSearchLayout.visible && (
+          <button
+            type="button"
+            data-topbar-overlay
+            onClick={commandPalette.openPalette}
+            className="absolute w-auto max-w-[34rem] h-9 px-4 rounded-lg border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
+            style={{ left: topbarSearchLayout.gutter, right: topbarSearchLayout.gutter, marginInline: 'auto' }}
+            aria-label="Search sessions, files, and commands"
+            title="Search everywhere (⌘K)"
+          >
+            <span className="text-[13px]">⌘K — Search for anything…</span>
+          </button>
+        )}
+        <div ref={topbarActionsRef} className="flex items-center gap-1.5 relative ml-auto">
           {/* Unified readout capsule — connection dot . system metrics .
               kiro-credits usage pooled into one bordered pill. Offline: the
               whole capsule tints danger (red border + subtle red bg + red
@@ -1342,7 +1447,7 @@ export default function App() {
               <button
                 key="conn"
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
-                onClick={() => setCapsuleCollapsed(c => !c)}
+                onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
                 title={`${connected ? 'Gateway connected' : authRequired ? 'Gateway offline — session expired, see banner above' : 'Gateway offline — reconnecting'} · click to ${capsuleCollapsed ? 'expand' : 'collapse'} readouts`}
                 aria-label={connected ? 'Gateway connected' : 'Gateway offline'}
                 aria-expanded={!capsuleCollapsed}
@@ -1395,10 +1500,13 @@ export default function App() {
             return (
               /* layout + tween (not spring: springs bounced in a prior
                  attempt) animates the capsule's width as segments mount and
-                 unmount on collapse/expand. */
+                 unmount on collapse/expand. The layout transition is gated to
+                 a pulse: 0.25s right after an intentional collapse/expand
+                 click, else 0s so header reflows (panel open/close, resize)
+                 snap the capsule into place instead of sliding it. */
               <motion.div
                 layout
-                transition={{ layout: { duration: 0.25, ease: 'easeOut' } }}
+                transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
                 className={`flex items-center gap-2 h-7 px-2.5 rounded-full border transition-colors duration-300 ${offline ? 'border-danger bg-danger-subtle' : 'border-border bg-card'}`}
               >
                 {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
@@ -1526,11 +1634,11 @@ export default function App() {
       {(!isMobile || mobileNavOpen) && (
       <motion.nav
         initial={isMobile ? { x: -240 } : false}
-        animate={{ width: isMobile ? 220 : effectiveCollapsed ? 58 : 220, x: 0 }}
+        animate={isMobile ? { width: 220, x: 0 } : { x: 0 }}
         exit={{ x: -240 }}
-        transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
+        transition={isMobile ? { duration: 0.25, ease: [0.32, 0.72, 0, 1] } : undefined}
         className={`bg-bg-elevated border border-border rounded-xl flex flex-col m-2 shadow-sm z-50 overflow-hidden ${isMobile ? 'fixed top-0 left-0 bottom-0' : ''}`}
-        style={isMobile ? undefined : { gridArea: 'nav' }}
+        style={isMobile ? undefined : { gridArea: 'nav', width: 'auto' }}
         role="navigation"
         aria-label="Main navigation"
       >
@@ -1541,13 +1649,7 @@ export default function App() {
          *  bounce when scrolling past the ends. scrollbar-none + scrollbarWidth
          *  hide the scrollbar here (where scrolling actually happens) across
          *  Firefox, modern WebKit, and older Safari (<16). */}
-        <div className="flex flex-col h-full px-2 pb-4 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none" style={{ scrollbarWidth: 'none' }}>
-        {!isMobile && (
-        <button className="flex items-center w-full mt-2 py-2.5 pl-3 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors mb-1 shrink-0" onClick={toggleNav} title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-label={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
-          <Menu size={16} />
-        </button>
-        )}
-
+        <div className="flex flex-col h-full px-2 pt-2 pb-4 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none" style={{ scrollbarWidth: 'none' }}>
         {(['Main', 'Platform', 'Apps'] as const).map(group => (
           <motion.div
             className="grid gap-0.5"
@@ -1556,7 +1658,7 @@ export default function App() {
             transition={{ duration: 0.2 }}
           >
             <AnimatePresence initial={false}>
-              {!effectiveCollapsed && (
+              {!effectiveCollapsed && group !== 'Main' && (
                 <motion.div
                   key={`header-${group}`}
                   initial={{ opacity: 0, height: 0 }}
@@ -1707,8 +1809,8 @@ export default function App() {
       )}
       </AnimatePresence>
 
-      {/* Content + Terminal */}
-      <div className={`flex min-h-0 min-w-0 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`} style={{ gridArea: 'content' }}>
+      {/* Content */}
+      <div className="flex flex-col min-h-0 min-w-0" style={{ gridArea: 'content' }}>
         <main id="main-content" tabIndex={-1} className={`flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
           <Routes>
@@ -1744,9 +1846,6 @@ export default function App() {
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
         </main>
-        <AnimatePresence>
-          {terminalEnabled && terminalOpen && <CliPanel />}
-        </AnimatePresence>
         {/* Self-managed floating panel: lifecycle-driven (hidden → small → chip),
             not a motion.* child, so it lives outside AnimatePresence. */}
         <BrowserLiveView />

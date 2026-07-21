@@ -183,6 +183,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # Truncate slot messages to the snapshot — everything from the
         # edited message onward is discarded (intentional, per Mesh-1244).
         del slot.messages[index:]
+        slot.invalidate_source_links()
         slot._dirty = True
         slot._resumed_count = 0
         # Window was truncated → next save MUST be the archive-safe rewrite path.

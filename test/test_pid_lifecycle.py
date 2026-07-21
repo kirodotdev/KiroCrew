@@ -994,3 +994,59 @@ class TestCleanupOrphanedMcpServersExtra:
         # kill raised → not counted, but the entry is still pruned
         assert killed == 0
         assert "77777" not in pid_file.read_text()
+
+
+class TestPidGoneOrUnmanaged:
+    """`_pid_gone_or_unmanaged` decides whether it is safe to untrack a PID.
+
+    Safe (True) only when the process is confirmed gone. Any PID still alive or
+    unsignalable returns False (retain) so a survivor of a failed teardown keeps
+    its tracking entry and the orphan sweep reaps it. Fork note: routes through
+    ``platform_compat.pid_liveness`` (Windows-safe) rather than raw
+    ``os.kill(pid, 0)``, so — unlike upstream 33da30e6 — an EPERM/unsignalable
+    PID is RETAINED (fail-safe), not untracked.
+
+    The probe is mocked at ``platform_compat.pid_liveness`` (not a real dead
+    PID): a raw ``os.kill(pid, 0)`` walk to *find* a dead PID would itself be
+    the Windows-terminates-the-target footgun this fork forbids.
+    """
+
+    def test_dead_pid_is_safe_to_untrack(self) -> None:
+        from kiro_crew.session_pid import _pid_gone_or_unmanaged
+
+        with patch(
+            "kiro_crew.platform_compat.pid_liveness",
+            return_value=platform_compat.PID_DEAD,
+        ):
+            assert _pid_gone_or_unmanaged(4242) is True
+
+    def test_live_pid_under_our_uid_is_retained(self) -> None:
+        # A live PID under our uid is retained (False) regardless of whether it
+        # is a managed agent: it may be an un-reaped survivor, and the periodic
+        # sweep re-validates ownership before reaping. This is the fail-safe
+        # direction — we never untrack something that is still alive here.
+        from kiro_crew.session_pid import _pid_gone_or_unmanaged
+
+        assert _pid_gone_or_unmanaged(os.getpid()) is False
+
+    def test_unsignalable_pid_is_retained(self) -> None:
+        # Fork divergence from upstream: pid_liveness collapses POSIX EPERM into
+        # PID_UNSIGNALABLE, which we treat as "retain" (the sweep re-validates
+        # ownership off the hot path). Never orphaning a live survivor is the
+        # invariant; a retained-but-recycled PID is harmless.
+        from kiro_crew.session_pid import _pid_gone_or_unmanaged
+
+        with patch(
+            "kiro_crew.platform_compat.pid_liveness",
+            return_value=platform_compat.PID_UNSIGNALABLE,
+        ):
+            assert _pid_gone_or_unmanaged(4242) is False
+
+    def test_alive_pid_is_retained(self) -> None:
+        from kiro_crew.session_pid import _pid_gone_or_unmanaged
+
+        with patch(
+            "kiro_crew.platform_compat.pid_liveness",
+            return_value=platform_compat.PID_ALIVE,
+        ):
+            assert _pid_gone_or_unmanaged(4242) is False

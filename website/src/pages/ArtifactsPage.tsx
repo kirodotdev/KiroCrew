@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, ExternalLink, Globe, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
+import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
@@ -23,6 +23,8 @@ import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb 
 import { sanitize } from '../api/helpers'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
+import { framablePreviewUrl } from '../lib/safeUrl'
+import { useAppPreview } from '../components/WebAppArtifactCard'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
 
@@ -230,6 +232,105 @@ function ContentThumb({ content, kind }: { content: string; kind: Artifact['kind
   )
 }
 
+const WEBAPP_STATUS_DOT: Record<string, string> = {
+  live: 'bg-ok',
+  deploying: 'bg-warn animate-pulse',
+  expired: 'bg-muted-strong',
+  error: 'bg-danger',
+}
+
+/** Gallery preview for webapp artifacts — a mock browser window so an app
+ * card reads as "a website" next to the html/widget iframe thumbs, never as
+ * a wall of raw description text. Live CloudFront deployments embed the real
+ * site (same scaled-viewport trick as WidgetThumb, no height reporter needed:
+ * fixed 16:10 viewport); every other state gets a status hero. `mini` drops
+ * the iframe (an 84px folder tile can't render a meaningful site). */
+function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
+  const BASE_W = 1280
+  const BASE_H = 800
+  const meta = art.webapp_metadata
+  const status = meta?.lifecycle?.status ?? 'draft'
+  const publicUrl = meta?.deploy_target?.public_url || ''
+  // Local-first: serve the app's local copy through the gateway preview
+  // channel (works for every lifecycle state); fall back to iframing the
+  // live CloudFront deployment; else a status hero.
+  const { base: previewBase, remoteFramable } = useAppPreview(art.slug, !mini && !!meta)
+  const frameUrl = previewBase
+    || (!mini && status === 'live' && remoteFramable ? framablePreviewUrl(publicUrl) : null)
+  const urlLabel = (() => {
+    if (!publicUrl) return 'not deployed'
+    try {
+      const u = new URL(publicUrl)
+      return `${u.host}${u.pathname}`
+    } catch {
+      return 'not deployed'
+    }
+  })()
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [colW, setColW] = useState(320)
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const measure = () => setColW(el.clientWidth || 320)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const scale = colW / BASE_W
+  const heroIcon = status === 'expired'
+    ? <Cloud size={mini ? 16 : 24} className="text-muted" aria-hidden="true" />
+    : <Rocket size={mini ? 16 : 24} className={status === 'deploying' ? 'text-warn animate-pulse' : 'text-accent/70'} aria-hidden="true" />
+  const heroLabel = status === 'expired' ? 'Expired' : status === 'deploying' ? 'Deploying\u2026' : status === 'live' ? 'Live' : 'Not deployed'
+  return (
+    <div className="bg-card">
+      {/* chrome bar */}
+      <div className={`flex items-center gap-1.5 px-2 ${mini ? 'py-1' : 'py-1.5'} bg-bg-elevated border-b border-border`}>
+        <div className="flex gap-1 shrink-0" aria-hidden="true">
+          <span className="w-1.5 h-1.5 rounded-full bg-danger/40" />
+          <span className="w-1.5 h-1.5 rounded-full bg-warn/40" />
+          <span className="w-1.5 h-1.5 rounded-full bg-ok/40" />
+        </div>
+        <div className="flex-1 min-w-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-card border border-border">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${WEBAPP_STATUS_DOT[status] ?? 'bg-muted-strong'}`} aria-hidden="true" />
+          <span className="text-[10px] text-muted truncate font-mono">{urlLabel}</span>
+        </div>
+      </div>
+      {frameUrl ? (
+        <div ref={wrapRef} className="relative w-full overflow-hidden bg-card" style={{ height: Math.round(BASE_H * scale) }}>
+          <iframe
+            src={frameUrl}
+            // Local channel (/artifact-app/...): scripts ONLY — the path is
+            // dashboard-origin, so allow-same-origin here would hand the app
+            // the dashboard's cookies/DOM (the channel's own CSP `sandbox`
+            // header enforces an opaque origin as a second layer).
+            // Remote CloudFront fallback: allow-same-origin refers to the
+            // site's own origin, never the dashboard's.
+            sandbox={previewBase ? 'allow-scripts' : 'allow-scripts allow-same-origin'}
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            title={`App preview: ${art.slug}`}
+            tabIndex={-1}
+            className="border-none bg-card block"
+            style={{ width: BASE_W, height: BASE_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}
+          />
+        </div>
+      ) : (
+        <div className={`flex flex-col items-center justify-center gap-1.5 ${mini ? 'py-3' : 'py-8'} bg-gradient-to-br from-accent-subtle via-card to-bg-elevated`}>
+          {heroIcon}
+          <span className={`${mini ? 'text-[10px]' : 'text-[12px]'} text-muted font-medium`}>{heroLabel}</span>
+          {!mini && meta?.architecture && (
+            <span className="text-[10px] text-muted">
+              {[meta.architecture.frontend && 'frontend', meta.architecture.backend && 'api', meta.architecture.state && 'db'].filter(Boolean).join(' \u00b7 ')}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Folders (Mesh-2720) ──────────────────────────────────────────────────
 // The library's DnD has only `folder-drop` droppables (folder cards/rows,
 // breadcrumb segments, the Unfiled lane), so pointer containment is the whole
@@ -432,7 +533,7 @@ function FolderMiniThumb({ a }: { a: Artifact }) {
   const content = full?.content || ''
   return (
     <div className="h-[84px] rounded-md border border-border overflow-hidden bg-bg-elevated pointer-events-none" title={a.name}>
-      {hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
     </div>
   )
 }
@@ -610,7 +711,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     >
       {/* Preview is non-interactive so clicks fall through to the card's onClick. */}
       <div className="pointer-events-none">
-        {hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
       </div>
       <div className="p-3">
         <div className="flex items-start justify-between gap-2">

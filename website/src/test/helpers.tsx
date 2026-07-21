@@ -7,7 +7,6 @@ import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
-import terminalReducer from '../store/terminalSlice'
 import instancesReducer from '../store/instancesSlice'
 import type { RootState } from '../store'
 import { ThemeProvider } from '../hooks/useTheme'
@@ -19,7 +18,6 @@ export function createTestStore(preloadedState?: Partial<RootState>) {
       dashboard: dashboardReducer,
       chat: chatReducer,
       notifications: notificationsReducer,
-      terminal: terminalReducer,
       instances: instancesReducer,
     },
     preloadedState,

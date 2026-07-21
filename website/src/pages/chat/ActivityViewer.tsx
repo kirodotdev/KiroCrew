@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component } from 'lucide-react'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest } from 'lucide-react'
 import { api } from '../../api/client'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
@@ -8,6 +8,8 @@ import Clickable from '../../components/Clickable'
 import type { SubagentActivity, ToolActivity, SessionDoc } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
+import type { PullRequestLink } from '../../utils/pullRequestLinks'
+import PullRequestPanel from '../../components/PullRequestPanel'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { markSubagentApproving, openActivityToTab } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
@@ -359,19 +361,21 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onAddToChat }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
+  sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onAddToChat?: (text: string) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'subagents' | 'logs' | 'files' | 'artifacts' | 'side' | 'workflows'
+  view?: 'changes' | 'subagents' | 'logs' | 'files' | 'artifacts' | 'side' | 'workflows'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
   const reduxTab = useAppSelector(s => s.chat.activityTab)
-  const [tab, setTab] = useState<'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
+  const [tab, setTab] = useState<'changes' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
+  const hasSources = (sources?.length || 0) > 0
   const explicitTab = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const ids = Object.keys(subagents)
@@ -418,9 +422,11 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
   // When a `view` prop is supplied, SidePanel owns the tab strip — render only
   // that view and skip the internal SegmentedControl.
-  const effectiveTab = view ?? tab
+  const requestedTab = view ?? tab
+  const effectiveTab = requestedTab === 'changes' && !hasSources ? 'files' : requestedTab
 
   const TABS: { key: typeof tab; label: string; icon: ReactNode; count?: number }[] = [
+    ...(hasSources ? [{ key: 'changes' as const, label: 'Changes', icon: <GitPullRequest size={13} />, count: sources!.length }] : []),
     { key: 'files', label: 'Files', icon: <FileText size={13} />, count: files?.length || 0 },
     { key: 'artifacts', label: 'Artifacts', icon: <Component size={13} /> },
     { key: 'subagents', label: 'Subagents', icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
@@ -440,9 +446,21 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="px-3 py-2 shrink-0 flex justify-center">
           <SegmentedControl
             segments={TABS}
-            value={tab}
+            value={effectiveTab}
             onChange={t => { setTab(t); explicitTab.current = true; dispatch(openActivityToTab(t)) }}
             layoutId="activity-tab"
+          />
+        </div>
+      )}
+
+      {/* Changes (pull request sources) view */}
+      {effectiveTab === 'changes' && hasSources && (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <PullRequestPanel
+            sources={sources!}
+            selectedUrl={selectedSourceUrl || ''}
+            onSelect={onSelectSource || (() => {})}
+            onAddToChat={onAddToChat || (() => {})}
           />
         </div>
       )}

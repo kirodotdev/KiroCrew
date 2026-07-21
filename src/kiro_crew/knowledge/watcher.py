@@ -14,6 +14,7 @@ from kiro_crew.sel import sel
 from .embedder import embedder_signature
 from .folder_watcher import FolderWatcher
 from .ingestion import (
+    FileTooLargeError,
     IngestionPipeline,
     count_stale_items,
     rebuild_embeddings,
@@ -114,11 +115,23 @@ class KnowledgeWatcher:
                     )
                     if content_hash != props.get("content_hash"):
                         logger.info("Source changed: %s", uri)
-                        await self.pipeline.ingest_file(
-                            uri,
-                            source_id=row["id"],
-                            namespace=props.get("namespace", "default"),
-                        )
+                        try:
+                            await self.pipeline.ingest_file(
+                                uri,
+                                source_id=row["id"],
+                                namespace=props.get("namespace", "default"),
+                            )
+                        except FileTooLargeError:
+                            # Warning already logged by the pipeline (names the file
+                            # and the config key). Mark the source errored and skip
+                            # persisting mtime/hash so the file is re-evaluated on
+                            # the next scan -- raising knowledge.max_ingest_file_mb
+                            # (config is read live) then recovers it automatically.
+                            self.store.db.execute(
+                                "UPDATE sources SET sync_status = 'error' WHERE id = ?",
+                                (row["id"],))
+                            self.store.db.commit()
+                            continue
                         # Re-read props after ingest (ingest may update them)
                         source = self.store.get_source_by_uri(uri)
                         if source:

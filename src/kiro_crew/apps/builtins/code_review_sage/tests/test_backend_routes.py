@@ -14,6 +14,7 @@ import sys
 import tempfile
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
@@ -69,6 +70,106 @@ class TestRunsPersistence(unittest.TestCase):
         self.mod._RUNS = [{"run_id": "c3", "status": "done"}]
         self.mod._save_runs()
         self.assertEqual(oct(self.mod._runs_file().stat().st_mode)[-3:], "600")
+
+
+class TestRecordReviewedDelivery(unittest.TestCase):
+    """Regression for the reviewed-index write path:
+      * Finding 2 (HIGH): a PR is indexed as reviewed ONLY when the poster
+        actually delivered (posted_comments >= posting_expected), not merely when
+        the poster turn completed (post_ok). A failed gh post must not strand it.
+      * The entry is keyed by the collision-free reviewed key (github.com/o/r#n),
+        NOT the lossy change-id."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._old_home = os.environ.get("KIROCREW_HOME")
+        os.environ["KIROCREW_HOME"] = self.tmp
+        self.mod = _load_routes_module()
+
+    def tearDown(self):
+        if self._old_home is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = self._old_home
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, *, posted, expected):
+        url = "https://github.com/acme/repo/pull/1"
+        cid = self.mod.review_driver.change_id_for(url)
+        return {
+            "run_id": "R1",
+            "changes": [url],
+            "head_shas": {self.mod.review_driver.reviewed_key_for(url): "sha1"},
+            "summary": {"per_change": [{
+                "change_id": cid, "deep_reviewed": True, "post_ok": True,
+                "posted_comments": posted, "posting_expected": expected,
+            }]},
+        }
+
+    def test_delivered_is_indexed_under_collision_free_key(self):
+        captured = {}
+        with unittest.mock.patch.object(
+                self.mod.results, "mark_reviewed",
+                side_effect=lambda entries, *a, **k: captured.update(entries)):
+            self.mod._record_reviewed(self._run(posted=2, expected=2))
+        self.assertEqual(list(captured), ["github.com/acme/repo#1"])
+        self.assertEqual(captured["github.com/acme/repo#1"]["head_sha"], "sha1")
+
+    def test_failed_post_is_not_indexed(self):
+        called = []
+        with unittest.mock.patch.object(
+                self.mod.results, "mark_reviewed",
+                side_effect=lambda entries, *a, **k: called.append(entries)):
+            # post_ok True (turn ended) but nothing actually posted -> not reviewed.
+            self.mod._record_reviewed(self._run(posted=0, expected=2))
+        self.assertEqual(called, [])
+
+
+class TestUnderLockRededup(unittest.TestCase):
+    """Regression for Codex Finding 2 (TOCTOU): a repo-review re-checks the reviewed
+    index under _RUN_LOCK, so a PR a concurrent run just recorded is not re-reviewed."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._old_home = os.environ.get("KIROCREW_HOME")
+        os.environ["KIROCREW_HOME"] = self.tmp
+        self.mod = _load_routes_module()
+        store.ensure_layout()
+
+    def tearDown(self):
+        if self._old_home is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = self._old_home
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, force=False):
+        url = "https://github.com/acme/repo/pull/1"
+        rkey = self.mod.review_driver.reviewed_key_for(url)
+        run = {
+            "changes": [url], "force": force,
+            "head_shas": {rkey: "sha1"},
+            "change_ids": [self.mod.review_driver.change_id_for(url)],
+        }
+        return url, rkey, run
+
+    def test_drops_pr_reviewed_by_concurrent_run(self):
+        url, rkey, run = self._run()
+        self.mod.results.mark_reviewed({rkey: {"head_sha": "sha1"}})  # concurrent run
+        kept = self.mod._dedup_changes_under_lock(run, [url])
+        self.assertEqual(kept, [])
+        self.assertEqual(run["changes"], [])
+        self.assertEqual(run["head_shas"], {})
+
+    def test_keeps_when_head_differs(self):
+        url, rkey, run = self._run()
+        self.mod.results.mark_reviewed({rkey: {"head_sha": "OLDSHA"}})  # head moved on
+        self.assertEqual(self.mod._dedup_changes_under_lock(run, [url]), [url])
+
+    def test_force_bypasses_dedup(self):
+        url, rkey, run = self._run(force=True)
+        self.mod.results.mark_reviewed({rkey: {"head_sha": "sha1"}})
+        self.assertEqual(self.mod._dedup_changes_under_lock(run, [url]), [url])
 
     def test_load_missing_file_is_noop(self):
         self.mod._RUNS = [{"run_id": "keep", "status": "done"}]

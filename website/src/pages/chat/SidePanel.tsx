@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel from '../../components/MarkdownPanel'
 import ArtifactPanel from '../../components/ArtifactPanel'
-import CliPanel from '../../components/CliPanel'
+import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
+import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
@@ -16,15 +17,17 @@ import { safeSetItem } from '../../utils/safeStorage'
 import type { SubagentActivity, ToolActivity } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
+import type { PullRequestLink } from '../../utils/pullRequestLinks'
 
 const KIND_ICON: Record<TabKind, ReactNode> = {
-  files: <FileText size={13} />, artifacts: <Component size={13} />, subagents: <Bot size={13} />, workflows: <Workflow size={13} />,
+  changes: <GitPullRequest size={13} />, files: <FileText size={13} />, artifacts: <Component size={13} />, subagents: <Bot size={13} />, workflows: <Workflow size={13} />,
   logs: <ScrollText size={13} />, side: <MessageSquare size={13} />, terminal: <TerminalSquare size={13} />,
   file: <FileText size={13} />, diff: <GitCompare size={13} />, artifact: <Package size={13} />,
 }
 
 /** Views offered by the + menu. */
-const NEW_MENU: { kind: ViewKind; label: string; icon: ReactNode; desc: string }[] = [
+const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; desc: string }[] = [
+  { kind: 'changes', label: 'Changes', icon: <GitPullRequest size={15} />, desc: 'Pull requests, checks & reviews' },
   { kind: 'files', label: 'Files', icon: <FileText size={15} />, desc: 'Browse & edit files' },
   { kind: 'artifacts', label: 'Artifacts', icon: <Component size={15} />, desc: 'In-session documents & stars' },
   { kind: 'subagents', label: 'Subagents', icon: <Bot size={15} />, desc: 'Live agent activity & transcripts' },
@@ -34,7 +37,7 @@ const NEW_MENU: { kind: ViewKind; label: string; icon: ReactNode; desc: string }
   { kind: 'terminal', label: 'Terminal', icon: <TerminalSquare size={15} />, desc: 'Shell on the gateway host' },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
 
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
@@ -48,6 +51,10 @@ interface SidePanelProps {
   projectDir?: string
   navLinks?: ExtractedLink[]
   navResolving?: boolean
+  sources?: PullRequestLink[]
+  selectedSourceUrl?: string
+  onSelectSource?: (url: string) => void
+  onAddSourceToChat?: (text: string) => void
   onSubmitComments?: (message: string) => void
   onFileSave: (filePath: string, content: string) => Promise<void>
   /** Close the whole panel (hides the side column). */
@@ -56,10 +63,10 @@ interface SidePanelProps {
 
 /**
  * Tabbed side panel. One strip holds singleton view tabs
- * (Files / Subagents / Workflows / Logs / Side / Terminal, opened from +) and
- * document tabs (file / diff / artifact, opened on demand — file chips, the
- * Files picker, artifact refs). Each tab renders its own body; documents live
- * as tabs instead of replacing the panel.
+ * (Changes / Files / Subagents / Workflows / Logs / Side / Terminal, opened
+ * from +) and document tabs (file / diff / artifact, opened on demand — file
+ * chips, the Files picker, artifact refs). Each tab renders its own body;
+ * documents live as tabs instead of replacing the panel.
  */
 /** Panel minimum width (also the resize handle's lower clamp). */
 export const SIDE_PANEL_MIN_W = 320
@@ -85,7 +92,9 @@ export const SIDE_PANEL_RESERVED_W = 560
 export function measureSidePanelReservedW(): number {
   const header = document.querySelector('header.topbar-glass')
   if (!header) return SIDE_PANEL_RESERVED_W
-  const clusters = Array.from(header.children).filter(c => c.tagName !== 'A') as HTMLElement[]
+  const clusters = Array.from(header.children).filter(
+    c => c.tagName !== 'A' && !c.hasAttribute('data-topbar-overlay'),
+  ) as HTMLElement[]
   const content = clusters.reduce((sum, c) => sum + c.getBoundingClientRect().width, 0)
   const cs = getComputedStyle(header as HTMLElement)
   const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
@@ -95,9 +104,35 @@ export function measureSidePanelReservedW(): number {
 
 export default function SidePanel({
   tabsCtl, subagents, toolLog, slot, files, onFileOpen, onFileRemove, onFilesClear,
-  projectDir, navLinks, navResolving, onSubmitComments, onFileSave, onClose,
+  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
+  onAddSourceToChat, onSubmitComments, onFileSave, onClose,
 }: SidePanelProps) {
-  const { tabs, activeId, openView, setActive, closeTab, patchTab, setOrder } = tabsCtl
+  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder } = tabsCtl
+  const terminalEnabled = useTerminalEnabled()
+  // The + menu / empty-state launcher hide Terminal when the feature is
+  // disabled server-side and hide Changes when no PR/MR source is present.
+  const menuItems = NEW_MENU.filter(item =>
+    (terminalEnabled || item.kind !== 'terminal')
+    && (sources?.length || item.kind !== 'changes')
+  )
+  // Terminal opens a NEW tab (its own PTY session) starting in the chat's
+  // working dir; every other menu item is a singleton view.
+  const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
+    if (kind === 'terminal') openTerminal({ cwd: projectDir })
+    else openView(kind)
+  }, [openTerminal, openView, projectDir])
+  // Closing a terminal tab kills its PTY (server) and disposes local state. The
+  // server delete goes through a React Query mutation (use-react-query
+  // guideline); the synchronous WS + xterm teardown stays in disposeTerminalSession.
+  const deleteTerminalSession = useDeleteTerminalSession()
+  const handleCloseTab = useCallback((id: string) => {
+    const t = tabs.find(x => x.id === id)
+    if (t?.kind === 'terminal' && t.sessionId) {
+      deleteTerminalSession.mutate(t.sessionId)
+      disposeTerminalSession(t.sessionId)
+    }
+    closeTab(id)
+  }, [tabs, closeTab, deleteTerminalSession])
   const [menuOpen, setMenuOpen] = useState(false)
   // Diff view preferences — persisted; 'mc-diff-split' is shared with the
   // file view's git-diff toggle so split/unified is one app-wide preference.
@@ -119,7 +154,7 @@ export default function SidePanel({
     dropdownRef: menuListRef,
     inputRef: menuNoInputRef,
     hasFilterInput: false,
-    filteredCount: NEW_MENU.length,
+    filteredCount: menuItems.length,
     onEnterSingleMatch: () => {},
     closeToTrigger: closeMenuToTrigger,
   })
@@ -148,7 +183,9 @@ export default function SidePanel({
     // the panel's own width, so this can't feed back into itself).
     const header = document.querySelector('header.topbar-glass')
     const ro = new ResizeObserver(recalc)
-    if (header) Array.from(header.children).forEach(c => ro.observe(c))
+    if (header) Array.from(header.children)
+      .filter(c => !c.hasAttribute('data-topbar-overlay'))
+      .forEach(c => ro.observe(c))
     return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
   }, [])
   const effectiveWidth = isMobile ? '100%' : Math.max(MIN_W, Math.min(width, maxW))
@@ -220,7 +257,7 @@ export default function SidePanel({
               {i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId && (
                 <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
               )}
-              <TabChip tab={t} active={t.id === activeId} onSelect={() => setActive(t.id)} onClose={() => closeTab(t.id)} />
+              <TabChip tab={t} active={t.id === activeId} onSelect={() => setActive(t.id)} onClose={() => handleCloseTab(t.id)} />
             </Reorder.Item>
           ))}
         </Reorder.Group>
@@ -244,14 +281,14 @@ export default function SidePanel({
               onKeyDown={onMenuKeyDown}
               className="absolute top-9 right-0 z-50 min-w-[200px] py-1.5 rounded-xl bg-bg-elevated border border-border shadow-lg animate-rise"
             >
-              {NEW_MENU.map(item => (
+              {menuItems.map(item => (
                 <button
                   key={item.kind}
                   role="menuitem"
                   data-option
                   tabIndex={-1}
                   className="flex items-center gap-2.5 w-full px-3 py-2 text-[13px] text-text hover:bg-bg-hover focus:bg-bg-hover focus:outline-none transition-colors bg-transparent border-none cursor-pointer text-left"
-                  onClick={() => { openView(item.kind); closeMenuToTrigger() }}
+                  onClick={() => { openMenuItem(item.kind); closeMenuToTrigger() }}
                 >
                   <span className="text-muted shrink-0">{item.icon}</span>
                   <span className="flex-1">{item.label}</span>
@@ -281,7 +318,7 @@ export default function SidePanel({
             <div className="flex flex-col items-center gap-4 w-full max-w-[420px]">
               <div className="text-[22px] text-muted font-semibold">Pick a panel to view</div>
               <div className="grid grid-cols-2 gap-2.5 w-full">
-              {NEW_MENU.map(item => {
+              {menuItems.map(item => {
                 // Live badges from data already flowing into the panel — a
                 // quiet accent pill when non-zero, muted otherwise.
                 const badge = item.kind === 'files' && files && files.length > 0
@@ -295,7 +332,7 @@ export default function SidePanel({
                   <button
                     key={item.kind}
                     className="flex flex-col items-start gap-1.5 px-3.5 py-3 rounded-xl border border-border bg-transparent hover:bg-bg-hover hover:border-border-strong text-left cursor-pointer transition-colors"
-                    onClick={() => openView(item.kind)}
+                    onClick={() => openMenuItem(item.kind)}
                   >
                     <div className="flex items-center gap-2.5 w-full text-text">
                       <span className="shrink-0 opacity-80">{item.icon}</span>
@@ -319,10 +356,14 @@ export default function SidePanel({
             return isActive ? (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
+                  view={t.kind as 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   files={files}
+                  sources={sources}
+                  selectedSourceUrl={selectedSourceUrl}
+                  onSelectSource={onSelectSource}
+                  onAddToChat={onAddSourceToChat}
                   // Files opened FROM the Files tab replace it in place (open
                   // another Files tab from + for a second file). Opens from
                   // other views keep the default open-or-focus behavior.
@@ -338,7 +379,7 @@ export default function SidePanel({
             <div key={t.id} className="absolute inset-0" style={{ display: isActive ? 'block' : 'none' }}>
               <TabBody
                 tab={t} active={isActive}
-                onClose={() => closeTab(t.id)}
+                onClose={() => handleCloseTab(t.id)}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
@@ -370,8 +411,7 @@ function TabBody({ tab, active, onClose, onContentChange, onFileSave, onFileOpen
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
   diffSideBySide: boolean; setDiffSideBySide: (fn: (v: boolean) => boolean) => void
 }) {
-  void active
-  if (tab.kind === 'terminal') return <CliPanel embedded />
+  if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} />
   if (tab.kind === 'file') {
     return (
       <MarkdownPanel
@@ -432,6 +472,15 @@ function TabBody({ tab, active, onClose, onContentChange, onFileSave, onFileOpen
   return null
 }
 
+/** Live terminal tab title — subscribes to the session's title (running command
+ *  / cwd basename) pushed by the backend poller; falls back to the tab's default
+ *  cwd title until the first frame arrives. Module-scope so it isn't redefined
+ *  per render. */
+function TerminalTabTitle({ sessionId, fallback }: { sessionId: string; fallback: string }) {
+  const live = useTerminalTitle(sessionId)
+  return <>{live || fallback}</>
+}
+
 function TabChip({ tab, active, onSelect, onClose }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void }) {
   return (
     <div
@@ -444,7 +493,11 @@ function TabChip({ tab, active, onSelect, onClose }: { tab: PanelTab; active: bo
       }`}
     >
       <span className="shrink-0 opacity-80">{KIND_ICON[tab.kind]}</span>
-      <span className="flex-1 min-w-0 text-[12.5px] truncate text-left">{tab.title}</span>
+      <span className="flex-1 min-w-0 text-[12.5px] truncate text-left">
+        {tab.kind === 'terminal' && tab.sessionId
+          ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
+          : tab.title}
+      </span>
       <button
         onClick={(e) => { e.stopPropagation(); onClose() }}
         className={`shrink-0 flex items-center justify-center w-5 h-5 rounded-md transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}

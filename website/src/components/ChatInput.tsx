@@ -147,6 +147,12 @@ interface ChatInputProps {
   value: string
   onChange: (v: string) => void
   onSend: () => void
+  /** Rendered inside the composer's own width wrapper, directly above the
+   * bordered input box. Children here share the EXACT box geometry of the
+   * composer (same padding container, same resolved max-width), so band
+   * surfaces like the feature tip can never drift out of alignment the way
+   * parallel sibling containers with percentage widths do. */
+  aboveComposer?: React.ReactNode
   /** When true (turn is running), show the split Steer/Queue send button.
    * v1 gates on turn-running only; if the slot's backend is not steer-capable
    * (e.g. claude), the POST safely falls through to the queue server-side.
@@ -306,6 +312,7 @@ function FilePreviewStrip({ files, onRemove }: { files: string[]; onRemove?: (pa
 
 
 function ChatInput({
+  aboveComposer,
   value,
   onChange,
   onSend,
@@ -1553,6 +1560,8 @@ function ChatInput({
   return (
     <div className={`px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
       style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (pendingFiles.length > 0 ? INPUT_DRAG_MIN_H + FILE_PREVIEW_H : INPUT_DRAG_MIN_H) + 'px' } : {}) }}>
+
+      {aboveComposer}
 
       {/* Knowledge context chip */}
       {!showGhost && knowledgeChip}

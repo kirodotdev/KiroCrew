@@ -37,8 +37,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MAX_SESSIONS = 3
-_ORPHAN_TIMEOUT_S = 300  # 5 min with no WS → reap PTY
+# Global ceiling across ALL chats' terminal tabs. Each chat's activity bar caps
+# its own terminals (frontend MAX_TERMINALS_PER_CHAT); this is the server-side
+# backstop. Override via config.json dashboard.terminal.max_sessions.
+_MAX_SESSIONS = 12
+_ORPHAN_TIMEOUT_S = 900  # 15 min with no WS → reap PTY (grace window for reload/network drops; in-app nav keeps the WS alive)
 _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
 
 
@@ -76,6 +79,10 @@ class _TerminalSession:
     ws: web.WebSocketResponse | None = None
     reader_task: asyncio.Task | None = None
     scrollback: bytearray = field(default_factory=bytearray)
+    last_title: str | None = None  # last title pushed to the client (dedup)
+    # Serializes concurrent WS writes (reader loop + title poller + pong);
+    # aiohttp's WebSocket writer is not safe for concurrent sends.
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def _get_registry(request: web.Request) -> dict[str, _TerminalSession | None]:
@@ -106,6 +113,63 @@ def _is_enabled(request: web.Request) -> bool:
 
 
 _enabled_cache: list = [True, 0.0]  # [value, timestamp]
+
+
+def _resolve_cwd(cfg: dict, requested: str | None) -> str:
+    """Resolve the PTY working directory.
+
+    A valid client-requested dir (the chat's project dir, passed as ?cwd=) wins;
+    otherwise the configured cwd, else $HOME. The requested dir must be an
+    existing directory — this is the user's own interactive shell (auth is
+    enforced at the WS handshake), so there is no root restriction beyond isdir.
+    """
+    default = cfg.get("cwd") or os.environ.get("HOME") or "/"
+    if requested:
+        candidate = os.path.abspath(os.path.expanduser(requested))
+        if os.path.isdir(candidate):
+            return candidate
+        logger.warning("terminal: ignoring invalid cwd %r", requested)
+    return default
+
+
+def _proc_comm(pid: int) -> str | None:
+    """Command name of a process (Linux /proc). None if unavailable."""
+    try:
+        with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def _proc_cwd(pid: int) -> str | None:
+    """Current working directory of a process (Linux /proc). None if unavailable."""
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
+def _session_title(sess: "_TerminalSession") -> str | None:
+    """Best-effort "what is this terminal doing" label: the foreground command
+    name while one runs, else the shell's cwd basename. Linux /proc based;
+    returns None when it can't tell (client keeps its current title, so on
+    non-Linux hosts the tab simply stays at its cwd default)."""
+    if not platform_compat.IS_POSIX or sess.master_fd < 0 or sess.proc is None:  # wokeignore:rule=master
+        return None
+    try:
+        fg = os.tcgetpgrp(sess.master_fd)  # wokeignore:rule=master
+    except OSError:
+        return None
+    # setsid() makes the shell its own process-group leader (pgid == pid); a
+    # foreground pgid different from that means a command is running.
+    if fg > 0 and fg != sess.proc.pid:
+        name = _proc_comm(fg)
+        if name:
+            return name
+    cwd = _proc_cwd(sess.proc.pid)
+    if cwd:
+        return os.path.basename(cwd.rstrip("/")) or cwd
+    return None
 
 
 async def _kill_session(sess: _TerminalSession) -> None:
@@ -288,7 +352,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 struct.pack("HHHH", 24, 80, 0, 0),
             )
             shell = str(cfg.get("shell") or os.environ.get("SHELL", "/bin/bash"))
-            cwd = cfg.get("cwd") or os.environ.get("HOME", "/")
+            cwd = _resolve_cwd(cfg, request.query.get("cwd"))
             env = {
                 **os.environ,
                 "TERM": "xterm-256color",
@@ -364,7 +428,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 if len(sess.scrollback) > _SCROLLBACK_MAX:
                     sess.scrollback = sess.scrollback[-_SCROLLBACK_MAX:]
                 if sess.ws and not sess.ws.closed:
-                    await sess.ws.send_bytes(_redact_terminal(data))
+                    async with sess.send_lock:
+                        await sess.ws.send_bytes(_redact_terminal(data))
         except OSError:
             pass
 
@@ -407,7 +472,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                         pass
                 elif ctrl.get("type") == "ping":
                     if not ws.closed:
-                        await ws.send_str(json.dumps({"type": "pong"}))
+                        async with sess.send_lock:
+                            await ws.send_str(json.dumps({"type": "pong"}))
             elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                 break
     finally:
@@ -595,5 +661,39 @@ async def reap_orphaned_terminals(app: web.Application) -> None:
                 if removed is not None:
                     await _kill_session(removed)
                     logger.info("Reaped orphaned terminal session %s", sid)
+    except asyncio.CancelledError:
+        pass
+
+
+async def poll_terminal_titles(app: web.Application) -> None:
+    """Background task: push a per-session title (foreground command name while
+    one runs, else the shell's cwd basename) to each connected terminal ~1/s,
+    and only when it changes. Fast commands that finish within the poll interval
+    never flip the title, so there's no flicker at the prompt."""
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+            state = app.get("state")
+            if not state or not hasattr(state, "_terminal_sessions"):
+                continue
+            registry: dict[str, _TerminalSession] = state._terminal_sessions
+            loop = asyncio.get_running_loop()
+            for sess in list(registry.values()):
+                if sess is None or sess.ws is None or sess.ws.closed:
+                    continue
+                # _session_title does blocking syscalls (tcgetpgrp ioctl, /proc
+                # reads) that can wedge on a D-state process or a stuck fs; run
+                # it off the loop on the subprocess pool (same rationale as the
+                # os.close offload in _kill_session) so one stuck read can never
+                # freeze the gateway event loop.
+                title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
+                if not title or title == sess.last_title:
+                    continue
+                sess.last_title = title
+                try:
+                    async with sess.send_lock:
+                        await sess.ws.send_str(json.dumps({"type": "title", "text": title}))
+                except (ConnectionResetError, RuntimeError, OSError):
+                    pass
     except asyncio.CancelledError:
         pass

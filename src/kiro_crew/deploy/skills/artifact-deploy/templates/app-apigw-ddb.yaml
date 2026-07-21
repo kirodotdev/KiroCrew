@@ -32,9 +32,22 @@ Resources:
 
   Table:
     Type: AWS::DynamoDB::Table
+    # Persistence protection (CWE-693/1188): the table can be promoted to
+    # persistent/production (persist.sh clears its TTL), and the reaper role
+    # holds cloudformation:DeleteStack + dynamodb:DeleteTable on
+    # kirocrew-deploy-app-*, so a TTL/tag misconfig must not irrecoverably
+    # erase data. PITR (below) gives 35-day recovery of accidental item
+    # overwrites/deletes while the table lives. We deliberately do NOT set
+    # DeletionPolicy:Retain or DeletionProtectionEnabled — those would orphan
+    # the table on every ephemeral reap (the reaper deletes the whole stack),
+    # regressing the clean-teardown / $0-idle story. Persistent data isn't
+    # reaper-exposed anyway: the reaper only reaps expired-TTL deploys and
+    # persist.sh clears the TTL so persisted deploys are SKIPPED.
     Properties:
       TableName: !Sub 'kirocrew-deploy-app-${Slug}'
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
       KeySchema:

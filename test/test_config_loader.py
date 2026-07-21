@@ -2870,3 +2870,48 @@ class TestSaveRoundTripPreservesAllSections:
             assert after.get("snapshot_dir") == "/tmp/snaps"
         finally:
             tmp.unlink(missing_ok=True)
+
+
+class TestOrchestratorWatchdogThemeAreParsed:
+    """load() must actually parse the orchestrator, watchdog, and dashboard-theme
+    fields from config.json. They were advertised in config-baseline.json and
+    served by /api/config/schema, and real consumers read them
+    (acp/session_handle.py .watchdog, dashboard/chat_orchestrator.py
+    .orchestrator.stage_timeout_seconds), but the cls(...) construction passed no
+    orchestrator=/watchdog= kwargs and DashboardConfig omitted theme_mode/
+    theme_color/onboarded — so config values were silently ignored (defaults
+    always won) and the server-authoritative theme never round-tripped (the
+    onboarding modal re-armed on every gateway restart)."""
+
+    def test_orchestrator_stage_timeout_is_parsed(self) -> None:
+        cfg = _load_from_dict({"orchestrator": {"stage_timeout_seconds": 60}})
+        assert cfg.orchestrator.stage_timeout_seconds == 60
+
+    def test_watchdog_fields_are_parsed(self) -> None:
+        cfg = _load_from_dict(
+            {"watchdog": {"tool_stall_hard_cap_secs": 61.0, "check_after_secs": 5.0}}
+        )
+        assert cfg.watchdog.tool_stall_hard_cap_secs == 61.0
+        assert cfg.watchdog.check_after_secs == 5.0
+
+    def test_dashboard_theme_fields_are_parsed(self) -> None:
+        cfg = _load_from_dict(
+            {"dashboard": {"theme_mode": "dark", "theme_color": "#ff0000", "onboarded": True}}
+        )
+        assert cfg.dashboard.theme_mode == "dark"
+        assert cfg.dashboard.theme_color == "#ff0000"
+        assert cfg.dashboard.onboarded is True
+
+    def test_absent_sections_use_defaults(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.orchestrator.stage_timeout_seconds == 1800
+        assert cfg.watchdog.tool_stall_hard_cap_secs == 2700.0
+        assert cfg.dashboard.theme_mode == ""
+        assert cfg.dashboard.onboarded is False
+
+    def test_bad_values_fall_back_without_crashing(self) -> None:
+        cfg = _load_from_dict(
+            {"watchdog": {"check_after_secs": "junk"}, "orchestrator": {"stage_timeout_seconds": "x"}}
+        )
+        assert cfg.watchdog.check_after_secs == 60.0
+        assert cfg.orchestrator.stage_timeout_seconds == 1800

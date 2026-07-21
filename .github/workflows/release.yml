@@ -4,6 +4,13 @@ on:
   push:
     tags: ["v*"]
 
+# Serialize release runs: insider/stable feed writes are last-writer-wins;
+# two tags pushed close together must publish in order or the channel feed
+# can roll back to the older release (see nightly.yml for the full note).
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -71,6 +78,20 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
+      # Stamp the Electron app with the tag-derived version so
+      # app.getVersion() equals the feed version (the auto-updater's
+      # client-side compare depends on this; a mismatch means a permanent
+      # "update available" loop). Same derivation as the release job:
+      # v1.2.3-insider.1 -> 1.2.3-insider.1.
+      - name: Stamp release version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          export STAMP_VERSION="${VERSION}"
+          node -e "const fs=require('fs');const f='website/electron/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.STAMP_VERSION;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+          sed -i.bak "s/__version__ = \".*\"/__version__ = \"${VERSION}\"/" src/kiro_crew/__init__.py
+          rm -f src/kiro_crew/__init__.py.bak
+          echo "Building release: ${VERSION}"
+
       - name: Build desktop app (PBS + uv venv)
         run: make desktop
         env:
@@ -90,6 +111,13 @@ jobs:
     name: Sign for Release
     needs: [build-wheel, build-desktop]
     runs-on: ubuntu-latest
+    # Tag pushes present OIDC subject ref:refs/tags/<tag>, which the signing
+    # role does NOT trust. Declaring the prod environment switches the subject
+    # to environment:prod, which the trust policy accepts. The environment is
+    # gated by ref restrictions (main + v* tags only) and the
+    # release-tags-admin-only ruleset (v* tag creation is admin-only); see
+    # notarize-macos.yml for the full rationale.
+    environment: prod
     outputs:
       version: ${{ steps.channel.outputs.version }}
       channel: ${{ steps.channel.outputs.channel }}
@@ -97,6 +125,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: write
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       HAS_CDSIGNER: ${{ secrets.CDSIGNER_API_ENDPOINT != '' && 'true' || '' }}
@@ -130,6 +159,26 @@ jobs:
           mkdir -p release
           find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.dmg" -o -name "*.zip" -o -name "*.AppImage" \) -exec cp {} release/ \;
           ls -la release/
+
+      - name: Attest build provenance
+        # Signed SLSA build-provenance for the built artifacts
+        # (wheel/sdist/DMG/AppImage) — CWE-1104 / P475357136. Placed in the
+        # `release` job because it already holds id-token (OIDC); per the
+        # least-privilege split enforced by test_workflow_permissions.py the
+        # id-token job must never also hold contents:write (that lives only in
+        # the separate github-release job). The macOS .zip is attested here in
+        # its pre-notarized form (notarize/staple runs in a later job); the
+        # wheel/sdist/dmg/AppImage digests are identical to what is published.
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          # Attest only artifacts whose bytes are final here. The macOS .zip is
+          # re-signed + notarized in a later job, so attesting it pre-notarization
+          # binds a digest that never ships (Codex review). Omit *.zip.
+          subject-path: |
+            release/*.whl
+            release/*.tar.gz
+            release/*.dmg
+            release/*.AppImage
 
       # Install the CDSigner SigV4 client BEFORE AWS credentials are configured
       # (same supply-chain ordering as nightly.yml).

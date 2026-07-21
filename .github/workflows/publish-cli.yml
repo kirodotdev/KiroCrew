@@ -31,6 +31,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  attestations: write
 
 jobs:
   publish-cli:
@@ -72,6 +73,15 @@ jobs:
             echo "sha256=$SHA256"
           } >> "$GITHUB_OUTPUT"
           echo "Wheel: $WHEEL_NAME (version $WHEEL_VERSION, label '${VERSION_LABEL}')"
+
+      - name: Attest wheel provenance
+        # Signed SLSA provenance binding the published wheel's digest to this
+        # repo/workflow/commit (CWE-1104) — complements the self-hosted
+        # SHA256SUMS (integrity, not authenticity). Runs before the wheel is
+        # published to S3/CloudFront.
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: ${{ steps.wheel.outputs.path }}
 
       - name: Configure AWS credentials
         if: env.HAS_SIGNING_SECRETS

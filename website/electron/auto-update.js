@@ -14,18 +14,25 @@
  * stays testable without an Electron runtime.
  */
 
-// Default update feed host. The feed compares the client's current version
-// against latest.json for this channel+platform and returns 200 (Squirrel JSON)
-// or 204 (no update). See kirocrew-publish-lambda-spec.md for the contract.
-const DEFAULT_FEED_BASE = "https://updates.kirocrew.dev/feed"; // placeholder host
+// Default update feed host: the public distribution CDN (CloudFront + OAC
+// over the kirocrew-updates bucket). The feed is a STATIC JSON file at
+// <base>/<channel>/latest-mac.json written by CI after notarization; the
+// artifact it points at lives under desktop/<channel>/<version>/ on the
+// same CDN. There is no 200/204 server endpoint: safeCheck() fetches the
+// feed itself and compares versions CLIENT-SIDE, engaging Squirrel.Mac only
+// when the feed version differs from the running app. (Squirrel treats any
+// 200 feed response as "update available", so gating on the client compare
+// is what prevents a re-download loop against a static file.)
+const DEFAULT_FEED_BASE = "https://d28nxu9if70cmc.cloudfront.net/feed";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
+const FEED_TIMEOUT_MS = 15 * 1000;
+const FEED_MAX_BYTES = 64 * 1024;
 
 /**
- * Map the build flavor ("beta" | "stable") to an update channel.
- * Beta builds track the fast "insider" channel (nightlies + internal testers);
- * stable builds track "stable". The public KiroCrew ships a single "stable"
- * flavor, so getFlavor is wired to a constant "stable" at the call site.
+ * Map the build flavor ("beta" | "stable") to an update channel. Retained
+ * for the internal beta flavor and as the fallback when the running version
+ * carries no channel marker.
  * @param {"beta"|"stable"} flavor
  * @returns {"insider"|"stable"}
  */
@@ -34,14 +41,82 @@ function channelForFlavor(flavor) {
 }
 
 /**
- * Build the Squirrel.Mac feed URL. Pure + testable.
- * @param {{base:string, platform:string, channel:string, version:string}} o
+ * Derive the update channel from the running version. CI stamps the app
+ * version per channel (nightly.yml: <base>-nightly.<stamp>; release.yml:
+ * tag-derived), so the version itself says which feed this build must
+ * track. MUST mirror release.yml's tag-to-channel rule: "-nightly." is
+ * nightly, any OTHER prerelease suffix (-insider.N, -rc.N, ...) is
+ * insider, bare semver is stable. Without this, a nightly/insider build
+ * would check the stable feed, see a differing version, and silently
+ * migrate the user onto stable.
+ * @param {string} version
+ * @returns {"nightly"|"insider"|"stable"|null} null when unstamped (dev)
+ */
+function channelForVersion(version) {
+  if (!version || typeof version !== "string") return null;
+  if (version.includes("-nightly.")) return "nightly";
+  if (version.includes("-")) return "insider";
+  return "stable";
+}
+
+/**
+ * Build the static feed URL for a channel. Pure + testable.
+ * @param {{base:string, channel:string}} o
  * @returns {string}
  */
-function buildFeedUrl({ base, platform, channel, version }) {
+function buildFeedUrl({ base, channel }) {
   const b = (base || DEFAULT_FEED_BASE).replace(/\/+$/, "");
-  const q = new URLSearchParams({ platform, channel, version });
-  return `${b}?${q.toString()}`;
+  return `${b}/${encodeURIComponent(channel)}/latest-mac.json`;
+}
+
+/**
+ * Default feed fetcher: GET the static feed JSON. Injectable via
+ * deps.fetchFeed for tests. Bounded body size + timeout; rejects on any
+ * non-200 so callers surface a single error path. HTTPS everywhere;
+ * plain HTTP is permitted ONLY for loopback hosts so the local update
+ * harness (KIROCREW_UPDATE_FEED=http://127.0.0.1:PORT/...) works --
+ * cleartext update metadata over a real network stays rejected.
+ * @param {string} url
+ * @returns {Promise<{version:string, url:string}>}
+ */
+function fetchFeedHttps(url) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const isLoopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname);
+    let mod;
+    if (parsed.protocol === "https:") {
+      mod = require("https");
+    } else if (parsed.protocol === "http:" && isLoopback) {
+      mod = require("http");
+    } else {
+      reject(new Error(`feed URL must be https (or http on loopback): ${parsed.protocol}//${parsed.hostname}`));
+      return;
+    }
+    const req = mod.get(url, { headers: { "cache-control": "no-cache" } }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`feed HTTP ${res.statusCode}`));
+        return;
+      }
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > FEED_MAX_BYTES) req.destroy(new Error("feed response too large"));
+      });
+      res.on("end", () => {
+        try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(FEED_TIMEOUT_MS, () => req.destroy(new Error("feed request timed out")));
+  });
 }
 
 /**
@@ -73,6 +148,7 @@ function initAutoUpdate(deps) {
     stopGateway,
     platform = "darwin-arm64",
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
+    fetchFeed = fetchFeedHttps,
     onUpdateState = null,
     log = console,
   } = deps;
@@ -80,16 +156,21 @@ function initAutoUpdate(deps) {
   // When the in-app UI is wired (onUpdateState provided), it owns the prompt;
   // the native dialog stays as the fallback for headless / no-renderer cases.
   const uiDriven = typeof onUpdateState === "function";
+  // Single channel resolver used for the feed AND everything reported to
+  // the UI: stamped version wins, flavor is the unstamped-dev fallback.
+  function currentChannel() {
+    return channelForVersion(app.getVersion()) || channelForFlavor(getFlavor());
+  }
   function emit(state, extra = {}) {
     if (!uiDriven) return;
     try {
-      onUpdateState({ state, channel: channelForFlavor(getFlavor()), version: app.getVersion(), ...extra });
+      onUpdateState({ state, channel: currentChannel(), version: app.getVersion(), ...extra });
     } catch (err) {
       log.error("[update] onUpdateState threw", err);
     }
   }
   function getInfo() {
-    return { version: app.getVersion(), channel: channelForFlavor(getFlavor()), platform, packaged: !!app.isPackaged };
+    return { version: app.getVersion(), channel: currentChannel(), platform, packaged: !!app.isPackaged };
   }
 
   // Squirrel is unavailable for unsigned / not-installed dev builds.
@@ -107,24 +188,40 @@ function initAutoUpdate(deps) {
   let quitHandled = false;
 
   function configureFeed() {
-    const channel = channelForFlavor(getFlavor());
-    const url = buildFeedUrl({
-      base: feedBase,
-      platform,
-      channel,
-      version: app.getVersion(),
-    });
+    const channel = currentChannel();
+    const url = buildFeedUrl({ base: feedBase, channel });
     autoUpdater.setFeedURL({ url });
     log.info(`[update] feed: ${url}`);
+    return url;
   }
 
-  function safeCheck() {
+  let checking = false;
+  async function safeCheck() {
+    if (checking || updateReady) return;
+    checking = true;
     try {
-      configureFeed(); // re-read flavor/channel each check
+      // CLIENT-SIDE version gate (see DEFAULT_FEED_BASE note): fetch the
+      // static feed and only hand off to Squirrel when the version differs.
+      // Squirrel would otherwise re-download on every check forever, since a
+      // static 200 feed always reads as "update available" to it.
+      const url = configureFeed(); // re-read flavor/channel each check
+      emit("checking");
+      const feed = await fetchFeed(url);
+      if (!feed || typeof feed.version !== "string" || typeof feed.url !== "string") {
+        throw new Error("feed missing version/url");
+      }
+      if (feed.version === app.getVersion()) {
+        log.info(`[update] up to date (${feed.version})`);
+        emit("not-available");
+        return;
+      }
+      log.info(`[update] feed has ${feed.version} (running ${app.getVersion()}) — engaging Squirrel`);
       autoUpdater.checkForUpdates();
     } catch (err) {
-      log.error("[update] checkForUpdates threw", err);
+      log.error("[update] check failed", err);
       emit("error", { message: String(err && err.message || err) });
+    } finally {
+      checking = false;
     }
   }
 
@@ -200,16 +297,19 @@ function initAutoUpdate(deps) {
   });
 
   configureFeed();
-  setTimeout(safeCheck, LAUNCH_CHECK_DELAY_MS);
-  setInterval(() => { if (!updateReady) safeCheck(); }, CHECK_INTERVAL_MS);
+  const launchTimer = setTimeout(safeCheck, LAUNCH_CHECK_DELAY_MS);
+  const pollTimer = setInterval(() => { if (!updateReady) safeCheck(); }, CHECK_INTERVAL_MS);
+  // Timers must never hold the process open (Electron quit, tests).
+  if (typeof launchTimer.unref === "function") launchTimer.unref();
+  if (typeof pollTimer.unref === "function") pollTimer.unref();
 
   // Renderer-callable triggers (wired to ipcMain in main.js).
   return {
-    check: () => { emit("checking"); safeCheck(); },
+    check: () => safeCheck(),
     install: () => applyUpdateAndRestart(),
     getInfo,
     isReady: () => updateReady,
   };
 }
 
-module.exports = { initAutoUpdate, channelForFlavor, buildFeedUrl };
+module.exports = { initAutoUpdate, channelForFlavor, channelForVersion, buildFeedUrl, fetchFeedHttps };

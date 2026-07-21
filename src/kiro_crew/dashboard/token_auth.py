@@ -346,7 +346,11 @@ _state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRE
 # url('/fonts/...')); without the exemption the auth middleware 403s each font
 # request and the browser, parsing the 403 HTML body as a font, logs
 # "invalid sfntVersion" and falls back to a default typeface.
-_BYPASS_PREFIXES = ("/assets/", "/static/", "/fonts/")
+# /artifact-app/ is the webapp-artifact local preview channel: auth is the
+# HMAC path token minted by the authed /api/artifacts/{slug}/app-preview
+# endpoint (sandboxed preview iframes carry no cookies). See
+# dashboard/handlers/webapp_preview.py for the full security model.
+_BYPASS_PREFIXES = ("/assets/", "/static/", "/fonts/", "/artifact-app/")
 _BYPASS_EXACT = {"/logo.png", "/manifest.json", "/sw.js", "/pcm-worklet.js", "/api/token/local", "/api/shutdown", "/api/theme/boot"}
 
 # Anchored bypass for installed-app static UI bundles only (federated-app
@@ -381,6 +385,7 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/vendor/",
     "/fonts/",
     "/app-assets/",
+    "/artifact-app/",
 )
 
 # Regex that matches /apps/{name} sub-namespace paths that have real server-side

@@ -33,6 +33,29 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      # Versioning + lifecycle give a recovery path for the retained content
+      # bucket: the deploy engine syncs with --delete and overwrites in place,
+      # so an accidental/erroneous sync or object delete would otherwise be
+      # unrecoverable (CWE-1188). Noncurrent versions are bounded (30d / 3
+      # kept) so recovery does not grow storage without limit.
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # S3 rejects a lifecycle rule without a filter; an empty rule-level
+          # Prefix applies the rule to all objects (cfn-lint's S3 Rule schema
+          # uses Prefix, not Filter).
+          - Id: expire-noncurrent-versions
+            Status: Enabled
+            Prefix: ''
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+              NewerNoncurrentVersions: 3
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            Prefix: ''
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
       Tags:
         - { Key: 'kirocrew:managed', Value: 'true' }
 
@@ -76,9 +99,10 @@ Resources:
         SecurityHeadersConfig:
           ContentTypeOptions:
             Override: true
-          FrameOptions:
-            FrameOption: SAMEORIGIN
-            Override: true
+          # No FrameOptions block: X-Frame-Options cannot express an allowlist
+          # (ALLOW-FROM is dead) and is superseded by CSP frame-ancestors below.
+          # Emitting both would re-block the dashboard preview whenever a UA
+          # honors XFO over frame-ancestors.
           ReferrerPolicy:
             ReferrerPolicy: strict-origin-when-cross-origin
             Override: true
@@ -88,8 +112,13 @@ Resources:
             Override: true
           # Permissive by design: demos are arbitrary user apps that need inline
           # scripts to run. Override:false lets an app set its own stricter CSP.
+          # frame-ancestors: 'self' plus loopback origins so the KiroCrew
+          # dashboard (localhost gateway / Electron) can embed the deployed
+          # site as a live preview. Public-web clickjacking surface is
+          # unchanged — an attacker page cannot be served from the victim's
+          # loopback.
           ContentSecurityPolicy:
-            ContentSecurityPolicy: "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; frame-ancestors 'self'"
+            ContentSecurityPolicy: "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; frame-ancestors 'self' http://localhost:* http://127.0.0.1:* http://kirocrew.localhost:*"
             Override: false
 
   Distribution:

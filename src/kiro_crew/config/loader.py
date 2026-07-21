@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re as _re
 import uuid
@@ -170,6 +171,33 @@ def _safe_int(value: object, default: int) -> int:
         return int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return default
+
+
+def _safe_float(
+    value: object,
+    default: float,
+    lo: float | None = None,
+    hi: float | None = None,
+) -> float:
+    """Convert *value* to float, returning *default* on failure, clamped to [lo, hi].
+
+    Non-finite results (NaN/Infinity) are replaced with *default* — NaN compares
+    false against any bound so it would silently bypass clamping (e.g. a
+    configured ``tips_cadence_hours: NaN`` would permanently suppress tips).
+    """
+    try:
+        result = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: json parses arbitrarily large ints fine, but float()
+        # on a several-hundred-digit int raises — must not crash config load.
+        result = default
+    if not math.isfinite(result):
+        result = default
+    if lo is not None and result < lo:
+        result = lo
+    if hi is not None and result > hi:
+        result = hi
+    return result
 
 
 def _session_work_dir(session_key: str | None) -> Path:
@@ -931,6 +959,17 @@ class KnowledgeConfig:
             "(UI/dashboards, not documents) and svg has no reader support.",
         ),
     )
+    max_ingest_file_mb: float = field(
+        default=100.0,
+        metadata=_meta(
+            "Max Ingest File Size (MB)",
+            "Per-file size cap for Knowledge Library ingestion. Oversized files "
+            "are skipped with a WARNING naming the file instead of being chunked "
+            "-- chunking a very large file (e.g. a tens-of-MB CSV->MD conversion) "
+            "is CPU-bound and previously hung gateway startup. Set 0 to disable "
+            "the cap.",
+        ),
+    )
     embed_timeout_secs: float = field(
         default=10.0,
         metadata=_meta(
@@ -1247,6 +1286,48 @@ class DashboardConfig:
             "Onboarded",
             "Whether the user has completed the dashboard onboarding flow. "
             "When true, the 'Choose your look' modal is skipped on first load.",
+        ),
+    )
+    tips_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Tips Enabled",
+            "Show feature tip cards while the agent is thinking.",
+        ),
+    )
+    tips_cadence_hours: float = field(
+        default=6.0,
+        metadata=_meta(
+            "Tips Cadence Hours",
+            "Minimum hours between showing a new tip.",
+        ),
+    )
+    tips_snooze_hours: float = field(
+        default=48.0,
+        metadata=_meta(
+            "Tips Snooze Hours",
+            "Hours before a snoozed tip becomes eligible again.",
+        ),
+    )
+    tips_recency_decay: float = field(
+        default=0.6,
+        metadata=_meta(
+            "Tips Recency Decay",
+            "Decay factor for weighted-random selection (0-1). Lower = stronger bias to newer tips.",
+        ),
+    )
+    tips_model: str = field(
+        default="claude-haiku-4.5",
+        metadata=_meta(
+            "Tips Model",
+            "Model ID for tips generation (pinned to Haiku-class for cost efficiency).",
+        ),
+    )
+    tips_explore_ratio: float = field(
+        default=0.2,
+        metadata=_meta(
+            "Tips Explore Ratio",
+            "Probability of picking a random catalog tip instead of personalized (0-1). Higher = more general discovery.",
         ),
     )
 
@@ -2655,6 +2736,12 @@ class KiroCrewConfig:
         telemetry_data = data.get("telemetry", {})
         if not isinstance(telemetry_data, dict):
             telemetry_data = {}
+        orchestrator_data = data.get("orchestrator", {})
+        if not isinstance(orchestrator_data, dict):
+            orchestrator_data = {}
+        watchdog_data = data.get("watchdog", {})
+        if not isinstance(watchdog_data, dict):
+            watchdog_data = {}
 
         # Parse agents section into dict[str, KiroCrewAgentConfig]
         raw_agents = data.get("agents", {})
@@ -2780,6 +2867,36 @@ class KiroCrewConfig:
                 daily_reset_hour=_coerce_int(messaging_data.get("daily_reset_hour"), -1),
                 queue_mode=str(messaging_data.get("queue_mode", "steer")),
             ),
+            # orchestrator/watchdog were advertised in config-baseline.json and
+            # served by /api/config/schema, and real consumers read them
+            # (acp/session_handle.py, dashboard/chat_orchestrator.py), but load()
+            # never passed these kwargs — so config.json values were silently
+            # ignored and the dataclass defaults always won.
+            orchestrator=OrchestratorConfig(
+                stage_timeout_seconds=_safe_int(
+                    orchestrator_data.get("stage_timeout_seconds", 1800), 1800
+                ),
+            ),
+            watchdog=WatchdogConfig(
+                check_after_secs=_safe_float(
+                    watchdog_data.get("check_after_secs", 60.0), 60.0
+                ),
+                stale_window_secs=_safe_float(
+                    watchdog_data.get("stale_window_secs", 300.0), 300.0
+                ),
+                tool_stall_suspect_secs=_safe_float(
+                    watchdog_data.get("tool_stall_suspect_secs", 600.0), 600.0
+                ),
+                tool_stall_hard_cap_secs=_safe_float(
+                    watchdog_data.get("tool_stall_hard_cap_secs", 2700.0), 2700.0
+                ),
+                model_silent_probe_secs=_safe_float(
+                    watchdog_data.get("model_silent_probe_secs", 900.0), 900.0
+                ),
+                wellness_sample_secs=_safe_float(
+                    watchdog_data.get("wellness_sample_secs", 3.0), 3.0
+                ),
+            ),
             telemetry=TelemetryConfig(
                 enabled=bool(telemetry_data.get("enabled", False)),
                 local_dir=str(telemetry_data.get("local_dir", "")),
@@ -2810,6 +2927,16 @@ class KiroCrewConfig:
                     )
                     if isinstance(k, str)
                 ],
+                max_ingest_file_mb=(
+                    float(mb)
+                    if isinstance(
+                        (mb := knowledge_data.get("max_ingest_file_mb", 100.0)),
+                        (int, float),
+                    )
+                    and not isinstance(mb, bool)
+                    and mb >= 0
+                    else 100.0
+                ),
                 embed_timeout_secs=float(knowledge_data.get("embed_timeout_secs", 10.0)),
                 embed_content_budget=int(knowledge_data.get("embed_content_budget", 0)),
                 pool_idle_ttl_secs=(
@@ -2905,6 +3032,12 @@ class KiroCrewConfig:
                 theme_color=dashboard_data.get("theme_color", ""),
                 recent_tint_count=_safe_int(dashboard_data.get("recent_tint_count", 0), 0),
                 onboarded=bool(dashboard_data.get("onboarded", False)),
+                tips_enabled=bool(dashboard_data.get("tips_enabled", True)),
+                tips_cadence_hours=_safe_float(dashboard_data.get("tips_cadence_hours", 6.0), 6.0, lo=0.0),
+                tips_snooze_hours=_safe_float(dashboard_data.get("tips_snooze_hours", 48.0), 48.0, lo=0.0),
+                tips_recency_decay=_safe_float(dashboard_data.get("tips_recency_decay", 0.6), 0.6, lo=0.0, hi=1.0),
+                tips_model=str(dashboard_data.get("tips_model", "claude-haiku-4.5")),
+                tips_explore_ratio=_safe_float(dashboard_data.get("tips_explore_ratio", 0.2), 0.2, lo=0.0, hi=1.0),
             ),
             tunnel=TunnelConfig(
                 enabled=bool(tunnel_data.get("enabled", False)),

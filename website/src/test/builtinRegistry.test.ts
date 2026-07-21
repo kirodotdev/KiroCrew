@@ -33,7 +33,7 @@ describe('builtinRegistry', () => {
 
   describe('BUILTIN_COMPONENT_REGISTRY', () => {
     it('contains all expected builtin app routes', () => {
-      const expectedRoutes = ['/worlds', '/channels']
+      const expectedRoutes = ['/worlds', '/channels', '/dev-fleet']
       for (const route of expectedRoutes) {
         expect(BUILTIN_COMPONENT_REGISTRY).toHaveProperty(route)
       }

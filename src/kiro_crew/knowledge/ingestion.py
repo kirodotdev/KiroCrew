@@ -6,12 +6,18 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
+from kiro_crew.sel import sel
 
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import dedup_document
@@ -28,6 +34,34 @@ CODE_EXTS = {
 }
 
 MARKDOWN_EXTS = {'.md', '.docx'}
+
+DEFAULT_MAX_INGEST_FILE_MB = 100.0
+_MB = 1024 * 1024
+
+
+class FileTooLargeError(RuntimeError):
+    """Raised when a source file exceeds ``knowledge.max_ingest_file_mb``."""
+
+
+def _max_ingest_file_mb() -> float:
+    # config.loader imports knowledge.doc_links, so a top-level import here
+    # would create an import cycle.
+    from kiro_crew.config.loader import KiroCrewConfig  # circular import
+    try:
+        return KiroCrewConfig.load().knowledge.max_ingest_file_mb
+    except Exception:
+        return DEFAULT_MAX_INGEST_FILE_MB
+
+
+def _run_chunker(chunker: HeadingAwareChunker, ext: str, text: str, uri: str) -> list[dict]:
+    """Dispatch to the right chunker. CPU-bound -- run via asyncio.to_thread."""
+    if ext == '.pptx':
+        return chunker.chunk_slides(text)
+    if ext in CODE_EXTS:
+        return chunker.chunk_code(text, language=ext.lstrip('.'))
+    if ext in MARKDOWN_EXTS:
+        return chunker.chunk_markdown(text)
+    return chunker.chunk(text, source_uri=uri)
 
 
 def _redact(text: str | None) -> str | None:
@@ -96,6 +130,40 @@ class IngestionPipeline:
         display_name = original_name or p.name
         ext = (Path(original_name).suffix if original_name else p.suffix).lower()
 
+        # Defense-in-depth: refuse sensitive paths before any filesystem access
+        # (size stat below, reader.read after), even though callers pre-filter.
+        resolved = await asyncio.to_thread(lambda: str(p.resolve()))
+        if is_sensitive_path(path) or is_sensitive_path(resolved):
+            sel().log_tool_invocation(
+                session_key="ingestion", agent="knowledge-ingest",
+                tool_name="knowledge.ingest_denied", outcome="denied",
+                resources=f"source_id={source_id} file={display_name} reason=sensitive_path",
+            )
+            raise PermissionError(f"Refusing to ingest sensitive path: {display_name}")
+
+        # Size guard BEFORE reading: chunking a very large file is CPU-bound and
+        # previously hung gateway startup for 25s+ with only a raw faulthandler
+        # dump (no actionable error). Skip with a clear WARNING naming the file.
+        limit_mb = _max_ingest_file_mb()
+        try:
+            file_size = await asyncio.to_thread(os.path.getsize, path)
+        except OSError:
+            file_size = 0
+        if limit_mb > 0 and file_size > limit_mb * _MB:
+            msg = (
+                f"Skipping oversized file '{display_name}' "
+                f"({file_size / _MB:.1f} MB > knowledge.max_ingest_file_mb={limit_mb:g} MB); "
+                f"raise knowledge.max_ingest_file_mb in config to ingest it"
+            )
+            logger.warning(msg)
+            sel().log_tool_invocation(
+                session_key="ingestion", agent="knowledge-ingest",
+                tool_name="knowledge.ingest_denied", outcome="denied",
+                resources=(f"source_id={source_id} file={display_name} "
+                           f"reason=oversized size_mb={file_size / _MB:.1f} limit_mb={limit_mb:g}"),
+            )
+            raise FileTooLargeError(msg)
+
         # 1. Read (offloaded: readers do synchronous whole-file parsing -- pdfplumber,
         # python-docx, etc. -- which must not block the event loop on a large file)
         if on_progress:
@@ -155,14 +223,9 @@ class IngestionPipeline:
                 overlap=int(chunk_overlap) if isinstance(chunk_overlap, (int, float, str)) else CHUNK_OVERLAP,
             )
         is_markdown = ext in MARKDOWN_EXTS
-        if ext == '.pptx':
-            chunks = chunker.chunk_slides(text)
-        elif ext in CODE_EXTS:
-            chunks = chunker.chunk_code(text, language=ext.lstrip('.'))
-        elif is_markdown:
-            chunks = chunker.chunk_markdown(text)
-        else:
-            chunks = chunker.chunk(text, source_uri=uri)
+        # Chunking is CPU-bound (recursive separator splitting); offloaded so a
+        # large document can't block the event loop past the loop watchdog.
+        chunks = await asyncio.to_thread(_run_chunker, chunker, ext, text, uri)
 
         total = len(chunks)
         self.store.db.execute("UPDATE ingestion_jobs SET items_total = ? WHERE id = ?", (total, job_id))
@@ -294,7 +357,7 @@ class IngestionPipeline:
             (job_id, source_id, now, now))
         self.store.db.commit()
 
-        chunks = self.chunker.chunk(text)
+        chunks = await asyncio.to_thread(self.chunker.chunk, text)
         total = len(chunks)
 
         # Snapshot items present before this call so a partial failure removes

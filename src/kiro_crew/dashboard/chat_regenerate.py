@@ -60,6 +60,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             variants = variants[-_MAX_VARIANTS:]
 
         del slot.messages[u_idx + 1:]
+        slot.invalidate_source_links()
         slot._dirty = True
         slot._resumed_count = 0
         # Window was truncated → next save MUST be the archive-safe rewrite path.
@@ -148,6 +149,7 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
             return web.json_response({"error": "corrupt variant entry"}, status=400)
         target_dict: dict = target
         target_dict["content"] = chosen.get("content", "")
+        slot.invalidate_source_links()
         target_dict["ts"] = chosen.get("ts", target_dict.get("ts", ""))
         target_dict["variant_idx"] = idx
         slot._dirty = True

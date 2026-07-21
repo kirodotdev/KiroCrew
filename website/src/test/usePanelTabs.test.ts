@@ -4,9 +4,14 @@
  * contracts: singleton view tabs, document dedupe/focus, replace-in-place
  * opens, patch-without-focus, neighbor refocus on close, and reordering.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { usePanelTabs } from '../hooks/usePanelTabs'
+import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
+
+// The panel-tab store is now module-level + localStorage-persisted (so the
+// strip survives ChatPage route unmounts and reloads). Reset it before each
+// test so state doesn't leak across the renderHook calls in this suite.
+beforeEach(() => { __resetPanelTabs() })
 
 describe('usePanelTabs', () => {
   it('starts empty with no active tab', () => {
@@ -29,6 +34,16 @@ describe('usePanelTabs', () => {
     expect(result.current.tabs.map(t => t.id)).toEqual(['files', 'logs'])
     expect(result.current.activeId).toBe('files')
     expect(result.current.activeTab?.title).toBe('Files')
+  })
+
+  it('opens Changes as a singleton source view', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openView('changes'))
+    act(() => result.current.openView('changes'))
+    expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.activeTab).toMatchObject({
+      id: 'changes', kind: 'changes', title: 'Changes',
+    })
   })
 
   it('openFile dedupes on path, titles by basename, and carries the origin slot', () => {
@@ -181,10 +196,12 @@ describe('usePanelTabs — per-slot isolation', () => {
     const { result, rerender } = renderHook(({ slot }: { slot: string | null }) => usePanelTabs(slot), {
       initialProps: { slot: null as string | null },
     })
-    act(() => result.current.openView('terminal'))
+    let sid = ''
+    act(() => { sid = result.current.openTerminal() })
     rerender({ slot: 'chat-a' })
     expect(result.current.tabs).toEqual([])
     rerender({ slot: null })
-    expect(result.current.tabs.map(t => t.id)).toEqual(['terminal'])
+    expect(result.current.tabs.map(t => t.id)).toEqual([`terminal:${sid}`])
+    expect(result.current.tabs[0].kind).toBe('terminal')
   })
 })

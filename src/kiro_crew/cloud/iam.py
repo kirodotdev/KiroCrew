@@ -542,7 +542,16 @@ def policy_document() -> dict[str, Any]:
                 "StringEquals": {
                     "iam:PassedToService": "ec2.amazonaws.com",
                     f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true",
-                }
+                },
+                # iam:AssociatedResourceArn fully satisfies the confused-deputy
+                # rule (CWE-269): the passed role may only be associated with an
+                # EC2 instance (not, e.g., re-passed to another resource type),
+                # complementing iam:PassedToService. Wildcard account/region so
+                # one printed policy works everywhere; ArnLike because it is an
+                # ARN pattern.
+                "ArnLike": {
+                    "iam:AssociatedResourceArn": "arn:aws:ec2:*:*:instance/*",
+                },
             },
         },
         {

@@ -3939,7 +3939,9 @@ class GatewayOrchestrator:
         # can read it deterministically with a single readline() in the
         # KIROCREW_READY: prefix matcher.
         if self._json_ready:
-            ready_token = generate_token("local-startup", ttl_seconds=MAX_SESSION_TTL_SECS)
+            ready_token = generate_token(
+                self._owner_id or "local-startup", ttl_seconds=MAX_SESSION_TTL_SECS
+            )
             ready_payload = {
                 "port": self._dashboard_port,
                 "token": ready_token,
@@ -4037,7 +4039,9 @@ class GatewayOrchestrator:
                     base_url = _cfg_url.rstrip("/")
                 else:
                     base_url = f"http://{host}:{self._dashboard_port}"
-                startup_token = generate_token("local-startup", ttl_seconds=MAX_SESSION_TTL_SECS)
+                startup_token = generate_token(
+                    self._owner_id or "local-startup", ttl_seconds=MAX_SESSION_TTL_SECS
+                )
                 dashboard_url = build_dashboard_url(
                     base_url, startup_token, local_only=self._local_only
                 )

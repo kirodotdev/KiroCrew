@@ -20,7 +20,12 @@ from chat_test_helpers import (
 )
 
 from kiro_crew.acp.types import TurnUsage
-from kiro_crew.dashboard.state import _MAX_SLOT_MESSAGES, DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import (
+    _MAX_SLOT_MESSAGES,
+    _MAX_SOURCE_LINKS_PER_SLOT,
+    DashboardState,
+    _ChatSlot,
+)
 from kiro_crew.history import ConversationLog
 
 # ── Slot unit tests ──
@@ -78,6 +83,87 @@ class TestChatSlot:
         assert d["messages"] == 1
         assert d["running"] is False
         assert d["pending_approval"] is False
+
+    def test_pr_source_links_refresh_after_same_length_content_edit(self):
+        slot = _ChatSlot("s1")
+        url = "https://github.com/acme/widgets/pull/12"
+        linked_content = f"Review {url}"
+        unlinked_content = "x" * len(linked_content)
+        slot.append("assistant", unlinked_content, ts="t1")
+        assert slot.to_dict()["source_links_total"] == 0
+
+        slot.update_message("t1", content=linked_content)
+        updated = slot.to_dict()
+        assert updated["source_links_total"] == 1
+        assert updated["source_links"][0]["url"] == url
+
+        slot.update_message("t1", content=unlinked_content)
+        assert slot.to_dict()["source_links_total"] == 0
+
+    def test_pr_source_links_ignore_streaming_numeric_prefixes(self):
+        slot = _ChatSlot("s1")
+        for suffix in ("1", "12", "123"):
+            slot.append("chunk", f"https://github.com/acme/widgets/pull/{suffix}")
+            assert slot.to_dict()["source_links_total"] == 0
+
+        url = "https://github.com/acme/widgets/pull/1234"
+        slot.append("assistant", f"Review {url}")
+        payload = slot.to_dict()
+        assert payload["source_links_total"] == 1
+        assert payload["source_links"][0]["url"] == url
+
+    @pytest.mark.parametrize(
+        "role", ["chunk", "done", "streaming", "queued", "permission"]
+    )
+    def test_pr_source_links_ignore_non_durable_roles(self, role):
+        slot = _ChatSlot("s1")
+        slot.append(role, "https://github.com/acme/widgets/pull/12")
+
+        assert slot.to_dict()["source_links_total"] == 0
+
+    def test_pr_source_links_stop_scanning_at_per_slot_cap(self):
+        class CountingMessage(dict):
+            reads = 0
+
+            def get(self, key, default=None):
+                if key == "content":
+                    self.reads += 1
+                return super().get(key, default)
+
+        slot = _ChatSlot("s1")
+        for number in range(1, _MAX_SOURCE_LINKS_PER_SLOT + 1):
+            slot.append(
+                "assistant",
+                f"https://github.com/acme/widgets/pull/{number}",
+            )
+        beyond_cap = CountingMessage(
+            role="assistant",
+            content="https://github.com/acme/widgets/pull/999",
+        )
+        slot.messages.append(beyond_cap)
+        slot.invalidate_source_links()
+
+        links = slot._pr_source_links()
+
+        assert len(links) == _MAX_SOURCE_LINKS_PER_SLOT
+        assert links[0]["number"] == 1
+        assert beyond_cap.reads == 0
+
+    def test_to_dict_scans_pr_source_links_once(self, monkeypatch):
+        slot = _ChatSlot("s1")
+        slot.append("user", "https://github.com/acme/widgets/pull/12")
+        original = _ChatSlot._pr_source_links
+        calls = 0
+
+        def counted(self):
+            nonlocal calls
+            calls += 1
+            return original(self)
+
+        monkeypatch.setattr(_ChatSlot, "_pr_source_links", counted)
+        payload = slot.to_dict()
+        assert payload["source_links_total"] == 1
+        assert calls == 1
 
     def test_pending_approval_flag(self):
         slot = _ChatSlot("s1")
@@ -506,6 +592,97 @@ class TestSlotLifecycle:
             data = await resp.json()
             keys = [s["key"] for s in data]
             assert "a" in keys and "b" in keys
+
+    @pytest.mark.asyncio
+    async def test_list_slots_schedules_source_refresh_with_push_callback(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers import source_providers
+
+        scheduler = MagicMock()
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", scheduler)
+        state = _make_state(tmp_path)
+        state.owner_id = "U_OWNER"
+        slot = state.get_or_create_slot("source")
+        url = "https://github.com/acme/repo/pull/12"
+        slot.append("user", url)
+
+        @web.middleware
+        async def owner_auth(request, handler):
+            request["user"] = "U_OWNER"
+            request["app"] = ""
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.append(owner_auth)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/slots")
+            assert resp.status == 200
+
+        scheduler.assert_called_once()
+        urls, callback = scheduler.call_args.args
+        assert urls == [url]
+        assert callback == state.push_slots_update
+
+    @pytest.mark.asyncio
+    async def test_list_slots_omits_status_and_refresh_for_non_owner(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import state as state_module
+        from kiro_crew.dashboard.handlers import source_providers
+
+        scheduler = MagicMock()
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", scheduler)
+        monkeypatch.setattr(
+            state_module,
+            "_cached_check_status",
+            lambda _url: {"ci": "passed", "state": "open"},
+        )
+        state = _make_state(tmp_path)
+        state.owner_id = "U_OWNER"
+        slot = state.get_or_create_slot("source")
+        url = "https://github.com/acme/private/pull/12"
+        slot.append("user", url)
+
+        @web.middleware
+        async def non_owner_auth(request, handler):
+            request["user"] = "U_OTHER"
+            request["app"] = ""
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.append(non_owner_auth)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/slots")
+            payload = await resp.json()
+
+        assert resp.status == 200
+        link = next(item for item in payload if item["key"] == "source")["source_links"][0]
+        assert link == {"provider": "github", "number": 12, "url": url}
+        scheduler.assert_not_called()
+
+    def test_slot_status_serialization_requires_owner_opt_in(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import state as state_module
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            state_module,
+            "_cached_check_status",
+            lambda _url: {"ci": "passed", "state": "open"},
+        )
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("source")
+        slot.append("user", "https://github.com/acme/private/pull/12")
+
+        generic_link = state.serialize_slots()[0]["source_links"][0]
+        owner_link = state.serialize_slots(include_check_status=True)[0]["source_links"][0]
+
+        assert "ci" not in generic_link
+        assert "state" not in generic_link
+        assert owner_link["ci"] == "passed"
+        assert owner_link["state"] == "open"
 
     @pytest.mark.asyncio
     async def test_approve_no_pending(self, tmp_path, monkeypatch):
@@ -9199,20 +9376,33 @@ class TestRunChatTransientRetry:
         assert slot._transient_5xx_retries == 0
 
     @pytest.mark.asyncio
-    async def test_transient_post_token_not_retried(self, tmp_path, monkeypatch):
-        """A transient 5xx AFTER a token has streamed must NOT be retried —
-        re-running would double-stream the already-emitted output."""
+    async def test_transient_post_token_textonly_retries_once(self, tmp_path, monkeypatch):
+        """A transient 5xx AFTER text streamed (no tool call) is retried EXACTLY
+        ONCE, APPEND-ONLY: the streamed partial is PRESERVED (finalized as a
+        normal assistant message, exactly like the terminal else: branch), a
+        recovery notice is surfaced, and a CONTINUE instruction — NOT the
+        original prompt — is re-queued onto the same live session. The retry
+        appends the continued answer as a NEW message below. The user sees an
+        append-only sequence [partial] [recover notice] [continued answer] with
+        nothing retracted. No chat_stream_reset event exists anymore (Mesh-2150)."""
         from kiro_crew.acp.client import AcpError
         from kiro_crew.dashboard.chat import _run_chat
-        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 
         call_count = 0
+        captured: list = []
 
         async def _stream(msg):
             nonlocal call_count
             call_count += 1
-            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial ")
-            raise AcpError(self._TRANSIENT)
+            captured.append(msg)
+            if call_count == 1:
+                # First attempt streams a partial, then hits a transient 5xx.
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial ")
+                raise AcpError(self._TRANSIENT)
+            # Retry streams a clean, continued answer.
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
 
         state = self._make_state(tmp_path, monkeypatch)
         client = self._client(_stream)
@@ -9224,12 +9414,264 @@ class TestRunChatTransientRetry:
             await _run_chat(state, slot, "hello")
             await self._drain_bg(state)
 
-        assert call_count == 1  # no retry once a partial response streamed
-        assert slot._transient_5xx_retries == 0
-        # Partial output is preserved and a clean error is surfaced.
-        assert any("partial" in t for t in self._assistant_texts(slot))
+        assert call_count == 2  # one post-token retry
+        # The recovery notice surfaced and no ❌ error was raised.
+        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        # APPEND-ONLY: the partial is PRESERVED as a finalized assistant message,
+        # AND the continued retry answer is appended below it. Both are present;
+        # the live chunk placeholders are finalized away.
+        assert not any(m.get("role") == "chunk" for m in slot.messages)
+        assistant = self._assistant_texts(slot)
+        assert any("partial" in t for t in assistant), "partial must be preserved"
+        assert any("ok-result" in t for t in assistant), "continued answer must append below"
+        # The RE-QUEUED prompt is the CONTINUE instruction, NOT the original.
+        assert len(captured) == 2
+        assert "Continue from where it stopped" in captured[1], (
+            "the retry must re-queue the continue instruction, not the original prompt"
+        )
+        assert "hello" not in captured[1], "the original prompt must NOT be re-queued"
+        # No chat_stream_reset broadcast — that frontend reconcile event was
+        # removed entirely by the append-only rework.
+        assert not any(
+            c.args and c.args[0] == "chat_stream_reset"
+            for c in state.broadcast_ws.call_args_list
+        ), "chat_stream_reset must no longer be broadcast"
+        # Live session was NOT reset. The one-shot allowance stays consumed
+        # (True) across the synthetic recovery turn — it is refreshed only at the
+        # start of the NEXT genuine user turn, never on the recovery turn itself
+        # (finding #3, prevents a recovery-turn re-failure from looping).
+        state.sessions.reset.assert_not_awaited()
+        assert slot._posttoken_retry_used is True
+
+    @pytest.mark.asyncio
+    async def test_transient_post_token_suppressed_preserves_partial(
+        self, tmp_path, monkeypatch
+    ):
+        """When Stop is active (_should_suppress_requeue True) during a post-token
+        transient 5xx, the partial assistant text is PRESERVED (persisted as an
+        assistant message) and the message is NOT re-queued. Under the
+        append-only design the partial + a retry notice are shown regardless of
+        eligibility; only the re-queue is gated (Mesh-2150)."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            # Stream a partial, then hit a transient 5xx (post-token, no tool).
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            raise AcpError(self._TRANSIENT)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        # Stop is active → suppress the re-queue for the whole handler.
+        monkeypatch.setattr(chat_runner, "_should_suppress_requeue", lambda s: True)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        # No re-queue: the stream ran exactly once (Stop is active). Finding #3:
+        # a suppressed recovery does NOT consume the one-shot allowance — the
+        # flag is only set when a recovery is actually enqueued, so it stays
+        # False and a later genuine turn can still recover once.
+        assert call_count == 1
+        assert slot._posttoken_retry_used is False
+        # HIGH: the partial survives as a persisted assistant message.
+        assert any("partial answer" in t for t in self._assistant_texts(slot))
+        # Chunk placeholders were finalized (not left as role "chunk").
+        assert not any(m.get("role") == "chunk" for m in slot.messages)
+        # The retry notice is shown (append-only: partial + notice regardless of
+        # eligibility); no ❌ terminal error is raised here.
+        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        # No chat_stream_reset broadcast — that event was removed entirely.
+        assert not any(
+            c.args and c.args[0] == "chat_stream_reset"
+            for c in state.broadcast_ws.call_args_list
+        )
+        # Transient path never resets the (still-alive) session.
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transient_post_toolcall_recovers(self, tmp_path, monkeypatch):
+        """A transient 5xx AFTER a TOOL CALL fired now RECOVERS (no longer
+        fail-fast). Because the retry re-queues a CONTINUE instruction onto the
+        SAME live session — which still holds the completed tool results — the
+        model resumes from where it stopped instead of blindly re-running the
+        tool. Exactly one post-token recovery fires, the partial is preserved,
+        and the continue instruction (not the original prompt) is re-queued."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        call_count = 0
+        captured: list = []
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            captured.append(msg)
+            if call_count == 1:
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="working ")
+                yield LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    text="",
+                    title="fs_read",
+                    tool_kind="read",
+                    tool_call_id="tc-1",
+                )
+                raise AcpError(self._TRANSIENT)
+            # Retry continues from the preserved context and finishes cleanly.
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert call_count == 2  # post-tool transient now RECOVERS via continue
+        # Recovery notice surfaced, no ❌ terminal error.
+        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        # The partial text is preserved and the continued answer appended below.
+        assert any("working" in t for t in self._assistant_texts(slot)), (
+            "partial must be preserved"
+        )
+        assert any("ok-result" in t for t in self._assistant_texts(slot)), (
+            "continued answer must append below"
+        )
+        # The CONTINUE instruction — not the original prompt — was re-queued.
+        assert len(captured) == 2
+        assert "Continue from where it stopped" in captured[1]
+        assert "hello" not in captured[1]
+        # The one-shot allowance stays consumed (True) across the recovery turn;
+        # it is refreshed only by the next genuine user turn. Live session never
+        # reset.
+        assert slot._posttoken_retry_used is True
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_posttoken_suppressed_leaves_allowance_for_later_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """Finding #3(a): a Stop-suppressed post-token transient must NOT consume
+        the one-shot allowance (the flag is set only when a recovery is actually
+        enqueued). A LATER genuine user turn on the same slot can therefore still
+        recover once."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        # ── Turn 1: Stop active → suppressed post-token transient. ──
+        async def _stream_suppressed(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial-1")
+            raise AcpError(self._TRANSIENT)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream_suppressed)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        monkeypatch.setattr(chat_runner, "_should_suppress_requeue", lambda s: True)
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "first question")
+            await self._drain_bg(state)
+
+        # Allowance untouched — the suppressed path never enqueued a recovery.
+        assert slot._posttoken_retry_used is False
+
+        # ── Turn 2: Stop cleared → a genuine turn recovers once. ──
+        call_count = 0
+
+        async def _stream_recover(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial-2")
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client.stream = _stream_recover
+        client.stream_command = _stream_recover
+        monkeypatch.setattr(chat_runner, "_should_suppress_requeue", lambda s: False)
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "second question")
+            await self._drain_bg(state)
+
+        # The later real turn recovered: it re-ran once and produced the answer.
+        assert call_count == 2
+        assert any("ok-result" in t for t in self._assistant_texts(slot))
+        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+
+    @pytest.mark.asyncio
+    async def test_posttoken_recovery_turn_refailure_does_not_loop(
+        self, tmp_path, monkeypatch
+    ):
+        """Finding #3(b): a post-token transient that re-fires DURING the
+        synthetic recovery turn must NOT recover again (no infinite re-queue).
+        The recovery turn inherits the already-consumed allowance (it is not
+        refreshed for the recover message), so the post-token branch is skipped
+        and a clean terminal error surfaces instead of a second recovery."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        captured: list = []
+
+        async def _stream(msg):
+            captured.append(msg)
+            # The recovery turn emits a partial then hits ANOTHER transient 5xx.
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="still-failing")
+            raise AcpError(self._TRANSIENT)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        # Simulate the state left by the originating turn that enqueued recovery.
+        slot._posttoken_retry_used = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            # Drive the recovery turn directly with the continue instruction.
+            await _run_chat(state, slot, _POSTTOKEN_RECOVER_MSG)
+            await self._drain_bg(state)
+
+        # Ran exactly once — no second recovery was enqueued (no loop).
+        assert len(captured) == 1
+        # The recover instruction was NOT re-queued a second time.
+        assert not any(m == _POSTTOKEN_RECOVER_MSG for m in captured[1:])
+        # The flag was NOT refreshed by the recovery turn (stays consumed).
+        assert slot._posttoken_retry_used is True
+        # A clean terminal error surfaced (branch skipped, fell to else:).
         assert any(t.startswith("❌") for t in self._err_texts(slot))
-        assert not any("Backend hiccup" in t for t in self._err_texts(slot))
+        # The partial from the recovery turn is still preserved (append-only).
+        assert any("still-failing" in t for t in self._assistant_texts(slot))
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio

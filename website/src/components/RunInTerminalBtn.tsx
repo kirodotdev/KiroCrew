@@ -1,8 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { SquareTerminal, Check, AlertCircle, ShieldAlert } from 'lucide-react'
-import { useAppDispatch, useAppSelector } from '../store'
-import { openCliPanel } from '../store/terminalSlice'
-import { sendToTerminal, getActiveTerminalWs, onTerminalReady } from '../utils/terminalRegistry'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
 
 export const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'fish'])
@@ -11,41 +8,52 @@ function stripPromptChars(code: string): string {
   return code.replace(/^[\$>]\s+/gm, '')
 }
 
+/**
+ * "Run in terminal" button on shell code blocks. Dispatches a `mc:run-in-terminal`
+ * request; ChatPage opens a fresh terminal tab in the current chat (starting in
+ * that chat's working directory) and runs the command there, then echoes back a
+ * `mc:run-in-terminal-result` so we can flash sent/failed. Correlated by reqId
+ * so overlapping runs don't cross wires.
+ */
 export default function RunInTerminalBtn({ code }: { code: string }) {
-  const dispatch = useAppDispatch()
-  const terminalOpen = useAppSelector(s => s.terminal.open)
   const [status, setStatus] = useState<'idle' | 'sent' | 'error' | 'warn'>('idle')
   const [warnReason, setWarnReason] = useState('')
   const warnTimerRef = useRef<ReturnType<typeof setTimeout>>()
-
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>()
-  useEffect(() => () => { clearTimeout(warnTimerRef.current); clearTimeout(flashTimerRef.current) }, [])
+  const resultTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const resultUnsubRef = useRef<(() => void) | null>(null)
 
-  const unsubRef = useRef<(() => void) | null>(null)
-  const readyTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
-  const pendingCodeRef = useRef<string>('')
-  useEffect(() => () => { unsubRef.current?.(); clearTimeout(readyTimeoutRef.current) }, [])
+  useEffect(() => () => {
+    clearTimeout(warnTimerRef.current)
+    clearTimeout(flashTimerRef.current)
+    clearTimeout(resultTimerRef.current)
+    resultUnsubRef.current?.()
+  }, [])
+
+  const flash = useCallback((s: 'sent' | 'error') => {
+    clearTimeout(flashTimerRef.current)
+    setStatus(s)
+    flashTimerRef.current = setTimeout(() => setStatus('idle'), s === 'sent' ? 1200 : 2000)
+  }, [])
 
   const execute = useCallback((cleaned: string) => {
-    pendingCodeRef.current = cleaned
-    if (!getActiveTerminalWs()) {
-      if (!terminalOpen) dispatch(openCliPanel())
-      unsubRef.current?.()
-      clearTimeout(readyTimeoutRef.current)
-      readyTimeoutRef.current = setTimeout(() => { unsubRef.current?.(); flash('error') }, 5000)
-      unsubRef.current = onTerminalReady(() => {
-        clearTimeout(readyTimeoutRef.current)
-        if (sendToTerminal(pendingCodeRef.current)) flash('sent'); else flash('error')
-      })
-      return
+    const reqId = Math.random().toString(36).slice(2)
+    const onResult = (e: Event) => {
+      if ((e as CustomEvent).detail?.reqId !== reqId) return
+      resultUnsubRef.current?.()
+      flash((e as CustomEvent).detail.ok ? 'sent' : 'error')
     }
-
-    if (sendToTerminal(cleaned)) {
-      flash('sent')
-    } else {
-      flash('error')
+    // Single unsub clears both the listener and the fallback timer.
+    resultUnsubRef.current?.()
+    window.addEventListener('mc:run-in-terminal-result', onResult)
+    resultTimerRef.current = setTimeout(() => { resultUnsubRef.current?.(); flash('error') }, 8000)
+    resultUnsubRef.current = () => {
+      window.removeEventListener('mc:run-in-terminal-result', onResult)
+      clearTimeout(resultTimerRef.current)
+      resultUnsubRef.current = null
     }
-  }, [terminalOpen, dispatch])
+    window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: cleaned, reqId } }))
+  }, [flash])
 
   const run = useCallback(() => {
     const cleaned = stripPromptChars(code)
@@ -75,11 +83,6 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
     clearTimeout(warnTimerRef.current)
     setStatus('idle')
   }, [])
-
-  function flash(s: 'sent' | 'error') {
-    setStatus(s)
-    flashTimerRef.current = setTimeout(() => setStatus('idle'), s === 'sent' ? 1200 : 2000)
-  }
 
   if (status === 'warn') {
     return (
@@ -115,7 +118,7 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
 
   if (status === 'error') {
     return (
-      <span className="p-1 rounded text-danger" title="No active terminal session" aria-label="No active terminal">
+      <span className="p-1 rounded text-danger" title="Couldn't run in terminal" aria-label="Couldn't run in terminal">
         <AlertCircle size={13} />
       </span>
     )
