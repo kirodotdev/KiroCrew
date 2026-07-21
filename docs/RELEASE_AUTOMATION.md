@@ -2,6 +2,90 @@
 
 Design for the three-channel release pipeline: Nightly → Beta → Stable.
 
+## As built (authoritative, 2026-07-21)
+
+The sections below this one are the original design; the implementation
+deliberately diverged in several places. Where they disagree, THIS section
+is the contract.
+
+**Channels and triggers (as built):**
+
+| Channel | Trigger | Workflow |
+|---------|---------|----------|
+| nightly | schedule (06:00 UTC) + manual dispatch on `main` | `nightly.yml` |
+| insider | push of a prerelease tag (`v0.2.0-insider.1`, `-rc.N`, …) | `release.yml` |
+| stable  | push of a bare semver tag (`v0.2.0`) | `release.yml` |
+
+There is no release-branch / beta-cut / promote model and no
+`beta-hotfix.yml`, `promote-stable.yml`, or `rollback.yml`. Channel is
+derived from the tag; versions are stamped with seconds precision on
+nightly (`0.1.0-nightly.YYYYMMDDHHMMSS`) so no published key is ever
+overwritten.
+
+**Buckets (as built) — two, not one:**
+
+- `kirocrew-signing-artifacts-…` (PRIVATE, signing trust domain only):
+  `pre-signed/` → `signed/` (CDSigner output) → `notarized/` (archive)
+- `kirocrew-updates-…` (private + CloudFront OAC, public trust domain):
+  `cli/{channel}/{version}/`, `desktop/{channel}/{version}/`,
+  `feed/{channel}/latest-mac.json`, served at
+  `https://d28nxu9if70cmc.cloudfront.net` (`updates.kirocrew.dev` is not
+  yet provisioned)
+
+**Feed (as built) — static file, no Lambda:** `notarize-macos.yml` writes
+`feed/{channel}/latest-mac.json` directly after the spctl gate. There is no
+Feed Lambda, no S3-event trigger, no 200/204 endpoint, and no CloudFront
+Function query routing: the client (`auto-update.js`) fetches the static
+JSON and compares versions CLIENT-SIDE, engaging Squirrel only on a version
+delta. Schema:
+
+```json
+{
+  "version": "0.1.0-nightly.20260721061155",
+  "url": "https://d28nxu9if70cmc.cloudfront.net/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.zip",
+  "dmg": "https://d28nxu9if70cmc.cloudfront.net/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.dmg",
+  "name": "0.1.0-nightly.20260721061155",
+  "pub_date": "2026-07-21T06:22:13Z"
+}
+```
+
+`url` is the Squirrel auto-update payload (zip, mandatory). `dmg` is the
+first-install disk image for humans/website links; Squirrel ignores it.
+
+**macOS artifact flow (as built), all channels via `notarize-macos.yml`:**
+
+1. CDSigner signs the .app (dynamic manifest covering every nested Mach-O)
+2. `notarytool` submit (app) → staple → `spctl` fail-closed gate
+3. Notarized zip → `notarized/` (signing bucket) + `desktop/{channel}/{version}/`
+   (distribution bucket, conditional write, immutable cache)
+4. **DMG rebuilt from the STAPLED app** (`hdiutil`, /Applications symlink) —
+   the electron-builder DMG wraps the unsigned app and never ships anywhere.
+   The rebuilt DMG is provenance-attested, then notarized (Apple accepts an
+   unsigned DMG whose contents are signed+stapled; stapling the DMG itself
+   requires a code signature and is skipped — the DMG passes Gatekeeper via
+   the online ticket lookup, and the stapled app inside covers the offline
+   launch check), then published to `desktop/{channel}/{version}/…dmg`
+5. Feed written last, only after both artifacts are publicly downloadable
+6. Build/attest/notarize of the DMG run whenever signing is configured;
+   only CDN publication and the feed write additionally require the
+   distribution bucket to be configured. `release.yml` attaches the
+   notarized zip + notarized DMG to the GitHub Release (never the unsigned
+   electron-builder DMG)
+
+**Feed-ordering protection (as built):** workflow-level `concurrency`
+groups (nightly: `cancel-in-progress: true`; release: queued) prevent an
+older run finishing last from rolling a channel feed backward. There is no
+`blocked-versions.json` and no rollback workflow yet; rollback is a manual
+feed overwrite.
+
+**CLI channel (as built):** `publish-cli.yml` publishes the wheel +
+SHA256SUMS + PEP 503 index to `cli/nightly/` from `nightly.yml` only;
+insider/stable CLI channel publication is not yet wired (wheels ship as
+GitHub Release assets). The signing trust domain for the wheel
+(minisign/cosign detached signatures) remains an open item.
+
+---
+
 ## Channels
 
 | Channel | Cadence | Source | Who uses it |

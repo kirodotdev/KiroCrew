@@ -75,10 +75,14 @@ class TestNightlyPermissions:
         }
         # Caller job for the reusable notarize workflow: a workflow_call
         # callee can never exceed the caller job's permissions, so the
-        # caller must grant id-token explicitly.
+        # caller must grant id-token explicitly. attestations:write is for
+        # the shipping-DMG provenance attestation inside notarize-macos.yml
+        # (the DMG is rebuilt there from the stapled app; the build-job DMG
+        # never ships and is attested nowhere).
         assert _permission_block(lines, "  notarize:") == {
             "id-token": "write",
             "contents": "read",
+            "attestations": "write",
         }
 
 

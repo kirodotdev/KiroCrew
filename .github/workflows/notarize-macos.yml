@@ -43,12 +43,16 @@ on:
 permissions:
   contents: read
   id-token: write
+  attestations: write
 
 jobs:
   notarize:
     name: Notarize + staple (${{ inputs.channel }})
     runs-on: macos-14
-    timeout-minutes: 45
+    # Two notarytool submissions (app, then DMG), each --wait up to 30m,
+    # plus build/staple/upload overhead -- the job budget must exceed their
+    # combined worst case or GitHub cancels mid-publish.
+    timeout-minutes: 75
     # OIDC subject alignment: tag-triggered callers (release.yml) present
     # ref:refs/tags/<tag>, which the signing role does not trust. The prod
     # environment switches the subject to environment:prod, which it does.
@@ -185,6 +189,98 @@ jobs:
           echo "DESKTOP_KEY=${DESKTOP_KEY}" >> "$GITHUB_ENV"
           echo "Public artifact: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
 
+      # First-install DMG, rebuilt from the STAPLED app (the electron-builder
+      # DMG from the build job wraps the unsigned app and must never ship).
+      # The DMG itself is not code-signed (the Developer ID cert lives inside
+      # CDSigner, which signs .app bundles): Apple ACCEPTS notarization of an
+      # unsigned DMG whose contents are fully signed+stapled (proven:
+      # submission 1c29ae3d), and Gatekeeper verifies the DMG via the online
+      # ticket lookup. Stapling the DMG is impossible without a signature
+      # (stapler Error 73), so it is deliberately skipped -- the app INSIDE
+      # is stapled, which covers the offline launch check that matters.
+      - name: Build DMG from stapled app
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          rm -rf work/dmg-staging && mkdir -p work/dmg-staging
+          cp -R "work/stapled/${APP_NAME}.app" work/dmg-staging/
+          ln -s /Applications work/dmg-staging/Applications
+          hdiutil create -volname "${APP_NAME}" -srcfolder work/dmg-staging \
+            -ov -format UDZO -quiet "work/${APP_NAME}.dmg"
+          ls -lh "work/${APP_NAME}.dmg"
+
+      # Attest the DMG that actually ships: the electron-builder DMG from the
+      # build job is attested nowhere (it wraps the unsigned app and never
+      # publishes); THIS rebuilt DMG is the released artifact, so provenance
+      # must bind these bytes. Runs before notarization/publication so nothing
+      # leaves the runner unattested.
+      - name: Attest DMG provenance
+        if: env.HAS_SIGNING_SECRETS
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: work/*.dmg
+
+      - name: Notarize DMG
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id kirocrew/signing/apple-notary \
+            --query SecretString --output text)
+          APPLE_ID=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['apple_id'])")
+          APPLE_PW=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['password'])")
+          TEAM_ID=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['team_id'])")
+          echo "::add-mask::$APPLE_PW"
+          unset SECRET_JSON
+
+          echo "Submitting DMG to Apple notary service..."
+          set +e
+          SUBMIT_OUT=$(xcrun notarytool submit "work/${APP_NAME}.dmg" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" \
+            --wait --timeout 30m 2>&1)
+          RC=$?
+          set -e
+          echo "$SUBMIT_OUT"
+          SUBMISSION_ID=$(echo "$SUBMIT_OUT" | awk '/^  id: /{print $2; exit}')
+
+          if [ $RC -ne 0 ] || ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
+            echo "DMG notarization was not Accepted. Fetching the itemized Apple log..."
+            if [ -n "$SUBMISSION_ID" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" || true
+            fi
+            exit 1
+          fi
+          echo "DMG notarization Accepted: $SUBMISSION_ID"
+
+      # Same never-republish discipline as the zip: conditional write,
+      # 412 on a job re-run keeps the existing notarized bytes.
+      - name: Publish DMG to distribution bucket
+        if: env.HAS_SIGNING_SECRETS && inputs.write_feed && vars.CLI_DIST_BUCKET != ''
+        run: |
+          set -euo pipefail
+          DMG_KEY="desktop/${CHANNEL}/${VERSION}/${APP_NAME}.dmg"
+          set +e
+          PUT_OUT=$(aws s3api put-object \
+            --bucket "${{ vars.CLI_DIST_BUCKET }}" \
+            --key "${DMG_KEY}" \
+            --body "work/${APP_NAME}.dmg" \
+            --if-none-match '*' \
+            --content-type application/x-apple-diskimage \
+            --cache-control "public, max-age=31536000, immutable" 2>&1)
+          RC=$?
+          set -e
+          if [ $RC -ne 0 ]; then
+            if echo "$PUT_OUT" | grep -q "PreconditionFailed"; then
+              echo "DMG key already published (job re-run) -- keeping existing bytes: ${DMG_KEY}"
+            else
+              echo "$PUT_OUT"
+              exit $RC
+            fi
+          fi
+          echo "DMG_KEY=${DMG_KEY}" >> "$GITHUB_ENV"
+          echo "Public DMG: ${{ vars.CLI_CDN_BASE }}/${DMG_KEY}"
+
       # Feed points at the NOTARIZED artifact on the CDN -- written only
       # after the spctl gate above passed, and only after the artifact
       # itself is publicly downloadable (feed-before-artifact would hand
@@ -202,6 +298,7 @@ jobs:
           {
             "version": "${VERSION}",
             "url": "${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}",
+            "dmg": "${{ vars.CLI_CDN_BASE }}/${DMG_KEY}",
             "name": "${VERSION}",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
@@ -216,7 +313,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: KiroCrew-notarized-${{ inputs.channel }}-${{ inputs.version }}
-          path: work/notarized.zip
+          path: |
+            work/notarized.zip
+            work/*.dmg
           retention-days: 14
 
       - name: Summary
@@ -228,6 +327,9 @@ jobs:
             echo "- Input: \`${SIGNED_ZIP_KEY}\`"
             echo "- Output: \`${NOTARIZED_KEY}\` (stapled, Gatekeeper-verified)"
             if [ -n "${DESKTOP_KEY:-}" ]; then
-              echo "- Public: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
+              echo "- Public zip: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
+            fi
+            if [ -n "${DMG_KEY:-}" ]; then
+              echo "- Public DMG: ${{ vars.CLI_CDN_BASE }}/${DMG_KEY}"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

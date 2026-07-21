@@ -162,22 +162,24 @@ jobs:
 
       - name: Attest build provenance
         # Signed SLSA build-provenance for the built artifacts
-        # (wheel/sdist/DMG/AppImage) — CWE-1104 / P475357136. Placed in the
+        # (wheel/sdist/AppImage) — CWE-1104 / P475357136. Placed in the
         # `release` job because it already holds id-token (OIDC); per the
         # least-privilege split enforced by test_workflow_permissions.py the
         # id-token job must never also hold contents:write (that lives only in
         # the separate github-release job). The macOS .zip is attested here in
         # its pre-notarized form (notarize/staple runs in a later job); the
-        # wheel/sdist/dmg/AppImage digests are identical to what is published.
+        # wheel/sdist/AppImage digests are identical to what is published.
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           # Attest only artifacts whose bytes are final here. The macOS .zip is
           # re-signed + notarized in a later job, so attesting it pre-notarization
-          # binds a digest that never ships (Codex review). Omit *.zip.
+          # binds a digest that never ships (Codex review). Omit *.zip. Same for
+          # *.dmg: the electron-builder DMG wraps the unsigned app and never
+          # ships; the shipping DMG is rebuilt from the stapled app and attested
+          # inside notarize-macos.yml.
           subject-path: |
             release/*.whl
             release/*.tar.gz
-            release/*.dmg
             release/*.AppImage
 
       # Install the CDSigner SigV4 client BEFORE AWS credentials are configured
@@ -236,6 +238,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      attestations: write
     uses: ./.github/workflows/notarize-macos.yml
     secrets: inherit
     with:
@@ -255,17 +258,23 @@ jobs:
         with:
           path: artifacts
 
-      # Assemble release assets: everything built, with the macOS zip
-      # replaced by the notarized + stapled one from the notarize job.
-      - name: Flatten artifacts (notarized macOS zip wins)
+      # Assemble release assets: everything built, with the macOS zip and DMG
+      # replaced by the notarized ones from the notarize job. The unsigned
+      # electron-builder DMG (built before signing) must never ship -- it
+      # wraps an unsigned app and hits the Gatekeeper scare dialog.
+      - name: Flatten artifacts (notarized macOS assets win)
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.dmg" -o -name "*.AppImage" \) -exec cp {} release/ \;
+          find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.AppImage" \) -exec cp {} release/ \;
           NOTARIZED=$(find artifacts -path "*KiroCrew-notarized-*" -name "notarized.zip" | head -1)
           if [ -n "$NOTARIZED" ]; then
             cp "$NOTARIZED" "release/KiroCrew-${{ needs.release.outputs.version }}-arm64-mac.zip"
           else
             find artifacts -type f -name "*arm64*.zip" -exec cp {} release/ \;
+          fi
+          NOTARIZED_DMG=$(find artifacts -path "*KiroCrew-notarized-*" -name "*.dmg" | head -1)
+          if [ -n "$NOTARIZED_DMG" ]; then
+            cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.release.outputs.version }}-arm64.dmg"
           fi
           ls -la release/
 

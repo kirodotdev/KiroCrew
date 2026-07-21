@@ -214,9 +214,11 @@ jobs:
         with:
           # Omit *.zip: the macOS zip is re-signed + notarized downstream, so a
           # pre-notarization attestation would bind a digest that never ships.
+          # Omit *.dmg too: the electron-builder DMG wraps the unsigned app
+          # and never ships; the DMG that ships is rebuilt from the stapled
+          # app and attested inside notarize-macos.yml.
           subject-path: |
             release/*.whl
-            release/*.dmg
             release/*.AppImage
 
       # Install the CDSigner SigV4 client (awscurl) BEFORE AWS credentials are
@@ -313,6 +315,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      attestations: write
     uses: ./.github/workflows/notarize-macos.yml
     secrets: inherit
     with:
