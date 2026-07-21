@@ -993,3 +993,171 @@ class TestCgroupScopeArgv:
             assert out.stdout.strip() == "hit-limit"
         finally:
             self._reset_probe()
+
+
+class TestKiroInternalSandboxExclusion:
+    """macOS sandbox mutual exclusion: kiro internal sandbox ON
+    -> KiroCrew seatbelt OFF for kiro-cli spawns; OFF -> seatbelt ON."""
+
+    def _write_settings(self, tmp_path, monkeypatch, content: str | None):
+        p = tmp_path / "amazon-internal.json"
+        if content is not None:
+            p.write_text(content)
+        monkeypatch.setattr("kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH", str(p))
+        return p
+
+    # --- kiro_internal_sandbox_enabled() helper ---
+
+    def test_absent_file_is_disabled(self, tmp_path, monkeypatch):
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        self._write_settings(tmp_path, monkeypatch, None)
+        assert kiro_internal_sandbox_enabled() is False
+
+    def test_malformed_json_is_disabled(self, tmp_path, monkeypatch):
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        self._write_settings(tmp_path, monkeypatch, "{not json")
+        assert kiro_internal_sandbox_enabled() is False
+
+    def test_missing_key_is_disabled(self, tmp_path, monkeypatch):
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        self._write_settings(tmp_path, monkeypatch, '{"other": true}')
+        assert kiro_internal_sandbox_enabled() is False
+
+    def test_true_is_enabled(self, tmp_path, monkeypatch):
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        assert kiro_internal_sandbox_enabled() is True
+
+    def test_false_is_disabled(self, tmp_path, monkeypatch):
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": false}')
+        assert kiro_internal_sandbox_enabled() is False
+
+    # --- wrap_argv gating ---
+
+    def test_darwin_kiro_spawn_delegates(self, tmp_path, monkeypatch):
+        """kiro sandbox ON + darwin + kiro-cli argv -> no seatbelt wrap."""
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
+        with patch("kiro_crew.sandbox.detect_backend") as mock_detect:
+            argv, cleanup = wrap_argv(["/usr/local/bin/kiro-cli", "acp"], mode="auto")
+        assert "sandbox-exec" not in argv
+        assert argv[-2:] == ["/usr/local/bin/kiro-cli", "acp"]
+        assert cleanup is None
+        # Delegation decided before backend detection (covers backend=none too)
+        mock_detect.assert_not_called()
+
+    def test_darwin_kiro_spawn_delegation_scrubs_env(self, tmp_path, monkeypatch):
+        """The delegated spawn keeps the seatbelt path's env scrub."""
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "sentinel")
+        argv, _ = wrap_argv(["kiro-cli", "acp"], mode="auto")
+        assert argv[0] == "env"
+        assert "-u" in argv
+        assert "AWS_SECRET_ACCESS_KEY" in argv
+
+    def test_darwin_non_kiro_spawn_stays_wrapped(self, tmp_path, monkeypatch):
+        """Non-kiro spawns have no internal sandbox — seatbelt stays on."""
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
+        with patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec"), patch(
+            "kiro_crew.sandbox.sandbox_exec_argv",
+            return_value=(["sandbox-exec", "python3"], "/tmp/p.sb"),
+        ) as mock_sb:
+            wrap_argv(["python3", "-m", "worker"], mode="auto")
+        mock_sb.assert_called_once()
+
+    def test_darwin_kiro_disabled_stays_wrapped(self, tmp_path, monkeypatch):
+        """kiro sandbox OFF -> KiroCrew's seatbelt ON (the inverse rule)."""
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": false}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
+        with patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec"), patch(
+            "kiro_crew.sandbox.sandbox_exec_argv",
+            return_value=(["sandbox-exec", "kiro-cli"], "/tmp/p.sb"),
+        ) as mock_sb:
+            wrap_argv(["kiro-cli", "acp"], mode="auto")
+        mock_sb.assert_called_once()
+
+    def test_linux_unaffected(self, tmp_path, monkeypatch):
+        """Mutual exclusion is macOS-only — Linux namespace path unchanged."""
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "linux")
+        with patch("kiro_crew.sandbox.detect_backend", return_value="namespace"), patch(
+            "kiro_crew.sandbox.namespace_argv",
+            return_value=["/bin/sh", "/tmp/launcher.sh", "kiro-cli"],
+        ) as mock_ns:
+            wrap_argv(["kiro-cli", "acp"], mode="auto")
+        mock_ns.assert_called_once()
+
+    def test_sel_failure_refuses_delegation_falls_back_to_seatbelt(self, tmp_path, monkeypatch):
+        """Audit-or-deny: if the SEL audit cannot be written, the delegation
+        is refused and the spawn falls back to KiroCrew's own seatbelt."""
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
+        with patch("kiro_crew.sel.sel", side_effect=RuntimeError("audit down")), patch(
+            "kiro_crew.sandbox.sandbox_exec_argv",
+            return_value=(["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli", "acp"], "/tmp/p.sb"),
+        ) as mock_sb:
+            argv, cleanup = wrap_argv(["kiro-cli", "acp"], mode="auto")
+        mock_sb.assert_called_once()
+        assert "sandbox-exec" in argv
+        assert cleanup == "/tmp/p.sb"
+
+    def test_non_dict_json_is_disabled(self, tmp_path, monkeypatch):
+        """Valid-but-non-object JSON must resolve to disabled, not raise."""
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        for content in ("[]", '"hello"', "null", "123"):
+            self._write_settings(tmp_path, monkeypatch, content)
+            assert kiro_internal_sandbox_enabled() is False, content
+
+    def test_symlink_to_sensitive_path_is_disabled(self, tmp_path, monkeypatch):
+        """A settings path symlinked into a sensitive location is refused by
+        the hooks-routed read and resolves to disabled (never crashes).
+
+        HOME is relocated to tmp_path because is_sensitive_path anchors its
+        deny list at the user's home directory."""
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        sensitive = tmp_path / ".aws" / "credentials"
+        sensitive.parent.mkdir()
+        sensitive.write_text('{"sandbox": true}')
+        link = tmp_path / "amazon-internal.json"
+        link.symlink_to(sensitive)
+        monkeypatch.setattr("kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH", str(link))
+        assert kiro_internal_sandbox_enabled() is False
+
+    def test_sel_failure_does_not_burn_warn_once_flag(self, tmp_path, monkeypatch, caplog):
+        """A SEL-failed attempt falls back to seatbelt WITHOUT consuming the
+        warn-once flag; the first real delegation afterwards still warns."""
+        import logging
+
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.sandbox._kiro_delegation_warned", False)
+
+        # First call: SEL down -> seatbelt fallback, no delegation warning.
+        with patch("kiro_crew.sel.sel", side_effect=RuntimeError("audit down")), patch(
+            "kiro_crew.sandbox.sandbox_exec_argv",
+            return_value=(["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli"], "/tmp/p.sb"),
+        ):
+            wrap_argv(["kiro-cli", "acp"], mode="auto")
+        import kiro_crew.sandbox as sb
+
+        assert sb._kiro_delegation_warned is False
+
+        # Second call: SEL healthy -> delegation proceeds AND warns once.
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.sandbox"):
+            with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+                argv, cleanup = wrap_argv(["kiro-cli", "acp"], mode="auto")
+        assert "sandbox-exec" not in argv
+        assert cleanup is None
+        assert sb._kiro_delegation_warned is True
+        assert any("delegating" in r.message for r in caplog.records)
