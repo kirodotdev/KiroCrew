@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld("updateAPI", {
     return () => ipcRenderer.removeListener("update-state", handler);
   },
   check: () => ipcRenderer.invoke("update:check"),
+  download: () => ipcRenderer.invoke("update:download"),
   install: () => ipcRenderer.invoke("update:install"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
 });

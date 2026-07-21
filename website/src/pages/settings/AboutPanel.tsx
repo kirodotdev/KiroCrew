@@ -10,9 +10,10 @@ import { api, ApiError } from '../../api/client'
 import { sanitize } from '../../api/helpers'
 
 type UpdateState = {
-  state: 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
+  state: 'checking' | 'found' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
   version?: string
   notes?: string
+  pubDate?: string
   channel?: string
   message?: string
 }
@@ -28,6 +29,8 @@ type UpdateInfo = {
 type UpdateAPI = {
   onState: (cb: (payload: UpdateState) => void) => (() => void)
   check: () => Promise<unknown>
+  download: () => Promise<unknown>
+  install: () => Promise<unknown>
   getInfo: () => Promise<UpdateInfo>
 }
 
@@ -90,25 +93,68 @@ export function AboutPanel() {
     mutationFn: () => desktopApi!.check(),
     onMutate: () => queryClient.setQueryData(['update-state'], null),
   })
+  // Explicit consent actions (macOS Software Update semantics): downloading
+  // and installing each happen only when the user clicks.
+  const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download() })
+  const installMutation = useMutation({ mutationFn: () => desktopApi!.install() })
 
   const version = info?.version || gatewayVersion || '—'
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   const checking = checkMutation.isPending || updateState?.state === 'checking'
 
-  // Desktop status line under the Check button.
+  // Desktop status line under the Check button (simple states only — the
+  // found/downloading/downloaded lifecycle renders as the update card below).
   let status: React.ReactNode = null
   if (checking) {
     status = <span className="text-muted flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> Checking for updates...</span>
   } else if (updateState?.state === 'not-available') {
     status = <span className="text-ok flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> You are on the latest version.</span>
-  } else if (updateState?.state === 'available' || updateState?.state === 'downloading') {
-    status = <span className="text-accent flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> Update found — downloading...</span>
-  } else if (updateState?.state === 'downloaded') {
-    status = <span className="text-accent flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> Update {updateState.version || ''} ready — see the install prompt.</span>
   } else if (updateState?.state === 'error') {
     status = <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> Couldn't check for updates{updateState.message ? `: ${updateState.message}` : ''}.</span>
   }
+
+  // Update card: shown whenever an update is found / downloading / ready.
+  const cardState = updateState?.state
+  const showUpdateCard = !checking && (cardState === 'found' || cardState === 'available' || cardState === 'downloading' || cardState === 'downloaded')
+  const cardBusy = cardState === 'available' || cardState === 'downloading'
+  const cardReady = cardState === 'downloaded'
+  const cardPubDate = updateState?.pubDate ? new Date(updateState.pubDate) : null
+  const updateCard: React.ReactNode = showUpdateCard ? (
+    <div className="p-3 bg-bg rounded-lg border border-border flex flex-col gap-2" data-testid="update-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <span className="text-[13px] font-medium text-text flex items-center gap-1.5">
+            <ArrowUp size={13} className="lucide-inline text-accent" />
+            {botName || 'Kiro Crew'} {updateState?.version || 'update'}
+          </span>
+          <span className="text-[12px] text-muted">
+            {channel ? `${channel} channel` : 'update'}
+            {cardPubDate && !isNaN(cardPubDate.getTime()) ? ` · published ${cardPubDate.toLocaleString()}` : ''}
+          </span>
+        </div>
+        <div className="shrink-0">
+          {cardReady ? (
+            <Btn primary onClick={() => installMutation.mutate()} disabled={installMutation.isPending}>
+              <RefreshCw size={13} className={`lucide-inline ${installMutation.isPending ? 'animate-spin' : ''}`} /> Restart & Update
+            </Btn>
+          ) : (
+            <Btn primary onClick={() => downloadMutation.mutate()} disabled={cardBusy || downloadMutation.isPending}>
+              {cardBusy || downloadMutation.isPending
+                ? (<><RefreshCw size={13} className="lucide-inline animate-spin" /> Downloading...</>)
+                : (<><ArrowUp size={13} className="lucide-inline" /> Download & Install</>)}
+            </Btn>
+          )}
+        </div>
+      </div>
+      {cardReady && (
+        <span className="text-[12px] text-muted">Downloaded and verified. The app restarts to finish installing; you can also quit later and it installs on exit.</span>
+      )}
+      {updateState?.notes ? (
+        <div className="p-2.5 bg-card rounded-md border border-border max-h-40 overflow-y-auto text-[12px] text-text whitespace-pre-wrap">{updateState.notes}</div>
+      ) : null}
+    </div>
+  ) : null
 
   // --- Gateway (web dashboard) update flow ---
   // The gateway exposes /api/update/check + /api/update; used when not running
@@ -260,6 +306,7 @@ export function AboutPanel() {
                 </Btn>
               </div>
               {status && <div className="text-[13px]">{status}</div>}
+              {updateCard}
             </div>
           )
         ) : (

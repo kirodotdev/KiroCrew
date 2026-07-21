@@ -26,6 +26,7 @@
 const DEFAULT_FEED_BASE = "https://d28nxu9if70cmc.cloudfront.net/feed";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
+const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
 const FEED_TIMEOUT_MS = 15 * 1000;
 const FEED_MAX_BYTES = 64 * 1024;
 
@@ -184,6 +185,9 @@ function initAutoUpdate(deps) {
   }
 
   let updateReady = false;
+  let downloading = false; // Squirrel download/extract in flight
+  let stagedVersion = null; // version name Squirrel has downloaded + staged
+  let stagedNotes = "";
   let installing = false;
   let quitHandled = false;
 
@@ -196,14 +200,26 @@ function initAutoUpdate(deps) {
   }
 
   let checking = false;
+  let foundFeed = null; // last feed entry surfaced to the user, awaiting consent
   async function safeCheck() {
-    if (checking || updateReady) return;
+    // NOTE: no updateReady short-circuit here. A check ALWAYS consults the
+    // feed and reports state (macOS Software Update semantics) — the silent
+    // `return` this replaces made the Check-for-updates button a dead no-op
+    // once a download had been staged.
+    if (checking) return;
+    if (downloading) {
+      // Squirrel is mid-download/extract. Re-engaging checkForUpdates() now
+      // restarts its update flow and tears down the temp staging dir under
+      // the in-flight extraction (observed in the field as
+      // "ditto: Could not lstat .../update.XXXX/...: No such file or
+      // directory"). Report progress instead; update-downloaded/error will
+      // clear the flag and the next check proceeds normally.
+      log.info("[update] check requested while download in flight — reporting progress");
+      emit("downloading");
+      return;
+    }
     checking = true;
     try {
-      // CLIENT-SIDE version gate (see DEFAULT_FEED_BASE note): fetch the
-      // static feed and only hand off to Squirrel when the version differs.
-      // Squirrel would otherwise re-download on every check forever, since a
-      // static 200 feed always reads as "update available" to it.
       const url = configureFeed(); // re-read flavor/channel each check
       emit("checking");
       const feed = await fetchFeed(url);
@@ -212,17 +228,72 @@ function initAutoUpdate(deps) {
       }
       if (feed.version === app.getVersion()) {
         log.info(`[update] up to date (${feed.version})`);
+        foundFeed = null;
         emit("not-available");
         return;
       }
-      log.info(`[update] feed has ${feed.version} (running ${app.getVersion()}) — engaging Squirrel`);
-      autoUpdater.checkForUpdates();
+      if (updateReady && stagedVersion === feed.version) {
+        // Latest is already downloaded + staged: re-surface the install
+        // prompt instead of doing nothing (and instead of re-downloading).
+        log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
+        emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+        return;
+      }
+      // CONSENT GATE (macOS Software Update semantics): discovery never
+      // downloads. Surface what was found — version, notes, publish date —
+      // and wait for an explicit download() before engaging Squirrel.
+      foundFeed = feed;
+      log.info(`[update] found ${feed.version} (running ${app.getVersion()}) — awaiting user consent`);
+      emit("found", {
+        version: feed.version,
+        notes: typeof feed.notes === "string" ? feed.notes : "",
+        pubDate: typeof feed.pub_date === "string" ? feed.pub_date : "",
+      });
     } catch (err) {
       log.error("[update] check failed", err);
       emit("error", { message: String(err && err.message || err) });
     } finally {
       checking = false;
     }
+  }
+
+  /**
+   * Explicit user consent: engage Squirrel to download (and stage) the
+   * version last surfaced by safeCheck. Never called automatically.
+   */
+  async function startDownload() {
+    if (downloading) { emit("downloading"); return; }
+    if (updateReady && foundFeed && stagedVersion === foundFeed.version) {
+      emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+      return;
+    }
+    if (updateReady) {
+      // A previously staged bundle was superseded by a newer find: drop the
+      // stale stage so Squirrel re-downloads the newest instead of installing
+      // an already-old build.
+      log.info(`[update] staged ${stagedVersion} superseded — re-downloading`);
+      updateReady = false;
+      stagedVersion = null;
+      stagedNotes = "";
+    }
+    configureFeed();
+    log.info("[update] user consented — engaging Squirrel download");
+    downloading = true;
+    emit("downloading");
+    autoUpdater.checkForUpdates();
+  }
+
+  // ShipIt aborts the bundle swap with "App Still Running Error" (Code=-9)
+  // if ANY instance of the app is alive during its ~25s install window — and
+  // the user silently relaunches into the OLD version. If anything blocks the
+  // Electron quit (a renderer beforeunload, a lingering child holding the
+  // process open), force-exit so this instance is guaranteed gone.
+  function forceExitFailsafe(reason) {
+    const t = setTimeout(() => {
+      log.error(`[update] process still alive ${FORCE_EXIT_AFTER_MS}ms after quitAndInstall (${reason}) — forcing exit so ShipIt can swap`);
+      try { app.exit(0); } catch { process.exit(0); }
+    }, FORCE_EXIT_AFTER_MS);
+    if (typeof t.unref === "function") t.unref();
   }
 
   async function applyUpdateAndRestart() {
@@ -239,6 +310,7 @@ function initAutoUpdate(deps) {
     app.removeListener("before-quit", deferredInstallOnQuit);
     log.info("[update] gateway down — quitAndInstall");
     autoUpdater.quitAndInstall();
+    forceExitFailsafe("manual install");
   }
 
   // If the user chose "Later", install on the natural quit. before-quit can't
@@ -251,6 +323,7 @@ function initAutoUpdate(deps) {
       log.info("[update] deferred install on quit");
       try { await stopGateway(); } catch (err) { log.error("[update] stop on quit errored", err); }
       autoUpdater.quitAndInstall();
+      forceExitFailsafe("deferred install on quit");
     })();
   }
 
@@ -279,12 +352,15 @@ function initAutoUpdate(deps) {
     }
   }
 
-  autoUpdater.on("error", (err) => { log.error("[update] error", err); emit("error", { message: String(err && err.message || err) }); });
+  autoUpdater.on("error", (err) => { downloading = false; log.error("[update] error", err); emit("error", { message: String(err && err.message || err) }); });
   autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });
-  autoUpdater.on("update-not-available", () => { log.info("[update] up to date"); emit("not-available"); });
-  autoUpdater.on("update-available", () => { log.info("[update] available — downloading…"); emit("available"); });
+  autoUpdater.on("update-not-available", () => { downloading = false; log.info("[update] up to date"); emit("not-available"); });
+  autoUpdater.on("update-available", () => { downloading = true; log.info("[update] downloading…"); emit("downloading"); });
   autoUpdater.on("update-downloaded", (_e, notes, name) => {
     updateReady = true;
+    downloading = false;
+    stagedVersion = name || null;
+    stagedNotes = notes || "";
     log.info(`[update] downloaded ${name} — ${uiDriven ? "notifying UI" : "prompting"}`);
     emit("downloaded", { version: name || app.getVersion(), notes: notes || "" });
     if (uiDriven) {
@@ -303,9 +379,12 @@ function initAutoUpdate(deps) {
   if (typeof launchTimer.unref === "function") launchTimer.unref();
   if (typeof pollTimer.unref === "function") pollTimer.unref();
 
-  // Renderer-callable triggers (wired to ipcMain in main.js).
+  // Renderer-callable triggers (wired to ipcMain in main.js). Background
+  // timers only ever DISCOVER (safeCheck emits "found") — downloading
+  // requires the explicit download() consent call.
   return {
     check: () => safeCheck(),
+    download: () => startDownload(),
     install: () => applyUpdateAndRestart(),
     getInfo,
     isReady: () => updateReady,

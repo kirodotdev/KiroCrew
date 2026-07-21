@@ -111,19 +111,26 @@ test("same feed version does NOT engage Squirrel (loop guard)", () =>
     assert.ok(calls.states.includes("not-available"));
   }));
 
-test("different feed version engages Squirrel with the static feed URL", () =>
+test("newer feed version surfaces 'found' and does NOT download until consent", () =>
   withDarwin(async () => {
     const { deps, calls } = makeDeps({
       appVersion: "1.0.0",
-      feed: { version: "1.0.1", url: "https://cdn.example.dev/desktop/stable/1.0.1/KiroCrew.zip" },
+      feed: { version: "1.0.1", url: "https://cdn.example.dev/desktop/stable/1.0.1/KiroCrew.zip", notes: "Fixes things", pub_date: "2026-07-21T18:40:21Z" },
     });
     const u = initAutoUpdate(deps);
     await u.check();
     await new Promise((r) => setImmediate(r));
-    assert.strictEqual(calls.checkForUpdates, 1);
+    // Discovery only: no Squirrel engagement, card metadata surfaced.
+    assert.strictEqual(calls.checkForUpdates, 0);
+    assert.ok(calls.states.includes("found"));
     // Bare-semver running version resolves to the STABLE channel -- the
     // version-derived channel wins over the fixture's "beta" flavor.
     assert.ok(calls.setFeedURL.includes("https://cdn.example.dev/feed/stable/latest-mac.json"));
+    // Explicit consent engages Squirrel.
+    await u.download();
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(calls.checkForUpdates, 1);
+    assert.ok(calls.states.includes("downloading"));
   }));
 
 test("malformed feed surfaces error and does not engage Squirrel", () =>
@@ -162,7 +169,9 @@ test("stamped nightly build tracks the NIGHTLY feed, not stable (no channel migr
     await u.check();
     await new Promise((r) => setImmediate(r));
     assert.ok(calls.setFeedURL.includes("https://cdn.example.dev/feed/nightly/latest-mac.json"));
-    assert.strictEqual(calls.checkForUpdates, 1);
+    // Discovery never downloads (consent gate).
+    assert.strictEqual(calls.checkForUpdates, 0);
+    assert.ok(calls.states.includes("found"));
   }));
 
 test("fetchFeedHttps accepts plain http on loopback (local update harness)", async () => {
@@ -179,3 +188,123 @@ test("fetchFeedHttps accepts plain http on loopback (local update harness)", asy
     srv.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Manual re-check semantics (macOS Software Update style): a check must never
+// be a silent no-op. Regression for the dead Check-for-updates button (silent
+// `if (updateReady) return`) and the stale-staged-bundle install.
+// ---------------------------------------------------------------------------
+
+test("re-check with the staged version still latest RE-SURFACES the downloaded state (no dead button)", () =>
+  withDarwin(async () => {
+    const { deps, calls, handlers } = makeDeps({
+      appVersion: "0.1.0-nightly.20260721061155",
+      feed: { version: "0.1.0-nightly.20260721082353", url: "https://cdn.example.dev/desktop/nightly/x/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    // Simulate Squirrel having downloaded + staged the feed version.
+    handlers["update-downloaded"]({}, "notes", "0.1.0-nightly.20260721082353");
+    calls.states.length = 0;
+    calls.checkForUpdates = 0;
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    // Must not silently no-op, must not re-download; must re-surface install.
+    assert.ok(calls.states.includes("checking"));
+    assert.ok(calls.states.includes("downloaded"));
+    assert.strictEqual(calls.checkForUpdates, 0);
+  }));
+
+test("stale staged bundle: check surfaces the newer version; consented download supersedes the stage", () =>
+  withDarwin(async () => {
+    const { deps, calls, handlers } = makeDeps({
+      appVersion: "0.1.0-nightly.20260721042000",
+      feed: { version: "0.1.0-nightly.20260721082353", url: "https://cdn.example.dev/desktop/nightly/x/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    // An OLDER version was staged earlier in the day.
+    handlers["update-downloaded"]({}, "notes", "0.1.0-nightly.20260721061155");
+    calls.states.length = 0;
+    calls.checkForUpdates = 0;
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    // The check must NOT re-surface the stale stage as installable, and must
+    // not download on its own: it surfaces the newest version for consent.
+    assert.strictEqual(calls.checkForUpdates, 0);
+    assert.ok(!calls.states.includes("downloaded"));
+    assert.ok(calls.states.includes("found"));
+    // Consent: the stale stage is dropped and Squirrel re-downloads.
+    await u.download();
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(calls.checkForUpdates, 1);
+  }));
+
+test("re-check when already up to date reports not-available even with a stale updateReady flag", () =>
+  withDarwin(async () => {
+    const { deps, calls, handlers } = makeDeps({
+      appVersion: "0.1.0-nightly.20260721082353",
+      feed: { version: "0.1.0-nightly.20260721082353", url: "https://cdn.example.dev/desktop/nightly/x/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    handlers["update-downloaded"]({}, "notes", "0.1.0-nightly.20260721082353");
+    calls.states.length = 0;
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    assert.ok(calls.states.includes("not-available"));
+    assert.strictEqual(calls.checkForUpdates, 0);
+  }));
+
+test("install path arms a force-exit failsafe after quitAndInstall (ShipIt App-Still-Running guard)", () =>
+  withDarwin(async () => {
+    const { deps } = makeDeps({
+      appVersion: "1.0.0",
+      feed: { version: "2.0.0", url: "https://cdn.example.dev/desktop/stable/2.0.0/KiroCrew.zip" },
+    });
+    const events = [];
+    deps.app.exit = (code) => events.push(`exit:${code}`);
+    deps.autoUpdater.quitAndInstall = () => events.push("quitAndInstall");
+    // Capture the failsafe timer instead of waiting 5s of wall clock.
+    const realSetTimeout = global.setTimeout;
+    let failsafe = null;
+    global.setTimeout = (fn, ms, ...rest) => {
+      if (ms === 5000) { failsafe = fn; return { unref: () => {} }; }
+      return realSetTimeout(fn, ms, ...rest);
+    };
+    try {
+      const u = initAutoUpdate(deps);
+      await u.install();
+    } finally {
+      global.setTimeout = realSetTimeout;
+    }
+    assert.deepStrictEqual(events, ["quitAndInstall"]);
+    assert.ok(failsafe, "failsafe timer must be armed");
+    failsafe(); // simulate the app still being alive 5s later
+    assert.deepStrictEqual(events, ["quitAndInstall", "exit:0"]);
+  }));
+
+test("re-check while a download is in flight does NOT re-engage Squirrel (staging-dir race guard)", () =>
+  withDarwin(async () => {
+    const { deps, calls, handlers } = makeDeps({
+      appVersion: "0.1.0-nightly.20260721082353",
+      feed: { version: "0.1.0-nightly.20260721182718", url: "https://cdn.example.dev/desktop/nightly/x/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    // Discovery, then explicit consent starts the download.
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    await u.download();
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(calls.checkForUpdates, 1);
+    handlers["update-available"]();
+    calls.states.length = 0;
+    // Impatient re-check AND re-click mid-download: must NOT restart
+    // Squirrel's flow (that rips the update.XXXX staging dir out from under
+    // ditto) -- both report progress instead.
+    await u.check();
+    await u.download();
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(calls.checkForUpdates, 1);
+    assert.ok(calls.states.includes("downloading"));
+    // Download completes -> flag clears -> ready to install.
+    handlers["update-downloaded"]({}, "notes", "0.1.0-nightly.20260721182718");
+    assert.ok(calls.states.includes("downloaded"));
+  }));

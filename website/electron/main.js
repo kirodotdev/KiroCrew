@@ -1524,6 +1524,7 @@ app.whenReady().then(async () => {
   // Renderer-callable bridges for Settings > About + the UpdateModal.
   ipcMain.handle("update:get-info", () => updater.getInfo());
   ipcMain.handle("update:check", () => { updater.check(); return { ok: true }; });
+  ipcMain.handle("update:download", () => { updater.download(); return { ok: true }; });
   ipcMain.handle("update:install", async () => { await updater.install(); return { ok: true }; });
 
   app.on("activate", () => {
