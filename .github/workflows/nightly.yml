@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+# Single-flight nightly runs. cancel-in-progress also protects the channel
+# feed (feed/nightly/latest-mac.json, last-writer-wins): an overlapping
+# older run is cancelled rather than finishing last and rolling the feed
+# back to an older build for every client.
 concurrency:
   group: nightly-build
   cancel-in-progress: true
@@ -147,6 +151,13 @@ jobs:
           echo "NIGHTLY_VERSION=${NIGHTLY}" >> "$GITHUB_ENV"
           sed -i.bak "s/__version__ = \".*\"/__version__ = \"${NIGHTLY}\"/" src/kiro_crew/__init__.py
           rm -f src/kiro_crew/__init__.py.bak
+          # Stamp the Electron app too: app.getVersion() (from the bundle's
+          # Info.plist, which electron-builder fills from package.json) must
+          # equal the feed version, or the auto-updater's client-side compare
+          # would see a permanent mismatch and re-download the same build on
+          # every check.
+          export STAMP_VERSION="${NIGHTLY}"
+          node -e "const fs=require('fs');const f='website/electron/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.STAMP_VERSION;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
           echo "Building nightly: ${NIGHTLY}"
 
       - name: Build desktop app

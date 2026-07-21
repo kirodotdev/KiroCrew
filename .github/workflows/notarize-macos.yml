@@ -148,23 +148,68 @@ jobs:
           echo "NOTARIZED_KEY=${KEY}" >> "$GITHUB_ENV"
           echo "Notarized artifact: s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}"
 
-      # Feed points at the NOTARIZED artifact -- written only after the
-      # spctl gate above passed.
-      - name: Write update feed
-        if: env.HAS_SIGNING_SECRETS && inputs.write_feed
+      # Public distribution: copy the notarized zip to the public update
+      # bucket (CloudFront + OAC) and write the channel feed there. The
+      # signing bucket stays private and single-purpose (signing material
+      # only) -- clients download exclusively through the CDN.
+      #
+      # The versioned zip key is immutable-cached by CloudFront, so it must
+      # never be republished with different bytes (same class as the cli/*
+      # wheel keys). --if-none-match makes the write conditional; on a 412
+      # (job re-run after a later-step failure) the existing object is a
+      # notarized artifact that already passed the spctl gate on the earlier
+      # attempt, so it is KEPT and the step continues idempotently.
+      - name: Publish notarized artifact to distribution bucket
+        if: env.HAS_SIGNING_SECRETS && inputs.write_feed && vars.CLI_DIST_BUCKET != ''
         run: |
+          set -euo pipefail
+          DESKTOP_KEY="desktop/${CHANNEL}/${VERSION}/${APP_NAME}.zip"
+          set +e
+          PUT_OUT=$(aws s3api put-object \
+            --bucket "${{ vars.CLI_DIST_BUCKET }}" \
+            --key "${DESKTOP_KEY}" \
+            --body work/notarized.zip \
+            --if-none-match '*' \
+            --content-type application/zip \
+            --cache-control "public, max-age=31536000, immutable" 2>&1)
+          RC=$?
+          set -e
+          if [ $RC -ne 0 ]; then
+            if echo "$PUT_OUT" | grep -q "PreconditionFailed"; then
+              echo "Key already published (job re-run) -- keeping existing notarized bytes: ${DESKTOP_KEY}"
+            else
+              echo "$PUT_OUT"
+              exit $RC
+            fi
+          fi
+          echo "DESKTOP_KEY=${DESKTOP_KEY}" >> "$GITHUB_ENV"
+          echo "Public artifact: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
+
+      # Feed points at the NOTARIZED artifact on the CDN -- written only
+      # after the spctl gate above passed, and only after the artifact
+      # itself is publicly downloadable (feed-before-artifact would hand
+      # clients a 403/404). The feed key is mutable and served no-cache by
+      # the feed/* CloudFront behavior, so overwriting is safe. Out-of-order
+      # overwrites (older run finishing last -> channel rollback) are
+      # prevented by the CALLER workflows' concurrency groups, which
+      # serialize runs per channel -- not by version comparison here, which
+      # would itself be a read-then-write race.
+      - name: Write update feed
+        if: env.HAS_SIGNING_SECRETS && inputs.write_feed && vars.CLI_DIST_BUCKET != ''
+        run: |
+          set -euo pipefail
           cat > /tmp/latest-mac.json <<EOF
           {
             "version": "${VERSION}",
-            "url": "https://${{ secrets.AWS_SIGNING_BUCKET }}.s3.us-west-2.amazonaws.com/${NOTARIZED_KEY}",
+            "url": "${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}",
             "name": "${VERSION}",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
           aws s3 cp /tmp/latest-mac.json \
-            "s3://${{ secrets.AWS_SIGNING_BUCKET }}/feed/${CHANNEL}/latest-mac.json" \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/latest-mac.json" \
             --content-type application/json
-          echo "Feed written: feed/${CHANNEL}/latest-mac.json -> ${NOTARIZED_KEY}"
+          echo "Feed written: feed/${CHANNEL}/latest-mac.json -> ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
 
       - name: Attach notarized artifact to workflow run
         if: env.HAS_SIGNING_SECRETS
@@ -182,4 +227,7 @@ jobs:
             echo "- Version: ${VERSION}"
             echo "- Input: \`${SIGNED_ZIP_KEY}\`"
             echo "- Output: \`${NOTARIZED_KEY}\` (stapled, Gatekeeper-verified)"
+            if [ -n "${DESKTOP_KEY:-}" ]; then
+              echo "- Public: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
