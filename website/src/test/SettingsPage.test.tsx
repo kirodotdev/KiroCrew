@@ -23,6 +23,7 @@ vi.mock('../pages/settings/InstancesPanel', () => ({ InstancesPanel: () => <div 
 vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div data-testid="security-panel" /> }))
 vi.mock('../pages/settings/NotificationsPanel', () => ({ NotificationsPanel: () => <div data-testid="notifications-panel" /> }))
 vi.mock('../pages/settings/SlackPanel', () => ({ SlackPanel: () => <div data-testid="slack-panel" /> }))
+vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data-testid="discord-panel" /> }))
 vi.mock('../pages/settings/GeneralPanel', () => ({ GeneralPanel: () => <div data-testid="general-panel" /> }))
 
 vi.mock('../store', () => ({ useAppSelector: () => '1.0.0' }))
@@ -65,5 +66,15 @@ describe('SettingsPage tabs', () => {
   it('renders the BrowserPanel when the browser tab is active', () => {
     renderAt('/settings?tab=browser')
     expect(screen.getByTestId('browser-panel')).toBeInTheDocument()
+  })
+
+  it('lists the Discord tab', () => {
+    renderAt('/settings')
+    expect(screen.getByText('Discord')).toBeInTheDocument()
+  })
+
+  it('renders the DiscordPanel when the discord tab is active', () => {
+    renderAt('/settings?tab=discord')
+    expect(screen.getByTestId('discord-panel')).toBeInTheDocument()
   })
 })

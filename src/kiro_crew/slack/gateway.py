@@ -52,6 +52,7 @@ from kiro_crew.autonudge import enabled as autonudge_enabled
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
+    CRED_DISCORD_BOT_TOKEN,
     CRED_OWNER_ID,
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
@@ -154,6 +155,7 @@ from kiro_crew.taskrunner import TaskRunner
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
+    from kiro_crew.discord.client import DiscordClient
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.task_models import Task
     from kiro_crew.telegram.client import TelegramClient
@@ -492,6 +494,17 @@ class GatewayOrchestrator:
         self._telegram_enabled = bool(cfg.telegram.enabled and self._telegram_bot_token)
         self._telegram_allowed_user_ids: list[int] = list(cfg.telegram.allowed_user_ids)
         self._telegram_client: "TelegramClient | None" = None
+        # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
+        # cfg.discord.bot_token; all other settings come from the typed
+        # cfg.discord dataclass (mirrors the Telegram block above).
+        self._discord_bot_token = (
+            creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
+        )
+        self._discord_enabled = bool(cfg.discord.enabled and self._discord_bot_token)
+        self._discord_allowed_user_ids: list[str] = [
+            str(u) for u in cfg.discord.allowed_user_ids
+        ]
+        self._discord_client: "DiscordClient | None" = None
         self.slack_command = cfg.slack.command
 
         # Services (initialized in start())
@@ -3581,6 +3594,8 @@ class GatewayOrchestrator:
             cleanup_tasks.append(asyncio.wait_for(self._wecom_client.close(), timeout=2.0))
         if self._telegram_client:
             cleanup_tasks.append(asyncio.wait_for(self._telegram_client.close(), timeout=2.0))
+        if self._discord_client:
+            cleanup_tasks.append(asyncio.wait_for(self._discord_client.close(), timeout=2.0))
         # Cancel background model download if still in flight
         if self._model_download_task is not None and not self._model_download_task.done():
             self._model_download_task.cancel()
@@ -3968,6 +3983,10 @@ class GatewayOrchestrator:
         from kiro_crew.telegram.gateway import maybe_start_telegram
 
         self._telegram_client = await maybe_start_telegram(self)
+        # Discord channel — guarded no-op unless enabled + token present.
+        from kiro_crew.discord.gateway import maybe_start_discord
+
+        self._discord_client = await maybe_start_discord(self)
 
         # Check for updates before printing URLs
         print("🐾 Checking for updates…")

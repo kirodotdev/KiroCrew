@@ -2637,6 +2637,105 @@
       "defaultValue": 80
     },
     {
+      "path": "discord",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Discord",
+      "help": "Discord bot integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "bot_token": "",
+        "allowed_user_ids": [],
+        "soft_threshold_pct": 80
+      }
+    },
+    {
+      "path": "discord.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Discord channel (Gateway WebSocket, DM-only). Requires DISCORD_BOT_TOKEN (env/.env) or discord.bot_token.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "discord.bot_token",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [
+        "discord"
+      ],
+      "label": "Bot Token",
+      "help": "Discord bot token from the Developer Portal (Bot page). Prefer the DISCORD_BOT_TOKEN credential (env/.env) over storing it here.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "discord.allowed_user_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Allowed User IDs",
+      "help": "Discord user IDs (snowflakes) permitted to DM the bot. Empty = deny all (fail closed): anyone sharing a server with the bot can DM it.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "discord.allowed_user_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "discord.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "Prompt the user to !compact or !new when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
       "path": "dashboard",
       "kind": "core",
       "type": "object",

@@ -1301,6 +1301,13 @@ class DashboardState:
         # Short reason from the failed connect attempt (e.g. "invalid_auth"),
         # empty when connected or never attempted. Read by the settings badge.
         self.slack_connect_error: str = ""
+        # True once the Discord channel's Gateway WebSocket transport started
+        # this session (set by maybe_start_discord). Read by the Discord
+        # settings status badge.
+        self.discord_connected: bool = False
+        # Short reason when the Discord channel failed to start, empty when
+        # running or never attempted. Read by the settings badge.
+        self.discord_connect_error: str = ""
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated

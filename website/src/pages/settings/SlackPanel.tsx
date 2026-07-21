@@ -54,8 +54,8 @@ function connectionHint(config: SlackConfigData): string {
   return 'Tokens are saved but not yet active. Restart the gateway to connect.'
 }
 
-/** Editor for a list of plain string IDs (channels, enterprise orgs). */
-function TagListEditor({ label, description, values, placeholder, onChange, validate, readOnly }: {
+/** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs). */
+export function TagListEditor({ label, description, values, placeholder, onChange, validate, readOnly }: {
   label: string
   description?: string
   values: string[]

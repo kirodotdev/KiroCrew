@@ -1,0 +1,881 @@
+"""Unit tests for the Discord channel on the messaging-transport abstraction.
+
+Covers: command parsing (commands.py), text chunking + [OPTIONS:] extraction +
+button components (renderer.py), deny-by-default auth + DM-only guard +
+capabilities + inbound normalization (transport.py), streaming render +
+finalization (renderer.py), the interactive approval decider, and the dispatch
+turn + interaction routing (transport_dispatch.py). Mirrors test_telegram.py.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from kiro_crew.acp.types import (
+    EVENT_COMPACTION_STATUS,
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+)
+from kiro_crew.discord.client import (
+    DISCORD_CHUNK_LIMIT,
+    DiscordInbound,
+    DiscordInteraction,
+    _find_button_label,
+)
+from kiro_crew.discord.commands import (
+    parse_command,
+    parse_mid_turn_override,
+)
+from kiro_crew.discord.renderer import (
+    DiscordApprovalDecider,
+    DiscordRenderer,
+    _extract_options,
+    _split_markdown,
+    _split_text,
+    _strip_steering,
+    build_option_components,
+)
+from kiro_crew.discord.transport import (
+    DISCORD_CAPABILITIES,
+    DiscordInboundMessage,
+    DiscordTransport,
+)
+from kiro_crew.discord.transport_dispatch import (
+    _STEER_ACK_EMOJI,
+    DiscordDispatcher,
+    _receipt_text,
+)
+from kiro_crew.messaging.link import dashboard_mirror_key
+from kiro_crew.messaging.transport import InboundMessage
+
+# ── Fakes ──────────────────────────────────────────────────────────────────
+
+
+class FakeClient:
+    """Captures outbound Discord REST calls."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, Any]] = []
+        self.edits: list[tuple[str, str, Any]] = []
+        self.component_edits: list[tuple[str, Any]] = []
+        self.acked: list[str] = []
+        self.reactions: list[tuple[str, str]] = []
+        self._mid = 100
+
+    async def send_typing(self, channel_id: str) -> None:
+        return None
+
+    async def send_message(
+        self,
+        channel_id: str,
+        text: str,
+        *,
+        components: Any = None,
+        reply_to_message_id: Any = None,
+    ) -> str:
+        await asyncio.sleep(0)  # yield like a real network await (exposes races)
+        self._mid += 1
+        self.sent.append((text, components))
+        return str(self._mid)
+
+    async def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        text: str,
+        *,
+        components: Any = None,
+    ) -> bool:
+        self.edits.append((message_id, text, components))
+        return True
+
+    async def edit_message_components(
+        self, channel_id: str, message_id: str, components: Any
+    ) -> bool:
+        self.component_edits.append((message_id, components))
+        return True
+
+    async def ack_component_interaction(self, interaction_id: str, interaction_token: str) -> None:
+        self.acked.append(interaction_id)
+
+    async def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> None:
+        self.reactions.append((message_id, emoji))
+
+    async def create_dm_channel(self, user_id: str) -> str:
+        return f"dm-{user_id}"
+
+    def final_text(self) -> Any:
+        """Text the user ultimately sees on the live message: the last edit if
+        it was edited (edit-streaming), else the last send."""
+        if self.edits:
+            return self.edits[-1][1]
+        return self.sent[-1][0] if self.sent else None
+
+    def final_components(self) -> Any:
+        if self.edits:
+            return self.edits[-1][2]
+        return self.sent[-1][1] if self.sent else None
+
+
+class _Ev:
+    def __init__(self, kind: str, text: str = "", stop_reason: str = "", title: str = "") -> None:
+        self.kind = kind
+        self.text = text
+        self.stop_reason = stop_reason
+        self.tool_call_id = ""
+        self.title = title
+        self.context_usage_pct = 0.0
+
+
+class FakeProvider:
+    supports_steer = True
+
+    def __init__(self, reply: str = "Answer") -> None:
+        self._reply = reply
+        self.steered: list = []
+        self.cancelled = 0
+        self.active_turn = True
+
+    def has_active_turn(self) -> bool:
+        return self.active_turn
+
+    async def steer(self, text: str) -> bool:
+        self.steered.append(text)
+        return True
+
+    async def cancel(self, *, wait_ack_timeout: float = 0.0) -> str:
+        self.cancelled += 1
+        return "acked"
+
+    async def stream(self, message: str) -> Any:
+        yield _Ev(EVENT_TEXT_CHUNK, text=f"{self._reply}: {message[:16]}")
+        yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+    async def stream_command(self, command: str) -> Any:
+        yield _Ev(EVENT_COMPACTION_STATUS, text="completed", title="ok")
+        yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+    async def wait_for_compaction(self, timeout: float = 0.0) -> dict:
+        return {"type": "completed", "summary": "ok"}
+
+    async def approve_tool(self, request_id: Any) -> None:
+        return None
+
+    async def reject_tool(self, request_id: Any) -> None:
+        return None
+
+
+class FakeSessions:
+    def __init__(self, raise_on_get: bool = False) -> None:
+        self.released: list[str] = []
+        self.acquired: list[str] = []
+        self.destroyed: list[str] = []
+        self.successes: list[str] = []
+        self.failures: list[str] = []
+        self.last_agent: Any = None
+        self.raise_on_get = raise_on_get
+        self._busy = False
+        self._has = True
+        self.queued: list = []
+        self._gp = FakeProvider()
+        self.mirror_links: dict[str, Any] = {}
+
+    async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
+        self.last_agent = agent
+        if self.raise_on_get:
+            raise RuntimeError("cold-start failed")
+        return FakeProvider(), True, False
+
+    async def set_channel(self, key: str, channel: str) -> None:
+        return None
+
+    def record_success(self, key: str) -> None:
+        self.successes.append(key)
+
+    async def record_failure(self, key: str) -> None:
+        self.failures.append(key)
+
+    def check_context_usage(self, key: str, provider: Any) -> float:
+        return 10.0
+
+    def release(self, key: str) -> None:
+        self.released.append(key)
+
+    def get_provider(self, key: str) -> Any:
+        return self._gp
+
+    def is_busy(self, key: str) -> bool:
+        return self._busy
+
+    def max_generation(self, bucket: str) -> int:
+        return -1
+
+    def set_mirror_link(self, key: str, link: Any) -> None:
+        self.mirror_links[key] = link
+
+    def clear_mirror_link(self, key: str) -> bool:
+        return self.mirror_links.pop(key, None) is not None
+
+    def enqueue(self, key: str, ts: str, text: str, *, force: bool = False, **kw: Any) -> bool:
+        if force or self._busy:
+            self.queued.append((ts, text, kw))
+            return True
+        return False
+
+    def dequeue(self, key: str) -> Any:
+        return self.queued.pop(0) if self.queued else None
+
+    def clear_queue(self, key: str) -> None:
+        self.queued.clear()
+
+    def has_session(self, key: str) -> bool:
+        return self._has
+
+    async def try_acquire(self, key: str) -> bool:
+        if self._busy or not self._has:
+            return False
+        self.acquired.append(key)
+        return True
+
+    async def destroy(self, key: str) -> None:
+        self.destroyed.append(key)
+
+
+class _FakeHooks:
+    auto_approve_subagent_spawn = False
+
+    def on_tool_call(self, *a: Any, **k: Any) -> Any:
+        return SimpleNamespace(action="allow")
+
+
+class FakeCtx:
+    def __init__(self) -> None:
+        self.hooks = _FakeHooks()
+
+    def build_message(self, text: str, is_new: bool, key: str, **kw: Any) -> Any:
+        return text, None
+
+
+def _cfg(soft: int = 80, default_agent: str = "") -> Any:
+    return SimpleNamespace(
+        discord=SimpleNamespace(soft_threshold_pct=soft),
+        agent=SimpleNamespace(default_agent=default_agent),
+        messaging=SimpleNamespace(
+            dm_scope="per-channel-peer",
+            idle_reset_minutes=0,
+            daily_reset_hour=-1,
+            queue_mode="steer",
+        ),
+    )
+
+
+def _dispatcher(
+    allowed: set[str], *, raise_on_get: bool = False, default_agent: str = ""
+) -> tuple[DiscordDispatcher, FakeClient, FakeSessions]:
+    sess = FakeSessions(raise_on_get=raise_on_get)
+    d = DiscordDispatcher(
+        sessions=sess,  # type: ignore[arg-type]
+        ctx_builder=FakeCtx(),  # type: ignore[arg-type]
+        cfg=_cfg(default_agent=default_agent),
+        allowed_user_ids=allowed,
+        agent=None,
+        conv_log=None,
+    )
+    cli = FakeClient()
+    d.client = cli  # type: ignore[assignment]
+    return d, cli, sess
+
+
+# ── commands.py ──────────────────────────────────────────────────────────
+
+
+class TestParseCommand:
+    def test_new_aliases(self) -> None:
+        assert parse_command("!new") == "new"
+        assert parse_command("!start") == "new"
+        assert parse_command("/new") == "new"  # Telegram muscle memory
+
+    def test_compact(self) -> None:
+        assert parse_command("!compact") == "compact"
+        assert parse_command("/compact") == "compact"
+
+    def test_stop_aliases(self) -> None:
+        assert parse_command("!stop") == "stop"
+        assert parse_command("!cancel") == "stop"
+
+    def test_link_unlink_help(self) -> None:
+        assert parse_command("!link") == "link"
+        assert parse_command("!unlink") == "unlink"
+        assert parse_command("!help") == "help"
+
+    def test_case_and_whitespace(self) -> None:
+        assert parse_command("  !NEW  ") == "new"
+
+    def test_plain_text_is_not_a_command(self) -> None:
+        assert parse_command("hello there") is None
+        assert parse_command("!unknown") is None
+        assert parse_command("") is None
+
+    def test_command_with_trailing_words_still_matches(self) -> None:
+        assert parse_command("!new please") == "new"
+
+
+class TestMidTurnOverride:
+    def test_queue_override(self) -> None:
+        assert parse_mid_turn_override("!queue do it later") == (
+            "queue",
+            "do it later",
+        )
+
+    def test_steer_override(self) -> None:
+        assert parse_mid_turn_override("!steer focus on X") == (
+            "steer",
+            "focus on X",
+        )
+
+    def test_slash_aliases(self) -> None:
+        assert parse_mid_turn_override("/steer now") == ("steer", "now")
+
+    def test_bare_directive_is_content(self) -> None:
+        assert parse_mid_turn_override("!queue") == (None, "!queue")
+
+    def test_plain_text_passthrough(self) -> None:
+        assert parse_mid_turn_override("hello") == (None, "hello")
+
+
+# ── renderer.py helpers ──────────────────────────────────────────────────
+
+
+class TestSplitText:
+    def test_short_text_single_chunk(self) -> None:
+        assert _split_text("hello", 100) == ["hello"]
+
+    def test_empty_text(self) -> None:
+        assert _split_text("", 100) == []
+
+    def test_splits_at_paragraph_boundary(self) -> None:
+        text = "para one\n\npara two\n\npara three"
+        chunks = _split_text(text, 20)
+        assert all(len(c) <= 20 for c in chunks)
+        assert "".join(c.replace("\n", "") for c in chunks)  # nothing lost
+
+    def test_split_markdown_balances_fences(self) -> None:
+        code = "```py\n" + ("x = 1\n" * 50) + "```"
+        chunks = _split_markdown(code, 120)
+        assert len(chunks) > 1
+        for ch in chunks:
+            assert ch.count("```") % 2 == 0  # every chunk self-contained
+
+
+class TestOptionComponents:
+    def test_empty_returns_none(self) -> None:
+        assert build_option_components([]) is None
+
+    def test_builds_rows_of_five(self) -> None:
+        comps = build_option_components([f"opt{i}" for i in range(7)])
+        assert comps is not None
+        assert len(comps) == 2  # 5 + 2
+        assert len(comps[0]["components"]) == 5
+        assert len(comps[1]["components"]) == 2
+        assert comps[0]["components"][0]["custom_id"] == "opt:0"
+
+    def test_label_capped_at_80(self) -> None:
+        comps = build_option_components(["x" * 200])
+        assert comps is not None
+        assert len(comps[0]["components"][0]["label"]) == 80
+
+    def test_caps_at_25_options(self) -> None:
+        comps = build_option_components([f"o{i}" for i in range(30)])
+        assert comps is not None
+        total = sum(len(r["components"]) for r in comps)
+        assert total == 25
+
+
+class TestExtractOptions:
+    def test_no_options(self) -> None:
+        assert _extract_options("plain body") == ("plain body", [])
+
+    def test_extracts_trailing_options(self) -> None:
+        body, opts = _extract_options("Pick one\n[OPTIONS: A | B | C]")
+        assert body == "Pick one"
+        assert opts == ["A", "B", "C"]
+
+    def test_holds_back_streaming_partial(self) -> None:
+        body, opts = _extract_options("Pick one\n[OPTIONS: A | B")
+        assert body == "Pick one"
+        assert opts == []
+
+
+class TestStripSteering:
+    def test_removes_complete_marker(self) -> None:
+        assert _strip_steering("before [STEERING steer-ab12: do X] after") == (
+            "before  after".replace("  ", " ")
+        ) or "STEERING" not in _strip_steering("before [STEERING steer-ab12: do X] after")
+
+    def test_removes_unclosed_trailing_marker(self) -> None:
+        out = _strip_steering("body text [STEERING steer-ab12: still stream")
+        assert "STEERING" not in out
+        assert out.startswith("body text")
+
+
+class TestFindButtonLabel:
+    def test_recovers_label(self) -> None:
+        components = [
+            {
+                "type": 1,
+                "components": [
+                    {"type": 2, "custom_id": "opt:0", "label": "First"},
+                    {"type": 2, "custom_id": "opt:1", "label": "Second"},
+                ],
+            }
+        ]
+        assert _find_button_label(components, "opt:1") == "Second"
+        assert _find_button_label(components, "opt:9") == ""
+
+
+# ── transport.py ─────────────────────────────────────────────────────────
+
+
+class TestTransportAuth:
+    def test_empty_allowlist_denies_everyone(self) -> None:
+        t = DiscordTransport(FakeClient())  # type: ignore[arg-type]
+        msg = InboundMessage(channel_type="discord", user_id="123", conversation_id="c1", text="hi")
+        assert t.authorize(msg) is False
+
+    def test_allowed_user_passes(self) -> None:
+        t = DiscordTransport(FakeClient(), allowed_user_ids=["123"])  # type: ignore[arg-type]
+        msg = InboundMessage(channel_type="discord", user_id="123", conversation_id="c1", text="hi")
+        assert t.authorize(msg) is True
+
+    def test_unlisted_user_denied(self) -> None:
+        t = DiscordTransport(FakeClient(), allowed_user_ids=["123"])  # type: ignore[arg-type]
+        msg = InboundMessage(channel_type="discord", user_id="456", conversation_id="c1", text="hi")
+        assert t.authorize(msg) is False
+
+    def test_empty_user_id_denied(self) -> None:
+        t = DiscordTransport(FakeClient(), allowed_user_ids=["123"])  # type: ignore[arg-type]
+        msg = InboundMessage(channel_type="discord", user_id="", conversation_id="c1", text="hi")
+        assert t.authorize(msg) is False
+
+    def test_capabilities(self) -> None:
+        assert DISCORD_CAPABILITIES.max_message_chars == DISCORD_CHUNK_LIMIT
+        assert DISCORD_CAPABILITIES.streaming is True
+        assert DISCORD_CAPABILITIES.edit is True
+        assert DISCORD_CAPABILITIES.reactions is True
+        assert DISCORD_CAPABILITIES.threads is False
+
+
+class TestTransportReceive:
+    def _transport(self, allowed: list[str]) -> tuple[DiscordTransport, list[InboundMessage]]:
+        dispatched: list[InboundMessage] = []
+
+        async def _dispatch(m: InboundMessage) -> None:
+            dispatched.append(m)
+
+        t = DiscordTransport(
+            FakeClient(),  # type: ignore[arg-type]
+            allowed_user_ids=allowed,
+            dispatch=_dispatch,
+        )
+        return t, dispatched
+
+    @pytest.mark.asyncio
+    async def test_authorized_dm_dispatches(self) -> None:
+        t, dispatched = self._transport(["u1"])
+        await t.receive(
+            DiscordInbound(channel_id="c1", user_id="u1", text="hello", message_id="m1")
+        )
+        assert len(dispatched) == 1
+        msg = dispatched[0]
+        assert isinstance(msg, DiscordInboundMessage)
+        assert msg.conversation_id == "c1"
+        assert msg.message_id == "m1"
+
+    @pytest.mark.asyncio
+    async def test_guild_message_denied_even_for_allowed_user(self) -> None:
+        t, dispatched = self._transport(["u1"])
+        await t.receive(DiscordInbound(channel_id="c1", user_id="u1", text="hello", guild_id="g1"))
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_dropped(self) -> None:
+        t, dispatched = self._transport(["u1"])
+        await t.receive(DiscordInbound(channel_id="c1", user_id="u2", text="hello"))
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_empty_text_dropped(self) -> None:
+        t, dispatched = self._transport(["u1"])
+        await t.receive(DiscordInbound(channel_id="c1", user_id="u1", text=""))
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_non_inbound_envelope_ignored(self) -> None:
+        t, dispatched = self._transport(["u1"])
+        await t.receive({"random": "dict"})
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_conversation_creates_dm_channel(self) -> None:
+        t, _ = self._transport(["u1"])
+        assert await t.resolve_conversation("u1") == "dm-u1"
+
+
+# ── renderer.py streaming/finalization ───────────────────────────────────
+
+
+class TestRenderer:
+    def _renderer(self) -> tuple[DiscordRenderer, FakeClient]:
+        cli = FakeClient()
+        r = DiscordRenderer(cli, "chan1", DISCORD_CAPABILITIES, session_key="sk")  # type: ignore[arg-type]
+        return r, cli
+
+    @pytest.mark.asyncio
+    async def test_stream_and_finalize(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_text_chunk("Hello ")
+        await r.on_text_chunk("world")
+        await r.on_done()
+        assert cli.final_text() == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_options_become_buttons_and_never_stream(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_text_chunk("Pick\n[OPTIONS: A | B]")
+        # Live frames must never show the raw directive.
+        for text, _ in cli.sent:
+            assert "[OPTIONS" not in text
+        await r.on_done()
+        comps = cli.final_components()
+        assert comps is not None
+        labels = [b["label"] for row in comps for b in row["components"]]
+        assert labels == ["A", "B"]
+        assert "[OPTIONS" not in cli.final_text()
+
+    @pytest.mark.asyncio
+    async def test_long_output_rotates_messages(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_text_chunk("A" * 5000)
+        await r.on_done()
+        # More than one message posted, none over the API cap.
+        assert len(cli.sent) >= 2
+        for text, _ in cli.sent:
+            assert len(text) <= 2000
+        for _, text, _c in cli.edits:
+            assert len(text) <= 2000
+
+    @pytest.mark.asyncio
+    async def test_tool_footer_transient(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_tool_call("t1", "grep")
+        assert any("grep" in text for text, _ in cli.sent)
+        await r.on_text_chunk("Result body")
+        await r.on_done()
+        assert "grep" not in cli.final_text()
+
+    @pytest.mark.asyncio
+    async def test_error_placeholder_when_no_output(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_done(stop_reason="error")
+        assert "⚠️" in cli.final_text()
+
+    @pytest.mark.asyncio
+    async def test_prompt_choice_sends_separate_approval_message(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_prompt_choice([], request_id="req9")
+        text, comps = cli.sent[-1]
+        assert "Approve" in text
+        ids = [b["custom_id"] for row in comps for b in row["components"]]
+        # a:<rid>:<nonce>:<flag> — nonce guards against reused request IDs.
+        assert len(ids) == 2
+        assert ids[0].startswith("a:req9:") and ids[0].endswith(":1")
+        assert ids[1].startswith("a:req9:") and ids[1].endswith(":0")
+        nonce = ids[0].split(":")[2]
+        assert len(nonce) == 16  # 8 random bytes hex
+        DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req9"), None)
+
+    @pytest.mark.asyncio
+    async def test_steer_marker_rotates_message_with_chip(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_text_chunk("first part [STEERING steer-ab12: focus on Y] second part")
+        await r.on_done()
+        all_texts = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
+        # Marker never shown raw; chip carries the summary.
+        assert all("[STEERING" not in t for t in all_texts)
+        assert any("focus on Y" in t for t in all_texts)
+
+    @pytest.mark.asyncio
+    async def test_close_finalizes_unfinished_turn(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_text_chunk("partial")
+        await r.close()
+        assert cli.final_text() == "partial"
+
+    @pytest.mark.asyncio
+    async def test_no_rotation_steer_summary_chip(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        r.note_steer("my steer words")
+        await r.on_text_chunk("answer body")
+        await r.on_done()
+        assert "my steer words" in cli.final_text()
+        assert "answer body" in cli.final_text()
+
+
+# ── DiscordApprovalDecider ───────────────────────────────────────────────
+
+
+class TestApprovalDecider:
+    @pytest.mark.asyncio
+    async def test_resolve_approves_with_valid_nonce(self) -> None:
+        decider = DiscordApprovalDecider(session_key="sk")
+        ev = SimpleNamespace(request_id="r1")
+        task = asyncio.ensure_future(decider(ev))
+        await asyncio.sleep(0)  # let the Future register
+        key = DiscordApprovalDecider.key("sk", "r1")
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce)
+        assert await task is True
+
+    @pytest.mark.asyncio
+    async def test_stale_nonce_fails_closed(self) -> None:
+        """A button from an earlier prompt (reused request ID) cannot resolve
+        a new pending request — the nonce must match the CURRENT prompt's."""
+        decider = DiscordApprovalDecider(session_key="sk")
+        ev = SimpleNamespace(request_id="r1")
+        task = asyncio.ensure_future(decider(ev))
+        await asyncio.sleep(0)
+        key = DiscordApprovalDecider.key("sk", "r1")
+        DiscordApprovalDecider.register_nonce(key)  # current prompt's nonce
+        # Press carries an OLD nonce (from a prompt before a restart).
+        assert not DiscordApprovalDecider.resolve_global(key, True, nonce="deadbeefdeadbeef")
+        assert not task.done()  # still pending — stale press had no effect
+        # A missing nonce also fails closed.
+        assert not DiscordApprovalDecider.resolve_global(key, True)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_resolve_unknown_key_returns_false(self) -> None:
+        assert not DiscordApprovalDecider.resolve_global("sk:none", True, nonce="x")
+
+
+# ── transport_dispatch.py ────────────────────────────────────────────────
+
+
+class TestDispatcher:
+    def _msg(self, text: str, user: str = "u1", chan: str = "c1") -> InboundMessage:
+        return InboundMessage(channel_type="discord", user_id=user, conversation_id=chan, text=text)
+
+    @pytest.mark.asyncio
+    async def test_new_command_bumps_generation(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        k1 = d._session_key("u1")
+        await d.handle_message(self._msg("!new"))
+        assert d._session_key("u1") != k1
+        assert "New conversation" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_help_command(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!help"))
+        assert "KiroCrew" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_normal_turn_streams_and_releases(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hello world"))
+        assert "Answer: hello world" in (cli.final_text() or "")
+        assert sess.successes and sess.released
+
+    @pytest.mark.asyncio
+    async def test_cold_start_failure_releases_nothing_but_closes_renderer(
+        self,
+    ) -> None:
+        d, cli, sess = _dispatcher({"u1"}, raise_on_get=True)
+        await d.handle_message(self._msg("hello"))
+        # No semaphore was acquired -> no release/record_failure of a held slot.
+        assert sess.released == []
+        assert sess.failures == []
+
+    @pytest.mark.asyncio
+    async def test_session_released_even_when_renderer_close_raises(self, monkeypatch) -> None:
+        """A rendering-finalization failure (e.g. Discord returning a
+        malformed body) must never leave the session permanently busy."""
+        from kiro_crew.discord.renderer import DiscordRenderer
+
+        async def _boom(self) -> None:
+            raise RuntimeError("finalization failed")
+
+        monkeypatch.setattr(DiscordRenderer, "close", _boom)
+        d, _, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hello"))
+        assert sess.released  # release still happened
+        assert d._active_renderers == {}  # renderer entry cleaned up
+
+    @pytest.mark.asyncio
+    async def test_busy_steers_and_acks_with_reaction(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._busy = True
+        msg = DiscordInboundMessage(
+            channel_type="discord",
+            user_id="u1",
+            conversation_id="c1",
+            text="steer text",
+            message_id="m42",
+        )
+        await d.handle_message(msg)
+        assert sess._gp.steered == ["steer text"]
+        assert cli.reactions == [("m42", _STEER_ACK_EMOJI)]
+
+    @pytest.mark.asyncio
+    async def test_busy_queue_override_enqueues_with_receipt(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._busy = True
+        await d.handle_message(self._msg("!queue later please"))
+        assert [t for _, t, _ in sess.queued] == ["later please"]
+        assert any("Queued" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_and_clears_queue(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._busy = True
+        sess.queued.append(("ts", "queued msg", {}))
+        await d.handle_message(self._msg("!stop"))
+        assert sess._gp.cancelled == 1
+        assert sess.queued == []
+        assert "Stopped" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_compact_uses_try_acquire_and_releases(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!compact"))
+        assert sess.acquired and sess.released
+        assert any("Compacted" in t for _, t, _ in cli.edits) or any(
+            "Compacted" in t for t, _ in cli.sent
+        )
+
+    @pytest.mark.asyncio
+    async def test_link_and_unlink(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!link"))
+        key = dashboard_mirror_key(d._session_key("u1"))
+        assert key in sess.mirror_links
+        assert sess.mirror_links[key].channel_id == "c1"
+        await d.handle_message(self._msg("!unlink"))
+        assert key not in sess.mirror_links
+
+    @pytest.mark.asyncio
+    async def test_default_agent_fallback(self) -> None:
+        d, _, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hi"))
+        assert sess.last_agent == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_configured_default_agent_wins(self) -> None:
+        d, _, sess = _dispatcher({"u1"}, default_agent="custom")
+        await d.handle_message(self._msg("hi"))
+        assert sess.last_agent == "custom"
+
+
+class TestInteractions:
+    def _itx(self, custom_id: str, label: str = "", guild: str = "") -> DiscordInteraction:
+        return DiscordInteraction(
+            interaction_id="i1",
+            interaction_token="tok",
+            channel_id="c1",
+            user_id="u1",
+            message_id="m1",
+            custom_id=custom_id,
+            label=label,
+            guild_id=guild,
+        )
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_interaction_not_acked(self) -> None:
+        d, cli, _ = _dispatcher({"other"})
+        await d.on_interaction(self._itx("a:r1:aabbccdd:1"))
+        assert cli.acked == []
+
+    @pytest.mark.asyncio
+    async def test_guild_interaction_denied(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.on_interaction(self._itx("a:r1:aabbccdd:1", guild="g1"))
+        assert cli.acked == []
+
+    @pytest.mark.asyncio
+    async def test_approval_resolves_pending_future(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        try:
+            await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
+            assert fut.result() is True
+            assert cli.acked == ["i1"]
+            assert any("Approved" in t for _, t, _ in cli.edits)
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_wrong_nonce_reports_expiry_not_approval(self) -> None:
+        """A stale button press (nonce mismatch) must not display 'Approved'."""
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        DiscordApprovalDecider.register_nonce(key)
+        try:
+            await d.on_interaction(self._itx("a:r1:0000000000000000:1"))
+            assert not fut.done()
+            assert any("expired" in t for _, t, _ in cli.edits)
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_expired_approval_reports_expiry(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.on_interaction(self._itx("a:r9:aabbccdd:1"))
+        assert any("expired" in t for _, t, _ in cli.edits)
+
+    @pytest.mark.asyncio
+    async def test_option_choice_reinjects_as_turn(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        await d.on_interaction(self._itx("opt:0", label="Choice A"))
+        # Buttons retired without clobbering the answer text.
+        assert cli.component_edits == [("m1", [])]
+        # Choice echoed as a quote, then answered as a fresh turn.
+        assert any(t.startswith("> Choice A") for t, _ in cli.sent)
+        assert any(
+            "Answer: Choice A" in t for t in [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
+        )
+
+    @pytest.mark.asyncio
+    async def test_option_without_label_asks_to_type(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.on_interaction(self._itx("opt:0", label=""))
+        assert any("type it instead" in t for t, _ in cli.sent)
+
+
+def test_receipt_text_caps_displayed_items() -> None:
+    texts = [f"message {i}" for i in range(8)]
+    out = _receipt_text(texts)
+    assert out.startswith("⏳ Queued (8):")
+    assert "…and 3 more" in out

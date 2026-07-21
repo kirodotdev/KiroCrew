@@ -12,6 +12,8 @@ import { VoicePanel } from './settings/VoicePanel'
 import { GeneralPanel } from './settings/GeneralPanel'
 import { SecurityPanel } from './settings/SecurityPanel'
 import { SlackPanel } from './settings/SlackPanel'
+import { DiscordPanel } from './settings/DiscordPanel'
+import { DiscordIcon } from '../components/DiscordIcon'
 import { OverviewPanel } from './settings/OverviewPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 import { AboutPanel } from './settings/AboutPanel'
@@ -26,6 +28,7 @@ const TABS = [
   { key: 'security', label: 'Security', icon: <ShieldCheck size={16} />, description: 'Security posture, defense layers, certifications, and data classification' },
   { key: 'notifications', label: 'Notifications', icon: <Bell size={16} />, description: 'Sound effects and per-category alert preferences' },
   { key: 'slack', label: 'Slack', icon: <SlackIcon size={16} />, description: 'Slack channel integration settings' },
+  { key: 'discord', label: 'Discord', icon: <DiscordIcon size={16} />, description: 'Discord bot channel integration settings' },
   { key: 'developer', label: 'Developer', icon: <Code size={16} />, description: 'Developer mode, logs, system metrics, and diagnostics' },
   { key: 'about', label: 'About', icon: <Info size={16} />, description: 'Version, update channel, check for updates, and license' },
 ]
@@ -54,9 +57,10 @@ export default function SettingsPage() {
         {tab === 'security' && <SecurityPanel />}
         {tab === 'notifications' && <NotificationsPanel />}
         {tab === 'slack' && <SlackPanel />}
+        {tab === 'discord' && <DiscordPanel />}
         {tab === 'developer' && <GeneralPanel />}
         {tab === 'about' && <AboutPanel />}
-        {tab !== 'overview' && tab !== 'chat' && tab !== 'voice' && tab !== 'display' && tab !== 'browser' && tab !== 'instances' && tab !== 'security' && tab !== 'notifications' && tab !== 'slack' && tab !== 'developer' && tab !== 'about' && (
+        {tab !== 'overview' && tab !== 'chat' && tab !== 'voice' && tab !== 'display' && tab !== 'browser' && tab !== 'instances' && tab !== 'security' && tab !== 'notifications' && tab !== 'slack' && tab !== 'discord' && tab !== 'developer' && tab !== 'about' && (
           <div className="text-muted text-sm py-12 text-center">
             {TABS.find(t => t.key === tab)?.label} settings — coming soon
           </div>

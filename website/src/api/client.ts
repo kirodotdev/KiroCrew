@@ -73,6 +73,28 @@ export interface SlackConfigSave {
   show_thinking: boolean
 }
 
+/** Discord config as returned by GET /api/discord/config (secret masked). */
+export interface DiscordConfigData {
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  bot_token_set: boolean
+  bot_token_preview: string
+  enabled: boolean
+  allowed_user_ids: string[]
+  soft_threshold_pct: number
+}
+
+/** Writable Discord config fields sent to PUT /api/discord/config. */
+export interface DiscordConfigSave {
+  bot_token: string
+  bot_token_clear: boolean
+  enabled: boolean
+  allowed_user_ids: string[]
+  soft_threshold_pct: number
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -965,6 +987,9 @@ export const api = {
   getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
   getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string }>,
   saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+  // Discord integration config
+  getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
+  saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
 
   // Auto-research
   researchValidate: (body: object) => post("/api/apps/auto-research/validate", body).then(j),

@@ -34,6 +34,7 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "subagents.md",
         "task-runner.md",
         "telegram-integration.md",
+        "discord-integration.md",
         "use-cases.md",
         "wechat-integration.md",
     }

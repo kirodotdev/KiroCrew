@@ -168,6 +168,7 @@ async def _apply_result_view(request: web.Request, text: str) -> tuple[str, dict
     the default ``spawn_status`` contract (full transcript) is preserved. Only a
     paged/filtered request pays the split+regex cost, offloaded to a thread.
     """
+
     def _q_int(name: str) -> int:
         try:
             return max(0, int(request.query.get(name, 0)))
@@ -648,17 +649,12 @@ async def api_send_message(request: web.Request) -> web.Response:
         # injected value must not abuse that upgrade.
         is_cron_caller = bool(CRON_SESSION_RE.match(caller_session))
         send_to_slack = (
-            target_session == "slack"
-            or bool(target_channel)
-            or bool(target_user)
-            or is_cron_caller
+            target_session == "slack" or bool(target_channel) or bool(target_user) or is_cron_caller
         )
         if target_session == "slack":
             target_session = None
         if target_session:
-            slot_key, job_name = _resolve_session_target(
-                state, target_session, caller_session
-            )
+            slot_key, job_name = _resolve_session_target(state, target_session, caller_session)
             if slot_key:
                 # Resolve the origin slot. get_slot is the hot path (fast,
                 # O(1) dict lookup). On miss, _rehydrate_slot_from_history
@@ -760,7 +756,9 @@ async def api_send_message(request: web.Request) -> web.Response:
                             if options:
                                 try:
                                     await state.slack_client.post_blocks(
-                                        channel, build_options_blocks(options), text,
+                                        channel,
+                                        build_options_blocks(options),
+                                        text,
                                         thread_ts=thread_ts,
                                     )
                                 except Exception:
@@ -1410,6 +1408,7 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     import tempfile  # noqa: F811
 
     from kiro_crew.config.loader import env_path  # noqa: F811
+    from kiro_crew.platform_compat import fchmod_safe, restrict_to_owner
 
     ep = env_path()
     lines = ep.read_text(encoding="utf-8").splitlines() if ep.exists() else []
@@ -1436,10 +1435,18 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     # the same filesystem. fchmod is belt-and-suspenders in case of odd umask.
     fd, tmp_name = tempfile.mkstemp(dir=str(ep.parent), prefix=".env.", suffix=".tmp")
     try:
-        os.fchmod(fd, 0o600)
+        # Portable perms: os.fchmod is POSIX-only (absent on Windows, where a
+        # raw call would raise AttributeError and 500 every token save).
+        # fchmod_safe applies 0600 on POSIX and no-ops on Windows;
+        # restrict_to_owner then locks the completed file down on both.
+        fchmod_safe(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
         os.replace(tmp_name, ep)
+        try:
+            restrict_to_owner(ep)
+        except OSError:
+            logger.warning("could not restrict .env permissions", exc_info=True)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -1702,6 +1709,240 @@ async def api_slack_config_save(request: web.Request) -> web.Response:
         {
             "ok": True,
             "restart_required": bool(env_updates) or bool(boot_read & staged.keys()),
+            "verify_warning": verify_warning,
+        }
+    )
+
+
+# ── Discord configuration API ──
+# The bot token lives in config_dir/.env as DISCORD_BOT_TOKEN (0600), with
+# config.json's discord.bot_token as a legacy fallback. Non-secret config
+# (enabled, allowed_user_ids, soft_threshold_pct) lives in config.json under
+# the "discord" key. GET returns a masked preview + presence boolean; raw
+# token values are write-only (reset at the Developer Portal if ever needed).
+
+#: Loose shape check for Discord bot tokens: three dot-separated base64url
+#: segments (e.g. "MTA5...aBc.GhIjKl.MnOpQrStUvWxYz0123456789_-").
+_DISCORD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{20,}$")
+
+
+async def _validate_discord_token(token: str) -> str | None:
+    """Check a pasted bot token against Discord before it is stored.
+
+    Uses ``GET /users/@me`` — the cheapest authenticated REST call. Returns
+    ``None`` when Discord accepts the token, or Discord's error message when
+    it rejects it. Network failures propagate to the caller, which treats
+    them as "unverifiable" rather than invalid — saves must not be blocked by
+    being offline.
+    """
+    import aiohttp  # noqa: F811
+
+    timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(
+            "https://discord.com/api/v10/users/@me",
+            headers={"Authorization": f"Bot {token}"},
+        ) as resp:
+            if 200 <= resp.status < 300:
+                return None
+            desc = ""
+            try:
+                data = await resp.json(content_type=None)
+                if isinstance(data, dict):
+                    desc = str(data.get("message", "") or "")
+            except Exception:
+                pass
+            return (desc or f"HTTP {resp.status}")[:60]
+
+
+async def api_discord_config_get(request: web.Request) -> web.Response:
+    """GET /api/discord/config — read Discord config + masked secret status."""
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_DISCORD_BOT_TOKEN,
+        KiroCrewConfig,
+    )
+
+    cfg = KiroCrewConfig.load()
+    creds = cfg.load_credentials()
+    token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
+    dc = cfg.discord
+    state: DashboardState = request.app["state"]
+    return web.json_response(
+        {
+            # True only when the Gateway WebSocket transport actually started
+            # this session — NOT merely "a token was present at boot".
+            "connected": bool(getattr(state, "discord_connected", False)),
+            "connect_error": str(getattr(state, "discord_connect_error", ""))[:120],
+            # allowed_user_ids is part of "configured": the transport fails
+            # closed and rejects every message while the allowlist is empty.
+            "configured": bool(token and dc.enabled and dc.allowed_user_ids),
+            # Remote sessions get a read-only view: config edits (PUT) are
+            # loopback-only, so the UI disables all inputs and hides Save.
+            "read_only": not is_direct_local_request(request),
+            "bot_token_set": bool(token),
+            "bot_token_preview": _mask_secret(token),
+            "enabled": bool(dc.enabled),
+            "allowed_user_ids": [str(u) for u in dc.allowed_user_ids],
+            "soft_threshold_pct": int(dc.soft_threshold_pct),
+        }
+    )
+
+
+async def api_discord_config_save(request: web.Request) -> web.Response:
+    """PUT /api/discord/config — persist Discord secret (.env) + config (config.json).
+
+    Every Discord field is read once at gateway startup (token, enabled flag,
+    allowlist are consumed in the orchestrator's constructor), so any actual
+    change returns ``restart_required`` for the UI hint.
+    """
+    from kiro_crew.agent import _atomic_json_write  # noqa: F811
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_DISCORD_BOT_TOKEN,
+        config_path,
+    )
+
+    caller = request.get("user", "dashboard")
+
+    def _deny(msg: str, status: int = 400) -> web.Response:
+        _sel().log_api_access(
+            caller=caller,
+            operation="discord.config.update",
+            outcome="denied",
+            source="dashboard",
+            error=msg,
+        )
+        return web.json_response({"error": msg}, status=status)
+
+    # Remote sessions are read-only: config writes are accepted only from the
+    # machine running the gateway, so a remote or tunneled session (even with
+    # a valid dashboard token) cannot alter Discord access or plant tokens.
+    if not is_direct_local_request(request):
+        return _deny("read-only from remote sessions (local machine only)", status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _deny("invalid JSON")
+    if not isinstance(body, dict):
+        return _deny("body must be an object")
+
+    # ── Phase 1: validate everything and stage changes. No writes happen until
+    # all validation passes, so a rejected field never leaves partial state. ──
+
+    env_updates: dict[str, str | None] = {}
+    clear_flag = body.get("bot_token_clear")
+    if clear_flag is not None and not isinstance(clear_flag, bool):
+        return _deny("bot_token_clear must be a boolean")
+    if clear_flag is True:
+        env_updates[CRED_DISCORD_BOT_TOKEN] = None
+    else:
+        raw = body.get("bot_token")
+        if isinstance(raw, str):
+            tok = raw.strip()
+            if tok.startswith(f"{CRED_DISCORD_BOT_TOKEN}="):  # accidental env line
+                tok = tok[len(CRED_DISCORD_BOT_TOKEN) + 1 :].strip()
+            if tok.startswith("Bot "):  # accidental Authorization-header prefix
+                tok = tok[4:].strip()
+            if tok:
+                if any(ch.isspace() for ch in tok):
+                    return _deny("bot_token must not contain whitespace")
+                if not _DISCORD_TOKEN_RE.match(tok):
+                    return _deny(
+                        "bot_token must be the bot token from the Discord "
+                        "Developer Portal (Bot page → Reset Token)"
+                    )
+                env_updates[CRED_DISCORD_BOT_TOKEN] = tok
+
+    # Config → config.json under "discord" (staged, applied only after Phase 1).
+    path = config_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        return _deny("config.json is corrupt", status=500)
+    if not isinstance(data.get("discord"), dict):
+        data["discord"] = {}
+    dc_cfg = data["discord"]
+    staged: dict[str, object] = {}
+    applied: list[str] = []
+
+    if "enabled" in body:
+        val = body.get("enabled")
+        if not isinstance(val, bool):
+            return _deny("enabled must be a boolean")
+        if val != bool(dc_cfg.get("enabled", False)):
+            staged["enabled"] = val
+            applied.append("enabled")
+
+    if "allowed_user_ids" in body:
+        raw_ids = body.get("allowed_user_ids")
+        if not isinstance(raw_ids, list):
+            return _deny("allowed_user_ids must be a list")
+        new_ids: list[str] = []
+        for item in raw_ids:
+            s = str(item).strip()
+            if not s:
+                continue
+            # Discord user IDs are numeric snowflakes (17-20 digits today;
+            # accept any all-digit string to stay future-proof).
+            if not s.isdigit():
+                return _deny(f"invalid Discord user ID: {s} (numeric IDs only)")
+            if s not in new_ids:
+                new_ids.append(s)
+        if new_ids != [str(u) for u in dc_cfg.get("allowed_user_ids", [])]:
+            staged["allowed_user_ids"] = new_ids
+            applied.append("allowed_user_ids")
+
+    if "soft_threshold_pct" in body:
+        pct = body.get("soft_threshold_pct")
+        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
+            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        if pct != int(dc_cfg.get("soft_threshold_pct", 80)):
+            staged["soft_threshold_pct"] = pct
+            applied.append("soft_threshold_pct")
+
+    # ── Phase 1.5: verify a newly pasted token against Discord before storing.
+    # A token Discord rejects fails the save right here, where the user can
+    # act on it. Network failure is NOT a rejection: the save proceeds with a
+    # warning so being offline never blocks config.
+    verify_warning = ""
+    pending_tok = env_updates.get(CRED_DISCORD_BOT_TOKEN)
+    if pending_tok:
+        try:
+            dc_err = await _validate_discord_token(pending_tok)
+        except Exception:
+            verify_warning = "Discord was unreachable, so the token was saved without verification."
+        else:
+            if dc_err:
+                return _deny(f"bot_token rejected by Discord ({dc_err})")
+
+    # ── Phase 2: commit. All validation passed, so writes are safe. ──
+    if env_updates:
+        _write_env_updates(env_updates)
+        # Keep the live process environment in sync with the new .env state
+        # (load_credentials() lets os.environ win over .env — see the Slack
+        # save handler for the full rationale).
+        for key, new_val in env_updates.items():
+            if new_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = new_val
+    if staged:
+        dc_cfg.update(staged)
+        _atomic_json_write(path, data)
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="discord.config.update",
+        outcome="ok",
+        source="dashboard",
+        resources=",".join(applied + list(env_updates.keys())),
+    )
+    # All Discord fields are boot-read: token/enabled/allowlist are consumed
+    # in the orchestrator's constructor and the dispatcher is built at boot.
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": bool(env_updates) or bool(staged),
             "verify_warning": verify_warning,
         }
     )

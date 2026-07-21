@@ -247,3 +247,63 @@ dashboard token auth.
 
 `allowed_users` / `open_channels` are intentionally not exposed while the
 runtime enforces owner-only access.
+
+## Discord channel
+
+**Transport (`kiro_crew/discord/`).** A concrete `MessagingTransport` over a
+pure-aiohttp Discord Gateway WebSocket client (`client.py`): identify with the
+`DIRECT_MESSAGES` intent only, heartbeat at the server interval with jitter,
+resume via `resume_gateway_url`/sequence tracking, exponential-backoff
+reconnect, and hard stop on non-recoverable close codes (4004/4010-4014).
+Outbound is REST v10 (send/edit/typing/reactions/interaction acks) with a
+single 429 `retry_after` back-off; malformed (non-JSON) response bodies
+degrade to an error result and never propagate into rendering. No public
+webhook endpoint is required. `client.ready` (asyncio.Event) is set on
+READY/RESUMED and cleared on disconnect; `maybe_start_discord` reports
+`connected` only after `wait_ready` succeeds and keeps the dashboard badge
+truthful via the `on_state_change` observer (a non-recoverable close flips it
+back off with the reason).
+
+**Security model.** `authorize` is deny-by-default against
+`discord.allowed_user_ids` (snowflakes kept as strings — they exceed 2^53);
+every denial is SEL-audited. DM-only fail-closed: any message carrying a
+`guild_id` is rejected even from allow-listed users so tool output can never
+land in a shared channel. Bot-authored messages (including our own) are
+dropped in the client as a loop guard. `DISCORD_BOT_TOKEN` is on the sandbox
+agent env denylist.
+
+**Dispatch + rendering.** Turns ride the shared `TurnDriver`
+(`transport_dispatch.py` mirrors the Telegram dispatcher: mid-turn
+steer/queue with collapsing receipts, drain-collapse, `!compact` under atomic
+`try_acquire`, dashboard mirror `!link`/`!unlink`). Text commands are
+`!`-prefixed (`!new`, `!compact`, `!link`, `!unlink`, `!stop`, `!help`,
+`!queue`/`!steer`; `/` aliases accepted) because Discord's client intercepts
+bare `/` as slash-commands. The renderer streams via throttled in-place edits
+under the 2000-char cap (chunked at 1900 with fence-balanced splitting),
+rotates messages at `[STEERING]` markers with quote chips, renders trailing
+`[OPTIONS:]` as button action rows (`opt:<i>`, label recovered from the
+component at interaction time), and posts Approve/Deny buttons for
+interactive tool approvals. Approval `custom_id`s carry a per-prompt random
+nonce (`a:<request_id>:<nonce>:<1|0>`) validated at resolution — ACP request
+IDs are reusable across provider/gateway restarts, so a stale button without
+the matching nonce fails closed. The decision window denies by default on
+timeout and retires the nonce with it.
+
+## Discord settings API
+
+- `GET /api/discord/config` — masked `bot_token_preview` + `bot_token_set`,
+  `connected` (true only after the Gateway handshake reached READY this
+  session), `connect_error`, `configured` (token AND enabled AND non-empty
+  allowlist — the transport fails closed on an empty list), `read_only`
+  (true unless the request is direct-local). Never returns a raw secret.
+- `PUT /api/discord/config` — requires a direct-local request (loopback peer
+  AND no forwarding headers); remote gets 403. Validate-first/commit-last.
+  New tokens must match the three-segment bot-token shape (an accidental
+  `Bot ` Authorization prefix or `DISCORD_BOT_TOKEN=` env line is stripped)
+  and are verified against Discord `GET /users/@me` before storage; rejection
+  returns 400 and writes nothing, network failure saves with
+  `verify_warning`. `bot_token_clear` must be a strict boolean.
+  `allowed_user_ids` accepts numeric snowflake strings only. Secrets land in
+  `config_dir/.env` (atomic 0600) with `os.environ` synced; non-secrets go to
+  `config.json` under `discord`. All fields are boot-read, so
+  `restart_required` is true on any actual change.
