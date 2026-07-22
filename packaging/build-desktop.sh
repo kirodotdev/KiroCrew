@@ -223,7 +223,18 @@ build_backend() {
   cat > "$out/bin/kirocrew" <<'LAUNCH'
 #!/bin/bash
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks before deriving DIR. When this launcher is reached through a
+# symlink (e.g. the ~/.local/bin/kirocrew shim planted on the user's PATH),
+# ${BASH_SOURCE[0]} is the symlink path, so a naive dirname points at the
+# symlink's directory and execs the wrong (or missing) python3.12. macOS ships
+# no `readlink -f`, so walk the symlink chain to the real wrapper location.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [ "${SOURCE:0:1}" != "/" ] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 exec "$DIR/python3.12" -s -m kiro_crew "$@"
 LAUNCH
   chmod +x "$out/bin/kirocrew"
