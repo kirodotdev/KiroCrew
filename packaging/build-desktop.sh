@@ -82,6 +82,18 @@ if [ -z "$KC_VERSION" ]; then
   exit 1
 fi
 
+# Channel identity from the version stamp. Nightly ships as a SEPARATE
+# side-by-side app (its own bundle id, name, icon) so it can be installed
+# next to the production app. Insider/stable share the production identity —
+# they are ONE app on two update lanes (the in-app channel switcher moves
+# between them), so they keep the package.json defaults. Derivation mirrors
+# auto-update.js channelForVersion: only a "-nightly." stamp changes
+# identity; unstamped dev builds and insider/stable stamps build "KiroCrew".
+case "$KC_VERSION" in
+  *-nightly.*) PRODUCT_NAME="KiroCrew Nightly" ;;
+  *)           PRODUCT_NAME="KiroCrew" ;;
+esac
+
 log() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 
 # --- 1. Frontend ------------------------------------------------------------
@@ -282,6 +294,22 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
   EB_ARGS=( "-c.extraMetadata.version=$KC_VERSION" )
+  if [ "$PRODUCT_NAME" = "KiroCrew Nightly" ]; then
+    # Same appId (com.amazon.kiro.crew) as production ON PURPOSE:
+    # - Finder decides install-replace by FILENAME only, so the distinct
+    #   productName alone gives side-by-side installs.
+    # - Squirrel.Mac validates updates against the host app's designated
+    #   requirement (which pins the bundle id); a distinct nightly id would
+    #   strand every existing install at the identity switch.
+    # - CDSigner authz is per-identifier; the shared id is already onboarded.
+    # Cost accepted: shared TCC/notification identity, and a kirocrew:// URL
+    # scheme could not disambiguate the two apps (none is registered today).
+    EB_ARGS+=(
+      "-c.productName=KiroCrew Nightly"
+      "-c.mac.icon=icon-nightly.png"
+      "-c.linux.icon=icon-nightly.png"
+    )
+  fi
   if [ "$OS" = "darwin" ]; then
     EB_ARGS+=( --mac )
     [ "$UNIVERSAL" = "1" ] && EB_ARGS+=( --universal )
@@ -296,9 +324,9 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
 if [ "$UNIVERSAL" = "1" ]; then
   log "Verifying the shell binary is universal (lipo)…"
   APP_BIN="$(find "$ELECTRON_DIR/dist" -maxdepth 5 \
-    -path "*/KiroCrew.app/Contents/MacOS/KiroCrew" -print -quit 2>/dev/null)"
+    -path "*/${PRODUCT_NAME}.app/Contents/MacOS/${PRODUCT_NAME}" -print -quit 2>/dev/null)"
   if [ -z "$APP_BIN" ]; then
-    echo "ERROR: staged KiroCrew.app not found under $ELECTRON_DIR/dist" >&2
+    echo "ERROR: staged ${PRODUCT_NAME}.app not found under $ELECTRON_DIR/dist" >&2
     exit 1
   fi
   LIPO_ARCHS="$(lipo -archs "$APP_BIN")"

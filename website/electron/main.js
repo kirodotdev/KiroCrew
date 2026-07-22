@@ -14,6 +14,7 @@ const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = requi
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
 const { capturePySpyDump } = require("./pyspy-dump");
+const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
 
 // ── Persistent settings for remote tunnel mode ──
 
@@ -87,8 +88,9 @@ const IS_MAC = process.platform === "darwin";
 const { validateRemoteSettings } = require("./validation");
 const { attachContextMenu } = require("./context-menu");
 
-// Set app name for macOS menu bar and dock
-app.name = "Kiro Crew";
+// Set app name for macOS menu bar and dock. Nightly ships as a separate
+// side-by-side app, so its menu bar must say so.
+app.name = identityFamily(app.getVersion()) === "nightly" ? "Kiro Crew Nightly" : "Kiro Crew";
 
 // Single-instance lock. On macOS LaunchServices reuses the already-running .app
 // when the user relaunches from the Dock / Spotlight, so a second instance is
@@ -159,21 +161,115 @@ function glog(line) {
   console.log(`[gateway-launch] ${line}`);
 }
 
+// ── Cross-app gateway ownership (shared ~/.kirocrew, shared port) ──────────
+// The nightly app and the production app are different bundles sharing one
+// data home and one port, so the port is the mutex. When a gateway is already
+// listening, we must decide REUSE (same family / dev / legacy) vs TAKEOVER
+// (the OTHER channel app owns it — prompt, quit it gracefully, then spawn our
+// own). Decision logic is pure in instance-guard.js; the effects live here.
+
+// NOTE: defaults to /api/health (HEALTH_IDENTITY_PATH), NOT HEALTH_URL --
+// HEALTH_URL is /api/status, whose payload carries no `app` identity field.
+function fetchHealthInfo(healthUrl = `${BACKEND_URL}${HEALTH_IDENTITY_PATH}`) {
+  return new Promise((resolve) => {
+    const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => {
+        try { resolve(JSON.parse(body)); } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
+// Ask the OTHER channel app to quit through its normal lifecycle (its
+// before-quit stops its own gateway). Never kill the gateway out from under
+// its shell — the shell's exit watcher would treat that as a crash.
+// Targets by app NAME: both installs share one bundle identifier
+// (com.amazon.kiro.crew), so `quit app id` would be ambiguous.
+function quitOtherApp(appName) {
+  return new Promise((resolve) => {
+    if (process.platform !== "darwin") { resolve(false); return; }
+    execFile("osascript", ["-e", `quit app "${appName}"`], { timeout: 10000 }, (err) => resolve(!err));
+  });
+}
+
+// Budget: the other app's graceful gateway stop runs up to 15s
+// (POST /api/shutdown -> SIGTERM -> SIGKILL) after the quit event lands,
+// so the wait must comfortably exceed it.
+async function waitForPortFree(maxWaitMs = 30000) {
+  const start = Date.now();
+  for (;;) {
+    try { await checkBackend(); } catch { return true; } // probe fails => port free
+    if (Date.now() - start > maxWaitMs) return false;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+async function resolveGatewayConflict() {
+  const health = await fetchHealthInfo();
+  const decision = decideGatewayAction(app.getVersion(), health);
+  if (decision.action === "reuse") {
+    glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
+    sendStatus("Gateway already running ✓");
+    return "reuse";
+  }
+  const other = FAMILY_META[decision.otherFamily];
+  glog(`gateway on :${PORT} is owned by ${other.appName} (${decision.otherVersion}) — prompting for takeover`);
+  const canTakeover = process.platform === "darwin";
+  const { response } = await dialog.showMessageBox({
+    type: "warning",
+    title: `${other.appName} is running`,
+    message: `${other.appName} (${decision.otherVersion}) is already running with your KiroCrew data.`,
+    detail: canTakeover
+      ? `Only one KiroCrew app can use ~/.kirocrew at a time. Quit ${other.appName} and continue here?`
+      : `Only one KiroCrew app can use ~/.kirocrew at a time. Quit ${other.appName}, then reopen this app.`,
+    buttons: canTakeover ? [`Quit ${other.appName} & Continue`, "Cancel"] : ["OK"],
+    defaultId: 0,
+    cancelId: canTakeover ? 1 : 0,
+  });
+  if (!canTakeover || response !== 0) return "abort";
+  sendStatus(`Waiting for ${other.appName} to quit…`);
+  await quitOtherApp(other.appName);
+  if (!(await waitForPortFree())) {
+    glog(`takeover failed: ${other.appName} did not release :${PORT}`);
+    await dialog.showMessageBox({
+      type: "error",
+      message: `${other.appName} did not quit.`,
+      detail: "Quit it manually, then relaunch this app.",
+      buttons: ["OK"],
+    });
+    return "abort";
+  }
+  glog(`takeover: ${other.appName} released :${PORT} — proceeding to spawn`);
+  return "spawn";
+}
+
 function startGateway() {
   return new Promise((resolve) => {
     glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
     sendStatus("Checking if gateway is running…");
     checkBackend()
-      .then(() => {
-        // A gateway is already listening on this port, so we reuse it and never
-        // spawn the bundled backend. This is the developer's usual path (their
-        // gateway is already up) and it HIDES any bug in the spawn path below —
-        // only a clean machine exercises the spawn.
-        glog(`reusing existing gateway on :${PORT} — bundled backend NOT spawned`);
-        sendStatus("Gateway already running ✓");
-        resolve(true);
+      .then(async () => {
+        // A gateway is already listening on this port. Same-family, dev, and
+        // legacy gateways are reused as before (the developer's usual path —
+        // note reuse HIDES any bug in the spawn path below; only a clean
+        // machine exercises the spawn). A gateway owned by the OTHER channel
+        // app triggers the takeover prompt instead.
+        const outcome = await resolveGatewayConflict();
+        if (outcome === "reuse") { resolve(true); return; }
+        if (outcome === "abort") { isQuitting = true; app.quit(); resolve(false); return; }
+        spawnGateway(resolve);
       })
       .catch(() => {
+        spawnGateway(resolve);
+      });
+  });
+}
+
+function spawnGateway(resolve) {
         // Ensure ~/.kirocrew/ directory exists before starting gateway
         // (gateway generates .local_secret itself on startup via O_CREAT|O_TRUNC)
         const kirocrewDir = KIROCREW_HOME;
@@ -257,8 +353,6 @@ function startGateway() {
           gatewayProcess = null;
         });
         resolve(true);
-      });
-  });
 }
 
 /**
@@ -708,15 +802,20 @@ function createWindow() {
 }
 
 function createTray() {
-  const iconPath = path.join(__dirname, "icon.png");
+  // Nightly ships its own icon (night-sky variant) so the menu-bar presence
+  // matches the Dock identity; app.name was set channel-aware at boot.
+  const nightly = identityFamily(app.getVersion()) === "nightly";
+  const iconFile = nightly && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
+    ? "icon-nightly.png" : "icon.png";
+  const iconPath = path.join(__dirname, iconFile);
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
   tray = new Tray(icon);
-  tray.setToolTip("Kiro Crew");
+  tray.setToolTip(app.name);
   // Each connection opens as its own window on every platform (native window
   // tabs were removed with the single-surface shell redesign).
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "Show Kiro Crew", click: () => mainWindow?.show() },
+      { label: `Show ${app.name}`, click: () => mainWindow?.show() },
       { type: "separator" },
       { label: "New Connection Window…", click: () => openNewConnectionWindow() },
       { type: "separator" },

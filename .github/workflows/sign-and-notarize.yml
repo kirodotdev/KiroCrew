@@ -185,7 +185,11 @@ jobs:
           CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
         run: |
           bash packaging/signing/sign.sh "$APP_PATH" "$CHANNEL" "$VERSION"
-          echo "signed_zip_key=signed/${CHANNEL}/${VERSION}/$(basename "$APP_PATH" .app).zip" >> "$GITHUB_OUTPUT"
+          # MUST mirror sign.sh's OUTPUT_KEY: bucket keys use the space-free
+          # slug of the bundle name ("KiroCrew Nightly" -> "KiroCrew-Nightly").
+          APP_SLUG="$(basename "$APP_PATH" .app)"
+          APP_SLUG="${APP_SLUG// /-}"
+          echo "signed_zip_key=signed/${CHANNEL}/${VERSION}/${APP_SLUG}.zip" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         run: |
@@ -222,13 +226,17 @@ jobs:
     # environment if an admin deliberately tags it -- the same principal
     # who could merge it to main.
     environment: prod
-    outputs:
-      app_name: ${{ steps.staple.outputs.app_name }}
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
       SIGNED_ZIP_KEY: ${{ needs.sign.outputs.signed_zip_key }}
+      # Published FILENAMES are pinned to this basename on every channel even
+      # though the nightly BUNDLE is "KiroCrew Nightly.app": CDN keys and the
+      # latest-DMG permalink (desktop/<channel>/latest/KiroCrew.dmg) are a
+      # public contract, and deriving filenames from the bundle name would
+      # silently rename the keys and break the permalink.
+      ARTIFACT_BASENAME: KiroCrew
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -319,18 +327,20 @@ jobs:
           # ditto preserves the resource fork carrying the stapled ticket.
           /usr/bin/ditto -c -k --keepParent "$APP" ../notarized.zip
           echo "APP_NAME=$(basename "$APP" .app)" >> "$GITHUB_ENV"
-          echo "app_name=$(basename "$APP" .app)" >> "$GITHUB_OUTPUT"
 
       - name: Upload notarized artifact to S3
         if: env.HAS_SIGNING_SECRETS
         run: |
-          KEY="notarized/${CHANNEL}/${VERSION}/${APP_NAME}.zip"
+          KEY="notarized/${CHANNEL}/${VERSION}/${ARTIFACT_BASENAME}.zip"
           aws s3 cp work/notarized.zip "s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}" --only-show-errors
           echo "NOTARIZED_KEY=${KEY}" >> "$GITHUB_ENV"
           echo "Notarized artifact: s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}"
 
       # First-install DMG, rebuilt from the STAPLED app (the electron-builder
       # DMG from the build job wraps the unsigned app and must never ship).
+      # Volume name follows the bundle ("KiroCrew Nightly" mounts as such);
+      # the FILE name stays ${ARTIFACT_BASENAME}.dmg for key/permalink
+      # stability.
       - name: Build DMG from stapled app
         if: env.HAS_SIGNING_SECRETS
         run: |
@@ -339,8 +349,8 @@ jobs:
           cp -R "work/stapled/${APP_NAME}.app" work/dmg-staging/
           ln -s /Applications work/dmg-staging/Applications
           hdiutil create -volname "${APP_NAME}" -srcfolder work/dmg-staging \
-            -ov -format UDZO -quiet "work/${APP_NAME}.dmg"
-          ls -lh "work/${APP_NAME}.dmg"
+            -ov -format UDZO -quiet "work/${ARTIFACT_BASENAME}.dmg"
+          ls -lh "work/${ARTIFACT_BASENAME}.dmg"
 
       # Developer ID sign the DMG itself via a second CDSigner task (type:
       # dmg). Without this, the DMG carries hdiutil's adhoc signature, which
@@ -353,7 +363,16 @@ jobs:
           AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
           AWS_SIGNER_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
           CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
-        run: bash packaging/signing/sign-dmg.sh "work/${APP_NAME}.dmg" "$CHANNEL" "$VERSION"
+        run: |
+          set -euo pipefail
+          # The DMG signs under the app's own bundle identifier, read from
+          # the stapled bundle rather than hardcoded (all channels currently
+          # share the onboarded com.amazon.kiro.crew -- CDSigner authz is
+          # per-identifier, so any future distinct id needs onboarding first).
+          DMG_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "work/stapled/${APP_NAME}.app/Contents/Info.plist")"
+          export DMG_IDENTIFIER
+          echo "DMG identifier: ${DMG_IDENTIFIER}"
+          bash packaging/signing/sign-dmg.sh "work/${ARTIFACT_BASENAME}.dmg" "$CHANNEL" "$VERSION"
 
       - name: Notarize DMG
         if: env.HAS_SIGNING_SECRETS
@@ -370,7 +389,7 @@ jobs:
 
           echo "Submitting DMG to Apple notary service..."
           set +e
-          SUBMIT_OUT=$(xcrun notarytool submit "work/${APP_NAME}.dmg" \
+          SUBMIT_OUT=$(xcrun notarytool submit "work/${ARTIFACT_BASENAME}.dmg" \
             --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" \
             --wait --timeout 30m 2>&1)
           RC=$?
@@ -395,9 +414,9 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          xcrun stapler staple "work/${APP_NAME}.dmg"
-          xcrun stapler validate "work/${APP_NAME}.dmg"
-          ASSESS=$(spctl --assess --type install --verbose "work/${APP_NAME}.dmg" 2>&1)
+          xcrun stapler staple "work/${ARTIFACT_BASENAME}.dmg"
+          xcrun stapler validate "work/${ARTIFACT_BASENAME}.dmg"
+          ASSESS=$(spctl --assess --type install --verbose "work/${ARTIFACT_BASENAME}.dmg" 2>&1)
           echo "$ASSESS"
           echo "$ASSESS" | grep -q "Notarized Developer ID" || {
             echo "Gatekeeper assessment did not report 'Notarized Developer ID' -- failing closed."
@@ -434,7 +453,7 @@ jobs:
             echo "- Version: ${VERSION}"
             echo "- Input: \`${SIGNED_ZIP_KEY}\`"
             echo "- Output: \`${NOTARIZED_KEY}\` (stapled, Gatekeeper-verified)"
-            echo "- DMG: \`${APP_NAME}.dmg\` (Developer ID signed, notarized, stapled)"
+            echo "- DMG: \`${ARTIFACT_BASENAME}.dmg\` (Developer ID signed, notarized, stapled)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
@@ -456,7 +475,8 @@ jobs:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
-      APP_NAME: ${{ needs.notarize.outputs.app_name }}
+      # Pinned published basename -- see the notarize job's env comment.
+      ARTIFACT_BASENAME: KiroCrew
     steps:
       - name: Configure AWS credentials
         if: env.HAS_SIGNING_SECRETS
@@ -478,7 +498,7 @@ jobs:
           set -euo pipefail
           ls -la work/
           [ -f "work/notarized.zip" ] || { echo "notarized.zip missing from gated artifact"; exit 1; }
-          [ -f "work/${APP_NAME}.dmg" ] || { echo "${APP_NAME}.dmg missing from gated artifact"; exit 1; }
+          [ -f "work/${ARTIFACT_BASENAME}.dmg" ] || { echo "${ARTIFACT_BASENAME}.dmg missing from gated artifact"; exit 1; }
 
       # The versioned zip key is immutable-cached by CloudFront, so it must
       # never be republished with different bytes (same class as the cli/*
@@ -490,7 +510,7 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          DESKTOP_KEY="desktop/${CHANNEL}/${VERSION}/${APP_NAME}.zip"
+          DESKTOP_KEY="desktop/${CHANNEL}/${VERSION}/${ARTIFACT_BASENAME}.zip"
           set +e
           PUT_OUT=$(aws s3api put-object \
             --bucket "${{ vars.CLI_DIST_BUCKET }}" \
@@ -518,12 +538,12 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          DMG_KEY="desktop/${CHANNEL}/${VERSION}/${APP_NAME}.dmg"
+          DMG_KEY="desktop/${CHANNEL}/${VERSION}/${ARTIFACT_BASENAME}.dmg"
           set +e
           PUT_OUT=$(aws s3api put-object \
             --bucket "${{ vars.CLI_DIST_BUCKET }}" \
             --key "${DMG_KEY}" \
-            --body "work/${APP_NAME}.dmg" \
+            --body "work/${ARTIFACT_BASENAME}.dmg" \
             --if-none-match '*' \
             --content-type application/x-apple-diskimage \
             --cache-control "public, max-age=31536000, immutable" 2>&1)
@@ -588,11 +608,11 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          LATEST_DMG_KEY="desktop/${CHANNEL}/latest/${APP_NAME}.dmg"
+          LATEST_DMG_KEY="desktop/${CHANNEL}/latest/${ARTIFACT_BASENAME}.dmg"
           aws s3api put-object \
             --bucket "${{ vars.CLI_DIST_BUCKET }}" \
             --key "${LATEST_DMG_KEY}" \
-            --body "work/${APP_NAME}.dmg" \
+            --body "work/${ARTIFACT_BASENAME}.dmg" \
             --content-type application/x-apple-diskimage \
             --cache-control "public, max-age=300" > /dev/null
           echo "LATEST_DMG_KEY=${LATEST_DMG_KEY}" >> "$GITHUB_ENV"

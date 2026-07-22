@@ -185,8 +185,18 @@ async def api_branding(request: web.Request) -> web.Response:
 
 
 async def api_health(request: web.Request) -> web.Response:
-    """GET /api/health — liveness probe; returns 200 whenever the server is up."""
-    return web.json_response({"ok": True})
+    """GET /api/health — liveness probe; returns 200 whenever the server is up.
+
+    Carries identity fields (``app``, ``version``) so the desktop shell's
+    cross-app instance guard (website/electron/instance-guard.js) can tell
+    WHICH KiroCrew-family gateway owns the shared port: the nightly app and
+    the production app share ~/.kirocrew and the port, so the port is a
+    mutex and the shell must distinguish "my family's gateway — reuse" from
+    "the other channel app's gateway — prompt to take over".
+    """
+    from kiro_crew import __version__
+
+    return web.json_response({"ok": True, "app": "kirocrew", "version": __version__})
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:

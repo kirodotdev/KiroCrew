@@ -48,6 +48,7 @@
     },
     "files": [
       "main.js",
+      "instance-guard.js",
       "context-menu.js",
       "find-bin.js",
       "auto-update.js",
@@ -66,7 +67,8 @@
       "anime.global.js",
       "loading.html",
       "token-prompt.html",
-      "icon.png"
+      "icon.png",
+      "icon-nightly.png"
     ],
     "extraResources": [
       {

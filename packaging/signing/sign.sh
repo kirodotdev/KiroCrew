@@ -54,11 +54,14 @@ fi
 : "${CDSIGNER_API_ENDPOINT:?Set CDSIGNER_API_ENDPOINT}"
 
 APP_NAME="$(basename "$APP_PATH" .app)"
+# Space-free slug for bucket keys: the nightly bundle is "KiroCrew Nightly.app"
+# and these keys flow into the CDSigner request JSON and URL paths.
+APP_SLUG="${APP_NAME// /-}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-INPUT_KEY="pre-signed/${CHANNEL}/${VERSION}/${APP_NAME}.tar.gz"
-OUTPUT_KEY="signed/${CHANNEL}/${VERSION}/${APP_NAME}.zip"
+INPUT_KEY="pre-signed/${CHANNEL}/${VERSION}/${APP_SLUG}.tar.gz"
+OUTPUT_KEY="signed/${CHANNEL}/${VERSION}/${APP_SLUG}.zip"
 
 log() { printf '\033[1;36m▶ %s\033[0m\n' "$*"; }
 
