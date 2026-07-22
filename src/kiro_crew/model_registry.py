@@ -238,6 +238,19 @@ def default(provider: str) -> str:
     return _DEFAULTS.get(provider, _FALLBACK_CANONICAL)
 
 
+def is_canonical_key(name: str) -> bool:
+    """True if ``name`` is a top-level canonical registry key (e.g. ``fable-5-1m``).
+
+    Distinguishes a canonical KEY from a provider alias or id: ``claude-fable-5``
+    is an alias (False), ``fable-5-1m`` is a key (True). The set-model guard uses
+    this to reject canonical keys on non-``claude_code`` providers, where they are
+    display-only identifiers the ACP CLI rejects as model ids (-32603 "model not
+    available"). ``auto`` is a registry key too, so callers that must permit the
+    Auto sentinel check for it separately.
+    """
+    return name in _REGISTRY
+
+
 def canonicalize_for_provider(stored_model: str, provider: str) -> str:
     """Map a stored model string to its canonical registry key — but ONLY for
     ``claude_code``, where the wire/dropdown values are canonical keys.

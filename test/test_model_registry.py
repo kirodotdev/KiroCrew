@@ -12,6 +12,23 @@ class TestModelRegistry:
             == "global.anthropic.claude-opus-4-8[1m]"
         )
 
+    def test_is_canonical_key_true_for_top_level_keys(self):
+        # Top-level registry keys — the display-only ids the /api/models
+        # fallback wrongly offered and the set-model guard must reject.
+        assert mr.is_canonical_key("fable-5-1m") is True
+        assert mr.is_canonical_key("opus-4.8-1m") is True
+        assert mr.is_canonical_key("opus-4.8") is True
+        # 'auto' is a registry key too; the set-model guard allows it separately.
+        assert mr.is_canonical_key("auto") is True
+
+    def test_is_canonical_key_false_for_aliases_and_unknowns(self):
+        # kiro/acp ids are ALIASES (or unregistered), never top-level keys, so
+        # they pass the guard unchanged.
+        assert mr.is_canonical_key("claude-fable-5") is False
+        assert mr.is_canonical_key("claude-opus-4.8") is False
+        assert mr.is_canonical_key("claude-sonnet-5") is False
+        assert mr.is_canonical_key("") is False
+
     def test_to_provider_id_identity_passthrough_for_provider_id(self):
         # An already-resolved provider id passes through unchanged (back-compat).
         pid = "global.anthropic.claude-opus-4-8[1m]"

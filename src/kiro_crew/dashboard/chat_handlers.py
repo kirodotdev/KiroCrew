@@ -16,6 +16,7 @@ from pathlib import Path
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+from kiro_crew import model_registry
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -1421,6 +1422,36 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "agent": agent_name, "workspace": workspace})
 
 
+def _model_rejected_reason(model_name: str) -> str | None:
+    """Reason to reject ``model_name`` for the active provider, or None to allow.
+
+    The dashboard model dropdown falls back to canonical registry keys (e.g.
+    ``fable-5-1m``) when /api/models is unavailable (gateway restart / kiro-cli
+    cold-start timeout). Those keys are DISPLAY identifiers the ACP CLI rejects
+    as model ids (-32603 "model not available") — selecting one used to write it
+    into ``slot.model`` and break the next turn. This guard is defense-in-depth
+    behind the frontend fix (auto-only fallback): a stale client, a direct API
+    call, or the openai-compat path can never persist a canonical key. ``auto``
+    and ``""`` (provider default) always pass; for the ``claude_code`` provider
+    canonical keys ARE the wire format, so they pass there too.
+    """
+    if not model_name or model_name == "auto":
+        return None
+    try:
+        provider = KiroCrewConfig.load().agent.provider
+    except Exception:  # pragma: no cover - config load is resilient
+        provider = ""
+    if provider == "claude_code":
+        return None
+    if model_registry.is_canonical_key(model_name):
+        return (
+            f"{model_name!r} is a display-only model identifier the "
+            f"{provider or 'active'} provider does not accept; "
+            f"select a listed model or 'auto'."
+        )
+    return None
+
+
 async def api_chat_slot_model(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/model — set model for a chat slot."""
     state: DashboardState = request.app["state"]
@@ -1433,6 +1464,10 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     model_name = _normalize_model(body.get("model", ""))
+    reason = _model_rejected_reason(model_name)
+    if reason:
+        logger.warning("Slot %s model rejected: %s", name, reason)
+        return web.json_response({"error": reason}, status=400)
     if slot.model == model_name:
         return web.json_response({"ok": True, "model": model_name})
     slot.model = model_name
@@ -1461,6 +1496,9 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     model_name = _normalize_model(body.get("model", ""))
+    reason = _model_rejected_reason(model_name)
+    if reason:
+        return web.json_response({"error": reason}, status=400)
     skip_running = body.get("skip_running", True)
     if not isinstance(skip_running, bool):
         return web.json_response({"error": "skip_running must be a boolean"}, status=400)

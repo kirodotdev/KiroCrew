@@ -1,6 +1,5 @@
 import { api } from '../../api/client'
 import modelTokensRaw from '../../model_tokens.json'
-import { displayModels } from '../modelRegistry'
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -190,14 +189,20 @@ export class AcpAdapter implements ProviderAdapter {
     }
   }
 
-  /** Static fallback from the canonical model registry — used when the backend
-   *  is unavailable (gateway restart, kiro-cli cold-start timeout, auth race). */
+  /** Fallback when the backend model list is unavailable (gateway restart /
+   *  kiro-cli cold-start timeout / auth race on /api/models). Exposes ONLY the
+   *  "auto" sentinel — never the canonical registry keys (opus-4.8-1m,
+   *  fable-5-1m, …). Those keys are DISPLAY identifiers the ACP CLI rejects as
+   *  model ids: selecting one during the cold-start window wrote it verbatim
+   *  into slot.model and kiro-cli failed the turn with -32603 "model not
+   *  available". "auto" always resolves server-side, so it is the only safe
+   *  offering until the real list loads. */
   private _defaultModels(): ModelInfo[] {
-    return displayModels().map(m => ({
-      name: m.name,
-      description: m.description,
-      contextWindow: m.contextWindow,
-    }))
+    return [{
+      name: 'auto',
+      description: 'Models chosen by task for optimal usage and consistent quality',
+      contextWindow: MODEL_TOKENS['auto'] ?? DEFAULT_CONTEXT,
+    }]
   }
 
   getContextWindow(model: string): number {

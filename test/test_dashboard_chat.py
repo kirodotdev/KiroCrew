@@ -10064,6 +10064,106 @@ class TestBulkModelSwitch:
 
         assert resp.status == 400
 
+    @pytest.mark.asyncio
+    async def test_canonical_key_rejected_no_slot_touched(self, tmp_path):
+        # A canonical registry key (the /api/models cold-start fallback trap)
+        # is rejected 400 for the acp provider; no slot is switched or reset.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.get_or_create_slot("a", model="claude-fable-5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model", json={"model": "fable-5-1m"}
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert "fable-5-1m" in data["error"]
+        assert state._slots["a"].model == "claude-fable-5"
+        state.sessions.reset.assert_not_awaited()
+
+
+class TestSlotModelGuard:
+    """POST /api/chat/slots/{slot}/model — reject canonical registry keys the
+    ACP CLI cannot accept (the /api/models cold-start fallback -32603 trap)."""
+
+    @staticmethod
+    def _app(state: DashboardState) -> web.Application:
+        from kiro_crew.dashboard.chat import api_chat_slot_model
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/model", api_chat_slot_model)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_canonical_key_rejected_slot_unchanged(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.get_or_create_slot("a", model="claude-fable-5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "fable-5-1m"}
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert "fable-5-1m" in data["error"]
+        # The slot keeps its valid model and the session is NOT reset.
+        assert state._slots["a"].model == "claude-fable-5"
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_string_auto_default_is_allowed(self, tmp_path):
+        # The frontend maps 'auto' -> '' before calling; '' is the provider
+        # default and always passes.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.get_or_create_slot("a", model="claude-fable-5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+
+        assert resp.status == 200
+        assert state._slots["a"].model == ""
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_auto_literal_is_allowed(self, tmp_path):
+        # A literal 'auto' (registry key, but the safe sentinel) always passes.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.get_or_create_slot("a", model="claude-fable-5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "auto"})
+
+        assert resp.status == 200
+        assert state._slots["a"].model == "auto"
+
+    @pytest.mark.asyncio
+    async def test_valid_kiro_alias_is_allowed(self, tmp_path):
+        # kiro/acp ids (registry aliases, not top-level keys) pass through.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.get_or_create_slot("a", model="claude-fable-5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+
+        assert resp.status == 200
+        assert state._slots["a"].model == "claude-opus-4.8"
+        state.sessions.reset.assert_awaited_once()
+
 
 def _make_tail_fork_slot(state):
     slot = state.get_or_create_slot("src")

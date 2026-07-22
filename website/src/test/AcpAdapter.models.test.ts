@@ -26,31 +26,34 @@ describe('AcpAdapter.fetchAvailableModels', () => {
     expect(models[2].description).toBe('Everyday tasks')
   })
 
-  it('falls back to static registry when API returns non-array (e.g. error object)', async () => {
+  it('falls back to AUTO-ONLY when API returns non-array (e.g. error object)', async () => {
     ;(api.models as any).mockResolvedValue({ error: 'Token required' })
     const models = await new AcpAdapter().fetchAvailableModels()
-    expect(models.length).toBeGreaterThan(0)
-    expect(models.some(m => m.name.includes('opus') || m.name.includes('sonnet'))).toBe(true)
+    // Never surface canonical registry keys (opus-4.8-1m, fable-5-1m, …): the
+    // ACP CLI rejects them as model ids (-32603). Only 'auto' is safe.
+    expect(models).toHaveLength(1)
+    expect(models[0].name).toBe('auto')
+    expect(models.some(m => m.name.includes('-1m') || m.name === 'opus-4.8')).toBe(false)
   })
 
-  it('falls back to static registry when API returns empty array', async () => {
+  it('falls back to AUTO-ONLY when API returns empty array', async () => {
     ;(api.models as any).mockResolvedValue([])
     const models = await new AcpAdapter().fetchAvailableModels()
-    expect(models.length).toBeGreaterThan(0)
+    expect(models).toHaveLength(1)
+    expect(models[0].name).toBe('auto')
   })
 
-  it('falls back to static registry when API throws (timeout, network error)', async () => {
+  it('falls back to AUTO-ONLY when API throws (timeout, network error)', async () => {
     ;(api.models as any).mockRejectedValue(new Error('fetch timeout'))
     const models = await new AcpAdapter().fetchAvailableModels()
-    expect(models.length).toBeGreaterThan(0)
-    expect(models.some(m => m.name.includes('opus'))).toBe(true)
+    expect(models).toHaveLength(1)
+    expect(models[0].name).toBe('auto')
   })
 
-  it('static fallback includes context window from registry', async () => {
+  it('auto-only fallback carries a sensible context window', async () => {
     ;(api.models as any).mockRejectedValue(new Error('boom'))
     const models = await new AcpAdapter().fetchAvailableModels()
-    const opus1m = models.find(m => m.name === 'opus-4.8-1m')
-    expect(opus1m).toBeDefined()
-    expect(opus1m!.contextWindow).toBe(1_000_000)
+    expect(models[0].name).toBe('auto')
+    expect(models[0].contextWindow).toBeGreaterThan(0)
   })
 })
