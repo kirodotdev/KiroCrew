@@ -287,8 +287,8 @@ const SESSION_FILTERS: SessionFilterDef[] = [
   {
     key: 'unread', storageKey: 'mc-session-unread-only', label: 'Unread',
     description: 'Show only sessions with unread messages',
-    color: 'var(--info)',
-    icon: (active) => <Circle size={12} className={active ? 'text-[var(--info)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--info)' } : {})} />,
+    color: 'var(--accent)',
+    icon: (active) => <Circle size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--accent)' } : {})} />,
   },
   {
     key: 'running', storageKey: 'mc-session-running-only', label: 'In progress',
@@ -1670,7 +1670,7 @@ function ChatSidebar({
             // the old "any unseen output" trigger so it no longer lights
             // mid-stream; a pending approval gets its own yellow subtitle
             // treatment instead. (CR-284529836)
-            <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--info)' }} title="Agent finished — your turn" />
+            <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--accent)' }} title="Agent finished — your turn" />
           )}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
@@ -1848,7 +1848,7 @@ function ChatSidebar({
           // eslint-disable-next-line jsx-a11y/no-static-element-interactions
           <span className="flex-1 text-[13px] font-medium text-text truncate" title="Double-click to rename" onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{folder.name}</span>
         )}
-        {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--info)' }} />}
+        {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />}
         <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
         {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={`Default agent: ${folder.default_agent}`}>{folder.default_agent}</span>}
         {!(editingId === folder.id && editScope === 'list') && (
@@ -2224,7 +2224,7 @@ function ChatSidebar({
                   {filterCounts['unread'] > 0 && (
                     <span
                       aria-hidden="true"
-                      className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-[var(--info)] text-white text-[10px] font-semibold leading-[14px] text-center pointer-events-none shadow-[0_0_4px_rgba(59,130,246,.5)]"
+                      className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-accent text-accent-fg text-[10px] font-semibold leading-[14px] text-center pointer-events-none shadow-[0_0_4px_var(--accent-glow)]"
                     >
                       {filterCounts['unread'] > 99 ? '99+' : filterCounts['unread']}
                     </span>

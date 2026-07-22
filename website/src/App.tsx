@@ -260,8 +260,8 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
   if (count <= 0) return null
   const ariaLabel = `${count} ${label}`
   return collapsed
-    ? <span className="absolute top-1 right-1 w-2 h-2 bg-danger rounded-full z-10" role="status" aria-label={ariaLabel} />
-    : <span className="absolute right-2 top-1/2 -translate-y-1/2 bg-danger text-danger-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" aria-label={ariaLabel}>{count}</span>
+    ? <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" role="status" aria-label={ariaLabel} />
+    : <span className="absolute right-2 top-1/2 -translate-y-1/2 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" aria-label={ariaLabel}>{count}</span>
 }
 
 /**
