@@ -43,7 +43,6 @@ oauth_config:
       - im:read
       - im:write
       - reactions:write
-      - users:read
       # Optional: uncomment for custom workspace emojis in Secretary emoji picker
       # - emoji:read
 
