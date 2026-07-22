@@ -748,7 +748,7 @@ export default function DevFleetPage() {
         }
       }
       if (fleet?.build_pending) {
-        out.push(<Badge key="bp" variant="warn">build pending \u2014 restart gateway to apply (kirocrew restart)</Badge>)
+        out.push(<Badge key="bp" variant="warn">{'build pending \u2014 restart gateway to apply (kirocrew restart)'}</Badge>)
       }
       return out
     }

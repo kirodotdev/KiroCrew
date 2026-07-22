@@ -182,7 +182,11 @@ describe('DevFleetPage', () => {
       return Promise.resolve(new Response('{}', { status: 200 }))
     })
     renderPage()
-    await waitFor(() => expect(screen.getByText(/build pending/i)).toBeInTheDocument())
+    const chip = await waitFor(() => screen.getByText(/build pending/i))
+    // The em-dash must render as the actual character, not a literal escape
+    // sequence (regression: \u2014 written in bare JSX text renders literally).
+    expect(chip.textContent).toContain('\u2014')
+    expect(chip.textContent).not.toContain('\\u2014')
   })
 
   it('single-column list layout for worktrees (no auto-fill truncation)', async () => {
