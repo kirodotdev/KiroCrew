@@ -183,10 +183,17 @@ describe('DevFleetPage', () => {
     })
     renderPage()
     const chip = await waitFor(() => screen.getByText(/build pending/i))
-    // The em-dash must render as the actual character, not a literal escape
-    // sequence (regression: \u2014 written in bare JSX text renders literally).
-    expect(chip.textContent).toContain('\u2014')
-    expect(chip.textContent).not.toContain('\\u2014')
+    // Visible text must stay short: the Badge pill is whitespace-nowrap inside a
+    // fixed-width grid column, so long text overflows into adjacent columns
+    // (regression: full instruction was rendered inline and overlapped UPDATED).
+    expect(chip.textContent).toBe('build pending')
+    // Full instruction lives in the tooltip. The em-dash must be the actual
+    // character, not a literal escape sequence (regression: \u2014 written in
+    // bare JSX text renders literally).
+    const title = chip.closest('[title]')?.getAttribute('title') ?? ''
+    expect(title).toContain('restart gateway to apply')
+    expect(title).toContain('\u2014')
+    expect(title).not.toContain('\\u2014')
   })
 
   it('single-column list layout for worktrees (no auto-fill truncation)', async () => {

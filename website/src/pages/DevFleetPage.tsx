@@ -748,7 +748,10 @@ export default function DevFleetPage() {
         }
       }
       if (fleet?.build_pending) {
-        out.push(<Badge key="bp" variant="warn">{'build pending \u2014 restart gateway to apply (kirocrew restart)'}</Badge>)
+        // Keep the visible text short: the ACTIONS grid column is fixed-width and
+        // the Badge pill is whitespace-nowrap, so long text overflows leftward
+        // into the UPDATED/BEHIND columns. Full instruction lives in the tooltip.
+        out.push(<Badge key="bp" variant="warn" title={'build pending \u2014 restart gateway to apply (kirocrew restart)'}>build pending</Badge>)
       }
       return out
     }
@@ -847,7 +850,7 @@ export default function DevFleetPage() {
               {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>&mdash;</span>}
               <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? w.behind + ' commits behind main' : 'up to date with main'}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
               <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
-              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 } as CSSProperties}>{rowButtons(w)}</div>
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0, flexWrap: 'wrap' } as CSSProperties}>{rowButtons(w)}</div>
             </>
           )}
         </div>
