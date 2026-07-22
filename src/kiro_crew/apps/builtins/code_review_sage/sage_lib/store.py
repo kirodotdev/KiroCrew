@@ -63,9 +63,6 @@ DEFAULT_CONFIG: dict[str, object] = {
         "model": None,         # None = inherit the system/agent default model
         "effort": "",          # "" = inherit the model/provider default effort
         "active_namespaces": ["default"],  # which namespaces to load during review
-        "max_review_rounds": 3,  # Phase-2 convergence rounds per change; re-review
-                                 # until a round adds no new findings or this cap is
-                                 # hit. Maximizes first-pass recall (>=1).
         "max_concurrent": 5,     # max reviews running at once on the shared runtime
                                  # (clamped to [1, 30]); "review all" can raise it.
     },

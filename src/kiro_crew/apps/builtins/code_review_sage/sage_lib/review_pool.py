@@ -93,7 +93,11 @@ def _is_abnormal_stop(reason: str) -> bool:
 MAX_CONCURRENT = 5        # default max reviews running at once (config: review.max_concurrent)
 MAX_CONCURRENT_CEIL = 30  # hard ceiling — "review all" can raise concurrency up to here
 MAX_STARTING = 2          # (legacy) retained for back-compat stats; single runtime has no cold-start throttle
-DEFAULT_TASK_TIMEOUT = 1800.0   # seconds per review task (gate or deep)
+DEFAULT_TASK_TIMEOUT = 5400.0   # 90 min per review turn. The single-pass review
+#   is ONE heavier turn (design + all code dimensions) that replaces up to 5 old
+#   turns, so the old 30-min cap force-killed legitimately-working large-PR reviews
+#   (stop_reason='timeout'). 90 min gives real headroom while staying well under the
+#   runtime's 2h (_DEFAULT_PROMPT_TIMEOUT) default that chat/subagent turns use.
 REVIEW_AGENT = "code-review-sage-reviewer"  # dedicated lean reviewer agent (shell-
 #   enabled so it can run the `gh` CLI to fetch/post GitHub PR reviews). The per-task
 #   prompt loads the `sage-review` skill on top of it.

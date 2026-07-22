@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sage_lib.review_driver import build_gate_task  # noqa: E402
+from sage_lib.review_driver import build_review_task  # noqa: E402
 
 _SKILL = (Path(__file__).resolve().parents[1]
           / "skills" / "sage-review" / "SKILL.md")
@@ -76,7 +76,7 @@ class TestGateTaskPromptCarriesDesignLenses(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.prompt = build_gate_task("CR-12345678")
+        cls.prompt = build_review_task("CR-12345678")
 
     def test_prompt_instructs_deep_thinking(self):
         self.assertIn("THINK DEEPLY", self.prompt)

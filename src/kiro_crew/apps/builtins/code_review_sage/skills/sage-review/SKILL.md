@@ -1,8 +1,8 @@
 ---
 name: sage-review
-description: Deep, platform-neutral code review for PRs and CRs. Phase 1 design gate (Problem Worth Solving & Solution Fit) then 9 code-level dimensions with chain-of-consequences, self-critique, and draft-only comments. The single app-owned source of truth.
+description: Deep, platform-neutral code review for PRs and CRs in ONE thorough single pass — design reasoning (Problem Worth Solving & Solution Fit) as one dimension alongside the 9 code-level dimensions, with chain-of-consequences, self-critique, and draft-only comments. The single app-owned source of truth.
 version: 1.0.0
-tags: [code-review, security, quality, design-gate, platform-neutral]
+tags: [code-review, security, quality, design, platform-neutral]
 ---
 
 # Code Review Sage — Review Ruleset
@@ -63,11 +63,12 @@ the finding.
 
 ---
 
-## Phase 1 — Design gate: Problem Worth Solving & Solution Fit
+## Design dimension — Problem Worth Solving & Solution Fit
 
-Runs **before** any code-level dimension and acts as a **gate** (a bad design
-short-circuits the review). The senior-engineer "should we even build this, and
-is this the best way?" lens. Answer each with a consequence chain:
+Reviewed **together with** the code dimensions in the SAME single pass — it is
+**one dimension** of the review, not a gate that runs before or short-circuits
+the code review. The senior-engineer "should we even build this, and is this the
+best way?" lens. Answer each with a consequence chain:
 
 - **What is the problem?** One sentence, from the user's/system's perspective.
 - **Does it matter, and to whom?** Who is hurt, how often, how badly? If the
@@ -81,11 +82,11 @@ is this the best way?" lens. Answer each with a consequence chain:
   high-stakes — impact, not size, is the signal. Blast radius governs **how
   deeply to review** (it raises `criticality`), NOT **whether** to review: a
   large or high-impact blast radius is **never, on its own, a `BLOCK`** — it
-  means proceed to Phase 2 with *more* scrutiny.
+  means review the code dimensions with *more* scrutiny.
 
 ### Deep design reasoning (think hard — this is the highest-leverage step)
 
-The design gate is **unified with the design review**: there is no separate
+The design dimension is **unified with the design review**: there is no separate
 "deep dive" stage — *this is it*. A design defect costs far more than any
 line-level bug and is the hardest to see, so reason **deliberately and deeply**
 here. Do not pattern-match a verdict. Spend real thinking budget (these workers
@@ -102,7 +103,7 @@ its own consequence chain, and only then settle on a verdict.
   public contracts, APIs, schemas, or persisted data *safely*? Is there a
   migration / compatibility story for existing callers and existing data? A
   design that silently breaks or strands either is a defect (this is the
-  design-level twin of the Phase-2 backward-compat check).
+  design-level twin of the code-level backward-compat check).
 - **Alternatives & proportionality.** Name the 1–2 strongest alternative
   designs and say why this one wins. Is the solution proportionate to the
   problem, or over-/under-engineered? "No alternative considered" on a
@@ -155,29 +156,34 @@ treat any divergence as a finding:
 
 ### Gate verdict
 
+The `gate_verdict` field is **still recorded** (the result schema requires it),
+but it is a **design assessment, not a Python gate**: a `BLOCK` is emitted as a
+🔴 design finding and `CONCERNS` as a 🟡. It never skips or short-circuits the
+code review — the review continues across ALL code dimensions in the SAME pass.
+
 | Verdict | Meaning | Effect |
 |---------|---------|--------|
-| `PASS` | Real problem, sound and proportionate solution | Proceed to Phase 2 |
-| `CONCERNS` | Acceptable but notable design risk | Record findings, still proceed to Phase 2 |
-| `BLOCK` | No real problem, wrong/over-engineered fix, or better alternative ignored | Record the design finding; **still proceed to Phase 2**. Marks the change not-ready-to-ship, but never skips the code review |
+| `PASS` | Real problem, sound and proportionate solution | No design finding; the review continues across all code dimensions in the same pass |
+| `CONCERNS` | Acceptable but notable design risk | Recorded as a 🟡 design finding; the review continues across all code dimensions in the same pass |
+| `BLOCK` | No real problem, wrong/over-engineered fix, or better alternative ignored | Recorded as a 🔴 not-ready-to-ship design finding; the review continues across all code dimensions in the same pass |
 
 **`BLOCK` is reserved for a genuine *design* defect** — the change solves no real
 problem, applies the wrong or over-engineered fix, ignores a clearly better
 alternative, or (for a posture-bearing change) has a missing/unreviewed design
 chain. A large blast radius, high `criticality`, or high `design_risk` is **NOT**
-a design defect on its own: it *raises review depth* (more thorough Phase 2), it
-never short-circuits the review. In fact a `BLOCK` **no longer skips Phase 2 at
-all** — it flags the design as not-ready-to-ship while the full code review still
-runs, so the author gets design + code feedback in one pass. When torn between
-`BLOCK` and `CONCERNS`, choose **`CONCERNS`**; reserve `BLOCK` for a design that is
-genuinely wrong.
+a design defect on its own: it *raises review depth* (more thorough code review),
+it never short-circuits the review. A `BLOCK` is recorded as a 🔴 design finding
+that flags the change not-ready-to-ship while the full code review still runs in
+the same pass, so the author gets design + code feedback together. When torn
+between `BLOCK` and `CONCERNS`, choose **`CONCERNS`**; reserve `BLOCK` for a
+design that is genuinely wrong.
 
-**Outputs of Phase 1** — capture the design reasoning as an explicit **chain of
-thought**, not one dense paragraph:
+**Outputs of the design dimension** — capture the design reasoning as an explicit
+**chain of thought**, not one dense paragraph:
 - `gate_verdict` ∈ {PASS, CONCERNS, BLOCK}
 - `design_risk` ∈ {low, medium, high}
 - `criticality` ∈ {critical, medium, low} — an a-priori review-depth tier from
-  design-risk × blast radius. Drives which changes get the Phase 2 deep review
+  design-risk × blast radius. Drives how deeply the code dimensions are reviewed
   (the curate/select step picks tiers); it is not only about blocking.
 - `problem` — the customer/system problem in **one sentence** (the user's lens).
 - `why_it_matters` — who is hurt, how often, how badly. If you can't name a real
@@ -187,17 +193,17 @@ thought**, not one dense paragraph:
   effects / sub-optimal tradeoffs**? State it as a consequence chain
   (*cause → mechanism → consequence*). This is where the design-risk verdict is
   justified.
-- `rationale` — *(optional)* a one-line synthesis tying the three together.
+- `design_headline` — *(optional)* a one-line synthesis tying the three together.
 
 ---
 
-## Phase 2 — The 9 code-level dimensions
+## The 9 code-level dimensions
 
-Run on every usable verdict — `PASS`, `CONCERNS`, AND `BLOCK`. A design `BLOCK`
-informs the ship decision but never skips this code review: the author wants all
-issues surfaced in one pass. For each added/modified line (skip deleted lines),
-evaluate against every dimension. Each finding gets a dimension, a severity, and
-a consequence chain.
+Reviewed in the SAME single pass as the design dimension — not a separate phase.
+A design `BLOCK` informs the ship decision but never skips this code review: the
+author wants all issues surfaced in one pass. For each added/modified line (skip
+deleted lines), evaluate against every dimension. Each finding gets a dimension,
+a severity, and a consequence chain.
 
 ### Coverage mandate — review EVERY change (first-pass completeness)
 
@@ -216,9 +222,17 @@ Prevent it — be **exhaustive, not representative**:
    and finish — do not emit until every changed hunk is covered.
 
 Aim to surface the COMPLETE set of findings in THIS pass. A finding that a later
-revision would expose should have been caught here. (The driver also re-runs this
-review in a bounded convergence loop until a round adds nothing new, but that is a
-safety net — your single pass should already be exhaustive.)
+revision would expose should have been caught here.
+
+**Emit a machine coverage signal** into the result record so the driver can
+verify first-pass completeness deterministically:
+
+- `files_covered` — the list of changed file PATHS you actually reviewed against
+  all dimensions in this pass.
+- `coverage_complete` — `true` ONLY if `files_covered` covers **every** changed
+  file in the diff. If it is `false` (you could not cover every file in this
+  pass), the driver runs **ONE targeted follow-up** on the remaining files — so
+  be honest about what you did and did not cover.
 
 1. **Correctness & regression** — logic errors, edge cases, null/empty handling,
    off-by-one, behavior changed on a path the description didn't mention. Did
@@ -264,8 +278,8 @@ safety net — your single pass should already be exhaustive.)
    listeners/handles, sync work on hot paths.
 
 5. **Scope & description fidelity** — scope creep (3+ unrelated concerns in one
-   change SHOULD be split); description accuracy (covered in Phase 1, re-checked
-   against the actual diff here).
+   change SHOULD be split); description accuracy (assessed in the design
+   dimension, re-checked against the actual diff here).
 
 6. **Cross-change conflict** — does another open change touch the same files or
    ship an overlapping feature? Flag merge-order/duplication risk. (Dedup against
@@ -419,7 +433,7 @@ the durable source of truth the Focus Report reads. **Findings JSON contract**
     "problem": "one-sentence customer/system problem",
     "why_it_matters": "who is hurt, how often/badly",
     "solution_assessment": "resolves? optimal/proportionate? side effects? — cause → mechanism → consequence",
-    "rationale": "optional one-line synthesis"
+    "design_headline": "optional one-line synthesis"
   },
   "blast_radius": {
     "rating": "SMALL | MEDIUM | LARGE",
@@ -427,6 +441,8 @@ the durable source of truth the Focus Report reads. **Findings JSON contract**
                 "guard_removals": 0, "import_fanout": 0}
   },
   "deep_reviewed": true,
+  "files_covered": ["path/to/file/a", "path/to/file/b"],
+  "coverage_complete": true,
   "findings": [
     {"dimension": "security",
      "severity": "red | yellow",
@@ -447,10 +463,14 @@ the durable source of truth the Focus Report reads. **Findings JSON contract**
 
 > Use the `change_id` emitted by `python3 sage_lib/pipeline.py prepare` **verbatim** — do NOT invent or reformat it (it must match the driver's `_cid`, or the record write and read hit different files).
 
-A gate-only record (the gate ran but Phase 2 hasn't executed yet, or the gate
-could not produce a usable verdict) carries just the `phase1` + `blast_radius`
-fields with `deep_reviewed: false`. A `BLOCK` verdict is NOT gate-only — it now
-gets the full Phase 2 review like any other usable verdict.
+**One record, written in one pass.** Every review writes exactly ONE record with
+`deep_reviewed: true` and a fully populated `phase1` block (design dimension) —
+there is no "gate-only" record and no design-vs-code split. Two coverage fields
+make first-pass completeness machine-checkable:
+- `files_covered` — array of changed file paths you reviewed against all
+  dimensions in this pass.
+- `coverage_complete` — `true` only if `files_covered` covers every changed file;
+  `false` triggers the driver's ONE targeted follow-up on the remaining files.
 
 ---
 
@@ -472,9 +492,8 @@ orchestration.
 ```
 - [ ] Self-heal store; load common + repo learned patterns
 - [ ] Resolve per-repo rule pack (if any) and read it as additional rules
-- [ ] Phase 1 design gate → verdict + design_risk + criticality + rationale
-- [ ] Phase 2 ALWAYS runs (PASS / CONCERNS / BLOCK) → 9 dimensions, chain-of-consequences findings
-- [ ] Coverage self-check: every changed hunk reviewed against all 9 dimensions (go back if any uncovered)
+- [ ] ONE thorough pass: design dimension (verdict + design_risk + criticality + design_headline) AND the 9 code dimensions together → chain-of-consequences findings
+- [ ] Coverage self-check: every changed hunk reviewed against all dimensions; emit files_covered + coverage_complete (driver runs ONE targeted follow-up if incomplete)
 - [ ] Self-critique (Filter / Merge / Sharpen / Stabilize)
 - [ ] Post surviving findings as DRAFT comments (publish=false), each quoting the snippet
 - [ ] If the change is a fix, run INLINE miss-analysis (learn-from-sage) → STAGE the learning into the candidate file

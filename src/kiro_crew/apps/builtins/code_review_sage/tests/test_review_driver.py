@@ -23,10 +23,14 @@ class TestReviewDriver(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _fake_dispatch(self, verdict="PASS", write_records=True, max_seen=None):
-        """A dispatch fn that mimics two kinds of isolated worker session:
-        - a GATE session writes a gate-only record carrying ``verdict``;
-        - a DEEP session augments that record (deep_reviewed=true + a finding).
+    def _fake_dispatch(self, verdict="PASS", write_records=True, max_seen=None,
+                       coverage_complete=True):
+        """A dispatch fn modeling the SINGLE-PASS reviewer:
+        - a REVIEW session writes the COMPLETE record in one turn (phase1 verdict +
+          one finding + counts + deep_reviewed=true + the coverage signal);
+        - a POSTER session publishes the driver-built pending comments;
+        - a COVERAGE FOLLOW-UP session (dispatched only when the first pass set
+          coverage_complete=false) marks coverage complete.
         The pool's send() returns when the worker's turn ends; this fake models
         that by writing the record and returning synchronously.
         """
@@ -37,8 +41,8 @@ class TestReviewDriver(unittest.TestCase):
                 if max_seen is not None:
                     max_seen[0] = max(max_seen[0], self._concurrent)
             m = re.search(r"CR-\d+", task)
-            is_gate = "ONLY the Phase 1 design gate" in task
-            is_deep = "Phase 2 deep review" in task
+            is_review = "SINGLE thorough pass" in task
+            is_followup = "INCOMPLETE file coverage" in task
             is_poster = "pre-redacted DRAFT review comments" in task
             if write_records and m:
                 cid = m.group(0)
@@ -49,22 +53,23 @@ class TestReviewDriver(unittest.TestCase):
                     rec["design_comment_posted"] = any(
                         e.get("kind") == "design" for e in pending)
                     results.write_result(rec, self.root)
-                elif is_gate:
+                elif is_review:
                     results.write_result({
                         "schema": "code-review-sage-result", "version": 1, "change_id": cid,
                         "platform": "github", "repo_identity": "github.com/o/r", "revision": "1",
                         "phase1": {"gate_verdict": verdict, "design_risk": "low", "criticality": "low"},
                         "blast_radius": {"rating": "SMALL", "signals": {}},
-                        "counts": {"red": 0, "yellow": 0}, "findings": [],
-                        "deep_reviewed": False, "title": cid,
+                        "counts": {"red": 0, "yellow": 1},
+                        "findings": [{"dimension": "correctness", "severity": "yellow",
+                                      "file": "f", "line": 1, "snippet": "x",
+                                      "observation": "o", "consequence": "c", "suggestion": "s"}],
+                        "deep_reviewed": True, "title": cid,
+                        "files_covered": ["f"], "coverage_complete": coverage_complete,
                     }, self.root)
-                elif is_deep:
+                elif is_followup:
                     rec = results.read_result(cid, self.root) or {}
-                    rec["deep_reviewed"] = True   # RECORDS findings only; does NOT post
-                    rec["findings"] = [{"dimension": "correctness", "severity": "yellow",
-                                        "file": "f", "line": 1, "snippet": "x",
-                                        "observation": "o", "consequence": "c", "suggestion": "s"}]
-                    rec["counts"] = {"red": 0, "yellow": 1}
+                    rec["coverage_complete"] = True
+                    rec["deep_reviewed"] = True
                     results.write_result(rec, self.root)
             with self.lock:
                 self._concurrent -= 1
@@ -75,7 +80,7 @@ class TestReviewDriver(unittest.TestCase):
         self.archived.append(html)
         return "sage-report-test"
 
-    def test_gate_then_deep_for_passing_changes(self):
+    def test_single_pass_reviews_all_changes(self):
         out = D.run_review(["CR-1", "CR-2", "CR-3"], dispatch=self._fake_dispatch(verdict="PASS"),
                            archiver=self._archiver, root=self.root)
         self.assertEqual(out["changes"], 3)
@@ -83,9 +88,9 @@ class TestReviewDriver(unittest.TestCase):
         self.assertEqual(out["deep_spawns"], 3)
         self.assertEqual(out["deep_reviewed"], 3)
         self.assertEqual(out["design_blocked"], 0)
-        # gate + deep + 1 convergence follow-up (finds nothing new) + poster, per change
-        self.assertEqual(len(self.calls), 12)
-        self.assertEqual(out["deep_rounds"], 6)           # 2 rounds/change (round 1 + 1 confirm)
+        # ONE review pass + poster per change (coverage complete -> no follow-up)
+        self.assertEqual(len(self.calls), 6)
+        self.assertEqual(out["deep_rounds"], 3)           # one review pass per change
         self.assertEqual(out["report"]["total"], 3)
         # report archived as a per-run artifact, then records cleaned
         self.assertEqual(out["report_slug"], "sage-report-test")
@@ -120,13 +125,13 @@ class TestReviewDriver(unittest.TestCase):
         self.assertNotIn("results_cleaned", out)
         self.assertEqual(len(results.list_results(self.root)), 2)   # records preserved
 
-    def test_no_gate_verdict_skips_phase2(self):
-        # dispatch that does not write any record -> no usable verdict
+    def test_no_record_marks_failed(self):
+        # dispatch that completes but writes no record -> review produced nothing usable
         def no_record(task, timeout=0):
             return {"ok": True, "output": "", "error": ""}
         out = D.run_review(["CR-7"], dispatch=no_record, generate_report=False, root=self.root)
-        self.assertEqual(out["deep_spawns"], 0)
-        self.assertEqual(out["per_change"][0]["skipped_reason"], "no_gate_verdict")
+        self.assertEqual(out["deep_reviewed"], 0)
+        self.assertEqual(out["per_change"][0]["skipped_reason"], "no_review_recorded")
 
     def test_each_task_is_single_change(self):
         D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(), archiver=self._archiver,
@@ -141,39 +146,38 @@ class TestReviewDriver(unittest.TestCase):
                      concurrency=2, root=self.root)
         self.assertLessEqual(max_seen[0], 2)
 
-    def test_gate_spawn_failure_surfaced_and_skips_deep(self):
+    def test_review_failure_surfaced(self):
         def failing(task, timeout=0):
             return {"ok": False, "output": "", "error": "boom"}
         out = D.run_review(["CR-9"], dispatch=failing, generate_report=False, root=self.root)
         self.assertEqual(len(out["failures"]), 1)
-        self.assertEqual(out["deep_spawns"], 0)
-        self.assertEqual(out["per_change"][0]["skipped_reason"], "gate_spawn_failed")
+        self.assertEqual(out["deep_reviewed"], 0)
+        self.assertEqual(out["per_change"][0]["skipped_reason"], "review_failed")
 
     def test_empty_change_set(self):
         out = D.run_review([], dispatch=self._fake_dispatch(), root=self.root)
         self.assertFalse(out["ok"])
 
-    def test_gate_task_is_phase1_only(self):
-        task = D.build_gate_task("https://github.com/o/r/pull/7")
+    def test_review_task_covers_design_and_is_single_pass(self):
+        task = D.build_review_task("https://github.com/o/r/pull/7")
         self.assertIn("ISOLATED", task)
-        self.assertIn("ONLY the Phase 1 design gate", task)
-        self.assertIn("Do NOT run Phase 2", task)
+        self.assertIn("SINGLE thorough pass", task)
+        self.assertIn("DESIGN dimension", task)
         self.assertIn("spawn further subagents", task)
         self.assertIn("github.com/o/r/pull/7", task)
 
-    def test_deep_task_runs_phase2_and_inline_learning(self):
-        task = D.build_deep_review_task("CR-8")
+    def test_review_task_has_inline_learning(self):
+        task = D.build_review_task("CR-8")
         self.assertIn("ISOLATED", task)
-        self.assertIn("Phase 2 deep review", task)
         self.assertIn("INLINE miss-analysis", task)
         self.assertIn("is_fix", task)
         self.assertIn("Do NOT spawn further subagents", task)
         self.assertIn("CR-8", task)
 
-    def test_deep_task_keeps_code_reviewer_checks_first_class(self):
-        # Gap-closing: the code-reviewer's strong checks must be explicitly
-        # reinforced in the deep prompt, not just folded into the skill.
-        task = D.build_deep_review_task("CR-9")
+    def test_review_task_keeps_code_reviewer_checks_first_class(self):
+        # The code-reviewer's strong checks must be explicit in the single-pass
+        # prompt (the 9 dimensions + fidelity + security threat chain).
+        task = D.build_review_task("CR-9")
         self.assertIn("9 code-level dimensions", task)
         self.assertIn("description<->diff fidelity", task)
         self.assertIn("threat chain", task)
@@ -189,25 +193,25 @@ class TestReviewDriver(unittest.TestCase):
                      generate_report=False, root=self.root, progress=prog)
         phases = [p for (c, p) in seen if c == "CR-1"]
         self.assertEqual(phases[0], "queued")     # marked queued upfront
-        self.assertIn("gating", phases)           # Phase 1 in progress
-        self.assertIn("deep", phases)             # Phase 2 in progress
+        self.assertIn("reviewing", phases)        # single review pass in progress
         self.assertEqual(phases[-1], "done")      # terminal
 
-    def test_progress_block_now_runs_deep(self):
+    def test_progress_block_still_reviews(self):
         seen = []
 
         def prog(cid, phase, extra=None):
             seen.append(phase)
         D.run_review(["CR-2"], dispatch=self._fake_dispatch(verdict="BLOCK"),
                      generate_report=False, root=self.root, progress=prog)
-        self.assertIn("deep", seen)               # BLOCK now proceeds to Phase 2
-        self.assertNotIn("blocked", seen)         # no more design-block short-circuit
+        self.assertIn("reviewing", seen)          # BLOCK is still fully reviewed
+        self.assertNotIn("blocked", seen)         # no design-block short-circuit
+        self.assertNotIn("gating", seen)          # no gate phase
         self.assertEqual(seen[-1], "done")
 
-    def test_gate_task_blast_radius_never_blocks(self):
-        # The design gate must BLOCK only on genuine design defects — a large
+    def test_review_task_blast_radius_never_blocks(self):
+        # The design dimension must BLOCK only on genuine design defects — a large
         # blast radius alone is not a BLOCK (it raises review depth).
-        task = D.build_gate_task("CR-9")
+        task = D.build_review_task("CR-9")
         self.assertIn("BLOCK is ONLY for a genuine DESIGN defect", task)
         self.assertIn("NEVER on its own a BLOCK", task)
 
@@ -224,28 +228,27 @@ class TestReviewDriver(unittest.TestCase):
         self.assertEqual(out["per_change"][0]["posted_comments"], 2)
 
     def test_progress_done_flags_unposted_findings(self):
-        # A deep session that writes findings but posts nothing -> driver reports
-        # posted=0 with expected>0 so the UI can flag "findings not posted".
-        def deep_no_post(task, timeout=0):
+        # A review that records findings but whose poster posts nothing -> driver
+        # reports posted=0 with expected>0 so the UI can flag "findings not posted".
+        def review_no_post(task, timeout=0):
             m = re.search(r"CR-\d+", task)
             assert m is not None
             cid = m.group(0)
-            if "ONLY the Phase 1 design gate" in task:
+            if "SINGLE thorough pass" in task:
                 results.write_result({
                     "schema": "code-review-sage-result", "version": 1, "change_id": cid,
                     "platform": "github", "repo_identity": "x", "revision": "1",
                     "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
                     "blast_radius": {"rating": "SMALL", "signals": {}},
-                    "counts": {"red": 0, "yellow": 0}, "findings": [],
-                    "deep_reviewed": False, "title": cid,
+                    "counts": {"red": 1, "yellow": 0},
+                    "findings": [{"dimension": "correctness", "severity": "red",
+                                  "file": "f", "line": 1, "snippet": "x",
+                                  "observation": "o", "consequence": "c", "suggestion": "s"}],
+                    "deep_reviewed": True, "title": cid,
+                    "files_covered": ["f"], "coverage_complete": True,
                 }, self.root)
-            elif "Phase 2 deep review" in task:
+            elif "pre-redacted DRAFT review comments" in task:
                 rec = results.read_result(cid, self.root) or {}
-                rec["deep_reviewed"] = True
-                rec["findings"] = [{"dimension": "correctness", "severity": "red",
-                                    "file": "f", "line": 1, "snippet": "x",
-                                    "observation": "o", "consequence": "c", "suggestion": "s"}]
-                rec["counts"] = {"red": 1, "yellow": 0}
                 rec["posted_comments"] = 0   # nothing posted despite a finding
                 results.write_result(rec, self.root)
             return {"ok": True, "output": "", "error": ""}
@@ -255,7 +258,7 @@ class TestReviewDriver(unittest.TestCase):
         def prog(cid, phase, extra=None):
             if phase == "done":
                 seen[cid] = extra or {}
-        D.run_review(["CR-2"], dispatch=deep_no_post, generate_report=False,
+        D.run_review(["CR-2"], dispatch=review_no_post, generate_report=False,
                      root=self.root, progress=prog)
         self.assertEqual(seen["CR-2"]["posted"], 0)
         self.assertEqual(seen["CR-2"]["expected"], 2)     # red1 + 1 ship comment; UI flags mismatch
@@ -301,52 +304,21 @@ class TestReviewDriver(unittest.TestCase):
         self.assertEqual(D._resolve_concurrency(7), 7)
         self.assertEqual(D._resolve_concurrency(1), 1)
 
-    def _fake_dispatch_growing(self, rounds_findings):
-        """Dispatch where each deep / follow-up round sets the finding count to the
-        next value in ``rounds_findings``, modeling recall that grows across rounds
-        then converges. Gate writes a PASS record; deep + follow-up share the counter."""
-        state = {"round": 0}
-
-        def dispatch(task, timeout=0):
-            with self.lock:
-                self.calls.append(task)
-            m = re.search(r"CR-\d+", task)
-            assert m is not None
-            cid = m.group(0) if m else None
-            if cid and "ONLY the Phase 1 design gate" in task:
-                results.write_result({
-                    "schema": "code-review-sage-result", "version": 1, "change_id": cid,
-                    "platform": "github", "repo_identity": "x", "revision": "1",
-                    "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
-                    "blast_radius": {"rating": "SMALL", "signals": {}},
-                    "counts": {"red": 0, "yellow": 0}, "findings": [],
-                    "deep_reviewed": False, "title": cid,
-                }, self.root)
-            elif cid and ("Phase 2 deep review" in task or "FOLLOW-UP review round" in task):
-                total = rounds_findings[min(state["round"], len(rounds_findings) - 1)]
-                state["round"] += 1
-                rec = results.read_result(cid, self.root) or {}
-                rec["deep_reviewed"] = True
-                rec["findings"] = [{"dimension": "correctness", "severity": "yellow",
-                                    "file": "f", "line": i, "snippet": "x", "observation": "o",
-                                    "consequence": "c", "suggestion": "s"} for i in range(total)]
-                rec["counts"] = {"red": 0, "yellow": total}
-                results.write_result(rec, self.root)
-            return {"ok": True, "output": "", "error": ""}
-        return dispatch
-
-    def test_convergence_loop_stops_when_no_new_findings(self):
-        # round 1 finds 1, follow-up finds 1 (no growth) -> converged, stop at 2 rounds
-        # (well under the default cap of 3), so recall converges without wasted rounds.
-        disp = self._fake_dispatch_growing([1, 1])
+    def test_coverage_backstop_runs_one_followup(self):
+        # First pass reports incomplete coverage -> the driver runs EXACTLY ONE
+        # targeted follow-up (not a blanket loop), then posts. deep_rounds == 2.
+        disp = self._fake_dispatch(verdict="PASS", coverage_complete=False)
         out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root)
         self.assertEqual(out["per_change"][0]["deep_rounds"], 2)
+        self.assertEqual(len(self.calls), 3)   # review + one follow-up + poster
+        self.assertTrue(any("INCOMPLETE file coverage" in c for c in self.calls))
 
-    def test_convergence_loop_respects_round_cap(self):
-        # findings grow every round, but the cap (default 3) stops the loop.
-        disp = self._fake_dispatch_growing([1, 2, 3, 4, 5])
+    def test_coverage_complete_skips_followup(self):
+        disp = self._fake_dispatch(verdict="PASS", coverage_complete=True)
         out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root)
-        self.assertEqual(out["per_change"][0]["deep_rounds"], 3)
+        self.assertEqual(out["per_change"][0]["deep_rounds"], 1)
+        self.assertEqual(len(self.calls), 2)   # review + poster only
+        self.assertFalse(any("INCOMPLETE file coverage" in c for c in self.calls))
 
 
 class TestWorkerPromptScriptPaths(unittest.TestCase):
@@ -357,8 +329,8 @@ class TestWorkerPromptScriptPaths(unittest.TestCase):
 
     def test_prompts_reference_existing_script_paths(self):
         app_root = Path(__file__).resolve().parents[1]
-        prompts = [D.build_gate_task("CR-12345678"),
-                   D.build_deep_review_task("CR-12345678")]
+        prompts = [D.build_review_task("CR-12345678"),
+                   D.build_review_followup_task("CR-12345678")]
         refs = set()
         for p in prompts:
             refs.update(re.findall(r"python3 ([\w./-]+\.py)", p))
@@ -373,12 +345,12 @@ class TestDeterministicPosting(unittest.TestCase):
     never posts), the driver builds the Python-redacted bodies, and a separate
     poster publishes them verbatim — so no LLM free-text reaches the CR surface."""
 
-    def test_deep_prompt_records_only_and_never_posts(self):
-        p = D.build_deep_review_task("https://github.com/o/r/pull/12345678")
+    def test_review_prompt_records_only_and_never_posts(self):
+        p = D.build_review_task("https://github.com/o/r/pull/12345678")
         self.assertIn("RECORD ONLY", p)                  # writes findings, no posting
         self.assertIn("do NOT post", p)
         self.assertIn("MUST NOT call any comment tool", p)
-        self.assertNotIn("CRAddComment", p)              # deep worker never posts
+        self.assertNotIn("CRAddComment", p)              # reviewer never posts
 
     def test_post_task_posts_prebuilt_redacted_bodies_verbatim(self):
         p = D.build_post_task("https://github.com/o/r/pull/12345678")
@@ -414,16 +386,16 @@ class TestChangeIdAndFetch(unittest.TestCase):
         self.assertNotIn("/", cid)
         self.assertNotIn(":", cid)
 
-    def test_gate_prompt_github_fetch(self):
-        p = D.build_gate_task("https://github.com/o/r/pull/5")
+    def test_review_prompt_github_fetch(self):
+        p = D.build_review_task("https://github.com/o/r/pull/5")
         self.assertIn("gh api", p)
         self.assertIn("--payload-file", p)
         self.assertNotIn("ReadInternalWebsites", p)
 
-    def test_deep_and_followup_prompts_use_gh(self):
+    def test_review_and_followup_prompts_use_gh(self):
         gh = "https://github.com/o/r/pull/5"
-        self.assertIn("gh api", D.build_deep_review_task(gh))
-        self.assertIn("gh api", D.build_deep_followup_task(gh))
+        self.assertIn("gh api", D.build_review_task(gh))
+        self.assertIn("gh api", D.build_review_followup_task(gh))
 
 
 class TestGithubPosting(unittest.TestCase):
@@ -465,7 +437,7 @@ class TestGithubPosting(unittest.TestCase):
         cid = D._cid(link)   # GH-o-r-5
 
         def dispatch(task, timeout=0):
-            if "ONLY the Phase 1 design gate" in task:
+            if "SINGLE thorough pass" in task:
                 results.write_result({
                     "schema": "code-review-sage-result", "version": 1, "change_id": cid,
                     "platform": "github", "repo_identity": "github.com/o/r",
@@ -473,18 +445,14 @@ class TestGithubPosting(unittest.TestCase):
                     "phase1": {"gate_verdict": "PASS", "design_risk": "low",
                                "criticality": "low"},
                     "blast_radius": {"rating": "SMALL", "signals": {}},
-                    "counts": {"red": 0, "yellow": 0}, "findings": [],
-                    "deep_reviewed": False, "title": cid,
+                    "counts": {"red": 1, "yellow": 0},
+                    "findings": [{"dimension": "correctness", "severity": "red",
+                                  "file": "src/a.rs", "line": 5, "snippet": "x",
+                                  "observation": "o", "consequence": "c",
+                                  "suggestion": "s"}],
+                    "deep_reviewed": True, "title": cid,
+                    "files_covered": ["src/a.rs"], "coverage_complete": True,
                 }, self.root)
-            elif "Phase 2 deep review" in task or "FOLLOW-UP review round" in task:
-                rec = results.read_result(cid, self.root) or {}
-                rec["deep_reviewed"] = True
-                rec["findings"] = [{"dimension": "correctness", "severity": "red",
-                                    "file": "src/a.rs", "line": 5, "snippet": "x",
-                                    "observation": "o", "consequence": "c",
-                                    "suggestion": "s"}]
-                rec["counts"] = {"red": 1, "yellow": 0}
-                results.write_result(rec, self.root)
             elif "pre-redacted DRAFT review comments" in task:
                 rec = results.read_result(cid, self.root) or {}
                 pay = rec.get("github_review_payload") or {}
