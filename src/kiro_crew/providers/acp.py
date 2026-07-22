@@ -222,6 +222,7 @@ class AcpProvider(LLMProvider):
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_settings_mcp_json: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
+        permission_mode: str | None = None,
     ) -> None:
         kwargs: dict[str, Any] = {
             "work_dir": work_dir,
@@ -234,6 +235,9 @@ class AcpProvider(LLMProvider):
             "mcp_gateway_overlay": mcp_gateway_overlay,
             "mcp_gateway_settings_mcp_json": mcp_gateway_settings_mcp_json,
             "mcp_gateway_socket": mcp_gateway_socket,
+            # Claude permission mode (Auto-mode/permission-UI parity). None on the
+            # kiro-cli path — fully inert; a companion CC provider threads it.
+            "permission_mode": permission_mode,
         }
         if agent:
             kwargs["agent"] = agent

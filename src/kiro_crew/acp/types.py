@@ -60,6 +60,16 @@ METHOD_SET_CONFIG_OPTION = "session/set_config_option"
 
 ACP_BACKEND_CLAUDE = "claude"
 
+# ── Claude Code permission modes ──
+# Values an edition writes into a per-session settings.local.json
+# ``permissions.defaultMode`` when it drives the dormant ``ACP_BACKEND_CLAUDE``
+# seam. ``default`` = per-tool approval; ``auto`` = the SDK auto-accept mode
+# (Auto-mode / permission-UI parity). Inert in the public core (kiro-cli only);
+# defined here so the client's ``permission_mode`` kwarg and a companion share
+# one canonical vocabulary rather than duplicating string literals.
+CC_PERMISSION_MODE_DEFAULT = "default"
+CC_PERMISSION_MODE_AUTO = "auto"
+
 # ── ACP Session Update Types ──
 
 UPDATE_USER_MESSAGE_CHUNK = "user_message_chunk"

@@ -153,6 +153,93 @@ class TestIsHeartbeatSafeTool:
         assert not _is_heartbeat_safe_tool("@kirocrew-core/cron_add")
 
 
+class TestEditionHeartbeatAllowlist:
+    """The CPP ``SlackEnterpriseGate.heartbeat_safe_tools()`` seam.
+
+    A companion may ADD tool names; the public Default is empty (byte-identical).
+    A qualified ``@server/Tool`` entry must match ONLY that server's tool, not a
+    same-bare-name tool from a different (or compromised) server.
+    """
+
+    def _install_gate_extra(self, monkeypatch, extra):
+        """Install a platform context whose slack_gate returns *extra*."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import build_default_context
+        from kiro_crew.platform.context import set_context
+
+        base = build_default_context(KiroCrewConfig())
+
+        class _Gate:
+            def validate_enterprise(self, *a, **k):
+                return True
+
+            def check_message_origin(self, *a, **k):
+                return True
+
+            def heartbeat_safe_tools(self):
+                return frozenset(extra)
+
+        import dataclasses
+
+        ctx = dataclasses.replace(base, slack_gate=_Gate())
+        set_context(ctx)
+        monkeypatch.setattr(
+            "kiro_crew.platform.bootstrap._BOOTED", True, raising=False
+        )
+
+    @pytest.fixture(autouse=True)
+    def _reset_ctx(self):
+        from kiro_crew.platform.context import set_context
+
+        yield
+        set_context(None)
+
+    def test_default_edition_set_is_empty(self, monkeypatch) -> None:
+        """No companion → the allowlist is byte-identical to the core set."""
+        self._install_gate_extra(monkeypatch, [])
+        assert not _is_heartbeat_safe_tool("@builder-mcp/ReadInternalWebsites")
+
+    def test_qualified_entry_matches_only_its_server(self, monkeypatch) -> None:
+        """A pinned ``@server/Tool`` entry auto-approves that exact identity…"""
+        self._install_gate_extra(monkeypatch, ["@builder-mcp/ReadInternalWebsites"])
+        assert _is_heartbeat_safe_tool("@builder-mcp/ReadInternalWebsites")
+        assert _is_heartbeat_safe_tool("Running: @builder-mcp/ReadInternalWebsites")
+        assert _is_heartbeat_safe_tool("mcp__builder-mcp__ReadInternalWebsites")
+
+    def test_qualified_entry_rejects_same_bare_name_other_server(self, monkeypatch) -> None:
+        """…but a DIFFERENT server exposing the same bare tool name is denied.
+
+        This is the collision guard: pinning ``@builder-mcp/ReadInternalWebsites``
+        must NOT auto-approve ``@evil-mcp/ReadInternalWebsites``.
+        """
+        self._install_gate_extra(monkeypatch, ["@builder-mcp/ReadInternalWebsites"])
+        assert not _is_heartbeat_safe_tool("@evil-mcp/ReadInternalWebsites")
+        assert not _is_heartbeat_safe_tool("Running: @evil-mcp/ReadInternalWebsites")
+        assert not _is_heartbeat_safe_tool("mcp__evil-mcp__ReadInternalWebsites")
+        # And the bare name alone is not auto-approved when only a qualified
+        # entry was allowlisted.
+        assert not _is_heartbeat_safe_tool("ReadInternalWebsites")
+
+    def test_bare_edition_entry_never_matches(self, monkeypatch) -> None:
+        """A BARE edition entry must NOT auto-approve anything (deny-by-default).
+
+        Entries MUST be server-qualified; a bare name would carry the collision
+        risk (a different server's same-named destructive tool auto-approved), so
+        the gate ignores it entirely — neither a qualified nor a bare title match.
+        """
+        self._install_gate_extra(monkeypatch, ["ReadInternalWebsites"])
+        assert not _is_heartbeat_safe_tool("@builder-mcp/ReadInternalWebsites")
+        assert not _is_heartbeat_safe_tool("ReadInternalWebsites")
+        assert not _is_heartbeat_safe_tool("Running: @builder-mcp/ReadInternalWebsites")
+
+    def test_unqualified_title_never_matches_edition_set(self, monkeypatch) -> None:
+        """A bare tool-call title (no resolvable server) never matches the edition
+        set even when a qualified entry is allowlisted."""
+        self._install_gate_extra(monkeypatch, ["@builder-mcp/ReadInternalWebsites"])
+        assert not _is_heartbeat_safe_tool("ReadInternalWebsites")
+        assert not _is_heartbeat_safe_tool("Running: ReadInternalWebsites")
+
+
 # ── HEARTBEAT_KEEP injection text ──
 
 

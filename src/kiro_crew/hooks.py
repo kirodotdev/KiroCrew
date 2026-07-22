@@ -850,6 +850,57 @@ _INTERNAL_READ_ALLOWLIST: dict[str, str] = {
 }
 
 
+def register_internal_read_path(read_id: str, rel_path: str) -> None:
+    """Register an edition-contributed fixed-path internal-read carve-out.
+
+    The composition-time seam an edition companion uses to add its own trusted
+    fixed-path reads (e.g. an SSO cookie jar for the usage-upload path) to
+    ``_INTERNAL_READ_ALLOWLIST`` — the exact structural twin of the boot-time
+    ``register_acp_backends`` / ``register_publish_providers`` seams.  This is
+    NOT an agent-reachable API: it is called once, from the companion's boot
+    composition, with HARDCODED constant arguments.  It never widens what
+    ``safe_read_file_internal`` will read at call time — that function still
+    re-verifies the resolved path is sensitive, opens O_NOFOLLOW, and SEL-audits
+    every outcome — this only lets an edition contribute an entry to the same
+    guarded table the core ships.
+
+    Guards (fail-closed, so a mis-registration cannot open a hole):
+
+    * ``read_id`` must be a non-empty string; re-registering an existing key with
+      a DIFFERENT path raises (a companion cannot silently repoint a core entry
+      such as ``kiro_usage_api.sso_token_cli`` at an attacker file).  Re-
+      registering the same key with the same path is idempotent.
+    * ``rel_path`` must be a relative path with no ``..`` component and no
+      absolute/anchor part, so the resolved target can only ever live under
+      ``~`` (the read still resolves under ``Path.home()`` at call time).
+    * the resolved ``~/<rel_path>`` must already be classified sensitive by
+      :func:`kiro_crew.security.is_sensitive_path` — the carve-out is only valid
+      for a path the shared file gate otherwise blocks; registering a
+      non-sensitive path is a configuration error and raises.
+    """
+    if not isinstance(read_id, str) or not read_id:
+        raise ValueError("register_internal_read_path: read_id must be a non-empty string")
+    existing = _INTERNAL_READ_ALLOWLIST.get(read_id)
+    if existing is not None and existing != rel_path:
+        raise ValueError(
+            f"register_internal_read_path: {read_id!r} already registered to a "
+            f"different path {existing!r}; refusing to repoint",
+        )
+    p = Path(rel_path)
+    if p.is_absolute() or p.anchor or ".." in p.parts:
+        raise ValueError(
+            f"register_internal_read_path: rel_path must be relative with no '..' "
+            f"(got {rel_path!r})",
+        )
+    resolved = str((Path.home() / p).expanduser())
+    if not is_sensitive_path(resolved):
+        raise ValueError(
+            f"register_internal_read_path: {rel_path!r} resolves to a non-sensitive "
+            f"path; the carve-out is only valid for a sensitive path",
+        )
+    _INTERNAL_READ_ALLOWLIST[read_id] = rel_path
+
+
 def safe_read_file_internal(read_id: str) -> bytes | None:
     """Read a sensitive path on behalf of an authorized internal caller.
 

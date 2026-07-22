@@ -1818,7 +1818,16 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # On existing configs, don't touch tools/allowedTools — user controls those.
     if fresh_install:
         added_refs: list[str] = []
-        for mcp_name in _MANAGED_MCP_SERVERS:
+        # Managed servers + edition-contributed servers both get their @ref
+        # registered so their tools are callable. Edition servers are injected
+        # into config['mcpServers'] via _extra_mcp_servers() above but were
+        # previously never added to config['tools'], so kiro-cli exposed the
+        # server but not its tools. The public edition contributes none, so this
+        # is a no-op there.
+        _register_names = list(_MANAGED_MCP_SERVERS) + [
+            n for n in _extra_mcp_servers() if n not in _MANAGED_MCP_SERVERS
+        ]
+        for mcp_name in _register_names:
             ref = f"@{mcp_name}"
             if mcp_name in valid_servers:
                 if ref not in config.get("tools", []):

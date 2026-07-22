@@ -298,20 +298,49 @@ def _context_clone_sandbox_mode(git_url: str) -> str:
         return _clone_sandbox_mode(git_url, _configured_registry_hosts())
 
 
+def _edition_registry_rows() -> list[dict[str, Any]]:
+    """Edition-contributed App-Store rows (CPP seam), fail-closed to []."""
+    from kiro_crew.platform.context import safe_context_call
+
+    def _read() -> list[dict[str, Any]]:
+        rows = current_context().apps_loader.registry_rows()
+        return [r for r in rows if isinstance(r, dict) and isinstance(r.get("name"), str)]
+
+    return safe_context_call(
+        _read,
+        fallback_factory=list,
+        log_message="edition registry_rows lookup failed; using bundled only",
+    )
+
+
 def _load_registry_file() -> list[dict[str, Any]]:
-    """Load and parse the bundled app-registry.json."""
+    """Load and parse the bundled app-registry.json, then merge edition rows.
+
+    Edition rows (from the CPP ``AppsLoader.registry_rows`` seam) are appended
+    ADD-only: a bundled core row wins over a same-``name`` edition row, so a
+    companion can only add catalog entries, never repoint a core one. The public
+    edition contributes none, so the merged list equals the bundled file.
+    """
+    rows: list[dict[str, Any]] = []
     if not _REGISTRY_FILE.is_file():
         logger.warning("Registry file not found: %s", _REGISTRY_FILE)
-        return []
-    try:
-        data = json.loads(_REGISTRY_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            logger.warning("Registry file is not a JSON array")
-            return []
-        return data
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to load registry: %s", exc)
-        return []
+    else:
+        try:
+            data = json.loads(_REGISTRY_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                rows = data
+            else:
+                logger.warning("Registry file is not a JSON array")
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to load registry: %s", exc)
+
+    seen = {r.get("name") for r in rows if isinstance(r, dict)}
+    for row in _edition_registry_rows():
+        if row.get("name") in seen:
+            continue
+        rows.append(row)
+        seen.add(row.get("name"))
+    return rows
 
 
 # ---------------------------------------------------------------------------

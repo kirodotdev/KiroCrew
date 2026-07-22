@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -146,24 +147,51 @@ def _patch_mcp_config_headless() -> None:
 
 
 def _cmd_auth_health() -> None:
-    """Browser auth health check is not available in the open-source build."""
+    """Browser auth health check — delegates to the auth layer.
+
+    In the OSS build the auth layer reports "not available in OSS"; an edition
+    that registered a ``BrowserAuthProvider`` surfaces its real health here.
+    """
+    from kiro_crew.browser import auth as _auth
+
+    result = _auth.health()
+    if result.get("available"):
+        print(json.dumps(result, indent=2))
+        return
     print("browser auth health: not available in OSS")
     sys.exit(1)
 
 
 def _cmd_auth_inject() -> None:
-    """Cookie injection is not available in the open-source build."""
+    """Cookie injection — delegates to the auth layer (OSS: not available)."""
+    from kiro_crew.browser import auth as _auth
+
+    result = _auth.ensure()
+    if result.get("available"):
+        print(json.dumps(result, indent=2))
+        return
     print("browser auth inject: not available in OSS")
     sys.exit(1)
 
 
 def _cmd_auth_refresh() -> None:
-    """Storage-state refresh is not available in the open-source build."""
+    """Storage-state refresh — delegates to the auth layer (OSS: not available)."""
+    from kiro_crew.browser import auth as _auth
+
+    if _auth.refresh_cookie_via_mcs():
+        print("browser auth refresh: ok")
+        return
     print("browser auth refresh: not available in OSS")
     sys.exit(1)
 
 
 def _cmd_auth_federate(url: str) -> None:
-    """Federated SSO is not available in the open-source build."""
+    """Federated SSO — delegates to the auth layer (OSS: not available)."""
+    from kiro_crew.browser import auth as _auth
+
+    result = _auth.federate_auth(url)
+    if result.get("ok"):
+        print(json.dumps({k: v for k, v in result.items() if k != "cookies"}, indent=2))
+        return
     print("browser auth federate: not available in OSS")
     sys.exit(1)

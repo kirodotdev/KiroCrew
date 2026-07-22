@@ -54,9 +54,19 @@ def _all_fields_recursive(
     cls: type,
     prefix: str = "",
 ) -> list[tuple[str, dataclasses.Field]]:  # type: ignore[type-arg]
-    """Yield (dot_path, field) for every field in the dataclass hierarchy."""
+    """Yield (dot_path, field) for every field in the dataclass hierarchy.
+
+    Private fields (leading underscore) are internal bookkeeping, not
+    user-facing config — e.g. ``KiroCrewConfig._extra_sections``, which
+    round-trips unknown/edition-contributed top-level sections. They are
+    excluded from the JSON schema (``schema.build_json_schema`` skips them), so
+    they carry no label/help metadata and never appear in SCHEMA_REGISTRY; skip
+    them here for the same reason the builder does.
+    """
     result: list[tuple[str, dataclasses.Field]] = []  # type: ignore[type-arg]
     for f in dataclasses.fields(cls):
+        if f.name.startswith("_"):
+            continue
         path = f"{prefix}.{f.name}" if prefix else f.name
         result.append((path, f))
         tp = f.type

@@ -356,6 +356,17 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
+    # Preserve the server-QUALIFIED form (before the prefix is stripped) so the
+    # edition allowlist can match on the full identity and avoid bare-name
+    # collisions — normalized to the "@server/Tool" spelling regardless of which
+    # wire form arrived ("mcp__server__Tool" or "@server/Tool").
+    qualified = ""
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        if len(parts) == 3:
+            qualified = f"@{parts[1]}/{parts[2]}"
+    elif name.startswith("@") and "/" in name:
+        qualified = name
     # Strip MCP server prefix: "mcp__builder-mcp__ToolName" → "ToolName"
     if name.startswith("mcp__"):
         parts = name.split("__", 2)
@@ -364,7 +375,31 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
     # Strip @server/Tool prefix: "@builder-mcp/ReadInternalWebsites" → "ReadInternalWebsites"
     if name.startswith("@") and "/" in name:
         name = name.rsplit("/", 1)[-1]
-    return name in HEARTBEAT_SAFE_TOOLS
+    if name in HEARTBEAT_SAFE_TOOLS:
+        return True
+    # Edition-contributed additions. Deferred context read via the sel.py pattern
+    # so this module never imports the platform package at load time; fails closed
+    # to the core set on any error.
+    #
+    # SECURITY — match ONLY the server-qualified "@server/Tool" identity, never a
+    # bare tool name: a bare-name allowlist entry would let a DIFFERENT (or
+    # compromised) MCP server expose a destructive tool with the same bare name
+    # as an allowlisted read-only one, and an injected heartbeat could get it
+    # auto-approved. So a title with no resolvable server (``qualified == ""``)
+    # can never match an edition entry, and an edition entry that is itself a
+    # bare name simply never matches any qualified title. This keeps the
+    # deny-by-default boundary intact; the companion MUST pin "@server/Tool".
+    if not qualified:
+        return False
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    empty: frozenset[str] = frozenset()
+    extra: frozenset[str] = safe_context_call(
+        lambda: current_context().slack_gate.heartbeat_safe_tools(),
+        fallback=empty,
+        log_message="heartbeat_safe_tools lookup failed; using core set only",
+    )
+    return qualified in extra
 
 
 # Prepended to every heartbeat task_text before ``ctx_builder.build_message``.

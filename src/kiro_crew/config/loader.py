@@ -82,6 +82,54 @@ from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_p
 
 logger = logging.getLogger(__name__)
 
+# Top-level config.json sections this core models AND round-trips through
+# to_dict(). Any other top-level key found at load() is captured into
+# KiroCrewConfig._extra_sections and re-emitted by to_dict() so an
+# edition-contributed section (written by a companion) survives the save()/PATCH
+# round-trip instead of being silently dropped.
+#
+# INVARIANT: this set must equal the top-level keys to_dict() emits (guarded by
+# test_config_extra_sections_roundtrip's parity test). It is the *emitted* set,
+# not merely the *parsed* set: a section this core parses into a field must ALSO
+# be emitted by to_dict() to be listed here — otherwise it would be excluded
+# from _extra_sections capture yet dropped by to_dict(), losing it on save().
+_KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
+    {
+        "agent",
+        "session",
+        "memory",
+        "slack",
+        "publish",
+        "telegram",
+        "discord",
+        "dashboard",
+        "tunnel",
+        "hooks",
+        "agents",
+        "default_agent",
+        "workspaces",
+        "default_workspace",
+        "memory_stores",
+        "default_memory_store",
+        "stt",
+        "instances",
+        "mcp_gateway",
+        "taskrunner",
+        "orchestrator",
+        "watchdog",
+        "messaging",
+        "cron_history",
+        "knowledge",
+        "heartbeat",
+        "skills",
+        "telemetry",
+        "snapshot_dir",
+        "timezone",
+        "auto_update",
+        "registries",
+    }
+)
+
 # Credential keys loaded from .env / environment
 CRED_SLACK_APP_TOKEN = "SLACK_APP_TOKEN"
 CRED_SLACK_BOT_TOKEN = "SLACK_BOT_TOKEN"
@@ -1007,6 +1055,28 @@ class KnowledgeConfig:
             "0 keeps the workers warm indefinitely.",
         ),
     )
+    auto_ingest_doc_links: bool = field(
+        default=False,
+        metadata=_meta(
+            "Auto-Ingest Doc Links",
+            "Automatically ingest documents referenced by links pasted into chat "
+            "whose host is in the doc-ingest allowlist. Off by default. An edition "
+            "that supplies a doc-link scanner (via the dashboard on_user_message "
+            "seam) uses this + the host allowlist below; inert in the public build "
+            "unless a link scanner is wired.",
+        ),
+    )
+    doc_ingest_hosts: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Doc-Ingest Host Allowlist",
+            "Exact hostnames whose links may be auto-ingested when "
+            "auto_ingest_doc_links is on. Empty = ingest nothing (SSRF-safe "
+            "deny-by-default): a link is only fetched if its host is an exact "
+            "member of this list. Prevents a pasted link to an internal metadata "
+            "endpoint or arbitrary host from being fetched.",
+        ),
+    )
 
 
 @dataclass
@@ -1270,6 +1340,17 @@ class DashboardConfig:
             "Dashboard color mode preference: 'dark', 'light', or 'system'. "
             "Empty = unset (frontend falls back to localStorage or 'system').",
             enum=["", "dark", "light", "system"],
+        ),
+    )
+    mwinit_flags: str = field(
+        default="",
+        metadata=_meta(
+            "mwinit Flags",
+            "Flags passed to the SSO login command by an edition that supplies a "
+            "real login handler (DashboardContributor.mwinit_handler). Empty = the "
+            "edition default. Inert in the public build (the core /api/mwinit is a "
+            "no-op stub); the companion validates the token allowlist when it uses "
+            "them.",
         ),
     )
     theme_color: str = field(
@@ -2665,6 +2746,15 @@ class KiroCrewConfig:
             "External app registries (org-owned repos). " "Each entry: {name, repo, branch}.",
         ),
     )
+    # Unknown top-level config.json sections captured verbatim at load() and
+    # re-emitted by to_dict() so a section this core does not model (e.g. an
+    # edition-contributed section written by a companion) is NOT silently
+    # dropped on the first save()/PATCH round-trip. Excluded from the JSON
+    # schema by the leading underscore (build_json_schema skips private fields);
+    # populated only from disk. This is the data-preservation half of the
+    # ConfigSchemaContributor seam — a companion writes its section, the core
+    # round-trips it untouched.
+    _extra_sections: dict = field(default_factory=dict)
 
     def channel_config(self, channel_id: str) -> ChannelConfig:
         """Return the config for *channel_id*, falling back to defaults.
@@ -2888,6 +2978,15 @@ class KiroCrewConfig:
         if not isinstance(default_memory_store_val, str):
             default_memory_store_val = "default"
 
+        # Capture unknown top-level sections verbatim so a section this core does
+        # not model (e.g. an edition-contributed section written by a companion)
+        # survives the load()->to_dict()->save() round-trip instead of being
+        # silently dropped. ``meta`` is stamped by save() itself, so it is never
+        # treated as an unknown section to preserve.
+        extra_sections = {
+            k: v for k, v in data.items() if k not in _KNOWN_CONFIG_SECTIONS and k != "meta"
+        }
+
         cfg = cls(
             agent=AgentConfig(
                 approval_mode=agent_data.get("approval_mode", "auto"),
@@ -3046,6 +3145,14 @@ class KiroCrewConfig:
                     and ttl >= 0
                     else 300
                 ),
+                auto_ingest_doc_links=bool(
+                    knowledge_data.get("auto_ingest_doc_links", False)
+                ),
+                doc_ingest_hosts=[
+                    str(h)
+                    for h in knowledge_data.get("doc_ingest_hosts", [])
+                    if isinstance(h, str) and h.strip()
+                ],
             ),
             telegram=TelegramConfig(
                 enabled=bool(telegram_data.get("enabled", False)),
@@ -3138,6 +3245,7 @@ class KiroCrewConfig:
                 terminal=dashboard_data.get("terminal", {"enabled": True}),
                 default_project=dashboard_data.get("default_project", ""),
                 theme_mode=dashboard_data.get("theme_mode", ""),
+                mwinit_flags=str(dashboard_data.get("mwinit_flags", "")),
                 theme_color=dashboard_data.get("theme_color", ""),
                 recent_tint_count=_safe_int(dashboard_data.get("recent_tint_count", 0), 0),
                 onboarded=bool(dashboard_data.get("onboarded", False)),
@@ -3255,6 +3363,7 @@ class KiroCrewConfig:
             observe_ttl_hours=max(
                 0.0, float(data.get("slack", {}).get("observe_ttl_hours", 168.0))
             ),
+            _extra_sections=extra_sections,
         )
 
         # Write-back migration: if the on-disk config has legacy format
@@ -3315,6 +3424,7 @@ class KiroCrewConfig:
             "slack": asdict(self.slack),
             "publish": asdict(self.publish),
             "telegram": asdict(self.telegram),
+            "discord": asdict(self.discord),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
             "hooks": self.hooks,
@@ -3342,6 +3452,13 @@ class KiroCrewConfig:
         }
         # External registries (always serialized so save() round-trips the field)
         d["registries"] = [asdict(r) for r in self.registries]
+        # Re-emit unknown/edition-contributed top-level sections captured at
+        # load() so save()/PATCH does not silently drop them. A known section
+        # never appears here (only keys absent from d are restored), so this can
+        # never clobber a core section with a stale captured copy.
+        for _k, _v in self._extra_sections.items():
+            if _k not in d:
+                d[_k] = _v
         # Preserve per-channel activation settings on round-trip
         slack_section = d.setdefault("slack", {})
         if self.slack_channels:

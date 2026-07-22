@@ -247,6 +247,12 @@ def _build_object_schema(cls: type) -> dict:
 
     props: dict = {}
     for f in fields(cls):
+        # Private fields (leading underscore) are internal bookkeeping, not
+        # user-facing config — e.g. KiroCrewConfig._extra_sections, which
+        # round-trips unknown/edition-contributed top-level sections. They are
+        # not part of the JSON schema or the flattened ConfigEntry baseline.
+        if f.name.startswith("_"):
+            continue
         props[f.name] = _build_field_schema(f, hints.get(f.name))
 
     return {

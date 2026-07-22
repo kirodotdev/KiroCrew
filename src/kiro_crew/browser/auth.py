@@ -1,4 +1,4 @@
-"""Browser authentication helpers for Playwright MCP browsing (OSS stub).
+"""Browser authentication helpers for Playwright MCP browsing.
 
 In the open-source build there is no bundled enterprise SSO integration, so the
 SSO/cookie-refresh helpers below are inert stubs that report "not available in
@@ -7,12 +7,26 @@ browser cookie file a user wants to inject into Playwright.
 
 All public symbols are preserved so that ``browser/setup.py``, ``browser/cli.py``
 and the dashboard handlers continue to import and call them safely.
+
+**Edition seam.** A companion edition supplies its real enterprise SSO/cookie
+flow by registering a provider via
+:func:`register_browser_auth_provider` at boot — the structural twin of
+``register_acp_backends`` / ``register_publish_providers`` /
+``embeddings.register_embedding_backend``. Every helper below delegates to the
+registered provider when one is present and otherwise returns today's OSS
+"not available" default, so the standalone build is byte-identical. A provider
+only needs to implement the subset of methods it supports; a missing method
+falls back to the OSS default for that helper (``getattr`` duck-typing keeps the
+companion free of an import-inherit dependency on this module).
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 # Path of a Netscape cookie jar, if the user maintains one. Kept generic; the
 # default location matches the historic name but nothing requires it to exist.
@@ -21,8 +35,70 @@ MIDWAY_COOKIE_PATH = Path.home() / ".midway" / "cookie"
 _NOT_AVAILABLE = {"available": False, "reason": "not available in OSS"}
 
 
+@runtime_checkable
+class BrowserAuthProvider(Protocol):
+    """The edition-supplied browser-auth flow (all methods optional).
+
+    A companion registers an instance via :func:`register_browser_auth_provider`.
+    Each method mirrors the module-level helper of the same name; a provider that
+    omits a method leaves that helper at its OSS default. Structural (``Protocol``)
+    so the companion need not import-inherit this class.
+    """
+
+    def cookie_path(self) -> Path: ...
+
+    def has_mcscli(self) -> bool: ...
+
+    def mcs_keys_process_running(self) -> bool: ...
+
+    def refresh_cookie_via_mcs(self) -> bool: ...
+
+    def refresh_aea(self) -> bool: ...
+
+    def has_kerberos_ticket(self) -> bool: ...
+
+    def health(self) -> dict[str, Any]: ...
+
+    def ensure(self) -> dict[str, Any]: ...
+
+    def federate_auth(self, target_url: str) -> dict[str, Any]: ...
+
+
+# Module-level provider slot. ``None`` → the OSS stubs below apply unchanged.
+_provider: Optional[BrowserAuthProvider] = None
+
+
+def register_browser_auth_provider(provider: Optional[BrowserAuthProvider]) -> None:
+    """Register (or clear, with ``None``) the edition browser-auth provider.
+
+    Called once from an edition's boot composition with a hardcoded provider
+    instance — never from an agent-reachable path. Idempotent; a later call
+    replaces the previous provider (tests pass ``None`` to reset).
+    """
+    global _provider
+    _provider = provider
+
+
+def _delegate(method: str, default: Callable[[], Any]) -> Any:
+    """Call ``provider.<method>()`` if a provider supplies it, else ``default()``.
+
+    A provider exception is logged and degrades to the OSS default rather than
+    propagating — a broken edition helper must not crash a browse/dashboard path.
+    """
+    prov = _provider
+    if prov is not None:
+        fn = getattr(prov, method, None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                logger.warning("browser-auth provider %s() failed; using default", method,
+                               exc_info=True)
+    return default()
+
+
 def cookie_path() -> Path:
-    return MIDWAY_COOKIE_PATH
+    return _delegate("cookie_path", lambda: MIDWAY_COOKIE_PATH)
 
 
 def parse_netscape_cookies(path: Path) -> list[dict[str, Any]]:
@@ -60,44 +136,54 @@ def parse_netscape_cookies(path: Path) -> list[dict[str, Any]]:
 
 
 def has_mcscli() -> bool:
-    """No enterprise credential helper in the OSS build."""
-    return False
+    """No enterprise credential helper in the OSS build (edition may override)."""
+    return _delegate("has_mcscli", lambda: False)
 
 
 def mcs_keys_process_running() -> bool:
-    """No enterprise credential helper in the OSS build."""
-    return False
+    """No enterprise credential helper in the OSS build (edition may override)."""
+    return _delegate("mcs_keys_process_running", lambda: False)
 
 
 def refresh_cookie_via_mcs() -> bool:
-    """Cookie refresh via an enterprise helper is not available in OSS."""
-    return False
+    """Cookie refresh via an enterprise helper (edition may override)."""
+    return _delegate("refresh_cookie_via_mcs", lambda: False)
 
 
 def refresh_aea() -> bool:
-    """Device-posture refresh is not available in OSS."""
-    return False
+    """Device-posture refresh (edition may override)."""
+    return _delegate("refresh_aea", lambda: False)
 
 
 def has_kerberos_ticket() -> bool:
-    """Kerberos/SPNEGO is not wired up in the OSS build."""
-    return False
+    """Kerberos/SPNEGO ticket presence (edition may override)."""
+    return _delegate("has_kerberos_ticket", lambda: False)
 
 
 def health() -> dict[str, Any]:
-    """Report auth health. The OSS build ships no bundled SSO integration."""
-    return dict(_NOT_AVAILABLE)
+    """Report auth health. OSS default: no bundled SSO (edition may override)."""
+    return _delegate("health", lambda: dict(_NOT_AVAILABLE))
 
 
 def ensure() -> dict[str, Any]:
-    """One-stop auth check. No-op in OSS: nothing to refresh."""
-    return dict(_NOT_AVAILABLE)
+    """One-stop auth check. OSS default: nothing to refresh (edition may override)."""
+    return _delegate("ensure", lambda: dict(_NOT_AVAILABLE))
 
 
 def federate_auth(target_url: str) -> dict[str, Any]:
-    """Enterprise federate SSO flow — not available in the OSS build.
+    """Enterprise federate SSO flow (edition may override).
 
-    Returns a result dict with ``ok=False`` so callers degrade gracefully and
-    simply navigate without injected SSO cookies.
+    OSS default returns ``ok=False`` so callers degrade gracefully and simply
+    navigate without injected SSO cookies. When a companion provider is present
+    its ``federate_auth(target_url)`` is called with the target URL.
     """
+    prov = _provider
+    if prov is not None:
+        fn = getattr(prov, "federate_auth", None)
+        if callable(fn):
+            try:
+                return fn(target_url)
+            except Exception:
+                logger.warning("browser-auth provider federate_auth() failed; using default",
+                               exc_info=True)
     return {"ok": False, "error": "not available in OSS", "cookies": []}

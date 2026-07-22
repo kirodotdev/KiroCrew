@@ -1190,12 +1190,18 @@ class AcpClient:
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_settings_mcp_json: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
+        permission_mode: str | None = None,
     ):
         self._work_dir = Path(work_dir) if work_dir else Path.home() / ".kirocrew" / "workspace"
         self._model = model or DEFAULT_MODEL
         self._agent = agent
         self._sandbox_mode = sandbox_mode
         self._acp_backend = acp_backend
+        # Claude Code permission mode (Auto-mode / permission-UI parity). Inert
+        # on the kiro-cli path and unused by the public core; a companion that
+        # drives the _is_claude seam reads/writes it and wires the permission-mode
+        # method set + settings.local.json defaultMode. None = the backend default.
+        self._permission_mode = permission_mode
         self._session_key = session_key
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
@@ -1330,6 +1336,19 @@ class AcpClient:
     @property
     def _is_claude(self) -> bool:
         return self.backend == ACP_BACKEND_CLAUDE
+
+    def _claude_session_mcp_servers(self) -> list:
+        """MCP server array passed to a claude ``session/new`` / ``session/load``.
+
+        Overridable seam for the dormant ``_is_claude`` backend. The Default is
+        ``[]`` so the public core (kiro-cli only, which gets its servers via
+        ``--agent``) is byte-identical. An internal companion that re-registers
+        Claude Code over the ``ACP_BACKEND_CLAUDE`` seam overrides this to inject
+        the kirocrew-core/cron + user MCP servers — the claude adapter does not
+        read ``kirocrew.mcp.json`` on its own, so without this a claude session
+        would have zero MCP tools.
+        """
+        return []
 
     @property
     def is_ready(self) -> bool:
@@ -1557,6 +1576,22 @@ class AcpClient:
             # ~/.claude registration glue (settings.local.json, the MCP-registry
             # reader) lived in the deleted cc_agent module and is re-added by the
             # internal companion, not the public core.
+            #
+            # Per-session settings seed: a companion attaches
+            # _write_claude_local_settings (permissions.defaultMode + the
+            # availableModels allowlist that unlocks the 1M-token window). It
+            # MUST run on the PRIMARY spawn path — not only the rare
+            # model-substitution retry at _new_session_following_substitution —
+            # or a claude session collapses to the 200K default. Guarded via
+            # getattr so the public core (no such method) is byte-identical.
+            _seed = getattr(self, "_write_claude_local_settings", None)
+            if callable(_seed):
+                try:
+                    _seed()
+                except (OSError, ValueError, TypeError):
+                    logger.warning(
+                        "initial seed of settings.local.json failed", exc_info=True
+                    )
             global _claude_acp_argv_cache  # noqa: PLW0603
             if _claude_acp_argv_cache is _UNRESOLVED:
                 _claude_acp_argv_cache = await asyncio.to_thread(_resolve_claude_acp_bin)
@@ -1962,8 +1997,11 @@ class AcpClient:
         new_params: dict = {
             "cwd": str(self._work_dir),
             # kiro-cli loads servers from --agent; claude-agent-acp must be
-            # told here -- it does not read kirocrew.mcp.json on its own.
-            "mcpServers": [],
+            # told here -- it does not read kirocrew.mcp.json on its own. The
+            # Default hook returns [] (kiro-cli path unchanged); an internal
+            # companion that drives the _is_claude seam overrides
+            # _claude_session_mcp_servers() to populate the claude MCP array.
+            "mcpServers": self._claude_session_mcp_servers(),
         }
         if self._is_claude:
             new_params["_meta"] = {"claudeCode": {"options": {}}}
@@ -2068,8 +2106,10 @@ class AcpClient:
                         "cwd": str(self._work_dir),
                         # kiro-cli gets its servers via --agent; the claude
                         # backend must receive them here (it does not read
-                        # kirocrew.mcp.json itself).
-                        "mcpServers": [],
+                        # kirocrew.mcp.json itself). Default [] leaves kiro-cli
+                        # unchanged; a companion overrides the hook (see
+                        # session/new above).
+                        "mcpServers": self._claude_session_mcp_servers(),
                     }
                     if self._is_claude:
                         load_params["_meta"] = {"claudeCode": {"options": {}}}

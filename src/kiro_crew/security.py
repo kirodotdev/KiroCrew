@@ -527,6 +527,16 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".pypirc",
     ".netrc",
     ".git-credentials",
+    # Enterprise SSO cookie store. The public core ships no bundled SSO
+    # integration, but the browser-auth layer already references this cookie
+    # path (browser/auth.py), an edition CredentialPolicy redacts its session
+    # token, and a companion IdentityProvider watches it for rotation. The cookie
+    # is a live bearer credential: an agent that could fs_read it could
+    # impersonate the user against every SSO-gated service. Classify the whole
+    # directory so the cookie and its sidecars are covered. Generic and inert on
+    # a host that does not have it — legitimate readers (the companion cookie
+    # jar) open it directly + SEL-audited, not through this shared gate.
+    ".midway",
     # kiro-cli / amazon-q auth stores hold the live SSO bearer token, read by
     # the dashboard credit pill via the audited kiro_usage_api._token_from_sqlite
     # helper. Classify the WHOLE data directories (not just data.sqlite3) so the

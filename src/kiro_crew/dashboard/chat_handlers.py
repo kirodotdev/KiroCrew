@@ -472,6 +472,21 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         state._background_tasks.add(_tt)
         _tt.add_done_callback(state._background_tasks.discard)
 
+    # Edition message observer (CPP seam). Fire-and-forget, fail-safe: a
+    # companion uses this to auto-ingest doc links pasted into chat. The public
+    # Default is a no-op. Guarded so an observer error never blocks the turn;
+    # deferred context read via the sel.py pattern (no platform import at load).
+    try:
+        from kiro_crew.platform.context import current_context, safe_context_call
+
+        safe_context_call(
+            lambda: current_context().dashboard.on_user_message(request.app, message),
+            fallback=None,
+            log_message="dashboard.on_user_message observer failed",
+        )
+    except Exception:
+        logger.debug("on_user_message observer raised; ignoring", exc_info=True)
+
     task = asyncio.create_task(
         asyncio.wait_for(_run_chat(state, slot, message), timeout=CHAT_TURN_TIMEOUT)
     )

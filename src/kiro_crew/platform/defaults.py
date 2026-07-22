@@ -130,6 +130,12 @@ class DefaultSlackEnterpriseGate:
 
         return enterprise.check_message_origin(event_team_id)
 
+    def heartbeat_safe_tools(self) -> "frozenset[str]":
+        # The public edition adds no tools to the heartbeat allowlist — the set
+        # stays exactly the core HEARTBEAT_SAFE_TOOLS. The companion returns its
+        # internal read-only tool names.
+        return frozenset()
+
 
 class DefaultIdentityProvider:
     """No-SSO local identity — the ``midway.py`` no-op stubs."""
@@ -227,6 +233,11 @@ class DefaultAppsLoader:
     def manifest_sources(self) -> List[Path]:
         return []
 
+    def registry_rows(self) -> List[Dict[str, Any]]:
+        # The public edition bundles no extra App-Store rows beyond
+        # apps/app-registry.json. A companion returns its internal catalog rows.
+        return []
+
 
 class DefaultPackageManager:
     """Public brew/curl/pip install strategy (delegated to cli_doctor logic)."""
@@ -302,6 +313,11 @@ class DefaultDashboardContributor:
 
     def mwinit_handler(self) -> Optional[Callable[..., Any]]:
         # None → the dashboard keeps its built-in /api/mwinit stub handler.
+        return None
+
+    def on_user_message(self, app: Any, message: str) -> None:
+        # The public edition observes no chat messages. A companion uses this to
+        # e.g. auto-ingest doc links pasted into chat.
         return None
 
 

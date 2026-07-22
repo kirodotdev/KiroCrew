@@ -347,6 +347,31 @@ class SkillsLoader:
         ):
             self._extra_paths.append(aim_skills_root)
 
+        # Edition-contributed skill paths (CPP seam). A companion returns extra
+        # SKILL.md source roots via McpToolingProvider.extra_skills(); the public
+        # Default returns [] so this is a no-op for the standalone edition.
+        # Lowest precedence (appended last, after local + AIM), sensitivity- and
+        # existence-checked exactly like the configured extra_paths. Deferred
+        # context read via the sel.py pattern so skills.py never imports the
+        # platform package at module load; fails closed to no extra paths.
+        from kiro_crew.platform.context import current_context, safe_context_call
+
+        edition_skill_paths: list[Path] = safe_context_call(
+            lambda: list(current_context().mcp_tooling.extra_skills()),
+            fallback_factory=list,
+            log_message="extra_skills lookup failed; using none",
+        )
+        for edition_path in edition_skill_paths:
+            resolved = Path(edition_path).expanduser().resolve()
+            if resolved in self._extra_paths:
+                continue
+            if is_sensitive_path(str(resolved)):
+                logger.warning("Skipping sensitive edition skill path: %s", edition_path)
+            elif resolved.is_dir():
+                self._extra_paths.append(resolved)
+            else:
+                logger.debug("Edition skill path does not exist: %s", edition_path)
+
         # Persistent usage ledger for hotness-ranked lazy skill injection.
         # Co-located with the skills root's parent (the KiroCrew home) so it
         # travels with runtime state. Best-effort: a failure here must not break

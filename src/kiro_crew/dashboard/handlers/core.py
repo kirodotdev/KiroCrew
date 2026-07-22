@@ -63,6 +63,18 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
 
     masked = copy.deepcopy(cfg.to_dict())
 
+    # Drop unknown/edition-contributed top-level sections (KiroCrewConfig.
+    # _extra_sections) from the API response entirely. They exist ONLY for the
+    # save() round-trip; the core does not model them, so they are absent from
+    # the schema and the sensitivity walk below (which is schema-driven) cannot
+    # know which of their values are secrets. Returning them verbatim to the
+    # dashboard would leak any credential an edition stored in its own section.
+    # to_dict()/save() still carry them — only this browser-facing view omits
+    # them. (An edition that needs to surface its config in the dashboard does
+    # so through its own masked route, not this core endpoint.)
+    for _extra_key in getattr(cfg, "_extra_sections", {}):
+        masked.pop(_extra_key, None)
+
     def _walk(node: object, prefix: str) -> None:
         if isinstance(node, dict):
             for key, val in list(node.items()):
@@ -990,6 +1002,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # SSO login flags for an edition that supplies a real mwinit_handler. Bounded
+    # to a short string here; the companion login handler re-validates each token
+    # against its own flag allowlist before spawning the login PTY (defense in
+    # depth — this gate only stores the value). Inert in the public build.
+    "dashboard.mwinit_flags": {"type": "str", "max_len": 256},
     # Instances (multi-instance management). Toggling enabled needs a gateway
     # restart to take effect (the SSH manager + CSP relaxation init at startup),
     # so the Instances settings panel surfaces a "restart required" hint.

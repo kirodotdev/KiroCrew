@@ -172,6 +172,33 @@ class SlackEnterpriseGate(Protocol):
 
     def check_message_origin(self, event_team_id: str) -> bool: ...
 
+    def heartbeat_safe_tools(self) -> "frozenset[str]":
+        """Extra tool names an edition allows during unattended heartbeat polling.
+
+        WIRED: ``slack/gateway.py::_is_heartbeat_safe_tool`` checks this set after
+        the core ``HEARTBEAT_SAFE_TOOLS`` exact-name match. The public default is
+        ``frozenset()`` (no additions — the heartbeat allowlist is byte-identical
+        to today). A companion returns its own read-only tool names so its
+        heartbeat polls can auto-approve them.
+
+        **Entries MUST be server-qualified ``"@server/Tool"``.** An entry is
+        honored ONLY when it matches that qualified identity; a bare tool name
+        never matches (and a tool-call title with no resolvable server is never
+        auto-approved from this set). This is deliberate: a bare-name allowlist
+        entry would let a *different* (or compromised) MCP server expose a
+        destructive tool with the same bare name as an allowlisted read-only one
+        and get it auto-approved during an unattended heartbeat — a hole in the
+        deny-by-default boundary. Pin the exact server (e.g.
+        ``"@builder-mcp/ReadInternalWebsites"``).
+
+        ADD-only by construction: this can only widen the allowlist with names
+        the companion vouches for; it can never remove a core entry or relax the
+        exact-match discipline. NEVER sourced from config — an agent-writable set
+        would defeat the deny-by-default heartbeat gate, so the companion adapter
+        is the only supplier. v1 method addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
 
 class IdentityProvider(Protocol):
     """SSO/identity resolution.
@@ -246,8 +273,14 @@ class McpToolingProvider(Protocol):
     def extra_mcp_servers(self) -> Dict[str, dict]: ...
 
     def extra_skills(self) -> List[Path]:
-        """NOT YET WIRED: the core does not yet load edition-contributed skill
-        paths; only ``extra_mcp_servers`` is consumed. Staged for later.
+        """Extra SKILL.md source roots the edition contributes.
+
+        WIRED: ``SkillsLoader.__init__`` appends these as lowest-precedence extra
+        skill paths (after local + AIM), each sensitivity- and existence-checked
+        like a configured ``skills.extra_paths`` entry, so an edition's SKILL.md
+        catalog (e.g. a PromptFarm-synced tree, an internal recommendation-engine
+        skill) is discoverable by trigger matching and the ``$skill`` picker. The
+        public Default returns ``[]`` (no extra paths — discovery is unchanged).
         """
         ...
 
@@ -277,6 +310,21 @@ class AppsLoader(Protocol):
     def bundled_app_names(self) -> List[str]: ...
 
     def manifest_sources(self) -> List[Path]: ...
+
+    def registry_rows(self) -> List[Dict[str, Any]]:
+        """Extra App-Store registry rows the edition bundles (ADD-only merge).
+
+        WIRED: ``apps/registry.py::_load_registry_file`` appends these to the
+        rows parsed from the bundled ``app-registry.json``, de-duplicated by the
+        row ``name`` (a bundled core row wins over a same-named edition row, so a
+        companion can only ADD catalog entries, never silently repoint a core
+        one). The public Default returns ``[]`` (catalog unchanged). A companion
+        returns its internal App-Store rows (e.g. dev-fleet, pipeline-health)
+        pointing at internal git hosts — which its ``AppRegistryPolicy`` already
+        trusts. Each row is the same dict shape as an ``app-registry.json`` entry.
+        v1 method addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
 
 
 class KnowledgeProvider(Protocol):
@@ -424,6 +472,20 @@ class DashboardContributor(Protocol):
 
     def mwinit_handler(self) -> Optional[Callable]:
         """Return the SSO-login WS handler, or ``None`` to keep the core stub."""
+        ...
+
+    def on_user_message(self, app: "web.Application", message: str) -> None:
+        """Observe an inbound user chat message (Default: no-op).
+
+        WIRED: ``dashboard/chat_handlers.py::api_chat`` calls this once per user
+        message, just before the turn is scheduled, inside a fail-safe guard so
+        an observer error never blocks the chat.  Fire-and-forget by contract:
+        the observer must not block (schedule its own task if it needs to do
+        work).  The public Default is a no-op; a companion uses it e.g. to
+        auto-ingest document links pasted into chat.  It is an
+        OBSERVER — its return value is ignored and it MUST NOT mutate the message
+        or the turn.
+        """
         ...
 
 

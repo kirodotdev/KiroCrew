@@ -466,10 +466,53 @@ delegates to that same global. Wired sites:
   `sandbox.prewarm_backend()` before companion composition so the cache is warm
   by the time a jail backend probes it.
 
+
+### Amazon-edition seam additions (v1, no `CONTRACT_VERSION` bump)
+
+Existing-Protocol methods added / wired so the Amazon companion can re-introduce
+dropped MeshClaw behavior without the core importing it. All are v1 additions (a
+`Default*` no-op reproduces today's OSS behavior exactly — a standalone process
+is byte-identical) with no `CONTRACT_VERSION` bump.
+
+- `SlackEnterpriseGate.heartbeat_safe_tools() -> frozenset[str]` — unioned into
+  `slack/gateway.py::_is_heartbeat_safe_tool` after the core `HEARTBEAT_SAFE_TOOLS`
+  exact-match. Default `frozenset()`. ADD-only; never sourced from config.
+- `AppsLoader.registry_rows() -> List[Dict]` — ADD-only merged by
+  `apps/registry.py::_load_registry_file` after bundled `app-registry.json`
+  (same-`name` core row wins). Default `[]`.
+- `DashboardContributor.on_user_message(app, message)` — fired once per user
+  message by `dashboard/chat_handlers.py::api_chat` before the turn, inside a
+  fail-safe `safe_context_call`. OBSERVER only. Default no-op.
+- `McpToolingProvider.extra_skills()` — now WIRED: `SkillsLoader.__init__`
+  appends returned paths as lowest-precedence extra skill roots (sensitivity- +
+  existence-checked). Default `[]`.
+- `browser/auth.py::register_browser_auth_provider(provider)` — module-level
+  registration hook (twin of `register_acp_backends`); every `browser/auth`
+  helper delegates to it when present, else the OSS default. `browser/cli.py`
+  auth subcommands now delegate through the helpers.
+- `hooks.register_internal_read_path(read_id, rel_path)` — guarded seam adding a
+  fixed-path entry to `_INTERNAL_READ_ALLOWLIST` (rejects `..`/absolute/
+  non-sensitive/repoint).
+- `security._SENSITIVE_HOME_DIRS` gains `.midway` (live SSO bearer cookie;
+  inert on a host without `~/.midway`).
+- `config.dashboard.mwinit_flags` (str) + `_EDITABLE_CONFIG` PATCH entry.
+- `config.knowledge.auto_ingest_doc_links` (bool) + `doc_ingest_hosts` (list) —
+  SSRF-safe, empty allowlist = deny-by-default.
+- `KiroCrewConfig._extra_sections` (private) — unknown top-level config.json
+  sections captured at `load()`, re-emitted by `to_dict()`, so an edition
+  section is not dropped on `save()`/PATCH. Excluded from the JSON schema
+  (`build_json_schema` skips leading-underscore fields). Data-preservation half
+  of the eventual `ConfigSchemaContributor`; Settings-visibility half is TODO.
+- ACP claude seam (all inside the dormant `_is_claude` path, inert on kiro-cli):
+  `AcpClient._claude_session_mcp_servers()` (Default `[]`) feeds both
+  `session/new` + `session/load` `mcpServers`; `_spawn` calls the
+  companion-attached `_write_claude_local_settings()` (via `getattr`) on the
+  PRIMARY spawn path; `AcpClient`/`AcpProvider` take a `permission_mode` kwarg
+  (Default `None`); `acp/types.py` adds `CC_PERMISSION_MODE_DEFAULT` /
+  `CC_PERMISSION_MODE_AUTO`.
+
 ### Deferred / non-mapping sites
 
-- `agent.py` — `mcp_tooling.extra_skills()` (skill catalog) is **not** wired:
-  skill discovery lives in `SkillsLoader`, not the agent config (TODO).
 - `cli_doctor.py` — `package_manager` is **not** wired: the ollama-install
   diagnostic is inline step-by-step logic, not a single plan-resolution site
   (TODO; Default `install_plan` returns `[]` = today's inline behavior).
