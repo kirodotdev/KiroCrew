@@ -1142,8 +1142,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // Preserve the persisted strip until that source-of-truth load settles.
     if (slotLoading) return
     if (sourceLinks.length === 0) {
+      // Changes is a permanently pinned tab (SidePanel.syncPinned) — never
+      // auto-close it here. Just clear the source selection; the tab stays put
+      // and renders its empty state until sources are detected again.
       setSelectedSourceUrl('')
-      tabsCtl.closeTab('changes')
       return
     }
     if (!sourceLinks.some(source => source.url === selectedSourceUrl)) {

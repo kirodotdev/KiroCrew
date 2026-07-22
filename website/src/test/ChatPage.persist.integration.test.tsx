@@ -175,4 +175,25 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
     expect(panel.result.current.activeId).toBe('changes')
   })
+
+  it('keeps the Changes tab pinned when a settled slot has no source links (regression)', async () => {
+    // Before the fix, ChatPage's source-reconcile effect called
+    // tabsCtl.closeTab('changes') whenever sourceLinks was empty — fighting
+    // SidePanel's always-pinned model and making the Changes tab vanish
+    // mid-session (it only reappeared on reload, when syncPinned re-ran).
+    // Changes is a permanent pinned tab; an empty source set must NOT close it.
+    const panel = renderHook(() => usePanelTabs('chat-2'))
+    act(() => panel.result.current.openView('changes'))
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+
+    // Settled hydration (slotLoading: false) + no messages ⇒ no source links,
+    // which is exactly the branch that used to auto-close the tab.
+    renderChatPage(undefined, 'chat-2', allSlots, {
+      messages: [],
+      slotLoading: false,
+    })
+    await act(async () => {})
+
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+  })
 })
