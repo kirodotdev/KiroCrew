@@ -3,6 +3,7 @@ import { render, screen, act, fireEvent, waitFor, within } from '@testing-librar
 import { renderWithProviders, createTestStore } from './helpers'
 import App, { calculateTopbarSearchLayout } from '../App'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
+import { openActivityPanel } from '../store/chatSlice'
 import SegmentedControl from '../components/SegmentedControl'
 import { safeSetItem } from '../utils/safeStorage'
 
@@ -349,12 +350,18 @@ describe('App routing', () => {
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {
     localStorage.removeItem('mc-nav')
-    renderWithProviders(<App />, { route: '/chat' })
+    // Regression (PR #94): the width transition was gated on a 180ms pulse AND
+    // the Activity panel being closed, so the sidebar snapped instead of
+    // animating whenever Activity was open (or a slow frame ate the pulse).
+    // The transition must now be unconditional — including with Activity open.
+    const store = createTestStore()
+    store.dispatch(openActivityPanel())
+    renderWithProviders(<App />, { route: '/chat', store })
 
     const shell = screen.getByTestId('dashboard-shell')
     expect(shell).toHaveStyle({
       gridTemplateColumns: '236px minmax(0,1fr) auto',
-      transition: 'none',
+      transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))

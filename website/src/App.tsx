@@ -769,9 +769,6 @@ export default function App() {
   useRumPageView()
   useNotificationSound()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
-  const [navLayoutPulse, setNavLayoutPulse] = useState(false)
-  const navLayoutPulseTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => { if (navLayoutPulseTimer.current) clearTimeout(navLayoutPulseTimer.current) }, [])
   const isMobile = useIsMobile()
   // Multi-instance: which instance fills the pane below the tab bar. null = Local
   // (the native dashboard); a non-null id means a remote instance's embedded
@@ -1259,9 +1256,6 @@ export default function App() {
   const toggleNav = () => {
     if (isMobile) { setMobileNavOpen(p => !p) }
     else {
-      if (navLayoutPulseTimer.current) clearTimeout(navLayoutPulseTimer.current)
-      setNavLayoutPulse(true)
-      navLayoutPulseTimer.current = setTimeout(() => setNavLayoutPulse(false), 180)
       setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next })
     }
   }
@@ -1360,9 +1354,11 @@ export default function App() {
         gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar actbar" "nav content actbar"',
         ...(!isMobile && {
           gridTemplateColumns: `${effectiveCollapsed ? 74 : 236}px minmax(0,1fr) auto`,
-          transition: navLayoutPulse && !activityOpen
-            ? 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)'
-            : 'none',
+          // Transition fires only when the template string itself changes (the
+          // collapse toggle) — content-driven resizes of the auto track (e.g.
+          // the Activity panel opening) don't alter the value, so keeping this
+          // unconditional is safe and avoids the gated-pulse snap regression.
+          transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
         }),
       }}
     >
