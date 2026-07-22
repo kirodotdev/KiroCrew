@@ -18,7 +18,12 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.llm_helpers import stream_and_collect
+from kiro_crew.providers.base import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
@@ -58,44 +63,106 @@ _CONTRADICTION_PROMPT = (
     "Respond with exactly one word: CONTRADICTORY, COMPLEMENTARY, or UNRELATED."
 )
 
-_CONTRADICTION_SESSION_KEY = "background:contradiction-check"
 _CONTRADICTION_MODEL = "claude-haiku-4.5"
+# Per-candidate cap on the background contradiction verdict. The sweep runs
+# fire-and-forget after the lesson is already persisted, so this bounds a hung
+# model call rather than gating the write path.
+_CONTRADICTION_TIMEOUT = 60.0
+
+
+async def _classify_contradiction(state: DashboardState, prompt: str) -> str:
+    """Run one contradiction classification on the shared ``_bg`` runtime.
+
+    Mirrors the lightweight background path used by title/suggestion generation
+    (``chat_title`` / ``suggestions``): acquire an ephemeral ``_bg`` session
+    handle via ``get_bg_session``, best-effort pin it to the cheap model, stream
+    to completion while rejecting any tool call (the classification is
+    tool-free), then always ``destroy()`` the handle. A fresh handle per call
+    keeps each verdict a clean binary classification — no cross-candidate turn
+    history — and avoids the unbounded context growth of a single long-lived
+    session reused across every ``learn_add``. Bounded by
+    ``_CONTRADICTION_TIMEOUT``. Returns the first upper-cased token of the
+    model's reply (e.g. ``"CONTRADICTORY"``), or ``""`` on empty output.
+    """
+    session = await state.sessions.get_bg_session()
+    text = ""
+    try:
+        # Contradiction check is a trivial binary classification — run on the
+        # cheapest model. Best-effort: fall through on the session's default
+        # model if the backend can't switch.
+        _set_model = getattr(session, "set_model", None)
+        if _set_model is not None:
+            try:
+                await _set_model(_CONTRADICTION_MODEL)
+            except Exception:
+                pass
+
+        async def _stream() -> None:
+            nonlocal text
+            async for event in session.prompt(prompt):
+                if event.kind == EVENT_TEXT_CHUNK:
+                    text += event.text
+                elif event.kind == EVENT_TOOL_CALL:
+                    # A tool-free classification should never dispatch a tool,
+                    # but an auto-approved tool arrives here WITHOUT a preceding
+                    # permission request (nothing to reject). Audit it so no
+                    # invocation escapes the SEL log (backend-security-controls
+                    # rule: every tool invocation emits a SEL event).
+                    _sel().log_tool_invocation(
+                        session_key="_bg",
+                        tool_name=getattr(event, "title", "unknown"),
+                        outcome="allowed",
+                        source="contradiction_check",
+                    )
+                elif event.kind == EVENT_PERMISSION_REQUEST:
+                    # The classification is tool-free; deny any tool the model
+                    # tries to call. Audit the denial (security-controls rule:
+                    # every permission decision emits a SEL event) before
+                    # rejecting, mirroring the suggestions bg path.
+                    _sel().log_tool_invocation(
+                        session_key="_bg",
+                        tool_name=getattr(event, "title", "unknown"),
+                        outcome="denied",
+                        source="contradiction_check",
+                    )
+                    await session.reject_tool(event.request_id)
+                elif event.kind == EVENT_COMPLETE:
+                    break
+
+        await asyncio.wait_for(_stream(), timeout=_CONTRADICTION_TIMEOUT)
+    finally:
+        await session.destroy()
+    stripped = text.strip()
+    return stripped.upper().split()[0] if stripped else ""
 
 
 async def _resolve_contradictions(
     state: DashboardState, new_rule: str, candidates: list[dict]
 ) -> list[str]:
-    """Use LLM to identify which candidate lessons contradict the new rule."""
+    """Use an LLM to identify which candidate lessons contradict the new rule.
+
+    Each candidate is classified independently on a fresh ``_bg`` runtime
+    session (see ``_classify_contradiction``). A per-candidate failure/timeout
+    is swallowed so one bad verdict never aborts the sweep — the lesson is
+    already persisted, and a missed verdict self-heals on the next ``learn_add``
+    touching the topic.
+    """
     to_delete: list[str] = []
     for candidate in candidates:
         prompt = _CONTRADICTION_PROMPT.format(
             old_rule=candidate["rule"], new_rule=new_rule
         )
         try:
-            provider, _new, _resumed = await state.sessions.get_or_create(
-                _CONTRADICTION_SESSION_KEY, agent="kirocrew-lite",
-            )
-            try:
-                # Contradiction check is a trivial binary classification —
-                # run on the cheapest model.
-                _set_model = getattr(provider, "set_model", None)
-                if _set_model is not None:
-                    try:
-                        await _set_model(_CONTRADICTION_MODEL)
-                    except Exception:
-                        pass
-                response = await stream_and_collect(provider, prompt)
-            finally:
-                state.sessions.release(_CONTRADICTION_SESSION_KEY)
-            verdict = response.strip().upper().split()[0] if response else ""
-            if verdict == "CONTRADICTORY":
-                logger.info(
-                    "Contradiction: new %r supersedes %r (sim=%.2f)",
-                    new_rule[:60], candidate["rule"][:60], candidate["similarity"],
-                )
-                to_delete.append(candidate["key"])
+            verdict = await _classify_contradiction(state, prompt)
         except Exception:
             logger.debug("Contradiction check failed for %r", candidate["key"], exc_info=True)
+            continue
+        if verdict == "CONTRADICTORY":
+            logger.info(
+                "Contradiction: new %r supersedes %r (sim=%.2f)",
+                new_rule[:60], candidate["rule"][:60], candidate["similarity"],
+            )
+            to_delete.append(candidate["key"])
     return to_delete
 
 

@@ -2,11 +2,50 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.providers.base import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
+)
 from kiro_crew.vector_memory import VectorMemoryStore
+
+
+class _FakeBgSession:
+    """Stand-in for a ``get_bg_session()`` handle.
+
+    ``prompt()`` replays a scripted event stream; ``set_model`` / ``reject_tool``
+    / ``destroy`` are AsyncMocks so tests can assert the model was pinned, tool
+    calls were rejected, and the handle was always destroyed.
+    """
+
+    def __init__(
+        self,
+        reply: str = "",
+        *,
+        emit_permission: bool = False,
+        emit_tool_call: bool = False,
+    ):
+        self._reply = reply
+        self._emit_permission = emit_permission
+        self._emit_tool_call = emit_tool_call
+        self.set_model = AsyncMock()
+        self.reject_tool = AsyncMock()
+        self.destroy = AsyncMock()
+
+    async def prompt(self, _prompt):  # noqa: ANN001 - test double
+        if self._emit_tool_call:
+            yield SimpleNamespace(kind=EVENT_TOOL_CALL, title="fs_read")
+        if self._emit_permission:
+            yield SimpleNamespace(kind=EVENT_PERMISSION_REQUEST, request_id="req-1")
+        if self._reply:
+            yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=self._reply)
+        yield SimpleNamespace(kind=EVENT_COMPLETE)
 
 
 class TestFindContradictionCandidates:
@@ -67,53 +106,115 @@ class TestFindContradictionCandidates:
 
 @pytest.mark.asyncio
 class TestResolveContradictions:
-    """Tests for _resolve_contradictions async helper."""
+    """Tests for _resolve_contradictions async helper (runs on the _bg runtime)."""
 
     async def test_contradictory_verdict_returns_key(self):
         from kiro_crew.dashboard.handlers.cron import _resolve_contradictions
 
         state = MagicMock()
-        mock_provider = AsyncMock()
-        state.sessions.get_or_create = AsyncMock(return_value=(mock_provider, True, False))
-        state.sessions.release = MagicMock()
+        session = _FakeBgSession("CONTRADICTORY")
+        state.sessions.get_bg_session = AsyncMock(return_value=session)
 
         candidates = [{"key": "lesson.old", "rule": "Use X format", "similarity": 0.65}]
-
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.stream_and_collect",
-            new=AsyncMock(return_value="CONTRADICTORY"),
-        ):
-            result = await _resolve_contradictions(state, "Do NOT use X format", candidates)
+        result = await _resolve_contradictions(state, "Do NOT use X format", candidates)
 
         assert result == ["lesson.old"]
+        # Model was pinned to the cheap contradiction model and the ephemeral
+        # handle was destroyed.
+        session.set_model.assert_awaited_once_with("claude-haiku-4.5")
+        session.destroy.assert_awaited_once()
 
     async def test_complementary_verdict_keeps_lesson(self):
         from kiro_crew.dashboard.handlers.cron import _resolve_contradictions
 
         state = MagicMock()
-        mock_provider = AsyncMock()
-        state.sessions.get_or_create = AsyncMock(return_value=(mock_provider, True, False))
-        state.sessions.release = MagicMock()
+        session = _FakeBgSession("COMPLEMENTARY")
+        state.sessions.get_bg_session = AsyncMock(return_value=session)
 
         candidates = [{"key": "lesson.keep", "rule": "Add CR links", "similarity": 0.55}]
-
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.stream_and_collect",
-            new=AsyncMock(return_value="COMPLEMENTARY"),
-        ):
-            result = await _resolve_contradictions(state, "Add stakeholder quotes", candidates)
+        result = await _resolve_contradictions(state, "Add stakeholder quotes", candidates)
 
         assert result == []
+        session.destroy.assert_awaited_once()
 
     async def test_llm_failure_skips_gracefully(self):
         from kiro_crew.dashboard.handlers.cron import _resolve_contradictions
 
         state = MagicMock()
-        state.sessions.get_or_create = AsyncMock(side_effect=RuntimeError("no provider"))
+        state.sessions.get_bg_session = AsyncMock(side_effect=RuntimeError("no bg runtime"))
 
         candidates = [{"key": "lesson.err", "rule": "Some rule", "similarity": 0.5}]
         result = await _resolve_contradictions(state, "New rule", candidates)
         assert result == []
+
+    async def test_rejects_tool_calls_and_still_classifies(self):
+        """A tool-permission event mid-stream is rejected + SEL-audited; the
+        verdict still lands."""
+        from kiro_crew.dashboard.handlers import cron
+
+        state = MagicMock()
+        session = _FakeBgSession("CONTRADICTORY", emit_permission=True)
+        state.sessions.get_bg_session = AsyncMock(return_value=session)
+
+        candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
+        with patch.object(cron, "_sel") as mock_sel:
+            result = await cron._resolve_contradictions(state, "Do NOT use X", candidates)
+
+        assert result == ["lesson.old"]
+        session.reject_tool.assert_awaited_once_with("req-1")
+        # Denied tool invocation is audited (security-controls rule).
+        mock_sel.return_value.log_tool_invocation.assert_called_once()
+        _, kwargs = mock_sel.return_value.log_tool_invocation.call_args
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["source"] == "contradiction_check"
+        session.destroy.assert_awaited_once()
+
+    async def test_auto_approved_tool_call_is_audited(self):
+        """An auto-approved EVENT_TOOL_CALL (no permission request to reject) is
+        still SEL-audited so no invocation escapes the log."""
+        from kiro_crew.dashboard.handlers import cron
+
+        state = MagicMock()
+        session = _FakeBgSession("UNRELATED", emit_tool_call=True)
+        state.sessions.get_bg_session = AsyncMock(return_value=session)
+
+        candidates = [{"key": "lesson.x", "rule": "r", "similarity": 0.6}]
+        with patch.object(cron, "_sel") as mock_sel:
+            result = await cron._resolve_contradictions(state, "new", candidates)
+
+        assert result == []  # UNRELATED verdict keeps the lesson
+        mock_sel.return_value.log_tool_invocation.assert_called_once()
+        _, kwargs = mock_sel.return_value.log_tool_invocation.call_args
+        assert kwargs["outcome"] == "allowed"
+        assert kwargs["source"] == "contradiction_check"
+        assert kwargs["tool_name"] == "fs_read"
+        session.destroy.assert_awaited_once()
+
+    async def test_timeout_is_swallowed_and_handle_destroyed(self):
+        """A hung classification times out per-candidate without aborting; the
+        bg handle is still destroyed in the finally."""
+        from kiro_crew.dashboard.handlers import cron
+
+        state = MagicMock()
+        destroyed = AsyncMock()
+
+        class _HangSession:
+            def __init__(self):
+                self.set_model = AsyncMock()
+                self.reject_tool = AsyncMock()
+                self.destroy = destroyed
+
+            async def prompt(self, _prompt):  # noqa: ANN001 - test double
+                import asyncio
+                await asyncio.sleep(10)
+                yield SimpleNamespace(kind=EVENT_COMPLETE)  # pragma: no cover
+
+        state.sessions.get_bg_session = AsyncMock(return_value=_HangSession())
+        candidates = [{"key": "lesson.hang", "rule": "r", "similarity": 0.6}]
+        with patch.object(cron, "_CONTRADICTION_TIMEOUT", 0.01):
+            result = await cron._resolve_contradictions(state, "new", candidates)
+        assert result == []
+        destroyed.assert_awaited_once()
 
 
 @pytest.mark.asyncio
