@@ -187,7 +187,7 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
     setup is its job — and reports the failure here instead of aborting.
     """
 
-    print("KiroCrew Doctor 🐾\n")
+    print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
 
     # ── Platform edition ──
@@ -646,4 +646,4 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
         print(f"❌ Fix these issues: {', '.join(issues)}")
         sys.exit(1)
     else:
-        print("✅ KiroCrew is ready!")
+        print("✅ Kiro Crew is ready!")

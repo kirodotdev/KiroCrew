@@ -170,7 +170,7 @@ class TestFormatDashboardUrls:
     def test_local_direct_url(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://localhost:5476", port=5476)
         assert len(lines) == 2
-        assert lines[0] == "🐾 Dashboard:"
+        assert lines[0] == "👻 Dashboard:"
         assert "http://localhost:5476" in lines[1]
 
     @patch.dict("os.environ", {}, clear=True)

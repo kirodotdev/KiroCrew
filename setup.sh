@@ -22,7 +22,7 @@ cd "$_kirocrew_dir" || return 1
 
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
 
-echo "🐾 KiroCrew Setup"
+echo "👻 KiroCrew Setup"
 echo ""
 
 # ── Ensure PATH includes common install locations ──
@@ -242,7 +242,7 @@ KIROCREW_PROJECT_DIR="$_kirocrew_dir" kirocrew setup --agent-only \
     || echo "  ⚠️  kirocrew setup --agent-only failed (run manually later)"
 
 echo ""
-echo "🐾 Setup complete!"
+echo "👻 Setup complete!"
 echo ""
 echo "  kirocrew doctor     # verify everything"
 echo "  kirocrew gateway    # start dashboard + gateway"

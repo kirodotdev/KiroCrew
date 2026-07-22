@@ -99,7 +99,7 @@ class TestPublishHomeTabHappyPath:
 
         blocks = view["blocks"]
         text = str(blocks)
-        assert "KiroCrew Status" in text
+        assert "Kiro Crew Status" in text
         assert "Cron Jobs" in text
         assert "Recent Lessons" in text
         assert "Commands" in text

@@ -88,7 +88,7 @@ export function AppPreview() {
         <div className="flex items-center justify-between h-[46px] px-3" style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ background: '#18181b' }}>
-              <span style={{ color: '#f59e0b', fontSize: 13 }}>🐾</span>
+              <span style={{ color: '#f59e0b', fontSize: 13 }}>👻</span>
             </div>
             <span className="text-[13px] font-bold tracking-[.08em]" style={{ color: C.textStrong }}>KIRO CREW</span>
           </div>

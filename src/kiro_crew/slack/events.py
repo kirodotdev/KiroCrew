@@ -432,7 +432,7 @@ async def _handle_config(
     view = {
         "type": "modal",
         "callback_id": "mc_config_panel",
-        "title": {"type": "plain_text", "text": "KiroCrew Config"},
+        "title": {"type": "plain_text", "text": "Kiro Crew Config"},
         "submit": {"type": "plain_text", "text": "Save"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": blocks,
@@ -908,7 +908,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         # ── Status ──
         yolo = is_yolo_mode()
         blocks.append(
-            {"type": "header", "text": {"type": "plain_text", "text": "🐾 KiroCrew Status"}}
+            {"type": "header", "text": {"type": "plain_text", "text": "👻 Kiro Crew Status"}}
         )
         status_lines = [
             "*Gateway:* ✅ Online",
@@ -1206,7 +1206,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         blocks.append(command_hint_block(f"{_sc} #channel", "track/untrack channel"))
 
         # ── Version ──
-        version_text = f"📦 KiroCrew v{__version__}"
+        version_text = f"📦 Kiro Crew v{__version__}"
         update_info = get_update_info()
         remote_ver = update_info.get("remote_version")
         if update_info.get("available") and remote_ver is not None:

@@ -73,7 +73,7 @@ def render_unit() -> str:
     home = str(Path.home())
     return (
         "[Unit]\n"
-        "Description=KiroCrew gateway (dashboard + Slack + cron)\n"
+        "Description=Kiro Crew gateway (dashboard + Slack + cron)\n"
         "Documentation=https://github.com/kirodotdev/KiroCrew\n"
         "After=network-online.target\n"
         "Wants=network-online.target\n"

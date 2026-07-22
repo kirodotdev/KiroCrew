@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 USERNAME=$(whoami)
 HOSTNAME=$(hostname)
 
-echo "🐾 KiroCrew Persistent Sessions Setup"
+echo "👻 KiroCrew Persistent Sessions Setup"
 echo ""
 
 # ── Check: systemd user manager running? ──

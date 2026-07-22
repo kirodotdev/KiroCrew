@@ -1,13 +1,13 @@
-"""KiroCrew CLI — personal AI agent.
+"""Kiro Crew CLI — personal AI agent.
 
 Commands:
     kirocrew chat -m "message"    Send a single message
     kirocrew chat                 Interactive chat mode
-    kirocrew gateway              Start the KiroCrew server (dashboard + Slack)
+    kirocrew gateway              Start the Kiro Crew server (dashboard + Slack)
     kirocrew gateway --seed NAME  Populate $KIROCREW_HOME from fixture NAME, then start the gateway
     kirocrew status               Show runtime stats
     kirocrew run TASK.md          Run an autonomous task from a spec file
-    kirocrew update               Update KiroCrew via git fetch + rebuild
+    kirocrew update               Update Kiro Crew via git fetch + rebuild
     kirocrew cron list|add|remove Manage scheduled jobs
     kirocrew spawn run "task"     Spawn a background subagent
     kirocrew spawn list           List subagents
@@ -74,7 +74,7 @@ BANNER = r"""
   | ' <| | '_/ _ \ (__| / _` \ V  V /
   |_|\_\_|_| \___/\___|_\__,_|\_/\_/
 
-  🐾 Your personal AI agent
+  👻 Your personal AI agent
 """
 
 # Markers that uniquely identify the KiroCrew repo root for project-dir
@@ -476,13 +476,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
                 port_int = int(port)
             except ValueError:
                 print(
-                    f"🐾 --port must be an integer or 'auto', got {port!r}.",
+                    f"👻 --port must be an integer or 'auto', got {port!r}.",
                     file=sys.stderr,
                 )
                 sys.exit(2)
             if not 1 <= port_int <= 65535:
                 print(
-                    f"🐾 --port {port_int} out of range (1..65535).",
+                    f"👻 --port {port_int} out of range (1..65535).",
                     file=sys.stderr,
                 )
                 sys.exit(2)
@@ -492,7 +492,7 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
         home_env = os.environ.get("KIROCREW_HOME", "")
         if not home_env:
             print(
-                "🐾 --approval yolo refused: KIROCREW_HOME must be explicitly set "
+                "👻 --approval yolo refused: KIROCREW_HOME must be explicitly set "
                 "to an isolated path (not the default ~/.kirocrew).",
                 file=sys.stderr,
             )
@@ -502,13 +502,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
             main_home = (Path.home() / ".kirocrew").resolve()
         except OSError as exc:
             print(
-                f"🐾 --approval yolo refused: failed to resolve KIROCREW_HOME: {exc}",
+                f"👻 --approval yolo refused: failed to resolve KIROCREW_HOME: {exc}",
                 file=sys.stderr,
             )
             sys.exit(2)
         if home_resolved == main_home:
             print(
-                "🐾 --approval yolo refused: KIROCREW_HOME resolves to the main "
+                "👻 --approval yolo refused: KIROCREW_HOME resolves to the main "
                 f"gateway home ({main_home}). Set KIROCREW_HOME to an isolated "
                 "path before re-running.",
                 file=sys.stderr,
@@ -674,7 +674,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="kirocrew",
-        description="KiroCrew — personal AI agent",
+        description="Kiro Crew — personal AI agent",
     )
     parser.add_argument("--version", action="version", version=f"kirocrew {__version__}")
     parser.add_argument(
@@ -742,10 +742,10 @@ Examples:
     tui_parser.add_argument("--home", help="KIROCREW_HOME override (e.g. ~/.kirocrew-dev)")
 
     # doctor
-    sub.add_parser("doctor", help="Verify KiroCrew setup")
+    sub.add_parser("doctor", help="Verify Kiro Crew setup")
 
     # gateway
-    gw_parser = sub.add_parser("gateway", help="Start the KiroCrew server (dashboard + Slack)")
+    gw_parser = sub.add_parser("gateway", help="Start the Kiro Crew server (dashboard + Slack)")
     gw_parser.add_argument(
         "--slack-only",
         action="store_true",
@@ -840,7 +840,7 @@ Examples:
     setup_parser.add_argument(
         "--electron-only",
         action="store_true",
-        help="Only install the KiroCrew desktop app (macOS), skip other setup",
+        help="Only install the Kiro Crew desktop app (macOS), skip other setup",
     )
     setup_parser.add_argument(
         "--clean",
@@ -1010,14 +1010,14 @@ Examples:
 
     # update
     # snapshot / restore
-    snap_parser = sub.add_parser("snapshot", help="Create a portable backup of KiroCrew state")
+    snap_parser = sub.add_parser("snapshot", help="Create a portable backup of Kiro Crew state")
     snap_parser.add_argument("output_dir", nargs="?", default=None)
     snap_parser.add_argument("--keep", type=int, default=7, help="Keep N most recent snapshots")
     snap_parser.add_argument(
         "--list", action="store_true", dest="list_snapshots", help="List existing snapshots"
     )
 
-    rest_parser = sub.add_parser("restore", help="Restore KiroCrew state from a snapshot")
+    rest_parser = sub.add_parser("restore", help="Restore Kiro Crew state from a snapshot")
     rest_parser.add_argument("snapshot", nargs="?", help="Path to snapshot .tar.gz")
     rest_parser.add_argument("--mode", choices=("replace", "merge"))
     rest_parser.add_argument("--dry-run", action="store_true")
@@ -1140,10 +1140,10 @@ Examples:
     pod_cleanup = pod_sub.add_parser("_cleanup")
     pod_cleanup.add_argument("name")
 
-    sub.add_parser("update", help="Update KiroCrew to the latest version")
+    sub.add_parser("update", help="Update Kiro Crew to the latest version")
 
     # stop
-    stop_parser = sub.add_parser("stop", help="Stop a running KiroCrew gateway")
+    stop_parser = sub.add_parser("stop", help="Stop a running Kiro Crew gateway")
     stop_parser.add_argument(
         "--port",
         type=int,
@@ -1161,7 +1161,7 @@ Examples:
     # otherwise SIGTERMs the foreground gateway and respawns it detached so the
     # shell returns immediately. Mirrors `stop`.
     restart_parser = sub.add_parser(
-        "restart", help="Restart a running KiroCrew gateway (service-aware)"
+        "restart", help="Restart a running Kiro Crew gateway (service-aware)"
     )
     restart_parser.add_argument(
         "--port",
@@ -1182,7 +1182,7 @@ Examples:
     # auto-restarts on crash, and auto-starts on boot.
     svc_parser = sub.add_parser(
         "service",
-        help="Manage the KiroCrew gateway as a system service (requires sudo on Linux)",
+        help="Manage the Kiro Crew gateway as a system service (requires sudo on Linux)",
     )
     svc_sub = svc_parser.add_subparsers(dest="service_action")
     svc_sub.add_parser("install", help="Install and start the gateway service (sudo on Linux)")
@@ -1193,7 +1193,7 @@ Examples:
     # AWS; credentials resolved by the aws CLI, never stored by KiroCrew).
     cloud_parser = sub.add_parser(
         "cloud",
-        help="Run KiroCrew on your own AWS EC2 instance",
+        help="Run Kiro Crew on your own AWS EC2 instance",
         epilog="""
 Examples:
   kirocrew cloud launch                  # interactive: provision + configure + open dashboard
@@ -1238,7 +1238,7 @@ Examples:
         help="On bootstrap failure, keep the instance (disable rollback) for inspection",
     )
 
-    _c_list = cloud_sub.add_parser("list", help="List your KiroCrew cloud instances")
+    _c_list = cloud_sub.add_parser("list", help="List your Kiro Crew cloud instances")
     _c_list.add_argument("--profile", default="")
     _c_list.add_argument("--region", default="")
 
@@ -1510,20 +1510,20 @@ Examples:
     mem_import.add_argument("file", help="Path to JSON file (export format)")
 
     # agent
-    agent_parser = sub.add_parser("agent", help="Manage KiroCrew agent definitions")
+    agent_parser = sub.add_parser("agent", help="Manage Kiro Crew agent definitions")
     agent_sub = agent_parser.add_subparsers(dest="agent_action")
-    agent_sub.add_parser("list", help="List KiroCrew agents")
-    agent_create = agent_sub.add_parser("create", help="Create a KiroCrew agent")
+    agent_sub.add_parser("list", help="List Kiro Crew agents")
+    agent_create = agent_sub.add_parser("create", help="Create a Kiro Crew agent")
     agent_create.add_argument("--name", required=True, help="Agent name")
     agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")
     agent_create.add_argument("--workspace", default="default", help="Workspace name")
     agent_create.add_argument("--memory-store", default="default", help="Memory store name")
-    agent_update = agent_sub.add_parser("update", help="Update a KiroCrew agent")
+    agent_update = agent_sub.add_parser("update", help="Update a Kiro Crew agent")
     agent_update.add_argument("name", help="Agent name to update")
     agent_update.add_argument("--kiro-agent", help="New kiro agent name")
     agent_update.add_argument("--workspace", help="New workspace name")
     agent_update.add_argument("--memory-store", help="New memory store name")
-    agent_delete = agent_sub.add_parser("delete", help="Delete a KiroCrew agent")
+    agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")
 
     # workspace
@@ -1543,7 +1543,7 @@ Examples:
     # app
     app_parser = sub.add_parser(
         "app",
-        help="Manage KiroCrew apps",
+        help="Manage Kiro Crew apps",
         epilog="""
 Examples:
   kirocrew app install /path/to/oncall-watchtower
@@ -1798,7 +1798,7 @@ Examples:
         try:
             _gw_lock = GatewayLock(config_dir()).acquire()
         except GatewayLockError as exc:
-            print(f"🐾 {exc}", file=sys.stderr)
+            print(f"👻 {exc}", file=sys.stderr)
             sys.exit(1)
         try:
             asyncio.run(_gateway(**gw_kwargs))

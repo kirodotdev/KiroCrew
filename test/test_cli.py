@@ -1577,7 +1577,7 @@ class TestStop:
             with pytest.raises(SystemExit) as exc:
                 _stop(5476)
             assert exc.value.code == 1
-        assert "No KiroCrew gateway" in capsys.readouterr().out
+        assert "No Kiro Crew gateway" in capsys.readouterr().out
 
     def test_no_kirocrew_process(self, capsys):
         # A listener exists but its cmdline isn't a kirocrew gateway → refuse to kill.
@@ -1587,7 +1587,7 @@ class TestStop:
             with pytest.raises(SystemExit) as exc:
                 _stop(5476)
             assert exc.value.code == 1
-        assert "No KiroCrew gateway" in capsys.readouterr().out
+        assert "No Kiro Crew gateway" in capsys.readouterr().out
 
     def test_successful_stop(self, capsys):
         from kiro_crew.cli_server import _stop
@@ -1696,7 +1696,7 @@ class TestStop:
         mock_stop_service.assert_not_called()
         # And we should have fallen through to the kill path
         # (which exits 1 here because no listener is found on 8089).
-        assert "No KiroCrew gateway" in capsys.readouterr().out
+        assert "No Kiro Crew gateway" in capsys.readouterr().out
 
 
 class TestRestart:

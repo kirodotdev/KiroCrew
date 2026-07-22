@@ -549,7 +549,7 @@ reading the result, and adapting — that verification-and-diagnosis is the diff
 - ✓ Ready → "Want to publish your first artifact now?"
 
 ```
-🐾 Let's get deploy-web connected to your AWS account. I'll never
+👻 Let's get deploy-web connected to your AWS account. I'll never
    see or store your credentials — only a profile name.
 
 Step 1/3 — AWS access

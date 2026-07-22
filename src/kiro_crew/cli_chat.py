@@ -23,7 +23,7 @@ BANNER = r"""
   | ' <| | '_/ _ \ (__| / _` \ V  V /
   |_|\_\_|_| \___/\___|_\__,_|\_/\_/
 
-  🐾 Your personal AI agent
+  👻 Your personal AI agent
 """
 
 
@@ -170,13 +170,13 @@ async def _interactive(provider: LLMProvider, cfg: KiroCrewConfig) -> None:
         try:
             message = input("you> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nBye! 🐾")
+            print("\nBye! 👻")
             break
 
         if not message:
             continue
         if message.lower() in ("exit", "quit", "/exit", "/quit", ":q"):
-            print("Bye! 🐾")
+            print("Bye! 👻")
             break
 
         await _send_and_print(provider, message)

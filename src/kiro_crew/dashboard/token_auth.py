@@ -456,7 +456,7 @@ _403_HTML = (
     ".err{{color:#ef4444}}}}"
     "</style></head><body>"
     "<div class='c'>"
-    "<div class='logo'>🐾</div>"
+    "<div class='logo'>👻</div>"
     "<h1>403 — {reason}</h1>"
     "<p>Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
     "<input id='u' type='text' placeholder='Paste token URL or raw token…' autofocus>"

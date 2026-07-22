@@ -259,7 +259,7 @@ def _stop(cli_port: int | None = None) -> None:
             source="cli",
             resources=f"port={port}",
         )
-        print(f"No KiroCrew gateway currently running on port {port}.")
+        print(f"No Kiro Crew gateway currently running on port {port}.")
         sys.exit(1)
 
     # Only kill processes that are actually KiroCrew gateways.
@@ -274,7 +274,7 @@ def _stop(cli_port: int | None = None) -> None:
             source="cli",
             resources=f"port={port} reason=no_kirocrew_process",
         )
-        print(f"No KiroCrew gateway currently running on port {port}.")
+        print(f"No Kiro Crew gateway currently running on port {port}.")
         sys.exit(1)
 
     sent: set[int] = set()
@@ -345,7 +345,7 @@ def _stop(cli_port: int | None = None) -> None:
             source="cli",
             resources=f"port={port} reason=process_already_exited",
         )
-        print(f"No KiroCrew gateway currently running on port {port} (process already exited).")
+        print(f"No Kiro Crew gateway currently running on port {port} (process already exited).")
         sys.exit(1)
 
 
@@ -648,7 +648,7 @@ def _restart(cli_port: int | None = None) -> None:
 
 def _update() -> None:
     """Update KiroCrew via git fetch + reset --hard + rebuild."""
-    print("🐾 Updating KiroCrew…\n")
+    print("👻 Updating Kiro Crew…\n")
 
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     if not proj:
@@ -759,7 +759,7 @@ def _update() -> None:
         print(f"  ❌ Install failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
-    print("\n✅ KiroCrew updated!")
+    print("\n✅ Kiro Crew updated!")
     print(f"\n{DATA_WARNING}\n")
 
     # Re-install agent config so new denied commands take effect.
@@ -787,20 +787,20 @@ def _status(args: argparse.Namespace) -> None:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            print("KiroCrew gateway is running (token auth enabled).")
+            print("Kiro Crew gateway is running (token auth enabled).")
             print("  For detailed stats, see the Overview page in the dashboard.")
         else:
-            print(f"KiroCrew gateway is running but returned HTTP {e.code}.")
+            print(f"Kiro Crew gateway is running but returned HTTP {e.code}.")
         return
     except (urllib.error.URLError, OSError):
-        print("KiroCrew gateway is not running.")
+        print("Kiro Crew gateway is not running.")
         print("  Start it with: kirocrew gateway")
         return
     except Exception:
-        print("KiroCrew gateway is running but returned an unexpected response.")
+        print("Kiro Crew gateway is running but returned an unexpected response.")
         return
 
-    print(f"KiroCrew v{__version__} 🐾\n")
+    print(f"Kiro Crew v{__version__} 👻\n")
     print(f"  Uptime:      {data.get('uptime', '—')}")
     print(f"  Sessions:    {data.get('sessions', 0)}")
     print(f"  Messages:    {data.get('messages', 0)}")
@@ -853,7 +853,7 @@ async def _gateway(
     if not config_path().exists():
         cfg = KiroCrewConfig()
         cfg.save()
-        print(f"🐾 Created default config: {config_path()}")
+        print(f"👻 Created default config: {config_path()}")
 
     cfg = KiroCrewConfig.load()
     await run_gateway(
@@ -957,9 +957,9 @@ async def _run_task(args: argparse.Namespace) -> None:
     await sessions.start_pool()
 
     if fresh:
-        print(f"🐾 Running spec (fresh): {spec_path}")
+        print(f"👻 Running spec (fresh): {spec_path}")
     else:
-        print(f"🐾 Running spec: {spec_path}")
+        print(f"👻 Running spec: {spec_path}")
     task_name = getattr(args, "name", "")
     result = await runner.run(spec_path, name=task_name)
 
@@ -1064,7 +1064,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
         # password prompt would block forever with no way to cancel.
         if not sys.stdin.isatty():
             print(
-                "🐾 Insufficient permissions to read the journal without sudo, "
+                "👻 Insufficient permissions to read the journal without sudo, "
                 "and stdin is not a TTY so sudo can't prompt.\n"
                 "   Add your user to the `systemd-journal` or `adm` group, or run:\n"
                 f"   sudo journalctl -u {unit} -f",
@@ -1089,7 +1089,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
     fallback = config_dir() / "gateway.log"
     if not fallback.exists():
         print(
-            "🐾 No gateway logs found. Either install the service "
+            "👻 No gateway logs found. Either install the service "
             "(`kirocrew service install`) or start the gateway "
             "(`kirocrew gateway`).",
             file=sys.stderr,

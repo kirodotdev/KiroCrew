@@ -39,7 +39,7 @@ esac
 export KIROCREW_PORT="${KIROCREW_PORT:-6777}"
 export KIROCREW_PROJECT_DIR="$SCRIPT_DIR"
 
-echo "🐾 Dev backend starting (live source, port $KIROCREW_PORT)"
+echo "👻 Dev backend starting (live source, port $KIROCREW_PORT)"
 echo "   Python: $RUNTIME_PYTHON"
 echo "   Source: $PYTHONPATH"
 echo "   Data:   $KIROCREW_HOME"

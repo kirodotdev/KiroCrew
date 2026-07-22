@@ -538,7 +538,7 @@ detail "Install ollama (https://ollama.com), then: ollama pull qwen3-embedding:0
 
 echo ""
 echo ""
-echo "  ${GREEN}${BOLD}🐾 KiroCrew installed successfully!${RESET}"
+echo "  ${GREEN}${BOLD}👻 KiroCrew installed successfully!${RESET}"
 echo ""
 echo "  ${DIM}────────────────────────────────────────${RESET}"
 echo ""

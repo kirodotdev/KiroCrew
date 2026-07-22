@@ -55,7 +55,7 @@ done
 has node || die "Node.js not found. Install Node.js 18+ (https://nodejs.org) and re-run."
 has npm  || die "npm not found. Install Node.js 18+ (https://nodejs.org) and re-run."
 
-echo "🐾 KiroCrew — minimal install"
+echo "👻 KiroCrew — minimal install"
 echo "  Repo:    $REPO_DIR"
 echo "  Python:  $("$_py" --version 2>&1)"
 echo "  Node:    $(node --version)"
@@ -140,7 +140,7 @@ echo "✓ Symlinked kirocrew → ~/.local/bin/kirocrew"
 echo ""
 
 # ── Done ──
-echo "🐾 KiroCrew installed!"
+echo "👻 KiroCrew installed!"
 echo ""
 echo "  Next steps:"
 echo "    1. Run setup:    $HOME/.local/bin/kirocrew setup"

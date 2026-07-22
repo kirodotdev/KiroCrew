@@ -127,7 +127,7 @@ def _fix_shell_profiles() -> None:
                 cleaned.append(line)
             if removed:
                 profile.write_text("".join(cleaned), encoding="utf-8")
-                print(f"  🔧 Cleaned stale KiroCrew PATH from {profile.name}")
+                print(f"  🔧 Cleaned stale Kiro Crew PATH from {profile.name}")
                 cleaned_profiles.append(profile.name)
         except OSError:
             pass
@@ -196,7 +196,7 @@ def _find_electron_dir() -> Path | None:
 def _setup_electron() -> None:
     """Build and install the KiroCrew desktop app (macOS only)."""
     if platform.system() != "Darwin":
-        print("  ⚠️  KiroCrew desktop app is only available on macOS.")
+        print("  ⚠️  Kiro Crew desktop app is only available on macOS.")
         return
 
     if not shutil.which("node"):
@@ -213,7 +213,7 @@ def _setup_electron() -> None:
         )
         return
 
-    print("  🔨 Building KiroCrew desktop app…")
+    print("  🔨 Building Kiro Crew desktop app…")
     npm_install = subprocess.run(
         ["npm", "install", "--no-audit", "--no-fund", "--loglevel=error"],
         cwd=str(electron_dir),
@@ -266,7 +266,7 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
         _setup_electron()
         return
 
-    print("KiroCrew Setup 🐾\n")
+    print("Kiro Crew Setup 👻\n")
     print(f"  {DATA_WARNING.replace(chr(10), chr(10) + '  ')}\n")
 
     # Report on optional prerequisites.
@@ -323,7 +323,7 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
     _maybe_sync_cc_plugins()
 
     if agent_only:
-        print("\n🐾 Done! Try: kirocrew gateway")
+        print("\n👻 Done! Try: kirocrew gateway")
         return
 
     # 3. Slack credentials
@@ -382,7 +382,7 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
     # 7. Cloud (run KiroCrew on the user's own AWS EC2) — optional, delegated.
     _maybe_setup_cloud()
 
-    print("\n🐾 Done! Try: kirocrew doctor && kirocrew gateway")
+    print("\n👻 Done! Try: kirocrew doctor && kirocrew gateway")
 
 
 def _maybe_setup_cloud() -> None:
@@ -393,7 +393,7 @@ def _maybe_setup_cloud() -> None:
     launcher wizard (``kirocrew cloud launch``).
     """
     print("\n── Run on AWS (optional) ──\n")
-    print("  KiroCrew can run 24/7 on your own AWS EC2 instance (bring your own")
+    print("  Kiro Crew can run 24/7 on your own AWS EC2 instance (bring your own")
     print("  AWS account; credentials stay in the aws CLI — never stored here).")
     try:
         answer = input("  Launch KiroCrew on AWS now? [y/N]: ").strip().lower()
