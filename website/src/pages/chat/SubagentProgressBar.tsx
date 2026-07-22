@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useMemo, memo } from 'react'
-import { Bot, ChevronDown } from 'lucide-react'
+import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
+import { Bot, ChevronDown, X } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sseSubagentDone } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -29,6 +29,19 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
   const hasActive = running > 0
+  // Only running/tool agents are cancellable via spawnDelete; pending agents
+  // (awaiting approval) are resolved through the approval reject path instead.
+  const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length, [activeList])
+  // Cancel a running subagent. A failed spawnDelete is swallowed with only a
+  // debug breadcrumb -- the 30s reconcile loop below is the safety net that
+  // drops any agent the backend actually stopped, so a failed DELETE self-heals
+  // and a toast would just be noise. Mirrors ActivityViewer's onCancel.
+  const stopAgent = useCallback((id: string) => {
+    api.spawnDelete(id).catch(() => console.warn(`spawnDelete failed for subagent ${id}; reconcile loop will resync`))
+  }, [])
+  const stopAll = useCallback(() => {
+    activeListRef.current.forEach(a => { if (a.status === 'running' || a.status === 'tool') stopAgent(a.id) })
+  }, [stopAgent])
   const [expanded, setExpanded] = useState(false)
   const [, setTick] = useState(0)
   // 1Hz tick to update elapsed timers + 30s reconciliation to clear phantom agents
@@ -53,16 +66,27 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   return (
     <div className="px-5 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
     <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
-      <button
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] font-mono cursor-pointer hover:bg-accent/5 transition-colors"
-        onClick={() => setExpanded(e => !e)}
-        aria-expanded={expanded}
-        aria-label={`${running} subagent${running > 1 ? 's' : ''} running`}
-      >
-        <Bot size={14} className="text-accent shrink-0" />
-        <span className="text-text-strong font-medium">{running} agent{running > 1 ? 's' : ''} running</span>
-        <ChevronDown size={14} className={`text-muted ml-auto shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-      </button>
+      <div className="w-full flex items-center gap-2 pr-2">
+        <button
+          className="flex-1 min-w-0 flex items-center gap-2 px-3 py-1.5 text-[13px] font-mono cursor-pointer hover:bg-accent/5 transition-colors text-left bg-transparent border-none"
+          onClick={() => setExpanded(e => !e)}
+          aria-expanded={expanded}
+          aria-label={`${running} subagent${running > 1 ? 's' : ''} running`}
+        >
+          <Bot size={14} className="text-accent shrink-0" />
+          <span className="text-text-strong font-medium">{running} agent{running > 1 ? 's' : ''} running</span>
+          <ChevronDown size={14} className={`text-muted ml-auto shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </button>
+        {stoppableCount > 0 && (
+          <button
+            className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
+            onClick={stopAll}
+            aria-label={stoppableCount > 1 ? 'Stop all running subagents' : 'Stop running subagent'}
+          >
+            <X size={11} /> Stop{stoppableCount > 1 ? ' all' : ''}
+          </button>
+        )}
+      </div>
       {expanded && activeList.length > 0 && (
         <div className="px-3 pb-2 space-y-0.5">
           {activeList.map((a, i) => {
@@ -79,6 +103,16 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                   </div>
                   {a.lastTool && <div className="text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</div>}
                 </div>
+                {(a.status === 'running' || a.status === 'tool') && (
+                  <button
+                    className="shrink-0 flex items-center text-[11px] px-1 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
+                    onClick={() => stopAgent(a.id)}
+                    aria-label={`Stop subagent ${sanitizeLlmOutput(a.agent || a.id)}`}
+                    title="Stop this subagent"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
               </div>
             )
           })}
