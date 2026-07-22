@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import ctypes
 import json
 import logging
@@ -29,6 +30,10 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Max tools/call requests buffered while a tool worker is busy (Mesh-3020).
+# Overflow gets an immediate JSON-RPC busy error instead of silence.
+PENDING_CALLS_MAX = 32
 
 # Thread-local cancel event set by run_mcp_stdio_loop worker threads.
 # Cooperative tools (wait, spawn_sub_agents) should call is_tool_cancelled()
@@ -444,6 +449,11 @@ def run_mcp_stdio_loop(
     a threading.Event that cooperative tools (``wait``, ``spawn_sub_agents``)
     check periodically. The cancelled request emits no response (per MCP spec).
 
+    ``tools/call`` requests that arrive while a worker is busy are buffered in
+    a bounded FIFO queue and dispatched in order as the worker frees (Mesh-3020
+    -- silently dropping them left the client waiting forever on a response
+    that never came). Queue overflow gets an immediate busy error response.
+
     On Windows ``select.select`` cannot poll ``sys.stdin`` (it only accepts
     sockets), so tool calls dispatch synchronously exactly as the pre-worker
     loop did — no in-flight cancel/ping interleave there (POSIX-only feature).
@@ -458,6 +468,8 @@ def run_mcp_stdio_loop(
     _cancelled_ids: set = set()
     _current_tool_name: str = ""
     _worker_audited: list = [False]  # [bool], guarded by _result_lock
+    # tools/call requests received while a worker was busy, dispatched FIFO.
+    _pending_calls: collections.deque[dict[str, Any]] = collections.deque()
 
     def _sel_audit(outcome: str, tool_name: str, req_id: Any) -> None:
         """Emit a SEL audit event for a tool invocation outcome.
@@ -567,9 +579,31 @@ def run_mcp_stdio_loop(
             # ping-gated wedge detector sees the backend as responsive.
             elif method == "ping" and req_id is not None:
                 respond(req_id, {})
-            # Other messages while busy: queue for later? For now, drop gracefully.
-            # The MCP spec says servers SHOULD NOT receive new requests while one is
-            # in-flight in a sequential server. Notifications are fine to drop.
+            # Buffer tools/call requests that arrive while busy so they get a
+            # response when the worker frees (Mesh-3020: dropping them left the
+            # client waiting forever). Cancels against queued ids are honored
+            # at dispatch time via _cancelled_ids.
+            elif method == "tools/call" and req_id is not None:
+                if len(_pending_calls) >= PENDING_CALLS_MAX:
+                    # Rejection is a tool-invocation decision -- audit it
+                    # (security-controls: all invocation decisions emit SEL).
+                    _sel_audit(
+                        "rejected_busy",
+                        req.get("params", {}).get("name", ""),
+                        req_id,
+                    )
+                    respond(
+                        req_id,
+                        None,
+                        error={
+                            "code": -32000,
+                            "message": "Server busy: pending tool-call queue is full; retry",
+                        },
+                    )
+                else:
+                    _pending_calls.append(req)
+            # Other messages while busy: drop gracefully. Notifications are
+            # fine to drop; initialize/initialized never arrive mid-tool.
             elif method == "tools/list" and req_id is not None:
                 excluded = _resolve_excluded_tools()
                 tools = list_tools_fn()
@@ -594,9 +628,13 @@ def run_mcp_stdio_loop(
             _cancel_event = None
             _result_ready.clear()
 
-        req = _read_message(sys.stdin)
-        if req is None:
-            break
+        # Dispatch a queued tools/call (FIFO) before reading new input.
+        if _pending_calls:
+            req = _pending_calls.popleft()
+        else:
+            req = _read_message(sys.stdin)
+            if req is None:
+                break
 
         try:
             method, req_id, _params = validate_jsonrpc_request(req)
@@ -634,6 +672,11 @@ def run_mcp_stdio_loop(
             tool_args = params.get("arguments", {})
             if not isinstance(tool_args, dict):
                 tool_args = {}
+            # A queued request may have been cancelled while waiting -- emit
+            # no response (per MCP spec) but audit the cancellation.
+            if req_id is not None and str(req_id) in _cancelled_ids:
+                _sel_audit("cancelled", tool_name, req_id)
+                continue
             # Defense-in-depth: reject calls to excluded tools even if
             # the LLM somehow attempts to call them (hallucination).
             excluded = _resolve_excluded_tools()

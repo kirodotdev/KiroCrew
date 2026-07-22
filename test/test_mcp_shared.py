@@ -250,3 +250,196 @@ class TestCallToolWithLoggingRedaction:
         assert secret not in captured.get("resources", "")
         # The non-sensitive fields still make it into the audit trail.
         assert "slug" in captured.get("resources", "")
+
+
+# --- run_mcp_stdio_loop busy-queue behavior (Mesh-3020) ----------------------
+#
+# A tools/call arriving while a worker is busy used to be silently dropped:
+# no response was ever written, so the client waited forever. These tests
+# drive the real loop over a pipe-backed stdin (select() needs a real fd)
+# and assert queued calls are answered FIFO once the worker frees. The
+# worker-thread + select() interleave is POSIX-only (the Windows loop
+# dispatches synchronously), so gate the class accordingly.
+
+import pytest  # noqa: E402
+
+from kiro_crew import platform_compat  # noqa: E402
+
+
+class _LoopHarness:
+    """Run run_mcp_stdio_loop in a thread against a pipe-backed stdin.
+
+    Responses are captured by patching mcp_shared.respond; SEL and tool-policy
+    resolution are stubbed out so the loop needs no gateway environment.
+    """
+
+    def __init__(self, monkeypatch, call_tool_fn):
+        import os
+        import sys
+        import threading
+        from unittest.mock import MagicMock
+
+        self.responses: list = []  # (req_id, result, error)
+        rfd, self._wfd = os.pipe()
+        self._stdin = io.TextIOWrapper(io.open(rfd, "rb"))
+        monkeypatch.setattr(sys, "stdin", self._stdin)
+        monkeypatch.setattr(mcp_shared, "respond", self._record)
+        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", lambda: set())
+        self.sel_mock = MagicMock()
+        monkeypatch.setattr(mcp_shared, "sel", lambda: self.sel_mock)
+        self._os = os
+        self._thread = threading.Thread(
+            target=mcp_shared.run_mcp_stdio_loop,
+            args=("test-server", "0.0.0", lambda: [], call_tool_fn),
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _record(self, req_id, result, error=None) -> None:
+        self.responses.append((req_id, result, error))
+
+    def send(self, msg: dict) -> None:
+        self._os.write(self._wfd, (json.dumps(msg) + "\n").encode("utf-8"))
+
+    def wait_for(self, predicate, timeout: float = 5.0) -> bool:
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return predicate()
+
+    def close(self) -> None:
+        self._os.close(self._wfd)
+        self._thread.join(timeout=5.0)
+
+
+def _tools_call(req_id, tool_name: str) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": {}},
+    }
+
+
+def _slow_then_echo():
+    """Return (call_tool_fn, started_event, release_event) for a blockable tool."""
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def call_tool(name, args):
+        if name == "slow":
+            started.set()
+            release.wait(timeout=10.0)
+        return f"done:{name}"
+
+    return call_tool, started, release
+
+
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX,
+    reason="worker-thread + select() interleave is POSIX-only",
+)
+class TestStdioLoopBusyQueue:
+    def setup_method(self):
+        mcp_shared._use_content_length = False
+
+    def test_tools_call_while_busy_is_queued_and_answered_fifo(self, monkeypatch):
+        import time
+
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(201, "slow"))
+            assert started.wait(timeout=5.0)
+            harness.send(_tools_call(202, "fast"))
+            harness.send(_tools_call(203, "fast"))
+            # Give the busy read loop a beat to buffer both calls
+            time.sleep(0.3)
+            assert harness.responses == []  # nothing answered while busy
+            release.set()
+            assert harness.wait_for(lambda: len(harness.responses) >= 3)
+            assert [r[0] for r in harness.responses] == [201, 202, 203]
+            assert all(r[2] is None for r in harness.responses)
+        finally:
+            release.set()
+            harness.close()
+
+    def test_cancelled_queued_call_gets_no_response_and_loop_continues(self, monkeypatch):
+        import time
+
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(301, "slow"))
+            assert started.wait(timeout=5.0)
+            harness.send(_tools_call(302, "fast"))
+            # Let the read loop consume 302 before the cancel arrives: two
+            # back-to-back pipe writes can coalesce into one buffered read,
+            # in which case cancel-of-queued is best-effort (same as the
+            # pre-existing in-flight cancel race).
+            time.sleep(0.3)
+            harness.send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": 302},
+                }
+            )
+            time.sleep(0.3)
+            release.set()
+            assert harness.wait_for(lambda: any(r[0] == 301 for r in harness.responses))
+            # Loop must still serve new calls after skipping the cancelled one
+            harness.send(_tools_call(303, "fast"))
+            assert harness.wait_for(lambda: any(r[0] == 303 for r in harness.responses))
+            assert not any(r[0] == 302 for r in harness.responses)
+        finally:
+            release.set()
+            harness.close()
+
+    def test_queue_overflow_returns_busy_error(self, monkeypatch):
+        import time
+
+        monkeypatch.setattr(mcp_shared, "PENDING_CALLS_MAX", 1)
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(401, "slow"))
+            assert started.wait(timeout=5.0)
+            harness.send(_tools_call(402, "fast"))  # fills the queue
+            time.sleep(0.2)
+            harness.send(_tools_call(403, "fast"))  # overflow
+            assert harness.wait_for(lambda: any(r[0] == 403 for r in harness.responses))
+            overflow = next(r for r in harness.responses if r[0] == 403)
+            assert overflow[2] is not None and overflow[2]["code"] == -32000
+            # The rejection is a tool-invocation decision and must be SEL-audited
+            assert any(
+                call.kwargs.get("outcome") == "rejected_busy"
+                for call in harness.sel_mock.log_tool_invocation.call_args_list
+            )
+            release.set()
+            assert harness.wait_for(
+                lambda: {401, 402} <= {r[0] for r in harness.responses}
+            )
+        finally:
+            release.set()
+            harness.close()
+
+    def test_ping_still_answered_while_busy(self, monkeypatch):
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(501, "slow"))
+            assert started.wait(timeout=5.0)
+            harness.send({"jsonrpc": "2.0", "id": 599, "method": "ping"})
+            assert harness.wait_for(lambda: any(r[0] == 599 for r in harness.responses))
+            release.set()
+            assert harness.wait_for(lambda: any(r[0] == 501 for r in harness.responses))
+        finally:
+            release.set()
+            harness.close()
