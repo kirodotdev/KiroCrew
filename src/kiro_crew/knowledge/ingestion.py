@@ -267,7 +267,13 @@ class IngestionPipeline:
                     chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
                     section_title=chunk.get('section_title'),
                 )
-                self._store_entities(extraction, item_id)
+                # Entity storage is O(entities): find_entity does a full-table
+                # alias scan and each add_entity/add_mention/add_entity_relation
+                # commits + mutates the graph. On a many-entity chunk this blocked
+                # the asyncio loop past the 25s watchdog (loop-stall crash dumps,
+                # dashboard "connection lost"). Offloaded: the graph is RLock-guarded
+                # and sqlite connections are thread-local, so this is thread-safe.
+                await asyncio.to_thread(self._store_entities, extraction, item_id)
                 await self._embed_item(
                     item_id, item_title, extraction.get('summary'), chunk['content']
                 )
@@ -305,7 +311,10 @@ class IngestionPipeline:
         # Cross-source dedup for whole-source ingests (upload / remote / chat). Folder-file
         # ingests (old_item_ids is a list) are swept by FolderWatcher at end of scan.
         if processed == total and old_item_ids is None:
-            self._maybe_dedup(source_id)
+            # dedup_document can merge entities -> _load_graph (full graph
+            # rebuild). Offloaded so a large source's dedup cannot stall the loop
+            # (RLock-guarded graph + thread-local sqlite make this thread-safe).
+            await asyncio.to_thread(self._maybe_dedup, source_id)
         return job_id
 
     async def ingest_text(self, text: str, title: str, source_type: str = 'manual',
@@ -390,7 +399,13 @@ class IngestionPipeline:
                     chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
                     section_title=chunk.get('section_title'),
                 )
-                self._store_entities(extraction, item_id)
+                # Entity storage is O(entities): find_entity does a full-table
+                # alias scan and each add_entity/add_mention/add_entity_relation
+                # commits + mutates the graph. On a many-entity chunk this blocked
+                # the asyncio loop past the 25s watchdog (loop-stall crash dumps,
+                # dashboard "connection lost"). Offloaded: the graph is RLock-guarded
+                # and sqlite connections are thread-local, so this is thread-safe.
+                await asyncio.to_thread(self._store_entities, extraction, item_id)
                 await self._embed_item(
                     item_id,
                     chunk.get('section_title') or f"{title} chunk {i}",
@@ -428,7 +443,10 @@ class IngestionPipeline:
         # dedup sweep, mirroring ingest_file, so one artifact edit doesn't rescan
         # the entire aggregate source.
         if processed == total and old_item_ids is None:
-            self._maybe_dedup(source_id)
+            # dedup_document can merge entities -> _load_graph (full graph
+            # rebuild). Offloaded so a large source's dedup cannot stall the loop
+            # (RLock-guarded graph + thread-local sqlite make this thread-safe).
+            await asyncio.to_thread(self._maybe_dedup, source_id)
         return job_id
 
     def get_job_status(self, job_id: str) -> dict | None:

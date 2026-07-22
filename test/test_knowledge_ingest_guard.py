@@ -155,6 +155,39 @@ class TestChunkingOffLoop:
         await pipeline.ingest_text("some body text", title="t")
         assert seen and all(t != loop_thread for t in seen)
 
+    @pytest.mark.asyncio
+    async def test_store_entities_runs_off_the_event_loop(self, pipeline):
+        """Mesh-3029: the per-chunk _store_entities pass (O(entities) find_entity
+        scans + per-entity commit/graph mutation) runs via asyncio.to_thread, not
+        inline on the loop where it stalled past the 25s loop-stall watchdog."""
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+        real = pipeline._store_entities
+
+        def _spy(extraction, item_id):
+            seen.append(threading.get_ident())
+            return real(extraction, item_id)
+
+        pipeline._store_entities = _spy  # type: ignore[method-assign]
+        await pipeline.ingest_text("some body text", title="t")
+        assert seen and all(t != loop_thread for t in seen)
+
+    @pytest.mark.asyncio
+    async def test_maybe_dedup_runs_off_the_event_loop(self, pipeline):
+        """Mesh-3029: the end-of-ingest _maybe_dedup (dedup_document -> merge_entities
+        -> _load_graph full rebuild) runs via asyncio.to_thread, not on the loop."""
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+        real = pipeline._maybe_dedup
+
+        def _spy(source_id):
+            seen.append(threading.get_ident())
+            return real(source_id)
+
+        pipeline._maybe_dedup = _spy  # type: ignore[method-assign]
+        await pipeline.ingest_text("some body text", title="t")
+        assert seen and all(t != loop_thread for t in seen)
+
     def test_run_chunker_dispatch(self):
         chunker = MagicMock()
         ingestion_mod._run_chunker(chunker, ".pptx", "t", "u")
