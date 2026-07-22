@@ -25,6 +25,7 @@ _DOCS_DIR = _REPO_ROOT / "src" / "kiro_crew" / "docs"
 # tips_allowlist is dependency-free, so importing it never pulls the runtime.
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST  # noqa: E402
+from kiro_crew.tips_text import truncate_summary  # noqa: E402
 
 
 def _get_git_mtime(filepath: Path) -> float:
@@ -82,7 +83,7 @@ def _scan_docs_catalog() -> list[dict]:
         entries.append({
             "feature": title,
             "title": title,
-            "summary": para[:300],
+            "summary": truncate_summary(para),
             "doc": md.name,
             "mtime": mtime,
         })

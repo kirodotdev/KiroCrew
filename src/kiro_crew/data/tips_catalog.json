@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-21T06:17:55.194009+00:00",
+  "generated_at": "2026-07-22T12:59:41.704579+00:00",
   "entries": [
     {
       "feature": "Agents & Configuration",
@@ -27,7 +27,7 @@
       "title": "Web Dashboard",
       "summary": "The dashboard is a React SPA at `http://localhost:5476` (or your configured URL). It provides chat, memory management, cron jobs, skills, agents, and system monitoring.",
       "doc": "dashboard.md",
-      "mtime": 1784265640.0
+      "mtime": 1784650591.0
     },
     {
       "feature": "Artifact Deploy (deploy-web)",
@@ -37,18 +37,25 @@
       "mtime": 1784517233.0
     },
     {
+      "feature": "Discord Integration",
+      "title": "Discord Integration",
+      "summary": "Talk to your agent from Discord DMs. The channel connects outbound over Discord's Gateway WebSocket, so it works behind NAT and firewalls with no webhook or public address.",
+      "doc": "discord-integration.md",
+      "mtime": 1784663052.0
+    },
+    {
       "feature": "Dynamic Sub-Agent Max Count",
       "title": "Dynamic Sub-Agent Max Count",
-      "summary": "KiroCrew sizes the concurrent sub-agent cap **automatically** by default (`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from the host's actual memory and CPU, plus a per-agent cost KiroCrew *learns* from past runs. A fixed number is wrong in both directions \u2014 it wastes ca",
+      "summary": "KiroCrew sizes the concurrent sub-agent cap **automatically** by default (`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from the host's actual memory and CPU, plus a per-agent cost KiroCrew *learns* from past runs.",
       "doc": "dynamic-subagent-sizing.md",
-      "mtime": 1784265640.0
+      "mtime": 1784706744.0
     },
     {
       "feature": "Feature Tips",
       "title": "Feature Tips",
       "summary": "KiroCrew occasionally surfaces a small tip above the chat composer while the agent is working, pointing at a feature you have not used yet. Tips are personalized: a background session reads your recent activity and memory context to pick features that fit how you actually work.",
       "doc": "feature-tips.md",
-      "mtime": 1784614606.3223891
+      "mtime": 1784615857.0
     },
     {
       "feature": "Getting Started with KiroCrew",
@@ -74,7 +81,7 @@
     {
       "feature": "Research Lab",
       "title": "Research Lab",
-      "summary": "Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle campaigns: you define a research question, a **grill tree** interactively clarifies scope and sub-questions, then the system investigates cycle-by-cycle until it satisfies a success criterion or exhausts its cycle budget. Ea",
+      "summary": "Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle campaigns: you define a research question, a **grill tree** interactively clarifies scope and sub-questions, then the system investigates cycle-by-cycle until it satisfies a success criterion or exhausts its cycle budget.",
       "doc": "research-lab.md",
       "mtime": 1784265640.0
     },

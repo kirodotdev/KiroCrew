@@ -28,6 +28,7 @@ from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, E
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+from kiro_crew.tips_text import truncate_summary
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -139,7 +140,7 @@ def _scan_docs_catalog() -> list[CatalogEntry]:
                 break
         if not para:
             continue
-        entries.append(CatalogEntry(feature=title, summary=para[:300], doc=md.name, mtime=mtime))
+        entries.append(CatalogEntry(feature=title, summary=truncate_summary(para), doc=md.name, mtime=mtime))
     return entries
 
 
@@ -347,7 +348,7 @@ def _load_bundled_catalog() -> list[CatalogEntry] | None:
                     mtime = 0.0
                 if not math.isfinite(mtime):
                     mtime = 0.0
-                entries.append(CatalogEntry(feature=feature, summary=summary[:300], doc=doc, mtime=mtime))
+                entries.append(CatalogEntry(feature=feature, summary=truncate_summary(summary), doc=doc, mtime=mtime))
         return entries if entries else None
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         # ValueError covers json.JSONDecodeError; the rest are defense-in-depth

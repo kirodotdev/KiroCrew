@@ -25,6 +25,7 @@ from kiro_crew.tips import (
     _select_tip,
     _validate_tip_fields,
 )
+from kiro_crew.tips_text import truncate_summary
 
 
 class TestCatalogParsing:
@@ -1311,3 +1312,57 @@ class TestOptOutState:
         ok = isinstance(tip_id, str) and isinstance(action, str) and len(tip_id) <= 100
         assert ok is True
         assert action in ("ack", "dismiss", "snooze", "helpful", "optout", "optin")
+
+
+class TestTruncateSummary:
+    """Sentence-safe truncation (kiro_crew.tips_text.truncate_summary)."""
+
+    def test_short_text_unchanged(self) -> None:
+        assert truncate_summary("A short summary.") == "A short summary."
+
+    def test_exact_limit_unchanged(self) -> None:
+        text = "x" * 300
+        assert truncate_summary(text) == text
+
+    def test_cuts_at_sentence_boundary(self) -> None:
+        first = "First sentence ends here."
+        text = first + " " + "Second sentence that pushes the total well past the limit " * 10
+        result = truncate_summary(text, limit=60)
+        assert result == first
+
+    def test_sentence_ending_exactly_at_limit_kept(self) -> None:
+        # Period at index limit-1, space at index limit: the full sentence fits.
+        first = "A" * 58 + "."
+        text = first + " trailing words beyond the limit"
+        assert truncate_summary(text, limit=59) == first
+
+    def test_word_boundary_fallback_appends_ellipsis(self) -> None:
+        text = "no sentence punctuation here just many words " * 5
+        result = truncate_summary(text, limit=60)
+        assert len(result) <= 61
+        assert result.endswith("\u2026")
+        # Never a mid-word cut: everything before the ellipsis is whole words.
+        assert text.startswith(result[:-1])
+        assert text[len(result) - 1] == " "
+
+    def test_never_cuts_mid_word_like_old_slice(self) -> None:
+        """Regression: the old text[:300] slice produced '... cycle budget. Ea'."""
+        text = (
+            "Research Lab runs autonomous campaigns until it satisfies a success "
+            "criterion or exhausts its cycle budget. Each cycle produces a report."
+        )
+        result = truncate_summary(text, limit=110)
+        assert result == (
+            "Research Lab runs autonomous campaigns until it satisfies a success "
+            "criterion or exhausts its cycle budget."
+        )
+
+    def test_single_unbroken_token_hard_cut(self) -> None:
+        text = "a" * 400
+        result = truncate_summary(text, limit=50)
+        assert len(result) == 50
+        assert result.endswith("\u2026")
+
+    def test_bang_and_question_boundaries(self) -> None:
+        assert truncate_summary("Stop! Then more words follow here.", limit=10) == "Stop!"
+        assert truncate_summary("Why? Then more words follow here.", limit=10) == "Why?"

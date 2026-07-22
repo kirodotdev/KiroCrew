@@ -1,9 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Lightbulb, X } from 'lucide-react'
+import { ExternalLink, Lightbulb, Settings, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
+import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import MarkdownRenderer from './MarkdownRenderer'
+
+// The Feature Tips toggle lives in Settings → Chat.
+export const TIPS_SETTINGS_PATH = '/settings?tab=chat'
+
+// Tip docs live in the repo at src/kiro_crew/docs/ (same base the Security and
+// Discord settings panels link to).
+const DOCS_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs'
+// Tips can be LLM-generated: only link a doc value shaped like a plain
+// markdown filename so an invented value can't produce a weird URL.
+const DOC_FILENAME_RE = /^[a-z0-9][a-z0-9._-]*\.md$/i
+
+export function tipDocHref(doc: string | undefined): string | null {
+  if (!doc || !DOC_FILENAME_RE.test(doc)) return null
+  return `${DOCS_BASE}/${doc}`
+}
 
 export interface Tip {
   id: string
@@ -36,7 +53,25 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
     feedbackMutation.mutate({ id: tip.id, action: 'dismiss' })
   }, [tip.id, feedbackMutation])
 
+  // Permanent opt-out (same action the Settings → Chat toggle uses). The
+  // backend accepts an empty id for optout; on success the toggle's cached
+  // status is refreshed so Settings reflects the change immediately.
+  const optOutMutation = useMutation({
+    mutationFn: () => api.tipsFeedback('', 'optout'),
+    onSuccess: () => {
+      queryClient.setQueryData(['tips-next'], null)
+      queryClient.invalidateQueries({ queryKey: ['tipsStatus'] })
+      onDismiss()
+    },
+  })
+
+  const handleOptOut = useCallback(() => {
+    if (optOutMutation.isPending) return
+    optOutMutation.mutate()
+  }, [optOutMutation])
+
   const tooltipText = tip.why ? `${tip.title} — ${tip.why}` : tip.title
+  const docHref = tipDocHref(tip.doc)
 
   return (
     <motion.div
@@ -55,15 +90,57 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
     >
       <Lightbulb size={14} className="shrink-0 mt-0.5" aria-hidden="true" style={{ color: 'var(--accent)' }} />
 
-      <span className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1">
         <span className="block font-medium text-[12px] leading-tight" style={{ color: 'var(--text)' }}>{tip.title}</span>
         {/* Full multi-line body — no truncation (maintainer feedback: "it can
             be multiple lines, don't cut off"). A viewport-relative max-height
             with scroll (Codex round-23) keeps a very long body from pushing
             the bottom-anchored card past the viewport on narrow screens —
-            every character stays reachable, nothing is clipped away. */}
-        <span className="block text-[12px] leading-snug mt-0.5 break-words overflow-y-auto max-h-[30vh]" style={{ color: 'var(--muted)' }}>{tip.body}</span>
-      </span>
+            every character stays reachable, nothing is clipped away.
+            Rendered through the sanitized markdown pipeline so inline
+            `code` / **bold** in generated bodies display styled instead of
+            as literal asterisks and backticks; the arbitrary variants strip
+            block margins to keep the strip compact. */}
+        <div
+          data-testid="tip-body"
+          className="text-[12px] leading-snug mt-0.5 break-words overflow-y-auto max-h-[30vh] [&_p]:m-0 [&_pre]:my-1 [&_ul]:my-0 [&_ol]:my-0"
+          style={{ color: 'var(--muted)' }}
+        >
+          <MarkdownRenderer content={tip.body} />
+        </div>
+        <div className="flex items-center gap-3 mt-1">
+          {docHref && (
+            <a
+              href={docHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] hover:underline"
+              style={{ color: 'var(--accent)' }}
+            >
+              <ExternalLink size={10} aria-hidden="true" />
+              Learn more
+            </a>
+          )}
+          <button
+            onClick={handleOptOut}
+            disabled={optOutMutation.isPending}
+            className="text-[11px] hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ color: 'var(--muted)' }}
+            aria-label="Turn off tips"
+          >
+            Turn off tips
+          </button>
+          <Link
+            to={TIPS_SETTINGS_PATH}
+            className="inline-flex items-center gap-1 text-[11px] hover:underline"
+            style={{ color: 'var(--muted)' }}
+            aria-label="Tip settings"
+          >
+            <Settings size={10} aria-hidden="true" />
+            Settings
+          </Link>
+        </div>
+      </div>
 
       <div className="flex items-center shrink-0 ml-auto">
         <button

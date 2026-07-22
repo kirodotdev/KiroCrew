@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 
 const mockTip = {
@@ -30,7 +31,11 @@ vi.mock('framer-motion', () => ({
 
 function renderWithQuery(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
+    </MemoryRouter>,
+  )
 }
 
 describe('TipCard (single-line strip)', () => {
@@ -50,9 +55,9 @@ describe('TipCard (single-line strip)', () => {
 
     const title = screen.getByText('Schedule recurring tasks')
     expect(title).toBeInTheDocument()
-    const body = screen.getByText(/Use cron_add/)
-    expect(body).toBeInTheDocument()
+    expect(screen.getByText(/Use cron_add/)).toBeInTheDocument()
     // Maintainer feedback: body may wrap to multiple lines, never cut off
+    const body = screen.getByTestId('tip-body')
     expect(body.className).not.toContain('line-clamp')
     expect(body.className).not.toContain('truncate')
     // Long bodies scroll within a viewport-relative cap instead of pushing
@@ -65,6 +70,69 @@ describe('TipCard (single-line strip)', () => {
     // Lucide lightbulb SVG present
     const icon = root.querySelector('svg[aria-hidden="true"]')
     expect(icon).not.toBeNull()
+  })
+
+  it('renders inline markdown in the body (code + bold) instead of literal syntax', () => {
+    renderWithQuery(
+      <TipCard
+        tip={{ ...mockTip, body: 'The `auto-research` app uses a **grill tree** to clarify scope.' }}
+        onDismiss={onDismiss}
+      />,
+    )
+    const body = screen.getByTestId('tip-body')
+    const code = body.querySelector('code')
+    expect(code?.textContent).toBe('auto-research')
+    const strong = body.querySelector('strong')
+    expect(strong?.textContent).toBe('grill tree')
+    // Raw markdown syntax must not leak through as literal text
+    expect(body.textContent).not.toContain('`')
+    expect(body.textContent).not.toContain('**')
+  })
+
+  it('renders a Learn more link to the doc on GitHub', () => {
+    renderWithQuery(
+      <TipCard tip={mockTip} onDismiss={onDismiss} />,
+    )
+    const link = screen.getByRole('link', { name: /learn more/i }) as HTMLAnchorElement
+    expect(link.href).toBe(
+      'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/cron-and-scheduling.md',
+    )
+    expect(link.target).toBe('_blank')
+    expect(link.rel).toContain('noopener')
+    expect(link.rel).toContain('noreferrer')
+  })
+
+  it('omits the Learn more link when doc is empty or not a plain .md filename', () => {
+    // Path traversal / invented values must not produce a URL
+    for (const doc of ['', '../secrets/keys.md', 'https://evil.example/x.md']) {
+      const { unmount } = renderWithQuery(
+        <TipCard tip={{ ...mockTip, doc }} onDismiss={onDismiss} />,
+      )
+      expect(screen.queryByRole('link', { name: /learn more/i })).toBeNull()
+      unmount()
+    }
+  })
+
+  it('"Turn off tips" opts out permanently (same action as the Settings toggle) and hides the card', async () => {
+    const { api: mockApi } = await import('../api/client')
+    renderWithQuery(
+      <TipCard tip={mockTip} onDismiss={onDismiss} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /turn off tips/i }))
+    await waitFor(() => {
+      expect(mockApi.tipsFeedback).toHaveBeenCalledWith('', 'optout')
+    })
+    await waitFor(() => {
+      expect(onDismiss).toHaveBeenCalled()
+    })
+  })
+
+  it('renders a Settings link pointing at the Feature Tips toggle (Settings → Chat)', () => {
+    renderWithQuery(
+      <TipCard tip={mockTip} onDismiss={onDismiss} />,
+    )
+    const link = screen.getByRole('link', { name: /tip settings/i }) as HTMLAnchorElement
+    expect(link.getAttribute('href')).toBe('/settings?tab=chat')
   })
 
   it('dismiss calls tipsFeedback(id, "dismiss") and hides on success', async () => {
