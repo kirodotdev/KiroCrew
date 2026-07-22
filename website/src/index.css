@@ -1279,15 +1279,15 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* Fullscreen: AppKit hides the traffic lights, so the clearance inset drops
    and the branding sits flush left again (back to the header's own pl-5). */
 .mac-electron.mac-fullscreen header.topbar-glass{padding-left:1.25rem}
-/* When the instance tab bar is the topmost strip (>=1 remote connected), the
-   native traffic lights sit over IT, not the header below. Relocate the 84px
-   clearance: the header returns to its own flush pl-5, and the bar reserves the
-   inset so its first tab clears the lights. Root flag set by App.tsx; it is
-   never set while fullscreen, so this never fights the mac-fullscreen rule.
+/* Embedded remote pane (option B): the pane is a separate document loaded in an
+   iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
+   the `.mac-electron` rule never applies. The parent relays whether it is a
+   non-fullscreen macOS Electron window; the embedded bridge toggles
+   `.embedded-mac-inset` on <html> so the pane's now-topmost header insets clear
+   of the parent window's native traffic lights.
    Keep 84px in sync with TRAFFIC_LIGHT_INSET_PX in src/lib/electron.ts. */
-.mac-instancebar-inset .mac-electron header.topbar-glass{padding-left:1.25rem}
-.mac-instancebar-inset .instance-tab-bar{padding-left:84px}
-/* The injected #electron-drag-bar (electron/main.js) marks the top 52px as a
+.embedded-mac-inset header.topbar-glass{padding-left:84px}
+/* The injected #electron-drag-bar (electron/main.js) marks the top 42px as a
    window drag region and only exempts native controls (button/a/input/
    [role="button"]/[tabindex]). The side panel's tab strip lives in that zone
    and its chips are divs — punch the whole strip out of the drag region so

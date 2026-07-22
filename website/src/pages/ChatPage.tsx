@@ -2937,7 +2937,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (() => {
         const RADIUS = 12 // same as the panel's rounded-xl — constant through the morph
         const PANEL = { top: 8, left: 0, width: sidebarWidth, height: Math.max(0, containerH - 16), borderRadius: RADIUS, opacity: 1 }
-        const BTN = { top: 15, left: 8, width: 34, height: 34, borderRadius: RADIUS, opacity: 1 }
+        const BTN = { top: 20, left: 8, width: 34, height: 34, borderRadius: RADIUS, opacity: 1 }
         const MORPH = { duration: 0.32, ease: [0.32, 0.72, 0, 1] as const }
         return (
           <>
@@ -2957,7 +2957,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             <button
               type="button"
               onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
-              className="absolute top-[15px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
+              className="absolute top-[20px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
               title={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
               aria-label={sidebarOpen ? 'Hide sessions sidebar' : 'Show sessions sidebar'}
             >

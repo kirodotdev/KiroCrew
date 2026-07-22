@@ -26,7 +26,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, ArrowLeftToLine, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import OnboardingFlow from './components/OnboardingFlow'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -58,8 +58,9 @@ import ArtifactDeployPage from './pages/ArtifactDeployPage'
 import SettingsPage from './pages/SettingsPage'
 import EmbedSettingsPage from './pages/EmbedSettingsPage'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
-import InstanceTabBar, { visibleInstanceTabs } from './components/InstanceTabBar'
+import InstanceTabBar from './components/InstanceTabBar'
 import InstancesViewport from './components/InstancesViewport'
+import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import EmbedTabStrip from './components/EmbedTabStrip'
 import DeveloperPage from './pages/DeveloperPage'
 import SchedulePage from './pages/SchedulePage'
@@ -776,19 +777,6 @@ export default function App() {
   // (the native dashboard); a non-null id means a remote instance's embedded
   // dashboard is shown instead, so the Local pane is hidden (not unmounted).
   const activeInstanceId = useAppSelector(s => s.instances.activeId)
-  // macOS traffic-light clearance: when the instance tab bar is the topmost
-  // strip (>=1 remote connected) the native lights sit over IT, not the header,
-  // so the 84px header inset must move onto the bar (see .mac-instancebar-inset
-  // in index.css). Reuse the shared visibleInstanceTabs rule and the cache-
-  // shared ['instances'] query so this can't diverge from InstanceTabBar. Only
-  // relevant on macOS Electron, and never while fullscreen (lights are hidden).
-  const instanceWarm = useAppSelector(s => s.instances.warm)
-  const { data: instancesData } = useQuery({
-    queryKey: ['instances'],
-    queryFn: () => api.listInstances(),
-    enabled: isMacElectron,
-    retry: false,
-  })
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   // Dynamic app nav items — all apps (builtin + installed) with UI pages
@@ -1106,23 +1094,11 @@ export default function App() {
     const api = (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
     return api?.onFullScreenChanged?.(setMacFullscreen)
   }, [])
-  // True when the standalone instance tab-bar STRIP is the topmost strip on
-  // macOS (only while a remote pane is active — on the local pane the tabs live
-  // inline in the consolidated header, which keeps its own 84px clearance). The
-  // native traffic lights then sit over the strip, so relocate the inset to it.
-  const macInstanceBarInset =
-    isMacElectron &&
-    !macFullscreen &&
-    activeInstanceId !== null &&
-    visibleInstanceTabs(instancesData?.instances ?? [], instanceWarm).length > 0
-  // Tell the Electron main process which strip is topmost so it can center the
-  // native traffic lights against the 32px instance bar (when shown) instead of
-  // the 52px header — otherwise the buttons sit ~10px below the tab row.
-  useEffect(() => {
-    if (!isMacElectron) return
-    const api = (window as { electronAPI?: { setInstanceBarInset?: (on: boolean) => void } }).electronAPI
-    api?.setInstanceBarInset?.(macInstanceBarInset)
-  }, [macInstanceBarInset])
+  // Native traffic lights always sit over the consolidated 42px header now
+  // (option B removed the standalone instance strip), so there is no separate
+  // strip inset to relay to Electron — positionTrafficLights centers on the
+  // header height directly. Remote panes get their own inset via `macInset`.
+  const macInset = isMacElectron && !macFullscreen
   const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb })), refetchInterval: metricsOpen ? 30_000 : false, enabled: metricsOpen })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
@@ -1332,12 +1308,10 @@ export default function App() {
         </div>
       </div>
     ) : (
-    <div className={`h-screen w-screen flex flex-col overflow-hidden bg-bg ${macInstanceBarInset ? 'mac-instancebar-inset' : ''}`}>
-      {/* Standalone instance tab bar — shown ONLY while a remote pane is active
-          (the local pane below is hidden then, so its inline in-header tabs are
-          not visible; this strip is what lets you switch back to Local). On the
-          local pane the tabs render inline inside the consolidated header. */}
-      {activeInstanceId !== null && <InstanceTabBar />}
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-bg">
+      {/* Embedded remote panes receive their switcher model from the parent via
+          this bridge (option B) — no-op in the top-level dashboard. */}
+      <EmbeddedHostBridge />
       <div className="flex-1 min-h-0 relative">
       {/* Local pane: the native dashboard. Hidden (not unmounted) while a remote
           instance tab is active, so local state/websocket survive the switch. */}
@@ -1661,9 +1635,9 @@ export default function App() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1, transition: { duration: 0.18, ease: 'easeOut', delay: 0.12 } }}
                     exit={{ opacity: 0, transition: { duration: 0.12, ease: 'easeIn' } }}
-                    className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center text-muted pointer-events-none"
+                    className="absolute right-0 inset-y-0 my-auto h-4 flex items-center text-muted pointer-events-none"
                   >
-                    <ArrowLeftToLine size={16} />
+                    <PanelLeftClose size={16} />
                   </motion.span>
                 )}
               </AnimatePresence>
@@ -1893,7 +1867,7 @@ export default function App() {
       </div>{/* /Local pane */}
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
-      <InstancesViewport />
+      <InstancesViewport macInset={macInset} />
       </div>{/* /pane stack */}
     </div>
     )}

@@ -27,7 +27,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
-import { removeWarm, setUnread, setWarm } from '../store/instancesSlice'
+import { removeWarm, setActiveId, setUnread, setWarm } from '../store/instancesSlice'
+import { visibleInstanceTabs } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { isEmbeddedPane } from '../lib/embedded'
 
@@ -48,12 +49,13 @@ function ttlToSeconds(ttl: string): number {
   return m[2] === 'h' ? n * 3600 : n * 60
 }
 
-export default function InstancesViewport() {
+export default function InstancesViewport({ macInset = false }: { macInset?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
   const activeId = useAppSelector(s => s.instances.activeId)
   const mru = useAppSelector(s => s.instances.mru)
+  const unread = useAppSelector(s => s.instances.unread)
 
   // Embedded instance panes never host nested panes (single-level by design),
   // so skip the poll and render nothing — see isEmbeddedPane / InstanceTabBar.
@@ -75,6 +77,13 @@ export default function InstancesViewport() {
   warmRef.current = warm
   const refreshingRef = useRef<Set<string>>(new Set())
   const lastRefreshRef = useRef<Map<string, number>>(new Map())
+  // Live iframe elements by id, so the parent can postMessage the switcher model
+  // into each embedded pane (option B relay). Set/cleared by the iframe ref cb.
+  const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
+  // Read-only mirrors for the long-lived message listener, kept current without
+  // re-subscribing (mirrors the warmRef / portToIdRef pattern already used here).
+  const postModelToRef = useRef<(id: string) => void>(() => {})
+  const instancesRef = useRef<Array<{ id: string }>>([])
 
   // Force a fresh token mint for one instance and reload its iframe by updating
   // warm[id].token (srcFor re-derives the ?token= URL, so changing the token
@@ -144,6 +153,24 @@ export default function InstancesViewport() {
         // the in-pane paste-token banner. No foreground guard here — the active
         // pane is exactly the one the user wants restored.
         void refreshToken(id)
+      } else if (data.type === 'mc-switch-instance') {
+        // The embedded pane's inline switcher (option B) asks the parent to flip
+        // the active tab. The SENDER is already trusted (its origin resolved to a
+        // warm tunnel above); validate the TARGET is Local (null) or a known
+        // instance before honoring it.
+        const target = (data as { id?: unknown }).id
+        if (target === null) {
+          dispatch(setActiveId(null))
+        } else if (
+          typeof target === 'string' &&
+          (instancesRef.current.some(i => i.id === target) || !!warmRef.current[target])
+        ) {
+          dispatch(setActiveId(target))
+        }
+      } else if (data.type === 'mc-embedded-ready') {
+        // The pane just (re)mounted and asked for the current model — send it now
+        // rather than waiting for the next input-driven broadcast.
+        postModelToRef.current(id)
       }
     }
     window.addEventListener('message', onMessage)
@@ -227,6 +254,58 @@ export default function InstancesViewport() {
     [warm],
   )
 
+  // Build the switcher model relayed to the embedded pane `id`: the full tab
+  // list (same rule as the local inline bar), which tab is active, this pane's
+  // OWN tunnel status (for its readout capsule, item 1), and the macOS inset.
+  const buildModelFor = useCallback(
+    (id: string) => {
+      const insts = instancesQuery.data?.instances ?? []
+      const tabs = visibleInstanceTabs(insts, warm).map(i => ({
+        id: i.id,
+        name: i.name,
+        sshHost: i.ssh_host,
+        state: i.status?.state,
+        unread: unread[i.id] || 0,
+      }))
+      const selfInst = insts.find(i => i.id === id)
+      const self = selfInst
+        ? {
+            state: selfInst.status?.state,
+            ttlRemaining: selfInst.status?.token_ttl_remaining,
+            ttlTotal: ttlToSeconds(selfInst.ttl),
+          }
+        : null
+      return { type: 'mc-host-model', v: 1, tabs, activeId, self, macInset }
+    },
+    [instancesQuery.data, warm, unread, activeId, macInset],
+  )
+
+  // Post the model into one embedded pane, addressed to its exact loopback
+  // origin (never '*') so it can't leak to an unexpected frame.
+  const postModelTo = useCallback(
+    (id: string) => {
+      const el = iframeRefs.current.get(id)
+      const w = warm[id]
+      if (!el?.contentWindow || !w) return
+      const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
+      try {
+        el.contentWindow.postMessage(buildModelFor(id), origin)
+      } catch {
+        /* frame mid-navigation — the next broadcast / ready ping retries */
+      }
+    },
+    [warm, buildModelFor],
+  )
+  postModelToRef.current = postModelTo
+  instancesRef.current = instancesQuery.data?.instances ?? []
+
+  // Broadcast the model to every warm pane whenever any input changes (active
+  // tab, tunnel status, unread, inset). Cheap: each post is a structured clone
+  // to a loopback frame.
+  useEffect(() => {
+    for (const id of Object.keys(warm)) postModelTo(id)
+  }, [warm, activeId, unread, macInset, instancesQuery.data, postModelTo])
+
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
   // ((re)connecting or down) so we can show the in-pane panel instead of a blank
@@ -260,8 +339,13 @@ export default function InstancesViewport() {
       {warmIds.map(id => (
         <iframe
           key={id}
+          ref={el => {
+            if (el) iframeRefs.current.set(id, el)
+            else iframeRefs.current.delete(id)
+          }}
           title={nameFor(id)}
           src={srcFor(id)}
+          onLoad={() => postModelTo(id)}
           className="absolute inset-0 w-full h-full border-0"
           style={{ display: id === activeId ? 'block' : 'none' }}
         />

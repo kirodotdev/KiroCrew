@@ -2099,10 +2099,14 @@ function ChatSidebar({
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
 
-      {/* Header */}
-      <div className="flex justify-between items-center px-2 h-12">
+      {/* Header — per Figma (node 3108:9725): all elements (collapse icon,
+          "Sessions" title, kebab, New button) centered on one line at ~28px
+          from the panel top (mt-2 ≈ panel 8px pad, then centered in a 40px row),
+          matching the left-menu header baseline. Equal top/right gap so the New
+          button sits equidistant from the panel's top and right edges. */}
+      <div className="flex justify-between items-center pl-2 pr-3.5 mt-2 h-10">
         <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-8' : ''}`}>
-          {!tinyHeader && <span className="sessions-panel-title text-[13px] font-medium text-muted uppercase tracking-[.04em] truncate">Sessions</span>}
+          {!tinyHeader && <span className="sessions-panel-title text-sm font-medium text-muted tracking-[.04em] truncate">Sessions</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>

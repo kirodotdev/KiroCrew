@@ -83,7 +83,7 @@ const MAX_WAIT_MS = 30_000; // 30s max wait for backend
 const IS_MAC = process.platform === "darwin";
 // The dashboard view fills the whole content area on all platforms. On macOS
 // the window is frameless (titleBarStyle:"hidden") and the dashboard's own
-// 52px header doubles as the title bar: an injected drag region makes it
+// 42px header doubles as the title bar: an injected drag region makes it
 // draggable and the native traffic lights are inset into it (see
 // positionTrafficLights).
 
@@ -627,13 +627,13 @@ function setupWindowContents(win, backendUrl) {
       #electron-drag-bar {
         position: fixed;
         top: 0; left: 0; right: 0;
-        height: 52px;
+        height: 42px;
         -webkit-app-region: drag;
         z-index: 99999;
         pointer-events: none;
       }
       a, button, input, select, textarea,
-      [role="button"], [tabindex] {
+      [role="button"], [tabindex], iframe {
         -webkit-app-region: no-drag;
       }
     `);
@@ -676,26 +676,27 @@ function setupWindowContents(win, backendUrl) {
 
 // ── Traffic lights ──
 //
-// The SPA renders a 52px (CSS px) header that acts as the title bar. The
+// The SPA renders a 42px (CSS px) header that acts as the title bar. The
 // native traffic lights are AppKit controls with a fixed ~14px visual height —
 // they do not scale with webContents zoom. To keep them visually centered in
 // the header at any zoom level, recompute their inset from the current zoom
-// factor: the header's on-screen height is 52 * zoomFactor, so both the x
+// factor: the header's on-screen height is 42 * zoomFactor, so both the x
 // inset and the vertical centering scale with it.
-const HEADER_CSS_PX = 52;
-// The instance tab strip (InstanceTabBar, h-8 = 32px) becomes the topmost row
-// whenever >=1 remote is connected; the native lights then sit over IT, not the
-// 52px header, so they must be centered against the strip's height — otherwise
-// they land ~10px too low and look off-row from the tab pills. The renderer
-// reports this via the "instancebar-inset-changed" IPC (see App.tsx).
-const INSTANCEBAR_CSS_PX = 32;
-const TRAFFIC_LIGHT_NATIVE_H = 14;
+const HEADER_CSS_PX = 42;
+// Visible AppKit traffic-light control height (fixed; does not scale with zoom).
+const TRAFFIC_LIGHT_NATIVE_H = 12;
+// AppKit anchors the button GROUP a few px below the naive top inset, so the
+// naive (H - buttonH)/2 lands the group low. Measured from a user screenshot at
+// a 42px header (lights centered ~3px below the search bar / selector midline),
+// this constant nudges the group up to sit on the header centerline. It is a
+// fixed device-px correction, applied after the zoom-scaled centering term.
+const TRAFFIC_LIGHT_Y_NUDGE = -4;
 
-function trafficLightPositionForZoom(zoomFactor, stripCssPx = HEADER_CSS_PX) {
-  const stripPx = Math.round(stripCssPx * zoomFactor);
+function trafficLightPositionForZoom(zoomFactor) {
+  const stripPx = Math.round(HEADER_CSS_PX * zoomFactor);
   return {
     x: Math.round(16 * zoomFactor),
-    y: Math.max(6, Math.round((stripPx - TRAFFIC_LIGHT_NATIVE_H) / 2)),
+    y: Math.max(4, Math.round((stripPx - TRAFFIC_LIGHT_NATIVE_H) / 2) + TRAFFIC_LIGHT_Y_NUDGE),
   };
 }
 
@@ -703,8 +704,7 @@ function positionTrafficLights(win) {
   if (!IS_MAC || !win || win.isDestroyed()) return;
   try {
     const zoom = win._mcView ? win._mcView.webContents.getZoomFactor() : 1;
-    const stripCssPx = win._mcInstanceBarInset ? INSTANCEBAR_CSS_PX : HEADER_CSS_PX;
-    win.setWindowButtonPosition(trafficLightPositionForZoom(zoom, stripCssPx));
+    win.setWindowButtonPosition(trafficLightPositionForZoom(zoom));
   } catch { /* window mid-teardown */ }
 }
 
@@ -743,7 +743,7 @@ function createWindow() {
     titleBarStyle: "hidden",
     backgroundColor: "#0f1117",
   };
-  // Inset the native traffic lights into the dashboard's 52px header row.
+  // Inset the native traffic lights into the dashboard's 42px header row.
   // Kept in sync with zoom by positionTrafficLights().
   if (IS_MAC) opts.trafficLightPosition = trafficLightPositionForZoom(1);
   // Only include `fullscreen` when we actually want fullscreen: the flag
@@ -1581,20 +1581,6 @@ app.whenReady().then(async () => {
   ipcMain.handle("zoom:set", (event, factor) => applyZoom(event.sender, clampZoomFactor(factor)));
   ipcMain.handle("zoom:step", (event, dir) =>
     applyZoom(event.sender, stepZoomFactor(event.sender.getZoomFactor(), dir > 0 ? +1 : -1)));
-
-  // The renderer reports whether the 32px instance tab strip is the topmost row
-  // (App.tsx macInstanceBarInset). When it is, the native traffic lights sit
-  // over that strip, so re-center them for its height instead of the 52px
-  // header — keeps the buttons on the same row as the tab pills.
-  ipcMain.on("instancebar-inset-changed", (event, on) => {
-    // Target the window that actually sent this — connection windows load the
-    // same SPA and can each emit it, so hardcoding mainWindow would cross-wire
-    // their traffic-light positions.
-    const win = windowForWebContents(event.sender);
-    if (!win || win.isDestroyed()) return;
-    win._mcInstanceBarInset = !!on;
-    positionTrafficLights(win);
-  });
 
   // Enable the chat input's screen-snip tool inside the Electron shell.
   // Without a display-media request handler, Electron (>= 20) rejects the

@@ -10,6 +10,13 @@
  * `activeId` is the instance currently filling the page body, or `null` for the
  * native dashboard (the "Local" tab). `mru` is recency order (front = most
  * recent) for K-cap eviction. `unread` is the validated postMessage relay count.
+ *
+ * `host` is the ONLY field written inside an embedded remote pane: the parent
+ * dashboard relays the switcher model (tabs + which one is active + this pane's
+ * own tunnel status + macOS traffic-light inset) down via postMessage so the
+ * embedded header can render the instance switcher inline — exactly like the
+ * local tab — instead of the parent stacking a second standalone strip on top
+ * of the pane (option B). It is null in the top-level (non-embedded) dashboard.
  */
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 
@@ -18,11 +25,41 @@ export interface WarmConn {
   token: string
 }
 
+/** One switcher tab as relayed to an embedded pane (parent → frame). */
+export interface HostTab {
+  id: string
+  name: string
+  sshHost: string
+  /** Live tunnel state driving the per-tab dot: connected|connecting|error|disconnected. */
+  state?: string
+  unread: number
+}
+
+/** The embedded pane's OWN tunnel status, used by its readout capsule (item 1). */
+export interface HostSelfTunnel {
+  state?: string
+  /** Seconds of token life remaining (parent-owned). */
+  ttlRemaining?: number
+  /** Total token TTL in seconds. */
+  ttlTotal?: number
+}
+
+/** Full model the parent relays to each embedded pane. */
+export interface HostModel {
+  tabs: HostTab[]
+  activeId: string | null
+  self: HostSelfTunnel | null
+  /** True when the parent is a macOS Electron window not in fullscreen, so the
+   *  embedded header must inset its content clear of the native traffic lights. */
+  macInset: boolean
+}
+
 interface InstancesState {
   warm: Record<string, WarmConn>
   activeId: string | null
   mru: string[]
   unread: Record<string, number>
+  host: HostModel | null
 }
 
 const initialState: InstancesState = {
@@ -30,6 +67,7 @@ const initialState: InstancesState = {
   activeId: null,
   mru: [],
   unread: {},
+  host: null,
 }
 
 const instancesSlice = createSlice({
@@ -59,11 +97,16 @@ const instancesSlice = createSlice({
     setUnread(state, action: PayloadAction<{ id: string; count: number }>) {
       state.unread[action.payload.id] = action.payload.count
     },
+    /** Embedded panes only: store the switcher model relayed by the parent. */
+    setHostModel(state, action: PayloadAction<HostModel | null>) {
+      state.host = action.payload
+    },
     clearInstances() {
       return initialState
     },
   },
 })
 
-export const { setWarm, setActiveId, removeWarm, setUnread, clearInstances } = instancesSlice.actions
+export const { setWarm, setActiveId, removeWarm, setUnread, setHostModel, clearInstances } =
+  instancesSlice.actions
 export default instancesSlice.reducer

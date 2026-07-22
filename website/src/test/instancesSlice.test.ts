@@ -7,7 +7,7 @@ import reducer, {
   clearInstances,
 } from '../store/instancesSlice'
 
-const initial = { warm: {}, activeId: null, mru: [], unread: {} }
+const initial = { warm: {}, activeId: null, mru: [], unread: {}, host: null }
 
 describe('instancesSlice', () => {
   it('setWarm stores the conn and fronts it in mru', () => {

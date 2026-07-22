@@ -30,10 +30,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("fullscreen-changed", handler);
     return () => ipcRenderer.removeListener("fullscreen-changed", handler);
   },
-  // Reports whether the 32px instance tab strip is the topmost row, so main
-  // can center the native traffic lights against the strip (32px) rather than
-  // the 52px header. See App.tsx macInstanceBarInset.
-  setInstanceBarInset: (on) => ipcRenderer.send("instancebar-inset-changed", !!on),
 });
 
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.

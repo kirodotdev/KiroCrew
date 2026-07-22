@@ -61,6 +61,134 @@ function fmtDuration(secs: number): string {
   return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`
 }
 
+// Shared tab pill styling. Selected state uses a tinted background ONLY — no
+// highlighted border (item 3) — with a transparent border kept on every tab so
+// the 24px height never shifts when selection changes.
+function tabCls(active: boolean): string {
+  return (
+    'flex items-center gap-1.5 h-6 px-2.5 rounded-md text-[12px] whitespace-nowrap transition-colors border shrink-0 ' +
+    (active
+      ? 'bg-accent-subtle text-accent border-transparent font-bold'
+      : 'bg-transparent text-muted border-transparent font-medium hover:text-text hover:bg-bg-hover')
+  )
+}
+
+/** Map a live tunnel state to its per-tab status-dot color. */
+function stateDotCls(state?: string): string {
+  return state === 'connected'
+    ? 'bg-[var(--ok)]'
+    : state === 'error'
+      ? 'bg-[var(--danger)]'
+      : state === 'connecting'
+        ? 'bg-[var(--warn)]'
+        : 'bg-[var(--muted)]'
+}
+
+/** The "Local" tab — native dashboard. Shared by the local and embedded bars. */
+function LocalTab({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      className={tabCls(active)}
+      onClick={onClick}
+      title="Local dashboard"
+    >
+      <Home size={13} /> Local
+    </button>
+  )
+}
+
+/** One remote-instance tab. Shared by the local and embedded bars. */
+function InstanceTab({
+  name,
+  title,
+  state,
+  connecting,
+  unread,
+  active,
+  onClick,
+}: {
+  name: string
+  title: string
+  state?: string
+  connecting?: boolean
+  unread?: number
+  active: boolean
+  onClick: () => void
+}) {
+  const badge = unread || 0
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      className={tabCls(active)}
+      onClick={onClick}
+      title={title}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(state)}`} aria-hidden />
+      {connecting ? <Loader2 size={13} className="animate-spin" /> : <Server size={13} />}
+      <span className="max-w-[160px] truncate">{name}</span>
+      {badge > 0 && (
+        <span
+          aria-label={`${badge} unread`}
+          className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-accent text-accent-fg text-[10px] leading-4 text-center"
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  )
+}
+
+// Outer container classes per variant. Inline is h-full so its 24px pills sit
+// vertically centered in the 42px header (item 3).
+function barCls(variant: 'strip' | 'inline'): string {
+  return variant === 'inline'
+    ? 'instance-tab-bar-inline flex items-center h-full gap-1 min-w-0 overflow-x-auto no-scrollbar'
+    : 'topbar-glass instance-tab-bar flex items-center gap-2 h-8 px-2 border-b border-border shrink-0 z-[46]'
+}
+
+/**
+ * Embedded (remote pane) switcher: renders the SAME inline tab bar as the local
+ * tab, driven by the model the parent relays into `instances.host` (option B),
+ * and posts switch requests back up so the parent flips `activeId`. This is what
+ * collapses the remote pane's two stacked bars into one consolidated header.
+ */
+function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
+  const host = useAppSelector(s => s.instances.host)
+  const onLocal = useCallback(() => {
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+    window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id: null }, '*')
+  }, [])
+  const onSelect = useCallback((id: string) => {
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+    window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id }, '*')
+  }, [])
+  if (!host || host.tabs.length === 0) return null
+  return (
+    <div className={barCls(variant)} role="tablist" aria-label="Instances">
+      <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
+        <LocalTab active={host.activeId === null} onClick={onLocal} />
+        {host.tabs.map(t => (
+          <InstanceTab
+            key={t.id}
+            name={t.name}
+            title={`${t.name} (${t.sshHost})`}
+            state={t.state}
+            connecting={t.state === 'connecting'}
+            unread={t.unread}
+            active={host.activeId === t.id}
+            onClick={() => onSelect(t.id)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function InstanceTabBar({ variant = 'strip' }: { variant?: 'strip' | 'inline' } = {}) {
   const dispatch = useAppDispatch()
   const activeId = useAppSelector(s => s.instances.activeId)
@@ -68,7 +196,8 @@ export default function InstanceTabBar({ variant = 'strip' }: { variant?: 'strip
   const unread = useAppSelector(s => s.instances.unread)
 
   // Embedded instance panes are single-level: never run the instances poll or
-  // render the switcher, so a remote pane can't recursively connect onward.
+  // render the local switcher. Instead they render the parent-relayed switcher
+  // (EmbeddedInstanceTabBar) so the remote pane shows one consolidated header.
   const embedded = isEmbeddedPane()
   // Shared with InstancesViewport / InstancesPanel via the React Query cache.
   const instancesQuery = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), enabled: !embedded })
@@ -115,15 +244,14 @@ export default function InstanceTabBar({ variant = 'strip' }: { variant?: 'strip
   )
   const onLocal = useCallback(() => dispatch(setActiveId(null)), [dispatch])
 
-  // Single-instance experience is unchanged: no bar until a remote instance is
-  // connected or remembered. Embedded panes never render the switcher.
-  if (embedded || disabled || tabInstances.length === 0) return null
+  // Embedded panes render the parent-relayed switcher (option B). Hooks above
+  // still run unconditionally (rules-of-hooks); the instances poll is disabled
+  // when embedded, so this is cheap.
+  if (embedded) return <EmbeddedInstanceTabBar variant={variant} />
 
-  const tabCls = (active: boolean) =>
-    'flex items-center gap-1.5 h-6 px-2.5 rounded-md text-[12px] whitespace-nowrap transition-colors border shrink-0 ' +
-    (active
-      ? 'bg-accent-subtle text-accent border-accent/40 font-bold'
-      : 'bg-transparent text-muted border-transparent font-medium hover:text-text hover:bg-bg-hover')
+  // Single-instance experience is unchanged: no bar until a remote instance is
+  // connected or remembered.
+  if (disabled || tabInstances.length === 0) return null
 
   // Right-aligned tunnel-status cluster: the ACTIVE remote pane's connection
   // state + countdown to the next token auto-refresh. On the Local tab there is
@@ -158,74 +286,25 @@ export default function InstanceTabBar({ variant = 'strip' }: { variant?: 'strip
   }
 
   return (
-    <div
-      className={
-        variant === 'inline'
-          ? 'instance-tab-bar-inline flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar'
-          : 'topbar-glass instance-tab-bar flex items-center gap-2 h-8 px-2 border-b border-border shrink-0 z-[46]'
-      }
-      role="tablist"
-      aria-label="Instances"
-    >
+    <div className={barCls(variant)} role="tablist" aria-label="Instances">
       <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeId === null}
-          className={tabCls(activeId === null)}
-          onClick={onLocal}
-          title="Local dashboard"
-        >
-          <Home size={13} /> Local
-        </button>
+        <LocalTab active={activeId === null} onClick={onLocal} />
         {tabInstances.map(inst => {
-          const isActive = activeId === inst.id
           const st = inst.status?.state
           const isConnecting =
             (connectMutation.isPending && connectMutation.variables === inst.id) ||
             st === 'connecting'
-          const badge = unread[inst.id] || 0
-          // Per-tab state dot — green connected, amber connecting, red error,
-          // muted disconnected — so a restored-but-down tab reads as broken
-          // without having to open it.
-          const dotCls =
-            st === 'connected'
-              ? 'bg-[var(--ok)]'
-              : st === 'error'
-                ? 'bg-[var(--danger)]'
-                : st === 'connecting'
-                  ? 'bg-[var(--warn)]'
-                  : 'bg-[var(--muted)]'
-          const stateLabel =
-            st === 'connected'
-              ? 'connected'
-              : st === 'error'
-                ? 'error'
-                : st === 'connecting'
-                  ? 'connecting'
-                  : 'disconnected'
           return (
-            <button
+            <InstanceTab
               key={inst.id}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              className={tabCls(isActive)}
+              name={inst.name}
+              title={`${inst.name} (${inst.ssh_host}) — ${st || 'disconnected'}`}
+              state={st}
+              connecting={isConnecting}
+              unread={unread[inst.id] || 0}
+              active={activeId === inst.id}
               onClick={() => onSelectInstance(inst.id)}
-              title={`${inst.name} (${inst.ssh_host}) — ${stateLabel}`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} aria-hidden />
-              {isConnecting ? <Loader2 size={13} className="animate-spin" /> : <Server size={13} />}
-              <span className="max-w-[160px] truncate">{inst.name}</span>
-              {badge > 0 && (
-                <span
-                  aria-label={`${badge} unread`}
-                  className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-accent text-accent-fg text-[10px] leading-4 text-center"
-                >
-                  {badge}
-                </span>
-              )}
-            </button>
+            />
           )
         })}
       </div>

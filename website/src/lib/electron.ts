@@ -2,10 +2,10 @@
  * Electron shell detection + frameless-window layout constants.
  *
  * The desktop app (electron/main.js) is a frameless window on macOS
- * (titleBarStyle:"hidden"): the SPA's 52px header row doubles as the title
+ * (titleBarStyle:"hidden"): the SPA's 42px header row doubles as the title
  * bar, and the native traffic lights are inset into the top-left of the
  * window (see trafficLightPositionForZoom in electron/main.js — x=16,
- * vertically centered in the 52px header, rescaled on zoom). The header gets
+ * vertically centered in the 42px header, rescaled on zoom). The header gets
  * a left inset clearing them via the `.mac-electron` rule in index.css.
  */
 const mc = (window as { kirocrew?: { isElectron?: boolean; platform?: string } }).kirocrew
