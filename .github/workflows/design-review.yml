@@ -71,8 +71,19 @@ jobs:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Fable 5's Bedrock inference-profile id (from model_registry.json:
-          # canonical `fable-5-1m` → claude_code provider id). Read-only tools
+          # Fable 5's BARE, REGIONAL (`us.`) Bedrock inference-profile id.
+          # Two reasons it must be this exact form:
+          #  - No `[1m]` tag: that suffix is the Anthropic-API/claude_code
+          #    provider-id form in model_registry.json; the Bedrock path
+          #    (use_bedrock) rejects it as an unknown model.
+          #  - `us.` not `global.`: Fable requires data-retention mode
+          #    `provider_data_share`, set at the ACCOUNT level in us-west-2.
+          #    The regional `us.` profile honors that account setting; the
+          #    `global.` profile routes cross-region and falls back to
+          #    `default`, which the model rejects ("data retention mode
+          #    'default' is not available for this model"). Matches the
+          #    working claude-review.yml (`us.anthropic.claude-opus-4-8`).
+          # Read-only tools
           # only — the design reviewer inspects the diff, it does not edit or
           # post; the workflow parses the review from the run's execution_file
           # and posts it itself. NOTE: we deliberately do NOT use --json-schema —
@@ -82,8 +93,16 @@ jobs:
           # structured_output and errored. Plain-text capture + a parsed verdict
           # header is robust. Automation mode: `prompt` runs on the trigger
           # without an @claude mention.
+          #
+          # --fallback-model pins the overload fallback to Opus 4.8 (regional
+          # `us.` profile, as in claude-review.yml). Without it, Claude Code
+          # falls back to its own smaller/older default (e.g. 4.6) when Fable 5
+          # is overloaded; pinning keeps the reviewer on a top-tier model.
+          # us.anthropic.* is already IAM-granted and honors the account
+          # provider_data_share retention mode.
           claude_args: |
-            --model global.anthropic.claude-fable-5[1m]
+            --model us.anthropic.claude-fable-5
+            --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 60
             --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
           prompt: |
