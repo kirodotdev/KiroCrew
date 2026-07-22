@@ -3,6 +3,7 @@
  * Manages git worktrees, pod instances, syncing, pruning, and rebasing.
  */
 import { useState, useRef, useCallback, useEffect, type CSSProperties, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardTitle, Btn, Checkbox, StatCard, EmptyState, ContentSkeleton, PageHeader, SearchInput, Badge, Select } from '../components/ui'
 import InfoTip from '../components/InfoTip'
@@ -95,32 +96,97 @@ function iconLabel(icon: ReactNode, label: string) {
 
 /* ─── Sub-components ─── */
 interface MenuItemDef { label: string; icon?: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; title?: string }
+// Row-actions dropdown geometry. The menu is portaled to <body> so a row's
+// <Card overflow> can't clip it (issue #146); these drive fixed positioning.
+const MENU_GAP = 6        // gap between trigger and menu (was `calc(100% + 6px)`)
+const MENU_MARGIN = 8     // min gap from the viewport edge
+const MENU_ITEM_H = 32    // estimated per-item height for the flip decision
+const MENU_PAD = 8        // container vertical padding (4px top + 4px bottom)
 function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLSpanElement>(null)
-  const close = useCallback((e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }, [])
-  useEffect(() => { document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close) }, [close])
+  // Trigger rect captured on open; drives the portaled menu's fixed position.
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const visible = items.filter(Boolean) as MenuItemDef[]
+
+  useEffect(() => {
+    if (!open) return
+    // The menu is portaled to <body>, so it is no longer a DOM descendant of
+    // the trigger — the outside-click guard must exclude BOTH the trigger and
+    // the menu (a plain trigger.contains() check would close on every menu
+    // click). Escape closes and returns focus to the trigger.
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!triggerRef.current?.contains(t) && !menuRef.current?.contains(t)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); triggerRef.current?.focus() } }
+    // position:fixed desyncs from any scrolling ancestor — close on scroll
+    // (capture phase catches nested scrollers) and on resize.
+    const onScrollOrResize = () => setOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScrollOrResize, true)
+    window.addEventListener('resize', onScrollOrResize)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScrollOrResize, true)
+      window.removeEventListener('resize', onScrollOrResize)
+    }
+  }, [open])
+
+  const toggle = () => {
+    if (!open && triggerRef.current) setRect(triggerRef.current.getBoundingClientRect())
+    setOpen((o) => !o)
+  }
+
+  // Right-align the menu's right edge to the trigger (as before), clamped so it
+  // never sits flush against the viewport edge. Open downward by default; flip
+  // up when there isn't room below for the estimated height and there's more
+  // room above. Either `top` or `bottom` is set (never both) + maxHeight so the
+  // menu is always clamped inside the viewport.
+  const estH = visible.length * MENU_ITEM_H + MENU_PAD
+  const spaceBelow = rect ? window.innerHeight - rect.bottom - MENU_GAP : 0
+  const spaceAbove = rect ? rect.top - MENU_GAP : 0
+  const openUp = !!rect && spaceBelow < estH + MENU_MARGIN && spaceAbove > spaceBelow
+  const avail = Math.max(80, (openUp ? spaceAbove : spaceBelow) - MENU_MARGIN)
+  const posStyle: CSSProperties = rect
+    ? {
+        position: 'fixed',
+        right: Math.max(MENU_MARGIN, window.innerWidth - rect.right),
+        ...(openUp
+          ? { bottom: window.innerHeight - rect.top + MENU_GAP }
+          : { top: rect.bottom + MENU_GAP }),
+        maxHeight: avail,
+      }
+    : { position: 'fixed' }
+
   return (
-    <span ref={ref} style={{ position: 'relative', display: 'inline-flex' } as CSSProperties}>
-      <Btn onClick={() => setOpen(!open)} title="More actions" aria-label="More actions">
+    <span style={{ display: 'inline-flex' } as CSSProperties}>
+      <Btn ref={triggerRef} onClick={toggle} title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded={open}>
         <Ellipsis size={15} className="lucide-inline" />
       </Btn>
-      {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 1200, background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: 4, minWidth: 168, boxShadow: '0 8px 24px rgba(0,0,0,0.45)' } as CSSProperties}>
-          {items.filter(Boolean).map((it, i) => {
-            const item = it!
-            return (
-              <Clickable
-                key={'mi' + i}
-                onClick={() => { setOpen(false); item.onClick() }}
-                disabled={!!item.disabled}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left' as const, background: 'none', border: 'none', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: item.danger ? 'var(--danger)' : 'var(--text)', cursor: item.disabled ? 'default' : 'pointer', opacity: item.disabled ? 0.5 : 1 } as CSSProperties}
-              >
-                {item.icon || null}{item.label}
-              </Clickable>
-            )
-          })}
-        </div>
+      {open && rect && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="More actions"
+          data-placement={openUp ? 'up' : 'down'}
+          style={{ ...posStyle, zIndex: 4000, overflowY: 'auto', background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: 4, minWidth: 168, boxShadow: '0 8px 24px rgba(0,0,0,0.45)' } as CSSProperties}
+        >
+          {visible.map((item, i) => (
+            <Clickable
+              key={'mi' + i}
+              onClick={() => { setOpen(false); item.onClick() }}
+              disabled={!!item.disabled}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left' as const, background: 'none', border: 'none', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: item.danger ? 'var(--danger)' : 'var(--text)', cursor: item.disabled ? 'default' : 'pointer', opacity: item.disabled ? 0.5 : 1 } as CSSProperties}
+            >
+              {item.icon || null}{item.label}
+            </Clickable>
+          ))}
+        </div>,
+        document.body,
       )}
     </span>
   )

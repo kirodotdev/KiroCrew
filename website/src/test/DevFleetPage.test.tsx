@@ -455,4 +455,100 @@ describe('DevFleetPage', () => {
     // The purpose one-liner renders in the drill-in.
     expect(screen.getByText('feat: add pagination to users API')).toBeInTheDocument()
   })
+
+  /* ─── Row-actions dropdown: portal + flip (issue #146) ─── */
+  // A worktree row whose "More actions" menu has items: non-main, not live,
+  // has_dist & not running → Spin up pod / Rebase onto main / Make live.
+  const FLEET_MENU = {
+    worktrees: [
+      { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+      { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, path: '/wt/feature-x' },
+    ],
+  }
+  function mockFleet(data: unknown) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+  }
+
+  it('renders the row-actions dropdown in a portal on document.body (escapes Card overflow)', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    const menu = await screen.findByRole('menu')
+    // Portaled: the menu is a direct child of <body>, not nested inside the SPA
+    // container / row Card — this is what lets it escape Card overflow clipping.
+    expect(menu.parentElement).toBe(document.body)
+    // Items render inside the portaled menu and are reachable.
+    expect(screen.getByText('Rebase onto main')).toBeInTheDocument()
+    expect(screen.getByText('Make live')).toBeInTheDocument()
+  })
+
+  it('portaled row-actions items are clickable (opens the Make live dialog)', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    fireEvent.click(await screen.findByText('Make live'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    expect(screen.getByText('Make "feature-x" live?')).toBeInTheDocument()
+  })
+
+  it('outside-click closes the portaled row-actions menu', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(await screen.findByRole('menu')).toBeInTheDocument()
+    // A click on <body> is outside both the trigger and the portaled menu.
+    fireEvent.mouseDown(document.body)
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  })
+
+  it('Escape closes the portaled row-actions menu', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(await screen.findByRole('menu')).toBeInTheDocument()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  })
+
+  it('row-actions menu opens downward when there is room below', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByLabelText('More actions')
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: 100, bottom: 120, left: 400, right: 440, width: 40, height: 20, x: 400, y: 100, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const menu = await screen.findByRole('menu') as HTMLElement
+    expect(menu.getAttribute('data-placement')).toBe('down')
+    // Downward placement anchors via `top`, not `bottom`.
+    expect(menu.style.top).not.toBe('')
+    expect(menu.style.bottom).toBe('')
+  })
+
+  it('row-actions menu flips upward when near the viewport bottom', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByLabelText('More actions')
+    // Trigger a few px above the bottom edge → no room below → flip up.
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: window.innerHeight - 8, bottom: window.innerHeight - 4, left: 400, right: 440, width: 40, height: 20, x: 400, y: window.innerHeight - 8, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const menu = await screen.findByRole('menu') as HTMLElement
+    expect(menu.getAttribute('data-placement')).toBe('up')
+    // Upward placement anchors via `bottom`, not `top`.
+    expect(menu.style.bottom).not.toBe('')
+    expect(menu.style.top).toBe('')
+  })
 })
