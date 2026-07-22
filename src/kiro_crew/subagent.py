@@ -530,8 +530,12 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
     See ``dynamic-subagent-sizing.md`` §3.
     """
     agent = cfg.agent
-    hard_cap = max(1, agent.subagent_auto_max)
-    lo = min(_LEGACY_DEFAULT_MAX, hard_cap)  # keeps clamp well-formed if hard_cap < 3
+    # Hard floor of 3 (``_LEGACY_DEFAULT_MAX``): the auto-sized cap never drops
+    # below today's behavior even if ``subagent_auto_max`` is somehow < 3 (the
+    # config loader clamps it up to 3, but defend here too so the runtime cap is
+    # guaranteed >= 3). ``subagent_auto_max`` is the upper ceiling.
+    hard_cap = max(_LEGACY_DEFAULT_MAX, agent.subagent_auto_max)
+    lo = _LEGACY_DEFAULT_MAX
 
     avail_gb = _available_memory_gb()
     if avail_gb <= 0:
@@ -586,7 +590,12 @@ def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
     except (AttributeError, TypeError, ValueError):
         configured = _LEGACY_DEFAULT_MAX
     if configured > 0:
-        return configured
+        # An explicit pin below the legacy floor (1 or 2) would silently disable
+        # auto-sizing AND run below today's default; floor it to 3. 0 stays the
+        # auto sentinel. The config loader and dashboard API also enforce this;
+        # defend here so a directly-constructed config can't drop the runtime cap
+        # below the floor.
+        return max(configured, _LEGACY_DEFAULT_MAX)
     return compute_max_subagents(cfg)
 
 

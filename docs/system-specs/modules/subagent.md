@@ -44,6 +44,12 @@ per operating system (see `dynamic-subagent-sizing.md`):
 - **Other (e.g. Windows)** — no probe yet; returns `-1.0` and the cap fails
   open to the legacy floor of 3.
 
+Hard floor: the auto-sized cap is always ≥ 3 — `compute_max_subagents` clamps to
+`[3, hard_cap]` and the config loader clamps `subagent_auto_max` UP to 3 (with a
+warning + `config_bounds_clamped` SEL event, mirroring the > 64 ceiling clamp).
+Applies only to auto-sizing (`max_subagents=0`); an explicit `max_subagents` pin
+is unrestricted (any 0..64).
+
 Limitation: the per-spawn `spawn_min_memory_gb` admission gate
 (`check_memory_available`) still reads `/proc/meminfo` and so remains inert
 (fails open) on non-Linux hosts. Auto-sizing and the runtime gate are

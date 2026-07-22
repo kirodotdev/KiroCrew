@@ -4,8 +4,8 @@ KiroCrew sizes the concurrent sub-agent cap **automatically** by default
 (`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from
 the host's actual memory and CPU, plus a per-agent cost KiroCrew *learns* from
 past runs. A fixed number is wrong in both directions — it wastes capacity on a
-large host and over-commits a tiny one — so auto is the default; set a positive
-integer to pin an explicit cap.
+large host and over-commits a tiny one — so auto is the default; set an
+integer >= 3 to pin an explicit cap.
 
 ## Enabling It
 
@@ -16,7 +16,14 @@ kirocrew config set agent.max_subagents 8
 ```
 
 - `agent.max_subagents = 0` — **auto** (default): compute the cap at startup.
-- `agent.max_subagents > 0` — explicit fixed cap.
+- `agent.max_subagents >= 3` — explicit fixed cap.
+
+`max_subagents` accepts **0 (auto) or an integer >= 3**. A pin of 1 or 2 would
+silently disable auto-sizing *and* run below today's default of 3, so it is
+normalized UP to 3 (config loader, with a `config_bounds_clamped` SEL event) and
+rejected by the dashboard API. `resolve_max_subagents` also floors any explicit
+value at 3 as a runtime backstop. `0` is the only way to request the host-safe
+auto cap.
 
 The cap is computed once per gateway start. Restart to recompute (e.g. after the
 host's resources change).
@@ -35,8 +42,11 @@ cap      = clamp( min(mem_term, cpu_term), 3, hard_cap )
 - **CPU term** — how many fit in the core budget, using a measured per-agent
   CPU cost (agents are mostly I/O-bound, so this is generous).
 - **`min(...)`** — the tighter of memory/CPU wins.
-- **Floor of 3** — never drops below the legacy default, so enabling auto can't
-  regress a small host. The per-spawn memory gate (`agent.spawn_min_memory_gb`)
+- **Floor of 3** — the auto-sized cap never drops below the legacy default
+  (`_LEGACY_DEFAULT_MAX`), so enabling auto can't regress a small host. This is
+  a hard floor: `compute_max_subagents` clamps to `[3, hard_cap]`, and the
+  config loader clamps `subagent_auto_max` itself UP to 3 (with a warning) if a
+  file sets it lower. The per-spawn memory gate (`agent.spawn_min_memory_gb`)
   still refuses individual spawns under real memory pressure.
 - **`hard_cap`** — an absolute ceiling (see "Why a hard cap" below).
 

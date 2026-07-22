@@ -708,7 +708,6 @@ export default function App() {
     refetchInterval: 30_000,
   })
   const approvalCount = pendingApprovals.filter((a: { id?: string }) => a.id?.startsWith('task-gate-')).length
-  const activityOpen = useAppSelector(s => s.chat.activityOpen)
   const { data: terminalConfig } = useQuery({
     queryKey: ['terminal-enabled'],
     queryFn: async () => {

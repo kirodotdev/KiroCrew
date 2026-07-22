@@ -298,7 +298,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max SubAgents",
-      "help": "Maximum amount of subagents at one time. 0 = auto-size the cap at startup from host memory/CPU and a learned per-agent cost (see dynamic-subagent-sizing docs). Default; set a positive integer to pin a fixed cap.",
+      "help": "Maximum amount of subagents at one time. 0 = auto-size the cap at startup from host memory/CPU and a learned per-agent cost (see dynamic-subagent-sizing docs). Default; set a fixed cap by pinning an integer >= 3 (values of 1 or 2 are raised to 3 — a pin below 3 would disable auto-sizing and run under the default).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
