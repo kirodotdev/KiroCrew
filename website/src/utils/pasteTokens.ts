@@ -102,6 +102,81 @@ export function expandAll(text: string, blocks: PasteBlock[]): string {
 }
 
 /**
+ * Inverse of {@link expandAll}: given fully-expanded content and its backing
+ * blocks, substitute each block's verbatim content back to its
+ * `[ Paste #N · M lines ]` token.
+ *
+ * This is the render-time safety net for history load. The backend stores and
+ * re-serves the EXPANDED content (what the LLM saw) alongside `meta.pastes`.
+ * `mergePreservedPastes` only re-collapses when it can match against an
+ * in-memory optimistic bubble or a localStorage side-table entry — both of
+ * which are absent on a fresh tab or after the side-table evicts the entry.
+ * When that happens a multi-hundred-KB paste is otherwise handed raw to the
+ * markdown renderer, which parses + lays out tens of thousands of lines on the
+ * main thread and freezes the tab (Mesh: big-paste chat freeze). Because the
+ * blocks travel with the message, re-collapse can be derived deterministically
+ * from `content` + `meta.pastes` with no external state.
+ *
+ * Replaces the FIRST non-overlapping occurrence of each block in document
+ * order, so repeated sends of the same paste each collapse to their own token.
+ * A block whose content is not found verbatim is skipped (that region renders
+ * as-is). Returns `content` unchanged when nothing matched.
+ */
+export function recollapsePastes(content: string, blocks: PasteBlock[]): string {
+  if (!content || !blocks.length) return content
+  interface Hit { start: number; end: number; block: PasteBlock }
+  const hits: Hit[] = []
+  const claimed: Array<[number, number]> = []
+  // First occurrence of `needle` not already claimed by an earlier block
+  // (handles the rare case where one paste's content is a substring of
+  // another's). Returns -1 when every occurrence overlaps a claim or none exist.
+  const firstUnclaimed = (needle: string): number => {
+    if (!needle) return -1
+    let from = 0
+    while (from <= content.length) {
+      const idx = content.indexOf(needle, from)
+      if (idx < 0) return -1
+      if (!claimed.some(([s, e]) => idx < e && idx + needle.length > s)) return idx
+      from = idx + 1
+    }
+    return -1
+  }
+  for (const b of blocks) {
+    if (!b.content) continue
+    // Prefer a verbatim match. Fall back to the trailing-whitespace-trimmed
+    // block content: the backend strips trailing whitespace from the stored
+    // message (mergePreservedPastes keys on trimEnd() for the same reason), so
+    // a paste that was the LAST thing in the message loses its own trailing
+    // newline/spaces and won't match verbatim — without the fallback the huge
+    // paste falls through to the raw markdown renderer and the freeze it guards
+    // against is not prevented for that shape. Verbatim is tried fully first so
+    // an interior block (whose trailing whitespace is preserved) is unaffected.
+    const trimmed = b.content.trimEnd()
+    let needle = b.content
+    let idx = firstUnclaimed(needle)
+    if (idx < 0 && trimmed && trimmed !== b.content) {
+      needle = trimmed
+      idx = firstUnclaimed(needle)
+    }
+    if (idx < 0) continue
+    const end = idx + needle.length
+    hits.push({ start: idx, end, block: b })
+    claimed.push([idx, end])
+  }
+  if (!hits.length) return content
+  hits.sort((a, b) => a.start - b.start)
+  let out = ''
+  let pos = 0
+  for (const h of hits) {
+    if (h.start < pos) continue // defensive: an overlap survived the claim check
+    out += content.slice(pos, h.start) + formatToken(h.block)
+    pos = h.end
+  }
+  out += content.slice(pos)
+  return out
+}
+
+/**
  * Merge preserved paste state from `existing` onto `incoming` (from backend
  * refresh). For each user message in `existing` with `meta.pastes`, the
  * tokenized content + pastes are re-applied to the matching incoming user
@@ -132,12 +207,26 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
     }
   }
   const queue = preserved.slice()
+  // A backend-served user message that carries its own `meta.pastes` but whose
+  // content is still fully expanded (no `[ Paste #N ]` token) needs fallback 3
+  // (self-contained re-collapse) even when there is no optimistic bubble and no
+  // side-table hit — so it must NOT be short-circuited away.
+  const needsSelfCollapse = (m: M): boolean => {
+    if (m.role !== 'user') return false
+    const own = (m.meta?.pastes as PasteBlock[] | undefined) || []
+    return own.length > 0 && findTokenRanges(m.content, own).length === 0
+  }
   // Short-circuit: if no existing user messages have paste metadata AND no
-  // incoming user message has a matching entry in the localStorage side table,
-  // return the `incoming` array reference unchanged. This preserves reference
-  // equality for callers that use Object.is / toBe checks, and avoids an
-  // unnecessary array allocation in the common no-pastes case.
-  if (!queue.length && !incoming.some(m => m.role === 'user' && readStoredPaste(m.content.trimEnd()))) {
+  // incoming user message has a matching entry in the localStorage side table
+  // AND none needs self-contained re-collapse, return the `incoming` array
+  // reference unchanged. This preserves reference equality for callers that use
+  // Object.is / toBe checks, and avoids an unnecessary array allocation in the
+  // common no-pastes case.
+  if (
+    !queue.length &&
+    !incoming.some(m => m.role === 'user' && readStoredPaste(m.content.trimEnd())) &&
+    !incoming.some(needsSelfCollapse)
+  ) {
     return incoming
   }
   return incoming.map(m => {
@@ -163,6 +252,17 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
       const newMeta: Record<string, unknown> = { ...m.meta, pastes: stored.pastes }
       if (stored.files && stored.files.length) newMeta.files = stored.files
       return { ...m, content: stored.displayTxt, meta: newMeta }
+    }
+    // 3) Self-contained re-collapse. The backend re-serves `meta.pastes`
+    // alongside the fully-expanded content, so when neither the optimistic
+    // bubble nor the side table can re-collapse (fresh tab, evicted entry),
+    // fold the message's own blocks back into `[ Paste #N ]` tokens. Without
+    // this a huge paste stays expanded in state and the virtualizer measures /
+    // the renderer parses hundreds of KB on the main thread, freezing the tab.
+    const ownPastes = (m.meta?.pastes as PasteBlock[] | undefined) || []
+    if (ownPastes.length && !findTokenRanges(m.content, ownPastes).length) {
+      const collapsed = recollapsePastes(m.content, ownPastes)
+      if (collapsed !== m.content) return { ...m, content: collapsed }
     }
     return m
   })

@@ -16,6 +16,8 @@ import TurnBlock from '../pages/chat/TurnBlock'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
+import PastedChip from '../components/PastedChip'
+import { type PasteBlock, findTokenRanges, recollapsePastes } from '../utils/pasteTokens'
 import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
 
@@ -36,7 +38,41 @@ export interface ChatMessageListProps {
 
 // ── Stable helpers (outside component) ──
 
-function renderUserContent(content: string, _meta: Record<string, unknown> | undefined): React.ReactNode {
+function renderUserContent(content: string, meta: Record<string, unknown> | undefined): React.ReactNode {
+  // History load re-serves the fully-EXPANDED paste content alongside
+  // meta.pastes. Handing a large paste (hundreds of KB / tens of thousands of
+  // lines) straight to MarkdownRenderer parses + lays it out on the main thread
+  // and freezes the tab. Re-collapse the message's own blocks back to
+  // `[ Paste #N ]` chips so only the small token text is rendered. Mirrors
+  // ChatPage.renderUserContentInner; kept minimal here to stay Redux-free.
+  const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
+  if (pastes.length) {
+    let text = content
+    let ranges = findTokenRanges(text, pastes)
+    if (!ranges.length) {
+      const collapsed = recollapsePastes(content, pastes)
+      if (collapsed !== content) { text = collapsed; ranges = findTokenRanges(text, pastes) }
+    }
+    if (ranges.length) {
+      const out: React.ReactNode[] = []
+      let last = 0
+      ranges.forEach((r, i) => {
+        const trimStart = text[r.start - 1] === '\n' ? r.start - 1 : r.start
+        const trimEnd = text[r.end] === '\n' ? r.end + 1 : r.end
+        if (trimStart > last) {
+          const seg = text.slice(last, trimStart)
+          if (seg) out.push(<span key={`t${i}`} style={{ whiteSpace: 'pre-wrap' }}>{seg}</span>)
+        }
+        out.push(<PastedChip key={`p${i}-${r.block.id}`} block={r.block} />)
+        last = trimEnd
+      })
+      if (last < text.length) {
+        const seg = text.slice(last)
+        if (seg) out.push(<span key="tend" style={{ whiteSpace: 'pre-wrap' }}>{seg}</span>)
+      }
+      return <MessageErrorBoundary rawContent={text}>{out}</MessageErrorBoundary>
+    }
+  }
   return <MessageErrorBoundary rawContent={content}><MarkdownRenderer content={content} /></MessageErrorBoundary>
 }
 

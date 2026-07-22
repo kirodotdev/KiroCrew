@@ -41,7 +41,7 @@ import type { DisplayItem, TurnItem } from './chat/types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { parseFiles, buildRelMap, prepareSendPayload } from '../utils/fileTokens'
-import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, saveStoredPaste } from '../utils/pasteTokens'
+import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 // Roles that fold into a collapsible group in the turn view. Thinking is NOT
 // here: it carries real content and renders as its own standalone block (a
@@ -248,8 +248,25 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
 
   if (!pastes.length) return <>{knowledgeBadge}{renderFileSegment(content, meta, onFileOpen, 'seg')}</>
 
-  const ranges = findTokenRanges(content, pastes)
-  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment(content, meta, onFileOpen, 'seg')}</>
+  // History load re-serves the fully-EXPANDED content (what the LLM saw), so a
+  // message whose bubble was a `[ Paste #N ]` chip when sent comes back as the
+  // raw paste text with no token in it. If mergePreservedPastes couldn't
+  // re-collapse it (no optimistic bubble, side-table entry evicted/missing),
+  // handing that raw text — potentially hundreds of KB / tens of thousands of
+  // lines — to renderFileSegment → MarkdownRenderer parses and lays it out on
+  // the main thread and freezes the tab. Re-collapse deterministically from the
+  // blocks that travel with the message so the chip is restored regardless of
+  // external state. See recollapsePastes / Mesh big-paste freeze.
+  let text = content
+  let ranges = findTokenRanges(text, pastes)
+  if (!ranges.length) {
+    const collapsed = recollapsePastes(content, pastes)
+    if (collapsed !== content) {
+      text = collapsed
+      ranges = findTokenRanges(text, pastes)
+    }
+  }
+  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment(text, meta, onFileOpen, 'seg')}</>
 
   // Paste chips are inline by nature, so to keep them flowing with the
   // surrounding text (e.g. "hey [chip] thanks"), render each text segment
@@ -264,17 +281,17 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
     // its expanded block absorb the line-break that ChatInput.handlePaste
     // forces around the token. Without this, expanding the chip adds an extra
     // visible line (its own block-level display + the still-rendered \n).
-    const trimStart = content[r.start - 1] === '\n' ? r.start - 1 : r.start
-    const trimEnd = content[r.end] === '\n' ? r.end + 1 : r.end
+    const trimStart = text[r.start - 1] === '\n' ? r.start - 1 : r.start
+    const trimEnd = text[r.end] === '\n' ? r.end + 1 : r.end
     if (trimStart > lastIdx) {
-      const seg = content.slice(lastIdx, trimStart)
+      const seg = text.slice(lastIdx, trimStart)
       if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, `t${i}`))
     }
     out.push(<PastedChip key={`p${i}-${r.block.id}`} block={r.block} />)
     lastIdx = trimEnd
   })
-  if (lastIdx < content.length) {
-    const seg = content.slice(lastIdx)
+  if (lastIdx < text.length) {
+    const seg = text.slice(lastIdx)
     if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, 'tend'))
   }
   return knowledgeBadge ? <>{knowledgeBadge}{out}</> : out

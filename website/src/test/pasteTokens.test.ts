@@ -9,6 +9,7 @@ import {
   tokenRangeAt,
   pruneBlocks,
   expandAll,
+  recollapsePastes,
   mergePreservedPastes,
   saveStoredPaste,
   readStoredPaste,
@@ -129,6 +130,76 @@ describe('pasteTokens', () => {
     })
   })
 
+  describe('recollapsePastes', () => {
+    it('folds a whole-message paste back to its token', () => {
+      const b = block({ id: 'a', seq: 1, lines: 3, content: 'l1\nl2\nl3' })
+      expect(recollapsePastes('l1\nl2\nl3', [b])).toBe('[ Paste #1 · 3 lines ]')
+    })
+
+    it('is the inverse of expandAll for a chip embedded in surrounding text', () => {
+      const b = block({ id: 'a', seq: 2, lines: 3, content: 'A\nB\nC' })
+      const display = `before ${formatToken(b)} after`
+      const expanded = expandAll(display, [b])
+      expect(recollapsePastes(expanded, [b])).toBe(display)
+    })
+
+    it('collapses multiple blocks in document order', () => {
+      const b1 = block({ id: 'a', seq: 1, lines: 1, content: 'AAA' })
+      const b2 = block({ id: 'b', seq: 2, lines: 1, content: 'BBB' })
+      expect(recollapsePastes('x AAA y BBB z', [b2, b1]))
+        .toBe(`x ${formatToken(b1)} y ${formatToken(b2)} z`)
+    })
+
+    it('returns content unchanged when no block content is found', () => {
+      const b = block({ id: 'a', seq: 1, content: 'AAA' })
+      expect(recollapsePastes('nothing here', [b])).toBe('nothing here')
+    })
+
+    it('claims non-overlapping occurrences when one block is a substring of another', () => {
+      const outer = block({ id: 'o', seq: 1, lines: 1, content: 'AAABBB' })
+      const inner = block({ id: 'i', seq: 2, lines: 1, content: 'AAA' })
+      // 'AAABBB' then a standalone 'AAA'. Outer claims the first region; inner
+      // must land on the later standalone 'AAA', not overlap the outer.
+      const out = recollapsePastes('AAABBB then AAA', [outer, inner])
+      expect(out).toBe(`${formatToken(outer)} then ${formatToken(inner)}`)
+    })
+
+    it('does not exceed the byte size of the input (huge paste collapses small)', () => {
+      const huge = 'x\n'.repeat(30_000)
+      const b = block({ id: 'a', seq: 1, lines: 30_001, content: huge })
+      const out = recollapsePastes(huge, [b])
+      expect(out).toBe(formatToken(b))
+      expect(out.length).toBeLessThan(64)
+    })
+
+    // The backend strips trailing whitespace from the stored message, but the
+    // block content is stored verbatim. A paste that was the LAST thing in the
+    // message therefore keeps a trailing newline in block.content that the
+    // stored content no longer has — verbatim indexOf misses. The trimEnd()
+    // fallback recovers it (else the huge paste falls through to raw markdown).
+    it('matches a tail block whose trailing whitespace the backend stripped', () => {
+      const b = block({ id: 'a', seq: 1, lines: 3, content: 'l1\nl2\nl3\n' })
+      // Stored content: block text minus its trailing newline (backend trimEnd).
+      const stored = 'l1\nl2\nl3'
+      expect(recollapsePastes(stored, [b])).toBe('[ Paste #1 · 3 lines ]')
+    })
+
+    it('collapses a whitespace-stripped tail block embedded after prefix text', () => {
+      const b = block({ id: 'a', seq: 2, lines: 2, content: 'A\nB  \n' })
+      const stored = 'hi A\nB' // prefix + block with trailing "  \n" stripped
+      expect(recollapsePastes(stored, [b])).toBe('hi [ Paste #2 · 2 lines ]')
+    })
+
+    it('prefers the verbatim match for an interior block whose trailing whitespace is preserved', () => {
+      // Interior block keeps its trailing newline in the stored content (text
+      // follows it), so the verbatim match must win — the trimEnd() fallback
+      // must not fire and swallow the trailing newline into the token.
+      const b = block({ id: 'a', seq: 1, lines: 2, content: 'X\nY\n' })
+      const stored = 'X\nY\nafter'
+      expect(recollapsePastes(stored, [b])).toBe('[ Paste #1 · 2 lines ]after')
+    })
+  })
+
   describe('mergePreservedPastes', () => {
     it('re-attaches tokens + pastes when expansion matches incoming content', () => {
       const b = block({ id: 'x', seq: 1, content: 'line1\nline2\nline3' })
@@ -178,6 +249,31 @@ describe('pasteTokens', () => {
       const out = mergePreservedPastes(existing, incoming)
       expect(out[0].content).toBe('some other text')
       expect(out[0].meta).toBeUndefined()
+    })
+
+    // Fallback 3: a fresh-tab load has no optimistic bubble and (for a big
+    // paste) no side-table entry, but the backend re-serves meta.pastes with
+    // the expanded content. Re-collapse from the message's own blocks so the
+    // huge string never reaches state/render expanded.
+    it('self-collapses a backend message carrying its own pastes but no token', () => {
+      const b = block({ id: 'a', seq: 1, lines: 3, content: 'l1\nl2\nl3' })
+      const incoming = [{ role: 'user', content: 'l1\nl2\nl3', meta: { pastes: [b] } }]
+      const out = mergePreservedPastes([], incoming)
+      expect(out[0].content).toBe('[ Paste #1 · 3 lines ]')
+      expect((out[0].meta as { pastes: PasteBlock[] }).pastes).toEqual([b])
+    })
+
+    it('does not re-collapse a message whose token is already present', () => {
+      const b = block({ id: 'a', seq: 1, lines: 3, content: 'l1\nl2\nl3' })
+      const already = { role: 'user', content: `hi ${formatToken(b)}`, meta: { pastes: [b] } }
+      const incoming = [already]
+      const out = mergePreservedPastes([], incoming)
+      expect(out[0].content).toBe(already.content)
+    })
+
+    it('returns incoming unchanged (same ref) when no message needs any collapse', () => {
+      const incoming = [{ role: 'user', content: 'plain, no pastes' }]
+      expect(mergePreservedPastes([], incoming)).toBe(incoming)
     })
   })
 
