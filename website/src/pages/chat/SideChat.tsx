@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Send, MessageSquare, Copy, Check, RotateCcw } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../api/client'
@@ -9,6 +9,8 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { SideMessage } from '../../store/chatSlice'
 
 const MAX_QUESTION_BYTES = 32_768
+// Max auto-grow height (px) for the side-question input before it scrolls.
+const MAX_INPUT_H = 240
 
 function SideMessageBubble({ msg, isStreaming }: { msg: SideMessage; isStreaming: boolean }) {
   const [copied, setCopied] = useState(false)
@@ -134,12 +136,26 @@ export default function SideChat({ slot }: { slot: string }) {
           el.focus()
           const len = el.value.length
           el.setSelectionRange(len, len)
+          // Scroll to the top so the START of a long quote is visible (focusing
+          // + caret-at-end scrolls to the bottom otherwise, hiding the quote).
+          el.scrollTop = 0
         }
       })
     }
     window.addEventListener('side-seed', onSeed)
     return () => window.removeEventListener('side-seed', onSeed)
   }, [])
+
+  // Auto-grow the input so a seeded multi-line quote (or a long typed question)
+  // is fully visible instead of being clipped to the 2-row default. Grows with
+  // content up to MAX_INPUT_H, then scrolls. The `min-h-[52px]` class floors it
+  // at ~2 rows so an empty box keeps its original size.
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_H)}px`
+  }, [draft])
 
   const send = useCallback(() => {
     const q = draft.trim()
@@ -233,7 +249,8 @@ export default function SideChat({ slot }: { slot: string }) {
           placeholder="Ask a side question…"
           rows={2}
           disabled={sendMutation.isPending}
-          className="flex-1 resize-none rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text focus:outline-none focus:border-accent disabled:opacity-60"
+          style={{ maxHeight: MAX_INPUT_H }}
+          className="flex-1 resize-none overflow-y-auto min-h-[52px] rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text focus:outline-none focus:border-accent disabled:opacity-60"
         />
         <button
           onClick={() => void send()}

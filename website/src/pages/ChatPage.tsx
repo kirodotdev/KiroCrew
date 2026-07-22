@@ -2378,6 +2378,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
 
   const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
+  // Select-to-Ask reuses the same FlyingQuote "pluck" animation as Quote, but
+  // targets the Side panel's input (which only mounts once the panel opens).
+  const [flyingAsk, setFlyingAsk] = useState<{ text: string; from: DOMRect } | null>(null)
+  const askTargetRef = useRef<HTMLElement | null>(null)
 
   const handleQuote = useCallback((text: string, rect: DOMRect) => {
     const quoted = text.split('\n').map(line => `> ${line}`).join('\n')
@@ -2397,13 +2401,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // openActivityToTab('side') bridge, then hands the selection to SideChat via a
   // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab /
   // reveal-slot — no new prop-drilling, no backend change).
-  const handleAsk = useCallback((text: string, _rect: DOMRect) => {
+  const handleAsk = useCallback((text: string, rect: DOMRect) => {
     dispatch(openActivityToTab('side'))
-    // Defer the seed one frame so the Side panel/tab has mounted its
-    // `side-seed` listener before the event fires.
-    requestAnimationFrame(() => {
-      window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
-    })
+    // The Side input mounts asynchronously once the panel opens. Poll a few
+    // frames for it, then fire the FlyingQuote "pluck" animation toward it and
+    // seed the selection (mirrors handleQuote's simultaneous seed + animate).
+    // If it never appears (panel blocked), fall back to seeding without the
+    // animation so the feature still works.
+    const trySeed = (attempt = 0) => {
+      const ta = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Ask a side question"]')
+      if (ta) {
+        askTargetRef.current = ta
+        setFlyingAsk({ text, from: rect })
+        window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
+      } else if (attempt < 20) {
+        requestAnimationFrame(() => trySeed(attempt + 1))
+      } else {
+        window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
+      }
+    }
+    requestAnimationFrame(() => trySeed())
   }, [dispatch])
 
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
@@ -3458,6 +3475,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               {!activityOpen && <WorkflowProgressBar slot={activeSlot} />}
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
+              {flyingAsk && <FlyingQuote text={flyingAsk.text} from={flyingAsk.from} targetRef={askTargetRef} onComplete={() => setFlyingAsk(null)} />}
               <div ref={inputAreaRef} className="relative z-10">
               {showHistorySuggestions && (
                 <div className="absolute left-0 right-0 bottom-full mb-1 mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]">
