@@ -1,4 +1,5 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
+import { FileDiff, ChevronDown, ChevronUp } from 'lucide-react'
 import type { FileChipStyle } from '../pages/chat/ChatSettings'
 import { colorForExt, fileIcon } from '../utils/fileIcons'
 
@@ -65,16 +66,111 @@ function Stats({ added, removed }: { added: number; removed: number }) {
   </>
 }
 
-/* ── Expanded: liquid-glass pill with icon + filename + stats ── */
-function ExpandedChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void }) {
-  const { added, removed } = countLines(fc.before, fc.after)
+/* ── Diffstat cells: a compact 5-cell bar (GitHub-style) giving an at-a-glance
+ *   sense of the add/remove proportion — green cells for additions, red for
+ *   removals, the rest neutral. Purely decorative, so aria-hidden.          */
+function DiffStatBar({ added, removed }: { added: number; removed: number }) {
+  const CELLS = 5
+  const total = added + removed
+  let g = 0, r = 0
+  if (total > 0) {
+    g = added > 0 ? Math.max(1, Math.round((added / total) * CELLS)) : 0
+    r = removed > 0 ? Math.max(1, Math.round((removed / total) * CELLS)) : 0
+    while (g + r > CELLS) { if (g >= r) g--; else r-- }
+  }
+  const neutral = CELLS - g - r
+  const cell = (cls: string, key: string) => <span key={key} className={`w-[7px] h-[7px] rounded-[2px] ${cls}`} />
+  return (
+    <span className="flex items-center gap-[3px] shrink-0" aria-hidden="true">
+      {Array.from({ length: g }, (_, i) => cell('bg-ok', `g${i}`))}
+      {Array.from({ length: r }, (_, i) => cell('bg-danger', `r${i}`))}
+      {Array.from({ length: neutral }, (_, i) => cell('bg-border', `n${i}`))}
+    </span>
+  )
+}
+
+/* ── Expanded row: one changed file per line — icon + filename left, a
+ *   diffstat bar + aligned +N/-N stats right. Rows are padded + rounded and
+ *   lift on hover (no hard dividers) so the block reads as a soft list.     */
+function ExpandedRow({ fc, added, removed, isArtifact, onClick }: { fc: FileChangeEntry; added: number; removed: number; isArtifact?: boolean; onClick: () => void }) {
   const Icon = fileIcon(fc.path)
   return (
-    <button onClick={onClick} className="glass-surface file-chip inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11.5px] font-medium cursor-pointer text-text" aria-label={fc.path}>
-      <Icon size={12} className={colorForExt(fc.path)} />
-      <span className="truncate max-w-[180px]">{basename(fc.path)}</span>
-      <Stats added={added} removed={removed} />
+    <button
+      onClick={onClick}
+      className="group/row flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left text-[12px] font-medium text-text cursor-pointer transition-colors hover:bg-bg-elevated"
+      aria-label={fc.path}
+    >
+      <Icon size={14} className={`shrink-0 ${colorForExt(fc.path)}`} />
+      <span className="truncate min-w-0 transition-colors">{basename(fc.path)}</span>
+      {isArtifact && (
+        <span
+          className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium"
+          title="This document is tracked as a session artifact, not a source-file change"
+        >
+          Artifact
+        </span>
+      )}
+      <span className="flex-1 min-w-0" />
+      <DiffStatBar added={added} removed={removed} />
+      <span className="shrink-0 flex items-center justify-end gap-1.5 tabular-nums min-w-[52px]">
+        <Stats added={added} removed={removed} />
+      </span>
     </button>
+  )
+}
+
+/* ── Expanded: a single elevated card grouping the changed files into aligned
+ *   rows, with a header carrying a neutral icon chip, the file count, and an
+ *   aggregate +N/-N roll-up (multi-file only). Reads as one structured unit.
+ *   `artifactPaths` (paths the session tracks as documents/artifacts) badges
+ *   those rows so generated docs read distinctly from source-file edits.
+ *   Long lists are capped at COLLAPSED_COUNT rows behind a "Show N more"
+ *   toggle so a big turn doesn't wall off the transcript (the header still
+ *   shows the true total + aggregate stats while collapsed).                */
+const COLLAPSED_COUNT = 8
+
+function ExpandedList({ fileChanges, onOpenDiff, artifactPaths }: {
+  fileChanges: FileChangeEntry[]
+  onOpenDiff?: (path: string, modified: string, original: string) => void
+  artifactPaths?: Set<string>
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const n = fileChanges.length
+  // Count once per file: reused by each row AND the header roll-up.
+  const stats = fileChanges.map(fc => countLines(fc.before, fc.after))
+  const totalAdded = stats.reduce((s, x) => s + x.added, 0)
+  const totalRemoved = stats.reduce((s, x) => s + x.removed, 0)
+  const overflow = n > COLLAPSED_COUNT
+  const visibleCount = overflow && !expanded ? COLLAPSED_COUNT : n
+  const hiddenCount = n - COLLAPSED_COUNT
+  return (
+    <div className="ft-block-reveal mt-2 mb-1.5 w-full max-w-full rounded-xl border border-border bg-bg overflow-hidden">
+      <div className="flex items-center gap-2.5 px-3.5 py-2 border-b border-border">
+        <FileDiff size={14} className="text-muted shrink-0" />
+        <span className="text-[12px] font-medium text-muted">{n} file{n === 1 ? '' : 's'} changed</span>
+        {n > 1 && (
+          <span className="ml-auto flex items-center gap-1.5 text-[11px] tabular-nums">
+            <Stats added={totalAdded} removed={totalRemoved} />
+          </span>
+        )}
+      </div>
+      <div className="flex flex-col gap-0.5 p-1.5">
+        {fileChanges.slice(0, visibleCount).map((fc, i) => (
+          <ExpandedRow key={fc.path} fc={fc} added={stats[i].added} removed={stats[i].removed} isArtifact={artifactPaths?.has(fc.path)} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} />
+        ))}
+        {overflow && (
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="flex items-center justify-center gap-1 w-full px-2 py-1.5 rounded-lg text-[11.5px] font-medium text-muted hover:text-text hover:bg-bg-elevated cursor-pointer transition-colors bg-transparent border-none"
+            aria-expanded={expanded}
+          >
+            {expanded
+              ? <><ChevronUp size={13} className="shrink-0" /> Show less</>
+              : <><ChevronDown size={13} className="shrink-0" /> Show {hiddenCount} more</>}
+          </button>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -93,27 +189,37 @@ function MinimalChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void
   )
 }
 
-const RENDERERS = { expanded: ExpandedChip, minimal: MinimalChip } as const
-
 /**
- * Renders a row of file-change chips below an assistant message.
- * Each chip shows the modified file's basename + line stats, and on
- * click opens the Monaco diff panel via `onOpenDiff(path, after, before)`.
+ * Renders the file-change block below an assistant message.
+ *
+ * - `expanded` (default): a single card grouping every changed file into
+ *   aligned rows (icon + filename left, +N/-N stats right) with a header —
+ *   reads as one structured unit instead of a loose pile of pills.
+ * - `minimal`: stats-only glass pills that wrap, filename on hover.
+ *
+ * Clicking any file opens the Monaco diff panel via
+ * `onOpenDiff(path, after, before)`.
  */
-const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff, style = 'expanded' }: {
+const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff, style = 'expanded', artifactPaths }: {
   fileChanges: FileChangeEntry[]
   onOpenDiff?: (path: string, modified: string, original: string) => void
   style?: FileChipStyle
+  /** Paths the session tracks as documents/artifacts — badged in the expanded
+   *  card so generated docs read distinctly from source-file edits. */
+  artifactPaths?: Set<string>
 }) {
   if (!fileChanges?.length) return null
-  const Chip = RENDERERS[style] ?? ExpandedChip
-  return (
-    <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mt-2 mb-1.5">
-      {fileChanges.map(fc => (
-        <Chip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} />
-      ))}
-    </div>
-  )
+  // Minimal keeps the wrapping pill row; anything else uses the grouped card.
+  if (style === 'minimal') {
+    return (
+      <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mt-2 mb-1.5">
+        {fileChanges.map(fc => (
+          <MinimalChip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} />
+        ))}
+      </div>
+    )
+  }
+  return <ExpandedList fileChanges={fileChanges} onOpenDiff={onOpenDiff} artifactPaths={artifactPaths} />
 })
 
 export default FileChangeChips

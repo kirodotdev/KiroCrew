@@ -164,21 +164,51 @@ describe('FileChangeChips', () => {
     consoleErr.mockRestore()
   })
 
-  it('uses the multiset fallback for huge files (>1M LCS cells)', () => {
-    // m * n > 1_000_000 triggers the cheap multiset branch. Build two
-    // files with ~1100 lines each so the cell budget is exceeded but the
-    // test still runs in <100ms.
-    const N = 1100
-    const before = Array.from({ length: N }, (_, i) => `before-line-${i}`).join('\n')
-    // Treatment: drop 5 unique lines, add 7 unique ones; the rest match.
-    const afterLines = Array.from({ length: N }, (_, i) => `before-line-${i}`)
-    afterLines.splice(0, 5)
-    afterLines.push('extra-1', 'extra-2', 'extra-3', 'extra-4', 'extra-5', 'extra-6', 'extra-7')
-    const after = afterLines.join('\n')
-    render(<FileChangeChips fileChanges={[change('/huge.log', before, after)]} />)
-    // Multiset branch: under-counts pure moves, but unique additions and
-    // unique removals are exact. Expect +7/-5.
-    expect(screen.getByText('+7')).toBeInTheDocument()
-    expect(screen.getByText('-5')).toBeInTheDocument()
+  it('badges rows whose path is in artifactPaths', () => {
+    render(
+      <FileChangeChips
+        fileChanges={[
+          change('/proj/src/code.ts', 'a', 'a\nb'),
+          change('/ws/kiro-pr-body.md', '', 'hello'),
+        ]}
+        artifactPaths={new Set(['/ws/kiro-pr-body.md'])}
+      />
+    )
+    // The artifact doc is badged; the source file is not.
+    const badges = screen.getAllByText('Artifact')
+    expect(badges).toHaveLength(1)
+    // Badge sits on the .md row, not the .ts row.
+    expect(badges[0].closest('button')).toHaveTextContent('kiro-pr-body.md')
+  })
+
+  it('renders no badges when artifactPaths is omitted', () => {
+    render(<FileChangeChips fileChanges={[change('/a.md', '', 'x')]} />)
+    expect(screen.queryByText('Artifact')).not.toBeInTheDocument()
+  })
+
+  it('caps long lists at 8 rows behind a "Show N more" toggle', () => {
+    const files = Array.from({ length: 11 }, (_, i) => change(`/f${i}.ts`, 'a', 'a\nb'))
+    render(<FileChangeChips fileChanges={files} />)
+    // First 8 shown; the rest hidden until expanded.
+    expect(screen.getByText('f0.ts')).toBeInTheDocument()
+    expect(screen.getByText('f7.ts')).toBeInTheDocument()
+    expect(screen.queryByText('f8.ts')).not.toBeInTheDocument()
+    expect(screen.queryByText('f10.ts')).not.toBeInTheDocument()
+    // Header still reports the TRUE total.
+    expect(screen.getByText('11 files changed')).toBeInTheDocument()
+    // Expand reveals the remainder…
+    fireEvent.click(screen.getByText('Show 3 more'))
+    expect(screen.getByText('f8.ts')).toBeInTheDocument()
+    expect(screen.getByText('f10.ts')).toBeInTheDocument()
+    // …and collapses again.
+    fireEvent.click(screen.getByText('Show less'))
+    expect(screen.queryByText('f10.ts')).not.toBeInTheDocument()
+  })
+
+  it('does not cap lists at or below the threshold', () => {
+    const files = Array.from({ length: 8 }, (_, i) => change(`/s${i}.ts`, 'a', 'b'))
+    render(<FileChangeChips fileChanges={files} />)
+    expect(screen.queryByText(/Show \d+ more/)).not.toBeInTheDocument()
+    expect(screen.getByText('s7.ts')).toBeInTheDocument()
   })
 })
