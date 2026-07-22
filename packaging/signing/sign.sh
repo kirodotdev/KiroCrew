@@ -159,6 +159,7 @@ log "Polling for completion (timeout: 15 min)..."
 MAX_WAIT=900  # 15 minutes
 POLL_INTERVAL=30
 ELAPSED=0
+SIGNED_OK=0
 
 while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
   sleep "$POLL_INTERVAL"
@@ -173,6 +174,7 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
   case "$STATUS" in
     success)
       log "Signing completed! (${ELAPSED}s)"
+      SIGNED_OK=1
       break
       ;;
     failure)
@@ -189,7 +191,9 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
   esac
 done
 
-if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+# Gate on the explicit success flag, not elapsed time: success arriving
+# exactly on the final poll tick must not be misread as a timeout.
+if [ "$SIGNED_OK" -ne 1 ]; then
   echo "ERROR: Signing timed out after ${MAX_WAIT}s (sign task: ${SIGN_TASK_ID})" >&2
   exit 5
 fi

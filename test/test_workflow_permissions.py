@@ -73,7 +73,8 @@ class TestNightlyPermissions:
         # Caller job for the reusable sign-and-notarize workflow: a
         # workflow_call callee can never exceed the caller job's permissions,
         # so the caller must grant id-token explicitly. attestations:write
-        # is for the sign job's wheel/sdist/AppImage provenance attestation.
+        # covers the sign job's wheel/sdist/AppImage provenance and the
+        # notarize job's shipping-DMG attestation.
         assert _permission_block(lines, "  sign-and-notarize:") == {
             "id-token": "write",
             "contents": "read",
