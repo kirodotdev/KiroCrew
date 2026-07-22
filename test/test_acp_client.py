@@ -3058,6 +3058,71 @@ class TestKillProcess:
 
         proc.kill.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_kill_process_awaits_async_variant_not_sync(self):
+        """Mesh-2801: _kill_process MUST await platform_compat.kill_process_tree_async
+        (the offloading variant) — never fall back to the sync
+        kill_process_tree, whose whole reason for existing is the Windows
+        event-loop offload. A test that patches only kill_process_tree would
+        silently pass if someone regresses the await back to sync, so pin
+        both symbols and hard-fail if the sync one is ever called."""
+        from kiro_crew import platform_compat
+
+        client = AcpClient()
+        proc = MagicMock()
+        proc.returncode = None
+        proc.pid = 42
+        proc.stdin = proc.stdout = proc.stderr = None
+        proc.wait = AsyncMock(return_value=0)
+        client._process = proc
+        client._pid = 42
+        client._child_pids = {}
+
+        def _sync_forbidden(*_a, **_kw):
+            raise AssertionError("sync variant must NOT be called from _kill_process")
+
+        # SIGTERM path
+        with (
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree_async",
+                new_callable=AsyncMock,
+            ) as mock_async,
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree",
+                side_effect=_sync_forbidden,
+            ),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+        ):
+            await client._kill_process(force=False)
+
+        assert mock_async.await_count == 1
+        assert mock_async.await_args.args == (42, platform_compat.SIGTERM)
+
+        # Reset process state for the SIGKILL path (force=True)
+        proc.returncode = None
+        proc.wait = AsyncMock(return_value=0)
+        client._process = proc
+        client._pid = 42
+        client._child_pids = {}
+
+        with (
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree_async",
+                new_callable=AsyncMock,
+            ) as mock_async_kill,
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree",
+                side_effect=_sync_forbidden,
+            ),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+        ):
+            await client._kill_process(force=True)
+
+        assert mock_async_kill.await_count == 1
+        assert mock_async_kill.await_args.args == (42, platform_compat.SIGKILL)
+
 
 class TestResetStateExtended:
     """Extended _reset_state tests covering sandbox cleanup and PID untracking."""

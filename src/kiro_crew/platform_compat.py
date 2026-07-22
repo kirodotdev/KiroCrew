@@ -8,6 +8,7 @@ POSIX-only.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ctypes.util
 import io
@@ -21,6 +22,8 @@ import sys
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
 from typing import Callable, Iterator, Optional
+
+from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger(__name__)
 
@@ -691,6 +694,46 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
     if r.returncode != 0:
         _raise_taskkill_error(pid, r.returncode, r.stderr or r.stdout)
     return True
+
+
+async def kill_pid_async(pid: int, sig: int = SIGTERM) -> bool:
+    """Async variant of :func:`kill_pid` — offloads Windows ``taskkill`` off the loop.
+
+    Windows kills spawn a ``taskkill.exe`` subprocess (``subprocess.run`` with a
+    5s timeout) — a blocking spawn that stalls the asyncio event loop when
+    called from an ``async def`` coroutine. Offload to
+    :func:`kiro_crew.executors.subprocess_executor` (the same bounded pool the
+    ACP client already uses for its ``ps``/``pgrep`` + ``os.close`` teardown
+    work) so the loop keeps running while ``taskkill`` waits for the target to
+    exit. POSIX ``os.kill`` is a non-blocking syscall — we still call
+    :func:`kill_pid` inline (no executor hop) so the async signature is
+    consistent across platforms AND existing test suites that monkeypatch
+    :func:`kill_pid` continue to intercept the call. Raises the same exception
+    types as :func:`kill_pid` (``ProcessLookupError`` / ``PermissionError`` /
+    ``OSError``).
+    """
+    if IS_POSIX:
+        # Inline dispatch to sync kill_pid: POSIX os.kill is non-blocking, and
+        # keeping this in-process (rather than a to-thread hop) preserves the
+        # exception frame + lets existing tests that patch kill_pid observe it.
+        return kill_pid(pid, sig)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(subprocess_executor(), kill_pid, pid, sig)
+
+
+async def kill_process_tree_async(pid: int, sig: int = SIGTERM) -> bool:
+    """Async variant of :func:`kill_process_tree` — offloads Windows ``taskkill /T``.
+
+    See :func:`kill_pid_async` for the offload rationale. POSIX
+    ``os.killpg`` is non-blocking so this dispatches inline to
+    :func:`kill_process_tree`; the Windows branch spawns ``taskkill /T /F``
+    off the loop via :func:`kiro_crew.executors.subprocess_executor`. Raises
+    the same exceptions as :func:`kill_process_tree`.
+    """
+    if IS_POSIX:
+        return kill_process_tree(pid, sig)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(subprocess_executor(), kill_process_tree, pid, sig)
 
 
 # ---------------------------------------------------------------------------

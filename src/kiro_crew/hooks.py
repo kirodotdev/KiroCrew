@@ -1243,7 +1243,13 @@ async def run_script_hook(
         # signal.SIGKILL are POSIX-only and would AttributeError on win32).
         try:
             if proc.returncode is None:
-                platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+                # Async variant offloads the Windows taskkill spawn — the hook
+                # timeout path already runs on the event loop, so we never want
+                # to stall it further while taskkill.exe walks the tree
+                # (Mesh-2801).
+                await platform_compat.kill_process_tree_async(
+                    proc.pid, platform_compat.SIGKILL
+                )
                 await proc.communicate()
         except Exception:
             pass

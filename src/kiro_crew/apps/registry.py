@@ -1046,15 +1046,22 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     Routed through platform_compat (killpg on POSIX, taskkill /T on Windows) so
     the Brazil app-build timeout path doesn't AttributeError on win32.
     """
+    # Async variants offload Windows taskkill to subprocess_executor so this
+    # Brazil-build timeout path never blocks the event loop on taskkill.exe
+    # (Mesh-2801). POSIX branch stays inline (os.killpg is non-blocking).
     try:
-        platform_compat.kill_process_tree(proc.pid, platform_compat.SIGTERM)
+        await platform_compat.kill_process_tree_async(
+            proc.pid, platform_compat.SIGTERM
+        )
     except OSError:
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_PERIOD)
     except asyncio.TimeoutError:
         try:
-            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+            await platform_compat.kill_process_tree_async(
+                proc.pid, platform_compat.SIGKILL
+            )
         except OSError:
             proc.kill()
         await proc.wait()

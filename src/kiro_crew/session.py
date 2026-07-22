@@ -2127,19 +2127,28 @@ class SessionManager:
             # Imported unconditionally so _kill_escaped_children is always
             # defined for the post-shutdown sweep below.
             from kiro_crew.acp.client import (
+                _capture_child_records,
                 _get_child_pids,
-                _get_start_time,
                 _kill_escaped_children,
-                _read_basename,
             )
 
             if pid:
                 # Snapshot child tree before shutdown. PIDs may be recycled
                 # between snapshot and kill, but _kill_escaped_children uses
                 # start-time comparison to skip recycled PIDs safely.
-                for p in _get_child_pids(pid):
-                    if p not in child_pids:
-                        child_pids[p] = (_get_start_time(p), _read_basename(p))
+                # macOS pgrep/ps spawns are offloaded to subprocess_executor
+                # to keep the reset path responsive (Mesh-2801 scope expansion).
+                _loop = asyncio.get_running_loop()
+                fresh = await _loop.run_in_executor(
+                    subprocess_executor(), _get_child_pids, pid
+                )
+                new_pids = [p for p in fresh if p not in child_pids]
+                if new_pids:
+                    child_pids.update(
+                        await _loop.run_in_executor(
+                            subprocess_executor(), _capture_child_records, new_pids
+                        )
+                    )
             await session.provider.shutdown()
             # Verify process is actually dead; force-kill entire tree if not.
             # os.kill(pid, 0) would *terminate* the process on Windows, so probe
@@ -2149,10 +2158,17 @@ class SessionManager:
                     # Still alive after shutdown — force kill process group
                     logger.warning("Reset %s: PID %d survived shutdown, force-killing", key, pid)
                     try:
-                        platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
+                        # Async variants offload Windows taskkill to
+                        # subprocess_executor so this reset path never blocks
+                        # the event loop on taskkill.exe (Mesh-2801).
+                        await platform_compat.kill_process_tree_async(
+                            pid, platform_compat.SIGKILL
+                        )
                     except (ProcessLookupError, OSError):
                         try:
-                            platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+                            await platform_compat.kill_pid_async(
+                                pid, platform_compat.SIGKILL
+                            )
                         except (ProcessLookupError, OSError):
                             pass
                 # Sweep children in different PGIDs (MCP servers) even when
@@ -2160,7 +2176,12 @@ class SessionManager:
                 # outlive the root.
                 if child_pids:
                     try:
-                        _kill_escaped_children(child_pids)
+                        # macOS `ps` spawns inside _is_our_child; offload
+                        # to subprocess_executor (Mesh-2801 scope expansion).
+                        _sweep_loop = asyncio.get_running_loop()
+                        await _sweep_loop.run_in_executor(
+                            subprocess_executor(), _kill_escaped_children, child_pids
+                        )
                     except Exception:
                         logger.exception("Reset %s: child sweep failed", key)
             # Kill the shared subagent runtime associated with this session

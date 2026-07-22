@@ -129,11 +129,13 @@ class TestCronReaper:
 
         with patch("kiro_crew.sel.sel"), patch(
             "kiro_crew.cron._REAPER_RESET_TIMEOUT", 0.05
-        ), patch.object(svc, "_sigkill_session") as mock_kill, patch.object(svc, "_save"):
+        ), patch.object(
+            svc, "_sigkill_session", new_callable=AsyncMock
+        ) as mock_kill, patch.object(svc, "_save"):
             await svc._force_reap("hang1", _JOB_TIMEOUT_SECS + 60)
 
         assert job.last_status == "error"
-        mock_kill.assert_called_once_with("cron:hang1")
+        mock_kill.assert_awaited_once_with("cron:hang1")
 
     @pytest.mark.asyncio
     async def test_reaper_sigkill_on_reset_exception(self, tmp_path: object) -> None:
@@ -150,12 +152,12 @@ class TestCronReaper:
         svc._running_tasks["exc1"] = MagicMock(done=MagicMock(return_value=False))
 
         with patch("kiro_crew.sel.sel"), patch.object(
-            svc, "_sigkill_session"
+            svc, "_sigkill_session", new_callable=AsyncMock
         ) as mock_kill, patch.object(svc, "_save"):
             await svc._force_reap("exc1", _JOB_TIMEOUT_SECS + 10)
 
         assert job.last_status == "error"
-        mock_kill.assert_called_once_with("cron:exc1")
+        mock_kill.assert_awaited_once_with("cron:exc1")
 
     @pytest.mark.asyncio
     async def test_reaper_cancels_asyncio_task(self, tmp_path: object) -> None:

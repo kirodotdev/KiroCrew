@@ -1078,3 +1078,206 @@ class TestFindListeningPidsErrors:
             assert os.getpid() in pids, f"expected pid {os.getpid()} in {pids}"
         finally:
             s.close()
+
+
+class TestKillAsyncVariants:
+    """Regression guards for the async ``kill_pid_async`` / ``kill_process_tree_async``
+    variants (Mesh-2801).
+
+    The async wrappers exist so async call sites can offload the blocking
+    Windows ``taskkill`` spawn to :func:`kiro_crew.executors.subprocess_executor`
+    without stalling the event loop. The POSIX branch dispatches inline to the
+    sync ``kill_pid`` / ``kill_process_tree`` (``os.kill`` / ``os.killpg`` are
+    non-blocking, and preserving the same callable keeps existing tests that
+    patch the sync entrypoints working). Windows offload is exercised via
+    monkeypatching IS_WINDOWS + subprocess.run so the branch is covered on
+    the Linux CI fleet.
+    """
+
+    def test_posix_kill_pid_async_dispatches_inline_to_kill_pid(self, monkeypatch):
+        """POSIX branch: kill_pid_async calls kill_pid synchronously so tests
+        that patch platform_compat.kill_pid observe the call unchanged."""
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        seen: list[tuple[int, int]] = []
+
+        def fake_kill_pid(pid: int, sig: int) -> bool:
+            seen.append((pid, sig))
+            return True
+
+        monkeypatch.setattr(pc, "kill_pid", fake_kill_pid)
+        import asyncio as _asyncio
+
+        result = _asyncio.new_event_loop().run_until_complete(
+            pc.kill_pid_async(4242, pc.SIGKILL)
+        )
+        assert result is True
+        assert seen == [(4242, pc.SIGKILL)]
+
+    def test_posix_kill_process_tree_async_dispatches_inline(self, monkeypatch):
+        """POSIX branch: kill_process_tree_async calls kill_process_tree inline
+        (same-callable dispatch keeps existing patch-based tests working)."""
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        seen: list[tuple[int, int]] = []
+
+        def fake_kill_tree(pid: int, sig: int) -> bool:
+            seen.append((pid, sig))
+            return True
+
+        monkeypatch.setattr(pc, "kill_process_tree", fake_kill_tree)
+        import asyncio as _asyncio
+
+        result = _asyncio.new_event_loop().run_until_complete(
+            pc.kill_process_tree_async(9999, pc.SIGTERM)
+        )
+        assert result is True
+        assert seen == [(9999, pc.SIGTERM)]
+
+    def test_posix_kill_pid_async_propagates_process_lookup_error(self, monkeypatch):
+        """POSIX branch propagates ProcessLookupError from kill_pid — callers'
+        ``except (ProcessLookupError, OSError)`` guards must still fire."""
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+
+        def raiser(*_a, **_kw):
+            raise ProcessLookupError("gone")
+
+        monkeypatch.setattr(pc, "kill_pid", raiser)
+        import asyncio as _asyncio
+
+        loop = _asyncio.new_event_loop()
+        with pytest.raises(ProcessLookupError):
+            loop.run_until_complete(pc.kill_pid_async(1, pc.SIGKILL))
+
+    def test_windows_kill_pid_async_offloads_via_subprocess_executor(self, monkeypatch):
+        """Windows branch: kill_pid_async submits the taskkill spawn to
+        subprocess_executor() (so the event loop never blocks on taskkill.exe).
+
+        Monkeypatched on Linux by flipping IS_WINDOWS and stubbing the executor
+        to a synchronous callable-runner; asserts the run_in_executor path was
+        taken by observing the executor sentinel captured at call time.
+        """
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        # Fake subprocess_executor sentinel — anything hashable-and-truthy.
+        sentinel = object()
+        seen_executors: list[object] = []
+
+        # Stub subprocess.run so kill_pid returns success without spawning.
+        def fake_run(*_a, **_kw):
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(pc.subprocess, "run", fake_run)
+
+        # Patch the `subprocess_executor` name bound in the platform_compat
+        # module namespace (top-level `from kiro_crew.executors import ...`)
+        # to return our sentinel.
+        monkeypatch.setattr(pc, "subprocess_executor", lambda: sentinel)
+
+        # Intercept the loop's run_in_executor to record which executor is used.
+        import asyncio as _asyncio
+
+        real_loop = _asyncio.new_event_loop()
+
+        async def _driver() -> bool:
+            loop = _asyncio.get_running_loop()
+            orig_rie = loop.run_in_executor
+
+            def spy(executor, func, *args):
+                seen_executors.append(executor)
+                # Run the callable inline in a completed future so we don't
+                # actually need the sentinel to be a real Executor.
+                fut: _asyncio.Future[bool] = loop.create_future()
+                try:
+                    fut.set_result(func(*args))
+                except BaseException as exc:  # pragma: no cover — defensive
+                    fut.set_exception(exc)
+                return fut
+
+            loop.run_in_executor = spy  # type: ignore[method-assign]
+            try:
+                return await pc.kill_pid_async(1234, pc.SIGKILL)
+            finally:
+                loop.run_in_executor = orig_rie  # type: ignore[method-assign]
+
+        result = real_loop.run_until_complete(_driver())
+        assert result is True
+        assert seen_executors == [sentinel], (
+            f"expected the subprocess_executor sentinel, got {seen_executors!r}"
+        )
+
+    def test_windows_kill_process_tree_async_offloads_via_subprocess_executor(
+        self, monkeypatch
+    ):
+        """Same offload contract as kill_pid_async but for the /T variant."""
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        sentinel = object()
+        seen_executors: list[object] = []
+
+        monkeypatch.setattr(
+            pc.subprocess,
+            "run",
+            lambda *_a, **_kw: types.SimpleNamespace(
+                returncode=0, stdout=b"", stderr=b""
+            ),
+        )
+        monkeypatch.setattr(pc, "subprocess_executor", lambda: sentinel)
+
+        import asyncio as _asyncio
+
+        real_loop = _asyncio.new_event_loop()
+
+        async def _driver() -> bool:
+            loop = _asyncio.get_running_loop()
+
+            def spy(executor, func, *args):
+                seen_executors.append(executor)
+                fut: _asyncio.Future[bool] = loop.create_future()
+                fut.set_result(func(*args))
+                return fut
+
+            loop.run_in_executor = spy  # type: ignore[method-assign]
+            return await pc.kill_process_tree_async(5678, pc.SIGTERM)
+
+        assert real_loop.run_until_complete(_driver()) is True
+        assert seen_executors == [sentinel]
+
+    def test_windows_kill_pid_async_propagates_taskkill_rc128(self, monkeypatch):
+        """Windows offload preserves the taskkill rc→exception mapping:
+        rc=128 must still surface as ProcessLookupError so the callers'
+        ``except (ProcessLookupError, OSError)`` guards fire.
+        """
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc.subprocess,
+            "run",
+            lambda *_a, **_kw: types.SimpleNamespace(
+                returncode=128, stdout=b"", stderr=b"not found"
+            ),
+        )
+        monkeypatch.setattr(pc, "subprocess_executor", lambda: object())
+
+        import asyncio as _asyncio
+
+        async def _driver() -> None:
+            loop = _asyncio.get_running_loop()
+
+            def spy(_executor, func, *args):
+                fut: _asyncio.Future = loop.create_future()
+                try:
+                    fut.set_result(func(*args))
+                except BaseException as exc:
+                    fut.set_exception(exc)
+                return fut
+
+            loop.run_in_executor = spy  # type: ignore[method-assign]
+            await pc.kill_pid_async(99999, pc.SIGKILL)
+
+        loop = _asyncio.new_event_loop()
+        with pytest.raises(ProcessLookupError):
+            loop.run_until_complete(_driver())

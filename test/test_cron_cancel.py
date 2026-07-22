@@ -162,7 +162,8 @@ class TestCronServiceCancel:
 class TestSubprocessRegistry:
     """cron_script running-subprocess registry + kill."""
 
-    def test_sigkill_session_guard_refusal_still_kills_pid(self):
+    @pytest.mark.asyncio
+    async def test_sigkill_session_guard_refusal_still_kills_pid(self):
         """Reaper: when the broadcast guard refuses the pgid, the runaway
         process must still be reaped via a scoped os.kill (never killpg)."""
         svc = CronService(base_dir=None, on_job=AsyncMock())
@@ -182,7 +183,7 @@ class TestSubprocessRegistry:
              patch("os.getpgid", return_value=1), \
              patch("os.killpg") as mock_killpg, \
              patch("os.kill") as mock_kill:
-            svc._sigkill_session("cron:guard")
+            await svc._sigkill_session("cron:guard")
 
         mock_killpg.assert_not_called()
         mock_kill.assert_called_once()

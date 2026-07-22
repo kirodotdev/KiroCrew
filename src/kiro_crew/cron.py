@@ -492,10 +492,10 @@ class CronService:
                 )
             except asyncio.TimeoutError:
                 logger.warning("Reaper: reset hung for cron %s, attempting SIGKILL", job_id)
-                self._sigkill_session(session_key)
+                await self._sigkill_session(session_key)
             except Exception:
                 logger.exception("Reaper: reset failed for cron %s, attempting SIGKILL", job_id)
-                self._sigkill_session(session_key)
+                await self._sigkill_session(session_key)
 
         # Cancel the asyncio task and clean up tracking state directly.
         # Don't rely on _run_job_isolated's finally — the reaper exists for
@@ -554,22 +554,30 @@ class CronService:
         except Exception:
             logger.exception("Reaper: SEL audit failed for cron %s", job_id)
 
-    def _sigkill_session(self, session_key: str) -> None:
+    async def _sigkill_session(self, session_key: str) -> None:
         """Best-effort SIGKILL when graceful reset hangs.
 
         Uses killpg to kill the entire process group, then sweeps
         escaped children in different PGIDs (MCP servers).
+
+        Async so the Windows ``taskkill`` spawn offloads to
+        :func:`kiro_crew.executors.subprocess_executor` via
+        :func:`platform_compat.kill_process_tree_async` / ``kill_pid_async``
+        instead of blocking the reaper loop's event loop for the duration of
+        ``taskkill.exe`` (Mesh-2801). The child-tree probe helpers
+        (``_get_child_pids`` / ``_get_start_time`` / ``_read_basename``) also
+        shell out to ``ps`` / ``pgrep`` on macOS, so they are offloaded to the
+        same executor.
         """
         if not self._sessions:
             return
         try:
             # circular import: cron → acp.client → session → cron
             from kiro_crew.acp.client import (
+                _capture_child_records,
                 _get_child_pids,
-                _get_start_time,
                 _is_our_child,
                 _kill_escaped_children,
-                _read_basename,
             )
 
             session = self._sessions._sessions.get(session_key)
@@ -583,24 +591,37 @@ class CronService:
                 logger.warning("Reaper: no usable PID (%r) for %s", raw_pid, session_key)
                 return
             # Snapshot child tree before killing — children in different
-            # PGIDs survive killpg.
+            # PGIDs survive killpg. The macOS pgrep/ps spawns happen on the
+            # subprocess_executor so the loop keeps ticking (Mesh-2801).
+            loop = asyncio.get_running_loop()
             raw_children = getattr(client, "_child_pids", None)
             child_pids: dict = (
                 dict(raw_children) if isinstance(raw_children, dict) else {}
             )
-            for p in _get_child_pids(pid):
-                if p not in child_pids:
-                    child_pids[p] = (_get_start_time(p), _read_basename(p))
+            fresh = await loop.run_in_executor(subprocess_executor(), _get_child_pids, pid)
+            new_pids = [p for p in fresh if p not in child_pids]
+            if new_pids:
+                child_pids.update(
+                    await loop.run_in_executor(
+                        subprocess_executor(), _capture_child_records, new_pids
+                    )
+                )
             # Validate PID hasn't been recycled before killing.
             original_start = getattr(client, "_start_time", None)
             if original_start is None:
                 logger.debug("Reaper: PID %d already dead for %s", pid, session_key)
-                _kill_escaped_children(child_pids)
+                await loop.run_in_executor(
+                    subprocess_executor(), _kill_escaped_children, child_pids
+                )
                 return
-            if not _is_our_child(pid, expected_start=original_start):
+            if not await loop.run_in_executor(
+                subprocess_executor(), _is_our_child, pid, original_start
+            ):
                 logger.warning("Reaper: PID %d recycled for %s, skipping killpg", pid, session_key)
                 stored = dict(raw_children) if isinstance(raw_children, dict) else {}
-                _kill_escaped_children(stored)
+                await loop.run_in_executor(
+                    subprocess_executor(), _kill_escaped_children, stored
+                )
                 return
             # Kill the entire process group first
             logger.warning(
@@ -613,18 +634,22 @@ class CronService:
                 # killpg(getpgid) on POSIX, taskkill /T on Windows — routed
                 # through platform_compat, whose POSIX path carries the
                 # broadcast guard (refuses pgid<=1 / own group; see
-                # platform_compat.kill_process_tree).
-                platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
+                # platform_compat.kill_process_tree). Async variant offloads
+                # Windows taskkill to subprocess_executor so the reaper loop
+                # never blocks the event loop on taskkill.exe (Mesh-2801).
+                await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
             except ValueError:
                 # Guard refused the pid outright (non-int/reserved) — nothing
                 # safe to signal.
                 logger.error("Reaper: kill guard refused pid %r for %s", pid, session_key)
             except (ProcessLookupError, OSError):
                 try:
-                    platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+                    await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
                 except (ProcessLookupError, OSError):
                     pass
-            _kill_escaped_children(child_pids)
+            await loop.run_in_executor(
+                subprocess_executor(), _kill_escaped_children, child_pids
+            )
         except Exception:
             logger.exception("Reaper: SIGKILL failed for %s", session_key)
 
@@ -667,14 +692,10 @@ class CronService:
                 )
             except asyncio.TimeoutError:
                 logger.warning("Cancel: reset hung for cron %s, attempting SIGKILL", job_id)
-                await asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(), self._sigkill_session, session_key
-                )
+                await self._sigkill_session(session_key)
             except Exception:
                 logger.exception("Cancel: reset failed for cron %s, attempting SIGKILL", job_id)
-                await asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(), self._sigkill_session, session_key
-                )
+                await self._sigkill_session(session_key)
 
         # 3. Cancel the asyncio task and clean up tracking state directly
         # (idempotent with _run_job_isolated's finally).

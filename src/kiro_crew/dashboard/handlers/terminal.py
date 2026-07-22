@@ -247,7 +247,12 @@ async def _kill_session(sess: _TerminalSession) -> None:
         # keeping a single shim call site avoids a raw-os.killpg vs shim
         # inconsistency across the module, and the tests all patch the shim.
         try:
-            platform_compat.kill_process_tree(sess.proc.pid, platform_compat.SIGTERM)
+            # Async variants offload Windows taskkill to subprocess_executor
+            # so this PTY teardown path never blocks the event loop on
+            # taskkill.exe (Mesh-2801). POSIX os.killpg stays inline.
+            await platform_compat.kill_process_tree_async(
+                sess.proc.pid, platform_compat.SIGTERM
+            )
         except (ProcessLookupError, PermissionError):
             # PermissionError (EPERM): the child made the PTY its controlling
             # terminal (TIOCSCTTY) and leads a session/group we can't signal.
@@ -257,7 +262,9 @@ async def _kill_session(sess: _TerminalSession) -> None:
             await asyncio.wait_for(sess.proc.wait(), timeout=5)
         except asyncio.TimeoutError:
             try:
-                platform_compat.kill_process_tree(sess.proc.pid, platform_compat.SIGKILL)
+                await platform_compat.kill_process_tree_async(
+                    sess.proc.pid, platform_compat.SIGKILL
+                )
             except (ProcessLookupError, PermissionError):
                 pass
             try:

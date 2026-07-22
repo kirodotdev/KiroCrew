@@ -634,13 +634,16 @@ class TestSubagentReaper:
         manager._agents["hang0001"] = info
         manager._running_count = 1
 
+        # _sigkill_session is async (Mesh-2801 offloaded the Windows taskkill
+        # to subprocess_executor via kill_process_tree_async), so callers now
+        # await it — the patch must be AsyncMock or asyncio complains.
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
             "kiro_crew.subagent._RESET_TIMEOUT", 0.1
-        ), patch.object(manager, "_sigkill_session") as mock_kill:
+        ), patch.object(manager, "_sigkill_session", new_callable=AsyncMock) as mock_kill:
             await manager._force_reap("hang0001", info, _TIMEOUT_SECS + 60)
 
         assert info.done is True
-        mock_kill.assert_called_once_with("subagent:hang0001")
+        mock_kill.assert_awaited_once_with("subagent:hang0001")
 
     @pytest.mark.asyncio
     async def test_run_finally_timeout_on_reset(self) -> None:
@@ -664,9 +667,10 @@ class TestSubagentReaper:
         manager._agents["slow0001"] = info
         manager._running_count = 1
 
+        # _sigkill_session is async (Mesh-2801) — patch with AsyncMock.
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
             "kiro_crew.subagent._RESET_TIMEOUT", 0.1
-        ), patch.object(manager, "_sigkill_session"):
+        ), patch.object(manager, "_sigkill_session", new_callable=AsyncMock):
             await manager._run(info)
 
         # Should complete without hanging

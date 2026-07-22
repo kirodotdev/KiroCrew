@@ -138,7 +138,12 @@ async def _run_lifecycle_script(
         except asyncio.TimeoutError:
             try:
                 # killpg on POSIX, taskkill /T on Windows — via platform_compat.
-                platform_compat.kill_process_tree(proc.pid, platform_compat.SIGTERM)
+                # Async variant offloads the Windows taskkill spawn to
+                # subprocess_executor so this lifecycle-script timeout path
+                # never blocks the event loop on taskkill.exe (Mesh-2801).
+                await platform_compat.kill_process_tree_async(
+                    proc.pid, platform_compat.SIGTERM
+                )
             except OSError:
                 proc.kill()
             try:
