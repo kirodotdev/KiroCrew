@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
-import { resolveByApprovalId, openActivityToTool, selectSlotPendingApproval } from '../store/chatSlice'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
@@ -462,6 +462,15 @@ function ChatInput({
       api.resolveApproval(approvalId, toApiDecision(decision)).then(finish).catch(fail)
     }
   }, [approvalId, activeSlot, dispatch])
+
+  // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
+  // Surfaced as a top-level REMINDER only — the banner does not resolve
+  // approvals itself. Doing so would duplicate the side panel's per-sub-agent
+  // Approve/Reject and let the user submit conflicting decisions through two
+  // controls for the same id. Clicking the banner opens the Subagents panel
+  // where each sub-agent is approved individually.
+  const pendingSpawnApprovals = useAppSelector(s => selectSlotPendingSpawnApprovals(s, slotId), shallowEqual)
+  const reviewSpawnApprovals = useCallback(() => { dispatch(openActivityToTab('subagents')) }, [dispatch])
 
   const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
@@ -1585,6 +1594,40 @@ function ChatInput({
       >
         <div className="w-12 h-[3px] rounded-full bg-border group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-all duration-200 opacity-0 group-hover/drag:opacity-100" />
       </div>}
+
+      {/* Sub-agent spawn-approval reminder — a top-level signal that one or more
+       *  sub-agents are queued awaiting the user's approval to run. Reminder-only:
+       *  the whole banner is a button that opens the Subagents panel, where each
+       *  sub-agent is approved individually. We deliberately do NOT render
+       *  Approve/Reject here to avoid duplicating the panel's controls. */}
+      <AnimatePresence>
+        {pendingSpawnApprovals.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
+          >
+            <button
+              type="button"
+              onClick={reviewSpawnApprovals}
+              className="w-full text-left bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border rounded-2xl mb-2 approval-glow cursor-pointer hover:border-border-strong transition-colors"
+            >
+              <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none">
+                <Bot size={13} className="text-warn shrink-0" />
+                <span className="text-[13px] font-body text-muted flex-1 min-w-0">
+                  {pendingSpawnApprovals.length === 1
+                    ? '1 sub-agent is awaiting your approval to run'
+                    : `${pendingSpawnApprovals.length} sub-agents are awaiting your approval to run`}
+                </span>
+                <span className="inline-flex items-center gap-1 text-[11px] text-muted shrink-0">
+                  <Target size={11} className="shrink-0" />Review in panel
+                </span>
+              </div>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Approval bar — always-visible button row, with a "ghost pill"
        *  detail mirror that grows in when the inline pill scrolls out of

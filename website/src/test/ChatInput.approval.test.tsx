@@ -266,3 +266,63 @@ describe('ChatInput approval flow', () => {
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
   })
 })
+
+function stateWithPendingSpawn(count = 1): Partial<RootState> {
+  const subagents: Record<string, unknown> = {}
+  for (let i = 1; i <= count; i++) {
+    subagents[`a${i}`] = {
+      id: `a${i}`, task: `task ${i}`, agent: '', status: 'pending',
+      streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
+      approval_id: `spawn:a${i}`,
+    }
+  }
+  return {
+    chat: {
+      activeSlot: 'slot-1',
+      messages: [{ role: 'user', content: 'go' }],
+      toolLog: [],
+      subagents,
+      slotActivity: {},
+      slotStatusDetail: {},
+    } as unknown as RootState['chat'],
+    dashboard: {
+      slots: [{ key: 'slot-1', messages: 1, running: false, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+      approvalMode: 'normal', connected: true, channelTrusted: false,
+      refreshTrigger: 0, unreadSlots: [], updateProgress: null,
+    } as unknown as RootState['dashboard'],
+  }
+}
+
+describe('ChatInput sub-agent spawn-approval reminder', () => {
+  it('surfaces a top-level reminder when a sub-agent awaits approval', () => {
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.getByText(/1 sub-agent is awaiting your approval to run/)).toBeInTheDocument()
+    expect(screen.getByText('Review in panel')).toBeInTheDocument()
+    // Reminder-only: no inline Approve/Reject (would duplicate the side panel's controls)
+    expect(screen.queryByText('Approve')).not.toBeInTheDocument()
+    expect(screen.queryByText('Approve all')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reject')).not.toBeInTheDocument()
+  })
+
+  it('pluralizes for multiple pending spawns', () => {
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.getByText(/3 sub-agents are awaiting your approval to run/)).toBeInTheDocument()
+  })
+
+  it('clicking the reminder opens the Subagents panel and resolves nothing', () => {
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /awaiting your approval to run/i }))
+    expect(store.getState().chat.activityTab).toBe('subagents')
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(api.resolveApproval).not.toHaveBeenCalled()
+  })
+
+  it('does not render the reminder when there are no pending spawns', () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
+  })
+})

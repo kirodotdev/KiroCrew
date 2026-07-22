@@ -613,6 +613,30 @@ export const selectSlotSubagentsActive = (state: RootState, slot: string): boole
   return false
 }
 
+// Stable empty result so the selector is referentially stable (with shallowEqual)
+// when a slot has no pending spawn approvals — avoids needless re-renders.
+const _EMPTY_PENDING_SPAWNS: SubagentActivity[] = []
+
+/**
+ * Pending sub-agent SPAWN approvals for a slot — sub-agents queued to run but
+ * blocked on the user's approval (status 'pending' + an approval_id).
+ *
+ * The backend broadcasts a spawn approval as a WS `approval` event with
+ * id `spawn:<agent_id>`; useWebSocket routes it into `sseSubagentPending`, so
+ * it only ever renders as a pending card in the side panel's Subagents tab —
+ * there is NO inline chat prompt and NO notification. This selector lets the
+ * composer surface a top-level "awaiting approval" banner so the user knows an
+ * action is required without hunting through the side panel. Use with
+ * `shallowEqual`.
+ */
+export const selectSlotPendingSpawnApprovals = (state: RootState, slot: string | null): SubagentActivity[] => {
+  if (!slot) return _EMPTY_PENDING_SPAWNS
+  const subs = getSlotSubs(state.chat, slot)
+  if (!subs) return _EMPTY_PENDING_SPAWNS
+  const out = Object.values(subs).filter(a => a.status === 'pending' && !!a.approval_id)
+  return out.length ? out : _EMPTY_PENDING_SPAWNS
+}
+
 /**
  * Single source of truth for "is this slot's composer busy" — the signal that
  * queues the next message (busy affordance) and skips the optimistic user

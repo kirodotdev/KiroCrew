@@ -37,6 +37,7 @@ import reducer, {
   editQueuedMessage,
   cancelQueuedMessage,
   selectSlotSubagentsActive,
+  selectSlotPendingSpawnApprovals,
   selectComposerBusy,
 } from '../store/chatSlice'
 import './mockApiClient'
@@ -1827,5 +1828,46 @@ describe('createSlot.fulfilled switched-away guard (Mesh-2908)', () => {
     const state = reducer(busy, fulfilled('new-slot', null))
     expect(state.activeSlot).toBe('slot-b')
     expect(state.creatingSlot).toBe(false)
+  })
+})
+
+describe('selectSlotPendingSpawnApprovals', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+  const withSlot = { ...initial, activeSlot: 'slot-1' }
+  const wrap = (chat: typeof initial) => ({ chat }) as any
+
+  it('returns pending spawn approvals for the active slot', () => {
+    const state = reducer(withSlot, sseSubagentPending({ slot: 'slot-1', id: 'a1', task: 'do stuff', approval_id: 'spawn:a1' }))
+    const pending = selectSlotPendingSpawnApprovals(wrap(state), 'slot-1')
+    expect(pending).toHaveLength(1)
+    expect(pending[0].id).toBe('a1')
+    expect(pending[0].approval_id).toBe('spawn:a1')
+  })
+
+  it('is empty (stable ref) when the slot has no pending spawns', () => {
+    const a = selectSlotPendingSpawnApprovals(wrap(withSlot), 'slot-1')
+    const b = selectSlotPendingSpawnApprovals(wrap(withSlot), 'slot-1')
+    expect(a).toHaveLength(0)
+    expect(a).toBe(b) // referentially stable so shallowEqual short-circuits re-renders
+  })
+
+  it('returns empty for a null slot', () => {
+    expect(selectSlotPendingSpawnApprovals(wrap(withSlot), null)).toHaveLength(0)
+  })
+
+  it('drops the approval once the sub-agent starts running', () => {
+    let state = reducer(withSlot, sseSubagentPending({ slot: 'slot-1', id: 'a1', task: 't', approval_id: 'spawn:a1' }))
+    expect(selectSlotPendingSpawnApprovals(wrap(state), 'slot-1')).toHaveLength(1)
+    state = reducer(state, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 't', agent: 'kirocrew' }))
+    expect(selectSlotPendingSpawnApprovals(wrap(state), 'slot-1')).toHaveLength(0)
+  })
+
+  it('surfaces pending spawns parked under a background (non-active) slot', () => {
+    // Pending card for a slot the user is NOT currently viewing lands in
+    // slotActivity[slot]; the selector must still find it when queried by slot.
+    const state = reducer(withSlot, sseSubagentPending({ slot: 'bg-slot', id: 'a2', task: 't', approval_id: 'spawn:a2' }))
+    const pending = selectSlotPendingSpawnApprovals(wrap(state), 'bg-slot')
+    expect(pending).toHaveLength(1)
+    expect(pending[0].id).toBe('a2')
   })
 })
