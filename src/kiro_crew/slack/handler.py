@@ -83,7 +83,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session import SessionManager
+from kiro_crew.session import SessionClosingError, SessionManager
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -3043,6 +3043,23 @@ async def handle_message(
         # ── Early cancellation check: bail before expensive LLM call ──
         if sessions.is_cancelled(session_key, msg_ts):
             logger.info("Message %s cancelled before LLM call — skipping", msg_ts)
+            await slack.set_thread_status(channel, reply_ts, "")
+            return
+
+        # Lease-dispatch race gate (Codex HIGH): the session lease was taken by
+        # get_or_create above, but the turn only opens on the first stream
+        # iteration below. If a gateway restart moved the SessionManager into the
+        # closing state during the async prep between, dispatching now would open
+        # a turn ABSENT from the shutdown drain snapshot → killed mid-turn with
+        # its native lock held (empty-response bug). Re-check SYNCHRONOUSLY here
+        # (no await between this check and the async-for) so the _closing read
+        # and the stream's turn registration are one atomic span, strictly
+        # ordered w.r.t. close_all's _closing set. Abort if closing (the outer
+        # finally releases the lease).
+        try:
+            sessions.begin_turn(session_key)
+        except SessionClosingError:
+            logger.info("Aborting Slack dispatch for %s — gateway shutting down", session_key)
             await slack.set_thread_status(channel, reply_ts, "")
             return
 

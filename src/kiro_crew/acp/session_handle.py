@@ -301,6 +301,19 @@ class AcpSessionHandle:
             and self._runtime.is_alive()
         )
 
+    @property
+    def has_unfinished_turn(self) -> bool:
+        """True if the native turn has not reached its done boundary and the
+        runtime is alive — INDEPENDENT of ``_cancelled`` (unlike
+        :attr:`is_turn_active`).
+
+        A turn that has been ``cancel()``'d but whose turn-done ack has not yet
+        arrived still holds the native turn open; the shutdown drain must still
+        wait on it before the runtime is killed, or kiro-cli's session lock is
+        left held (the empty-response-after-restart bug).
+        """
+        return (not self._turn_done.is_set()) and self._runtime.is_alive()
+
     async def wait_turn_done(self, timeout: float = 30.0) -> bool:
         """Wait for the current turn to complete. Returns True if done, False on timeout."""
         try:

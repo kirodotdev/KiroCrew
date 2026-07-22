@@ -29,6 +29,7 @@ def _mock_provider_factory():
         m.start = AsyncMock()
         m.shutdown = AsyncMock()
         m.context_usage_pct = lambda: 0.0
+        m.has_active_turn = lambda: False
         return m
 
     return factory
@@ -46,6 +47,7 @@ def _alive_provider_factory():
         m.is_process_alive = lambda: True
         m.is_alive = lambda: True
         m.context_usage_pct = lambda: 0.0
+        m.has_active_turn = lambda: False
         return m
 
     return factory

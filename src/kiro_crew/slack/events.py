@@ -716,7 +716,16 @@ async def _handle_restart(
             # peer, and os._exit() below would otherwise never be reached.
             # asyncio.TimeoutError subclasses Exception, so the handler proceeds
             # to exit on timeout.
-            await asyncio.wait_for(orch.sessions.close_all(), timeout=5.0)
+            #
+            # drain_timeout=2.0 keeps the pre-shutdown drain (internally bounded
+            # to drain_timeout+1.0 = 3s) well inside this 5s outer deadline, so
+            # the kill path still runs afterwards. close_all deliberately does
+            # NOT catch CancelledError (propagates to keep this 5s deadline
+            # honest); a still-held lock from a pathological overrun is recovered
+            # by the orphan reaper on next startup.
+            await asyncio.wait_for(
+                orch.sessions.close_all(drain_timeout=2.0), timeout=5.0
+            )
     except Exception:
         logger.debug("Session cleanup before restart failed", exc_info=True)
     # Flush the SEL audit queue: logging is async (background writer thread +

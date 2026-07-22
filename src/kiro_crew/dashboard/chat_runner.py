@@ -149,6 +149,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session import SessionClosingError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.stats import Stats
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
@@ -2817,6 +2818,23 @@ async def _run_chat(
         _turn_credits = 0.0
         _turn_cost_usd = 0.0
         _turn_msg_boundary = len(slot.messages)
+
+        # Lease-dispatch race gate (Codex HIGH): this session's semaphore lease
+        # was taken by get_or_create above, but the provider turn only opens on
+        # the first stream iteration below. If a gateway restart / Make-Live
+        # cutover moved the SessionManager into the closing state during the
+        # async prep between, dispatching now would open a turn ABSENT from the
+        # shutdown drain snapshot → killed mid-turn with its native lock held
+        # (empty-response bug). Re-check SYNCHRONOUSLY here — no await between
+        # this check and the async-for — so the _closing read and the stream's
+        # turn registration (AcpClient.stream_events clears _turn_done before its
+        # first await) are one atomic span, strictly ordered w.r.t. close_all's
+        # _closing set. Abort (lease released by the outer finally) if closing.
+        try:
+            state.sessions.begin_turn(session_key)
+        except SessionClosingError:
+            logger.info("Aborting dispatch for %s — gateway is shutting down", session_key)
+            return
         async for event in event_stream:
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:

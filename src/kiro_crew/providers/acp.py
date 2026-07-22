@@ -998,6 +998,29 @@ class AcpProvider(LLMProvider):
         """True if a prompt is in flight (and not yet cancelled) on the client."""
         return bool(self._client) and self._client.has_active_turn()
 
+    def has_unfinished_turn(self) -> bool:
+        """True if the client reports a native turn that has NOT reached its
+        done boundary — INDEPENDENT of cancel state (unlike
+        :meth:`has_active_turn`).
+
+        Used by the shutdown drain so an already-cancelled turn whose native ack
+        has not yet arrived is still drained (waited on) before the process is
+        killed — otherwise kiro-cli is killed with the native turn open and its
+        session lock held (the empty-response-after-restart bug, #200).
+        """
+        return bool(self._client) and self._client.has_unfinished_turn()
+
+    async def wait_turn_done(self, timeout: float) -> str:
+        """Wait for the current native turn to reach its done boundary; returns
+        the stop reason, or raises ``asyncio.TimeoutError``.
+
+        Public wrapper over the inner client's ``wait_turn_done`` (which
+        :meth:`cancel` already uses). The shutdown drain calls this on a turn
+        that was already cancelled (so ``cancel`` returns ``"no_turn"``) but is
+        still unfinished, to wait for the pending ack before teardown.
+        """
+        return await self._client.wait_turn_done(timeout=timeout)
+
     @property
     def exit_code(self) -> int | None:
         """Process exit code, or None if still running."""

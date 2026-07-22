@@ -180,3 +180,6 @@ class FakeSessions:
 
     def release(self, session_key):
         return None
+
+    def begin_turn(self, session_key):
+        return None

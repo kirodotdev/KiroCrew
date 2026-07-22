@@ -101,6 +101,10 @@ class FakeSessionManager:
     def release(self, key):
         pass
 
+    def begin_turn(self, key):
+        # Pre-dispatch gate parity with the real SessionManager (open state).
+        pass
+
     async def set_channel(self, key, channel_id):
         pass
 

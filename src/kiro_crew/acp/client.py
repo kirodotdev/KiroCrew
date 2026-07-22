@@ -3571,6 +3571,19 @@ class AcpClient:
         """
         return not self._cancelled and not self._turn_done.is_set() and self._is_process_alive()
 
+    def has_unfinished_turn(self) -> bool:
+        """True if the native turn has NOT reached its done boundary and the
+        process is still alive — INDEPENDENT of cancel state.
+
+        Unlike :meth:`has_active_turn`, this does NOT exclude a turn that has
+        already been ``cancel_session()``'d but whose native turn-done ack has
+        not yet arrived. That turn still holds kiro-cli's native-session lock
+        open, so killing the process now leaves the lock held and reproduces the
+        empty-response-after-restart bug. The shutdown drain uses THIS signal so
+        it still waits for such a turn's ack before the process is killed.
+        """
+        return not self._turn_done.is_set() and self._is_process_alive()
+
     # ── Private Helpers ──
 
     _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}

@@ -377,6 +377,18 @@ class AcpSessionProvider(LLMProvider):
         """
         return self._handle.is_turn_active
 
+    def has_unfinished_turn(self) -> bool:
+        """True if the native turn has not reached its done boundary —
+        INDEPENDENT of cancel state (unlike :meth:`has_active_turn`).
+
+        Parity with ``AcpClient.has_unfinished_turn``: reports a
+        cancelled-but-not-yet-acked turn as still unfinished so the shutdown
+        drain waits for its ack before the shared runtime is killed. Delegates
+        to the handle's ``has_unfinished_turn`` (which omits the cancelled
+        exclusion that ``is_turn_active`` applies).
+        """
+        return self._handle.has_unfinished_turn
+
     async def wait_turn_done(self, timeout: float = 30.0) -> str:
         """Wait for the current turn to finish; return its stop_reason (str) or
         raise asyncio.TimeoutError.

@@ -83,6 +83,9 @@ class FakeSessionManager:
     def release(self, key):
         pass
 
+    def begin_turn(self, key):
+        pass
+
     async def set_channel(self, key, channel_id):
         pass
 

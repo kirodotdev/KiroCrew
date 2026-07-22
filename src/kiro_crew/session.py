@@ -74,6 +74,7 @@ Four mechanisms clean up processes. They are complementary — not redundant.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import threading
@@ -234,6 +235,16 @@ _MAX_POOL = POOL_SIZE_MAX
 # mass shutdown from enqueueing dozens of uncancellable teardown tasks at once.
 _CLOSE_ALL_CONCURRENCY = 8
 
+# Bounded window to bring in-flight prompts to a safe boundary before a gateway
+# restart / Make-Live cutover tears down the kiro-cli processes (see
+# SessionManager.drain_active_turns). Kept small: a restart must stay snappy, and
+# a turn that will not reach a safe boundary in this window is unlikely to in any
+# reasonable one — on timeout we fall through to the (SIGTERM-first) kill path.
+# This is the co-operative drain the empty-response-after-Make-Live incident
+# needed; the subsequent SIGTERM grace (AcpRuntime 5s / AcpClient 3s) is what
+# then lets kiro-cli release its native-session lock.
+_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS = 5.0
+
 # Bound on the won-race stale-retry recursion in get_or_create. Each retry
 # requires the winning session to have been recycled/reaped in the narrow
 # window between our semaphore acquire and re-validate, so >1 is already
@@ -341,6 +352,85 @@ def _model_fallback(per_agent_model: str, global_default: str) -> "str | None":
 
 # Type alias for provider factory — accepts optional session key
 ProviderFactory = Callable[..., LLMProvider]
+
+
+class SessionClosingError(RuntimeError):
+    """Raised when a turn is requested while the manager is tearing down.
+
+    A subclass of ``RuntimeError`` so existing broad handlers still catch it.
+    Signalled both by the ``get_or_create`` entry gate (no new/resumed session
+    once ``close_all`` has set ``_closing``) and by :meth:`SessionManager.begin_turn`
+    (the pre-dispatch gate that stops a caller which already holds a lease from
+    opening a turn during the shutdown drain window).
+    """
+
+
+def _provider_has_active_turn(provider: LLMProvider) -> bool:
+    """True only if ``provider`` reports a real in-flight turn.
+
+    Real providers implement ``has_active_turn()`` as a synchronous method that
+    returns a plain ``bool``. This helper guards the shutdown-drain path against
+    (a) providers that don't implement it (warm-pool doubles, minimal stubs) and
+    (b) test doubles whose auto-generated attribute returns a coroutine
+    (``AsyncMock``) — calling that would otherwise leak an un-awaited coroutine
+    warning. Anything that is not exactly ``True`` is treated as "no active
+    turn", so the drain is a strict opt-in that can never mis-fire on a double.
+    """
+    fn = getattr(provider, "has_active_turn", None)
+    if not callable(fn):
+        return False
+    try:
+        res = fn()
+    except Exception:
+        return False
+    if inspect.isawaitable(res):
+        # A double returned an awaitable instead of a bool — close it to avoid
+        # a RuntimeWarning and treat as "no active turn".
+        close = getattr(res, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return False
+    return res is True
+
+
+def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
+    """True only if ``provider`` reports a native turn that has not reached its
+    done boundary — INDEPENDENT of cancel state (unlike
+    :func:`_provider_has_active_turn`).
+
+    The shutdown drain filters on THIS, not ``has_active_turn``. A turn that has
+    already been ``session/cancel``'d but whose native turn-done ack has not yet
+    arrived reports ``has_active_turn() is False`` yet still holds kiro-cli's
+    native-session lock open; killing the process now reproduces the
+    empty-response-after-restart bug (#200). Reporting it as "unfinished" keeps
+    it in the drain set so the ack is waited on before teardown.
+
+    Same defensive guard as :func:`_provider_has_active_turn`: providers that
+    don't implement the method (warm-pool doubles, minimal stubs) or doubles
+    whose auto-generated attribute returns a coroutine (``AsyncMock``) are
+    treated as "no unfinished turn", so the drain can never mis-fire on a
+    double.
+    """
+    fn = getattr(provider, "has_unfinished_turn", None)
+    if not callable(fn):
+        return False
+    try:
+        res = fn()
+    except Exception:
+        return False
+    if inspect.isawaitable(res):
+        close = getattr(res, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return False
+    return res is True
+
 
 StopOutcome = Literal["soft", "hard", "idle"]
 
@@ -508,6 +598,12 @@ class SessionManager:
         self._provider_factory = provider_factory
         self._sessions: dict[str, _Session] = {}
         self._lock = asyncio.Lock()
+        # Set True (under _lock) at the top of close_all() so the multi-second
+        # pre-shutdown drain window cannot be raced by a new turn: get_or_create
+        # refuses once this is set, so a prompt that began AFTER the drain
+        # snapshot can't slip in and later get killed mid-turn with its native
+        # session lock held (Codex HIGH: drain-window race).
+        self._closing = False
         self._start_sem = asyncio.Semaphore(4)  # max 4 concurrent cold-starts
         self._cleanup_task: asyncio.Task | None = None
         self._compacting: set[str] = set()
@@ -1782,6 +1878,18 @@ class SessionManager:
         _claimed: "tuple[_Session, bool] | None" = None
         try:
             async with self._lock:
+                # Refuse to start OR resume any turn once teardown has begun.
+                # close_all() sets _closing under this same lock BEFORE it
+                # snapshots providers to drain; anything reaching here after
+                # that would be absent from the drain set and get killed
+                # mid-turn with its native lock held (Codex HIGH: drain-window
+                # race). Reject fresh sessions and reuse alike — no new prompt
+                # may begin during shutdown.
+                if self._closing:
+                    raise SessionClosingError(
+                        "SessionManager is closing (gateway restart/shutdown in "
+                        "progress); refusing to start or resume a turn"
+                    )
                 # Skip the live-session branch only while the recycle FALLBACK
                 # is tearing down the EXACT session object still in the map.
                 # In-place compaction — both the kiro-cli and claude paths —
@@ -2654,8 +2762,151 @@ class SessionManager:
             self._session_map.delete(key)
             logger.info("Destroyed session (map deleted): %s", key)
 
-    async def close_all(self) -> None:
-        """Shut down every session (called on shutdown)."""
+    async def drain_active_turns(self, timeout: float | None = None) -> int:
+        """Bring in-flight prompts to a safe boundary before teardown.
+
+        Every gateway restart and Dev-Fleet 'Make Live' cutover funnels through
+        ``close_all()`` (the systemd cutover via the SIGTERM shutdown path, the
+        in-process update-restart via ``_restart_gateway``). Without this step
+        ``close_all()`` shuts each session's provider down immediately, so a slot
+        that is mid-prompt has its kiro-cli killed with the native turn still
+        open — leaving the native-session lock (``~/.kiro/sessions/cli/<uuid>.json``)
+        held. When the new gateway resumes that slot via ``session/load`` kiro-cli
+        rejects with "active in another process" and the slot returns EMPTY
+        completions until the stale lock times out. This was the confirmed root
+        cause of the Make-Live empty-response incident (slot chat-1, native
+        session 31f36326, after the 04:26 cutover).
+
+        For each registered session with an active turn, issue a graceful ACP
+        ``session/cancel`` and wait (bounded) for the turn-done ack, so the
+        native turn closes cleanly and kiro-cli can release the lock on the
+        subsequent SIGTERM. The whole operation is bounded by ``timeout``; on
+        timeout we log a warning and return so the caller falls through to the
+        (SIGTERM-first) kill path — the drain never hangs teardown and never
+        raises. ``timeout <= 0`` disables the drain entirely.
+
+        Returns the number of sessions that had an active turn (for
+        observability and tests). Only the registered user sessions are drained;
+        the warm pool holds pre-spawned, never-prompted processes.
+        """
+        if timeout is None:
+            timeout = _DRAIN_ACTIVE_TURNS_TIMEOUT_SECS
+        if timeout <= 0:
+            return 0
+
+        async with self._lock:
+            providers = [s.provider for s in self._sessions.values()]
+        # Filter on has_UNFINISHED_turn, not has_active_turn: a turn already
+        # session/cancel'd but whose native ack has not arrived reports
+        # has_active_turn False yet still holds the native lock open. Draining
+        # THAT (waiting for its ack) is exactly what prevents the killed-with-
+        # lock-held empty-response bug (Codex HIGH, cancel/ack race).
+        unfinished = [p for p in providers if _provider_has_unfinished_turn(p)]
+        if not unfinished:
+            return 0
+
+        logger.info(
+            "Draining %d unfinished turn(s) to a safe boundary before teardown (<= %.1fs)",
+            len(unfinished),
+            timeout,
+        )
+
+        async def _drain_one(provider: LLMProvider) -> None:
+            cancel_fn = getattr(provider, "cancel", None)
+            if not callable(cancel_fn):
+                return
+            try:
+                # Graceful cancel: reach a safe turn boundary + wait for the ack
+                # so kiro-cli closes the native turn (and can release its
+                # session lock) before we kill the process. cancel() is itself
+                # internally bounded by wait_ack_timeout; the outer wait_for
+                # below is the hard cap.
+                outcome = await cancel_fn(wait_ack_timeout=timeout)
+            except Exception:
+                logger.debug("drain_active_turns: cancel failed", exc_info=True)
+                return
+            # cancel() returns "no_turn" when has_active_turn() is already False
+            # — precisely the already-cancelled-but-not-yet-acked turn that
+            # has_unfinished_turn still flags. The native turn is still open, so
+            # wait directly for its done-ack rather than skip it (that skip is
+            # what left the lock held → empty-response bug).
+            if outcome == "no_turn" and _provider_has_unfinished_turn(provider):
+                waiter = getattr(provider, "wait_turn_done", None)
+                if callable(waiter):
+                    try:
+                        await waiter(timeout=timeout)
+                    except asyncio.TimeoutError:
+                        logger.debug(
+                            "drain_active_turns: post-cancel wait_turn_done timed out"
+                        )
+                    except Exception:
+                        logger.debug(
+                            "drain_active_turns: wait_turn_done failed", exc_info=True
+                        )
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *[_drain_one(p) for p in unfinished], return_exceptions=True
+                ),
+                # A hair above the per-session budget so an internally-bounded
+                # cancel resolves as its own timeout rather than the gather being
+                # cancelled out from under it.
+                timeout=timeout + 1.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "drain_active_turns: %d turn(s) did not reach a safe boundary within "
+                "%.1fs — proceeding to kill (kiro-cli SIGTERM grace still applies)",
+                len(unfinished),
+                timeout,
+            )
+        return len(unfinished)
+
+    async def close_all(self, drain_timeout: float | None = None) -> None:
+        """Shut down every session (called on shutdown).
+
+        ``drain_timeout`` bounds the pre-shutdown co-operative drain
+        (:meth:`drain_active_turns`); ``None`` uses the full default budget.
+        A caller that wraps ``close_all()`` in its own hard outer deadline —
+        Slack's restart wraps it in ``wait_for(..., 5s)`` — MUST pass a
+        ``drain_timeout`` small enough to leave room for the kill path inside
+        that deadline. systemd cutover and in-process update-restart pass no
+        budget and keep the full default. ``drain_timeout <= 0`` disables the
+        drain.
+        """
+        # Bring any in-flight prompts to a safe boundary FIRST so kiro-cli can
+        # release its native-session lock before we kill the processes below.
+        # Bounded + best-effort: never blocks teardown, never raises. Both
+        # restart paths (systemd Make-Live cutover, in-process update-restart)
+        # funnel through here, so this is the single chokepoint that fixes the
+        # empty-response-after-restart incident.
+        # Enter the closing state under the lock BEFORE the drain snapshot so no
+        # new turn can begin (or new session register) during the multi-second
+        # drain window — a prompt that started after the snapshot would be absent
+        # from the drain set and later get killed mid-turn with its native lock
+        # held (Codex HIGH: drain-window race). Paired with the get_or_create
+        # closing gate.
+        async with self._lock:
+            self._closing = True
+
+        try:
+            await self.drain_active_turns(timeout=drain_timeout)
+        except Exception:
+            # We deliberately do NOT catch asyncio.CancelledError here. Slack's
+            # restart wraps close_all in wait_for(..., 5s), which enforces its
+            # deadline by cancelling us. Swallowing that cancel would DEFEAT the
+            # 5s hard cap — wait_for would then block until close_all finished on
+            # its own, so a slow later teardown phase could overrun the deadline
+            # and prevent os._exit(1) from being reached, wedging the restart
+            # (Codex HIGH). Letting CancelledError propagate keeps the cap
+            # honest; a drain cut short that way skips the in-line kill path, but
+            # the next-startup orphan reaper reclaims any still-held
+            # process/lock. drain_timeout is sized (e.g. 2.0 on the Slack path)
+            # so the drain finishes well inside the cap and this cancellation is
+            # not hit on the normal path.
+            logger.debug("close_all: drain_active_turns failed", exc_info=True)
+
         if self._cleanup_task:
             self._cleanup_task.cancel()
 
@@ -2783,6 +3034,48 @@ class SessionManager:
             await self.reset(key)
             return True
         return False
+
+    def begin_turn(self, key: str) -> None:
+        """Atomic pre-dispatch gate — raise if teardown has begun.
+
+        Closes the lease-dispatch race (Codex HIGH). A caller obtains a session
+        and its per-session semaphore *lease* from :meth:`get_or_create`, does
+        async prep, then drives ``provider.stream(...)``. The ``_closing`` gate in
+        ``get_or_create`` only blocks callers that have NOT yet acquired a lease;
+        a caller that took its lease BEFORE ``close_all`` set ``_closing`` can
+        still reach dispatch AFTER — and an already-issued lease cannot be
+        revoked. Such a turn would first open *after* ``drain_active_turns``'s
+        snapshot, be absent from the drain set, and get killed mid-turn with its
+        native-session lock held (the empty-response-after-restart bug, #200).
+
+        The caller MUST therefore call ``begin_turn`` **synchronously, with no
+        await in between**, immediately before the stream drive. This method only
+        *reads* ``_closing`` — atomic in the single-threaded event loop, so no
+        lock is needed — and the stream's synchronous prefix clears the native
+        turn-done event (registering the turn) before its first ``await`` (see
+        ``AcpClient.stream_events``: ``_turn_done.clear()`` precedes
+        ``await ensure_ready()``). So the ``_closing`` read here and that turn
+        registration form ONE yield-free span; in the event loop that span is
+        strictly ordered w.r.t. ``close_all``'s ``_closing`` set — the turn is
+        EITHER registered before the drain snapshot (and thus drained) OR the
+        caller aborts here. It can never straddle, so no un-drained turn opens
+        during the drain window.
+
+        NOTE: making this ``async`` / lock-guarded would REOPEN the race — the
+        ``await`` would yield the loop between the check and the turn
+        registration, letting ``close_all`` snapshot in between. ``key`` is
+        accepted for API symmetry and possible future per-key gating; the
+        current shutdown signal is manager-global.
+
+        Raises:
+            SessionClosingError: a gateway restart/shutdown is in progress; the
+                caller aborts the turn (its ``finally`` releases the lease).
+        """
+        if self._closing:
+            raise SessionClosingError(
+                "SessionManager is closing (gateway restart/shutdown in "
+                "progress); refusing to start a turn"
+            )
 
     # ── Per-session semaphore ──
 
