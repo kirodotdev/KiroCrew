@@ -26,7 +26,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, ArrowLeftToLine, Globe, LayoutGrid, Lightbulb, ExternalLink } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, ArrowLeftToLine, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import OnboardingFlow from './components/OnboardingFlow'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -65,6 +65,8 @@ import SchedulePage from './pages/SchedulePage'
 import { useUpdateSubscription } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 import BrowserLiveView from './components/BrowserLiveView'
+import BottomTerminalPanel from './components/BottomTerminalPanel'
+import { useBottomTerminalOpen, toggleBottomTerminal } from './hooks/useBottomTerminal'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppsPage from './pages/AppsPage'
 import AppPage from './pages/AppPage'
@@ -726,6 +728,7 @@ export default function App() {
   // so there is no hidden-until-fetch-resolves flash.
   const terminalEnabled = terminalConfig?.enabled !== false
   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
+  const bottomTerminalOpen = useBottomTerminalOpen()
   const navigate = useNavigate()
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
@@ -1800,6 +1803,17 @@ export default function App() {
                 />
                 )
               })()}
+              {terminalEnabled && (
+                <NavItem
+                  path="#"
+                  label="Terminal"
+                  icon={<SquareTerminal size={16} />}
+                  active={bottomTerminalOpen}
+                  collapsed={effectiveCollapsed}
+                  onClick={closeMobileNav}
+                  onClickOverride={() => toggleBottomTerminal()}
+                />
+              )}
               <NavItem
                 path={s.path}
                 label={s.label}
@@ -1865,6 +1879,10 @@ export default function App() {
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
         </main>
+        {/* App-wide docked terminal panel — spans every route, below <main>.
+            Toggled from the sidebar Terminal icon; hosts app-wide
+            shells. Distinct from the chat-scoped activity-bar terminal tabs. */}
+        {terminalEnabled && <BottomTerminalPanel />}
         {/* Self-managed floating panel: lifecycle-driven (hidden → small → chip),
             not a motion.* child, so it lives outside AnimatePresence. */}
         <BrowserLiveView />

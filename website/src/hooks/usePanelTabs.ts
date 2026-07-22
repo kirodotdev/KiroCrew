@@ -285,12 +285,24 @@ export function usePanelTabs(slotKey: string | null = null) {
     return sessionId
   }, [tabs, upsert, setActive])
 
+  /** Adopt an EXISTING terminal session as a tab in THIS slot (no new PTY) —
+   *  the mirror of openTerminal, used to move a terminal from the app-wide
+   *  bottom panel back into a chat. Reuses the given session id so its live
+   *  shell + scrollback come along. Returns false at the per-chat cap. */
+  const adoptTerminal = useCallback((sessionId: string, cwd?: string): boolean => {
+    const id = `terminal:${sessionId}`
+    if (tabs.some(t => t.id === id)) { setActive(id); return true }
+    if (tabs.filter(t => t.kind === 'terminal').length >= MAX_TERMINALS_PER_CHAT) return false
+    upsert({ id, kind: 'terminal', title: cwd ? basename(cwd) : 'Terminal', sessionId, cwd })
+    return true
+  }, [tabs, upsert, setActive])
+
   const activeTab = useMemo(() => tabs.find(t => t.id === activeId) ?? null, [tabs, activeId])
 
   return useMemo(() => ({
     tabs, activeId, activeTab,
-    openView, openTerminal, openFile, openDiff, openArtifact,
+    openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact,
     patchTab, closeTab, closeAll, setActive, setOrder,
     hasTabs: tabs.length > 0,
-  }), [tabs, activeId, activeTab, openView, openTerminal, openFile, openDiff, openArtifact, patchTab, closeTab, closeAll, setActive, setOrder])
+  }), [tabs, activeId, activeTab, openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, patchTab, closeTab, closeAll, setActive, setOrder])
 }

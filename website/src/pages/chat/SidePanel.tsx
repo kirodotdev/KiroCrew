@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -10,6 +10,7 @@ import ArtifactPanel from '../../components/ArtifactPanel'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
+import { adoptTab as adoptBottomTerminal } from '../../hooks/useBottomTerminal'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
@@ -133,6 +134,15 @@ export default function SidePanel({
     }
     closeTab(id)
   }, [tabs, closeTab, deleteTerminalSession])
+  // Move a terminal tab OUT of this chat into the app-wide bottom panel. Unlike
+  // handleCloseTab this must NOT dispose the session — the PTY + xterm live in
+  // terminalRegistry/termCache keyed by session id and simply re-attach in the
+  // bottom panel. Only drop it from this chat once the panel accepts it.
+  const handleTransferToBottom = useCallback((id: string) => {
+    const t = tabs.find(x => x.id === id)
+    if (t?.kind !== 'terminal' || !t.sessionId) return
+    if (adoptBottomTerminal(t.sessionId, t.cwd)) closeTab(id)
+  }, [tabs, closeTab])
   const [menuOpen, setMenuOpen] = useState(false)
   // Diff view preferences — persisted; 'mc-diff-split' is shared with the
   // file view's git-diff toggle so split/unified is one app-wide preference.
@@ -257,7 +267,7 @@ export default function SidePanel({
               {i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId && (
                 <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
               )}
-              <TabChip tab={t} active={t.id === activeId} onSelect={() => setActive(t.id)} onClose={() => handleCloseTab(t.id)} />
+              <TabChip tab={t} active={t.id === activeId} onSelect={() => setActive(t.id)} onClose={() => handleCloseTab(t.id)} onTransfer={t.kind === 'terminal' ? () => handleTransferToBottom(t.id) : undefined} />
             </Reorder.Item>
           ))}
         </Reorder.Group>
@@ -483,12 +493,16 @@ function TerminalTabTitle({ sessionId, fallback }: { sessionId: string; fallback
   return <>{live || fallback}</>
 }
 
-function TabChip({ tab, active, onSelect, onClose }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void }) {
+function TabChip({ tab, active, onSelect, onClose, onTransfer }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void; onTransfer?: () => void }) {
   return (
     <div
       role="tab"
       aria-selected={active}
+      tabIndex={0}
       onClick={onSelect}
+      // Guard on e.target so Enter/Space on the nested transfer/close buttons
+      // activates them natively instead of also selecting the tab.
+      onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose() } }}
       className={`group relative flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full cursor-pointer shrink-0 max-w-[240px] select-none border transition-colors ${
         active ? 'bg-bg-elevated border-border text-text-strong shadow-sm' : 'bg-transparent border-transparent text-muted hover:text-text hover:bg-bg-hover'
@@ -500,14 +514,26 @@ function TabChip({ tab, active, onSelect, onClose }: { tab: PanelTab; active: bo
           ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
           : tab.title}
       </span>
-      <button
-        onClick={(e) => { e.stopPropagation(); onClose() }}
-        className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
-        title="Close tab"
-        aria-label="Close tab"
-      >
-        <X size={12} />
-      </button>
+      <div className="flex items-center gap-0.5 shrink-0">
+        {onTransfer && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onTransfer() }}
+            className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+            title="Move to bottom panel"
+            aria-label="Move to bottom panel"
+          >
+            <PanelBottom size={12} />
+          </button>
+        )}
+        <button
+          onClick={(e) => { e.stopPropagation(); onClose() }}
+          className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+          title="Close tab"
+          aria-label="Close tab"
+        >
+          <X size={12} />
+        </button>
+      </div>
     </div>
   )
 }
