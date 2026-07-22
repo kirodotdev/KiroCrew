@@ -29,6 +29,13 @@ from snowballstemmer import stemmer as _snowball_stemmer
 
 try:
     import pysqlite3 as sqlite3
+
+    # Defense-in-depth: a bundle prune can leave an EMPTY ``pysqlite3`` package
+    # dir (its native ``.so`` removed), so the import succeeds but the module
+    # has no ``connect`` — an AttributeError at first use, not an ImportError.
+    # Treat a pysqlite3 without ``connect`` as absent and fall back to stdlib.
+    if not hasattr(sqlite3, "connect"):
+        raise ImportError("pysqlite3 present but incomplete (no connect)")
 except ImportError:
     import sqlite3
 import time
