@@ -172,6 +172,8 @@ class Project:
     commit_hashes: list[str]  # per-step commit SHAs
     worktree_path: str     # git worktree path (empty if git init)
     repo_root: str         # original repo root (for worktree cleanup)
+    auto_approve: bool = False  # per-run trust: auto-approve tool permission requests
+                                # (deny-lists + force_approval gates still apply)
 ```
 
 ## Concurrent Tasks
@@ -415,6 +417,86 @@ Two-layer approval during step execution:
    - 2-hour timeout on interactive approval (auto-reject)
    - YOLO mode: auto-approves all
    - Trust mode: auto-approves when all slots trusted
+
+### Per-run auto-approve (trust) toggle
+
+`Project.auto_approve` is a per-run trust flag (default `False`). It is opt-in
+at execute time via the dashboard (`auto_approve` in the execute/start request
+body) and threaded through `execute_plan()`, `run()`, and `start_background()`.
+
+- **Default off** → current interactive behavior (tool permission requests
+  prompt via `on_tool_approval`, or deny-by-default when headless).
+- **On** → the run's tool permission requests are auto-approved WITHOUT the
+  interactive prompt, and the SEL tool-invocation audit records the approval
+  with reason `run_auto_approve` (vs `hook_auto_approve` for an explicit hook
+  trust).
+
+Two guardrails remain intact for a trusted run:
+
+- **Hook deny-lists / sensitive-path blocks** are evaluated BEFORE the
+  auto-approve check, so a `TOOL_DENY` still rejects the tool.
+- **`force_approval` / `requires_approval` task gates** are a separate
+  task-level path (top of `execute_single_task`) and are unaffected — they
+  still block/prompt regardless of `auto_approve`.
+
+The mid-stream context-overflow check still runs before final approval.
+
+Hardening measures scope the trust tightly. It is not the global `SafetyOverride`
+singleton (which would leak trust to every session), but the authoritative grant
+IS held by `SafetyOverride` — as a **task-scoped grant** — so per-run trust is
+audited and expires through the same primitive the `backend-security-controls`
+rule mandates, with no independent approval state living on the run:
+
+- **SafetyOverride scoped grant (audited, TTL-bounded, slide-renewed)** — enabling
+  `auto_approve` calls `safety_override().activate_scoped("taskrunner:{task_id}:autoapprove",
+  source="dashboard")`, which fail-closed audits the activation to the SEL BEFORE
+  committing and stamps a TTL (dashboard window, 6h, under the 24h hard ceiling).
+  The permission branch authorizes via `is_scope_active(scope)` before EVERY
+  approval; when the grant lapses (or is absent, e.g. after a gateway restart) the
+  run's intent is revoked (`auto_approve` cleared, SEL `task.auto_approve_expired`)
+  and the tool falls through to interactive / deny-by-default. To avoid a long but
+  *actively-progressing* run losing trust mid-flight at the base TTL, each
+  auto-approved tool call slides the grant forward via `renew_scoped()` — capped at
+  the 24h hard ceiling from first activation, so an abandoned (idle) run still lapses
+  after the base window. `scope_remaining_secs()` is surfaced in `build_status`
+  (`auto_approve_remaining_secs`) so the dashboard can warn before expiry.
+  `Project.auto_approve` is only the persisted UI-intent flag; the live authorization
+  is the scoped grant. Setting/clearing both sides is owned by a single
+  `TaskRunner._grant_run_trust(run, enabled)` so the intent flag and grant cannot
+  diverge; grants are revoked at run teardown (`_release_run_runtime`).
+- **Deny-by-default parsing** — the API reads `auto_approve` as `body.get(...)
+  is True`, so only a literal JSON `true` enables trust; truthy non-booleans
+  (`"false"`, `"0"`, `[]`, `{}`) do NOT.
+- **Provenance gated at the boundary (label-based, shared by every launch endpoint)**
+  — a single `_gate_auto_approve()` helper is applied by BOTH `api_taskrunner_start`
+  AND `api_taskrunner_execute_plan` (and any future launch surface), so the gate can't
+  drift between routes. It honors `auto_approve` only when the request is not
+  app/proxy-embedded (`request["app"] == ""`, set by `token_auth_middleware` for the
+  dashboard itself) — blocking an embedded app/proxy from minting trust even while
+  claiming `source: "dashboard"` — and, on `start` (which carries a source claim),
+  only when the caller EXPLICITLY declared `source == "dashboard"` (checked on the raw
+  claimed value, so an omitted/unknown source cannot inherit trust via coercion). The
+  decision is SEL-audited (`auto_approve_grant` with endpoint + claimed-vs-resolved
+  source + `request["app"]`). Residual: a raw token-holder is indistinguishable from
+  the dashboard UI (the gateway's trust model is "token == user"), so this remains a
+  declared-label gate; a sub-principal auth model would be a platform-level follow-up.
+- **Reset on crash-recovery + affirmative re-grant on resume** — a run recovered from
+  an active state (`running`/`pausing`/`cancelling`) on gateway restart has
+  `auto_approve` forced `False` and its scoped grant deactivated in `_load_runs()`;
+  and because a grant is torn down at run teardown, the dashboard toggle re-syncs from
+  the *live* grant (`auto_approve_remaining_secs > 0`), not stale persisted intent —
+  so resuming a paused/planned run shows the toggle UNCHECKED and requires an
+  affirmative re-grant rather than a click on a pre-checked box.
+
+### Scope limitation (cron / MCP unattended runs)
+
+Per-run trust is intentionally reachable **only** from the dashboard toggle, so
+cron-scheduled and MCP/chat-launched runs — which are headless by construction —
+cannot carry it and still hit the `headless_no_authorization` deny-by-default
+branch. Auto-granting recurring trust to a cron is a deliberately larger risk, so
+that surface is **not** covered by this feature and continues to rely on the
+operator's existing global controls. Extending unattended trust to recurring runs
+is a possible follow-up, not a current goal.
 
 ## Watchdog
 

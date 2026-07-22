@@ -112,6 +112,12 @@ class SafetyOverride:
         self._last_renewed_by: str = ""
         self._on_expired: Optional[Callable[[str], None]] = None
         self._on_activated: Optional[Callable[[str, int], None]] = None
+        # Task-scoped auto-approve grants: scope key -> (activated_at, expires_at)
+        # monotonic. Independent of the global override; each grant is TTL-bounded,
+        # audited on activation, and slide-renewable up to a 24h ceiling from first
+        # activation, so a caller (e.g. the task runner) can hold a narrow, expiring
+        # grant without flipping the session-wide override.
+        self._scoped: dict[str, tuple[float, float]] = {}
 
     def __getattr__(self, name: str) -> object:
         # Provide a fallback _lock for instances created with object.__new__()
@@ -120,6 +126,10 @@ class SafetyOverride:
             lock = threading.Lock()
             object.__setattr__(self, "_lock", lock)
             return lock
+        if name == "_scoped":
+            scoped: dict[str, tuple[float, float]] = {}
+            object.__setattr__(self, "_scoped", scoped)
+            return scoped
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     # ── Callback properties ──────────────────────────────────────────────────
@@ -274,6 +284,126 @@ class SafetyOverride:
             outcome="disabled",
             resources=f"source:{source}",
         )
+
+    # ── Task-scoped grants ───────────────────────────────────────────────────
+
+    def activate_scoped(
+        self, scope: str, source: str, ttl: Optional[int] = None
+    ) -> ActivationResult:
+        """Activate a narrow, TTL-bounded auto-approve grant for ``scope``.
+
+        Unlike ``activate()`` this does NOT flip the session-wide override; it
+        records an expiring grant for a single scope key (e.g. one task run).
+        The activation is audited fail-closed to the SEL BEFORE it is committed,
+        exactly like the global ``activate()``, so no grant exists without an
+        audit trail. TTL defaults to the source's default and is capped at the
+        24h hard ceiling.
+        """
+        if ttl is None:
+            ttl = self._SOURCE_TTLS.get(source, self._SLACK_TTL)
+        ttl = min(ttl, self._MAX_TTL)
+        now_mono = time.monotonic()
+        activated_at_iso = datetime.now(tz=timezone.utc).isoformat()
+
+        # Fail-closed audit before commit — no grant without a trace.
+        try:
+            self._log_sel(
+                caller="safety_override",
+                operation="safety_override:activate_scoped",
+                outcome="enabled",
+                resources=f"scope:{scope}, source:{source}, ttl:{ttl}s",
+                critical=True,
+            )
+        except Exception:
+            logger.error(
+                "SEL audit failed; refusing scoped safety override activation", exc_info=True
+            )
+            return ActivationResult(active=False, ttl=0, source=source, activated_at_iso="")
+
+        with self._lock:
+            self._scoped[scope] = (now_mono, now_mono + ttl)
+
+        return ActivationResult(
+            active=True, ttl=ttl, source=source, activated_at_iso=activated_at_iso
+        )
+
+    def renew_scoped(
+        self, scope: str, source: str, ttl: Optional[int] = None
+    ) -> RenewResult:
+        """Slide a scoped grant's expiry forward on activity, capped at the ceiling.
+
+        Extends the grant to ``min(now + ttl, activated_at + _MAX_TTL)`` so an
+        actively-progressing run does not lose trust at the base TTL, while the
+        absolute 24h hard ceiling from first activation is still honored (an
+        abandoned run with no activity simply lapses). No-op / not-renewed if the
+        grant is absent or the ceiling is already reached. Intentionally NOT
+        SEL-logged per call — it extends an already-audited grant within its
+        audited ceiling, and per-tool-call logging would flood the SEL.
+        """
+        if ttl is None:
+            ttl = self._SOURCE_TTLS.get(source, self._SLACK_TTL)
+        ttl = min(ttl, self._MAX_TTL)
+        now_mono = time.monotonic()
+        with self._lock:
+            entry = self._scoped.get(scope)
+            if entry is None:
+                return RenewResult(renewed=False, ttl=0, source=source, reason="not_active")
+            activated_at, _ = entry
+            ceiling = activated_at + self._MAX_TTL
+            if now_mono >= ceiling:
+                return RenewResult(renewed=False, ttl=0, source=source, reason="ceiling_reached")
+            new_expiry = min(now_mono + ttl, ceiling)
+            self._scoped[scope] = (activated_at, new_expiry)
+            remaining = max(0, int(new_expiry - now_mono))
+        return RenewResult(renewed=True, ttl=remaining, source=source)
+
+    def is_scope_active(self, scope: str) -> bool:
+        """Return True if ``scope`` has a live (unexpired) grant.
+
+        Expires the grant and logs a SEL event when its TTL has lapsed.
+        """
+        now_mono = time.monotonic()
+        with self._lock:
+            entry = self._scoped.get(scope)
+            if entry is None:
+                return False
+            if now_mono < entry[1]:
+                return True
+            del self._scoped[scope]
+
+        self._log_sel(
+            caller="safety_override",
+            operation="safety_override:scope_expired",
+            outcome="expired",
+            resources=f"scope:{scope}",
+        )
+        return False
+
+    def deactivate_scope(self, scope: str) -> None:
+        """Revoke a scoped grant immediately. No-op if absent."""
+        with self._lock:
+            existed = self._scoped.pop(scope, None) is not None
+        if existed:
+            self._log_sel(
+                caller="safety_override",
+                operation="safety_override:deactivate_scope",
+                outcome="disabled",
+                resources=f"scope:{scope}",
+            )
+
+    def scope_remaining_secs(self, scope: str) -> int:
+        """Return seconds remaining on a scoped grant, 0 if absent/expired.
+
+        Pure read — does NOT expire or SEL-log a lapsed grant (that is the
+        enforcement path's job via ``is_scope_active``), so a status/UI poll can
+        never emit a ``scope_expired`` event or mutate state.
+        """
+        now_mono = time.monotonic()
+        with self._lock:
+            entry = self._scoped.get(scope)
+            if entry is None:
+                return 0
+            return max(0, int(entry[1] - now_mono))
 
     def is_active(self) -> bool:
         """Return True if the override is currently active.

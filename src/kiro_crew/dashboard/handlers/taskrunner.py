@@ -23,6 +23,45 @@ def _sel():
     return _pkg.sel()
 
 
+def _gate_auto_approve(
+    request: web.Request, requested: bool, claimed_source, endpoint: str
+) -> bool:
+    """Provenance gate for per-run auto-approve, shared by every launch endpoint.
+
+    Per-run trust is a human-at-the-dashboard decision, so it is honored ONLY for a
+    dashboard-context request — ``request["app"] == ""`` (set by
+    ``token_auth_middleware`` for the dashboard itself), which blocks an
+    app/proxy-embedded caller from minting trust even while claiming
+    ``source: "dashboard"``. When a caller declares a ``source`` (the start
+    endpoint), it must be the literal ``"dashboard"`` (checked on the raw claimed
+    value so an omitted/unknown source cannot inherit trust via coercion). The
+    grant decision is SEL-audited (claimed-vs-resolved source + request app), so a
+    machine grant cannot masquerade as a human one without a trace. Residual: a raw
+    token-holder is indistinguishable from the dashboard UI (gateway trust model is
+    "token == user"); a sub-principal auth model is a platform-level follow-up.
+
+    ``claimed_source=None`` means the endpoint carries no source claim (e.g.
+    ``/execute`` operates on an existing run) — only the app-context check applies.
+    """
+    request_app = request.get("app", "")
+    granted = requested
+    if requested and (request_app != "" or (claimed_source is not None and claimed_source != "dashboard")):
+        granted = False
+    if requested:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            source="taskrunner",
+            tool_name="auto_approve_grant",
+            outcome="granted" if granted else "denied",
+            metadata={
+                "endpoint": endpoint,
+                "claimed_source": str(claimed_source),
+                "request_app": str(request_app),
+            },
+        )
+    return granted
+
+
 # ── Task Runner ──
 
 
@@ -101,11 +140,15 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         task_name = body.get("name", "")
         workspace_dir = body.get("workspace_dir", "")
         allowed_sources = {"dashboard", "text", "spec", "file", "chat", "mcp", "cron", "yaml"}
-        source = body.get("source", "dashboard")
-        if source not in allowed_sources:
-            source = "dashboard"
+        claimed_source = body.get("source")
+        source = claimed_source if claimed_source in allowed_sources else "dashboard"
+        # Deny-by-default (`is True`) + shared provenance gate (dashboard-context only).
+        auto_approve = _gate_auto_approve(
+            request, body.get("auto_approve") is True, claimed_source, endpoint="start"
+        )
         task_id = state.task_runner.start_background(
-            spec_path, agent=agent, name=task_name, source=source, workspace_dir=workspace_dir
+            spec_path, agent=agent, name=task_name, source=source, workspace_dir=workspace_dir,
+            auto_approve=auto_approve,
         )
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -517,8 +560,14 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     agent = body.get("agent", "")
     fresh = body.get("fresh", False)
     workspace_dir = body.get("workspace_dir", "")
+    # Same provenance gate as /start: an app/proxy-embedded caller cannot mint
+    # trust on the resume/execute path either (no source claim here — the run
+    # already exists — so only the dashboard-context check applies).
+    auto_approve = _gate_auto_approve(
+        request, body.get("auto_approve") is True, None, endpoint="execute"
+    )
     try:
-        state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh, workspace_dir=workspace_dir)
+        state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh, workspace_dir=workspace_dir, auto_approve=auto_approve)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "task_id": task_id})

@@ -122,6 +122,7 @@ class Project:
     mode: str = "quick"  # "quick" (text only) | "spec" (has spec file/content)
     source_spec: str = ""  # original input text or spec content
     skip_planning: bool = False  # true = plan + execute immediately
+    auto_approve: bool = False  # per-run trust intent (UI flag); the live, expiring, audited grant is held in SafetyOverride (scope taskrunner:{task_id}:autoapprove)
 
 
 # Callback for notifications: (title, body, task_id) -> None

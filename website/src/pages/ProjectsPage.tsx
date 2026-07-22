@@ -5,7 +5,7 @@ import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { TaskRunnerStatus, ProjectRun } from '../types'
-import { Card, PageHeader, SendBtn, Btn } from '../components/ui'
+import { Card, PageHeader, SendBtn, Btn, Checkbox } from '../components/ui'
 import AgentSelector from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import ProjectDetailPage from './ProjectDetailPage'
@@ -51,6 +51,7 @@ export default function ProjectsPage() {
   const [editingName, setEditingName] = useState(false)
   const [editNameValue, setEditNameValue] = useState('')
   const [refined, setRefined] = useState('')
+  const [autoApprove, setAutoApprove] = useState(false)
   const [refineStatus, setRefineStatus] = useState<string>('idle')
   const [refineError, setRefineError] = useState('')
   const mountedRef = useRef(true)
@@ -129,8 +130,18 @@ export default function ProjectsPage() {
     const id = autoRunRef.current
     if (!id || !selectedRun || selectedRun.task_id !== id || selectedRun.status !== 'planned') return
     autoRunRef.current = null
-    api.executePlan(selectedRun.task_id, agent).then(r => { if (r.ok) load() })
+    // Auto-run is a programmatic launch, NOT an affirmative per-run trust grant for
+    // THIS run — always pass false. (Per-run trust requires an explicit dashboard
+    // toggle + manual Execute.) Passing the component-wide `autoApprove` here would
+    // also race the sync effect below and could leak a stale `true` from a
+    // previously-selected run onto this one.
+    api.executePlan(selectedRun.task_id, agent, false).then(r => { if (r.ok) load() })
   }, [selectedRun, agent, load])
+  // Sync the per-run auto-approve toggle from the selected run (default false).
+  // Reflect only a LIVE trust grant (not stale persisted intent), so resuming a
+  // paused/planned run — whose grant was torn down — shows unchecked and requires an
+  // affirmative re-grant rather than a single click on a pre-checked box.
+  useEffect(() => { setAutoApprove((selectedRun?.auto_approve_remaining_secs ?? 0) > 0) }, [selectedRun?.task_id, selectedRun?.auto_approve_remaining_secs])
   useEffect(() => { sessionStorage.setItem('tr-input', userInput) }, [userInput])
   useEffect(() => { sessionStorage.setItem('tr-spec', specText) }, [specText])
   useEffect(() => { sessionStorage.setItem('tr-yaml', yamlText) }, [yamlText])
@@ -323,7 +334,11 @@ export default function ProjectsPage() {
               <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> Planning…</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> Running</> : selectedRun.status}</span>
               <div className="flex-1" />
               {selectedRun.status === 'planned' && <>
-                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent); if (r.ok) load() }}><Play className="lucide-inline" /> Execute</button>
+                <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title="Run unattended: auto-approve this run's tool calls. Deny-listed tools and force_approval gates still block.">
+                  <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
+                  Auto-approve tool calls
+                </label>
+                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> Execute</button>
                 <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={async () => { const res = await api.planContext(selectedRun.task_id); if (res.ok && res.context) { dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1') } }}><MessageSquare className="lucide-inline" /> Chat</button>
                 <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.deleteTaskRun(selectedRun.task_id); setSelectedRun(null); load() }}><X className="lucide-inline" /> Discard</button>
               </>}
@@ -332,7 +347,13 @@ export default function ProjectsPage() {
               {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelTaskRunner(selectedRun.task_id); load() }}><Square className="lucide-inline" /> Cancel</button>}
               {!selectedRun.running && selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && <>
                 {selectedRun.status === 'paused' && (
-                  <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent); if (r.ok) load() }}><Play className="lucide-inline" /> Resume</button>
+                  <>
+                    <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title="Run unattended: auto-approve this run's tool calls. Deny-listed tools and force_approval gates still block.">
+                      <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
+                      Auto-approve tool calls
+                    </label>
+                    <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> Resume</button>
+                  </>
                 )}
                 {(selectedRun.status === 'completed' || selectedRun.status === 'cancelled') && (
                   <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => {

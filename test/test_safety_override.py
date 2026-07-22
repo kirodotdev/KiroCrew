@@ -451,3 +451,91 @@ class TestSourceTtls:
         # Should not crash; use slack TTL as fallback
         assert result.active is True
         assert result.ttl == SafetyOverride._SLACK_TTL
+
+
+# ─── Task-scoped grants ───────────────────────────────────────────────────────
+
+
+class TestScopedGrants:
+    def test_activate_scoped_uses_source_ttl(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            result = override.activate_scoped("taskrunner:t1:autoapprove", source="dashboard")
+        assert result.active is True
+        assert result.ttl == SafetyOverride._DASHBOARD_TTL
+        assert override.is_scope_active("taskrunner:t1:autoapprove") is True
+
+    def test_ttl_capped_at_ceiling(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            result = override.activate_scoped("s", source="dashboard", ttl=999999)
+        assert result.ttl == SafetyOverride._MAX_TTL
+
+    def test_unknown_scope_is_inactive(self, override: SafetyOverride) -> None:
+        assert override.is_scope_active("never-granted") is False
+
+    def test_scope_expires_and_is_purged(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate_scoped("s", source="dashboard", ttl=60)
+            # Fast-forward past the TTL.
+            with patch("kiro_crew.safety_override.time.monotonic", return_value=time.monotonic() + 120):
+                assert override.is_scope_active("s") is False
+        # Purged from the internal map after expiry.
+        assert "s" not in override._scoped
+
+    def test_deactivate_scope_revokes(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate_scoped("s", source="dashboard")
+            assert override.is_scope_active("s") is True
+            override.deactivate_scope("s")
+        assert override.is_scope_active("s") is False
+
+    def test_scoped_grant_does_not_flip_global(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate_scoped("s", source="dashboard")
+        # A scoped grant must NOT activate the session-wide override.
+        assert override.is_active() is False
+
+    def test_activate_scoped_fails_closed_on_audit_error(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value.log_api_access.side_effect = RuntimeError("sel down")
+            result = override.activate_scoped("s", source="dashboard")
+        # No grant is committed when the fail-closed audit raises.
+        assert result.active is False
+        assert override.is_scope_active("s") is False
+
+    def test_renew_scoped_extends_expiry(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            base = time.monotonic()
+            with patch("kiro_crew.safety_override.time.monotonic", return_value=base):
+                override.activate_scoped("s", source="dashboard", ttl=100)
+            # 90s later a tool call renews it — expiry slides forward.
+            with patch("kiro_crew.safety_override.time.monotonic", return_value=base + 90):
+                r = override.renew_scoped("s", source="dashboard", ttl=100)
+                assert r.renewed is True
+                # Now ~100s of remaining window, not the ~10s left before renewal.
+                assert override.scope_remaining_secs("s") > 50
+
+    def test_renew_capped_at_ceiling(self, override: SafetyOverride) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            base = time.monotonic()
+            with patch("kiro_crew.safety_override.time.monotonic", return_value=base):
+                override.activate_scoped("s", source="dashboard", ttl=100)
+            # Past the 24h ceiling from first activation → cannot renew further.
+            with patch(
+                "kiro_crew.safety_override.time.monotonic",
+                return_value=base + SafetyOverride._MAX_TTL + 10,
+            ):
+                r = override.renew_scoped("s", source="dashboard", ttl=100)
+                assert r.renewed is False
+                assert r.reason == "ceiling_reached"
+
+    def test_renew_absent_scope(self, override: SafetyOverride) -> None:
+        r = override.renew_scoped("never", source="dashboard")
+        assert r.renewed is False
+        assert r.reason == "not_active"

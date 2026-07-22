@@ -733,8 +733,8 @@ export const api = {
   cancelPlan: () => post('/api/taskrunner/plan/cancel').then(j),
   updatePlan: (taskId: string, steps: PlanStepInput[]) =>
     put('/api/taskrunner/' + encodeURIComponent(taskId) + '/plan', { steps }).then(j),
-  executePlan: (taskId: string, agent?: string) =>
-    post('/api/taskrunner/' + encodeURIComponent(taskId) + '/execute', { agent: agent || '' }).then(j),
+  executePlan: (taskId: string, agent?: string, autoApprove?: boolean) =>
+    post('/api/taskrunner/' + encodeURIComponent(taskId) + '/execute', { agent: agent || '', auto_approve: !!autoApprove }).then(j),
   planFromChat: (steps: PlanStepInput[], taskId?: string, originalInput?: string) =>
     post('/api/taskrunner/from-chat', { steps, task_id: taskId || '', original_input: originalInput || '' }).then(j),
   planContext: (taskId: string) =>

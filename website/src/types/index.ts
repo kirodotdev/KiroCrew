@@ -298,6 +298,10 @@ export interface ProjectRun {
   work_dir: string; branch_name: string
   spec_content: string; lessons_learned: string[]; commits: number
   original_input: string; source: string; groups: number[][]
+  /** Whether this run should auto-approve tool calls (per-run trust toggle).
+   * Reflects the last chosen value; deny-lists and force_approval gates still block. */
+  auto_approve?: boolean
+  auto_approve_remaining_secs?: number
 }
 export interface TaskRunnerStatus {
   running: boolean; available: boolean; runs: ProjectRun[]

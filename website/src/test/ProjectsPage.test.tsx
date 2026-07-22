@@ -160,6 +160,30 @@ describe('ProjectsPage', () => {
     expect(mockApi.retryTaskRun).toHaveBeenCalledWith('run-4', 1)
   })
 
+  it('toggling auto-approve then Execute calls executePlan with autoApprove=true', async () => {
+    const plannedRun: ProjectRun = {
+      task_id: 'run-plan', name: 'Plan Me', running: false, status: 'planned',
+      steps: 1, completed: 0, failed: 0, skipped: 0, current_step: 0,
+      spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
+      task_details: [], started_at: 0, finished_at: 0,
+      work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
+      commits: 0, original_input: '', source: 'text', groups: [],
+    }
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [plannedRun] })
+    renderWithProviders(<ProjectsPage />)
+    await screen.findByText('Plan Me')
+    fireEvent.click(screen.getByText('Plan Me'))
+    // Toggle defaults OFF
+    const toggle = screen.getByLabelText('Auto-approve tool calls') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+    fireEvent.click(toggle)
+    expect(toggle.checked).toBe(true)
+    // Click Execute
+    fireEvent.click(screen.getByRole('button', { name: /Execute/ }))
+    expect(mockApi.executePlan).toHaveBeenCalledWith('run-plan', '', true)
+  })
+
   it('schedule calls createCron with project spec', async () => {
     const completedRun: ProjectRun = {
       task_id: 'run-5', name: 'Cron Me', running: false, status: 'completed',

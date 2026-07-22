@@ -7,9 +7,11 @@ import re
 import time
 from pathlib import Path
 
+from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_exfiltration_urls
 from kiro_crew.task_models import (
     PROGRESS_FILE,
+    SESSION_PREFIX,
     NotifyCallback,
     Project,
     Task,
@@ -154,6 +156,14 @@ def build_status(
                 "error": run.error,
                 "tokens_used": run.tokens_used,
                 "replan_count": run.replan_count,
+                "auto_approve": getattr(run, "auto_approve", False),
+                "auto_approve_remaining_secs": (
+                    safety_override().scope_remaining_secs(
+                        f"{SESSION_PREFIX}:{run.task_id}:autoapprove"
+                    )
+                    if getattr(run, "auto_approve", False)
+                    else 0
+                ),
                 "original_input": run.original_input[:2000],
                 "source": run.source,
                 "task_details": [

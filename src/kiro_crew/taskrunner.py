@@ -17,6 +17,7 @@ from kiro_crew import git_coord, shutdown_event
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.llm_helpers import stream_and_collect_json
+from kiro_crew.safety_override import safety_override
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
@@ -93,6 +94,16 @@ _DEFAULT_TOKEN_BUDGET = DEFAULT_TOKEN_BUDGET
 _HEARTBEAT_INTERVAL = 30  # watchdog checks process liveness every 30s
 _DEAD_THRESHOLD = 2  # consecutive dead checks before fail-fast reset
 _RESULT_MEM_CAP = 4000  # truncate task.result in memory after step completes
+
+
+def _auto_approve_scope(task_id: str) -> str:
+    """SafetyOverride scope key holding a run's per-run auto-approve grant.
+
+    The live, TTL-bounded, audited grant lives in the SafetyOverride singleton
+    (see ``activate_scoped``); ``Project.auto_approve`` is only the UI intent
+    flag. Enforcement reads ``safety_override().is_scope_active(scope)``.
+    """
+    return f"{_SESSION_PREFIX}:{task_id}:autoapprove"
 
 
 def _resolve_workspace_dir(raw: str) -> str:
@@ -386,7 +397,7 @@ class TaskRunner:
         self._persist_runs()
         return {"index": task.index, "title": task.title, "description": task.description, "depends_on": task.depends_on, "requires_approval": task.requires_approval, "force_approval": task.force_approval}
 
-    def execute_plan(self, task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "") -> str:
+    def execute_plan(self, task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False) -> str:
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
@@ -422,6 +433,9 @@ class TaskRunner:
             run.replan_count = 0
             run.status = "planned"
             self._persist_runs()
+
+        self._grant_run_trust(run, bool(auto_approve))
+        self._persist_runs()
 
         self._agent = agent
         history_key = f"taskrunner:run:{task_id}"
@@ -496,7 +510,7 @@ class TaskRunner:
 
     async def run(
         self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "",
-        workspace_dir: str = "",
+        workspace_dir: str = "", auto_approve: bool = False,
     ) -> Project:
         spec_path = Path(spec_path)
         if not spec_path.exists():
@@ -521,6 +535,7 @@ class TaskRunner:
         run.task_id = task_id
         run.name = name or auto_name(spec_content, str(spec_path))
         run.work_dir = str(task_dir)
+        self._grant_run_trust(run, bool(auto_approve))
         self._runs[task_id] = run
         self._persist_runs()  # persist immediately so crash recovery works
         watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -826,7 +841,7 @@ class TaskRunner:
 
     def start_background(
         self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "",
-        workspace_dir: str = "",
+        workspace_dir: str = "", auto_approve: bool = False,
     ) -> str:
         # Validate the per-run workspace override synchronously so the caller
         # (HTTP handler) surfaces a bad/sensitive path immediately, not inside
@@ -872,12 +887,13 @@ class TaskRunner:
             status="planning",
             started_at=time.time(),
             source=source,
+            auto_approve=bool(auto_approve),
         )
         self._persist_runs()  # persist planning state for crash recovery
 
         async def _wrapped() -> None:
             try:
-                await self.run(spec_path, task_id=task_id, name=name, source=source, workspace_dir=workspace_dir)
+                await self.run(spec_path, task_id=task_id, name=name, source=source, workspace_dir=workspace_dir, auto_approve=auto_approve)
             except Exception as exc:
                 logger.exception("start_background task %s failed", task_id)
                 placeholder = self._runs.get(task_id)
@@ -938,6 +954,19 @@ class TaskRunner:
         # down (one kiro-cli process for the whole run).
         await self._release_run_runtime(run)
 
+    def _grant_run_trust(self, run: Project, enabled: bool) -> None:
+        """Single owner of per-run trust — sets the persisted UI intent flag AND
+        the authoritative SafetyOverride scoped grant together, so the two
+        representations can never diverge at a call site. Enable activates an
+        audited, TTL-bounded scoped grant; disable revokes it.
+        """
+        run.auto_approve = bool(enabled)
+        scope = _auto_approve_scope(run.task_id)
+        if run.auto_approve:
+            safety_override().activate_scoped(scope, source="dashboard")
+        else:
+            safety_override().deactivate_scope(scope)
+
     async def _release_run_runtime(self, run: Project) -> None:
         """Kill the run's shared AcpRuntime once (idempotent) at run teardown.
 
@@ -952,6 +981,11 @@ class TaskRunner:
             )
         except Exception:
             logger.debug("release run runtime failed for %s", run.task_id, exc_info=True)
+        # Revoke the per-run auto-approve grant so trust never outlives the run.
+        try:
+            safety_override().deactivate_scope(_auto_approve_scope(run.task_id))
+        except Exception:
+            logger.debug("deactivate auto-approve scope failed for %s", run.task_id, exc_info=True)
 
     def delete_run(self, task_id: str) -> bool:
         run = self._runs.get(task_id)
@@ -1287,6 +1321,7 @@ class TaskRunner:
                         "original_input": run.original_input,
                         "source": run.source,
                         "spec_content": run.spec_content,
+                        "auto_approve": run.auto_approve,
                         "task_details": [
                             {
                                 "index": t.index,
@@ -1345,8 +1380,17 @@ class TaskRunner:
                     original_input=item.get("original_input", ""),
                     source=item.get("source", ""),
                     tasks=tasks,
+                    auto_approve=item.get("auto_approve", False),
                 )
                 self._runs[run.task_id] = run
+                # Compensating control: never let per-run trust silently survive a
+                # gateway restart. A run recovered from an active state had its
+                # auto-approve granted for a live, attended launch; after a crash the
+                # user must re-affirm trust on resume (execute_plan re-applies it from
+                # the dashboard toggle).
+                if run.status in ("running", "pausing", "cancelling"):
+                    run.auto_approve = False
+                    safety_override().deactivate_scope(_auto_approve_scope(run.task_id))
                 # Crash recovery: if gateway died mid-execution, mark as resumable
                 if run.status in ("running", "pausing"):
                     if not run.tasks:

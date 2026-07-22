@@ -24,6 +24,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
 )
+from kiro_crew.safety_override import safety_override
 from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -355,6 +356,7 @@ async def execute_task(
                     # interactive prompt — the task runner previously handled only
                     # TOOL_DENY and always prompted, ignoring explicit trust.
                     _auto_approved = False
+                    _auto_reason = ""
                     if ctx:
                         tool_result = ctx.hooks.on_tool_call(
                             event.title,
@@ -380,6 +382,49 @@ async def execute_task(
                             continue
                         if tool_result.action == TOOL_AUTO_APPROVE:
                             _auto_approved = True
+                            _auto_reason = "hook_auto_approve"
+
+                    # Per-run trust toggle: the user explicitly opted THIS run into
+                    # unattended execution via the dashboard. It is NOT the global
+                    # SafetyOverride singleton (which would leak trust to every
+                    # session); instead the authoritative grant is a task-scoped
+                    # SafetyOverride grant (scope `taskrunner:{task_id}:autoapprove`)
+                    # activated through the singleton's fail-closed audited
+                    # `activate_scoped()` and TTL-bounded there (dashboard window,
+                    # ≤24h ceiling) — so no independent approval state lives on the
+                    # run, and it satisfies the backend-security-controls expiry rule.
+                    # `run.auto_approve` is only the UI intent flag; the live decision
+                    # is `is_scope_active()`, re-checked before EVERY approval and
+                    # revoked the moment the grant lapses. It is deny-by-default (only a
+                    # literal `true` enables it), dashboard source-gated, SEL-audited as
+                    # `run_auto_approve`, and reset on crash-recovery. Compensating
+                    # controls stay intact: hook deny-lists / sensitive-path blocks
+                    # (handled above) still reject, and force_approval / requires_approval
+                    # task gates (separate task-level path) still pause for approval.
+                    if not _auto_approved and getattr(run, "auto_approve", False):
+                        _scope = f"{SESSION_PREFIX}:{run.task_id}:autoapprove"
+                        if safety_override().is_scope_active(_scope):
+                            _auto_approved = True
+                            _auto_reason = "run_auto_approve"
+                            # Slide the grant forward on activity so an actively
+                            # progressing run does not lose trust at the base TTL;
+                            # still hard-capped at the 24h ceiling from first grant,
+                            # so an abandoned (idle) run lapses as intended.
+                            safety_override().renew_scoped(_scope, source="dashboard")
+                        else:
+                            # Grant lapsed / absent — clear BOTH trust representations
+                            # together (intent flag + scoped grant, idempotent) and fall
+                            # through to interactive / deny-by-default. Bounds unattended
+                            # tool execution to the grant window.
+                            run.auto_approve = False
+                            safety_override().deactivate_scope(_scope)
+                            sel().log_api_access(
+                                caller="taskrunner",
+                                operation="task.auto_approve_expired",
+                                outcome="expired",
+                                source="taskrunner",
+                                resources=f"task-{task.index}",
+                            )
 
                     # Mid-stream context check runs BEFORE authorization resolution:
                     # context management is orthogonal to approval and must fire even
@@ -400,7 +445,7 @@ async def execute_task(
                     # Positive-authorization resolution (deny-by-default shape):
                     # each path is explicit — no falsy-guard fall-through.
                     if _auto_approved:
-                        approve_reason = "hook_auto_approve"
+                        approve_reason = _auto_reason or "hook_auto_approve"
                     elif on_tool_approval:
                         run.last_task_time = _time.time()
                         approved = await on_tool_approval(event)
@@ -443,6 +488,9 @@ async def execute_task(
                             "task": task.index,
                             "task_id": run.task_id,
                             "reason": approve_reason,
+                            # Trust provenance: which launch surface granted this run.
+                            # run_auto_approve is dashboard-gated at the API boundary.
+                            "source": run.source,
                         },
                     )
                 elif event.kind == EVENT_TOOL_CALL:
