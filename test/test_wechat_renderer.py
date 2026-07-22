@@ -4,8 +4,37 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.wechat.renderer import WeComRenderer
+from kiro_crew.wechat.renderer import WeComRenderer, _strip_options
 from kiro_crew.wechat.transport import WECOM_CAPABILITIES
+
+
+class TestStripOptionsRedos:
+    def test_unterminated_options_tag_is_not_redos(self) -> None:
+        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
+        # consume a "[" that ALSO starts the outer "[OPTIONS:" literal, so over
+        # text with many "[OPTIONS:" prefixes search() re-explored the body from
+        # each position — polynomial. The tempered body
+        # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so the
+        # body is unambiguous (linear). A whitespace-padded unterminated tag and
+        # many repeated "[OPTIONS:" prefixes (the real pump) must both return
+        # promptly.
+        import time
+
+        # A single unterminated tag: no closing ']' after the last "[OPTIONS",
+        # so the whole still-streaming partial is hidden.
+        evil = "[OPTIONS:" + ("\t" * 200_000) + "x"
+        start = time.perf_counter()
+        result = _strip_options(evil)
+        assert time.perf_counter() - start < 1.0, "possible ReDoS"
+        assert result == ""
+
+        # Many repeated "[OPTIONS:" prefixes (the real polynomial pump): the
+        # linear match must still return promptly. There is no closing ']', so
+        # the trailer regex does not match and the text is returned unchanged.
+        evil = "[OPTIONS:" * 100_000 + "x"
+        start = time.perf_counter()
+        result = _strip_options(evil)
+        assert time.perf_counter() - start < 1.0, "possible ReDoS"
 
 
 class FakeClient:

@@ -13,6 +13,8 @@ import reducer, {
   markSlotRead,
   fetchSlots,
   selectUnreadByMode,
+  sseSubagentStatus,
+  sseSubagentText,
 } from '../store/dashboardSlice'
 import type { StatusData, ChatSlot } from '../types'
 
@@ -219,6 +221,47 @@ describe('dashboardSlice', () => {
       // Existing unread preserved, no new ones spuriously added
       expect(state.unreadSlots).toEqual(['chat-1'])
       expect(state.slotsLoaded).toBe(true)
+    })
+  })
+
+  describe('subagent SSE prototype-pollution guards', () => {
+    // Both `slot` and `id` are untrusted keys from the SSE payload. A value of
+    // __proto__/constructor/prototype must never reach an assignment that would
+    // write through Object.prototype. Note the subagentRunning[slot] check does
+    // NOT stop slot="__proto__" on its own — it resolves truthily through the
+    // prototype chain — so isUnsafeKey(slot) is the real guard.
+    const polluted = () => ({} as Record<string, unknown>).polluted
+
+    it('sseSubagentStatus ignores a __proto__ slot without polluting the prototype', () => {
+      const state = reducer(
+        initial,
+        sseSubagentStatus({ slot: '__proto__', running: 1, agents: [] }),
+      )
+      // `['__proto__']` always returns the prototype object; the real check is
+      // that no OWN property was created and the prototype was not polluted.
+      expect(Object.prototype.hasOwnProperty.call(state.subagentRunning, '__proto__')).toBe(false)
+      expect(polluted()).toBeUndefined()
+    })
+
+    it('sseSubagentText ignores a __proto__ slot and does not pollute', () => {
+      // Prime a legit slot so the reducer would otherwise proceed.
+      const primed = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
+      reducer(primed, sseSubagentText({ slot: '__proto__', id: 'a', text: 'x' }))
+      expect(({} as Record<string, unknown>)['a']).toBeUndefined()
+      expect(polluted()).toBeUndefined()
+    })
+
+    it('sseSubagentText ignores a __proto__ id and does not pollute', () => {
+      let state = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
+      state = reducer(state, sseSubagentText({ slot: 'chat-1', id: '__proto__', text: 'x' }))
+      expect(state.subagentText['chat-1']?.['__proto__']).toBeUndefined()
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    })
+
+    it('sseSubagentText still stores text for a normal slot+id', () => {
+      let state = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
+      state = reducer(state, sseSubagentText({ slot: 'chat-1', id: 'sub-1', text: 'hello' }))
+      expect(state.subagentText['chat-1']['sub-1']).toBe('hello')
     })
   })
 })

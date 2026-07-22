@@ -27,6 +27,45 @@ class TestExtractOptions:
         _, choices = extract_options("[OPTIONS:  X |  Y  | Z ]")
         assert choices == ["X", "Y", "Z"]
 
+    def test_bracket_inside_option_text_survives(self):
+        # The closing ']' is anchored to end-of-line, so a literal ']' inside
+        # an option (e.g. "Fix [x] logging") must not truncate the body.
+        _, choices = extract_options("[OPTIONS: Fix [x] logging | Skip]")
+        assert choices == ["Fix [x] logging", "Skip"]
+
+    def test_body_does_not_span_newlines(self):
+        # The MULTILINE body must stay single-line: an assistant message that
+        # mentions "[OPTIONS:" mid-text on one line and has a LATER line ending
+        # in "]" must NOT match across the newline (which would delete a
+        # multi-line span from the visible text and emit bogus pills). The
+        # tempered body excludes \n (``[^[\n]``) precisely so this cannot happen.
+        cleaned, choices = extract_options("See [OPTIONS: in my notes\nsummary ]")
+        assert choices == []
+        assert cleaned == "See [OPTIONS: in my notes\nsummary ]"
+
+    def test_unterminated_options_tag_is_not_redos(self):
+        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
+        # consume a ``[`` that ALSO starts the outer ``[OPTIONS:`` literal, so
+        # over text with many ``[OPTIONS:`` prefixes ``search()`` re-explored the
+        # body from each position — polynomial. The tempered body
+        # ``(?:[^[\n]|\[(?!OPTIONS:))*`` forbids only a re-occurring ``[OPTIONS:``,
+        # so the body is unambiguous (linear). Two adversarial inputs — a long
+        # whitespace-padded unterminated tag, and many repeated ``[OPTIONS:``
+        # prefixes (the real pump) — must both return promptly.
+        import time
+
+        for evil in (
+            "[OPTIONS:" + (" " * 200_000) + "x",
+            "[OPTIONS:" * 100_000 + "x",
+        ):
+            start = time.perf_counter()
+            cleaned, choices = extract_options(evil)
+            elapsed = time.perf_counter() - start
+            assert elapsed < 1.0, f"extract_options took {elapsed:.2f}s (possible ReDoS)"
+            # No terminating ']' → no match, input returned unchanged.
+            assert choices == []
+            assert cleaned == evil
+
 
 class TestBuildOptionsBlocks:
     def test_returns_checkboxes_and_send_button(self):

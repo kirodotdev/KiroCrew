@@ -25,10 +25,10 @@ Dependency direction is ``webex -> messaging`` (allowed).
 from __future__ import annotations
 
 import logging
-import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.constants import OPTIONS_RE_TRAILER
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.webex.client import chunk_utf8
@@ -51,8 +51,12 @@ _THINKING = "🤔 Thinking…"
 _ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
 # Trailing "[OPTIONS: a | b | c]" chip trailer (a dashboard convention Webex
-# can't render as tappable chips). Matched only at the very end of the message.
-_OPTIONS_RE = re.compile(r"\[OPTIONS:\s*(.*?)\]\s*\Z", re.DOTALL)
+# can't render as tappable chips). Matched only at the very END of the message,
+# so use the DOTALL/trailer canonical parser. Defined once in constants.py
+# (shared with the Slack/dashboard/Discord/Telegram/WeCom surfaces) so the
+# ReDoS-hardened grammar can never drift; see OPTIONS_RE_TRAILER for the full
+# rationale. Per-choice whitespace is stripped by the caller.
+_OPTIONS_RE = OPTIONS_RE_TRAILER
 
 
 def _strip_options(text: str) -> str:

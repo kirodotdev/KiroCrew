@@ -467,6 +467,27 @@ class TestExtractOptions:
         assert "[OPTIONS" not in body
         assert opts == []
 
+    def test_unterminated_options_tag_is_not_redos(self) -> None:
+        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
+        # consume a "[" that ALSO starts the outer "[OPTIONS:" literal, so over
+        # text with many "[OPTIONS:" prefixes search() re-explored the body from
+        # each position — polynomial. The tempered body
+        # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so
+        # the body is unambiguous (linear). A whitespace-padded unterminated tag
+        # and many repeated "[OPTIONS:" prefixes (the real pump) must both return
+        # promptly.
+        import time
+
+        for evil in (
+            "[OPTIONS:" + ("\t" * 200_000) + "x",
+            "[OPTIONS:" * 100_000 + "x",
+        ):
+            start = time.perf_counter()
+            body, opts = _extract_options(evil)
+            elapsed = time.perf_counter() - start
+            assert elapsed < 1.0, f"_extract_options took {elapsed:.2f}s (possible ReDoS)"
+            assert opts == []
+
 
 # ── transport.py: deny-by-default auth + capabilities + inbound ─────────────
 

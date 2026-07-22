@@ -35,6 +35,7 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.constants import OPTIONS_RE_TRAILER
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.messaging.transport import TransportCapabilities
 
@@ -61,8 +62,13 @@ _STYLE_SECONDARY = 2
 _STYLE_SUCCESS = 3
 _STYLE_DANGER = 4
 
-# Trailing "[OPTIONS: a | b | c]" -- extracted for button-row rendering.
-_OPTIONS_RE = re.compile(r"\[OPTIONS:\s*(.*?)\]\s*\Z", re.DOTALL)
+# Trailing "[OPTIONS: a | b | c]" -- extracted for button-row rendering. Matched
+# only at the very END of the message, so use the DOTALL/trailer canonical
+# parser. Defined once in constants.py (shared with the Slack/dashboard/Telegram/
+# WeCom surfaces) so the ReDoS-hardened grammar can never drift; see
+# OPTIONS_RE_TRAILER for the full rationale. Per-choice whitespace is stripped by
+# the caller.
+_OPTIONS_RE = OPTIONS_RE_TRAILER
 
 # kiro-cli's inline "[STEERING steer-<id>: …]" steer-ack marker (see the
 # Telegram renderer for the full rationale — Discord likewise has no parser).
