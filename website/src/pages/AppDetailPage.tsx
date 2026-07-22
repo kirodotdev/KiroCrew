@@ -31,6 +31,8 @@ type AppInfo = {
   highlights?: string[]
   screenshots?: string[]
   screenshotsDark?: string[]
+  heroImage?: string
+  heroImageDark?: string
   repo?: string
   branch?: string
   // Installed state
@@ -85,6 +87,13 @@ interface AppManifest {
   highlights?: string[]
   screenshots?: string[]
   screenshotsDark?: string[]
+  // Store-listing metadata. For built-in apps these live on the manifest
+  // (preserved through AppManifest.extra) rather than on a registry entry —
+  // built-ins are not part of the /api/apps/registry feed.
+  iconUrl?: string
+  heroImage?: string
+  heroImageDark?: string
+  ui?: { pages?: { route?: string; label?: string; icon?: string; iconUrl?: string }[] }
   agents?: string[]
   skills?: string[]
   crons?: { name: string }[]
@@ -215,12 +224,18 @@ export default function AppDetailPage() {
           description: m.description || '',
           version: registryEntry?.version || m.version || installed.version || '0.0.0',
           author: m.author || registryEntry?.author || '',
-          icon: registryEntry?.icon || '',
-          iconUrl: registryEntry?.iconUrl || '',
+          // Built-in apps aren't in the registry feed, so registryEntry is
+          // undefined for them — their icon/hero metadata lives on the
+          // manifest. Fall back to it so built-in detail pages render the real
+          // icon and hero instead of the generic Package box.
+          icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
+          iconUrl: registryEntry?.iconUrl || m.iconUrl || m.ui?.pages?.[0]?.iconUrl || '',
           tags: m.tags || registryEntry?.tags || [],
           highlights: m.highlights || registryEntry?.highlights || [],
           screenshots: registryEntry?.screenshots || m.screenshots || [],
           screenshotsDark: registryEntry?.screenshotsDark || m.screenshotsDark || [],
+          heroImage: registryEntry?.heroImage || m.heroImage || '',
+          heroImageDark: registryEntry?.heroImageDark || m.heroImageDark || '',
           repo: registryEntry?.repo || '',
           installed: true,
           installedVersion: installed.version,
@@ -398,6 +413,10 @@ export default function AppDetailPage() {
   const agentCount = app.manifest?.agents?.length || 0
   const skillCount = app.manifest?.skills?.length || 0
   const cronCount = app.manifest?.crons?.length || 0
+  // Theme-aware hero banner source (mirrors the Browse card resolution).
+  const heroSrc = resolvedMode === 'dark'
+    ? (app.heroImageDark || app.heroImage || '')
+    : (app.heroImage || app.heroImageDark || '')
 
   return (
     <>
@@ -453,6 +472,20 @@ export default function AppDetailPage() {
                 </Btn>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Hero banner (only when the app ships one) */}
+        {heroSrc && (
+          <div className="w-full aspect-video max-h-72 rounded-2xl border border-border overflow-hidden mb-6 bg-[var(--card)]">
+            {/* onError is an image-load lifecycle handler (hide broken images). */}
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+            <img
+              src={heroSrc}
+              alt=""
+              className="w-full h-full object-cover"
+              onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+            />
           </div>
         )}
 
