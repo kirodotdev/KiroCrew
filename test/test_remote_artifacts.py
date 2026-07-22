@@ -28,11 +28,15 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_pull_latest,
     api_artifact_update,
     api_artifact_upstream_status,
+    api_remote_artifact_delete_comment,
+    api_remote_artifact_mark_review,
+    api_remote_artifact_post_comment,
+    api_remote_artifact_reply_comment,
     api_remote_artifacts_browse,
     api_remote_artifacts_clone,
     api_remote_artifacts_fork,
 )
-from kiro_crew.publish_provider import PublishProvider
+from kiro_crew.publish_provider import Capability, PublishProvider, RemoteComment
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -1054,3 +1058,107 @@ class TestRoutesAndAllowlist:
 
         assert "/api/remote-artifacts" in _MIXED_INTERNAL_API_PATHS
         assert "/api/artifacts" in _MIXED_INTERNAL_API_PATHS
+
+
+# ── Remote comment writes: publish governance gate ──────────────────────────
+
+
+class _CommentProvider(BrowseFakeProvider):
+    """Fake provider that supports comment writes, recording each provider
+    call so a test can assert the governance gate ran BEFORE any egress."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes: list[str] = []
+
+    def capabilities(self):
+        return {Capability.COMMENTS_READ, Capability.COMMENTS_WRITE}
+
+    async def post_comment(self, *, external_id, body, anchor=None):
+        self.writes.append("post")
+        return RemoteComment(remote_id="rc1", thread_id="rc1", author="me", body=body)
+
+    async def reply_comment(self, *, external_id, parent_remote_id, body):
+        self.writes.append("reply")
+        return RemoteComment(
+            remote_id="rc2",
+            thread_id=parent_remote_id,
+            author="me",
+            body=body,
+            parent_id=parent_remote_id,
+        )
+
+    async def mark_review(self, *, external_id, remote_id):
+        self.writes.append("review")
+
+    async def delete_comment(self, *, external_id, remote_id):
+        self.writes.append("delete")
+
+
+@pytest.fixture
+def comment_provider(monkeypatch):
+    prov = _CommentProvider()
+    saved = dict(publish_provider._FACTORIES)
+    publish_provider.reset_providers()
+    publish_provider.register_provider(prov.name, lambda: prov)
+    publish_provider._INSTANCES[prov.name] = prov
+    yield prov
+    publish_provider._FACTORIES.clear()
+    publish_provider._FACTORIES.update(saved)
+    publish_provider.reset_providers()
+
+
+_MATCH = {"provider": "fakeprov", "external_id": "ext-1", "comment_id": "c9"}
+
+
+class TestRemoteCommentGovernanceGate:
+    """Every remote comment WRITE is outbound egress, so it must pass the same
+    fail-closed capabilities.publish gate as artifact publish. A denied gate
+    returns 403 and the provider write is never reached (bytes never leave)."""
+
+    @pytest.mark.asyncio
+    async def test_post_comment_denied_403_before_egress(
+        self, patch_restricted, comment_provider, gate_denied
+    ):
+        req = _request(body={"text": "hi"}, match=_MATCH)
+        resp = await api_remote_artifact_post_comment(req)
+        assert resp.status == 403
+        assert comment_provider.writes == []
+        assert gate_denied == ["fakeprov"]
+
+    @pytest.mark.asyncio
+    async def test_reply_comment_denied_403_before_egress(
+        self, patch_restricted, comment_provider, gate_denied
+    ):
+        req = _request(body={"text": "re"}, match=_MATCH)
+        resp = await api_remote_artifact_reply_comment(req)
+        assert resp.status == 403
+        assert comment_provider.writes == []
+
+    @pytest.mark.asyncio
+    async def test_mark_review_denied_403_before_egress(
+        self, patch_restricted, comment_provider, gate_denied
+    ):
+        req = _request(match=_MATCH)
+        resp = await api_remote_artifact_mark_review(req)
+        assert resp.status == 403
+        assert comment_provider.writes == []
+
+    @pytest.mark.asyncio
+    async def test_delete_comment_denied_403_before_egress(
+        self, patch_restricted, comment_provider, gate_denied
+    ):
+        req = _request(match=_MATCH)
+        resp = await api_remote_artifact_delete_comment(req)
+        assert resp.status == 403
+        assert comment_provider.writes == []
+
+    @pytest.mark.asyncio
+    async def test_gate_open_permits_post_and_reaches_provider(
+        self, patch_restricted, comment_provider, gate_open
+    ):
+        req = _request(body={"text": "hi"}, match=_MATCH)
+        resp = await api_remote_artifact_post_comment(req)
+        assert resp.status == 201
+        assert comment_provider.writes == ["post"]
+        assert gate_open == ["fakeprov"]

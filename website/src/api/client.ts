@@ -962,6 +962,25 @@ export const api = {
         (opts?.q ? `&q=${encodeURIComponent(opts.q)}` : '') +
         (opts?.pageToken ? `&pageToken=${encodeURIComponent(opts.pageToken)}` : ''),
     ).then(j),
+  // Read-only detail fetch for a provider-hosted artifact (metadata + content),
+  // powering the remote-artifact detail page's viewer. external_id can contain
+  // "/", so it is percent-encoded into the path segment.
+  remoteArtifactDetail: (provider: string, externalId: string) =>
+    get(`/api/remote-artifacts/${encodeURIComponent(provider)}/${encodeURIComponent(externalId)}`).then(j),
+  // Remote artifact comments (view-without-fork): these write straight through
+  // to the provider (scope=shared) and are TTL-cached server-side. external_id
+  // + comment_id travel in the path, percent-encoded (provider-native ids may
+  // contain "/").
+  remoteArtifactComments: (provider: string, externalId: string) =>
+    get(`/api/remote-artifacts/${encodeURIComponent(provider)}/${encodeURIComponent(externalId)}/comments`).then(j),
+  postRemoteArtifactComment: (provider: string, externalId: string, body: { text: string; anchor?: object }) =>
+    post(`/api/remote-artifacts/${encodeURIComponent(provider)}/${encodeURIComponent(externalId)}/comments`, body).then(j),
+  replyRemoteArtifactComment: (provider: string, externalId: string, commentId: string, body: { text: string }) =>
+    post(`/api/remote-artifacts/${encodeURIComponent(provider)}/${encodeURIComponent(externalId)}/comments/${encodeURIComponent(commentId)}/reply`, body).then(j),
+  markReviewRemoteComment: (provider: string, externalId: string, commentId: string) =>
+    post(`/api/remote-artifacts/${encodeURIComponent(provider)}/${encodeURIComponent(externalId)}/comments/${encodeURIComponent(commentId)}/review`, {}).then(j),
+  deleteRemoteComment: (provider: string, externalId: string, commentId: string) =>
+    del(`/api/remote-artifacts/${encodeURIComponent(provider)}/${encodeURIComponent(externalId)}/comments/${encodeURIComponent(commentId)}`).then(j),
   updateArtifactSharing: (slug: string, body: { visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[] }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/sharing`, body).then(j),
   unpublishArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}/publish`).then(j),

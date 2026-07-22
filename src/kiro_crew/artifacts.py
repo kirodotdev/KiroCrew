@@ -1718,6 +1718,91 @@ class ArtifactStore:
                 return True
             return False
 
+    def merge_remote_comments(
+        self, slug: str, provider: str, remote_comments: _List["ArtifactComment"]
+    ) -> _List["ArtifactComment"]:
+        """Reconcile remote (provider) comments into the local mirror.
+
+        The provider is authoritative for its own comments. This:
+          * drops local mirrors that came back tombstoned (``deleted``) — so a
+            comment deleted on the remote disappears locally;
+          * syncs mutable fields (status/body/author) of changed provider
+            comments — so an inbound resolve/edit is reflected;
+          * adds newly-seen provider comments;
+          * leaves local comments (``origin == "local"``) untouched, and keeps
+            provider comments absent from this fetch (avoids wiping on a
+            transient/paginated empty — real deletes return as tombstones).
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            existing = self._load_comments(slug)
+            incoming = {
+                rc.origin: rc for rc in remote_comments if rc.origin and rc.origin != "local"
+            }
+            deleted_origins = {
+                origin for origin, rc in incoming.items() if getattr(rc, "deleted", False)
+            }
+            # Threads whose ROOT was deleted upstream — cascade-drop the whole
+            # subtree, not just the tombstoned root. Two confirmed realities:
+            #   * some remotes do NOT cascade-delete replies when a parent is
+            #     deleted — the replies keep coming back deleted=False — so we drop
+            #     them by thread rather than waiting for per-reply tombstones.
+            #   * the remote retains the deleted ROOT as a tombstone in *every*
+            #     fetch, so seed the drop-set from the INCOMING tombstones (the
+            #     authoritative, always-present signal), not only the local mirror
+            #     — that mirror is gone after the first cascade, which is exactly
+            #     why the orphans used to come back on the next fetch.
+            # Replies share the root's thread_id (provider: thread_id =
+            # parentCommentId or commentId), so this drops the subtree on every
+            # fetch — self-healing, no persistent local tombstone needed. Local
+            # threads can't collide: a deleted root is always a provider comment.
+            dropped_threads: set[str] = set()
+            for irc in incoming.values():
+                irc_root = not irc.parent_id or irc.thread_id == irc.id
+                if getattr(irc, "deleted", False) and irc_root:
+                    dropped_threads.add(irc.thread_id)
+                    dropped_threads.add(irc.id)
+            for c in existing:
+                if c.origin in deleted_origins and (not c.parent_id or c.thread_id == c.id):
+                    dropped_threads.add(c.thread_id)
+                    dropped_threads.add(c.id)
+            result: _List["ArtifactComment"] = []
+            seen: set[str] = set()
+            changed = False
+            for c in existing:
+                if c.thread_id in dropped_threads:
+                    # Reply (local or provider) under a root deleted upstream —
+                    # cascade-drop it too, even if it's local-origin (orphaned).
+                    changed = True
+                    continue
+                if not c.origin or c.origin == "local":
+                    result.append(c)  # local comment — never touched by remote sync
+                    continue
+                if c.origin in deleted_origins:
+                    changed = True  # tombstoned on the provider — drop the mirror
+                    continue
+                rc = incoming.get(c.origin)
+                if rc is None:
+                    result.append(c)  # not in this fetch — keep (don't wipe)
+                    continue
+                seen.add(c.origin)
+                if c.status != rc.status or c.body != rc.body or c.author != rc.author:
+                    c.status, c.body, c.author = rc.status, rc.body, rc.author
+                    c.updated_at = rc.updated_at or c.updated_at
+                    changed = True
+                result.append(c)
+            for origin, rc in incoming.items():
+                if origin in seen or origin in deleted_origins:
+                    continue
+                if rc.thread_id in dropped_threads:
+                    continue  # belongs to a thread whose root was deleted upstream
+                result.append(rc)
+                changed = True
+            if changed:
+                self._write_comments(slug, result)
+                return result
+            return existing
+
     def _rescan_comment_anchors_locked(self, slug: str, content: str) -> None:
         """Re-validate every anchored comment against ``content`` and flip
         ``anchor_orphaned`` accordingly. MUST be called with ``self._lock``

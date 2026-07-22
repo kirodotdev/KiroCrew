@@ -562,3 +562,79 @@ class TestCommentLifecycleEvents:
         resp = await h.api_artifact_comments(_req(match={"slug": "doc"}))
         cmt = _j(resp)["comments"][0]
         assert cmt["anchor_orphaned"] is True
+
+
+class TestFetchOnViewMerge:
+    """The GET-comments fetch-on-view path (artifact WITH a publication): a
+    provider that advertises COMMENTS_READ has its comments merged into the
+    local mirror before the list is returned. Two invariants this locks in:
+
+      * provider-controlled ``author`` is redacted at the read boundary (it is
+        stored raw in the mirror, so redaction lives on the way out — like body
+        / anchor), and
+      * each merged mirror carries ``target_provider`` / ``target_external_id``
+        so a later local edit/review/delete routes back to the source.
+    """
+
+    def _publish(self, store: ArtifactStore) -> None:
+        from kiro_crew.artifacts import ArtifactPublication
+
+        store.set_publication(
+            "doc",
+            ArtifactPublication(artifact_id="EXT1", view_url="https://x/EXT1", provider="fakeprov"),
+        )
+
+    def _patch_provider(self, monkeypatch, remote):
+        from kiro_crew.publish_provider import Capability
+
+        class _Prov:
+            def capabilities(self):
+                return {Capability.COMMENTS_READ}
+
+            async def fetch_comments(self, *, external_id):
+                assert external_id == "EXT1"
+                return remote
+
+        monkeypatch.setattr(h, "get_provider", lambda name: _Prov())
+
+    @pytest.mark.asyncio
+    async def test_provider_author_redacted_at_read_boundary(self, store, monkeypatch):
+        from kiro_crew.publish_provider import RemoteComment
+
+        self._publish(store)
+        self._patch_provider(
+            monkeypatch,
+            [
+                RemoteComment(
+                    remote_id="7",
+                    thread_id="7",
+                    author="AKIAIOSFODNN7EXAMPLE",
+                    body="looks good",
+                )
+            ],
+        )
+        resp = await h.api_artifact_comments(_req(match={"slug": "doc"}))
+        assert resp.status == 200
+        cmt = next(c for c in _j(resp)["comments"] if c["origin"] == "fakeprov:7")
+        # Credential in the provider-controlled author never reaches the wire.
+        assert "AKIAIOSFODNN7EXAMPLE" not in cmt["author"]
+        # ...but it IS stored raw in the mirror (redaction is read-boundary only).
+        stored = next(c for c in store.list_comments("doc") if c.origin == "fakeprov:7")
+        assert stored.author == "AKIAIOSFODNN7EXAMPLE"
+
+    @pytest.mark.asyncio
+    async def test_merged_mirror_carries_routing_metadata(self, store, monkeypatch):
+        from kiro_crew.publish_provider import RemoteComment
+
+        self._publish(store)
+        self._patch_provider(
+            monkeypatch,
+            [RemoteComment(remote_id="9", thread_id="9", author="alice", body="hi")],
+        )
+        resp = await h.api_artifact_comments(_req(match={"slug": "doc"}))
+        assert resp.status == 200
+        stored = next(c for c in store.list_comments("doc") if c.origin == "fakeprov:9")
+        # Without these a later edit/review/delete would stay local and be
+        # resurrected by the next fetch — the write handlers gate on them.
+        assert stored.target_provider == "fakeprov"
+        assert stored.target_external_id == "EXT1"

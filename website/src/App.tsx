@@ -53,6 +53,7 @@ import CapabilitiesPage from './pages/CapabilitiesPage'
 import KnowledgePage from './pages/KnowledgePage'
 import ArtifactsPage from './pages/ArtifactsPage'
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
+import RemoteArtifactDetailPage from './pages/RemoteArtifactDetailPage'
 import ArtifactDeployPage from './pages/ArtifactDeployPage'
 import SettingsPage from './pages/SettingsPage'
 import EmbedSettingsPage from './pages/EmbedSettingsPage'
@@ -1870,6 +1871,7 @@ export default function App() {
             <Route path="/developer" element={<DeveloperPage />} />
             <Route path="/artifacts" element={<ArtifactsPage />} />
             <Route path="/artifacts/deploy" element={<Navigate to="/deploy" replace />} />
+            <Route path="/artifacts/remote/:provider/:externalId" element={<ErrorBoundary><RemoteArtifactDetailPage /></ErrorBoundary>} />
             <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
             <Route path="/deploy" element={<ArtifactDeployPage />} />
             {/* Builtin app routes — auto-discovered from registry. React Router v6

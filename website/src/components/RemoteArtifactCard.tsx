@@ -1,8 +1,8 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Copy, GitFork, Loader2, User } from 'lucide-react'
 import { Btn, Badge } from './ui'
 import { api } from '../api/client'
-import { safeHttpUrl } from '../lib/safeUrl'
 import { timeAgo } from '../utils/timeAgo'
 import type { RemoteArtifact } from '../types'
 
@@ -46,6 +46,7 @@ export default function RemoteArtifactCard({
   const [forking, setForking] = useState(false)
   const [cloning, setCloning] = useState(false)
   const [error, setError] = useState('')
+  const navigate = useNavigate()
   const remoteName = providerLabel || provider || 'the remote provider'
 
   const handleFork = async () => {
@@ -82,15 +83,12 @@ export default function RemoteArtifactCard({
     }
   }
 
-  // The fork ships no in-app remote read-only viewer route, so the row opens
-  // the provider's own view URL (when the listing carries one). view_url comes
-  // from a provider response, so validate the scheme (http/https only) before
-  // opening — a malicious/compromised provider could otherwise supply a
-  // javascript:/file:/data: URL that executes or launches on click.
-  const safeViewUrl = safeHttpUrl(artifact.view_url ?? '')
-  const openRemote = () => {
-    if (safeViewUrl) window.open(safeViewUrl, '_blank', 'noopener,noreferrer')
-  }
+  // Open the in-app read-only viewer (read & comment; the provider's own "open
+  // original" link lives on that detail page, so it isn't duplicated here). The
+  // route is provider-neutral — provider name + external_id both percent-encoded
+  // since a provider-native id can contain "/".
+  const openRemote = () =>
+    navigate(`/artifacts/remote/${encodeURIComponent(provider)}/${encodeURIComponent(artifact.external_id)}`)
 
   return (
     <div
@@ -109,7 +107,7 @@ export default function RemoteArtifactCard({
           openRemote()
         }
       }}
-      title={`Open on ${remoteName}`}
+      title={`Open read-only viewer (read & comment; open the original on ${remoteName} from there)`}
       className="flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg hover:bg-bg-elevated/60 transition-colors cursor-pointer focus-ring outline-none"
     >
       <div className="min-w-0 flex-1">

@@ -86,6 +86,12 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_versions,
     api_artifacts_create,
     api_artifacts_list,
+    api_remote_artifact_comments,
+    api_remote_artifact_delete_comment,
+    api_remote_artifact_get,
+    api_remote_artifact_mark_review,
+    api_remote_artifact_post_comment,
+    api_remote_artifact_reply_comment,
     api_remote_artifacts_browse,
     api_remote_artifacts_clone,
     api_remote_artifacts_fork,
@@ -634,6 +640,37 @@ def _register_mcp_routes(app: web.Application) -> None:
     # slash before matching and 404s. Body transport is slash-safe.
     app.router.add_post("/api/remote-artifacts/{provider}/clone", api_remote_artifacts_clone)
     app.router.add_post("/api/remote-artifacts/{provider}/fork", api_remote_artifacts_fork)
+    # Single remote artifact fetch (content source for the remote-detail view).
+    # external_id is a path segment here — browser-only, and the ids that reach
+    # this route come from the browse listing (no embedded slash). The more
+    # specific {external_id}/comments* routes below still match first.
+    app.router.add_get("/api/remote-artifacts/{provider}/{external_id}", api_remote_artifact_get)
+    # Per-remote-artifact comments (remote-detail view of a provider-hosted
+    # artifact the user has no local copy of). external_id here IS a path segment
+    # — these are browser-only, comment ops target a single already-resolved
+    # artifact, and the provider ids that reach this route are the browse/detail
+    # listing's own ids (no embedded slash). Empty registry -> get_provider raises
+    # -> the handlers return a clear error, never a 500.
+    app.router.add_get(
+        "/api/remote-artifacts/{provider}/{external_id}/comments",
+        api_remote_artifact_comments,
+    )
+    app.router.add_post(
+        "/api/remote-artifacts/{provider}/{external_id}/comments",
+        api_remote_artifact_post_comment,
+    )
+    app.router.add_post(
+        "/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/reply",
+        api_remote_artifact_reply_comment,
+    )
+    app.router.add_post(
+        "/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/review",
+        api_remote_artifact_mark_review,
+    )
+    app.router.add_delete(
+        "/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}",
+        api_remote_artifact_delete_comment,
+    )
 
     # Artifact folders. ``/api/artifact-folders`` (hyphen) never
     # collides with the ``/api/artifacts/{slug}`` dynamic route.

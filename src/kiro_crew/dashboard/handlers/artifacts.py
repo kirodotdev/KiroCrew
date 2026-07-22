@@ -31,7 +31,9 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -2836,13 +2838,66 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
         # Existence check + sidecar read are blocking filesystem IO (store.get
         # reads current.html up to MAX_CONTENT_BYTES = 25 MiB); offload off the
         # event loop (no-blocking-call-on-event-loop).
-        await _run_off_loop(lambda: store.get(slug))
+        art = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
 
-    # Surfaced to the UI so a provider-side failure would be visible rather than
-    # silently dropped. Always None in the public fork (no remote comment sync).
+    # Surfaced to the UI so a provider-side failure (e.g. the remote comment op
+    # not being reachable) is visible rather than silently dropped.
     remote_sync_error: str | None = None
+
+    # Fetch-on-view: if this artifact is published to a provider that supports
+    # COMMENTS_READ, pull the remote comments and reconcile them into the local
+    # mirror before returning. The provider fetch is network IO and the merge is
+    # blocking filesystem IO, so both run off the event loop. Best-effort: any
+    # failure is surfaced as remote_sync_error but never fails the list. When no
+    # provider is registered (the public default), get_provider raises and this
+    # degrades to local-only comments — identical to the prior behavior.
+    if art.publication and art.publication.artifact_id:
+        try:
+            provider = get_provider(art.publication.provider)
+            if Capability.COMMENTS_READ in provider.capabilities():
+                remote = await provider.fetch_comments(external_id=art.publication.artifact_id)
+                if remote:
+                    mapped = [
+                        ArtifactComment(
+                            id=rc.remote_id,
+                            origin=f"{art.publication.provider}:{rc.remote_id}",
+                            provider=art.publication.provider,
+                            scope="shared",
+                            author=rc.author,
+                            is_agent=rc.is_agent,
+                            body=rc.body,
+                            anchor_quote=rc.anchor.quote if rc.anchor else None,
+                            anchor_prefix=rc.anchor.prefix if rc.anchor else None,
+                            anchor_suffix=rc.anchor.suffix if rc.anchor else None,
+                            anchor_start_offset=rc.anchor.start_offset if rc.anchor else None,
+                            anchor_end_offset=rc.anchor.end_offset if rc.anchor else None,
+                            anchor_version=rc.anchor.version_number if rc.anchor else None,
+                            thread_id=rc.thread_id,
+                            parent_id=rc.parent_id,
+                            status=rc.status,
+                            # Routing metadata so a later local edit/review/delete
+                            # of this merged mirror reaches the provider — the
+                            # write handlers gate on target_external_id before
+                            # calling the provider, so without it those mutations
+                            # would silently stay local and be resurrected/
+                            # overwritten by the next fetch-on-view.
+                            target_provider=art.publication.provider,
+                            target_external_id=art.publication.artifact_id,
+                            sync_state="synced",
+                            created_at=rc.created_at,
+                            updated_at=rc.updated_at,
+                            deleted=rc.deleted,
+                        )
+                        for rc in remote
+                    ]
+                    await _run_off_loop(
+                        lambda: store.merge_remote_comments(slug, art.publication.provider, mapped)
+                    )
+        except Exception as exc:  # noqa: BLE001 — fetch-on-view is best-effort
+            logger.warning("fetch-on-view comments failed for %s: %s", slug, exc)
+            remote_sync_error = _redact_text(str(exc))
 
     comments = await _run_off_loop(lambda: store.list_comments(slug))
     result = []
@@ -2852,7 +2907,11 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
             "origin": c.origin,
             "provider": c.provider,
             "scope": c.scope,
-            "author": c.author,
+            # Provider-controlled: a remote comment merged into the mirror carries
+            # the provider's author string verbatim, so redact credentials/exfil
+            # URLs at this read boundary like the body/anchor (comments are stored
+            # raw; redaction happens on the way out — backend-security-controls).
+            "author": _redact_text(c.author),
             "is_agent": c.is_agent,
             "body": _redact_text(c.body),
             "thread_id": c.thread_id,
@@ -2864,10 +2923,15 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
             "updated_at": c.updated_at,
         }
         if c.anchor_quote:
+            # Anchor text can carry provider/agent-influenced content and is
+            # echoed to the dashboard, so redact credentials/exfil-URLs like the
+            # body (backend-security-controls). Remote comments merged from a
+            # provider are stored raw, so redaction must happen at this read
+            # boundary too — not only on the local POST path.
             entry["anchor"] = {
-                "quote": c.anchor_quote,
-                "prefix": c.anchor_prefix,
-                "suffix": c.anchor_suffix,
+                "quote": _redact_text(c.anchor_quote),
+                "prefix": _redact_text(c.anchor_prefix) if c.anchor_prefix else c.anchor_prefix,
+                "suffix": _redact_text(c.anchor_suffix) if c.anchor_suffix else c.anchor_suffix,
                 "start_offset": c.anchor_start_offset,
                 "end_offset": c.anchor_end_offset,
                 "version_number": c.anchor_version,
@@ -3842,3 +3906,402 @@ async def api_remote_artifacts_fork(request: web.Request) -> web.Response:
         ),
         status=201,
     )
+
+
+async def api_remote_artifact_get(request: web.Request) -> web.Response:
+    """GET /api/remote-artifacts/{provider}/{external_id} — fetch one remote artifact.
+
+    Provider-neutral read of a provider-hosted artifact the user has no local
+    copy of — the content source for the remote-detail view. Routes through the
+    registered provider's ``fetch_content`` (``Capability.CONTENT_PULL``); the
+    returned ``{content, content_type, title, owner, visibility, ...}`` is
+    redacted before it leaves the process. When no provider is registered (the
+    public default) ``get_provider`` raises and this returns a clear error, not a
+    500. Read-only, so no publish-governance gate.
+    """
+    provider_name = request.match_info["provider"]
+    external_id = request.match_info["external_id"]
+
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        return _err("restricted session", status=403)
+
+    try:
+        provider = get_provider(provider_name)
+        if Capability.CONTENT_PULL not in provider.capabilities():
+            return _err(f"{provider_name} does not support fetching content", status=400)
+        result = await provider.fetch_content(external_id=external_id)
+    except Exception as exc:  # noqa: BLE001 — provider failure must not 500 the view
+        _audit(
+            tool="remote_artifact_fetch",
+            request=request,
+            outcome="error",
+            error=_redact_text(str(exc)),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+
+    if result is None:
+        return _err("remote artifact not found or unreadable", status=404)
+
+    _audit(
+        tool="remote_artifact_fetch",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "external_id": external_id},
+    )
+    # Redact the provider payload (content + any metadata) before it leaves.
+    return _json_response(_redact_remote_response(dict(result)))
+
+
+# ── Remote-artifact comments (browse a provider-hosted artifact directly) ────
+# A user can open an artifact hosted by a publish provider that they do NOT have
+# a local copy of (via the remote-detail page). These endpoints read/write that
+# artifact's comments straight through to the provider — there is no local store
+# to mirror into — with a short in-memory TTL cache in front of the GET so
+# repeated views don't re-hit the provider. When no provider is registered (the
+# public default) get_provider raises and every endpoint degrades to a clear
+# error rather than a 500.
+
+_REMOTE_COMMENT_TTL_SECS = 300
+# Cap retained entries so the cache tracks ACTIVE artifacts, not lifetime browse
+# count: without a bound, every distinct provider:external_id ever opened would
+# live for the process lifetime (a slow leak on long-running gateways).
+_REMOTE_COMMENT_CACHE_MAX = 256
+# key "provider:external_id" -> (fetched_at_monotonic, serialized_comments)
+_remote_comment_cache: "OrderedDict[str, tuple[float, list[dict[str, Any]]]]" = OrderedDict()
+
+
+def _remote_cache_sweep(now: float) -> None:
+    """Evict entries older than the TTL so cache size tracks active artifacts."""
+    stale = [
+        k for k, (ts, _) in _remote_comment_cache.items() if now - ts >= _REMOTE_COMMENT_TTL_SECS
+    ]
+    for k in stale:
+        _remote_comment_cache.pop(k, None)
+
+
+def _remote_cache_put(key: str, value: "tuple[float, list[dict[str, Any]]]") -> None:
+    """Insert/refresh an entry LRU-style and evict the oldest past the cap."""
+    _remote_comment_cache.pop(key, None)  # move-to-end on refresh
+    _remote_comment_cache[key] = value
+    while len(_remote_comment_cache) > _REMOTE_COMMENT_CACHE_MAX:
+        _remote_comment_cache.popitem(last=False)  # evict oldest
+
+
+def _serialize_remote_comment(rc: Any, provider: str) -> dict[str, Any]:
+    """Serialize a provider RemoteComment to the same wire shape the local
+    comments endpoint uses, so the frontend renders both identically.
+
+    ``provider`` is the route's provider name — the origin/provider fields are
+    keyed off it (never a hardcoded provider) so this stays provider-neutral.
+    """
+    entry: dict[str, Any] = {
+        "id": rc.remote_id,
+        "origin": f"{provider}:{rc.remote_id}",
+        "provider": provider,
+        "scope": "shared",
+        # Provider-controlled author string — redact credentials/exfil URLs like
+        # the body/anchor before it reaches the dashboard (backend-security-controls).
+        "author": _redact_text(rc.author),
+        "is_agent": rc.is_agent,
+        "body": _redact_text(rc.body),
+        "thread_id": rc.thread_id,
+        "parent_id": rc.parent_id,
+        "status": rc.status,
+        "sync_state": "synced",
+        "created_at": rc.created_at,
+        "updated_at": rc.updated_at,
+    }
+    if rc.anchor and rc.anchor.quote:
+        # Provider-controlled anchor text is echoed to the dashboard, so redact
+        # credentials/exfil-URLs like the body (backend-security-controls).
+        entry["anchor"] = {
+            "quote": _redact_text(rc.anchor.quote),
+            "prefix": (_redact_text(rc.anchor.prefix) if rc.anchor.prefix else rc.anchor.prefix),
+            "suffix": (_redact_text(rc.anchor.suffix) if rc.anchor.suffix else rc.anchor.suffix),
+            "start_offset": rc.anchor.start_offset,
+            "end_offset": rc.anchor.end_offset,
+            "version_number": rc.anchor.version_number,
+        }
+    return entry
+
+
+def _invalidate_remote_comment_cache(provider: str, external_id: str) -> None:
+    _remote_comment_cache.pop(f"{provider}:{external_id}", None)
+
+
+async def api_remote_artifact_comments(request: web.Request) -> web.Response:
+    """GET /api/remote-artifacts/{provider}/{external_id}/comments.
+
+    Fetch comments for a provider-hosted artifact (no local store). TTL-cached
+    in memory. Provider failures surface as ``remote_sync_error`` rather than a
+    500, so the remote detail view still renders content.
+    """
+    provider_name = request.match_info["provider"]
+    external_id = request.match_info["external_id"]
+    cache_key = f"{provider_name}:{external_id}"
+
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        return _err("restricted session", status=403)
+
+    now = time.monotonic()
+    _remote_cache_sweep(now)
+    cached = _remote_comment_cache.get(cache_key)
+    if cached and (now - cached[0]) < _REMOTE_COMMENT_TTL_SECS:
+        return _json_response({"comments": cached[1], "remote_sync_error": None, "cached": True})
+
+    comments: list[dict[str, Any]] = []
+    remote_sync_error: str | None = None
+    try:
+        provider = get_provider(provider_name)
+        if Capability.COMMENTS_READ not in provider.capabilities():
+            remote_sync_error = f"{provider_name} does not support comments"
+        else:
+            remote = await provider.fetch_comments(external_id=external_id)
+            comments = [
+                _serialize_remote_comment(rc, provider_name) for rc in remote if not rc.deleted
+            ]
+            _remote_cache_put(cache_key, (time.monotonic(), comments))
+    except Exception as exc:  # noqa: BLE001 — provider failure must not 500 the view
+        logger.warning("remote comments fetch failed for %s: %s", cache_key, exc)
+        remote_sync_error = _redact_text(str(exc))
+
+    return _json_response({"comments": comments, "remote_sync_error": remote_sync_error})
+
+
+async def api_remote_artifact_post_comment(request: web.Request) -> web.Response:
+    """POST /api/remote-artifacts/{provider}/{external_id}/comments — scope=shared."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        return _err("restricted session", status=403)
+
+    provider_name = request.match_info["provider"]
+    external_id = request.match_info["external_id"]
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    if len(text) > 10000:
+        return _err("text exceeds 10000 chars")
+    text = _redact_text(text)
+
+    # Writing a comment to a provider-hosted artifact is outbound egress (bytes
+    # leave the box), so it goes through the same fail-closed capabilities.publish
+    # gate as artifact publish and the local shared-comment path — otherwise a
+    # policy denying publish for this provider would be bypassed. No local mirror
+    # to fall back to here, so a denial is an audited 403.
+    gov_denial = _publish_governance_denied(request, provider_name)
+    if gov_denial is not None:
+        _audit(
+            tool="remote_artifact_post_comment",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(gov_denial, status=403)
+
+    try:
+        provider = get_provider(provider_name)
+        if Capability.COMMENTS_WRITE not in provider.capabilities():
+            return _err(f"{provider_name} does not support comments", status=400)
+
+        anchor_obj = None
+        anchor_data = body.get("anchor")
+        if isinstance(anchor_data, dict) and anchor_data.get("quote"):
+            anchor_obj = CommentAnchor(
+                quote=anchor_data.get("quote"),
+                prefix=anchor_data.get("prefix"),
+                suffix=anchor_data.get("suffix"),
+                start_offset=anchor_data.get("start_offset"),
+                end_offset=anchor_data.get("end_offset"),
+                version_number=anchor_data.get("version_number"),
+            )
+        rc = await provider.post_comment(external_id=external_id, body=text, anchor=anchor_obj)
+    except Exception as exc:  # noqa: BLE001
+        _audit(
+            tool="remote_artifact_post_comment",
+            request=request,
+            outcome="error",
+            error=_redact_text(str(exc)),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+
+    _invalidate_remote_comment_cache(provider_name, external_id)
+    _audit(
+        tool="remote_artifact_post_comment",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "external_id": external_id},
+    )
+    return _json_response({"comment": _serialize_remote_comment(rc, provider_name)}, status=201)
+
+
+async def api_remote_artifact_reply_comment(request: web.Request) -> web.Response:
+    """POST /api/remote-artifacts/{provider}/{external_id}/comments/{id}/reply."""
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        return _err("restricted session", status=403)
+
+    provider_name = request.match_info["provider"]
+    external_id = request.match_info["external_id"]
+    parent_id = request.match_info["comment_id"]
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    if len(text) > 10000:
+        return _err("text exceeds 10000 chars")
+    text = _redact_text(text)
+
+    # Replying is outbound egress to the provider — same fail-closed publish gate.
+    gov_denial = _publish_governance_denied(request, provider_name)
+    if gov_denial is not None:
+        _audit(
+            tool="remote_artifact_reply_comment",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(gov_denial, status=403)
+
+    try:
+        provider = get_provider(provider_name)
+        if Capability.COMMENTS_WRITE not in provider.capabilities():
+            return _err(f"{provider_name} does not support comments", status=400)
+        rc = await provider.reply_comment(
+            external_id=external_id, parent_remote_id=parent_id, body=text
+        )
+    except Exception as exc:  # noqa: BLE001
+        _audit(
+            tool="remote_artifact_reply_comment",
+            request=request,
+            outcome="error",
+            error=_redact_text(str(exc)),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+
+    _invalidate_remote_comment_cache(provider_name, external_id)
+    _audit(
+        tool="remote_artifact_reply_comment",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "external_id": external_id},
+    )
+    return _json_response({"comment": _serialize_remote_comment(rc, provider_name)}, status=201)
+
+
+async def api_remote_artifact_mark_review(request: web.Request) -> web.Response:
+    """POST /api/remote-artifacts/{provider}/{external_id}/comments/{id}/review.
+
+    Advance a shared-artifact comment thread to REVIEW on the provider. The
+    user does not own this artifact locally, so the status change writes
+    straight through to the source.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        return _err("restricted session", status=403)
+
+    provider_name = request.match_info["provider"]
+    external_id = request.match_info["external_id"]
+    comment_id = request.match_info["comment_id"]
+
+    # Advancing a thread's status mutates provider-side state — same publish gate.
+    gov_denial = _publish_governance_denied(request, provider_name)
+    if gov_denial is not None:
+        _audit(
+            tool="remote_artifact_mark_review",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(gov_denial, status=403)
+
+    try:
+        provider = get_provider(provider_name)
+        if Capability.COMMENTS_WRITE not in provider.capabilities():
+            return _err(f"{provider_name} does not support comments", status=400)
+        await provider.mark_review(external_id=external_id, remote_id=comment_id)
+    except Exception as exc:  # noqa: BLE001
+        _audit(
+            tool="remote_artifact_mark_review",
+            request=request,
+            outcome="error",
+            error=_redact_text(str(exc)),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+
+    _invalidate_remote_comment_cache(provider_name, external_id)
+    _audit(
+        tool="remote_artifact_mark_review",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "external_id": external_id},
+    )
+    return _json_response({"status": "review"})
+
+
+async def api_remote_artifact_delete_comment(request: web.Request) -> web.Response:
+    """DELETE /api/remote-artifacts/{provider}/{external_id}/comments/{id}.
+
+    Delete a shared-artifact comment on the provider (writes through to the
+    source — the user has no local copy to mirror it in).
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        return _err("restricted session", status=403)
+
+    provider_name = request.match_info["provider"]
+    external_id = request.match_info["external_id"]
+    comment_id = request.match_info["comment_id"]
+
+    # Deleting a provider comment mutates provider-side state — same publish gate.
+    gov_denial = _publish_governance_denied(request, provider_name)
+    if gov_denial is not None:
+        _audit(
+            tool="remote_artifact_delete_comment",
+            request=request,
+            outcome="denied",
+            error=gov_denial,
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(gov_denial, status=403)
+
+    try:
+        provider = get_provider(provider_name)
+        if Capability.COMMENTS_WRITE not in provider.capabilities():
+            return _err(f"{provider_name} does not support comments", status=400)
+        await provider.delete_comment(external_id=external_id, remote_id=comment_id)
+    except Exception as exc:  # noqa: BLE001
+        _audit(
+            tool="remote_artifact_delete_comment",
+            request=request,
+            outcome="error",
+            error=_redact_text(str(exc)),
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err(_redact_text(str(exc)), status=502)
+
+    _invalidate_remote_comment_cache(provider_name, external_id)
+    _audit(
+        tool="remote_artifact_delete_comment",
+        request=request,
+        outcome="success",
+        extra={"provider": provider_name, "external_id": external_id},
+    )
+    return _json_response({"deleted": True})

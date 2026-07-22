@@ -62,6 +62,10 @@ art = store.update(art.slug, content="<table>… age column …</table>")
 versions = store.list_versions(art.slug)
 items = store.list(tag="ops")
 store.delete(art.slug)
+
+# Reconcile a provider's authoritative comments into the local mirror
+# (fetch-on-view). Returns the merged list; leaves origin=="local" untouched.
+store.merge_remote_comments(art.slug, "artifactory", remote_comments)
 ```
 
 The store is thread-safe. A module-level singleton is available via
@@ -154,6 +158,17 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `GET` | `/api/remote-artifacts/{provider}/browse` | Provider-routed discovery: `?q=` → `search_remote`, else `list_remote(?scope=mine\|shared\|public)`; rows annotated with `local_slug`; unregistered provider → 503 (matches clone/fork) |
 | `POST` | `/api/remote-artifacts/{provider}/clone` | Bidirectional clone (`publish_sync.clone_from_remote`, sets `auto_sync=True` → arms future pushes); **gated by `_publish_governance_denied` on the routed provider**; empty registry → 503. Body: `{ "external_id": ... }` (provider-native ids can contain `/`, which a path segment can't carry) |
 | `POST` | `/api/remote-artifacts/{provider}/fork` | Independent copy with pull-only `fork_metadata` lineage (`publish_sync.fork_from_remote`); ungated ingress; empty registry → 503. Body: `{ "external_id": ... }` |
+| `GET` | `/api/remote-artifacts/{provider}/{external_id}` | Read-only detail fetch (metadata + content) for a provider-hosted artifact the user has no local copy of — content source for the remote-detail viewer; ungated ingress; passes `_redact_remote_response`; empty registry → 503 |
+| `GET` | `/api/remote-artifacts/{provider}/{external_id}/comments` | List comments on a provider-hosted artifact (`fetch_comments`, `COMMENTS_READ`); TTL-cached in memory; provider failure surfaces as `remote_sync_error`, not a 500; ungated ingress; anchor/body redacted per comment |
+| `POST` | `/api/remote-artifacts/{provider}/{external_id}/comments` | Post a top-level comment straight through to the provider (`post_comment`, `COMMENTS_WRITE`, scope=shared); **egress — gated by `_publish_governance_denied` on the routed provider** |
+| `POST` | `/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/reply` | Reply to a provider thread (`reply_comment`); **egress — gated by `_publish_governance_denied`** |
+| `POST` | `/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/review` | Advance a provider thread to REVIEW (`mark_review`); **egress — gated by `_publish_governance_denied`** |
+| `DELETE` | `/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}` | Delete a provider comment (`delete_comment`); **egress — gated by `_publish_governance_denied`** |
+
+`external_id` (and `comment_id`) travel as percent-encoded path segments on
+these routes; aiohttp's `path_safe` matching (3.9.2+) preserves `%2F`, so a
+provider-native id containing `/` round-trips correctly (browse-listing ids are
+slash-free in practice). Clone/fork keep the id in the JSON body instead.
 
 POST/PATCH/DELETE require an unrestricted session. The HTTP body envelope is
 capped at 2 MiB; the store enforces a per-content cap of 25 MiB
@@ -203,8 +218,13 @@ ungated, so the two egress-arming routes go through
 `_publish_governance_denied` (fail-closed `capabilities.publish ∩
 destinations:<provider>`) BEFORE dispatch — `overwrite-remote` on the resolved
 `publication.provider`, and `clone` on the routed provider (a clone sets
-`auto_sync=True`, arming every future snapshot push). Fork and the read-only
-routes (browse, upstream-status, pull-latest) stay ungated ingress. All remote
+`auto_sync=True`, arming every future snapshot push). The four remote comment
+WRITE routes (post / reply / review / delete) are outbound egress too, so each
+goes through the same `_publish_governance_denied` gate BEFORE the provider call
+— a denial is an audited 403 and no bytes leave the box (there is no local
+mirror to fall back to, unlike the local shared-comment path). Fork and the
+read-only routes (browse, upstream-status, pull-latest, remote-artifact detail,
+remote comment list) stay ungated ingress. All remote
 payloads pass `_redact_remote_response` (recursive credential/exfil-URL
 redaction, depth-capped, `localPath` stripped). Browse rows are annotated with
 `local_slug` BEFORE redaction (so a credential-shaped `external_id` isn't
@@ -326,6 +346,31 @@ provider push status (`local_only | pending_push | synced | push_failed`).
 Provider push/reconcile itself is companion-edition-only behavior behind the
 CPP publish seam — the open-source core carries the `sync_state` field and
 enforces the provider-origin guards, but ships no remote reconcile loop.
+
+**Inbound comment sync (fetch-on-view).** `GET /api/artifacts/{slug}/comments`
+opportunistically pulls the provider's comments (`fetch_comments`, when the
+publication provider advertises `COMMENTS_READ`) and reconciles them into the
+local mirror via `ArtifactStore.merge_remote_comments(slug, provider, comments)`
+before returning. Each merged mirror carries `target_provider`/`target_external_id`
+(the publication's provider + artifact id) so a later local edit/review/delete of
+that comment routes back to the source — the write handlers gate on
+`target_external_id` before calling the provider, so without it those mutations
+would silently stay local and be resurrected on the next fetch. The provider is
+authoritative for its own comments; the merge
+drops mirrors that came back tombstoned (cascade-dropping a whole thread when its
+ROOT is deleted upstream), syncs mutable fields (status/body/author) of changed
+provider comments, adds newly-seen ones, and leaves `origin == "local"` comments
+untouched — while keeping provider comments merely absent from one fetch (a
+transient/paginated empty is not a delete). The fetch is network IO and the merge
+is blocking filesystem IO, so both run off the event loop; any failure is
+best-effort and surfaces as `remote_sync_error` rather than failing the list.
+With no provider registered (the public default) `get_provider` raises and the
+endpoint degrades to local-only comments. Comment `body`, `author`, **and** the
+anchor `quote`/`prefix`/`suffix` are run through `_redact_text` (credential +
+exfil-URL redaction) at every read boundary — the local list endpoint and the
+remote-detail serializer (`_serialize_remote_comment`) — because
+provider-controlled comments are merged into the mirror raw, so redaction cannot
+live only on the local POST path.
 
 **Agent disposition contract** (owner decision 2026-07-13; rubric ships in
 the builtin `artifacts` skill):
