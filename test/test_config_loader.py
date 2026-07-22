@@ -2491,12 +2491,35 @@ class TestSecurityBoundClamping:
             cfg = _load_from_dict({"agent": {"subagent_auto_max": 200}})
         assert cfg.agent.subagent_auto_max == SUBAGENT_AUTO_MAX_CEILING == 64
 
+    def test_subagent_auto_max_floored_to_min(self) -> None:
+        """A value below the auto-size floor (3) is clamped UP to 3 with a
+        warning, mirroring the > ceiling clamp."""
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
+            cfg = _load_from_dict({"agent": {"subagent_auto_max": 1}})
+        assert cfg.agent.subagent_auto_max == 3
+
     def test_max_subagents_clamped_to_ceiling(self) -> None:
         from kiro_crew.config.loader import SUBAGENT_AUTO_MAX_CEILING
 
         with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
             cfg = _load_from_dict({"agent": {"max_subagents": 200}})
         assert cfg.agent.max_subagents == SUBAGENT_AUTO_MAX_CEILING == 64
+
+    def test_max_subagents_below_fixed_floor_raised_to_three(self) -> None:
+        """An explicit pin of 1 or 2 is normalized UP to the fixed-pin floor (3):
+        a sub-3 pin would silently disable auto-sizing and run below the default.
+        The auto sentinel (0) and in-range pins (>= 3) are left untouched."""
+        from kiro_crew.config.loader import MAX_SUBAGENTS_FIXED_FLOOR
+
+        assert MAX_SUBAGENTS_FIXED_FLOOR == 3
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
+            for pinned in (1, 2):
+                cfg = _load_from_dict({"agent": {"max_subagents": pinned}})
+                assert cfg.agent.max_subagents == 3
+            # 0 (auto sentinel) and a valid pin are preserved verbatim.
+            assert _load_from_dict({"agent": {"max_subagents": 0}}).agent.max_subagents == 0
+            assert _load_from_dict({"agent": {"max_subagents": 3}}).agent.max_subagents == 3
+            assert _load_from_dict({"agent": {"max_subagents": 8}}).agent.max_subagents == 8
 
     def test_subagent_max_turns_clamped_to_ceiling(self) -> None:
         from kiro_crew.config.loader import SUBAGENT_MAX_TURNS_CEILING

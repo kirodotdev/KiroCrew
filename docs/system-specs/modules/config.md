@@ -178,8 +178,8 @@ class AgentConfig:
     enforce_denied_commands: str = "all"  # "all" or "kirocrew"
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     yolo: bool = False             # permanent YOLO mode (skip tool approval); tracked via _yolo_from_config flag
-    max_subagents: int = 3         # concurrent subagent cap; 0 = auto-size from host memory/CPU. Load-time clamped to [0, 64]
-    subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [1, 64]
+    max_subagents: int = 3         # concurrent subagent cap; 0 = auto-size from host memory/CPU. Load-time: 0 (auto) or [3, 64] — a fixed pin of 1/2 is raised to 3
+    subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
     subagent_max_turns: int = 100  # default per-subagent tool-call budget. Load-time clamped to [1, 200]
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
 

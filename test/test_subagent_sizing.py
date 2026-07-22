@@ -129,11 +129,13 @@ def test_floor_never_below_three(patch_host) -> None:
     assert compute_max_subagents(cfg) == 3
 
 
-def test_hard_cap_below_floor_does_not_exceed_hard_cap(patch_host) -> None:
-    # Misconfigured hard_cap < 3 must still not exceed hard_cap.
+def test_hard_cap_below_floor_is_raised_to_three(patch_host) -> None:
+    # A misconfigured subagent_auto_max < 3 no longer drops the cap below 3:
+    # compute_max_subagents enforces a hard floor of 3 (the loader also clamps
+    # subagent_auto_max up to 3, but compute defends independently).
     patch_host(174.7, 48)
     cfg = _cfg(hard_cap=2)
-    assert compute_max_subagents(cfg) == 2
+    assert compute_max_subagents(cfg) == 3
 
 
 def test_unreadable_memory_fails_open_to_legacy_default(patch_host) -> None:
@@ -155,6 +157,17 @@ def test_resolve_zero_sentinel_triggers_compute(patch_host) -> None:
     patch_host(174.7, 48)
     cfg = _cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
     assert resolve_max_subagents(cfg) == 16
+
+
+def test_resolve_floors_explicit_pin_below_three(patch_host) -> None:
+    # A stray explicit pin of 1 or 2 (e.g. from a directly-constructed config
+    # that bypassed the loader/API clamps) is floored to 3 at resolve time — it
+    # must never drop the runtime cap below the legacy default. 0 stays "auto".
+    patch_host(174.7, 48)
+    assert resolve_max_subagents(_cfg(max_subagents=1)) == 3
+    assert resolve_max_subagents(_cfg(max_subagents=2)) == 3
+    # A valid explicit pin (>= 3) is returned unchanged, not auto-computed.
+    assert resolve_max_subagents(_cfg(max_subagents=5, hard_cap=16)) == 5
 
 
 # --- Gateway wiring contract (Stage 3) -------------------------------------

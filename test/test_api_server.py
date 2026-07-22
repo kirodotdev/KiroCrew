@@ -546,6 +546,32 @@ class TestApiKirocrewConfig:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_put_rejects_subagent_auto_max_below_floor(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        (tmp_path / "config.json").write_text('{"agent": {}}')
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_auto_max": 1}})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_max_subagents_below_fixed_floor(self, tmp_path, monkeypatch):
+        # A fixed pin of 1 or 2 is rejected: 0 (auto) is the only sub-3 value
+        # allowed, and an explicit pin must be >= 3 (below that disables auto-sizing
+        # and runs under the default).
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        (tmp_path / "config.json").write_text('{"agent": {}}')
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            for bad in (1, 2):
+                resp = await c.put("/api/config/kirocrew", json={"agent": {"max_subagents": bad}})
+                assert resp.status == 400
+            # 0 (auto) and a valid pin (>= 3) are accepted.
+            for ok in (0, 3):
+                resp = await c.put("/api/config/kirocrew", json={"agent": {"max_subagents": ok}})
+                assert resp.status == 200
+
+    @pytest.mark.asyncio
     async def test_put_auto_max_cannot_bypass_max_subagents_limit(self, tmp_path, monkeypatch):
         # Raising subagent_auto_max in the same request must NOT let max_subagents
         # exceed the absolute ceiling (64): a 9999 auto_max is rejected first, so

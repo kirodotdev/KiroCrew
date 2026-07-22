@@ -23,6 +23,7 @@ from kiro_crew import platform_compat
 from kiro_crew.agent import build_agent_config
 from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
+    MAX_SUBAGENTS_FIXED_FLOOR,
     SUBAGENT_AUTO_MAX_CEILING,
     SUBAGENT_MAX_TURNS_CEILING,
     KiroCrewConfig,
@@ -879,7 +880,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         if (
             not isinstance(persisted_hard_cap, int)
             or isinstance(persisted_hard_cap, bool)
-            or persisted_hard_cap < 1
+            or persisted_hard_cap < 3
         ):
             persisted_hard_cap = 16
         # Clamp to the absolute ceiling even when read from persisted config: a
@@ -894,22 +895,32 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             if (
                 isinstance(val, bool)
                 or not isinstance(val, int)
-                or val < 1
+                or val < 3
                 or val > SUBAGENT_AUTO_MAX_CEILING
             ):
                 return _deny(
-                    "subagent_auto_max must be an integer between 1 and "
+                    "subagent_auto_max must be an integer between 3 and "
                     f"{SUBAGENT_AUTO_MAX_CEILING}"
                 )
             agent["subagent_auto_max"] = val
             applied.append("subagent_auto_max")
-        # max_subagents: 0 = auto-size; otherwise 1..persisted_hard_cap. The bound
-        # is the persisted ceiling captured above, never this request's value.
+        # max_subagents: 0 = auto-size; otherwise a fixed pin in
+        # [MAX_SUBAGENTS_FIXED_FLOOR, persisted_hard_cap]. The bound is the
+        # persisted ceiling captured above, never this request's value. A pin of
+        # 1 or 2 is rejected — it would disable auto-sizing and run below the
+        # default (0 is the only way to request the host-safe auto cap).
         if "max_subagents" in agent_settings:
             val = agent_settings["max_subagents"]
             hard_cap = persisted_hard_cap
-            if isinstance(val, bool) or not isinstance(val, int) or val < 0 or val > hard_cap:
-                return _deny(f"max_subagents must be an integer between 0 (auto) and {hard_cap}")
+            if (
+                isinstance(val, bool)
+                or not isinstance(val, int)
+                or (val != 0 and not (MAX_SUBAGENTS_FIXED_FLOOR <= val <= hard_cap))
+            ):
+                return _deny(
+                    f"max_subagents must be 0 (auto) or an integer between "
+                    f"{MAX_SUBAGENTS_FIXED_FLOOR} and {hard_cap}"
+                )
             agent["max_subagents"] = val
             applied.append("max_subagents")
         # Boolean toggles

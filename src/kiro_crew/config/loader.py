@@ -528,8 +528,9 @@ class AgentConfig:
             "Max SubAgents",
             "Maximum amount of subagents at one time. 0 = auto-size the cap at "
             "startup from host memory/CPU and a learned per-agent cost "
-            "(see dynamic-subagent-sizing docs). Default; set a positive integer "
-            "to pin a fixed cap.",
+            "(see dynamic-subagent-sizing docs). Default; set a fixed cap by "
+            "pinning an integer >= 3 (values of 1 or 2 are raised to 3 — a pin "
+            "below 3 would disable auto-sizing and run under the default).",
         ),
     )
     spawn_min_memory_gb: float = field(
@@ -1580,11 +1581,22 @@ SUBAGENT_AUTO_MAX_CEILING = 64  # agent.subagent_auto_max — concurrent subagen
 SUBAGENT_MAX_TURNS_CEILING = 200  # agent.subagent_max_turns — per-subagent turn budget
 POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 
+# agent.max_subagents fixed-pin floor. 0 is the "auto-size" sentinel; any other
+# (explicit) value must be >= this floor. A pin of 1 or 2 would silently DISABLE
+# auto-sizing and run below today's default of 3, so such values are normalized
+# UP to the floor at load time (see _clamp_security_bounds) and rejected by the
+# dashboard API. Mirrors ``subagent._LEGACY_DEFAULT_MAX`` (kept as a local
+# constant to avoid a config→subagent import cycle).
+MAX_SUBAGENTS_FIXED_FLOOR = 3
+
 # (section, key, min, max) for each bounded field clamped at load time. The
-# mins match the existing runtime floors (0 / 1) so a legitimate in-range value
-# is never altered — only out-of-range (tampered) values are clamped.
+# mins match the runtime floors: subagent_auto_max has a floor of 3
+# (``subagent._LEGACY_DEFAULT_MAX`` — the auto-size minimum), so a value < 3 is
+# clamped UP to 3 with a warning, mirroring the > ceiling clamp. max_subagents
+# keeps a 0 floor here (0 = auto sentinel) — its 0-or-(>=3) rule is applied as a
+# special case after the generic loop. Only out-of-range values are altered.
 _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
-    ("agent", "subagent_auto_max", 1, SUBAGENT_AUTO_MAX_CEILING),
+    ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
@@ -1666,6 +1678,35 @@ def _clamp_security_bounds(data: dict) -> None:
                 clamped,
             )
             _log_config_clamp_event(f"{section}.{key}", val, clamped, lo, hi)
+
+    # max_subagents special case: 0 is the auto-size sentinel; any explicit pin
+    # must be >= MAX_SUBAGENTS_FIXED_FLOOR. A stray 1/2 silently disables
+    # auto-sizing AND runs below today's default, so clamp it UP to the floor
+    # (0 is left intact). Runs after the generic [0, ceiling] range clamp above.
+    agent = data.get("agent")
+    if isinstance(agent, dict):
+        ms = agent.get("max_subagents")
+        if (
+            isinstance(ms, int)
+            and not isinstance(ms, bool)
+            and 0 < ms < MAX_SUBAGENTS_FIXED_FLOOR
+        ):
+            agent["max_subagents"] = MAX_SUBAGENTS_FIXED_FLOOR
+            logger.warning(
+                "config agent.max_subagents=%d is below the fixed-pin floor of %d "
+                "(0 = auto-size; an explicit pin must be >= %d); clamped UP to %d",
+                ms,
+                MAX_SUBAGENTS_FIXED_FLOOR,
+                MAX_SUBAGENTS_FIXED_FLOOR,
+                MAX_SUBAGENTS_FIXED_FLOOR,
+            )
+            _log_config_clamp_event(
+                "agent.max_subagents",
+                ms,
+                MAX_SUBAGENTS_FIXED_FLOOR,
+                MAX_SUBAGENTS_FIXED_FLOOR,
+                SUBAGENT_AUTO_MAX_CEILING,
+            )
 
 
 def _config_fingerprint() -> tuple:
