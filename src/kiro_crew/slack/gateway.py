@@ -2262,6 +2262,28 @@ class GatewayOrchestrator:
             }
         return None
 
+    async def _persist_slot_title(self, slot: "_ChatSlot") -> None:
+        """Persist a dashboard slot's title so it survives a gateway restart.
+
+        Best-effort and off the event loop (``set_title`` does a synchronous
+        read + rewrite): a slow or failed write must never break heartbeat
+        delivery. Mirrors the auto-research worker-slot titling path.
+        """
+        conv_log = getattr(self.dashboard_state, "conversation_log", None)
+        if conv_log is None:
+            return
+        # Lazy import avoids a circular dependency (dashboard.chat_utils → gateway).
+        from kiro_crew.dashboard.chat_utils import _history_key_for
+
+        try:
+            await asyncio.to_thread(
+                conv_log.set_title, _history_key_for(slot.key), slot.title
+            )
+        except Exception:
+            logger.warning(
+                "Heartbeat: failed to persist slot title for %s", slot.key, exc_info=True
+            )
+
     async def _deliver_result(
         self,
         title: str,
@@ -2410,7 +2432,20 @@ class GatewayOrchestrator:
         if deliver == "dashboard":
             if self.dashboard_state:
                 slot = self.dashboard_state.get_or_create_slot()
+                # Heartbeat delivery appends only an assistant message, so the
+                # interactive LLM auto-titler never fires for this slot
+                # (_maybe_auto_title gates on user_count >= 1) and it would be
+                # stuck on the "New Session…" placeholder forever. Seed a
+                # meaningful title from the (already-redacted) task summary,
+                # mirroring the cron/auto-research slot pattern: set the title,
+                # lock _titled so display_title returns it, and persist it so it
+                # survives a gateway restart (best-effort, off the event loop).
+                seed = " ".join(task_summary.split())
+                slot.title = f"💓 {seed}"[:80] if seed else title
+                slot._titled = True
+                await self._persist_slot_title(slot)
                 slot.append("assistant", f"{title}\n\n{result_text}", "msg msg-a")
+                self.dashboard_state.push_slot_title(slot.key, slot.title)
                 self.dashboard_state.push_slots_update()
                 self.dashboard_state.notify("heartbeat", title, body, meta={"slot": slot.key})
             return
