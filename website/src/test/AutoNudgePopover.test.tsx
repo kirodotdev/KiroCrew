@@ -120,3 +120,57 @@ describe('AutoNudgePopover goal persistence', () => {
     expect((screen.getByDisplayValue('60') as HTMLInputElement).value).toBe('60')
   })
 })
+
+describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetForTests()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })) as unknown as typeof fetch)
+  })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  // Idle is the first number input, max-cycles the second (DOM order in the JSX).
+  const fields = () => screen.getAllByRole('spinbutton') as HTMLInputElement[]
+  const idleField = () => fields()[0]
+  const cyclesField = () => fields()[1]
+
+  it('allows clearing the idle field to empty while typing, then defaults to 60 on blur (the reported bug)', () => {
+    renderPopover(null)
+    expect(idleField().value).toBe('60')
+    // Pre-fix the per-keystroke coercion snapped an emptied field straight back
+    // to 60 (leading digit stuck). Now the empty edit is allowed as-typed...
+    fireEvent.change(idleField(), { target: { value: '' } })
+    expect(idleField().value).toBe('')
+    // ...and only commits to the default when the field loses focus.
+    fireEvent.blur(idleField())
+    expect(idleField().value).toBe('60')
+  })
+
+  it('retypes idle 60 -> 30 without the leading digit sticking', () => {
+    renderPopover(null)
+    fireEvent.change(idleField(), { target: { value: '' } })
+    fireEvent.change(idleField(), { target: { value: '30' } })
+    expect(idleField().value).toBe('30')
+    fireEvent.blur(idleField())
+    expect(idleField().value).toBe('30')
+  })
+
+  it('empty max-cycles commits to 0 (infinity) on blur', () => {
+    renderPopover(null)
+    expect(cyclesField().value).toBe('0')
+    fireEvent.change(cyclesField(), { target: { value: '' } })
+    expect(cyclesField().value).toBe('')
+    fireEvent.blur(cyclesField())
+    expect(cyclesField().value).toBe('0')
+  })
+
+  it('Save sends the typed idle value even without an intervening blur', async () => {
+    renderPopover(null)
+    fireEvent.change(idleField(), { target: { value: '45' } })
+    // Click Start loop WITHOUT blurring the field first — save() must read the
+    // raw string, not a stale committed number.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+    const body = JSON.parse((fetch as unknown as { mock: { calls: any[][] } }).mock.calls[0][1].body)
+    expect(body.idle_secs).toBe(45)
+  })
+})

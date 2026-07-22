@@ -30,10 +30,20 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
   // the 60 / 0 / default template rather than a bare 0 / "".
   const [message, setMessage] = useState(() => loop?.message || DEFAULT_MSG)
-  const [idleSecs, setIdleSecs] = useState(() => loop?.idle_secs || 60)
-  const [maxCycles, setMaxCycles] = useState(() => loop?.max_cycles || 0)
+  // Idle-seconds and max-cycles are held as RAW STRINGS while the popover is
+  // open so every edit (including a fully-cleared field or a transient "") is
+  // allowed as-typed. A previous controlled-number binding re-coerced on each
+  // keystroke, so backspacing to empty snapped the field straight back to its
+  // default and the leading digit could never be removed. The string is parsed
+  // into a number only when the field commits (blur / save); an empty or
+  // unparseable value falls back to the field default — 60 idle, 0 cycles.
+  const [idleInput, setIdleInput] = useState(() => String(loop?.idle_secs || 60))
+  const [maxCyclesInput, setMaxCyclesInput] = useState(() => String(loop?.max_cycles || 0))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  const parseIdle = (s: string) => parseInt(s, 10) || 60
+  const parseCycles = (s: string) => parseInt(s, 10) || 0
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
   // or restoring a remembered draft on open must NOT re-write the store (doing
@@ -43,8 +53,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const hasEdited = useRef(false)
   // Latest field values, kept current every render so the close-flush below
   // (which runs from a stable handler) can read them.
-  const latest = useRef({ slotKey, message, idleSecs, maxCycles, loop })
-  latest.current = { slotKey, message, idleSecs, maxCycles, loop }
+  const latest = useRef({ slotKey, message, idleInput, maxCyclesInput, loop })
+  latest.current = { slotKey, message, idleInput, maxCyclesInput, loop }
 
   // Compute the draft to persist for the current field state, or null to drop
   // the slot: the blank / pristine-default case stores nothing so an emptied or
@@ -53,8 +63,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // into the user-draft store; persistence is skipped entirely while a loop is
   // present.)
   function draftToPersist(s: typeof latest.current): GoalDraft | null {
-    const isPristineDefault = s.message === DEFAULT_MSG && s.idleSecs === 60 && s.maxCycles === 0
-    return isPristineDefault ? null : { message: s.message, idleSecs: s.idleSecs, maxCycles: s.maxCycles }
+    const idleSecs = parseIdle(s.idleInput)
+    const maxCycles = parseCycles(s.maxCyclesInput)
+    const isPristineDefault = s.message === DEFAULT_MSG && idleSecs === 60 && maxCycles === 0
+    return isPristineDefault ? null : { message: s.message, idleSecs, maxCycles }
   }
 
   // Seed/restore fields on each open (rising edge). A live loop is the
@@ -69,13 +81,13 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
       // or an empty message shows the 60 / 0 / default template.
       setMessage(loop.message || DEFAULT_MSG)
-      setIdleSecs(loop.idle_secs || 60)
-      setMaxCycles(loop.max_cycles || 0)
+      setIdleInput(String(loop.idle_secs || 60))
+      setMaxCyclesInput(String(loop.max_cycles || 0))
     } else {
       const remembered = loadGoalDraft(slotKey)
       setMessage(remembered ? remembered.message : DEFAULT_MSG)
-      setIdleSecs(remembered ? remembered.idleSecs : 60)
-      setMaxCycles(remembered ? remembered.maxCycles : 0)
+      setIdleInput(String(remembered ? remembered.idleSecs : 60))
+      setMaxCyclesInput(String(remembered ? remembered.maxCycles : 0))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; loop/slotKey are read fresh each open
   }, [open])
@@ -100,15 +112,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     if (!open || !hasEdited.current || loop) return
     const timer = setTimeout(() => saveGoalDraft(slotKey, draftToPersist(latest.current)), DRAFT_SAVE_DEBOUNCE_MS)
     return () => clearTimeout(timer)
-  }, [open, slotKey, message, idleSecs, maxCycles, loop])
+  }, [open, slotKey, message, idleInput, maxCyclesInput, loop])
 
   async function save() {
     setSaving(true)
     setError('')
     try {
-      const body = JSON.stringify({ slot_key: slotKey, message, idle_secs: idleSecs, max_cycles: maxCycles })
+      // Parse from the raw strings here (not a committed number state) so a value
+      // typed and then Save-clicked without an intervening blur is still captured.
+      const idle_secs = parseIdle(idleInput)
+      const max_cycles = parseCycles(maxCyclesInput)
+      const body = JSON.stringify({ slot_key: slotKey, message, idle_secs, max_cycles })
       const resp = loop
-        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs: idleSecs, max_cycles: maxCycles, active: true }) })
+        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs, max_cycles, active: true }) })
         : await fetch('/api/autonudge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
@@ -188,8 +204,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               aria-label="Idle seconds before nudge"
               min={15}
               max={86400}
-              value={idleSecs}
-              onChange={e => { hasEdited.current = true; setIdleSecs(parseInt(e.target.value) || 60) }}
+              value={idleInput}
+              onChange={e => { hasEdited.current = true; setIdleInput(e.target.value) }}
+              onBlur={() => setIdleInput(String(parseIdle(idleInput)))}
               className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
             />
           </div>
@@ -199,8 +216,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               type="number"
               aria-label="Max cycles (0 = infinite)"
               min={0}
-              value={maxCycles}
-              onChange={e => { hasEdited.current = true; setMaxCycles(parseInt(e.target.value) || 0) }}
+              value={maxCyclesInput}
+              onChange={e => { hasEdited.current = true; setMaxCyclesInput(e.target.value) }}
+              onBlur={() => setMaxCyclesInput(String(parseCycles(maxCyclesInput)))}
               className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
             />
           </div>
