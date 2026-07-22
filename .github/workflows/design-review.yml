@@ -335,14 +335,18 @@ jobs:
             echo "Created new design-review comment"
           fi
 
-      # This step only surfaces the verdict in the Actions log (notice for
-      # PASS/CONCERNS, warning for BLOCK / errored review) and exits 0 — it does
-      # not itself fail the check. But the JOB still goes RED when the model step
-      # above failed (continue-on-error was intentionally dropped). That red is
-      # by design and NON-BLOCKING: keep "Design Review" OUT of required status
-      # checks so it can never gate merge. Design judgment is advisory — humans
-      # act on the PR comment.
-      - name: Design review status (advisory, non-blocking)
+      # This step converts the design verdict into the "Design Review" check
+      # status. A real BLOCK verdict now FAILS the check (emits ::error:: and
+      # exits 1) — the one case where the design itself is judged wrong. Every
+      # other outcome stays NON-BLOCKING and exits 0: PASS/CONCERNS, the
+      # Dependabot skip, and — critically — any run that DID NOT COMPLETE
+      # (Bedrock overload / throttle / 403 / action error → UNKNOWN or empty
+      # verdict). An errored or overloaded review must NEVER fail this gate; only
+      # a genuine BLOCK does. NOTE: failing here only turns the "Design Review"
+      # check red — it gates MERGE only if the check is added to the base
+      # branch's REQUIRED status checks (a repo branch-protection setting, out of
+      # scope of this workflow). Do NOT widen the failing branch beyond BLOCK.
+      - name: Design review status (gates on BLOCK)
         if: always()
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
@@ -350,15 +354,17 @@ jobs:
           VERDICT: ${{ steps.post.outputs.verdict }}
         run: |
           if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "Dependabot PR: design review skipped (advisory)."
+            echo "Dependabot PR: design review skipped (non-blocking)."
             exit 0
           fi
           case "$VERDICT" in
             PASS|CONCERNS)
-              echo "Design review verdict for $HEAD: $VERDICT (advisory, non-blocking)." ;;
+              echo "Design review verdict for $HEAD: $VERDICT (non-blocking)."
+              exit 0 ;;
             BLOCK)
-              echo "::warning::Design review verdict for $HEAD: BLOCK (advisory) — a human should weigh the design concern in the PR comment before merging." ;;
+              echo "::error::Design review verdict for $HEAD: BLOCK — the design gate failed. Read the design concern in the PR comment and fix the design, or have a human override the concern before merging."
+              exit 1 ;;
             *)
-              echo "::warning::Design review did not produce a verdict for $HEAD (advisory — not blocking). See the Design review job logs / re-run." ;;
+              echo "::warning::Design review did not produce a verdict for $HEAD (errored / overloaded / incomplete — NOT blocking). See the Design review job logs / re-run."
+              exit 0 ;;
           esac
-          exit 0
