@@ -130,10 +130,11 @@ jobs:
         with:
           path: artifacts
 
-      # Assemble release assets: everything built, with the macOS zip and DMG
-      # replaced by the notarized ones from the notarize job. The unsigned
-      # electron-builder DMG (built before signing) must never ship -- it
-      # wraps an unsigned app and hits the Gatekeeper scare dialog.
+      # Assemble release assets: everything built, with the macOS zip
+      # replaced by the notarized one from the notarize job. No DMG ships:
+      # the unsigned electron-builder DMG wraps an unsigned app, and even a
+      # notarized hdiutil DMG is adhoc-signed, which Gatekeeper rejects as
+      # "damaged" (see sign-and-notarize.yml header note).
       - name: Flatten artifacts (notarized macOS assets win)
         run: |
           mkdir -p release
@@ -143,10 +144,6 @@ jobs:
             cp "$NOTARIZED" "release/KiroCrew-${{ needs.version.outputs.version }}-arm64-mac.zip"
           else
             find artifacts -type f -name "*arm64*.zip" -exec cp {} release/ \;
-          fi
-          NOTARIZED_DMG=$(find artifacts -path "*KiroCrew-notarized-*" -name "*.dmg" | head -1)
-          if [ -n "$NOTARIZED_DMG" ]; then
-            cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-arm64.dmg"
           fi
           ls -la release/
 
