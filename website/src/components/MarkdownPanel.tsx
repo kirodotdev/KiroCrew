@@ -156,6 +156,10 @@ interface Props {
   onSubmitComments?: (message: string) => void
   onRefresh?: (filePath: string) => Promise<void>
   reserveWidth?: number
+  /** Restored file-tab preference. Undefined allows the initial modified-file
+   *  auto-diff; false explicitly keeps the normal preview/source view. */
+  initialDiffMode?: boolean
+  onDiffModeChange?: (diffMode: boolean) => void
   /** Render as a SidePanel tab body (fills parent, no resize handle/border). */
   embedded?: boolean
 }
@@ -612,7 +616,7 @@ const CommentOverlayBlock = memo(function CommentOverlayBlock({ popover, addComm
   )
 })
 
-export default memo(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, embedded }: Props) {
+export default memo(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded }: Props) {
   const qc = useQueryClient()
   // Code files (non-rich, non-markdown) have no meaningful preview — their
   // "preview" was just a read-only render of the same text. They open
@@ -621,7 +625,12 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
     if (MD_EXTS.has(extOf(filePath))) return false
     return !['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf'].includes(detectFileType(filePath))
   })
-  const [diffMode, setDiffMode] = useState(false)
+  const [diffMode, setDiffMode] = useState(initialDiffMode ?? false)
+  const toggleDiffMode = useCallback(() => {
+    const next = !diffMode
+    setDiffMode(next)
+    onDiffModeChange?.(next)
+  }, [diffMode, onDiffModeChange])
   // Unified vs side-by-side diff rendering — persisted, and shares its key
   // with SidePanel's diff tabs so the preference is app-wide.
   const [diffSplit, setDiffSplit] = usePersistedBool('mc-diff-split', true)
@@ -898,15 +907,22 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
     staleTime: 10_000,
   })
   const originalContent = diffData?.original ?? ''
-  // Auto-open diff mode on first load only for a genuine edit (an existing
-  // tracked file that was modified). For a brand-new / untracked file there's
-  // no prior HEAD content, so every line is an addition and the whole document
-  // renders green — that hurts readability while conveying little. Skip
-  // auto-diff there; the git-diff toggle in the header stays available.
-  if (diffData && diffInitFileRef.current !== filePath) {
+  // Auto-open diff mode once for a genuine edit unless this file tab already
+  // carries an explicit choice. File-tab metadata survives ChatPage unmounts,
+  // so returning to a session restores preview/source instead of re-enabling
+  // diff after the user turned it off.
+  useEffect(() => {
+    if (!diffData || diffInitFileRef.current === filePath) return
     diffInitFileRef.current = filePath
-    if (diffData.diff && diffData.status === 'modified') setDiffMode(true)
-  }
+    if (initialDiffMode !== undefined) {
+      setDiffMode(initialDiffMode)
+      return
+    }
+    if (diffData.diff && diffData.status === 'modified') {
+      setDiffMode(true)
+      onDiffModeChange?.(true)
+    }
+  }, [diffData, filePath, initialDiffMode, onDiffModeChange])
 
   const revealOrCopy = useCallback(async (path: string, action: 'open' | 'reveal') => {
     try {
@@ -1254,7 +1270,7 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
 
   const editorToolbarButtons = (<>
     {!isRichType && (
-      <button className={`p-1.5 rounded-md border cursor-pointer ${diffMode ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { setDiffMode(!diffMode) }} title="Toggle diff view" aria-label="Toggle diff view"><FileDiff size={14} /></button>
+      <button className={`p-1.5 rounded-md border cursor-pointer ${diffMode ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={toggleDiffMode} title="Toggle diff view" aria-label="Toggle diff view"><FileDiff size={14} /></button>
     )}
     {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${wordWrap ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setWordWrap(!wordWrap)} title="Toggle word wrap" aria-label="Toggle word wrap"><WrapText size={14} /></button>
@@ -1341,7 +1357,7 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
               <button className={barIconBtn(!diffSplit)} onClick={() => setDiffSplit(!diffSplit)} title={diffSplit ? 'Switch to unified view' : 'Switch to split view'} aria-label={diffSplit ? 'Switch to unified view' : 'Switch to split view'} aria-pressed={!diffSplit}><Columns2 size={14} /></button>
             )}
             {!isRichType && (
-              <button className={barIconBtn(diffMode)} onClick={() => setDiffMode(!diffMode)} title="Toggle diff view" aria-label="Toggle diff view" aria-pressed={diffMode}><FileDiff size={14} /></button>
+              <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title="Toggle diff view" aria-label="Toggle diff view" aria-pressed={diffMode}><FileDiff size={14} /></button>
             )}
             <OverflowMenu filePath={filePath} content={content} revealOrCopy={revealOrCopy}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? 'Save or discard changes first' : 'Refresh file (re-read from disk)'}

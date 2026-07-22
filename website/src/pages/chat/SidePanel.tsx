@@ -416,6 +416,7 @@ export default function SidePanel({
                 tab={t} active={isActive}
                 onClose={() => handleCloseTab(t.id)}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
+                onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
                 onSubmitComments={onSubmitComments}
@@ -438,9 +439,10 @@ export default function SidePanel({
  *  type on every SidePanel render, forcing React to unmount/remount the whole
  *  subtree — which reset editor state and re-fired xterm's focus-on-visible
  *  effect, stealing focus from the chat input on every keystroke. */
-function TabBody({ tab, active, onClose, onContentChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, onClose, onContentChange, onDiffModeChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; onClose: () => void
   onContentChange: (c: string) => void
+  onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string) => void
   onSubmitComments?: (m: string) => void
@@ -456,6 +458,8 @@ function TabBody({ tab, active, onClose, onContentChange, onFileSave, onFileOpen
         filePath={tab.path || ''}
         content={tab.content || ''}
         onContentChange={onContentChange}
+        initialDiffMode={tab.diffMode}
+        onDiffModeChange={onDiffModeChange}
         onSave={onFileSave}
         onClose={onClose}
         liveWatch

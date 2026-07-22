@@ -179,6 +179,22 @@ describe('usePanelTabs — per-slot isolation', () => {
     expect(result.current.activeId).toBe('diff:/b.ts')
   })
 
+  it('restores a file tab\'s selected diff view after leaving and returning to a chat', () => {
+    const { result, rerender } = renderHook(({ slot }: { slot: string | null }) => usePanelTabs(slot), {
+      initialProps: { slot: 'chat-a' as string | null },
+    })
+    act(() => result.current.openFile('/README.md', '# current'))
+    act(() => result.current.patchTab('file:/README.md', { diffMode: false }))
+
+    rerender({ slot: 'chat-b' })
+    expect(result.current.tabs).toEqual([])
+    rerender({ slot: 'chat-a' })
+
+    expect(result.current.activeTab).toMatchObject({
+      id: 'file:/README.md', diffMode: false,
+    })
+  })
+
   it('operations only touch the active slot\'s bucket (closeAll in B leaves A intact)', () => {
     const { result, rerender } = renderHook(({ slot }: { slot: string | null }) => usePanelTabs(slot), {
       initialProps: { slot: 'chat-a' as string | null },

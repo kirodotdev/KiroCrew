@@ -24,6 +24,9 @@ export interface PanelTab {
   content?: string
   original?: string
   modified?: string
+  /** Last selected working-tree diff view for file tabs. Persisted with the
+   *  tab so leaving and returning to a chat does not re-enable auto-diff. */
+  diffMode?: boolean
   artifactSlug?: string
   artifactKind?: Artifact['kind']
   // ── terminal fields ──
