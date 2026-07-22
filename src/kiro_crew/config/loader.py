@@ -3481,15 +3481,19 @@ class KiroCrewConfig:
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
-            # Custom agents use their own model from their agent config;
-            # only override model for the default kirocrew agent.
-            # If model_override is provided (from slot.model), use it.
+            # Resolve the model: slot override, else the default kirocrew model,
+            # else the custom agent's own model. Custom agents MUST resolve here
+            # because the ACP session/set_mode path switches prompt/tools but not
+            # the model, so an unset model makes kiro fall back to cli.json's
+            # chat.defaultModel. Use _resolve_named_agent_model (the kiro model
+            # slot) to match this backend. Returns "" when none is declared;
+            # AcpClient normalizes "" to DEFAULT_MODEL, same as None.
             if model_override:
                 m = model_override
             elif not agent or agent == "kirocrew":
                 m = model
             else:
-                m = None
+                m = self._resolve_named_agent_model(agent)
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only
