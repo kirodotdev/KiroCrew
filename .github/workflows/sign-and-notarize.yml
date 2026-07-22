@@ -16,7 +16,9 @@ name: Sign and Notarize macOS (reusable)
 #                to this job. Ends by attaching the GATED artifact
 #                (notarized zip) to the workflow run.
 #   publish   -- everything S3-bound: copy the gated artifact to the public
-#                distribution bucket and write the channel feed, dead last.
+#                distribution bucket and write the channel feed, dead last
+#                among the go-live pointers (a convenience latest-DMG alias
+#                mirroring the feed's dmg field trails it deliberately).
 #                Separate from notarize so a transient publish failure
 #                retries as a ~2-minute ubuntu job ("Re-run failed jobs")
 #                instead of repeating two ~30-minute-budget Apple
@@ -566,6 +568,36 @@ jobs:
             --content-type application/json
           echo "Feed written: feed/${CHANNEL}/latest-mac.json -> ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
 
+      # Human-clickable permalink to the current DMG:
+      #   <CDN>/desktop/<channel>/latest/KiroCrew.dmg
+      # The feed remains the canonical pointer for machines; this alias is a
+      # convenience mirror of the feed's dmg field for download buttons and
+      # docs, so it is written AFTER the feed (never points ahead of the
+      # go-live switch). Unlike the versioned keys it is MUTABLE by design
+      # (same class as the feed): plain overwrite, no --if-none-match, and a
+      # short max-age instead of immutable. desktop/* rides the default
+      # CloudFront behavior (CACHING_OPTIMIZED), which honors per-object
+      # Cache-Control -- versioned keys cache for a year only because we
+      # stamp them immutable; max-age=300 here means edges roll over to a
+      # new nightly within minutes, no invalidation needed. Worst case is
+      # standard latest-link semantics: a download in that window gets the
+      # previous build, which is still fully signed+notarized+stapled.
+      # Uploads the local body (not an S3 copy): the publish role's
+      # desktop/* grant is Put-only.
+      - name: Update latest DMG alias
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          LATEST_DMG_KEY="desktop/${CHANNEL}/latest/${APP_NAME}.dmg"
+          aws s3api put-object \
+            --bucket "${{ vars.CLI_DIST_BUCKET }}" \
+            --key "${LATEST_DMG_KEY}" \
+            --body "work/${APP_NAME}.dmg" \
+            --content-type application/x-apple-diskimage \
+            --cache-control "public, max-age=300" > /dev/null
+          echo "LATEST_DMG_KEY=${LATEST_DMG_KEY}" >> "$GITHUB_ENV"
+          echo "Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_DMG_KEY}"
+
       - name: Summary
         if: env.HAS_SIGNING_SECRETS
         run: |
@@ -574,5 +606,6 @@ jobs:
             echo "- Version: ${VERSION}"
             echo "- Public zip: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
             echo "- Public DMG: ${{ vars.CLI_CDN_BASE }}/${DMG_KEY}"
+            echo "- Latest DMG alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_DMG_KEY}"
             echo "- Feed: \`feed/${CHANNEL}/latest-mac.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
