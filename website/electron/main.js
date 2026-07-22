@@ -210,7 +210,21 @@ function startGateway() {
         const child = spawn(bin, ["gateway", "--no-open"], {
           stdio: ["ignore", childOut, childOut],
           detached: false,
-          env: { ...cleanEnv, KIROCREW_PROJECT_DIR: path.resolve(__dirname, "..") },
+          env: {
+            ...cleanEnv,
+            KIROCREW_PROJECT_DIR: path.resolve(__dirname, ".."),
+            // Keep CPython bytecode caches OUT of the signed app bundle.
+            // Without this, the embedded interpreter writes __pycache__/*.pyc
+            // next to the bundled sources on first import, breaking the
+            // codesign seal ("a sealed resource is missing or invalid") --
+            // Gatekeeper then fails the installed app, and Squirrel's
+            // installer can trip over the corrupted target during updates.
+            // CPython creates the directory tree on demand (PEP 3147 /
+            // sys.pycache_prefix). Inherited by every Python child the
+            // gateway spawns (app servers run on the same interpreter), so
+            // the whole process tree stays out of the bundle.
+            PYTHONPYCACHEPREFIX: path.join(kirocrewDir, "cache", "pycache"),
+          },
         });
         gatewayProcess = child;
         // The child inherits its own dup of the fd; close our copy so it doesn't leak.
