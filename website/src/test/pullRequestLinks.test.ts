@@ -9,7 +9,11 @@ import {
   recordNewPullRequestLinks,
 } from '../utils/pullRequestLinks'
 
-const messages = (...content: string[]): ChatMessage[] => content.map(text => ({ role: 'user', content: text, cls: '' }))
+// Default to assistant-authored messages: under first-mention attribution only
+// agent-surfaced PRs are Change sources, so tests asserting that a PR IS
+// extracted use assistant content. User-referenced-only PRs are covered
+// explicitly in the "first-mention attribution" describe block below.
+const messages = (...content: string[]): ChatMessage[] => content.map(text => ({ role: 'assistant', content: text, cls: '' }))
 
 describe('extractPullRequestLinks', () => {
   it('extracts and deduplicates GitHub pull requests in first-seen order', () => {
@@ -53,11 +57,10 @@ describe('extractPullRequestLinks', () => {
   })
 
   it.each([
-    ['streaming', 'assistant'],
-    ['chunk', 'user'],
-  ])('defers digit-by-digit %s PR numbers until the message finalizes to %s', (
+    ['streaming'],
+    ['chunk'],
+  ])('defers digit-by-digit %s PR numbers until the message finalizes', (
     transientRole,
-    finalRole,
   ) => {
     const index = new PullRequestLinkIndex()
     const seen = new Map<string, Set<string>>()
@@ -71,8 +74,9 @@ describe('extractPullRequestLinks', () => {
       expect(recordNewPullRequestLinks(seen, 'slot-a', links)).toBe(false)
     }
 
+    // Finalizes to an agent (assistant) message, so the PR becomes a Change source.
     const finalized = index.update('slot-a', [
-      { role: finalRole, content: `${prefix}123`, cls: '' },
+      { role: 'assistant', content: `${prefix}123`, cls: '' },
     ])
     expect(finalized.map(link => link.url)).toEqual([
       'https://github.com/acme/widgets/pull/123',
@@ -98,7 +102,7 @@ describe('extractPullRequestLinks', () => {
   it('rescans only the changing tail during streaming', () => {
     let historicalReads = 0
     const historical = {
-      role: 'user',
+      role: 'assistant',
       cls: '',
       get content() {
         historicalReads += 1
@@ -153,12 +157,12 @@ describe('extractPullRequestLinks', () => {
     const middle = { role: 'assistant', content: 'middle', cls: '' } as ChatMessage
 
     index.update('slot-a', [
-      { role: 'user', content: 'https://github.com/acme/widgets/pull/12', cls: '' },
+      { role: 'assistant', content: 'https://github.com/acme/widgets/pull/12', cls: '' },
       middle,
       { role: 'streaming', content: 'working', cls: '' },
     ])
     const links = index.update('slot-a', [
-      { role: 'user', content: 'https://github.com/acme/widgets/pull/14', cls: '' },
+      { role: 'assistant', content: 'https://github.com/acme/widgets/pull/14', cls: '' },
       middle,
       { role: 'streaming', content: 'still working', cls: '' },
     ])
@@ -223,5 +227,83 @@ describe('extractPullRequestLinks', () => {
     localStorage.setItem('mc-pr-source-seen-v1', JSON.stringify({ slot: ['not-an-array'] }))
     expect(loadSeenPullRequestLinks()).toEqual(new Map())
     localStorage.clear()
+  })
+})
+
+describe('first-mention attribution (Changes vs Resources)', () => {
+  const url = 'https://github.com/acme/widgets/pull/12'
+
+  it('excludes a PR only the user referenced (it belongs in Resources)', () => {
+    expect(extractPullRequestLinks([
+      { role: 'user', content: `please review ${url}`, cls: '' },
+    ])).toEqual([])
+  })
+
+  it('includes a PR the agent surfaced', () => {
+    expect(extractPullRequestLinks([
+      { role: 'assistant', content: `opened ${url}`, cls: '' },
+    ]).map(l => l.url)).toEqual([url])
+  })
+
+  it('keeps a user-first PR excluded even after the agent echoes it back', () => {
+    // User pastes the PR first; the agent quoting it later must NOT reclassify
+    // it as a Change — the earlier user mention owns the classification.
+    expect(extractPullRequestLinks([
+      { role: 'user', content: `look at ${url}`, cls: '' },
+      { role: 'assistant', content: `sure, checking ${url} now`, cls: '' },
+    ])).toEqual([])
+  })
+
+  it('keeps an agent-first PR included even if the user later references it', () => {
+    expect(extractPullRequestLinks([
+      { role: 'assistant', content: `created ${url}`, cls: '' },
+      { role: 'user', content: `thanks, ${url} looks good`, cls: '' },
+    ]).map(l => l.url)).toEqual([url])
+  })
+
+  it('treats a PR surfaced in tool/thinking output as an agent Change', () => {
+    // A PR URL in a tool result (e.g. `gh pr create` output) is agent-surfaced.
+    expect(extractPullRequestLinks([
+      { role: 'tool', content: `Created pull request ${url}`, cls: '' } as ChatMessage,
+    ]).map(l => l.url)).toEqual([url])
+  })
+
+  it('splits a mixed transcript into agent Changes only', () => {
+    const agentPr = 'https://github.com/acme/widgets/pull/20'
+    const userPr = 'https://github.com/acme/widgets/pull/99'
+    expect(extractPullRequestLinks([
+      { role: 'user', content: `context: ${userPr}`, cls: '' },
+      { role: 'assistant', content: `done, opened ${agentPr}`, cls: '' },
+    ]).map(l => l.url)).toEqual([agentPr])
+  })
+
+  it('index.update applies the same first-mention rule as extraction', () => {
+    const index = new PullRequestLinkIndex()
+    // User-only mention → no Change source.
+    expect(index.update('slot-x', [
+      { role: 'user', content: `see ${url}`, cls: '' },
+    ])).toEqual([])
+    // Agent appends its own PR → only that one surfaces; the user's stays out.
+    const agentPr = 'https://github.com/acme/widgets/pull/21'
+    expect(index.update('slot-x', [
+      { role: 'user', content: `see ${url}`, cls: '' },
+      { role: 'assistant', content: `opened ${agentPr}`, cls: '' },
+    ]).map(l => l.url)).toEqual([agentPr])
+  })
+
+  it('a flood of user-referenced PRs does not starve agent Change sources', () => {
+    // MAX user PRs first, then an agent PR. The per-role cap must keep the
+    // agent PR from being crowded out of the (bounded) source list.
+    const userMsgs = Array.from({ length: MAX_PULL_REQUEST_SOURCES }, (_, i) => ({
+      role: 'user',
+      content: `https://github.com/acme/widgets/pull/${i + 1}`,
+      cls: '',
+    } as ChatMessage))
+    const agentPr = 'https://github.com/acme/service/pull/500'
+    const result = extractPullRequestLinks([
+      ...userMsgs,
+      { role: 'assistant', content: `opened ${agentPr}`, cls: '' },
+    ])
+    expect(result.map(l => l.url)).toEqual([agentPr])
   })
 })

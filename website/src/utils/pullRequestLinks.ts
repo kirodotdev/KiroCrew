@@ -10,6 +10,35 @@ export interface PullRequestLink {
   repo: string
 }
 
+/**
+ * First-mention attribution: whoever mentioned a PR FIRST owns its
+ * classification. 'user' means the person referenced it for context (it belongs
+ * in Resources, not Changes); 'agent' means the assistant / a tool / thinking
+ * output surfaced or created it (a real Change). Because the dedup map keeps the
+ * first occurrence of each URL, an agent later echoing a user-referenced PR
+ * cannot reclassify it — the user's earlier mention stands.
+ */
+type MentionRole = 'agent' | 'user'
+interface AttributedLink extends PullRequestLink {
+  mentionedBy: MentionRole
+}
+
+/**
+ * Emit only PRs whose FIRST mention came from the agent. User-referenced PRs are
+ * kept in the dedup map (so a later agent echo is still recognized as a
+ * duplicate and skipped) but excluded here — they surface in the Files-tab
+ * Resources list instead. Clean PullRequestLink objects are rebuilt so the
+ * public shape never leaks the internal attribution field.
+ */
+function emitChangeSources(found: Map<string, AttributedLink>): PullRequestLink[] {
+  const out: PullRequestLink[] = []
+  for (const link of found.values()) {
+    if (link.mentionedBy === 'user') continue
+    out.push({ url: link.url, provider: link.provider, number: link.number, repo: link.repo })
+  }
+  return out
+}
+
 export const MAX_PULL_REQUEST_SOURCES = 64
 
 const SEEN_SOURCES_STORAGE_KEY = 'mc-pr-source-seen-v1'
@@ -70,39 +99,57 @@ function parseCandidate(raw: string): PullRequestLink | null {
 function linksInMessage(
   message: ChatMessage | undefined,
   limit = MAX_PULL_REQUEST_SOURCES,
-): PullRequestLink[] {
+): AttributedLink[] {
   if (message?.role === 'streaming' || message?.role === 'chunk' || limit <= 0) return []
-  const found = new Map<string, PullRequestLink>()
+  // Non-transient roles other than 'user' (assistant, tool, thinking, …) are all
+  // agent output — a PR URL in a tool result (e.g. `gh pr create`) is as much an
+  // agent-surfaced Change as one the assistant types.
+  const mentionedBy: MentionRole = message?.role === 'user' ? 'user' : 'agent'
+  const found = new Map<string, AttributedLink>()
   const rawContent = message?.content
   const content = typeof rawContent === 'string' ? rawContent : ''
   URL_CANDIDATE_RE.lastIndex = 0
   for (const match of content.matchAll(URL_CANDIDATE_RE)) {
     const link = parseCandidate(match[0])
     if (!link || found.has(link.url)) continue
-    found.set(link.url, link)
+    found.set(link.url, { ...link, mentionedBy })
     if (found.size >= limit) break
   }
   return [...found.values()]
 }
 
+function roleCount(found: Map<string, AttributedLink>, role: MentionRole): number {
+  let n = 0
+  for (const link of found.values()) if (link.mentionedBy === role) n += 1
+  return n
+}
+
 function addLinks(
-  found: Map<string, PullRequestLink>,
-  links: PullRequestLink[],
+  found: Map<string, AttributedLink>,
+  links: AttributedLink[],
 ): void {
   for (const link of links) {
     if (found.has(link.url)) continue
+    // Cap each role INDEPENDENTLY. The emitted Change sources are the agent
+    // links, so counting user-referenced links against a single shared limit
+    // let a flood of pasted PRs exhaust the budget and starve every later
+    // agent-created PR out of the Changes tab. User links must still be
+    // retained (bounded) so a later agent echo of a user-first PR stays
+    // classified as a Resource — hence a per-role cap rather than dropping them.
+    if (roleCount(found, link.mentionedBy) >= MAX_PULL_REQUEST_SOURCES) continue
     found.set(link.url, link)
-    if (found.size >= MAX_PULL_REQUEST_SOURCES) return
   }
 }
 
 export function extractPullRequestLinks(messages: ChatMessage[]): PullRequestLink[] {
-  const found = new Map<string, PullRequestLink>()
+  const found = new Map<string, AttributedLink>()
   for (const message of messages) {
-    addLinks(found, linksInMessage(message, MAX_PULL_REQUEST_SOURCES - found.size))
-    if (found.size >= MAX_PULL_REQUEST_SOURCES) break
+    addLinks(found, linksInMessage(message))
+    // Once MAX agent sources are captured, no further message can add an emitted
+    // Change source, so stop scanning (user links past this point are moot).
+    if (roleCount(found, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
   }
-  return [...found.values()]
+  return emitChangeSources(found)
 }
 
 function sameMessagePrefix(
@@ -125,8 +172,8 @@ function sameMessagePrefix(
 export class PullRequestLinkIndex {
   private slot: string | null = null
   private messages: ChatMessage[] = []
-  private settled = new Map<string, PullRequestLink>()
-  private tail: PullRequestLink[] = []
+  private settled = new Map<string, AttributedLink>()
+  private tail: AttributedLink[] = []
   private tailTransient = false
   private result: PullRequestLink[] = []
 
@@ -150,11 +197,8 @@ export class PullRequestLinkIndex {
     if (appended) {
       if (!this.tailTransient) addLinks(this.settled, this.tail)
       for (let index = previousLength; index < nextLength - 1; index += 1) {
-        addLinks(
-          this.settled,
-          linksInMessage(messages[index], MAX_PULL_REQUEST_SOURCES - this.settled.size),
-        )
-        if (this.settled.size >= MAX_PULL_REQUEST_SOURCES) break
+        addLinks(this.settled, linksInMessage(messages[index]))
+        if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
       }
       this.setTail(messages[nextLength - 1])
       this.messages = messages
@@ -174,11 +218,8 @@ export class PullRequestLinkIndex {
     this.messages = messages
     this.settled = new Map()
     for (let index = 0; index < Math.max(0, messages.length - 1); index += 1) {
-      addLinks(
-        this.settled,
-        linksInMessage(messages[index], MAX_PULL_REQUEST_SOURCES - this.settled.size),
-      )
-      if (this.settled.size >= MAX_PULL_REQUEST_SOURCES) break
+      addLinks(this.settled, linksInMessage(messages[index]))
+      if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
     }
     this.setTail(messages.at(-1))
     this.materialize()
@@ -186,13 +227,13 @@ export class PullRequestLinkIndex {
 
   private setTail(message: ChatMessage | undefined): void {
     this.tailTransient = message?.role === 'streaming' || message?.role === 'chunk'
-    this.tail = linksInMessage(message, MAX_PULL_REQUEST_SOURCES - this.settled.size)
+    this.tail = linksInMessage(message)
   }
 
   private materialize(): void {
     const found = new Map(this.settled)
     addLinks(found, this.tail)
-    this.result = [...found.values()]
+    this.result = emitChangeSources(found)
   }
 }
 

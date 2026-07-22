@@ -267,7 +267,7 @@ export default function SidePanel({
             default spacing. */}
         <div className="flex items-center gap-1.5 shrink-0">
           {pinnedTabs.map(t => (
-            <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} onSelect={() => setActive(t.id)} onClose={() => {}} />
+            <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => setActive(t.id)} onClose={() => {}} />
           ))}
         </div>
         {pinnedTabs.length > 0 && dynamicTabs.length > 0 && (
@@ -522,7 +522,12 @@ function TerminalTabTitle({ sessionId, fallback }: { sessionId: string; fallback
   return <>{live || fallback}</>
 }
 
-function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void; closable?: boolean; onTransfer?: () => void }) {
+function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer, pinned = false }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void; closable?: boolean; onTransfer?: () => void; pinned?: boolean }) {
+  // Pinned views (Changes / Files / Artifacts) are icon-only when inactive and
+  // expand to icon + label when active — a hybrid that keeps the strip compact
+  // while still naming the current view. Dynamic (document / terminal) tabs
+  // always show their label. Icon-only chips MUST carry an accessible name.
+  const showLabel = active || !pinned
   return (
     <div
       role="tab"
@@ -533,19 +538,29 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer }
       // activates them natively instead of also selecting the tab.
       onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
       onAuxClick={(e) => { if (closable && e.button === 1) { e.preventDefault(); onClose() } }}
+      // Icon-only pinned chips have no visible text, so give them an explicit
+      // accessible name + hover tooltip. Harmless (and a nice tooltip) when the
+      // label is also shown.
+      aria-label={pinned ? tab.title : undefined}
+      title={pinned && !showLabel ? tab.title : undefined}
       // Figma "Side Navigation" chip: 28px tall, 6px corners (not a full pill),
       // 8px padding, 4px icon↔label gap. Active = neutral fill (--border) + accent
-      // text; inactive = muted, brightening on hover.
-      className={`group relative flex items-center gap-1 h-7 rounded-md cursor-pointer shrink-0 max-w-[240px] select-none transition-colors ${closable ? 'pl-2 pr-1' : 'px-2'} ${
+      // text; inactive = muted, brightening on hover. Icon-only (inactive pinned)
+      // collapses to a square (w-7, centered) so the trio reads as an even set.
+      className={`group relative flex items-center gap-1 h-7 rounded-md cursor-pointer shrink-0 select-none transition-colors ${
+        showLabel ? `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}` : 'w-7 justify-center px-0'
+      } ${
         active ? 'bg-border text-accent' : 'text-muted hover:text-text hover:bg-bg-elevated'
       }`}
     >
       <span className="shrink-0">{KIND_ICON[tab.kind]}</span>
-      <span className="min-w-0 text-[12px] truncate text-left">
-        {tab.kind === 'terminal' && tab.sessionId
-          ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
-          : tab.title}
-      </span>
+      {showLabel && (
+        <span className="min-w-0 text-[12px] truncate text-left">
+          {tab.kind === 'terminal' && tab.sessionId
+            ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
+            : tab.title}
+        </span>
+      )}
       {(onTransfer || closable) && (
         <div className="flex items-center gap-0.5 shrink-0">
           {onTransfer && (
