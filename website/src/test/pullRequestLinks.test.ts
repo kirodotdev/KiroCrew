@@ -37,6 +37,21 @@ describe('extractPullRequestLinks', () => {
     ))).toEqual([])
   })
 
+  it('detects URLs wrapped in markdown emphasis (regression: trailing ** broke the numeric tail)', () => {
+    const url = 'https://github.com/acme/widgets/pull/166'
+    for (const wrapped of [`**${url}**`, `*${url}*`, `\`${url}\``, `__${url}__`, `~~${url}~~`]) {
+      expect(extractPullRequestLinks(messages(`PR is up: ${wrapped} — fix(tips)`))).toEqual([
+        { url, provider: 'github', number: 166, repo: 'widgets' },
+      ])
+    }
+    // GitLab MRs get the same trim
+    expect(extractPullRequestLinks(messages(
+      'MR: **https://gitlab.com/acme/platform/-/merge_requests/42**',
+    ))).toEqual([
+      { url: 'https://gitlab.com/acme/platform/-/merge_requests/42', provider: 'gitlab', number: 42, repo: 'platform' },
+    ])
+  })
+
   it.each([
     ['streaming', 'assistant'],
     ['chunk', 'user'],

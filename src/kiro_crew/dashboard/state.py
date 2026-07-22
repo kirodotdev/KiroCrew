@@ -1119,7 +1119,12 @@ class _ChatSlot:
                 end = idx
                 while end < len(content) and content[end] not in stop_chars:
                     end += 1
-                candidate = content[idx:end].rstrip(".,!?;:")
+                # Also strip markdown emphasis (**bold**, *italic*, `code`,
+                # _underscore_, ~~strike~~): agent messages routinely wrap PR
+                # URLs in emphasis and a trailing "**" fails the numeric tail
+                # check. Valid PR/MR URLs end in a number, so these chars can
+                # never belong to a legitimate link tail.
+                candidate = content[idx:end].rstrip(".,!?;:*_~`")
                 idx = end
                 if "/pull/" not in candidate and "/merge_requests/" not in candidate:
                     continue

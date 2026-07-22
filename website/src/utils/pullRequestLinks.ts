@@ -25,8 +25,13 @@ const MAX_PERSISTED_SLOT_LENGTH = 512
 const URL_CANDIDATE_RE = /https:\/\/[^\s<>()[\]{}"']+/g
 
 function parseCandidate(raw: string): PullRequestLink | null {
-  // Trim trailing punctuation that the candidate scan may have swallowed.
-  const cleaned = raw.replace(/[.,!?;:]+$/, '')
+  // Trim trailing punctuation and markdown emphasis (**bold**, *italic*,
+  // `code`, _underscore_, ~~strike~~) that the candidate scan may have
+  // swallowed — agent messages routinely wrap PR URLs in emphasis, and a
+  // trailing "**" makes the numeric tail check fail silently. Safe for
+  // this parser: a valid PR/MR URL always ends in a numeric component, so
+  // these characters can never be part of a legitimate link tail.
+  const cleaned = raw.replace(/[.,!?;:*_~`]+$/, '')
   let url: URL
   try {
     url = new URL(cleaned)

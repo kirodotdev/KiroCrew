@@ -111,6 +111,19 @@ class TestChatSlot:
         assert payload["source_links_total"] == 1
         assert payload["source_links"][0]["url"] == url
 
+    def test_pr_source_links_detect_markdown_wrapped_urls(self):
+        """Regression: '**url**' left a trailing '**' on the candidate, so the
+        numeric tail check failed and the link was silently dropped."""
+        slot = _ChatSlot("s1")
+        url = "https://github.com/acme/widgets/pull/166"
+        for i, wrapped in enumerate(
+            (f"**{url}**", f"*{url}*", f"`{url}`", f"__{url}__", f"~~{url}~~")
+        ):
+            slot.append("assistant", f"PR is up: {wrapped} — fix(tips)", ts=f"t{i}")
+        payload = slot.to_dict()
+        assert payload["source_links_total"] == 1
+        assert payload["source_links"][0]["url"] == url
+
     @pytest.mark.parametrize(
         "role", ["chunk", "done", "streaming", "queued", "permission"]
     )
