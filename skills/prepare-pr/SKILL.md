@@ -38,7 +38,7 @@ The scripts are stdlib **Python 3** (run with `python3`; no third-party deps), p
 | `preflight.py` | 0 | repo/branch/base/auth/dirty/divergence/existing-PR + blockers | 0 ready · 30 blocker · 2 env |
 | `diff_signals.py [base]` | 1 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config) | 0 · 2 env |
 | `pr_status.py [pr#]` | 2 gate | PR state, all CI checks + rollup, unresolved-thread count, latest reviews | **0 clean · 10 running · 20 failing/findings · 2 env** |
-| `pr_findings.py [pr#]` | 3 | failing CI log tails + unresolved threads (path/line/author/body) | 0 · 2 env |
+| `pr_findings.py [pr#]` | 3 | per-job failed steps + failing CI log tails (with check-run annotations when the failed-log archive is empty) + unresolved threads (path/line/author/body) | 0 · 2 env |
 
 `pr_status.py` drives the loop: **10** → `wait` and re-poll (don't inspect yet); **20** → drill in and fix; **0** → converge; **2** → fix env or escalate.
 
