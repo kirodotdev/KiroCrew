@@ -7,6 +7,11 @@ export type ViewKind = 'changes' | 'files' | 'artifacts' | 'subagents' | 'workfl
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal'
 
+/** Views that are AUTO-managed by content (see `syncPinned`): they appear —
+ *  pinned to the front, non-closable, and absent from the + menu — only while
+ *  they have content, and are removed when empty. Order here = strip order. */
+export const PINNED_VIEWS: ViewKind[] = ['changes', 'files', 'artifacts']
+
 export interface PanelTab {
   id: string
   kind: TabKind
@@ -220,6 +225,32 @@ export function usePanelTabs(slotKey: string | null = null) {
     upsert({ id: kind, kind, title: VIEW_TITLES[kind] })
   }, [upsert])
 
+  /** Reconcile the AUTO-managed pinned views (Changes / Files / Artifacts) to
+   *  exactly the ``available`` set: present-with-content ones are kept (or
+   *  created), pinned to the FRONT in PINNED_VIEWS order; empty ones are
+   *  removed. Dynamic tabs (documents / terminal / other views) keep their
+   *  order after the pinned block. No-ops when already in the target shape so
+   *  it's safe to call from a content-driven effect every render. */
+  const syncPinned = useCallback((available: ViewKind[]) => {
+    update(b => {
+      const desired = PINNED_VIEWS.filter(k => available.includes(k))
+      const dynamic = b.tabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id))
+      const pinned = desired.map(
+        k => b.tabs.find(t => t.id === k) ?? { id: k, kind: k, title: VIEW_TITLES[k] },
+      )
+      const nextTabs = [...pinned, ...dynamic]
+      // Refocus if the active tab was a pinned view that just went away.
+      const activeId = b.activeId && nextTabs.some(t => t.id === b.activeId)
+        ? b.activeId
+        : (nextTabs.length ? nextTabs[0].id : null)
+      // Bail if nothing actually changed (id sequence + focus) — avoids churn.
+      const sameOrder = nextTabs.length === b.tabs.length
+        && nextTabs.every((t, i) => t.id === b.tabs[i].id)
+      if (sameOrder && activeId === b.activeId) return b
+      return { tabs: nextTabs, activeId }
+    })
+  }, [update])
+
   const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string }) => {
     upsert({ id: `file:${path}`, kind: 'file', title: basename(path), path, content, slot }, opts?.replaceId)
   }, [upsert])
@@ -302,7 +333,7 @@ export function usePanelTabs(slotKey: string | null = null) {
   return useMemo(() => ({
     tabs, activeId, activeTab,
     openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact,
-    patchTab, closeTab, closeAll, setActive, setOrder,
+    patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, activeId, activeTab, openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, patchTab, closeTab, closeAll, setActive, setOrder])
+  }), [tabs, activeId, activeTab, openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }

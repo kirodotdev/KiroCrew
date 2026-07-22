@@ -511,10 +511,16 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {/* Files tab */}
       {effectiveTab === 'files' && (() => {
         const changed = (files || []).filter(f => f.source === 'tool')
+        // Hide links that are already surfaced in the Changes tab (its `sources`);
+        // keep every other link — including cr-classified hosts (Bitbucket,
+        // self-hosted, code reviews) that the Changes parser can't render, so
+        // they stay reachable in Resources instead of vanishing from the panel.
+        const sourceUrls = new Set((sources || []).map(s => s.url.replace(/\/+$/, '')))
+        const resourceLinks = (navLinks || []).filter(l => !sourceUrls.has(l.url.replace(/\/+$/, '')))
         return (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto py-2">
-              {(changed.length === 0 && (!navLinks || navLinks.length === 0)) ? (
+              {(changed.length === 0 && resourceLinks.length === 0) ? (
                 <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">No files changed yet</div>
               ) : (
                 <>
@@ -529,7 +535,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                       </div>
                     </div>
                   )}
-                  {navLinks && navLinks.length > 0 && (
+                  {resourceLinks.length > 0 && (
                     <div className="px-3 mb-4">
                       <div className="flex items-center gap-2 my-2">
                         <span className="text-[14px] font-semibold text-muted">Resources</span>
@@ -537,7 +543,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                         {navResolving && <span className="text-[10px] text-accent animate-pulse">resolving...</span>}
                       </div>
                       <div className="flex flex-col gap-0.5">
-                        {navLinks.map((link, i) => (
+                        {resourceLinks.map((link, i) => (
                           <a
                             key={i}
                             href={link.url}

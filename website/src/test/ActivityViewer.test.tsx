@@ -72,25 +72,36 @@ describe('ActivityViewer', () => {
     expect(screen.getByText('Loading source provider…')).toBeInTheDocument()
   })
 
-  it('Resources section renders links in Files tab', () => {
+  it('Resources hides links present in the Changes tab (sources) and keeps the rest', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const store = configureStore({
       reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
     })
     // Files tab is the default
     store.dispatch(openActivityToTab('files'))
+    const prUrl = 'https://github.com/kirodotdev/KiroCrew/pull/42'
     render(
       <Provider store={store}>
         <QueryClientProvider client={qc}>
           <ActivityViewer
             {...baseProps}
-            navLinks={[{ url: 'https://code.amazon.com/reviews/CR-1', type: 'cr', label: 'CR-1', msgIdx: 0 }]}
+            // The Changes tab surfaces this PR, so it should NOT also appear in Resources.
+            sources={[{ url: prUrl, provider: 'github', number: 42, repo: 'KiroCrew' }]}
+            navLinks={[
+              { url: prUrl, type: 'cr', label: 'PR #42', msgIdx: 0 },
+              // Not in `sources` (a code-review host Changes can't render) — must stay reachable.
+              { url: 'https://code.amazon.com/reviews/CR-1', type: 'cr', label: 'CR-1', msgIdx: 0 },
+              { url: 'https://code.amazon.com/packages/KiroCrew', type: 'other', label: 'KiroCrew repo', msgIdx: 0 },
+            ]}
           />
         </QueryClientProvider>
       </Provider>,
     )
-    // Resources section should appear in the Files tab
     expect(screen.getByText('Resources')).toBeInTheDocument()
+    // Non-Changes links stay in Resources.
+    expect(screen.getByText('KiroCrew repo')).toBeInTheDocument()
     expect(screen.getByText('CR-1')).toBeInTheDocument()
+    // The link already shown in the Changes tab is hidden from Resources.
+    expect(screen.queryByText('PR #42')).not.toBeInTheDocument()
   })
 })

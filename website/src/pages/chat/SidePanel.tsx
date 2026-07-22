@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Reorder } from 'framer-motion'
 import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom } from 'lucide-react'
@@ -12,6 +12,7 @@ import { countLines } from '../../components/FileChangeChips'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import { adoptTab as adoptBottomTerminal } from '../../hooks/useBottomTerminal'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
+import { PINNED_VIEWS } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
 import { safeSetItem } from '../../utils/safeStorage'
@@ -21,9 +22,9 @@ import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 
 const KIND_ICON: Record<TabKind, ReactNode> = {
-  changes: <GitPullRequest size={13} />, files: <FileText size={13} />, artifacts: <Component size={13} />, subagents: <Bot size={13} />, workflows: <Workflow size={13} />,
-  logs: <ScrollText size={13} />, side: <MessageSquare size={13} />, terminal: <TerminalSquare size={13} />,
-  file: <FileText size={13} />, diff: <GitCompare size={13} />, artifact: <Package size={13} />,
+  changes: <GitPullRequest size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
+  logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />,
+  file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />,
 }
 
 /** Views offered by the + menu. */
@@ -108,14 +109,23 @@ export default function SidePanel({
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
 }: SidePanelProps) {
-  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder } = tabsCtl
+  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   const terminalEnabled = useTerminalEnabled()
   // The + menu / empty-state launcher hide Terminal when the feature is
-  // disabled server-side and hide Changes when no PR/MR source is present.
+  // disabled server-side, and never list the auto-managed pinned views
+  // (Changes / Files / Artifacts) — those appear on their own when they have
+  // content (see the syncPinned reconcile below).
   const menuItems = NEW_MENU.filter(item =>
     (terminalEnabled || item.kind !== 'terminal')
-    && (sources?.length || item.kind !== 'changes')
+    && !(PINNED_VIEWS as string[]).includes(item.kind)
   )
+  // Files / Artifacts / Changes are ALWAYS present — pinned to the front,
+  // non-closable, and never in the + menu — regardless of whether they
+  // currently have content.
+  useEffect(() => { syncPinned(PINNED_VIEWS) }, [syncPinned])
+  // Split the strip: pinned (fixed, non-closable) vs. dynamic (draggable).
+  const pinnedTabs = useMemo(() => tabs.filter(t => (PINNED_VIEWS as string[]).includes(t.id)), [tabs])
+  const dynamicTabs = useMemo(() => tabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id)), [tabs])
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
   // working dir; every other menu item is a singleton view.
   const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
@@ -230,26 +240,47 @@ export default function SidePanel({
   }, [menuOpen])
 
   return (
-    <div className="h-full shrink-0 flex flex-col bg-bg border-l border-border overflow-hidden relative" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
+    <div className="shrink-0 min-h-0 my-2 flex flex-col bg-bg overflow-hidden relative border-l border-t border-b border-border rounded-l-xl" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
       {/* Left-edge resize handle */}
       <div className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" onMouseDown={onDragStart}>
         <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
       </div>
       {/* Tab strip — drag chips horizontally to reorder (framer Reorder).
-          h-[42px] matches the app header row so the two bars align.
-          side-panel-strip punches the strip out of the Electron window-drag
-          region (see index.css) so chips receive pointer events. */}
-      {/* border-b gives the strip a tab-bar baseline; chips stay centered
-          pills (bordered when active) floating above it. */}
-      <div className="side-panel-strip flex items-center gap-1.5 h-[42px] shrink-0 pl-2 pr-1.5 border-b border-border">
+          Per Figma "left-nav" (7328:10637): the row is a rounded elevated card
+          (bg-elevated, 12px radius, 8px padding) floating above the content,
+          not a flat bordered bar. side-panel-strip punches the strip out of the
+          Electron window-drag region (see index.css) so chips receive events. */}
+      <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 mb-3 rounded-tl-xl bg-bg-elevated">
+        {/* Collapse the panel (far-left), separated from the tabs by a hairline. */}
+        <button
+          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+          onClick={onClose}
+          title="Close panel"
+          aria-label="Close panel"
+        >
+          <PanelRightClose size={15} />
+        </button>
+        <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
+        {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
+            the front, non-closable, not draggable, compact. Wrapped in a
+            tight-gap group so the three sit closer together than the strip's
+            default spacing. */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {pinnedTabs.map(t => (
+            <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} onSelect={() => setActive(t.id)} onClose={() => {}} />
+          ))}
+        </div>
+        {pinnedTabs.length > 0 && dynamicTabs.length > 0 && (
+          <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
+        )}
         <Reorder.Group
           axis="x"
-          values={tabs}
-          onReorder={setOrder}
+          values={dynamicTabs}
+          onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
           className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0"
         >
-          {tabs.map((t, i) => (
+          {dynamicTabs.map((t, i) => (
             <Reorder.Item
               key={t.id}
               value={t}
@@ -264,7 +295,7 @@ export default function SidePanel({
               {/* Chrome-style separator: hairline between adjacent chips,
                   suppressed on both edges of the selected tab (its pill
                   background already delineates it). Centered in the gap-2. */}
-              {i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId && (
+              {i > 0 && t.id !== activeId && dynamicTabs[i - 1].id !== activeId && (
                 <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
               )}
               <TabChip tab={t} active={t.id === activeId} onSelect={() => setActive(t.id)} onClose={() => handleCloseTab(t.id)} onTransfer={t.kind === 'terminal' ? () => handleTransferToBottom(t.id) : undefined} />
@@ -307,19 +338,13 @@ export default function SidePanel({
             </div>
           )}
         </div>
-        <button
-          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-          onClick={onClose}
-          title="Close panel"
-          aria-label="Close panel"
-        >
-          <PanelRightClose size={15} />
-        </button>
       </div>
 
       {/* Body — render every doc/terminal tab mounted (hidden when inactive) so
           xterm sessions and editor scroll state survive tab switches; category
           views mount only when active (cheap + query-driven). */}
+      {/* Content area: left + top border (square corner) so the border wraps
+          only the content, NOT the tab strip above (which stays borderless). */}
       <div className="flex-1 min-h-0 relative">
         {tabs.length === 0 && (
           /* Empty state: launcher — the available views themselves, roomy and
@@ -374,10 +399,10 @@ export default function SidePanel({
                   selectedSourceUrl={selectedSourceUrl}
                   onSelectSource={onSelectSource}
                   onAddToChat={onAddSourceToChat}
-                  // Files opened FROM the Files tab replace it in place (open
-                  // another Files tab from + for a second file). Opens from
-                  // other views keep the default open-or-focus behavior.
-                  onFileOpen={t.kind === 'files' ? (p) => onFileOpen?.(p, { replaceId: t.id }) : onFileOpen}
+                  // The Files/Artifacts/Changes tabs are permanent (pinned),
+                  // so opening a file just opens its own document tab — the
+                  // pinned Files tab stays put as the list to return to.
+                  onFileOpen={onFileOpen}
                   onFileRemove={onFileRemove} onFilesClear={onFilesClear}
                   projectDir={projectDir} navLinks={navLinks} navResolving={navResolving}
                 />
@@ -493,7 +518,7 @@ function TerminalTabTitle({ sessionId, fallback }: { sessionId: string; fallback
   return <>{live || fallback}</>
 }
 
-function TabChip({ tab, active, onSelect, onClose, onTransfer }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void; onTransfer?: () => void }) {
+function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void; closable?: boolean; onTransfer?: () => void }) {
   return (
     <div
       role="tab"
@@ -503,37 +528,44 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer }: { tab: PanelTab
       // Guard on e.target so Enter/Space on the nested transfer/close buttons
       // activates them natively instead of also selecting the tab.
       onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
-      onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose() } }}
-      className={`group relative flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full cursor-pointer shrink-0 max-w-[240px] select-none border transition-colors ${
-        active ? 'bg-bg-elevated border-border text-text-strong shadow-sm' : 'bg-transparent border-transparent text-muted hover:text-text hover:bg-bg-hover'
+      onAuxClick={(e) => { if (closable && e.button === 1) { e.preventDefault(); onClose() } }}
+      // Figma "Side Navigation" chip: 28px tall, 6px corners (not a full pill),
+      // 8px padding, 4px icon↔label gap. Active = neutral fill (--border) + accent
+      // text; inactive = muted, brightening on hover.
+      className={`group relative flex items-center gap-1 h-7 rounded-md cursor-pointer shrink-0 max-w-[240px] select-none transition-colors ${closable ? 'pl-2 pr-1' : 'px-2'} ${
+        active ? 'bg-border text-accent' : 'text-muted hover:text-text hover:bg-bg-elevated'
       }`}
     >
-      <span className="shrink-0 opacity-80">{KIND_ICON[tab.kind]}</span>
-      <span className="min-w-0 text-[12.5px] truncate text-left">
+      <span className="shrink-0">{KIND_ICON[tab.kind]}</span>
+      <span className="min-w-0 text-[12px] truncate text-left">
         {tab.kind === 'terminal' && tab.sessionId
           ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
           : tab.title}
       </span>
-      <div className="flex items-center gap-0.5 shrink-0">
-        {onTransfer && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onTransfer() }}
-            className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
-            title="Move to bottom panel"
-            aria-label="Move to bottom panel"
-          >
-            <PanelBottom size={12} />
-          </button>
-        )}
-        <button
-          onClick={(e) => { e.stopPropagation(); onClose() }}
-          className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
-          title="Close tab"
-          aria-label="Close tab"
-        >
-          <X size={12} />
-        </button>
-      </div>
+      {(onTransfer || closable) && (
+        <div className="flex items-center gap-0.5 shrink-0">
+          {onTransfer && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onTransfer() }}
+              className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+              title="Move to bottom panel"
+              aria-label="Move to bottom panel"
+            >
+              <PanelBottom size={12} />
+            </button>
+          )}
+          {closable && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onClose() }}
+              className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+              title="Close tab"
+              aria-label="Close tab"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

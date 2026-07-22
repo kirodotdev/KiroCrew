@@ -204,4 +204,35 @@ describe('usePanelTabs — per-slot isolation', () => {
     expect(result.current.tabs.map(t => t.id)).toEqual([`terminal:${sid}`])
     expect(result.current.tabs[0].kind).toBe('terminal')
   })
+
+  it('syncPinned adds content-gated views at the front, in PINNED_VIEWS order', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openView('logs'))
+    act(() => result.current.syncPinned(['files', 'changes']))
+    // Pinned views are ordered per PINNED_VIEWS (changes, files, artifacts),
+    // always ahead of dynamic tabs.
+    expect(result.current.tabs.map(t => t.id)).toEqual(['changes', 'files', 'logs'])
+  })
+
+  it('syncPinned removes a pinned view when its content goes away, refocusing if needed', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.syncPinned(['files', 'artifacts']))
+    act(() => result.current.setActive('artifacts'))
+    expect(result.current.activeId).toBe('artifacts')
+    // Artifacts empties out: its tab is dropped and focus falls back.
+    act(() => result.current.syncPinned(['files']))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['files'])
+    expect(result.current.activeId).toBe('files')
+  })
+
+  it('syncPinned preserves dynamic tabs and their order after the pinned block', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openView('logs'))
+    act(() => result.current.openView('side'))
+    act(() => result.current.syncPinned(['changes']))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['changes', 'logs', 'side'])
+    // Emptying content removes only the pinned view; dynamic tabs untouched.
+    act(() => result.current.syncPinned([]))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['logs', 'side'])
+  })
 })
