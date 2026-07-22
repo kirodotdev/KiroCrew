@@ -89,6 +89,58 @@ class TestLogoHandler:
         assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_logo_nightly_version_serves_nightly_variant(self, tmp_path, monkeypatch):
+        """Nightly-stamped builds serve the night-sky logo so in-app branding
+        (sidebar, favicon, notification avatar -- all /logo.png) matches the
+        nightly app's Dock/tray identity."""
+        from kiro_crew.dashboard.handlers import logo
+
+        (tmp_path / "kirocrew-logo.png").write_bytes(b"\x89PNG-default")
+        (tmp_path / "kirocrew-logo-nightly.png").write_bytes(b"\x89PNG-nightly")
+        monkeypatch.setattr("kiro_crew.__version__", "0.1.0-nightly.20260722223306")
+        cfg = KiroCrewConfig(dashboard=DashboardConfig(avatar=""))
+        req = MagicMock()
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg), patch(
+            "kiro_crew.dashboard.handlers._STATIC_DIR", tmp_path
+        ):
+            resp = await logo(req)
+        assert resp.status == 200
+        assert resp._path.name == "kirocrew-logo-nightly.png"
+
+    @pytest.mark.asyncio
+    async def test_logo_nightly_missing_asset_falls_back_to_default(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import logo
+
+        (tmp_path / "kirocrew-logo.png").write_bytes(b"\x89PNG-default")
+        monkeypatch.setattr("kiro_crew.__version__", "0.1.0-nightly.20260722223306")
+        cfg = KiroCrewConfig(dashboard=DashboardConfig(avatar=""))
+        req = MagicMock()
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg), patch(
+            "kiro_crew.dashboard.handlers._STATIC_DIR", tmp_path
+        ):
+            resp = await logo(req)
+        assert resp.status == 200
+        assert resp._path.name == "kirocrew-logo.png"
+
+    @pytest.mark.asyncio
+    async def test_logo_stable_version_ignores_nightly_variant(self, tmp_path, monkeypatch):
+        """Insider/stable stamps keep the production logo even when the
+        nightly asset is present in the static dir."""
+        from kiro_crew.dashboard.handlers import logo
+
+        (tmp_path / "kirocrew-logo.png").write_bytes(b"\x89PNG-default")
+        (tmp_path / "kirocrew-logo-nightly.png").write_bytes(b"\x89PNG-nightly")
+        monkeypatch.setattr("kiro_crew.__version__", "0.1.0")
+        cfg = KiroCrewConfig(dashboard=DashboardConfig(avatar=""))
+        req = MagicMock()
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg), patch(
+            "kiro_crew.dashboard.handlers._STATIC_DIR", tmp_path
+        ):
+            resp = await logo(req)
+        assert resp.status == 200
+        assert resp._path.name == "kirocrew-logo.png"
+
+    @pytest.mark.asyncio
     async def test_logo_no_config_serves_default(self, tmp_path):
         from kiro_crew.dashboard.handlers import logo
 

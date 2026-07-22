@@ -167,9 +167,21 @@ async def logo(request: web.Request) -> web.StreamResponse:
         validated = validate_file_path(cfg.dashboard.avatar)
         if validated and Path(validated).is_file():
             return web.FileResponse(validated)
-    path = _h._STATIC_DIR / "kirocrew-logo.png"
-    if path.is_file():
-        return web.FileResponse(path)
+    # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
+    # variant so the whole in-app surface -- sidebar logo, browser favicon,
+    # and native-notification avatar all resolve through /logo.png -- matches
+    # the nightly app's Dock/tray identity. Stamp check mirrors the desktop
+    # shell's channelForVersion ("-nightly." marks nightly); a user-configured
+    # avatar above always wins over channel branding.
+    from kiro_crew import __version__
+
+    names = ["kirocrew-logo.png"]
+    if "-nightly." in __version__:
+        names.insert(0, "kirocrew-logo-nightly.png")
+    for name in names:
+        path = _h._STATIC_DIR / name
+        if path.is_file():
+            return web.FileResponse(path)
     return web.Response(status=404)
 
 
