@@ -243,12 +243,37 @@ describe('ChatSidebar Folder Grouping', () => {
     await waitFor(() => expect(screen.getByText('Delete Me')).toBeInTheDocument())
     expect(screen.getByText('Pipeline debug')).toBeInTheDocument()
 
-    const deleteBtn = screen.getByTestId('folder-delete-f1')
+    // Delete now lives in the folder ⋯ overflow menu — open it first.
+    fireEvent.click(screen.getByTestId('folder-menu-f1'))
+    const deleteBtn = await screen.findByTestId('folder-delete-f1')
     fireEvent.click(deleteBtn)
 
     await waitFor(() => expect(screen.queryByText('Delete Me')).not.toBeInTheDocument())
     // Slot previously in the deleted folder is still visible, now ungrouped
     expect(screen.getByText('Pipeline debug')).toBeInTheDocument()
+  })
+
+  it('exposes folder actions via the ⋯ overflow menu', async () => {
+    const folders = [{ id: 'f1', name: 'Menu Folder', order: 0, collapsed: false }]
+    server.use(http.get('/api/chat/folders', () => HttpResponse.json(folders)))
+    renderWithProviders(<ChatSidebar {...defaultProps} slots={baseSlots} />)
+    await waitFor(() => expect(screen.getByText('Menu Folder')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId('folder-menu-f1'))
+    expect(await screen.findByTestId('folder-delete-f1')).toBeInTheDocument()
+    expect(screen.getByTestId('folder-rename-f1')).toBeInTheDocument()
+  })
+
+  it('opens the folder ⋯ menu via keyboard (click activation)', async () => {
+    const folders = [{ id: 'f1', name: 'Kbd Folder', order: 0, collapsed: false }]
+    server.use(http.get('/api/chat/folders', () => HttpResponse.json(folders)))
+    renderWithProviders(<ChatSidebar {...defaultProps} slots={baseSlots} />)
+    await waitFor(() => expect(screen.getByText('Kbd Folder')).toBeInTheDocument())
+
+    // Enter/Space on the ⋯ <button> fires click (not mousedown) — the open
+    // logic must live on onClick so keyboard users can reach the menu.
+    fireEvent.click(screen.getByTestId('folder-menu-f1'))
+    expect(await screen.findByTestId('folder-rename-f1')).toBeInTheDocument()
   })
 
   it('renames a folder on double-click via API', async () => {
@@ -297,7 +322,8 @@ describe('ChatSidebar Folder Grouping', () => {
     renderWithProviders(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Old Name')).toBeInTheDocument())
 
-    fireEvent.click(screen.getByTestId('folder-rename-f1'))
+    fireEvent.click(screen.getByTestId('folder-menu-f1'))
+    fireEvent.click(await screen.findByTestId('folder-rename-f1'))
     // Flush the rAF focus effect (and any pending close-focus-restore).
     for (let i = 0; i < 3; i++) {
       await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge } from 'lucide-react'
+import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
@@ -31,7 +31,9 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { safeSetItem } from '../utils/safeStorage'
-import { resolveFolderAgent } from '../utils/folderAgent'
+import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
+import ProjectPicker from '../components/ProjectPicker'
+import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable } from '../components/dnd'
@@ -376,54 +378,6 @@ function isSingleEmoji(s: string): boolean {
   return true // older engines: backend remains authoritative
 }
 
-/** Folder icon picker: a Radix dropdown (fork idiom — the folder menu was
- *  migrated to Radix in the sidebar to fix viewport clipping) holding a curated
- *  emoji grid, a validated free-emoji input (single emoji only), and
- *  reset-to-auto. The trigger is a small Smile button that slots into the
- *  folder header's hover action group; picking closes the menu. Errors clear
- *  when the menu closes or the input changes. */
-function FolderIconPicker({ currentIcon, onPick, onReset, size = 12 }: { currentIcon?: string; onPick: (icon: string) => void; onReset: () => void; size?: number }) {
-  const [open, setOpen] = useState(false)
-  const [iconErr, setIconErr] = useState(false)
-  const pick = (em: string) => { onPick(em); setIconErr(false); setOpen(false) }
-  return (
-    <DropdownMenu open={open} onOpenChange={o => { setOpen(o); if (!o) setIconErr(false) }}>
-      <DropdownMenuTrigger asChild>
-        <button type="button" title="Folder icon" aria-label="Set folder icon"
-          className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none"
-          onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
-          <Smile size={size} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[240px] p-2" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center gap-2 text-muted mb-1.5 px-1">
-          <Smile size={13} className="shrink-0" />
-          <span className="shrink-0 text-[12px]">Icon</span>
-          <button type="button" title="Reset to an auto-generated emoji"
-            className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-accent bg-transparent border-none cursor-pointer p-0"
-            onClick={() => { onReset(); setIconErr(false); setOpen(false) }}>
-            <RotateCcw size={11} /> Reset
-          </button>
-        </div>
-        <div className="grid grid-cols-6 gap-0.5">
-          {FOLDER_EMOJIS.map(em => (
-            <button key={em} type="button" aria-label={`Set folder icon to ${em}`}
-              className={`h-7 flex items-center justify-center rounded cursor-pointer bg-transparent border-none text-[15px] leading-none hover:bg-bg-hover ${currentIcon === em ? 'bg-accent-subtle ring-1 ring-accent' : ''}`}
-              onClick={() => pick(em)}>
-              {em}
-            </button>
-          ))}
-        </div>
-        <input type="text" maxLength={16} placeholder="or type / paste an emoji" aria-label="Custom folder emoji"
-          className={`mt-1.5 w-full text-[12px] text-text bg-bg border rounded px-2 py-1 outline-none ${iconErr ? 'border-danger focus:border-danger' : 'border-border focus:border-accent'}`}
-          onClick={e => e.stopPropagation()}
-          onChange={() => { if (iconErr) setIconErr(false) }}
-          onKeyDown={e => { e.stopPropagation(); if (e.key !== 'Enter') return; const v = (e.target as HTMLInputElement).value.trim(); if (!v) return; if (!isSingleEmoji(v)) { setIconErr(true); return } pick(v) }} />
-        {iconErr && <div className="mt-1 px-1 text-[11px] text-danger">Enter a single emoji (no text).</div>}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
 
 /** A folder's icon: a Lucide folder glyph as a uniform base. When collapsed
  *  (resting) it shows the closed Folder glyph with the folder's custom emoji
@@ -580,6 +534,29 @@ function ChatSidebar({
   // one close (see the menu Content handlers below). One-shot: read and cleared
   // on the next close.
   const suppressMenuRestoreRef = useRef(false)
+  // Input modality tracker for menu-close focus handling: true while the most
+  // recent interaction was a keyboard press. Capture-phase listeners so Radix's
+  // own handlers can't reorder around us.
+  const lastInputKeyboardRef = useRef(false)
+  useEffect(() => {
+    const onPointer = () => { lastInputKeyboardRef.current = false }
+    const onKey = () => { lastInputKeyboardRef.current = true }
+    document.addEventListener('pointerdown', onPointer, true)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [])
+  // Folder → project-directory linking: which folder's ProjectPicker is open,
+  // scoped like editScope/createScope ('list' or a columnId) so a folder
+  // rendered in several board columns mounts exactly one picker anchored to
+  // the row that initiated the link (reviewers: duplicate-portal fix).
+  const [linking, setLinking] = useState<{ folderId: string; scope: string } | null>(null)
+  const linkAnchorRef = useRef<HTMLDivElement | null>(null)
+  // Inline emoji input validation error for the folder ⋯ menu's Icon section.
+  // Shared across menus (only one is open at a time); reset on menu open.
+  const [iconErr, setIconErr] = useState(false)
   // The rename menus are Radix (ContextMenu/DropdownMenu). On close, Radix's
   // FocusScope restores focus to its trigger (the card) AFTER the input mounts.
   // That restore blurs the freshly-mounted input, firing its onBlur, which
@@ -613,7 +590,14 @@ function ChatSidebar({
   // just-mounted rename input and cancel the edit. Every other item keeps the
   // default focus-restore intact.
   const onMenuCloseAutoFocus = useCallback((e: Event) => {
-    if (suppressMenuRestoreRef.current) { suppressMenuRestoreRef.current = false; e.preventDefault() }
+    if (suppressMenuRestoreRef.current) { suppressMenuRestoreRef.current = false; e.preventDefault(); return }
+    // Pointer dismissals (outside click / mouse item pick) skip Radix's
+    // focus-restore-to-trigger: the trigger lives inside a focus-within-revealed
+    // hover group (folder headers AND session rows), so restoring focus pins
+    // the action strip visible after the pointer has left the row. Keyboard
+    // closes (Esc / Enter on an item) keep the restore — focus returning to
+    // the trigger is exactly right for keyboard users (a11y).
+    if (!lastInputKeyboardRef.current) e.preventDefault()
   }, [])
   const [sortKey, setSortKey] = useState<SortKey>(() => {
     const saved = localStorage.getItem(SORT_LS_KEY)
@@ -1398,7 +1382,12 @@ function ChatSidebar({
     mutationFn: ({ folderId }: { folderId: string; columnId?: string }) => {
       const agent = resolveFolderAgent(folders, folderId, defaultAgent)
       const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
-      return dispatch(createSlot({ agent, mode: effectiveMode })).unwrap()
+      // Folder linked to a project directory (directly or via an ancestor):
+      // carry it in the create payload so the slot starts on the linked
+      // project — createSlot applies it before the slot activates, so the
+      // first message can't race a late project switch.
+      const project = resolveFolderProjectDir(folders, folderId)
+      return dispatch(createSlot({ agent, mode: effectiveMode, project })).unwrap()
     },
     onSuccess: (slot: Slot, { folderId, columnId }: { folderId: string; columnId?: string }) => {
       if (slot?.key) {
@@ -1450,10 +1439,67 @@ function ChatSidebar({
 
   // Render a folder block scoped to a single column: only slots matching the column predicate.
   // Always render the folder header (even with 0 matches) so users can see + drop into it.
+  // Shared ⋯-menu sections: Default agent + Icon picker. Rendered inside both
+  // the list-view and board-view folder menus so board view keeps full folder
+  // management (reviewer finding: the board menu had dropped these controls).
+  // The emoji input stops keystroke propagation so Radix menu typeahead /
+  // arrow navigation can't steal typing from the field (see the Radix
+  // keyboard-widget lesson; the removed FolderIconPicker did the same).
+  const renderFolderMenuConfigSections = (folder: ChatFolder) => (
+    <>
+      <div className="px-3 py-1.5 flex items-center gap-2 text-muted" onPointerDown={e => e.stopPropagation()}>
+        <Zap size={13} className="shrink-0" />
+        <span className="shrink-0">Default agent</span>
+        <select className="ml-auto text-[12px] text-text bg-bg-elevated border border-border rounded px-1 py-0.5 cursor-pointer outline-none max-w-[90px]"
+          title="Default agent for new chats in this folder"
+          value={folders.find(f => f.id === folder.id)?.default_agent || ''}
+          onClick={e => e.stopPropagation()}
+          onKeyDown={e => e.stopPropagation()}
+          onChange={e => { updateFolderMutation.mutate({ id: folder.id, body: { default_agent: e.target.value } }) }}>
+          <option value="">none</option>
+          {installedAgents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
+        </select>
+      </div>
+      <div className="px-3 py-1.5" onPointerDown={e => e.stopPropagation()}>
+        <div className="flex items-center gap-2 text-muted mb-1.5">
+          <Smile size={13} className="shrink-0" />
+          <span className="shrink-0">Icon</span>
+          <button type="button" title="Reset to an auto-generated emoji"
+            className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-accent bg-transparent border-none cursor-pointer p-0"
+            onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { regenerate_icon: true } }) }}>
+            <RotateCcw size={11} /> Reset
+          </button>
+        </div>
+        <div className="grid grid-cols-6 gap-0.5">
+          {FOLDER_EMOJIS.map(em => {
+            const selected = folders.find(f => f.id === folder.id)?.icon === em
+            return (
+              <button key={em} type="button" aria-label={`Set folder icon to ${em}`}
+                className={`h-7 flex items-center justify-center rounded cursor-pointer bg-transparent border-none text-[15px] leading-none hover:bg-bg-hover ${selected ? 'bg-accent-subtle ring-1 ring-accent' : ''}`}
+                onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { icon: em } }) }}>
+                {em}
+              </button>
+            )
+          })}
+        </div>
+        <input type="text" maxLength={16} placeholder="or type / paste an emoji" aria-label="Custom folder emoji"
+          className={`mt-1.5 w-full text-[12px] text-text bg-bg border rounded px-2 py-1 outline-none ${iconErr ? 'border-danger focus:border-danger' : 'border-border focus:border-accent'}`}
+          onClick={e => e.stopPropagation()}
+          onChange={() => { if (iconErr) setIconErr(false) }}
+          onKeyDown={e => { e.stopPropagation(); if (e.key !== 'Enter') return; const v = (e.target as HTMLInputElement).value.trim(); if (!v) return; if (!isSingleEmoji(v)) { setIconErr(true); return } updateFolderMutation.mutate({ id: folder.id, body: { icon: v } }) }} />
+        {iconErr && <div className="mt-1 text-[11px] text-danger">Enter a single emoji (no text).</div>}
+      </div>
+    </>
+  )
+
   const renderColumnFolder = (folder: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean): React.ReactNode => {
     const childFolders = folders.filter(f => f.parent_id === folder.id)
     const childSlots = filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === folder.id)
     const deepChildren = childFolders
+    // Valid "Move folder to" destinations: everything outside this folder's
+    // own subtree (cycle guard). One O(1) lookup, computed once per row.
+    const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
+    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id))
     const count = childSlots.length + deepChildren.filter(cf => {
       const cfSlots = filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === cf.id)
       return cfSlots.length > 0 || descendantMatch(folders, cf.id, filteredSlots.filter(s => colSlotKeys.has(s.key)), slotFolders)
@@ -1481,6 +1527,11 @@ function ChatSidebar({
         }}
       >
         <div
+          // Anchors the ProjectPicker popover when linking a project from the
+          // ⋯ menu (board view has no list-view header row to anchor to).
+          // Scope check keeps the anchor + picker on the initiating column even
+          // when other columns render the same folder.
+          ref={linking?.folderId === folder.id && linking.scope === columnId ? linkAnchorRef : undefined}
           className={`group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-all`}
           style={{ paddingLeft: '6px' }}
           role="button"
@@ -1511,24 +1562,37 @@ function ChatSidebar({
           )}
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {!(editingId === folder.id && editScope === columnId) && (
-          <span className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5">
-            <select className="text-[10px] text-muted bg-transparent border-none cursor-pointer outline-none max-w-[60px]" title="Default agent" value={folder.default_agent || ''} onClick={e => e.stopPropagation()} onChange={e => { e.stopPropagation(); updateFolderMutation.mutate({ id: folder.id, body: { default_agent: e.target.value } }) }}>
-              <option value="">agent…</option>
-              {installedAgents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
-            </select>
-            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title="New chat in folder" aria-label={`New chat in folder ${folder.name}`} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, columnId) }} onMouseDown={e => { e.stopPropagation() }}>
+          <span className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100 transition-opacity flex items-center gap-0.5">
+            {/* ⋯ menu + a primary "new chat in folder" action, mirroring the
+             *  list-view folder header (renderFolderHeader) so board view has
+             *  the same one-click way to start a session inside a folder. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-menu`} className="text-muted hover:text-text bg-transparent border-none cursor-pointer p-[2px]" title="More" aria-label={`Folder options for ${folder.name}`} aria-haspopup="menu" onMouseDown={e => { e.stopPropagation() }} onClick={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
+                  <MoreVertical size={11} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+                <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> Rename</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} onClick={() => { suppressMenuRestoreRef.current = true; setCreatingIn(folder.id); setCreateScope(columnId); setNewName('') }}><FolderPlus size={13} /> New subfolder</DropdownMenuItem>
+                {/* Re-parent: board-view parity with the list-view folder menu. */}
+                <FolderMoveSubmenu variant="dropdown" label="Move folder to"
+                  folders={reparentTargets}
+                  currentFolderId={folder.parent_id || null}
+                  onPick={pid => moveFolderTo(folder.id, pid)} />
+                <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: columnId }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? 'Change project directory' : 'Link project directory'}</DropdownMenuItem>
+                {renderFolderMenuConfigSections(folder)}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> Delete folder</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title="New chat in folder" aria-label={`New chat in folder ${folder.name}`} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, columnId) }} onMouseDown={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
               <MessageSquarePlus size={11} />
-            </button>
-            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title="New subfolder" aria-label="New subfolder" onClick={e => { e.stopPropagation(); setCreatingIn(folder.id); setCreateScope(columnId); setNewName('') }}>
-              <FolderPlus size={10} />
-            </button>
-            <FolderIconPicker currentIcon={folder.icon} size={10} onPick={icon => updateFolderMutation.mutate({ id: folder.id, body: { icon } })} onReset={() => updateFolderMutation.mutate({ id: folder.id, body: { regenerate_icon: true } })} />
-            <button type="button" className="text-muted hover:text-danger bg-transparent border-none cursor-pointer p-[2px]" title={`Delete folder "${folder.name}"`} aria-label={`Delete folder ${folder.name}`} onClick={e => { e.stopPropagation(); if (confirm(`Delete folder "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}>
-              <X size={10} />
             </button>
           </span>
           )}
         </div>
+        {linking?.folderId === folder.id && linking.scope === columnId && <ProjectPicker open={true} onOpenChange={open => { if (!open) setLinking(null) }} anchorRef={linkAnchorRef} onSelect={path => { updateFolderMutation.mutate({ id: folder.id, body: { project_dir: path } }); setLinking(null) }} />}
         <FolderBody open={!folder.collapsed && !forceCollapsed}>
           <div className="border-l border-border ml-2 pl-1">
             {/* Inline "New chat" affordance at the top of the column folder's
@@ -1822,51 +1886,90 @@ function ChatSidebar({
     const childSlots = filteredSlots.filter(s => slotFolders[s.key] === folder.id)
     const count = childSlots.length + childFolders.length
     const hasUnread = folderTreeHasUnread(folder.id)
-    // The whole header is the drag-to-reorder handle (pointer listeners forwarded
-    // via dragHandleProps). The PointerSensor activation distance keeps the
-    // collapse toggle + action buttons clickable; drag is off while renaming.
     const draggable = !!dragHandleProps && editingId !== folder.id
+    // Valid "Move folder to" destinations: everything outside this folder's
+    // own subtree (cycle guard). One O(1) lookup, computed once per row.
+    const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
+    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id))
     return (
-      // Folder header doubles as the dnd-kit drag handle (dragHandleProps) and a
-      // collapse toggle; the drag-handle listeners + spread props make a native
-      // <button> impractical, so scope-disable the interaction/click rules.
-      // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events
       <div key={`folder-header-${folder.id}`}
+        // Non-interactive container (role="group"): the row holds a collapse
+        // toggle button + action buttons, so it must NOT itself be a button —
+        // an interactive element can't legally contain other interactive
+        // elements (invalid ARIA), and a folder row is a grouping, not an action.
+        // The row also anchors the ProjectPicker popover when linking a project,
+        // since the link action now lives in the ⋯ menu rather than a hover button.
+        ref={linking?.folderId === folder.id && linking.scope === 'list' ? linkAnchorRef : undefined}
+        role="group"
+        aria-label={`Folder ${folder.name}`}
+        // The whole header is the drag-to-reorder handle (pointer listeners only,
+        // no role override). 8px activation distance keeps the collapse toggle
+        // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
-        className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md cursor-pointer text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        style={{ paddingLeft: '8px' }}
-        onClick={() => toggleCollapse(folder.id)}>
-        <span data-testid={`folder-collapse-${folder.id}`} className="shrink-0 text-muted transition-transform duration-150" style={{ transform: folder.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }}>
-          <ChevronRight size={14} />
-        </span>
-        <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} />
+        className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        style={{ paddingLeft: '8px' }}>
         {editingId === folder.id && editScope === 'list' ? (
-          <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+          <>
+            <span className="shrink-0 text-muted" style={{ transform: folder.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }}><ChevronRight size={14} /></span>
+            <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+            <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
+          </>
         ) : (
-          // Double-click rename is a mouse-only power shortcut; the hover Rename
-          // button is the accessible path, so scope-disable the interaction rule.
-          // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-          <span className="flex-1 text-[13px] font-medium text-text truncate" title="Double-click to rename" onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{folder.name}</span>
+          <>
+            {/* The collapse toggle is the real interactive control — a native
+             *  <button> (keyboard-operable for free), filling the row so clicking
+             *  the chevron/icon/name still toggles.  Double-click the name renames. */}
+            <button type="button"
+              className="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
+              aria-expanded={!folder.collapsed}
+              aria-label={`${folder.collapsed ? 'Expand' : 'Collapse'} folder ${folder.name}`}
+              onClick={() => toggleCollapse(folder.id)}>
+              <span data-testid={`folder-collapse-${folder.id}`} className="shrink-0 text-muted transition-transform duration-150" style={{ transform: folder.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }}>
+                <ChevronRight size={14} />
+              </span>
+              <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} />
+              {/* Double-click rename is a mouse-only power shortcut; the accessible
+               *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
+              {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+              <span className="flex-1 text-[13px] font-medium text-text truncate text-left" title="Double-click to rename" onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{folder.name}</span>
+              {folder.project_dir && <span className="text-[10px] text-accent/60 shrink-0" title={folder.project_dir}><Link2 size={9} /></span>}
+              {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />}
+              <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
+            </button>
+            {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={`Default agent: ${folder.default_agent}`}>{folder.default_agent}</span>}
+          </>
         )}
-        {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />}
-        <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
-        {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={`Default agent: ${folder.default_agent}`}>{folder.default_agent}</span>}
         {!(editingId === folder.id && editScope === 'list') && (
-        <div className="absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm">
-          <select className="text-[10px] text-muted bg-transparent border-none cursor-pointer outline-none max-w-[70px]" title="Default agent for new chats" value={folder.default_agent || ''} onClick={e => e.stopPropagation()} onChange={e => { e.stopPropagation(); updateFolderMutation.mutate({ id: folder.id, body: { default_agent: e.target.value } }) }}>
-            <option value="">agent…</option>
-            {installedAgents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
-          </select>
-          <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" title="Rename folder" aria-label="Rename folder" data-testid={`folder-rename-${folder.id}`} onClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={12} /></button>
+        <div className="absolute top-1/2 -translate-y-1/2 right-1.5 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100">
+          {/* ⋯ menu first, then the primary "new chat" action.  Sibling
+           *  <button>s of the collapse toggle (valid ARIA — no nesting). */}
+          <DropdownMenu onOpenChange={open => { if (open) setIconErr(false) }}>
+            <DropdownMenuTrigger asChild>
+              <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" title="More" aria-label={`Folder options for ${folder.name}`} aria-haspopup="menu" data-testid={`folder-menu-${folder.id}`} onMouseDown={e => { e.stopPropagation() }}><MoreVertical size={12} /></button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+              <DropdownMenuItem data-testid={`folder-rename-${folder.id}`} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> Rename</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setCreatingIn(folder.id); setCreateScope('list'); setNewName('') }}><FolderPlus size={13} /> New subfolder</DropdownMenuItem>
+              {/* Re-parent: move this folder under another folder or back to the
+               *  top level. Self + descendants are excluded (cycle guard). */}
+              <FolderMoveSubmenu variant="dropdown" label="Move folder to"
+                folders={reparentTargets}
+                currentFolderId={folder.parent_id || null}
+                onPick={pid => moveFolderTo(folder.id, pid)} />
+              <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: 'list' }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? 'Change project directory' : 'Link project directory'}</DropdownMenuItem>
+              {renderFolderMenuConfigSections(folder)}
+              {folderOffersHide(folder, foldersWithActiveSubtree) && (
+                <DropdownMenuItem data-testid={`folder-hide-${folder.id}`} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> Hide when empty</DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> Delete folder</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title="New chat in folder" aria-label="New chat in folder" onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
-          <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title="New subfolder" aria-label="New subfolder" onClick={e => { e.stopPropagation(); setCreatingIn(folder.id); setCreateScope('list'); setNewName('') }}><FolderPlus size={12} /></button>
-          <FolderIconPicker currentIcon={folder.icon} size={12} onPick={icon => updateFolderMutation.mutate({ id: folder.id, body: { icon } })} onReset={() => updateFolderMutation.mutate({ id: folder.id, body: { regenerate_icon: true } })} />
-          {folderOffersHide(folder, foldersWithActiveSubtree) && (
-            <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" data-testid={`folder-hide-${folder.id}`} title="Hide when empty" aria-label="Hide when empty" onClick={e => { e.stopPropagation(); updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={12} /></button>
-          )}
-          <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-danger hover:bg-danger-subtle transition-all bg-transparent border-none" data-testid={`folder-delete-${folder.id}`} title="Delete folder" aria-label="Delete folder" onClick={e => { e.stopPropagation(); if (confirm(`Delete "${folder.name}"?`)) deleteFolderMutation.mutate(folder.id) }}><X size={12} /></button>
         </div>
         )}
+        {linking?.folderId === folder.id && linking.scope === 'list' && <ProjectPicker open={true} onOpenChange={open => { if (!open) setLinking(null) }} anchorRef={linkAnchorRef} onSelect={path => { updateFolderMutation.mutate({ id: folder.id, body: { project_dir: path } }); setLinking(null) }} />}
       </div>
     )
   }

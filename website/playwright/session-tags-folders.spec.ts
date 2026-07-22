@@ -274,10 +274,13 @@ test.describe('Folders inside columns (deep)', () => {
     const col = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [plannedId], mode: 'any' } })).json()
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="col-${col.id}-folder-${folder.id}"]`)
-    // Click × on folder header (it only appears on hover — force via locator)
+    // Delete folder via its More-menu → "Delete folder" item (menu opens on hover).
     await page.locator(`[data-testid="col-${col.id}-folder-${folder.id}"]`).hover()
+    await page.locator(`[data-testid="col-${col.id}-folder-${folder.id}-menu"]`).click({ force: true })
     page.once('dialog', d => d.accept())
-    await page.locator(`[data-testid="col-${col.id}-folder-${folder.id}"] button[title^="Delete folder"]`).click({ force: true })
+    // Column-context delete item has no testid (unlike the sidebar folder menu),
+    // so target it by role + label — robust across both menu contexts.
+    await page.getByRole('menuitem', { name: /delete folder/i }).click()
     // Folder gone
     await expect.poll(async () => {
       const list = await (await request.get('/api/chat/folders')).json()
@@ -338,9 +341,10 @@ test.describe('Folders inside columns (deep)', () => {
     const col = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [], mode: 'any' } })).json()
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="col-${col.id}-folder-${parent.id}"]`)
-    // Hover parent folder to reveal action buttons
-    await page.locator(`[data-testid="col-${col.id}-folder-${parent.id}"] > div`).first().hover()
-    await page.locator(`[data-testid="col-${col.id}-folder-${parent.id}-new-sub"]`).click({ force: true })
+    // "New subfolder" moved into the folder More-menu (reveals the inline input).
+    await page.locator(`[data-testid="col-${col.id}-folder-${parent.id}"]`).hover()
+    await page.locator(`[data-testid="col-${col.id}-folder-${parent.id}-menu"]`).click({ force: true })
+    await page.getByRole('menuitem', { name: /new subfolder/i }).click()
     // Inline subfolder input appears
     const input = page.locator(`input[placeholder="Subfolder name…"]`).first()
     await expect(input).toBeVisible()
@@ -368,5 +372,23 @@ test.describe('Folders inside columns (deep)', () => {
     // Both appear
     await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${planned.key}"]`)).toHaveCount(1)
     await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${untagged.key}"]`)).toHaveCount(1)
+  })
+
+  test('F12. Folder action strip hides after dismissing the ⋯ menu with an outside click', async ({ page, request }) => {
+    // Regression: Radix restores focus to the ⋯ trigger on close; the trigger
+    // sits inside the focus-within-revealed hover group, so an outside-click
+    // dismissal left the strip pinned visible with the pointer elsewhere.
+    // Pointer dismissals now suppress the focus restore (keyboard Esc keeps it).
+    const folder = await (await request.post('/api/chat/folders', { data: { name: 'F12-dismiss' } })).json()
+    await page.goto('/chat')
+    const strip = page.locator(`[data-testid="folder-menu-${folder.id}"]`).locator('..')
+    await page.locator(`[data-testid="folder-collapse-${folder.id}"]`).hover()
+    await page.locator(`[data-testid="folder-menu-${folder.id}"]`).click()
+    await page.getByRole('menuitem', { name: /rename/i }).waitFor()
+    // Dismiss by clicking far outside, then move the pointer away from the row.
+    await page.mouse.click(600, 400)
+    await page.mouse.move(600, 500)
+    await expect(page.getByRole('menuitem', { name: /rename/i })).toHaveCount(0)
+    await expect.poll(async () => strip.evaluate(el => getComputedStyle(el).opacity), { timeout: 5000 }).toBe('0')
   })
 })
