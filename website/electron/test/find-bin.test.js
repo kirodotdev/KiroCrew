@@ -113,4 +113,53 @@ describe("findKirocrewBin", () => {
     const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME);
     assert.equal(result, venvBin);
   });
+
+  // Universal-bundle layout: arch-suffixed backend trees under backend-dist/.
+  const archBin = (arch) =>
+    path.join(RESOURCES, "backend-dist", `kirocrew-backend-${arch}`, "bin", "kirocrew");
+  const armBackend = archBin("arm64");
+  const x64Backend = archBin("x64");
+
+  const both = (targets) => ({
+    accessSync: (p) => { if (!targets.includes(p)) throw new Error("ENOENT"); },
+    constants: { X_OK: fs.constants.X_OK },
+  });
+
+  it("picks the arm64 backend tree for arch 'arm64' when both suffixed dirs exist", () => {
+    const fakeFs = both([armBackend, x64Backend]);
+    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "arm64");
+    assert.equal(result, armBackend);
+  });
+
+  it("picks the x64 backend tree for arch 'x64' when both suffixed dirs exist", () => {
+    const fakeFs = both([armBackend, x64Backend]);
+    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "x64");
+    assert.equal(result, x64Backend);
+  });
+
+  it("prefers the arch-suffixed tree over the unsuffixed layout when both exist", () => {
+    const unsuffixed = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "bin", "kirocrew");
+    const fakeFs = both([armBackend, unsuffixed]);
+    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "arm64");
+    assert.equal(result, armBackend);
+  });
+
+  it("falls back to the unsuffixed layout when arch-suffixed dirs are absent", () => {
+    const unsuffixed = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "bin", "kirocrew");
+    const fakeFs = only(unsuffixed);
+    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "arm64");
+    assert.equal(result, unsuffixed);
+  });
+
+  it("skips arch-suffixed candidates cleanly for an unmapped arch (e.g. 'ia32')", () => {
+    const probed = [];
+    const unsuffixed = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "bin", "kirocrew");
+    const fakeFs = {
+      accessSync: (p) => { probed.push(p); if (p !== unsuffixed) throw new Error("ENOENT"); },
+      constants: { X_OK: fs.constants.X_OK },
+    };
+    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "ia32");
+    assert.equal(result, unsuffixed);
+    assert.deepStrictEqual(probed.filter((p) => p.includes("kirocrew-backend-")), []);
+  });
 });

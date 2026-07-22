@@ -4,7 +4,7 @@
 # Standalone distribution targets:
 #   make wheel     — self-contained pip wheel (dashboard bundled)
 #   make backend-bin — frozen standalone backend binary (PyInstaller)
-#   make desktop   — double-clickable desktop app (DMG / AppImage)
+#   make desktop   — double-clickable desktop app (universal DMG on macOS / AppImage on Linux)
 .PHONY: all build frontend backend test clean wheel backend-bin desktop
 
 PY ?= python3
@@ -58,11 +58,14 @@ wheel: frontend
 	$(PY) -m build --wheel
 
 # Frozen standalone backend binary (no system Python needed). Stages the
-# dashboard first so it's embedded in the bundle.
+# dashboard first so it's embedded in the bundle. Host-arch only (UNIVERSAL=0):
+# the standalone backend is a local-machine artifact, not a distributable app.
 backend-bin: frontend
-	SKIP_FRONTEND=1 SKIP_ELECTRON=1 bash packaging/build-desktop.sh
+	UNIVERSAL=0 SKIP_FRONTEND=1 SKIP_ELECTRON=1 bash packaging/build-desktop.sh
 
-# Full double-clickable desktop app (DMG on macOS, AppImage on Linux).
+# Full double-clickable desktop app. macOS: ONE universal DMG (arm64 + x86_64,
+# needs an Apple-Silicon host with Rosetta 2 — see docs/DESKTOP_APP.md;
+# UNIVERSAL=0 for a faster host-arch-only build). Linux: AppImage (host arch).
 desktop:
 	bash packaging/build-desktop.sh
 

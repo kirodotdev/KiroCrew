@@ -21,21 +21,56 @@ What was changed relative to the upstream wheel:
 
 `llama_cpp_libs/` holds the minimal verified shared-library closure per
 platform, extracted from the official prebuilt CPU wheels
-(https://abetlen.github.io/llama-cpp-python/whl/cpu):
+(https://abetlen.github.io/llama-cpp-python/whl/cpu) — except `macos_x86_64/`,
+which upstream does not publish and is built from the pinned PyPI sdist (see
+below):
 
 | Dir | Source wheel |
 |-----|--------------|
 | `linux_x86_64/`  | `llama_cpp_python-0.3.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl` (sha256 f34c26f51ec4fd4e0355c5384b7056f877bf7a38c9d7897a46c78118ca900366) |
 | `linux_aarch64/` | `llama_cpp_python-0.3.34-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl` (sha256 725d8a324032b3f1143c20eee62e47415476eb85127e8a134e3a431d666d21d1) |
 | `macos_arm64/`   | `llama_cpp_python-0.3.34-py3-none-macosx_11_0_arm64.whl` (sha256 d42e069db63c11494f429589fb0b7b5d3862d72d4ad5e8ef311e0ece7865b33d) |
+| `macos_x86_64/`  | built from sdist `llama_cpp_python-0.3.34.tar.gz` (sha256 d849d286d808284f1d3ec1bd6875572430d29d1f9574a010232caa4e9cef0e35) — see below |
 | `win_amd64/`     | `llama_cpp_python-0.3.34-py3-none-win_amd64.whl` (sha256 6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a) |
 
 Linux libs are manylinux2014 (glibc ≥ 2.17) — they run on both AL2 (2.26) and
 AL2023 (2.34). The macOS dylibs embed the Metal shader (no separate
-`.metallib`). Windows DLLs are found via `os.add_dll_directory`.
+`.metallib`); the x86_64 build compiles the Metal backend in but macOS
+disables Metal under Rosetta/Intel at runtime, so ggml falls back to
+CPU+Accelerate. Windows DLLs are found via `os.add_dll_directory`.
 
-To upgrade: download the four wheels for the new version, re-extract the same
-closure (`libllama` + `libggml*` + vendored `libgomp` on Linux; top-level
+### macos_x86_64: built from source (no official wheel)
+
+Upstream publishes no macOS x86_64 wheel for 0.3.34 (PyPI, the CPU wheel
+index, and GitHub releases are arm64-only for macOS). The dylibs were built
+from the sha256-pinned PyPI sdist on macOS under Rosetta with an x86_64
+CPython (uv-managed python-build-standalone) and:
+
+```
+CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_NATIVE=OFF
+  -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew -DLLAMA_BUILD_COMMON=OFF
+  -DLLAMA_OPENSSL=OFF -DHTTPLIB_USE_OPENSSL_IF_AVAILABLE=OFF -DLLAMA_CURL=OFF"
+```
+
+`GGML_NATIVE=OFF` keeps the code generic x86-64 (no -march=native).
+`LLAMA_BUILD_COMMON=OFF` + the OpenSSL/curl switches drop llama-common (not
+part of the shipped closure) and its TLS link against Homebrew's arm64
+OpenSSL, which cannot link into an x86_64 build. `CMAKE_IGNORE_PREFIX_PATH`
+keeps CMake away from arm64 Homebrew libraries entirely. The same closure as
+`macos_arm64/` is extracted (`libllama` + `libggml*`); dylib sha256s:
+
+```
+bb86af6801bdb1610784619450f71e00d9ce66b2c018cc847a625431a450c5a4  libggml-base.0.dylib
+34cc0d8d3c1d3bb8cdafa51ad986410add2c7196867f2a84f160efa0525540d6  libggml-blas.0.dylib
+c165a668db8017323633638311c637036940cdafffdd059ff9ab101ae4e3c3a0  libggml-cpu.0.dylib
+5904f53af4cefdb02358a758eaa9b3b8a5ca65bc6a40afba0b629604d015e420  libggml-metal.0.dylib
+24646be604824d9fdf107cfb9c63374519754327cf368603cf6f873c75d2341d  libggml.0.dylib
+d28ac2ad5d9fbccd6df6622a6aa3cd54ae8474c88b6672c9fb7a59d4a05ed040  libllama.dylib
+```
+
+To upgrade: download the four wheels for the new version (plus rebuild
+`macos_x86_64/` from the new sdist with the CMAKE_ARGS above), re-extract the
+same closure (`libllama` + `libggml*` + vendored `libgomp` on Linux; top-level
 dylibs on macOS), replace `llama_cpp/` with the new wheel's Python code (minus
 `lib/` and `server/`), and re-run the embedding smoke test in
 `test/test_embeddings.py`.

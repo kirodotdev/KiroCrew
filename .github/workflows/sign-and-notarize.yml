@@ -160,7 +160,12 @@ jobs:
         if: env.HAS_CDSIGNER
         run: |
           mkdir -p unsigned-app
-          MAC_ZIP=$(find release -name "*arm64*.zip" | head -1)
+          # Arch-agnostic: electron-builder's mac zip always ends in
+          # "-mac.zip" (universal builds carry "-universal-mac.zip", per-arch
+          # ones "-arm64-mac.zip"), and nothing else in release/ is a mac zip
+          # (wheel/sdist/AppImage only) -- so this matches the mac zip
+          # whichever arch mode built it.
+          MAC_ZIP=$(find release -name "*-mac.zip" | head -1)
           if [ -n "$MAC_ZIP" ]; then
             unzip -q "$MAC_ZIP" -d unsigned-app/
             echo "APP_PATH=$(find unsigned-app -name '*.app' -maxdepth 1 | head -1)" >> "$GITHUB_ENV"

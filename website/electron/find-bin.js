@@ -1,3 +1,9 @@
+// Universal .app bundles (packaging/build-desktop.sh UNIVERSAL=1) ship one
+// complete backend tree per CPU architecture under backend-dist/. Maps a Node
+// `process.arch` value to the directory suffix; arches without an entry
+// (e.g. "ia32") simply skip the arch-suffixed candidates.
+const ARCH_DIR_SUFFIX = { arm64: "arm64", x64: "x64" };
+
 /**
  * Locate the kirocrew backend binary by checking well-known paths in order.
  *
@@ -10,11 +16,26 @@
  * @param {typeof import("path")} path - Node path module
  * @param {string|undefined} resourcesPath - `process.resourcesPath` (Electron only)
  * @param {string} dirname - `__dirname` of the calling module
+ * @param {string} [arch] - CPU arch selecting the backend tree in universal
+ *   bundles (defaults to `process.arch`)
  * @returns {string} Absolute path to the binary, or `"kirocrew"`
  */
-function findKirocrewBin(fs, os, path, resourcesPath, dirname) {
+function findKirocrewBin(fs, os, path, resourcesPath, dirname, arch = process.arch) {
   const home = os.homedir();
-  const candidates = [
+  const candidates = [];
+  // 0. Universal-bundle layout: arch-suffixed backend trees, selected by the
+  //    running shell's arch. Ranked above the unsuffixed layout so a universal
+  //    bundle never falls back to a wrong-arch tree; plain per-arch bundles
+  //    don't ship these dirs so the probes miss (ENOENT) and fall through.
+  const suffix = ARCH_DIR_SUFFIX[arch];
+  if (suffix) {
+    const archBackend = `kirocrew-backend-${suffix}`;
+    candidates.push(
+      path.join(resourcesPath || "", "backend-dist", archBackend, "bin", "kirocrew"),
+      path.resolve(dirname, "backend-dist", archBackend, "bin", "kirocrew")
+    );
+  }
+  candidates.push(
     // 1. Legacy PyInstaller layout: a flat frozen executable at the root of the
     //    bundle. The current builder (packaging/build-desktop.sh) no longer
     //    emits this; kept first only for backward-compat with older bundles.
@@ -31,8 +52,8 @@ function findKirocrewBin(fs, os, path, resourcesPath, dirname) {
     // 2. Well-known install paths (toolbox, installer symlink, and venv)
     path.join(home, ".toolbox", "bin", "kirocrew"),
     path.join(home, ".local", "bin", "kirocrew"),
-    path.join(home, ".kirocrew-app", ".venv", "bin", "kirocrew"),
-  ];
+    path.join(home, ".kirocrew-app", ".venv", "bin", "kirocrew")
+  );
   for (const bin of candidates) {
     try {
       fs.accessSync(bin, fs.constants.X_OK);

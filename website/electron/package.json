@@ -32,7 +32,8 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": false
+      "notarize": false,
+      "x64ArchFiles": "{**/backend-dist/**,**/backend-dist/**/.*/**}"
     },
     "afterSign": "scripts/notarize.js",
     "linux": {
@@ -69,8 +70,8 @@
     ],
     "extraResources": [
       {
-        "from": "backend-dist/kirocrew-backend",
-        "to": "backend-dist/kirocrew-backend",
+        "from": "backend-dist",
+        "to": "backend-dist",
         "filter": [
           "**/*",
           "!**/__pycache__/**",

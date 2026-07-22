@@ -8,7 +8,7 @@ name: Build Desktop (reusable)
 # exist exactly once.
 #
 # Platform matrix (expand as support lands):
-#   - macOS arm64:  shipped (desktop app)
+#   - macOS universal (arm64 + x86_64): shipped (one desktop DMG)
 #   - Linux x64:    shipped (AppImage)
 #   - Linux arm64:  TODO (Graviton, Raspberry Pi)
 #   - Windows x64:  TODO (blocked on kiro-cli Windows support)
@@ -38,7 +38,11 @@ jobs:
             # only the KiroCrew-notarized-* artifact. GitHub shows all uploaded
             # artifacts on the run page with equal prominence, so the name is
             # the only place to signal that.
-            artifact-name: unsigned-build-darwin-arm64
+            artifact-name: unsigned-build-darwin-universal
+            # On macOS, `make desktop` builds the universal app by default:
+            # universal Electron shell + both per-arch PBS backends in one
+            # DMG. The x86_64 backend slice builds and gates under Rosetta 2,
+            # which GitHub's arm64 macOS runners (macos-14) ship preinstalled.
           - os: ubuntu-22.04
             artifact-name: build-linux-x64
     steps:

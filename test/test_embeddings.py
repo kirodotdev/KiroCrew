@@ -117,6 +117,7 @@ class TestPlatformLibsDirname:
             ("linux", "arm64", "linux_aarch64"),
             ("linux", "AARCH64", "linux_aarch64"),  # machine is lowercased
             ("darwin", "arm64", "macos_arm64"),
+            ("darwin", "x86_64", "macos_x86_64"),  # Intel Mac (universal DMG x64 slice)
             ("win32", "amd64", "win_amd64"),
             ("win32", "x86_64", "win_amd64"),
         ],
@@ -132,7 +133,7 @@ class TestPlatformLibsDirname:
         ("platform_str", "machine"),
         [
             ("linux", "ppc64le"),
-            ("darwin", "x86_64"),  # Intel Mac unsupported
+            ("darwin", "ppc"),
             ("win32", "arm64"),
             ("sunos5", "x86_64"),
             ("aix", "aarch64"),

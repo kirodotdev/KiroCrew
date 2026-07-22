@@ -142,13 +142,15 @@ jobs:
           find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.AppImage" \) -exec cp {} release/ \;
           NOTARIZED=$(find artifacts -path "*KiroCrew-notarized-*" -name "notarized.zip" | head -1)
           if [ -n "$NOTARIZED" ]; then
-            cp "$NOTARIZED" "release/KiroCrew-${{ needs.version.outputs.version }}-arm64-mac.zip"
+            cp "$NOTARIZED" "release/KiroCrew-${{ needs.version.outputs.version }}-universal-mac.zip"
           else
-            find artifacts -type f -name "*arm64*.zip" -exec cp {} release/ \;
+            # Unsigned fallback (CDSigner not configured): the electron-builder
+            # mac zip always ends in "-mac.zip" whatever the arch token.
+            find artifacts -type f -name "*-mac.zip" -exec cp {} release/ \;
           fi
           NOTARIZED_DMG=$(find artifacts -path "*KiroCrew-notarized-*" -name "*.dmg" | head -1)
           if [ -n "$NOTARIZED_DMG" ]; then
-            cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-arm64.dmg"
+            cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-universal.dmg"
           fi
           ls -la release/
 

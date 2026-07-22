@@ -122,6 +122,8 @@ def _platform_libs_dirname() -> str | None:
     elif sys.platform == "darwin":
         if machine == "arm64":
             return "macos_arm64"
+        if machine == "x86_64":
+            return "macos_x86_64"
     elif sys.platform == "win32":
         if machine in ("amd64", "x86_64"):
             return "win_amd64"

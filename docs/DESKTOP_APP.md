@@ -13,18 +13,19 @@ build is driven by [`packaging/build-desktop.sh`](../packaging/build-desktop.sh)
 ## What `make desktop` produces
 
 ```bash
-make desktop
+make desktop               # macOS: ONE universal DMG (arm64 + x86_64) · Linux: AppImage
+UNIVERSAL=0 make desktop   # macOS: faster host-arch-only DMG (local iteration)
 ```
 
 Output lands in **`website/electron/dist/`**:
 
-| Platform | Artifact |
-|----------|----------|
-| macOS | `KiroCrew-*.dmg` |
-| Linux | `KiroCrew-*.AppImage` |
+| Command | Platform | Artifact |
+|---------|----------|----------|
+| `make desktop` | macOS | `KiroCrew-<version>-universal.dmg` |
+| `UNIVERSAL=0 make desktop` | macOS | `KiroCrew-<version>-arm64.dmg` (Apple Silicon host) or `KiroCrew-<version>.dmg` (Intel host) |
+| `make desktop` | Linux | `KiroCrew-*.AppImage` (host arch) |
 
-The artifact for the host OS is built (DMG on macOS, AppImage on Linux). The
-electron-builder configuration lives in
+The electron-builder configuration lives in
 [`website/electron/package.json`](../website/electron/package.json):
 
 - **appId:** `dev.kirocrew.desktop`
@@ -32,73 +33,113 @@ electron-builder configuration lives in
 - mac target: `dmg` (category `public.app-category.developer-tools`)
 - linux target: `AppImage` (category `Development`)
 
-### Builds are host-architecture-only — one build per target arch
+### macOS default — one universal DMG for both arches
 
-> **Important:** `make desktop` produces an installer for the **host OS *and*
-> host CPU architecture only.** It is not a universal/fat binary.
+On macOS, `make desktop` produces a single `KiroCrew-<version>-universal.dmg`
+running **natively** on both Apple Silicon and Intel Macs. It needs only
+**one Apple-Silicon machine** — no Intel host, no second build. (It requires
+an Apple-Silicon host with Rosetta 2; the script fails fast with instructions
+otherwise, and `UNIVERSAL=0` is the opt-out.)
 
-The python-build-standalone interpreter is architecture-specific (honors the host
-arch) and the electron-builder config sets no `arch` key (defaults to the host
-arch). The bundled backend's architecture is therefore **coupled** to the
-installer's — you cannot mix (e.g. an arm64 DMG carrying an x86_64 backend). To
-cover all four supported targets you must run the build on a machine of each
-architecture:
+### macOS opt-out and Linux — host-arch-only builds
+
+`UNIVERSAL=0 make desktop` (and every Linux build) produces an installer for
+the **host OS *and* host CPU architecture only.** The python-build-standalone
+interpreter is architecture-specific (honors the host arch) and, in this mode,
+the bundled backend's architecture is **coupled** to the installer's — you
+cannot mix (e.g. an arm64 DMG carrying an x86_64 backend). Use it for faster
+local iteration on macOS (~half the build time and disk of universal), or on
+an Intel Mac where the universal build cannot run. Per-arch targets:
 
 | Target | Build host | Produces |
 |--------|-----------|----------|
-| macOS arm64 (Apple Silicon) | Apple Silicon Mac | arm64 `.dmg` |
-| macOS x86_64 (Intel) | Intel Mac, or an Apple-Silicon Mac via Rosetta (see [Building BOTH macOS DMGs](#building-both-macos-dmgs-from-one-apple-silicon-machine-rosetta)) | x86_64 `.dmg` |
+| macOS arm64 (Apple Silicon) | Apple Silicon Mac (`UNIVERSAL=0`) | arm64 `.dmg` |
+| macOS x86_64 (Intel) | Intel Mac | x86_64 `.dmg` |
 | Linux x86_64 | x86_64 Linux | x86_64 `.AppImage` |
 | Linux aarch64 (Graviton/ARM) | aarch64 Linux | aarch64 `.AppImage` |
 
-A maintainer on an Apple-Silicon Mac who runs `make desktop` ships an
-**arm64-only** DMG; Intel-Mac users cannot run it. For a public release, build
-each artifact on its own runner (e.g. a CI matrix of `macos-14` (arm64),
-`macos-13` (x86_64), `ubuntu-latest` (x86_64), and an arm64 Linux runner).
-There is intentionally no `universal2` macOS target — it would require
-universal2 wheels for every native dependency (numpy, aiohttp, lxml, PyYAML),
-which not all publish.
+Anything you **distribute** for macOS should be the universal DMG — the
+host-arch build is a local-machine artifact.
 
-### Building BOTH macOS DMGs from one Apple-Silicon machine (Rosetta)
+Prerequisite: **Rosetta 2** on the build machine
+(`softwareupdate --install-rosetta --agree-to-license`) — the x86_64 PBS
+interpreter runs under Rosetta during the build (pip install + verification).
+The script preflights this (`arch -x86_64 /usr/bin/true`) and aborts with the
+`softwareupdate` hint if missing.
 
-You can produce both the arm64 and the x86_64 DMG on a single Apple-Silicon Mac
-without an Intel machine, by running the x86_64 toolchain under **Rosetta 2**.
-The PBS interpreter is architecture-specific, so the trick is to install an
-x86_64 PBS interpreter via `uv` under Rosetta and build with that.
+How it works — **universal shell + dual embedded backends**:
 
-Prerequisites: Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`).
+- The Electron shell binaries (`Contents/MacOS/`, `Frameworks/`) are
+  lipo-merged fat binaries via electron-builder's `--universal` target.
+- The PBS backend tree cannot be lipo-merged (thousands of files, no
+  universal2 PBS — see [below](#why-no-true-universal2-backend)), so the app
+  ships **two complete backend trees** and picks one at launch:
 
-```bash
-# 0. Build the frontend ONCE (arch-independent); both DMGs reuse it.
-cd website && npm ci && npm run build && cd ..
-
-# 1. arm64 (native):
-SKIP_FRONTEND=1 bash packaging/build-desktop.sh
-#    → website/electron/dist/KiroCrew-<version>-arm64.dmg
-
-# 2. x86_64 (under Rosetta): uv installs the x86_64 PBS interpreter.
-arch -x86_64 uv python install cpython-3.12
-# Then run the build script under Rosetta to pick up the x86_64 interpreter:
-arch -x86_64 bash -c 'SKIP_FRONTEND=1 bash packaging/build-desktop.sh'
-#    → website/electron/dist/KiroCrew-<version>.dmg (x64)
+```
+KiroCrew.app/Contents/
+├── MacOS/ + Frameworks/…                 ← fat binaries (arm64 + x86_64)
+└── Resources/backend-dist/
+    ├── kirocrew-backend-arm64/           ← full PBS bundle, arm64
+    └── kirocrew-backend-x64/             ← full PBS bundle, x86_64
 ```
 
-electron-builder names the host-arch (arm64) DMG `KiroCrew-<v>-arm64.dmg` and the
-x64 DMG `KiroCrew-<v>.dmg` (no suffix), so the two coexist in
-`website/electron/dist/`. Verify each actually carries the matching backend:
+The build runs the normal backend steps twice: natively for
+`kirocrew-backend-arm64/`, then again with an x86_64 PBS interpreter
+(`uv python install cpython-3.12-macos-x86_64-none`, executed under Rosetta)
+for `kirocrew-backend-x64/`. The frontend is built once (arch-independent).
+Each backend passes the same self-containment gate as a per-arch build — the
+x64 gate doubles as proof the bundle runs under Rosetta. In
+`website/electron/package.json`, `build.mac.x64ArchFiles` allowlists
+`backend-dist/**` (single-arch Mach-O files inside a universal app are
+intentional there), and `extraResources` ships the `backend-dist/` directory
+wholesale so single- and dual-backend layouts both package.
+
+**Trade-off:** the DMG carries two full Python backend trees, so it is
+roughly **2× the size** of a per-arch DMG — expect ~350–400 MB. That is the
+price of one artifact + one update feed; a per-arch feed split was
+explicitly deferred.
+
+Verify a universal build:
 
 ```bash
-# The embedded backend's arch MUST match the DMG's arch (an arm64 DMG carrying
-# an x86_64 backend would crash on launch). Mount and check:
-hdiutil attach -nobrowse -readonly website/electron/dist/KiroCrew-<v>-arm64.dmg
-file "/Volumes/KiroCrew <v>-arm64/KiroCrew.app/Contents/Resources/backend-dist/kirocrew-backend/kirocrew-backend"
+V=<version>
+hdiutil attach -nobrowse -readonly "website/electron/dist/KiroCrew-$V-universal.dmg"
+APP="/Volumes/KiroCrew $V-universal/KiroCrew.app"
+
+# 1. The shell binary is fat:
+lipo -archs "$APP/Contents/MacOS/KiroCrew"
+#   → x86_64 arm64
+
+# 2. EACH backend carries the matching interpreter:
+file "$APP/Contents/Resources/backend-dist/kirocrew-backend-arm64/bin/python3.12"
 #   → …executable arm64
-hdiutil detach "/Volumes/KiroCrew <v>-arm64"
+file "$APP/Contents/Resources/backend-dist/kirocrew-backend-x64/bin/python3.12"
+#   → …executable x86_64
+
+hdiutil detach "/Volumes/KiroCrew $V-universal"
 ```
 
-> CI is still the cleaner path for releases (`macos-14` for arm64, `macos-13`
-> for x86_64) — the Rosetta route is for producing both locally when you don't
-> have an Intel runner.
+(The build script performs these `lipo -archs` / `file` checks itself as
+post-gates, plus a resolver-agreement gate asserting `find-bin.js` resolves
+the arch-suffixed launcher.)
+
+**CI:** the `macos-14` (Apple Silicon) entry in `build-desktop.yml` runs
+`make desktop` (universal by default on macOS — GitHub's arm64 macOS runners
+include Rosetta 2)
+and uploads a single `unsigned-build-darwin-universal` artifact. Everything
+downstream (codesigning both slices, notarization, stapling, the update
+feed) is arch-indifferent: the feed schema is unchanged, `latest-mac.json`
+points at the one universal zip, and installed arm64 apps auto-update onto
+it seamlessly. No Intel runner and no per-arch feed split are needed.
+
+#### Why no *true* universal2 backend?
+
+A genuinely lipo-merged (universal2) **backend** stays off the table: there is
+no universal2 python-build-standalone distribution, the backend tree is
+thousands of files (a fragile file-by-file merge with no tool support), and
+not all native dependencies publish paired wheels to merge (numpy, aiohttp,
+lxml, PyYAML…). The dual-backend layout above is how universality is achieved
+instead — two single-arch trees, selected at launch by `process.arch`.
 
 ### Refreshing / cleaning the DMGs
 
@@ -110,7 +151,7 @@ only the current set remains:
 ```bash
 cd website/electron/dist
 rm -f KiroCrew-<old-version>*.dmg            # stale DMGs from a prior version
-rm -rf mac mac-arm64                          # app-staging dirs (regenerated each build)
+rm -rf mac mac-arm64 mac-universal*           # app-staging dirs (regenerated each build)
 rm -f builder-debug.yml
 ```
 
@@ -142,6 +183,13 @@ pipeline end-to-end:
 6. Package with electron-builder                      → website/electron/dist/ (DMG / AppImage)
 ```
 
+On macOS (universal by default) the pipeline repeats steps 2–5 once per
+architecture — natively into `kirocrew-backend-arm64/`, then with an x86_64
+PBS interpreter under Rosetta into `kirocrew-backend-x64/` — and step 6
+packages with `electron-builder --mac --universal`. With `UNIVERSAL=0` (and
+always on Linux) steps 2–5 run once for the host arch into the unsuffixed
+`kirocrew-backend/`.
+
 Step by step:
 
 1. **Frontend** — in `website/`, runs `npm ci` (or `npm install`) + `npm run
@@ -162,20 +210,24 @@ Step by step:
 6. **Package** — in `website/electron/`, runs electron-builder to produce the
    installer(s) in `website/electron/dist/`.
 
-### Build escape hatches
+### Build flags
 
-The script honors two environment flags:
+The script honors these environment flags:
 
 | Flag | Effect |
 |------|--------|
+| `UNIVERSAL=0` | macOS: opt out of the universal default — host-arch-only build (faster local iteration; the only option on an Intel Mac). Universal (`UNIVERSAL=1`) is the macOS default; Linux is always host-arch |
 | `SKIP_FRONTEND=1` | Reuse an already-built `website/dist` |
 | `SKIP_ELECTRON=1` | Stop after the bundled backend (no electron-builder) |
 
 ## The bundled backend (python-build-standalone)
 
 The build produces a self-contained Python interpreter with all dependencies
-installed, located at `website/electron/backend-dist/kirocrew-backend/`. Key
-details:
+installed, located at `website/electron/backend-dist/kirocrew-backend/`
+(per-arch mode) or `…/backend-dist/kirocrew-backend-arm64/` +
+`…/kirocrew-backend-x64/` (universal mode — electron-builder ships the whole
+`backend-dist/` directory as `extraResources`, so both layouts package the
+same way). Key details:
 
 - **Interpreter** is a python-build-standalone CPython 3.12 with `@executable_path`-
   relative dylib references (genuinely portable, no system Python dependency).
@@ -200,20 +252,30 @@ and loads the dashboard once it is healthy.
 ### `find-bin.js` — locating the binary
 
 `findKirocrewBin()` checks well-known paths in order and returns the first
-executable it finds, falling back to bare `kirocrew` on `PATH`:
+executable it finds, falling back to bare `kirocrew` on `PATH`. The running
+process's CPU architecture (`process.arch`, injected as a parameter) selects
+the matching backend in a universal app:
 
-1. `<resourcesPath>/backend-dist/kirocrew-backend/bin/kirocrew` — the bundled
-   PBS backend inside the packaged `.app` (electron-builder ships
-   `backend-dist/kirocrew-backend` as `extraResources`).
-2. `<__dirname>/backend-dist/kirocrew-backend/bin/kirocrew` — the same binary
-   when running unpackaged from `website/electron/` in development.
+1. `<resourcesPath>/backend-dist/kirocrew-backend-<arch>/bin/kirocrew`, then
+   `<__dirname>/…` — the arch-suffixed PBS backend inside a **universal**
+   packaged `.app` (or unpackaged in development), where `<arch>` is `arm64`
+   or `x64` per `process.arch` (a fat Electron shell runs as exactly one
+   slice, so `process.arch` is the native arch of the Mac — Apple Silicon
+   loads `kirocrew-backend-arm64/`, Intel loads `kirocrew-backend-x64/`).
+   Ranked above the unsuffixed layout so a universal bundle never falls back
+   to a wrong-arch tree; per-arch bundles don't ship these dirs, so the
+   probes miss and fall through.
+2. `<resourcesPath>/backend-dist/kirocrew-backend/bin/kirocrew`, then
+   `<__dirname>/…` — the unsuffixed fallback: the bundled PBS backend inside
+   a **per-arch** packaged `.app` (or unpackaged in development).
 3. `<__dirname>/../bin/kirocrew`
 4. Well-known install paths under `$HOME` (e.g. `~/.local/bin/kirocrew`,
    `~/.kirocrew-app/.venv/bin/kirocrew`).
 5. Bare `"kirocrew"` (resolved via `PATH`).
 
-The function is pure — `fs`, `os`, `path`, `process.resourcesPath`, and
-`__dirname` are injected — so it is unit-testable without mocking globals.
+The function is pure — `fs`, `os`, `path`, `process.resourcesPath`,
+`__dirname`, and the arch are injected — so both arch branches are
+unit-testable without mocking globals.
 
 ### `main.js` — spawning the gateway
 

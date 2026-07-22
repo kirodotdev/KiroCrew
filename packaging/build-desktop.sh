@@ -16,12 +16,19 @@
 # and use @executable_path-relative dylib references, so the bundle is genuinely
 # portable across machines without needing the exact same system Python version.
 #
-# ARCHITECTURE: builds for the HOST OS and HOST CPU ARCH only (not a universal
-# binary). To ship macOS arm64 + x86_64 and Linux x86_64 + aarch64, run once
-# per architecture.
+# ARCHITECTURE: on macOS this builds ONE universal .app/DMG by default: the
+# Electron shell is lipo-merged (arm64 + x86_64) by electron-builder, and the
+# backend — which cannot be lipo-merged (a whole PBS tree, not one binary) —
+# ships as TWO complete trees (backend-dist/kirocrew-backend-arm64/ and
+# .../kirocrew-backend-x64/), selected at launch by find-bin.js via
+# process.arch. The x86_64 backend is built under Rosetta 2, so the universal
+# build needs an Apple-Silicon host. Linux always builds host-arch only
+# (AppImage). UNIVERSAL=0 forces a host-arch-only macOS build (faster local
+# iteration, or the only option on an Intel Mac).
 #
 # Usage:
-#   bash packaging/build-desktop.sh            # build for the host OS + arch
+#   bash packaging/build-desktop.sh            # macOS: universal DMG · Linux: host arch
+#   UNIVERSAL=0 bash packaging/...             # macOS: host-arch-only DMG
 #   SKIP_FRONTEND=1 bash packaging/...         # reuse an already-staged dist
 #   SKIP_ELECTRON=1 bash packaging/...         # stop after the backend binary
 set -euo pipefail
@@ -29,8 +36,41 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-printf '\n\033[1;33m▶ Building for host arch only: %s/%s.\033[0m\n' \
-  "$(uname -s)" "$(uname -m)"
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+HOST_ARCH="$(uname -m)"
+
+# Universal is the macOS default; Linux has no universal concept (AppImage is
+# per-arch). UNIVERSAL=0 opts a macOS build out.
+if [ "$OS" = "darwin" ]; then
+  UNIVERSAL="${UNIVERSAL:-1}"
+else
+  UNIVERSAL="${UNIVERSAL:-0}"
+fi
+
+if [ "$UNIVERSAL" = "1" ]; then
+  if [ "$OS" != "darwin" ]; then
+    echo "ERROR: UNIVERSAL=1 is a macOS-only mode (universal .app = lipo-merged" >&2
+    echo "       Mach-O shell + dual macOS backends). Build Linux per-arch instead." >&2
+    exit 1
+  fi
+  if [ "$HOST_ARCH" != "arm64" ]; then
+    echo "ERROR: the universal build requires an Apple-Silicon host — the arm64" >&2
+    echo "       backend cannot be built on Intel (no x86_64->arm64 Rosetta)." >&2
+    echo "       On this machine run a host-arch-only build instead:" >&2
+    echo "       UNIVERSAL=0 make desktop" >&2
+    exit 1
+  fi
+  if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+    echo "ERROR: Rosetta 2 is required to build the x86_64 backend. Install it with:" >&2
+    echo "       softwareupdate --install-rosetta --agree-to-license" >&2
+    echo "       (or build host-arch only: UNIVERSAL=0 make desktop)" >&2
+    exit 1
+  fi
+  printf '\n\033[1;33m▶ Building UNIVERSAL macOS app: arm64 + x86_64.\033[0m\n'
+else
+  printf '\n\033[1;33m▶ Building for host arch only: %s/%s.\033[0m\n' \
+    "$(uname -s)" "$HOST_ARCH"
+fi
 
 ELECTRON_DIR="$ROOT/website/electron"
 
@@ -59,8 +99,8 @@ if [ ! -f "$ROOT/website/dist/index.html" ]; then
   exit 1
 fi
 
-# --- 2. Provision python-build-standalone interpreter via uv ----------------
-log "Provisioning python-build-standalone interpreter (uv)…"
+# --- 2. uv (provisions the PBS interpreters) ---------------------------------
+log "Ensuring uv is available…"
 command -v uv >/dev/null 2>&1 || {
   echo "uv not found — installing pinned version from https://docs.astral.sh/uv/" >&2
   # Pin to a known-good version to avoid silent supply-chain changes.
@@ -74,113 +114,169 @@ command -v uv >/dev/null 2>&1 || {
   }
 }
 
-# Pin to CPython 3.12 (latest stable, matches CI python-version).
-UV_PY_VERSION="cpython-3.12"
-uv python install "$UV_PY_VERSION" >/dev/null 2>&1 || true
-
-# Resolve the architecture suffix for the PBS directory name.
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-[ "$ARCH" = "arm64" ] && ARCH="aarch64"
-[ "$ARCH" = "x86_64" ] && ARCH="x86_64"
-
-if [ "$OS" = "darwin" ]; then
-  PBS_PATTERN="cpython-3.12*-macos-${ARCH}-none"
-else
-  PBS_PATTERN="cpython-3.12*-linux-${ARCH}-gnu"
-fi
-
-PBS_DIR="$(find "$(uv python dir)" -maxdepth 1 -type d -name "$PBS_PATTERN" 2>/dev/null | sort -V | tail -1)"
-if [ -z "$PBS_DIR" ] || [ ! -x "$PBS_DIR/bin/python3.12" ]; then
-  echo "ERROR: no managed python-build-standalone 3.12 for ${OS}-${ARCH} under $(uv python dir)" >&2
-  echo "       Run: uv python install $UV_PY_VERSION" >&2
-  exit 1
-fi
-echo "    PBS interpreter: $PBS_DIR"
-
-# --- 3. Install kiro_crew into the bundled interpreter ----------------------
-log "Installing kiro_crew into the bundled interpreter…"
-BACKEND_OUT="$ELECTRON_DIR/backend-dist/kirocrew-backend"
-rm -rf "$ELECTRON_DIR/backend-dist"
-mkdir -p "$ELECTRON_DIR/backend-dist"
-cp -R "$PBS_DIR" "$BACKEND_OUT"
-
-# PBS ships uv's PEP 668 EXTERNALLY-MANAGED marker; drop it so pip can install
-# into our private copy (this is our bundle, not a system interpreter).
-find "$BACKEND_OUT" -name "EXTERNALLY-MANAGED" -delete 2>/dev/null || true
-
-# PYTHONNOUSERSITE=1 + empty PYTHONPATH: force the full closure into the bundle.
-# Without this, pip treats deps already present on the build host as "satisfied"
-# and skips them -> the gateway crashes on a clean machine with ModuleNotFoundError.
-env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-  "$BACKEND_OUT/bin/python3.12" -m pip install \
-  --no-warn-script-location --disable-pip-version-check "$ROOT"
-
-# Stage the dashboard dist into the package's static dir.
-SP="$BACKEND_OUT/lib/python3.12/site-packages"
-log "Staging dashboard dist into kiro_crew/static/dist…"
-mkdir -p "$SP/kiro_crew/static"
-( cd "$SP/kiro_crew/static" && rm -rf dist && cp -R "$ROOT/website/dist" dist )
-[ -f "$SP/kiro_crew/static/dist/index.html" ] || {
-  echo "ERROR: dashboard dist not staged" >&2; exit 1
+# Resolve a managed PBS interpreter dir: $1 = uv install key, $2 = dir pattern.
+# Prints the interpreter dir on stdout; fails loudly if absent.
+provision_pbs() {
+  local uv_key="$1" pattern="$2" dir
+  uv python install "$uv_key" >/dev/null 2>&1 || true
+  dir="$(find "$(uv python dir)" -maxdepth 1 -type d -name "$pattern" 2>/dev/null | sort -V | tail -1)"
+  if [ -z "$dir" ] || [ ! -x "$dir/bin/python3.12" ]; then
+    echo "ERROR: no managed python-build-standalone 3.12 matching ${pattern} under $(uv python dir)" >&2
+    echo "       Run: uv python install $uv_key" >&2
+    return 1
+  fi
+  printf '%s\n' "$dir"
 }
 
-# Relocatable launcher script.
-cat > "$BACKEND_OUT/bin/kirocrew" <<'LAUNCH'
+# Build ONE self-contained backend tree.
+#   $1 = PBS interpreter dir   $2 = output dir   $3 = required Mach-O arch tag
+#        ("" skips the arch gate — used by the non-universal Linux path)
+# Copies the interpreter, pip-installs kiro_crew (full closure), stages the
+# dashboard, writes the relocatable launcher, gates self-containment, prunes.
+build_backend() {
+  local pbs_dir="$1" out="$2" want_arch="$3" sp
+
+  log "Installing kiro_crew into the bundled interpreter ($(basename "$out"))…"
+  mkdir -p "$(dirname "$out")"
+  cp -R "$pbs_dir" "$out"
+
+  # PBS ships uv's PEP 668 EXTERNALLY-MANAGED marker; drop it so pip can install
+  # into our private copy (this is our bundle, not a system interpreter).
+  find "$out" -name "EXTERNALLY-MANAGED" -delete 2>/dev/null || true
+
+  # PYTHONNOUSERSITE=1 + empty PYTHONPATH: force the full closure into the bundle.
+  # Without this, pip treats deps already present on the build host as "satisfied"
+  # and skips them -> the gateway crashes on a clean machine with ModuleNotFoundError.
+  # An x86_64 python3.12 binary runs under Rosetta transparently, so the same
+  # invocation builds both arches' bundles.
+  # --prefer-binary: take an older prebuilt wheel over a newer sdist. Some deps
+  # have dropped macOS x86_64 wheels in their newest releases (e.g. cryptography
+  # >= 49 is arm64-only), and a source build inside the bundle needs toolchains
+  # (Rust targets) the build host may lack — an older universal2/x86_64 wheel is
+  # the portable choice. No-op where the newest release has a usable wheel.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/bin/python3.12" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check "$ROOT"
+
+  # Stage the dashboard dist into the package's static dir.
+  sp="$out/lib/python3.12/site-packages"
+  log "Staging dashboard dist into kiro_crew/static/dist…"
+  mkdir -p "$sp/kiro_crew/static"
+  ( cd "$sp/kiro_crew/static" && rm -rf dist && cp -R "$ROOT/website/dist" dist )
+  [ -f "$sp/kiro_crew/static/dist/index.html" ] || {
+    echo "ERROR: dashboard dist not staged" >&2; exit 1
+  }
+
+  # Relocatable launcher script.
+  cat > "$out/bin/kirocrew" <<'LAUNCH'
 #!/bin/bash
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec "$DIR/python3.12" -s -m kiro_crew "$@"
 LAUNCH
-chmod +x "$BACKEND_OUT/bin/kirocrew"
+  chmod +x "$out/bin/kirocrew"
 
-# Self-containment gate: the full import chain must resolve with no user-site.
-log "Verifying self-containment…"
-PYTHONNOUSERSITE=1 "$BACKEND_OUT/bin/python3.12" -m kiro_crew --version >/dev/null \
-  || { echo "ERROR: bundled backend is NOT self-contained (missing dep under PYTHONNOUSERSITE=1)" >&2; exit 1; }
+  # Arch gate: the bundled interpreter must be the arch this tree claims to be
+  # (a mismatch ships an app whose backend crashes at launch on the other arch).
+  if [ -n "$want_arch" ]; then
+    case "$(file -b "$out/bin/python3.12")" in
+      *"$want_arch"*) ;;
+      *)
+        echo "ERROR: $(basename "$out")/bin/python3.12 is not ${want_arch}:" >&2
+        file "$out/bin/python3.12" >&2
+        exit 1
+        ;;
+    esac
+  fi
 
-# Resolver-agreement gate: the Electron launcher (find-bin.js) must be able to
-# locate the launcher we just wrote. This catches contract drift between this
-# builder's output layout (BACKEND_OUT/bin/kirocrew) and find-bin.js's candidate
-# list — a silent mismatch there ships an app that can't spawn its backend
-# (falls through to the bare "kirocrew" PATH fallback -> spawn ENOENT).
-if command -v node >/dev/null 2>&1; then
-  log "Verifying find-bin.js resolves the bundled launcher…"
-  node -e '
-    const fs=require("fs"), os=require("os"), path=require("path");
-    const { findKirocrewBin } = require(path.join(process.argv[1], "find-bin"));
-    // Simulate the packaged app: resourcesPath and __dirname both point at the
-    // electron dir where backend-dist currently lives.
-    const resolved = findKirocrewBin(fs, os, path, process.argv[1], process.argv[1]);
-    const expected = process.argv[2];
-    if (resolved !== expected) {
-      console.error("ERROR: find-bin.js resolved \x27" + resolved + "\x27, expected the bundled launcher \x27" + expected + "\x27.");
-      console.error("       The builder output layout and find-bin.js candidate list have drifted apart.");
-      process.exit(1);
-    }
-    console.log("    find-bin.js -> " + resolved);
-  ' "$ELECTRON_DIR" "$BACKEND_OUT/bin/kirocrew" \
-    || { echo "ERROR: find-bin.js cannot locate the bundled backend launcher" >&2; exit 1; }
+  # Self-containment gate: the full import chain must resolve with no user-site.
+  log "Verifying self-containment ($(basename "$out"))…"
+  PYTHONNOUSERSITE=1 "$out/bin/python3.12" -m kiro_crew --version >/dev/null \
+    || { echo "ERROR: bundled backend is NOT self-contained (missing dep under PYTHONNOUSERSITE=1)" >&2; exit 1; }
+
+  # Prune to shrink the bundle.
+  log "Pruning bundle ($(basename "$out"))…"
+  ( cd "$out"
+    find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+    find lib/python3.12/site-packages -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
+    rm -rf lib/python3.12/test lib/python3.12/idlelib lib/python3.12/tkinter \
+           lib/python3.12/turtledemo lib/python3.12/ensurepip lib/python3.12/lib2to3 2>/dev/null || true )
+
+  echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
+}
+
+# Resolver-agreement gate: the Electron launcher (find-bin.js) must locate the
+# launcher we just wrote. This catches contract drift between this builder's
+# output layout and find-bin.js's candidate list — a silent mismatch there
+# ships an app that can't spawn its backend (falls through to the bare
+# "kirocrew" PATH fallback -> spawn ENOENT).
+#   $1 = expected launcher path   $2 = arch argument ("" = default process.arch)
+resolver_gate() {
+  local expected="$1" arch_arg="$2"
+  if command -v node >/dev/null 2>&1; then
+    log "Verifying find-bin.js resolves ${expected#"$ELECTRON_DIR/"}…"
+    node -e '
+      const fs=require("fs"), os=require("os"), path=require("path");
+      const { findKirocrewBin } = require(path.join(process.argv[1], "find-bin"));
+      // Simulate the packaged app: resourcesPath and __dirname both point at the
+      // electron dir where backend-dist currently lives.
+      const arch = process.argv[3] || undefined;
+      const resolved = arch
+        ? findKirocrewBin(fs, os, path, process.argv[1], process.argv[1], arch)
+        : findKirocrewBin(fs, os, path, process.argv[1], process.argv[1]);
+      const expected = process.argv[2];
+      if (resolved !== expected) {
+        console.error("ERROR: find-bin.js resolved \x27" + resolved + "\x27, expected the bundled launcher \x27" + expected + "\x27.");
+        console.error("       The builder output layout and find-bin.js candidate list have drifted apart.");
+        process.exit(1);
+      }
+      console.log("    find-bin.js -> " + resolved);
+    ' "$ELECTRON_DIR" "$expected" "$arch_arg" \
+      || { echo "ERROR: find-bin.js cannot locate the bundled backend launcher" >&2; exit 1; }
+  else
+    echo "    (node not found; skipping find-bin.js resolver-agreement gate)"
+  fi
+}
+
+# --- 3. Build the backend tree(s) --------------------------------------------
+rm -rf "$ELECTRON_DIR/backend-dist"
+mkdir -p "$ELECTRON_DIR/backend-dist"
+
+if [ "$UNIVERSAL" = "1" ]; then
+  log "Provisioning PBS interpreters (arm64 + x86_64) via uv…"
+  PBS_ARM64="$(provision_pbs "cpython-3.12-macos-aarch64-none" "cpython-3.12*-macos-aarch64-none")"
+  PBS_X64="$(provision_pbs "cpython-3.12-macos-x86_64-none" "cpython-3.12*-macos-x86_64-none")"
+  echo "    arm64 PBS:  $PBS_ARM64"
+  echo "    x86_64 PBS: $PBS_X64"
+
+  build_backend "$PBS_ARM64" "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64" "arm64"
+  build_backend "$PBS_X64" "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64" "x86_64"
+
+  resolver_gate "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64/bin/kirocrew" "arm64"
+  resolver_gate "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64/bin/kirocrew" "x64"
 else
-  echo "    (node not found; skipping find-bin.js resolver-agreement gate)"
+  log "Provisioning python-build-standalone interpreter (uv)…"
+  # Pin to CPython 3.12 (latest stable, matches CI python-version).
+  ARCH="$HOST_ARCH"
+  [ "$ARCH" = "arm64" ] && ARCH="aarch64"
+  if [ "$OS" = "darwin" ]; then
+    PBS_PATTERN="cpython-3.12*-macos-${ARCH}-none"
+  else
+    PBS_PATTERN="cpython-3.12*-linux-${ARCH}-gnu"
+  fi
+  PBS_DIR="$(provision_pbs "cpython-3.12" "$PBS_PATTERN")"
+  echo "    PBS interpreter: $PBS_DIR"
+
+  build_backend "$PBS_DIR" "$ELECTRON_DIR/backend-dist/kirocrew-backend" ""
+  resolver_gate "$ELECTRON_DIR/backend-dist/kirocrew-backend/bin/kirocrew" ""
 fi
 
-# --- 4. Prune to shrink the bundle ------------------------------------------
-log "Pruning bundle…"
-( cd "$BACKEND_OUT"
-  find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-  find lib/python3.12/site-packages -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
-  rm -rf lib/python3.12/test lib/python3.12/idlelib lib/python3.12/tkinter \
-         lib/python3.12/turtledemo lib/python3.12/ensurepip lib/python3.12/lib2to3 2>/dev/null || true )
-
-echo "    backend-dist size: $(du -sh "$BACKEND_OUT" 2>/dev/null | cut -f1)"
-
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
-  log "SKIP_ELECTRON=1 — backend ready at $BACKEND_OUT"
+  log "SKIP_ELECTRON=1 — backend(s) ready under $ELECTRON_DIR/backend-dist/"
   exit 0
 fi
 
-# --- 5. Package the desktop app with electron-builder -----------------------
+# --- 4. Package the desktop app with electron-builder -----------------------
 log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
 ( cd "$ELECTRON_DIR"
   if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
@@ -188,12 +284,32 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   EB_ARGS=( "-c.extraMetadata.version=$KC_VERSION" )
   if [ "$OS" = "darwin" ]; then
     EB_ARGS+=( --mac )
+    [ "$UNIVERSAL" = "1" ] && EB_ARGS+=( --universal )
   else
     EB_ARGS+=( --linux )
   fi
 
   CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "${EB_ARGS[@]}"
 )
+
+# Universal post-gate: the staged shell binary must carry BOTH arch slices.
+if [ "$UNIVERSAL" = "1" ]; then
+  log "Verifying the shell binary is universal (lipo)…"
+  APP_BIN="$(find "$ELECTRON_DIR/dist" -maxdepth 5 \
+    -path "*/KiroCrew.app/Contents/MacOS/KiroCrew" -print -quit 2>/dev/null)"
+  if [ -z "$APP_BIN" ]; then
+    echo "ERROR: staged KiroCrew.app not found under $ELECTRON_DIR/dist" >&2
+    exit 1
+  fi
+  LIPO_ARCHS="$(lipo -archs "$APP_BIN")"
+  case "$LIPO_ARCHS" in
+    *x86_64*arm64*|*arm64*x86_64*)
+      echo "    $APP_BIN: $LIPO_ARCHS" ;;
+    *)
+      echo "ERROR: shell binary is not universal (lipo -archs: $LIPO_ARCHS)" >&2
+      exit 1 ;;
+  esac
+fi
 
 log "Done. Installer(s) are in $ELECTRON_DIR/dist/"
 ls -1 "$ELECTRON_DIR/dist/"*.{dmg,AppImage,zip} 2>/dev/null | sed 's/^/   /' || true
