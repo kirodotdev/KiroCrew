@@ -25,6 +25,12 @@ from typing import Any
 KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([+-]|$)")
 
+# App names that would collide with reserved notification namespaces: an app
+# named "system" would produce channels "system.<id>", shadowing the bus's
+# reserved system channels (e.g. "system.approval"). Rejected at manifest
+# validation AND defense-in-depth at the push endpoint.
+RESERVED_APP_NAMES = frozenset({"system"})
+
 
 def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
     """Return True if ``rel_path`` is an unsafe app-resource path.
@@ -751,6 +757,11 @@ class AppManifest:
         elif not KEBAB_RE.match(self.name):
             errors.append(
                 f"name must be kebab-case (lowercase alphanumeric + hyphens), got: {self.name!r}"
+            )
+        elif self.name in RESERVED_APP_NAMES:
+            errors.append(
+                f"app name {self.name!r} is reserved (would shadow the "
+                f"{self.name}.* notification channel namespace)"
             )
 
         if not self.version:

@@ -66,7 +66,10 @@ Validation (`apps/manifest.py`): max 8 channels per app, kebab-case ids, unique 
 
 `test/test_notifications_push.py` (39 tests): auth bypass attempts, undeclared channels, oversized/chunked bodies, rate limit + refund semantics, falsy-but-valid fields, signing-payload coverage, register-once behavior, sink-failure 500. `test/test_dashboard.py` covers persistence, load-time redaction, and the executor-offloaded persist path.
 
+## Channel lifecycle
+
+Channels register lazily on an app's first push to each declared channel. On app uninstall or disable, `NotificationBus.unregister_app_channels(app_name)` removes every `<app>.*` channel from the registry (wired in `apps/routes.py`); re-enabling re-registers lazily on the next push. System channels are never removable. The app name `system` is rejected at manifest validation (`RESERVED_APP_NAMES`) AND denied defense-in-depth at the push endpoint, so app channels can never shadow the reserved `system.*` namespace.
+
 ## Known follow-ups
 
-- An app named `system` could produce `full_channel == "system.<id>"`, shadowing reserved system channels (cosmetic spoofing only — `source` stays `app:system` and is SEL-audited). Follow-up: reject reserved app names at install or namespace app channels distinctly.
 - Phase 3 (per RFC): per-channel user settings and runtime priority overrides.
