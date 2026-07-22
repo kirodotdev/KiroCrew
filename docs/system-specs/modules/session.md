@@ -72,9 +72,17 @@ check (`dashboard/handlers/cron.py`).
 
 ## Key Behaviors
 
-- **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 90%, valid 5–90), fires `/compact` to kiro-cli. Context re-injected via
-  `build_session_context()` on next message. Blind fallback after 40
-  prompts if metadata never reports %.
+- **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 90%, valid 5–90), compacts **in place** on both
+  backends: kiro-cli via native `/compact` (command execute +
+  `_kiro.dev/compaction/status` wait), claude via SDK `/compact`. The
+  process and session ID survive, so queued/agentic work continues
+  automatically. kiro-cli only: if the in-place compact fails, times out,
+  or the provider lacks native support, falls back to the legacy
+  **recycle** (kill session; context re-injected via
+  `build_session_context()` on next message). A recycle is never forced
+  through a live turn — if the turn semaphore cannot be acquired within
+  the budget, the attempt is deferred to the next turn-end check. Blind
+  fallback after 40 prompts if metadata never reports %.
 - **Circuit breaker**: force-resets session after 5 consecutive failures.
 - **Dead provider detection**: `get_or_create()` checks `provider.is_alive()`
   on the fast path. If the backing process died (crash, SIGKILL, orphan
@@ -546,6 +554,17 @@ exceeds 85% of available cores.
 
 ## Compaction Race Handling
 
-If user sends message during compaction: `get_or_create()` sees key in
-`_compacting` → creates fresh session. Background task finishes → checks
-provider identity → only shuts down old provider.
+In-place compaction (both backends) keeps the `_sessions` entry healthy:
+a concurrent `get_or_create()` reuses it, queueing on the session
+semaphore behind the compact, then continues on the compacted session.
+
+Only the kiro-cli recycle fallback tears the entry down. It records the
+exact session object under teardown in `_recycling` (distinct from
+`_compacting`, which is just the trigger dedup gate): `get_or_create()`
+skips reuse only when the map still holds that exact object, then
+cold-starts fresh — a healthy replacement registered under the same key
+during the teardown is reused normally, never overwritten. The recycle
+pops by object identity — if a racing cold-start already replaced the
+entry, only the old session object is shut down; the fresh replacement
+and its session_map entry survive (the old provider is still reaped so
+its process never leaks).

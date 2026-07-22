@@ -12,11 +12,18 @@ lightweight background work (cron, heartbeat, lesson extraction).  It
 stays alive between uses, serialized by the per-session semaphore.
 
 At >= ``cfg.session.autocompact_pct`` context usage, fires a background
-compaction task. Two backends, two strategies:
+compaction task. Both backends compact **in place** so the session — and
+any queued or agentic work on it — continues without a user nudge:
 
-* **kiro-cli:** kill the session and let the next user message re-seed
-  context via ``build_session_context()``. The session_map entry is
-  dropped to avoid false-resume from stale state.
+* **kiro-cli:** run ``/compact`` in place under the session semaphore
+  (native command execute + ``_kiro.dev/compaction/status`` wait). The
+  process and session ID survive; the conversation is summarized in
+  place. If the in-place compact fails or times out, fall back to the
+  legacy **recycle**: kill the session and let the next user message
+  re-seed context via ``build_session_context()`` (the session_map entry
+  is dropped to avoid false-resume from stale state). A recycle is never
+  forced through a live turn — if the turn semaphore cannot be acquired,
+  the attempt is skipped and re-triggered at the next turn end.
 * **claude-agent-acp:** run ``/compact`` in place under the session
   semaphore. The SDK preserves the same session ID across the
   compact_boundary; the session keeps its summary and continues without
@@ -278,6 +285,11 @@ _CONTEXT_COMPACT_PCT = 80.0
 # compact would otherwise block all concurrent gets on the same session.
 _COMPACT_TIMEOUT_SECS = 300.0
 
+# How long the kiro-cli in-place path waits for the async
+# ``_kiro.dev/compaction/status`` result after issuing /compact. Matches the
+# budget the dashboard's manual /compact and Slack's !compact already use.
+_COMPACT_RESULT_WAIT_SECS = 120.0
+
 # After a failed compact, suppress auto-compaction for this many seconds so a
 # broken /compact does not fire on every subsequent turn.
 _COMPACT_FAILURE_COOLDOWN_SECS = 60.0
@@ -494,6 +506,14 @@ class SessionManager:
         self._start_sem = asyncio.Semaphore(4)  # max 4 concurrent cold-starts
         self._cleanup_task: asyncio.Task | None = None
         self._compacting: set[str] = set()
+        # key -> the EXACT _Session object being torn down by the recycle
+        # FALLBACK (pop from _sessions + provider SIGKILL). Distinct from
+        # _compacting: an in-place compact keeps the entry healthy and
+        # reusable. get_or_create skips reuse only when the map still holds
+        # THIS object — a healthy replacement registered under the same key
+        # is reused normally (never overwritten/leaked by a duplicate
+        # cold-start).
+        self._recycling: dict[str, "_Session"] = {}
         self._compact_cooldown_until: dict[str, float] = {}
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         self._on_compacted: _CompactCallback | None = None
@@ -1622,17 +1642,19 @@ class SessionManager:
         _claimed: "tuple[_Session, bool] | None" = None
         try:
             async with self._lock:
-                # Skip the live-session branch only when a *recycle-style*
-                # compact is in flight (kiro path drops the entry from
-                # _sessions). Claude in-place compact keeps the entry healthy,
-                # so concurrent get_or_create must reuse it instead of
-                # cold-starting a duplicate provider that would later overwrite
-                # _sessions[key] and leak the original process.
+                # Skip the live-session branch only while the recycle FALLBACK
+                # is tearing down the EXACT session object still in the map.
+                # In-place compaction — both the kiro-cli and claude paths —
+                # keeps the entry healthy, so concurrent get_or_create must
+                # reuse it (queueing on the session semaphore behind the
+                # compact). A healthy REPLACEMENT registered under the same
+                # key during a recycle is likewise reused — the object match
+                # keeps the guard from exiling it and cold-starting a
+                # duplicate provider that would overwrite _sessions[key] and
+                # leak the replacement's process.
                 _existing = self._sessions.get(key)
                 _is_recycling = (
-                    key in self._compacting
-                    and _existing is not None
-                    and not _is_claude_backend(_existing.provider)
+                    _existing is not None and self._recycling.get(key) is _existing
                 )
                 if _existing is not None and not _is_recycling:
                     sess = _existing
@@ -1940,15 +1962,18 @@ class SessionManager:
 
             async with self._lock:
                 # Re-check: another coroutine may have created this key while we
-                # were starting the provider (race on same key). Claude in-place
-                # compact leaves the existing entry healthy, so reuse it even
-                # when _compacting is set; only kiro recycle (which drops the
-                # entry from _sessions) should fall through to register us.
+                # were starting the provider (race on same key). In-place
+                # compaction (kiro-cli and claude) leaves the existing entry
+                # healthy, so reuse it even when _compacting is set; only an
+                # entry that IS the exact object the recycle FALLBACK is
+                # tearing down should fall through to register us — a healthy
+                # replacement under the same key must be reused, never
+                # overwritten. The recycle path also pops by object identity,
+                # so even if we do register over a being-recycled entry, only
+                # the old session object is killed.
                 _existing = self._sessions.get(key)
                 _is_recycling = (
-                    key in self._compacting
-                    and _existing is not None
-                    and not _is_claude_backend(_existing.provider)
+                    _existing is not None and self._recycling.get(key) is _existing
                 )
                 if _existing is not None and not _is_recycling:
                     # Another task won the race — use theirs and shut down our
@@ -2285,14 +2310,17 @@ class SessionManager:
     async def _compact_session(self, key: str, pct: float) -> None:
         """Compact a session that hit the context threshold.
 
-        For kiro-cli we recycle: kill the session and let the next user
-        message re-seed context via build_session_context(). The session_map
-        entry is dropped so we don't false-resume from stale state.
+        Both backends compact **in place** first, so the kiro-cli process (or
+        claude SDK session) survives and any queued or agentic work continues
+        automatically — the fix for "session stops after auto-compaction".
 
-        For claude-agent-acp we run /compact in place. The SDK summarises
-        the conversation into a fresh, smaller context — no recycle needed,
-        and the session keeps its history (the compaction summary) instead
-        of starting from scratch.
+        kiro-cli only: if the in-place ``/compact`` fails or times out, fall
+        back to the legacy recycle — kill the session and let the next user
+        message re-seed context via build_session_context(). The session_map
+        entry is dropped so we don't false-resume from stale state. A recycle
+        is never forced through a live turn: if the turn semaphore cannot be
+        acquired within the budget, the attempt is skipped and the next
+        turn-end ``check_context_usage`` re-triggers it.
         """
         try:
             session = self._sessions.get(key)
@@ -2330,36 +2358,119 @@ class SessionManager:
                 await self._fire_compact_callback(key, pct, success=True)
                 return
 
-            # kiro-cli recycle SIGKILLs the provider; drain the in-flight turn
-            # via the session semaphore first so we don't kill mid-cleanup.
-            drain = self._sessions.get(key)
-            sem = drain.semaphore if drain else None
-            sem_held = False
-            if sem is not None:
-                try:
-                    await asyncio.wait_for(sem.acquire(), timeout=_COMPACT_TIMEOUT_SECS)
-                    sem_held = True
-                except asyncio.TimeoutError:
+            # ── kiro-cli: in-place /compact first ──
+            if session is not None:
+                outcome = await self._compact_in_place(key, session, pct)
+                if outcome == "ok":
+                    return
+                if outcome == "busy":
+                    # A turn is still running. NEVER kill a live turn for
+                    # compaction — the old force-recycle here SIGKILLed
+                    # kiro-cli mid-turn, losing all in-flight work. The next
+                    # turn-end check_context_usage re-triggers compaction
+                    # when the semaphore is free. No cooldown / no failure
+                    # callback: this is a deferral, not a failure.
                     logger.warning(
-                        "Session %s recycle: turn still active after %.0fs, forcing recycle",
+                        "Session %s compaction deferred — turn still active after %.0fs",
                         key,
                         _COMPACT_TIMEOUT_SECS,
                     )
+                    return
+                # outcome == "failed" → fall through to the recycle fallback.
+
+            # ── kiro-cli recycle fallback ──
+            # SIGKILLs the provider; drain the in-flight turn via the session
+            # semaphore first so we don't kill mid-turn. Operates strictly on
+            # the *session object captured above*: pop-by-identity means a
+            # fresh session registered by a racing cold-start is never popped
+            # or killed by mistake.
+            if session is None:
+                return
+            sem = session.semaphore
+            try:
+                await asyncio.wait_for(sem.acquire(), timeout=_COMPACT_TIMEOUT_SECS)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Session %s recycle skipped — turn still active after %.0fs",
+                    key,
+                    _COMPACT_TIMEOUT_SECS,
+                )
+                return
+            self._recycling[key] = session
             try:
                 async with self._lock:
-                    session = self._sessions.pop(key, None)
-                if session:
-                    self._session_map.delete(key)
+                    popped = None
+                    if self._sessions.get(key) is session:
+                        popped = self._sessions.pop(key, None)
+                if popped is None:
+                    # A racing cold-start already replaced the entry — the map
+                    # now points at a fresh, healthy session. Reap OUR old
+                    # provider (its process would otherwise leak) but leave the
+                    # replacement and its session_map entry untouched.
                     await session.provider.shutdown()
+                    logger.info(
+                        "Recycled session %s (context overflow; entry already replaced)", key
+                    )
+                else:
+                    self._session_map.delete(key)
+                    await popped.provider.shutdown()
                     logger.info("Recycled session %s (context overflow)", key)
-                    await self._fire_compact_callback(key, pct, success=True)
+                await self._fire_compact_callback(key, pct, success=True)
             finally:
-                if sem_held and sem is not None:
-                    sem.release()
+                if self._recycling.get(key) is session:
+                    self._recycling.pop(key, None)
+                sem.release()
         except Exception:
             logger.exception("Session recycle failed for %s", key)
         finally:
             self._compacting.discard(key)
+
+    async def _compact_in_place(self, key: str, session: "_Session", pct: float) -> str:
+        """Attempt a native in-place ``/compact`` on a kiro-cli session.
+
+        Returns:
+        - ``"ok"``: compaction completed; session (and its process) survives.
+          The success callback has been fired and the cooldown cleared.
+        - ``"busy"``: the turn semaphore could not be acquired within
+          ``_COMPACT_TIMEOUT_SECS`` — a turn is still running. Nothing was
+          attempted; the caller must NOT recycle (no mid-turn kill).
+        - ``"failed"``: the compact was attempted but failed, timed out, or
+          the provider does not support it (base ``wait_for_compaction``
+          returns ``{"type": "timeout"}``). The caller falls back to recycle.
+
+        Holds the session semaphore for the duration so a queued turn waits
+        behind the compaction (and then continues on the compacted session)
+        instead of interleaving with it.
+        """
+        try:
+            await asyncio.wait_for(session.semaphore.acquire(), timeout=_COMPACT_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            return "busy"
+        try:
+
+            async def _run() -> None:
+                await session.provider.compact()
+                result = await session.provider.wait_for_compaction(
+                    timeout=_COMPACT_RESULT_WAIT_SECS
+                )
+                rtype = result.get("type") if isinstance(result, dict) else None
+                if rtype != "completed":
+                    raise RuntimeError(f"compaction reported {rtype or 'no result'}")
+
+            await asyncio.wait_for(_run(), timeout=_COMPACT_TIMEOUT_SECS)
+        except (Exception, asyncio.TimeoutError):
+            logger.warning(
+                "Session %s in-place /compact failed — falling back to recycle",
+                key,
+                exc_info=True,
+            )
+            return "failed"
+        finally:
+            session.semaphore.release()
+        self._compact_cooldown_until.pop(key, None)
+        logger.info("Compacted session %s in place (context overflow)", key)
+        await self._fire_compact_callback(key, pct, success=True)
+        return "ok"
 
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None:
         """Invoke ``_on_compacted`` if registered, swallowing exceptions."""

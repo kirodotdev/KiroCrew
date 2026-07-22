@@ -1026,22 +1026,29 @@ class TestCompactCallback:
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_compact_session_force_recycles_after_timeout(self, cfg, caplog, monkeypatch):
-        """A stuck turn (semaphore never released) must force-recycle after
-        _COMPACT_TIMEOUT_SECS so context still clears."""
+    async def test_compact_session_defers_when_turn_never_drains(self, cfg, caplog, monkeypatch):
+        """A still-running turn (semaphore held) must NEVER be killed for
+        compaction: after _COMPACT_TIMEOUT_SECS the attempt is deferred —
+        session intact, no callback — and re-triggered at the next turn end."""
         monkeypatch.setattr("kiro_crew.session._COMPACT_TIMEOUT_SECS", 0.1)
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        # Hold the semaphore and never release -> simulates a stuck turn.
-        await mgr.get_or_create("dashboard:chat-1")
+        # Hold the semaphore and never release -> simulates a long-running turn.
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
         cb = AsyncMock()
         mgr.set_compact_callback(cb)
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
             await asyncio.wait_for(mgr._compact_session("dashboard:chat-1", 92.0), timeout=2)
 
-        assert "dashboard:chat-1" not in mgr._sessions
-        cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
-        assert any("forcing recycle" in r.message for r in caplog.records)
+        # Session survives, the live turn was not killed, and nothing was
+        # reported to the user (a deferral is not a failure).
+        assert "dashboard:chat-1" in mgr._sessions
+        provider.shutdown.assert_not_awaited()
+        cb.assert_not_awaited()
+        assert any("compaction deferred" in r.message for r in caplog.records)
+        # _compacting cleared so the next turn-end check can re-trigger.
+        assert "dashboard:chat-1" not in mgr._compacting
+        mgr.release("dashboard:chat-1")
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -2409,25 +2416,73 @@ class TestClaudeBackendCompaction:
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_get_or_create_during_kiro_recycle_cold_starts(self, cfg):
-        """Kiro path drops the entry from _sessions; if a stale entry is still
-        present we must fall through to cold-start (preserves the recycle
-        semantics that predate the claude in-place branch)."""
+    async def test_get_or_create_during_recycle_teardown_cold_starts(self, cfg):
+        """While the recycle fallback is tearing the entry down (_recycling
+        holds the exact object still in the map), get_or_create must not
+        reuse the doomed entry — fall through to cold-start."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
 
-        with patch("kiro_crew.session._is_claude_backend", return_value=False):
-            mgr._compacting.add("k1")
-            try:
-                provider2, is_new, _ = await mgr.get_or_create("k1")
-            finally:
-                mgr._compacting.discard("k1")
+        mgr._recycling["k1"] = mgr._sessions["k1"]
+        try:
+            provider2, is_new, _ = await mgr.get_or_create("k1")
+        finally:
+            mgr._recycling.pop("k1", None)
 
-        # New provider, original kept (cold-start path replaces _sessions[key]
-        # via the post-start lock, but for the test we just check we did not
-        # short-circuit to the existing entry).
+        # New provider: we did not short-circuit to the doomed entry.
         assert provider2 is not provider
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_reuses_healthy_replacement_during_recycle(self, cfg):
+        """The _recycling marker is object-aware: when the map already holds a
+        healthy REPLACEMENT for a key whose OLD session is still being torn
+        down, get_or_create must reuse the replacement — not exile it and
+        cold-start a duplicate provider that would overwrite and leak it."""
+        from kiro_crew.session import _Session
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        old_provider, _, _ = await mgr.get_or_create("k1")
+        old_sess = mgr._sessions["k1"]
+        mgr.release("k1")
+
+        # Recycle of the OLD object is in flight; a racing cold-start has
+        # already registered a fresh replacement under the same key.
+        replacement_provider = AsyncMock()
+        replacement_provider.shutdown = AsyncMock()
+        replacement = _Session(provider=replacement_provider, is_new=False)
+        mgr._sessions["k1"] = replacement
+        mgr._recycling["k1"] = old_sess
+        try:
+            provider2, is_new, _ = await mgr.get_or_create("k1")
+        finally:
+            mgr._recycling.pop("k1", None)
+
+        assert provider2 is replacement_provider
+        assert is_new is False
+        assert mgr._sessions["k1"] is replacement
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_during_inplace_compact_reuses_session(self, cfg):
+        """An in-place compact (kiro or claude) keeps the entry healthy:
+        concurrent get_or_create must reuse it — queueing on the session
+        semaphore — instead of cold-starting a duplicate provider."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+
+        mgr._compacting.add("k1")  # in-place compact in flight; NOT recycling
+        try:
+            provider2, is_new, _ = await mgr.get_or_create("k1")
+        finally:
+            mgr._compacting.discard("k1")
+
+        assert provider2 is provider
+        assert is_new is False
         mgr.release("k1")
         await mgr.close_all()
 
@@ -2446,6 +2501,175 @@ class TestClaudeBackendCompaction:
         assert is_new is True
         assert provider is not None
         mgr.release("k1")
+        await mgr.close_all()
+
+
+class TestKiroInPlaceCompaction:
+    """kiro-cli auto-compaction runs /compact IN PLACE first, so the session
+    (and any queued/agentic work) continues automatically — recycle is only
+    the fallback. Fix for 'session stops after auto-compaction'."""
+
+    @staticmethod
+    def _inplace_provider_factory(result: dict):
+        """Provider whose native compaction reports *result*."""
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.shutdown = AsyncMock()
+            m.context_usage_pct = lambda: 0.0
+            m.compact = AsyncMock()
+            m.wait_for_compaction = AsyncMock(return_value=result)
+            return m
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_inplace_success_keeps_session_and_process(self, cfg):
+        mgr = SessionManager(
+            cfg, provider_factory=self._inplace_provider_factory({"type": "completed"})
+        )
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        cb = AsyncMock()
+        mgr.set_compact_callback(cb)
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        # Session survives in place: same entry, same provider, no SIGKILL.
+        assert "dashboard:chat-1" in mgr._sessions
+        assert mgr._sessions["dashboard:chat-1"].provider is provider
+        provider.compact.assert_awaited_once()
+        provider.shutdown.assert_not_awaited()
+        cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
+        # Semaphore released: the next turn can proceed immediately.
+        assert not mgr._sessions["dashboard:chat-1"].semaphore.locked()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_inplace_failed_result_falls_back_to_recycle(self, cfg):
+        mgr = SessionManager(
+            cfg, provider_factory=self._inplace_provider_factory({"type": "failed"})
+        )
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        cb = AsyncMock()
+        mgr.set_compact_callback(cb)
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        # Fallback recycle: entry dropped, process killed, context guaranteed
+        # to clear on the next (re-seeded) message.
+        assert "dashboard:chat-1" not in mgr._sessions
+        provider.shutdown.assert_awaited_once()
+        cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
+        assert "dashboard:chat-1" not in mgr._recycling
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_inplace_no_native_support_falls_back_to_recycle(self, cfg):
+        """Base LLMProvider.wait_for_compaction returns {'type': 'timeout'} —
+        providers without native compaction must keep today's recycle path."""
+        mgr = SessionManager(
+            cfg, provider_factory=self._inplace_provider_factory({"type": "timeout"})
+        )
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        cb = AsyncMock()
+        mgr.set_compact_callback(cb)
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        assert "dashboard:chat-1" not in mgr._sessions
+        provider.shutdown.assert_awaited_once()
+        cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_inplace_success_clears_failure_cooldown(self, cfg):
+        mgr = SessionManager(
+            cfg, provider_factory=self._inplace_provider_factory({"type": "completed"})
+        )
+        await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        mgr._compact_cooldown_until["dashboard:chat-1"] = time.monotonic() + 999
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        assert "dashboard:chat-1" not in mgr._compact_cooldown_until
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_inplace_holds_semaphore_so_queued_turns_wait(self, cfg):
+        """While the in-place compact runs, the session semaphore is held —
+        a queued turn waits behind it and then continues on the compacted
+        session instead of interleaving with the compaction."""
+        gate = asyncio.Event()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.shutdown = AsyncMock()
+            m.context_usage_pct = lambda: 0.0
+            m.compact = AsyncMock()
+
+            async def _wait(timeout=120.0):
+                await gate.wait()
+                return {"type": "completed"}
+
+            m.wait_for_compaction = _wait
+            return m
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        sess = mgr._sessions["dashboard:chat-1"]
+
+        task = asyncio.create_task(mgr._compact_session("dashboard:chat-1", 92.0))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert sess.semaphore.locked()  # queued turn would wait here
+
+        gate.set()
+        await asyncio.wait_for(task, timeout=2)
+        assert "dashboard:chat-1" in mgr._sessions
+        assert not sess.semaphore.locked()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_recycle_pop_by_identity_spares_replacement(self, cfg):
+        """If a racing cold-start replaced the entry while the recycle
+        fallback waited on the old turn semaphore, only the OLD session is
+        killed; the fresh replacement (and its session_map entry) survives."""
+        from kiro_crew.session import _Session
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        old_provider, _, _ = await mgr.get_or_create("k1")
+        old_sess = mgr._sessions["k1"]
+        # Keep the old turn semaphore held so the recycle blocks on acquire.
+        cb = AsyncMock()
+        mgr.set_compact_callback(cb)
+        # Skip the in-place attempt: force the fallback path directly.
+        mgr._compact_in_place = AsyncMock(return_value="failed")  # type: ignore[method-assign]
+
+        task = asyncio.create_task(mgr._compact_session("k1", 92.0))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+
+        # A racing cold-start replaces the entry with a fresh session.
+        new_provider = AsyncMock()
+        new_provider.shutdown = AsyncMock()
+        mgr._sessions["k1"] = _Session(provider=new_provider, is_new=False)
+
+        # Old turn ends -> recycle proceeds, pops by identity.
+        old_sess.semaphore.release()
+        await asyncio.wait_for(task, timeout=2)
+
+        # Replacement untouched; old provider reaped.
+        assert mgr._sessions["k1"].provider is new_provider
+        new_provider.shutdown.assert_not_awaited()
+        old_provider.shutdown.assert_awaited_once()
+        cb.assert_awaited_once_with("k1", 92.0, success=True)
         await mgr.close_all()
 
 
