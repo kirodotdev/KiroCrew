@@ -26,6 +26,7 @@ from kiro_crew.apps.builtins.auto_research.workflow_template import (
 )
 from kiro_crew.autonudge import get_instance as _autonudge_instance
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.knowledge.llm_pool import LLMPool
 
 try:
@@ -875,7 +876,7 @@ async def _launch_loop(request: web.Request, cid: str) -> None:
         return
     db = _get_db()
     row = db.execute(
-        "SELECT question, sub_questions, sources, scope_constraints, max_cycles, idle_secs, "
+        "SELECT name, question, sub_questions, sources, scope_constraints, max_cycles, idle_secs, "
         "success_criteria, auto_approve, parallel_workers FROM campaigns WHERE id = ?",
         (cid,),
     ).fetchone()
@@ -886,6 +887,40 @@ async def _launch_loop(request: web.Request, cid: str) -> None:
     slot = state.get_or_create_slot(
         name=f"research-{cid}", agent=_RESEARCH_AGENT, app="auto-research"
     )
+    # Give the app-owned worker slot a meaningful title (the campaign's human
+    # name) instead of the "New Session…" placeholder. The slot is driven by
+    # autonudge, whose injected messages carry role "nudge" (not "user"), so the
+    # normal LLM auto-titler never fires for it (_maybe_auto_title gates on
+    # user_count >= 1). Set it explicitly, mirroring the cron/workflow slot
+    # pattern: redact user-supplied text (defence-in-depth), lock _titled so
+    # display_title returns it instead of the placeholder, persist so it survives
+    # a gateway restart, and push a live SSE update to the sidebar/header.
+    raw_title = row["name"] or f"research-{cid}"
+    if _HAS_SECURITY:
+        raw_title, _ = redact_exfiltration_urls(raw_title)
+        raw_title, _ = redact_credentials(raw_title)
+    else:
+        # Fail closed: the campaign name is user-controlled, so if the security
+        # redactors are unavailable we must NOT persist/broadcast it. Fall back
+        # to the non-user-derived slot key, which carries no user content.
+        raw_title = f"research-{cid}"
+    slot.title = raw_title
+    slot._titled = True
+    # Persist the title so it survives a gateway restart. set_title() does
+    # synchronous file I/O (read + rewrite + fsync), so offload it to a thread
+    # to avoid blocking the event loop, and treat persistence as best-effort:
+    # a slow/failed write must never prevent the worker loop from being armed
+    # below (otherwise the campaign would be left running with no worker).
+    if getattr(state, "conversation_log", None) is not None:
+        try:
+            await asyncio.to_thread(
+                state.conversation_log.set_title, _history_key_for(slot.key), slot.title
+            )
+        except Exception:
+            logger.warning(
+                "auto_research: failed to persist slot title for %s", cid, exc_info=True
+            )
+    state.push_slot_title(slot.key, slot.title)
     # The worker runs autonomously — auto-approve its tools so the loop never
     # stalls on per-tool approval prompts (brakes: max_cycles, Stop, sandbox,
     # deny-list). The slot is app-owned, so it's hidden from the chat sidebar.

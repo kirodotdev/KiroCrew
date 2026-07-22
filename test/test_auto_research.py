@@ -1316,6 +1316,80 @@ class TestLoopLaunch:
         assert state.get_or_create_slot.return_value._trust is True
 
     @pytest.mark.asyncio
+    async def test_launch_sets_slot_title_from_campaign_name(self, monkeypatch):
+        # The worker slot is autonudge-driven (messages are role "nudge", not
+        # "user"), so the LLM auto-titler never fires and the slot would show
+        # the "New Session…" placeholder. _launch_loop must title it from the
+        # campaign's human name, lock _titled, and push a live update.
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        c = create_campaign(
+            {
+                "name": "SQLite vs Postgres deep dive",
+                "question": "Compare SQLite and PostgreSQL for desktop apps",
+                "sources": ["web"],
+            }
+        )
+        svc = MagicMock()
+        svc.add = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        state = MagicMock()
+        slot = SimpleNamespace(key=f"research-{c['id']}")
+        state.get_or_create_slot.return_value = slot
+        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        assert slot.title == "SQLite vs Postgres deep dive"
+        assert slot._titled is True
+        state.push_slot_title.assert_called_once_with(slot.key, "SQLite vs Postgres deep dive")
+        # Title persisted under the slot's canonical history key so it survives
+        # a gateway restart.
+        state.conversation_log.set_title.assert_called_once()
+        assert state.conversation_log.set_title.call_args.args[1] == "SQLite vs Postgres deep dive"
+
+    @pytest.mark.asyncio
+    async def test_launch_title_persist_failure_still_arms_worker(self, monkeypatch):
+        # Title persistence is best-effort: a set_title I/O failure must NOT
+        # propagate and leave the campaign running without its worker armed.
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        c = create_campaign(
+            {"question": "Research question about something here", "sources": ["web"]}
+        )
+        svc = MagicMock()
+        svc.add = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        state = MagicMock()
+        state.get_or_create_slot.return_value = SimpleNamespace(key=f"research-{c['id']}")
+        state.conversation_log.set_title.side_effect = OSError("disk full")
+        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        # Worker still armed despite the persistence failure.
+        svc.add.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_launch_title_fails_closed_without_redactors(self, monkeypatch):
+        # The campaign name is user-controlled. If the security redactors are
+        # unavailable (_HAS_SECURITY False), the title MUST fall back to the
+        # non-user-derived key rather than persisting/broadcasting raw input.
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        c = create_campaign(
+            {
+                "name": "http://evil.example/leak?token=abc",
+                "question": "Research question about something here",
+                "sources": ["web"],
+            }
+        )
+        svc = MagicMock()
+        svc.add = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "_HAS_SECURITY", False)
+        state = MagicMock()
+        slot = SimpleNamespace(key=f"research-{c['id']}")
+        state.get_or_create_slot.return_value = slot
+        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        assert slot.title == f"research-{c['id']}"
+        assert "evil.example" not in slot.title
+
+    @pytest.mark.asyncio
     async def test_launch_writes_brief(self, monkeypatch):
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
