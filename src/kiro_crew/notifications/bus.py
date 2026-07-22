@@ -243,6 +243,10 @@ class NotificationBus:
     def is_registered(self, channel: str) -> bool:
         return channel in self._channels
 
+    def channels(self) -> dict[str, str]:
+        """Snapshot of registered channels: {channel: default_priority}."""
+        return dict(self._channels)
+
     def push(self, payload: NotificationPayload) -> dict[str, Any]:
         """Validate, enrich, and deliver a notification.
 

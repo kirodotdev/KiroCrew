@@ -228,6 +228,8 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_notification_delete,
     api_notification_unack,
     api_notifications,
+    api_notification_channel_settings,
+    api_notification_channels,
     api_notifications_ack_all,
     api_notifications_clear,
     api_send_message,
