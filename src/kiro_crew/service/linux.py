@@ -252,16 +252,21 @@ def stop() -> None:
     _systemctl("stop", f"{SERVICE_NAME}.service")
 
 
-def restart() -> None:
-    """Atomically restart the service.
+def restart() -> bool:
+    """Atomically restart the service. Returns True iff systemctl succeeded.
 
     Single ``systemctl restart`` call rather than ``stop`` + ``start`` —
     smaller down-window, and the supervisor stays in charge of the
     lifecycle the whole time. ``Restart=on-failure`` semantics in the
     unit are unaffected: ``systemctl restart`` is an explicit operator
     action, so the manager honors it regardless of restart policy.
+
+    A system-scope restart requires root/polkit; an unprivileged caller
+    gets a non-zero exit ("Interactive authentication required"). We
+    return that outcome so callers do not report a restart that never
+    happened.
     """
-    _systemctl("restart", f"{SERVICE_NAME}.service")
+    return _systemctl("restart", f"{SERVICE_NAME}.service").returncode == 0
 
 
 def status() -> str:

@@ -130,12 +130,10 @@ def restart_service() -> bool:
     plat = current_platform()
     if plat == Platform.SYSTEMD:
         if linux.is_active():
-            linux.restart()
-            return True
+            return linux.restart()
         return False
     if plat == Platform.LAUNCHD:
         if macos.is_active():
-            macos.restart()
-            return True
+            return macos.restart()
         return False
     return False

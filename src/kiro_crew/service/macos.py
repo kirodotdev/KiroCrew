@@ -178,8 +178,8 @@ def stop() -> None:
         _launchctl("unload", str(PLIST_PATH))
 
 
-def restart() -> None:
-    """Restart the running agent.
+def restart() -> bool:
+    """Restart the running agent. Returns True iff the reload succeeded.
 
     ``launchctl restart`` was deprecated and behaves like ``stop`` —
     KeepAlive treats SIGTERM as an unsuccessful exit and respawns
@@ -189,10 +189,14 @@ def restart() -> None:
     (also without ``-w``) so the agent picks up any plist changes and
     starts a fresh process. This mirrors ``systemctl restart``
     semantics on Linux.
+
+    Returns False when the plist is absent or the ``load`` step exits
+    non-zero, so callers do not report a restart that never happened.
     """
-    if PLIST_PATH.exists():
-        _launchctl("unload", str(PLIST_PATH))
-        _launchctl("load", str(PLIST_PATH))
+    if not PLIST_PATH.exists():
+        return False
+    _launchctl("unload", str(PLIST_PATH))
+    return _launchctl("load", str(PLIST_PATH)).returncode == 0
 
 
 def status() -> str:

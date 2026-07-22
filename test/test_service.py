@@ -376,9 +376,28 @@ class TestControllerDispatch:
             "kiro_crew.service.controller.current_platform",
             return_value=Platform.SYSTEMD,
         ), patch.object(svc_linux, "is_active", return_value=True), patch.object(
-            svc_linux, "restart"
+            svc_linux, "restart", return_value=True
         ) as mock_restart:
             assert controller.restart_service() is True
+        mock_restart.assert_called_once()
+
+    def test_restart_service_returns_false_when_systemd_restart_fails(self):
+        # The core false-success bug: an unprivileged/failed `systemctl
+        # restart` exits non-zero, but restart_service() historically returned
+        # True regardless (it never checked restart()'s result), printing a
+        # bogus success. The controller must propagate the restart outcome so
+        # the caller falls back to the foreground path instead of assuming the
+        # service manager handled it.
+        from kiro_crew.service import controller
+        from kiro_crew.service import linux as svc_linux
+
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.SYSTEMD,
+        ), patch.object(svc_linux, "is_active", return_value=True), patch.object(
+            svc_linux, "restart", return_value=False
+        ) as mock_restart:
+            assert controller.restart_service() is False
         mock_restart.assert_called_once()
 
     def test_restart_service_routes_to_macos(self):
@@ -389,9 +408,22 @@ class TestControllerDispatch:
             "kiro_crew.service.controller.current_platform",
             return_value=Platform.LAUNCHD,
         ), patch.object(svc_macos, "is_active", return_value=True), patch.object(
-            svc_macos, "restart"
+            svc_macos, "restart", return_value=True
         ) as mock_restart:
             assert controller.restart_service() is True
+        mock_restart.assert_called_once()
+
+    def test_restart_service_returns_false_when_macos_restart_fails(self):
+        from kiro_crew.service import controller
+        from kiro_crew.service import macos as svc_macos
+
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.LAUNCHD,
+        ), patch.object(svc_macos, "is_active", return_value=True), patch.object(
+            svc_macos, "restart", return_value=False
+        ) as mock_restart:
+            assert controller.restart_service() is False
         mock_restart.assert_called_once()
 
     def test_restart_service_returns_false_when_macos_inactive(self):
@@ -620,6 +652,30 @@ class TestLinuxControlPaths:
             svc_linux.stop()
         called = [list(c.args[0]) for c in run.call_args_list]
         assert ["sudo", "systemctl", "stop", f"{SERVICE_NAME}.service"] in called
+
+    def test_restart_returns_true_on_success(self):
+        from kiro_crew.service import linux as svc_linux
+
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=ok
+        ) as run:
+            assert svc_linux.restart() is True
+        called = [list(c.args[0]) for c in run.call_args_list]
+        assert ["sudo", "systemctl", "restart", f"{SERVICE_NAME}.service"] in called
+
+    def test_restart_returns_false_on_nonzero_exit(self):
+        # An unprivileged / failed systemctl restart exits non-zero (systemd
+        # refuses a system-scope restart without root). restart() must report
+        # that failure, not swallow it -- this is the crux of the false-success
+        # bug: the outcome has to reach restart_service() and its caller.
+        from kiro_crew.service import linux as svc_linux
+
+        failed = MagicMock(returncode=1, stdout="", stderr="Interactive authentication required")
+        with patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=failed
+        ):
+            assert svc_linux.restart() is False
 
     def test_restart_invokes_systemctl_restart_atomic(self):
         # systemctl restart is preferred over stop+start: it's a single
