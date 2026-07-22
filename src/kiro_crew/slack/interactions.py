@@ -1611,7 +1611,7 @@ async def _handle_cron_ack(payload: dict, action: dict, channel: str, msg_ts: st
     if _orch.dashboard_state:
         for n in _orch.dashboard_state._notification_log:
             if n.get("job_id") == job_id and not n.get("acked"):
-                _orch.dashboard_state.ack_notification(n["ts"])
+                await _orch.dashboard_state.ack_notification(n["ts"])
                 _orch.dashboard_state.broadcast_ws("notification_ack", {"ts": n["ts"]})
 
 
@@ -1622,7 +1622,7 @@ async def _handle_subagent_ack(payload: dict, action: dict, channel: str, msg_ts
         return
     for n in _orch.dashboard_state._notification_log:
         if n.get("kind") == "subagent" and subagent_id in n.get("title", "") and not n.get("acked"):
-            _orch.dashboard_state.ack_notification(n["ts"])
+            await _orch.dashboard_state.ack_notification(n["ts"])
             _orch.dashboard_state.broadcast_ws("notification_ack", {"ts": n["ts"]})
 
 

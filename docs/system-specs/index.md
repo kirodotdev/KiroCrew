@@ -48,6 +48,7 @@ Load relevant module specs before making changes to that component. Read common 
 
 | Feature | Description |
 |---------|-------------|
+| [app-notifications](features/app-notifications.md) | App notification producers: push endpoint, manifest channels, rate limiting |
 | [claude-code-provider](features/claude-code-provider.md) | Removed — KiroCrew is KiroACP/kiro-cli only; documents the dormant ACP seam that remains |
 | [code-approvers](features/code-approvers.md) | Tier-based CR reviewer routing with drift validator |
 | [dashboard-token-auth](features/dashboard-token-auth.md) | Slack-gated HMAC token authentication for dashboard |

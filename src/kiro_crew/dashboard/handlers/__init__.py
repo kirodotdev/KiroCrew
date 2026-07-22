@@ -473,6 +473,9 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     logo,
     pwa_file,
 )
+from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
+    api_push_notification,
+)
 from kiro_crew.dashboard.handlers.optimizer import (  # noqa: E402, F401
     handle_optimize,
 )

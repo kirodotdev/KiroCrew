@@ -555,6 +555,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
     app.router.add_get("/api/notifications", handlers.api_notifications)
+    app.router.add_post("/api/notifications/push", handlers.api_push_notification)
     app.router.add_post("/api/notifications/clear", handlers.api_notifications_clear)
 
     # Auto-nudge (feature-flagged — returns 503 when KIROCREW_AUTONUDGE unset)

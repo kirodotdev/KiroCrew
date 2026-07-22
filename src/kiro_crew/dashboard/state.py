@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from kiro_crew.notifications.bus import (
     normalize_note,
     payload_from_legacy,
 )
+from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1354,6 +1356,14 @@ class DashboardState:
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         self.notification_bus = NotificationBus(sink=self._deliver_note)
+        # Future of the most recent delivery-sink persist job (None when the
+        # last persist ran inline). The app push handler awaits it to give a
+        # durability guarantee; legacy producers ignore it (best-effort).
+        self.last_notification_persist: asyncio.Future[bool] | None = None
+        # Per-app push rate limiter (RFC Phase 2). State-owned (not a module
+        # global) so its lifecycle matches the gateway instance and tests get
+        # isolation for free.
+        self.notification_rate_limiter = AppRateLimiter()
         self._slots: dict[str, _ChatSlot] = {}
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         self._slot_counter = 0
@@ -1815,7 +1825,25 @@ class DashboardState:
         self._notification_log.append(note)
         self._unread_count += 1
         self._broadcast(note)
-        _persist_notification(note)
+        # Persistence does blocking file I/O (append + possible trim). The
+        # bus sink is now externally drivable (Phase 2 app producers), so on
+        # a running event loop the write is offloaded to a dedicated
+        # single-worker executor (FIFO keeps on-disk order = delivery order).
+        # A snapshot copy is handed off because the in-memory note can be
+        # mutated afterwards on the loop (e.g. ack sets note["acked"]).
+        # The future is stashed so callers that need durability (the app
+        # push endpoint) can await it and read the success bool; legacy
+        # system producers stay fire-and-forget (best-effort history).
+        # Without a running loop (unit tests, sync callers) persist inline.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _persist_notification(note)
+            self.last_notification_persist = None
+        else:
+            self.last_notification_persist = loop.run_in_executor(
+                _notification_io_executor(), _persist_notification, dict(note)
+            )
 
     def register_sse(self) -> asyncio.Queue[dict[str, Any]]:
         """Register a new SSE client and return its dedicated queue."""
@@ -1834,45 +1862,56 @@ class DashboardState:
         """Reset unread counter (called when client opens notification panel)."""
         self._unread_count = 0
 
-    def delete_notification(self, ts: str) -> bool:
+    async def _rewrite_notifications_async(self) -> None:
+        """Rewrite the notifications file on the I/O executor and await it.
+
+        All disk mutations (appends from ``_deliver_note`` and rewrites from
+        delete/ack/clear) go through the same single-worker executor, so they
+        execute strictly in submission order — a rewrite submitted after an
+        append can never be overtaken by it (no resurrection of deleted
+        rows). Awaiting makes the mutation durable before the HTTP response
+        returns. A shallow per-row snapshot is handed off because rows are
+        mutated on the loop (e.g. ack flags).
+        """
+        snapshot = [dict(n) for n in self._notification_log]
+        await asyncio.get_running_loop().run_in_executor(
+            _notification_io_executor(), _rewrite_notifications, snapshot
+        )
+
+    async def delete_notification(self, ts: str) -> bool:
         """Remove a single notification by timestamp and persist to disk."""
         before = len(self._notification_log)
         self._notification_log = [n for n in self._notification_log if n.get("ts") != ts]
         removed = len(self._notification_log) < before
         if removed:
-            _rewrite_notifications(self._notification_log)
+            await self._rewrite_notifications_async()
         return removed
 
-    def ack_notification(self, ts: str) -> bool:
+    async def ack_notification(self, ts: str) -> bool:
         """Mark a notification as acknowledged and persist."""
         for n in self._notification_log:
             if n.get("ts") == ts:
                 n["acked"] = True
-                _rewrite_notifications(self._notification_log)
+                await self._rewrite_notifications_async()
                 self.broadcast_ws("notification_ack", {"ts": ts})
                 return True
         return False
 
-    def unack_notification(self, ts: str) -> bool:
+    async def unack_notification(self, ts: str) -> bool:
         """Mark a notification as unread and persist."""
         for n in self._notification_log:
             if n.get("ts") == ts:
                 n["acked"] = False
-                _rewrite_notifications(self._notification_log)
+                await self._rewrite_notifications_async()
                 self.broadcast_ws("notification_unack", {"ts": ts})
                 return True
         return False
 
-    def clear_notifications(self) -> None:
+    async def clear_notifications(self) -> None:
         """Remove all notifications from memory and disk."""
         self._notification_log.clear()
         self._unread_count = 0
-        path = _notifications_path()
-        try:
-            if path.exists():
-                path.write_text("", encoding="utf-8")
-        except Exception:
-            logger.debug("Failed to clear notifications file", exc_info=True)
+        await self._rewrite_notifications_async()
 
     def get_slot(self, name: str) -> _ChatSlot | None:
         """Look up a slot by name without creating it. Returns None if absent."""
@@ -2624,8 +2663,31 @@ def _load_notifications() -> list[dict[str, Any]]:
         return []
 
 
-def _persist_notification(note: dict[str, str]) -> None:
-    """Append a single notification to the JSONL file on disk."""
+# Notification file I/O runs exclusively on this single-worker executor when
+# an event loop is running: appends (from the delivery sink) and rewrites
+# (from delete/ack/clear) execute strictly in submission order, so no lock is
+# needed and the loop never blocks on file I/O.
+_notification_io_pool: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _notification_io_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Lazily create the single-worker executor for notification persistence."""
+    global _notification_io_pool
+    if _notification_io_pool is None:
+        _notification_io_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="notif-io"
+        )
+    return _notification_io_pool
+
+
+def _persist_notification(note: dict[str, str]) -> bool:
+    """Append a single notification to the JSONL file on disk.
+
+    Returns True on success. Failures are swallowed (legacy system producers
+    are explicitly best-effort — history is a cache, delivery is the
+    broadcast) but reported via the return value so callers that need
+    durability (the app push endpoint) can surface them.
+    """
     path = _notifications_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2633,8 +2695,10 @@ def _persist_notification(note: dict[str, str]) -> None:
             f.write(json.dumps(note) + "\n")
         # Trim if file grows too large (keep last N lines)
         _maybe_trim_notifications(path)
+        return True
     except Exception:
         logger.debug("Failed to persist notification", exc_info=True)
+        return False
 
 
 def _rewrite_notifications(notifications: list[dict[str, str]]) -> None:

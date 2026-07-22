@@ -966,6 +966,17 @@ def get_app_manifest(name: str) -> AppManifest | None:
         return None
 
 
+def is_app_enabled(name: str) -> bool:
+    """Read-only enablement check: True only for an installed, enabled app.
+
+    Unlike ``get_app`` this never writes (no version-sync side effect), so it
+    is safe to call from worker threads (e.g. ``asyncio.to_thread``) without
+    racing loop-side writers of ``installed.json``.
+    """
+    meta = _read_installed(name)
+    return bool(meta and meta.enabled)
+
+
 def set_app_source(name: str, source: str) -> bool:
     """Update the ``source`` field of an installed app's metadata.
 

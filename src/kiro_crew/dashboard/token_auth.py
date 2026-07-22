@@ -1052,6 +1052,14 @@ def app_token_path_allowed(app_name: str, path: str) -> bool:
         return False
     if _app_owns_path(app_name, path):
         return True
+    # Notification push (RFC local notification bus, Phase 2): every app may
+    # reach this single push-only endpoint — the handler independently
+    # enforces app identity (from the verified token), manifest-declared
+    # channels, and per-app rate limits, so the grant confers no cross-app
+    # authority. Deliberately NOT /api/notifications: that path also serves
+    # GET (read history) and DELETE, which app tokens must not reach.
+    if path == "/api/notifications/push":
+        return True
     return any(_api_pattern_matches(p, path) for p in _app_api_allowlist(app_name))
 
 

@@ -571,7 +571,7 @@ async def api_cron_ack(request: web.Request) -> web.Response:
     notification_ts = body.get("ts", "")
     ok = state.crons.ack_job(job_id, summary)
     if notification_ts:
-        state.ack_notification(notification_ts)
+        await state.ack_notification(notification_ts)
     return web.json_response({"ok": ok})
 
 

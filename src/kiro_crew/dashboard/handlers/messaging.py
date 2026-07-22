@@ -29,7 +29,6 @@ from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
     DashboardState,
-    _rewrite_notifications,
 )
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.format import build_options_blocks, extract_options
@@ -362,14 +361,14 @@ async def api_notification_delete(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
-    ok = state.delete_notification(ts)
+    ok = await state.delete_notification(ts)
     return web.json_response({"ok": ok})
 
 
 async def api_notifications_clear(request: web.Request) -> web.Response:
     """POST /api/notifications/clear — clear all notifications."""
     state: DashboardState = request.app["state"]
-    state.clear_notifications()
+    await state.clear_notifications()
     return web.json_response({"ok": True})
 
 
@@ -383,7 +382,7 @@ async def api_notification_ack(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
-    ok = state.ack_notification(ts)
+    ok = await state.ack_notification(ts)
     return web.json_response({"ok": ok})
 
 
@@ -402,7 +401,7 @@ async def api_notification_unack(request: web.Request) -> web.Response:
         if n.get("ts") == ts and n.get("kind") == "cron" and n.get("job_id"):
             state.crons.unack_job(n["job_id"])
             break
-    ok = state.unack_notification(ts)
+    ok = await state.unack_notification(ts)
     return web.json_response({"ok": ok})
 
 
@@ -411,7 +410,10 @@ async def api_notifications_ack_all(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     for n in state._notification_log:
         n["acked"] = True
-    _rewrite_notifications(state._notification_log)
+    # Same ordered executor as every other notification-file mutation: a
+    # rewrite submitted after a queued delivery append can never be
+    # overtaken by it, and durability is awaited before responding.
+    await state._rewrite_notifications_async()
     state.broadcast_ws("notification_ack", {"ts": "*"})
     return web.json_response({"ok": True})
 

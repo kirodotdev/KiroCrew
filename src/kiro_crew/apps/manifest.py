@@ -582,11 +582,91 @@ class PublishProviderConfig:
 # ---------------------------------------------------------------------------
 
 # Fields that are parsed into typed dataclass attributes
+@dataclass
+class NotificationChannel:
+    """A producer-declared notification channel (RFC local notification bus, Phase 2)."""
+
+    id: str = ""  # kebab-case, unique within the app
+    name: str = ""  # human-readable display name for settings UI
+    icon: str = ""  # lucide icon name (optional)
+    defaultPriority: str = "default"  # "critical" | "default" | "passive"  # noqa: N815
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"id": self.id, "name": self.name}
+        if self.icon:
+            d["icon"] = self.icon
+        if self.defaultPriority != "default":
+            d["defaultPriority"] = self.defaultPriority
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NotificationChannel:
+        return cls(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "")),
+            icon=str(data.get("icon", "")),
+            defaultPriority=str(data.get("defaultPriority", "default")),  # noqa: N815
+        )
+
+
+# Maximum declared channels per app (RFC "Channel registry"): keeps the
+# per-channel settings surface bounded; raising later is free, lowering after
+# apps ship with more is a breaking change.
+MAX_NOTIFICATION_CHANNELS = 8
+
+_CHANNEL_PRIORITIES = ("critical", "default", "passive")
+
+
+@dataclass
+class NotificationsConfig:
+    """Notification channel declarations for an app."""
+
+    channels: list[NotificationChannel] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        if not self.channels:
+            return {}
+        return {"channels": [c.to_dict() for c in self.channels]}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NotificationsConfig:
+        raw = data.get("channels", [])
+        channels = [NotificationChannel.from_dict(c) for c in raw if isinstance(c, dict)]
+        return cls(channels=channels)
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        if len(self.channels) > MAX_NOTIFICATION_CHANNELS:
+            errors.append(
+                f"notifications.channels: at most {MAX_NOTIFICATION_CHANNELS} channels "
+                f"per app, got {len(self.channels)}"
+            )
+        seen: set[str] = set()
+        for ch in self.channels:
+            if not ch.id:
+                errors.append("notifications.channels: channel missing required field: id")
+                continue
+            if not KEBAB_RE.match(ch.id):
+                errors.append(f"notifications.channels: channel id must be kebab-case: {ch.id!r}")
+            if ch.id in seen:
+                errors.append(f"notifications.channels: duplicate channel id: {ch.id!r}")
+            seen.add(ch.id)
+            if not ch.name:
+                errors.append(f"notifications.channels: channel {ch.id!r} missing name")
+            if ch.defaultPriority not in _CHANNEL_PRIORITIES:
+                errors.append(
+                    f"notifications.channels: channel {ch.id!r} defaultPriority must be "
+                    f"one of {_CHANNEL_PRIORITIES}, got {ch.defaultPriority!r}"
+                )
+        return errors
+
+
 _KNOWN_FIELDS = frozenset({
     "name", "version", "displayName", "description", "author", "license",
     "minKiroCrewVersion", "signer", "signature", "agents", "skills", "sops",
     "mcpServers", "crons", "ui", "backend", "permissions", "setup", "tags",
     "jobFamilies", "platform", "dependencies", "publishProvider",
+    "notifications",
 })
 
 
@@ -641,6 +721,9 @@ class AppManifest:
 
     # --- Publish registry (Route B, §1.3) ---
     publishProvider: PublishProviderConfig = field(default_factory=PublishProviderConfig)  # noqa: N815
+
+    # --- Notifications (RFC local notification bus, Phase 2) ---
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -726,18 +809,29 @@ class AppManifest:
         # Backend hooks validation
         errors.extend(self.backend.hooks.validate())
 
+        # Notification channel validation (RFC Phase 2: 8-channel cap, kebab ids)
+        errors.extend(self.notifications.validate())
+
         return errors
 
     def signing_payload(self) -> bytes:
         """Canonical bytes an admission signature covers (manifest minus the
-        signature). Deterministic across field ordering so a future admission
-        verify has a stable payload over name/version/signer/permissions."""
+        signature). Dict keys are sorted for determinism; note the channels
+        list keeps its manifest order, so reordering channel declarations is
+        a signature-relevant change (intentional -- the signed bytes track
+        the manifest as written)."""
         body = {
             "name": self.name,
             "version": self.version,
             "signer": self.signer,
             "permissions": self.permissions.to_dict(),
         }
+        if self.notifications.channels:
+            # Channel declarations gate what an app may push and at which
+            # default priority -- tampering must invalidate the signature.
+            # Included only when non-empty so manifests signed before
+            # notifications existed keep producing the identical payload.
+            body["notifications"] = self.notifications.to_dict()
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -793,6 +887,9 @@ class AppManifest:
         pp_d = self.publishProvider.to_dict()
         if pp_d:
             d["publishProvider"] = pp_d
+        notif_d = self.notifications.to_dict()
+        if notif_d:
+            d["notifications"] = notif_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -862,6 +959,13 @@ class AppManifest:
             else PublishProviderConfig()
         )
 
+        notif_raw = data.get("notifications", {})
+        notifications = (
+            NotificationsConfig.from_dict(notif_raw)
+            if isinstance(notif_raw, dict)
+            else NotificationsConfig()
+        )
+
         return cls(
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
@@ -888,6 +992,7 @@ class AppManifest:
             dependencies=deps,
             platform=platform_cfg,
             publishProvider=publish_provider,
+            notifications=notifications,
             tags=[str(t) for t in data.get("tags", []) if t],
             jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
             extra=extra,

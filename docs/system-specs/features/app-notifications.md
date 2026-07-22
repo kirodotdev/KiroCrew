@@ -1,0 +1,72 @@
+# App Notification Producers (Push Endpoint) — Design Document
+
+Last Updated: 2026-07-22 (initial: RFC local notification bus, Phase 2)
+
+## Overview
+
+Phase 2 of the local notification bus (`docs/request-for-change/rfc-local-notification-bus.md`): installed apps become first-class notification producers. An app declares its channels in `app.json`, then pushes notifications through `POST /api/notifications/push` authenticated with its app token. The gateway resolves the producer identity server-side from the verified token (never from the request body), enforces manifest-declared channels, and applies a per-app rate limit. Delivered notes flow through the Phase 1 `NotificationBus` sink (`DashboardState._deliver_note`), which redacts, broadcasts to SSE clients, and persists.
+
+## API
+
+### POST /api/notifications/push
+
+App-token-only endpoint (dashboard-user tokens are rejected with 403: they have no app identity, and the endpoint is for producers). Registered in `server.py` `_register_mcp_routes`, so it serves both the dashboard app and the headless gateway.
+
+Request body (JSON, max 64 KB — enforced on Content-Length AND incrementally on the raw stream so chunked transfer-encoding cannot bypass it):
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `channel` | string | yes | A channel id declared in the app's manifest (bare id, not the full dotted name) |
+| `title` | string | yes | Validated by `NotificationPayload.validate()` (length caps) |
+| `body` | string | yes | Length-capped |
+| `priority` | string | no | `critical` / `default` / `passive`; defaults to the channel's `defaultPriority` |
+| `group_key`, `url`, `icon`, `ttl`, `actions`, `meta` | — | no | Passed through payload validation; `url` must be a dashboard-internal path |
+
+The note's `source` is always `app:<name>` resolved from the verified token; `channel` becomes `<app-name>.<channel-id>`.
+
+Responses: `200` with `{"ok": true, "note": {...}}` where `note` is the enriched note (resolved `source`, full `channel`, effective `priority`, server timestamp `ts`); `400` (validation failure — including a corrupt on-disk manifest `defaultPriority`), `403` (no app token / app disabled or unknown / channel not declared), `413` (oversized body), `429` (rate limited), `500` (delivery or persistence failure, SEL-audited). A `200` is a durability guarantee: the handler awaits the persist job before acknowledging, so an accepted push cannot be silently lost to a disk failure. Legacy system producers remain best-effort fire-and-forget.
+
+### Request pipeline order
+
+`validate -> register-channel-once -> rate-limit token -> bus.push`, chosen so that:
+
+- Invalid payloads and corrupt-manifest 400s never consume a rate-limit token (the budget caps DELIVERED notifications).
+- Channel registration happens at most once per channel (re-registering every push would stomp future runtime priority overrides).
+- A `NotificationValidationError` escaping `bus.push` (unreachable today; safety net) refunds the token. A sink failure (e.g. disk full) deliberately does NOT refund: delivery may be partial, and throttling a producer while the gateway is failing is protective.
+
+## Manifest schema: `notifications.channels`
+
+```json
+{
+  "notifications": {
+    "channels": [
+      { "id": "sync-status", "name": "Sync status", "defaultPriority": "passive" }
+    ]
+  }
+}
+```
+
+Validation (`apps/manifest.py`): max 8 channels per app, kebab-case ids, unique ids, `defaultPriority` in the priority enum. The `notifications` block is covered by `signing_payload()` when non-empty, so channel declarations (including any `critical` default priority) are tamper-evident post-signing; manifests without channels produce a byte-identical signing payload to pre-Phase-2 manifests (backward compatible).
+
+## Authorization
+
+- **Token gate** (`token_auth.py` `app_token_path_allowed`): app tokens are deny-by-default; a single carve-out grants every app token exactly `/api/notifications/push`. Deliberately NOT `/api/notifications` — that path also serves GET (read history) and DELETE, which app tokens must not reach.
+- **Handler checks**: app must be installed AND enabled (`is_app_enabled`, a read-only accessor safe for `asyncio.to_thread` — unlike `get_app` it has no version-sync write side effect), and the channel must be declared in the manifest. Manifest reads run off-loop via `asyncio.to_thread` (TOCTOU window accepted: one final notification from a just-disabled app).
+- **Auditing**: every denial, error, and grant emits SEL `log_api_access` with the caller identity.
+
+## Rate limiting
+
+`notifications/rate_limit.py` `AppRateLimiter`: per-app token bucket, 30 notifications per 5 minutes with burst 10. State-owned (`DashboardState.notification_rate_limiter`), not a module global, so its lifecycle matches the gateway instance and tests get isolation. Buckets are never evicted; growth is bounded because only installed, enabled apps reach the limiter (unknown apps 403 earlier). `refund(app_name)` returns one token (capped at burst) for requests that consumed a token but delivered nothing.
+
+## Delivery and event-loop safety
+
+`bus.push` delivers synchronously into `DashboardState._deliver_note` (redact, append to in-memory log, SSE broadcast). Persistence (JSONL append + trim) does blocking file I/O; because the sink is externally drivable in Phase 2, ALL notification file mutations run on a dedicated single-worker executor when a loop is running: appends from the delivery sink AND whole-file rewrites from delete/ack/unack/clear. Single-worker execution means strict submission order — a rewrite submitted after an append can never be overtaken by that append, so a deleted notification cannot be resurrected by a still-queued persist. Mutation endpoints (`delete_notification`, `ack_notification`, `unack_notification`, `clear_notifications`) are async and await durability before responding; the delivery sink stays fire-and-forget (a push response does not need to wait for disk). Snapshot copies are handed to the executor so later loop-side mutation (e.g. ack flags) cannot race serialization. No locks are taken on the event loop and no file I/O runs on it. Sync callers (tests, CLI) persist inline.
+
+## Testing
+
+`test/test_notifications_push.py` (39 tests): auth bypass attempts, undeclared channels, oversized/chunked bodies, rate limit + refund semantics, falsy-but-valid fields, signing-payload coverage, register-once behavior, sink-failure 500. `test/test_dashboard.py` covers persistence, load-time redaction, and the executor-offloaded persist path.
+
+## Known follow-ups
+
+- An app named `system` could produce `full_channel == "system.<id>"`, shadowing reserved system channels (cosmetic spoofing only — `source` stays `app:system` and is SEL-audited). Follow-up: reject reserved app names at install or namespace app channels distinctly.
+- Phase 3 (per RFC): per-channel user settings and runtime priority overrides.
