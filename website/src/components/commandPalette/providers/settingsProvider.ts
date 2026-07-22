@@ -11,7 +11,7 @@ import { SETTINGS_KEYWORDS } from '../settingsKeywords'
 import type { SettingEntry } from '../settingsTypes'
 
 /**
- * Settings provider for the Search Everywhere command palette (Mesh-2151).
+ * Settings provider for the Search Everywhere command palette.
  *
  * Backs the **Settings** tab. Searches over the codegen'd SETTINGS_REGISTRY
  * (label, description, keywords, tab name) using the shared fuzzy matcher.

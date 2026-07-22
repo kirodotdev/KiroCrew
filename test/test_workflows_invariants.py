@@ -241,7 +241,7 @@ def test_syntax_error_is_reported_not_raised() -> None:
 
 # --------------------------------------------------------------------------- #
 # GATE group B (DSL-contract half) — two authoring-bug classes that shipped
-# runtime crashes in generated scripts (see the meshclaw-core-group bug thread):
+# runtime crashes in generated scripts (see the core-group bug thread):
 #   * awaiting a SYNCHRONOUS ctx method (ctx.phase/log/nudge) → "can't await NoneType"
 #   * dereferencing an awaited nullable ctx result inline → "'NoneType' has no
 #     attribute 'get'" / "not subscriptable" when the agent returns None

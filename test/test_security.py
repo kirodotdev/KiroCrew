@@ -66,7 +66,7 @@ class TestRedactCredentials:
         assert "BEGIN OPENSSH PRIVATE KEY" not in result
 
     def test_redacts_full_private_key_body(self) -> None:
-        """Talos 05687e60: the base64 BODY (not just the header) must be redacted."""
+        """security-review 05687e60: the base64 BODY (not just the header) must be redacted."""
         body_a = "MIIEpAIBAAKCAQEA1234567890abcdefghijklmnopqrstuvwxyzABCDEF"
         body_b = "GHIJKLMNOPQRSTUVWXYZ0987654321zyxwvutsrqponmlkjihgfedcba"
         text = (
@@ -142,7 +142,7 @@ class TestRedactCredentials:
     def test_pem_header_in_prose_without_end_keeps_trailing_lines(self) -> None:
         """A PEM BEGIN header mentioned inline in prose (no body, no END marker)
         must not swallow trailing lines to end-of-string. Guards the `$`
-        end-of-string over-redaction regression (Talos 05687e60)."""
+        end-of-string over-redaction regression (security-review 05687e60)."""
         text = (
             "For example, a PEM key starts with "
             "-----BEGIN RSA PRIVATE KEY----- and contains base64 data.\n"
@@ -157,7 +157,7 @@ class TestRedactCredentials:
     def test_redacts_encrypted_private_key_across_dek_info_blank_line(self) -> None:
         """RFC 1421 ENCRYPTED PEM (no END): the mandatory blank line between the
         DEK-Info header and the base64 body must NOT terminate the run — the
-        whole body is redacted. Guards the round-3 leak (CR-289301166) where a
+        whole body is redacted. Guards the round-3 leak where a
         single blank line ended the continuation and emitted the body verbatim."""
         body_line1 = "MIIEpQIBAAKCAQEAencryptedbodybytesABCDEF1234567890zyxwv"
         body_line2 = "secondencryptedbodylineGHIJKL0987654321mnopqrABCDEF"
@@ -178,7 +178,7 @@ class TestRedactCredentials:
     def test_two_blank_lines_terminate_private_key_run(self) -> None:
         """TWO+ consecutive blank lines terminate the truncated-key run so
         trailing prose is preserved (no over-redaction). The single-blank-line
-        lookahead must not extend across a paragraph break (CR-289301166)."""
+        lookahead must not extend across a paragraph break."""
         body = "MIIEpQIBAAKCAQEAbodybytes1234567890abcdefghijklmnop"
         text = (
             "-----BEGIN RSA PRIVATE KEY-----\n"
@@ -362,7 +362,7 @@ class TestRedactCredentials:
         assert "TOKEN2" not in result
         assert '"region":"x"' in result
 
-    # ── JWT / Authorization: Bearer tokens (Talos cc1d6bdd) ──
+    # ── JWT / Authorization: Bearer tokens (security-review cc1d6bdd) ──
     # JWTs and OAuth bearer tokens leaked in tool output / logs were previously
     # not redacted. `eyJ` is the base64url of every JWT header's `{"` prefix.
 
@@ -438,7 +438,7 @@ class TestRedactCredentials:
     def test_redacts_json_shaped_authorization_bearer(self) -> None:
         """A serialized JSON header `{"Authorization": "Bearer <tok>"}` redacts.
 
-        Heimdall round-2 follow-up to CR-289081658: the quote before the `:` and
+        security-review round-2 follow-up to the quote before the `:` and
         the quote before the token defeated the old `Authorization:\\s*Bearer`
         prefix, leaking the token in structured logs / JSON request dumps.
         """
@@ -527,7 +527,7 @@ class TestRedactCredentialsBase64:
 
 
 class TestBareSecretKeyRedaction:
-    """Label-independent 40-char AWS secret-key redaction (Talos bf7b1baf).
+    """Label-independent 40-char AWS secret-key redaction (security-review bf7b1baf).
 
     A bare 40-char base64 secret (the value paired with an AKIA/ASIA access key
     ID) carries no distinctive prefix and no ``key=`` label, so the labelled
@@ -725,15 +725,15 @@ class TestSandboxDeniedCommands:
     # --- ada: allowed (blocked by kiro-cli at runtime) ---
 
     def test_ada_update_once_allowed(self, denied_commands: list[str]) -> None:
-        cmd = "ada credentials update --once --account 123 --provider conduit --role Admin"
+        cmd = "ada credentials update --once --account 123 --provider sso --role Admin"
         assert not self._is_denied(cmd, denied_commands)
 
     def test_ada_update_daemon_allowed(self, denied_commands: list[str]) -> None:
-        cmd = "ada credentials update --account 123 --provider isengard --role Admin"
+        cmd = "ada credentials update --account 123 --provider iam --role Admin"
         assert not self._is_denied(cmd, denied_commands)
 
     def test_ada_profile_add_allowed(self, denied_commands: list[str]) -> None:
-        cmd = "ada profile add --profile staging --account 123 --provider conduit --role Y"
+        cmd = "ada profile add --profile staging --account 123 --provider sso --role Y"
         assert not self._is_denied(cmd, denied_commands)
 
     def test_ada_profile_list_allowed(self, denied_commands: list[str]) -> None:
@@ -980,7 +980,7 @@ class TestBuiltinDenyPatterns:
         """Per-segment evaluation: legitimate ``git stash push`` followed by
         unrelated commands via shell separators is now allowed.
 
-        Under the prior whole-string design (CR-272068197) these were
+        Under the prior whole-string design these were
         over-blocked because any separator suppressed the stash exception.
         Per-segment evaluation classifies each segment independently — the
         stash segment matches its exception, the trailing segments don't
@@ -1021,7 +1021,7 @@ class TestBuiltinDenyPatterns:
         """
         from kiro_crew.security import is_denied
 
-        # Concrete bypass attempt — flagged by AutoSDE on CR-276508806 rev 1.
+        # Concrete bypass attempt — flagged by review-bot on rev 1.
         assert is_denied("git$(echo ' ')push origin main") is not None
         # Other variants that exploit the same boundary trick.
         assert is_denied("git$(echo)push origin") is not None
@@ -1032,7 +1032,7 @@ class TestBuiltinDenyPatterns:
         """``&`` (single ampersand, the bash background operator) must split
         segments like ``;`` and ``&&``.
 
-        Regression for AutoSDE finding on CR-276508806 rev 2: the rev-2
+        Regression for review-bot finding on rev 2: the rev-2
         ``_CMD_SPLIT_RE`` covered ``&&`` but not a lone ``&``, so
         ``git stash push & git push origin main`` (which bash backgrounds
         the left command and immediately runs the right) stayed a single
@@ -1061,7 +1061,7 @@ class TestBuiltinDenyPatterns:
         exception, so a *different* pattern with no exception still triggers
         an outright deny.
 
-        Regression for AutoSDE finding on CR-276508806 rev 1: the original
+        Regression for review-bot finding on rev 1: the original
         pass-2 inner loop used ``break`` after granting an exception, which
         would skip remaining patterns.  In rev 2 the equivalent logic in
         pass 1 records the exception-matched pattern as a candidate and
@@ -1108,7 +1108,7 @@ class TestBuiltinDenyPatterns:
         """A legit feature-branch push must be ALLOWED even when an EARLIER
         chained segment merely contains the word ``push``.
 
-        Ported upstream regression guard (MeshClaw f93e2f07 / CR-290209851):
+        Ported upstream regression guard (from the upstream project):
         upstream's two-pass gate matched a bare ``\\bpush\\b`` in any segment,
         so prose like ``git commit -m 'ready to push'`` was denied before the
         refspec normalizer could allow the real feature-branch push. This
@@ -1164,7 +1164,7 @@ class TestBuiltinDenyPatterns:
     def test_deny_event_audit_emitted_on_block(self, monkeypatch) -> None:
         """Every denial path emits a ``deny_event`` SEL event.
 
-        Regression test for AutoSDE finding on CR-276508806 rev 1: prior
+        Regression test for review-bot finding on rev 1: prior
         revision only emitted SEL audit on the exception-granted path,
         leaving denials un-audited.
         """
@@ -1524,7 +1524,7 @@ class TestRedactExfiltrationUrls:
 
 
 class TestExfilUrlPathAndRawIp:
-    """Talos 78224f3f: secrets embedded in the URL PATH (no ``?``) and raw-IP /
+    """security-review 78224f3f: secrets embedded in the URL PATH (no ``?``) and raw-IP /
     IPv6 literal hosts must be scanned/redacted — previously both bypassed
     scan_exfiltration_urls (query-only scan + letter-TLD-only host regex)."""
 
@@ -1551,7 +1551,7 @@ class TestExfilUrlPathAndRawIp:
 
     def test_ipv4_mapped_ipv6_imds_host_scanned(self) -> None:
         # IPv4-mapped IPv6 literal (dotted-quad suffix) must match _URL_RE — a
-        # concrete IMDS bypass otherwise (Talos 78224f3f).
+        # concrete IMDS bypass otherwise (security-review 78224f3f).
         text = "curl http://[::ffff:169.254.169.254]/latest/AKIAIOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text), "IPv4-mapped IPv6 IMDS host must be flagged"
 
@@ -1916,14 +1916,25 @@ class TestIsSensitivePath:
     def test_kirocrew_env(self) -> None:
         assert is_sensitive_path("~/.kirocrew/.env") is True
 
+    def test_browser_auth_cookie_paths(self) -> None:
+        # The browser-auth cookie jar + the Playwright storage-state derived from
+        # it hold reusable authenticated-session cookies. Agent file tools must
+        # not read them through the shared gate, or a prompt-injected turn could
+        # exfiltrate live browser sessions.
+        home = str(Path.home())
+        assert is_sensitive_path("~/.kirocrew/browser-cookies.txt") is True
+        assert is_sensitive_path("~/.kirocrew/playwright-storage-state.json") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/browser-cookies.txt") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/playwright-storage-state.json") is True
+
     def test_sel_hmac_key(self) -> None:
-        # Talos finding cdf82704: the SEL HMAC signing key is the trust root of
+        # security-review finding cdf82704: the SEL HMAC signing key is the trust root of
         # the tamper-evident audit chain. If an audited agent could fs_read it,
         # it could forge the entire chain, so it must be sensitive (read-blocked).
         assert is_sensitive_path("~/.kirocrew/sel_hmac.key") is True
 
     def test_security_events_log(self) -> None:
-        # Talos finding cdf82704: the SEL audit log itself must not be
+        # security-review finding cdf82704: the SEL audit log itself must not be
         # readable/rewritable by the audited agent (tamper of the evidence trail).
         assert is_sensitive_path("~/.kirocrew/security_events.jsonl") is True
 
@@ -1942,19 +1953,19 @@ class TestIsSensitivePath:
         assert is_sensitive_path(f"{home}/.kirocrew/app_admission.json") is True
 
     def test_token_signing_key(self) -> None:
-        # Mesh-2369: token_signing.key (dashboard/token_secret.py) signs every
+        # token_signing.key (dashboard/token_secret.py) signs every
         # dashboard access + refresh token. An agent that could fs_read it could
         # forge auth tokens for itself, so it must be read-blocked like the SEL
         # HMAC key above.
         assert is_sensitive_path("~/.kirocrew/token_signing.key") is True
 
     def test_refresh_chains_json(self) -> None:
-        # Mesh-2369: refresh_chains.json (dashboard/refresh_tokens.py) stores
+        # refresh_chains.json (dashboard/refresh_tokens.py) stores
         # refresh-token chain state used to mint new access tokens.
         assert is_sensitive_path("~/.kirocrew/refresh_chains.json") is True
 
     def test_local_secret(self) -> None:
-        # Mesh-2369: .local_secret is the shared internal-auth secret used to
+        # .local_secret is the shared internal-auth secret used to
         # authenticate MCP/cron/hook callbacks back into the gateway
         # (mcp_core.py, cron_script.py, mcp_shared.py, etc.).
         assert is_sensitive_path("~/.kirocrew/.local_secret") is True
@@ -2072,7 +2083,7 @@ class TestIsSensitiveBashCommand:
         assert "blocked" in result.lower()
 
     def test_cat_sel_hmac_key_blocked(self) -> None:
-        # Talos finding cdf82704: reading the SEL HMAC key via bash is blocked
+        # security-review finding cdf82704: reading the SEL HMAC key via bash is blocked
         # (adding it to _SENSITIVE_HOME_DIRS also arms the bash-read matcher).
         result = is_sensitive_bash_command("cat ~/.kirocrew/sel_hmac.key")
         assert result is not None and "blocked" in result.lower()
@@ -2091,27 +2102,27 @@ class TestIsSensitiveBashCommand:
         assert rm is not None and "blocked" in rm.lower()
 
     def test_colon_separated_sensitive_path_blocked(self) -> None:
-        # CR-284272012 H-p5: a sensitive path after ':' / VAR=val:path / a
+        # H-p5: a sensitive path after ':' / VAR=val:path / a
         # PATH-style colon list must be caught by the verb-independent catch-all.
         assert is_sensitive_bash_command("FOO=bar:~/.aws/credentials echo done") is not None
         assert is_sensitive_bash_command("PATH=/foo:~/.ssh/id_rsa:/bar") is not None
         assert is_sensitive_bash_command("LD_PRELOAD=:~/.aws/credentials whoami") is not None
 
     def test_git_write_verbs_on_sensitive_path_blocked(self) -> None:
-        # CR-284272012 H-p9: file-materialising git verbs still blocked.
+        # H-p9: file-materialising git verbs still blocked.
         assert is_sensitive_bash_command("git checkout -- ~/.aws/credentials") is not None
         assert is_sensitive_bash_command("git restore ~/.ssh/id_rsa") is not None
         assert is_sensitive_bash_command("git mv x ~/.kirocrew/profiles/p.json") is not None
 
     def test_readonly_git_non_sensitive_path_allowed(self) -> None:
-        # CR-284272012 H-p9: bare `git` was over-blocking read-only inspection.
+        # H-p9: bare `git` was over-blocking read-only inspection.
         # A read verb naming a NON-sensitive path must not be treated as a write.
         assert is_sensitive_bash_command("git log -- src/app.py") is None
         assert is_sensitive_bash_command("git diff HEAD~1 README.md") is None
         assert is_sensitive_bash_command("git show HEAD") is None
 
     def test_extract_into_trust_root_subdir_blocked(self) -> None:
-        # CR-284272012 H-p6: extraction into ANY ~/.kirocrew descendant (not just
+        # H-p6: extraction into ANY ~/.kirocrew descendant (not just
         # the root or /profiles) can drop files downstream tooling reads.
         assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kirocrew/foo/") is not None
         assert is_sensitive_bash_command("unzip -d ~/.kirocrew/foo/ evil.zip") is not None
@@ -2186,7 +2197,7 @@ class TestAuditBashCommand:
 
 class TestAuditBashExfiltration:
     """Tests for audit_bash_exfiltration() — the enforced (deny-at-gate) subset
-    of suspicious commands: data egress + reverse shells (Talos 5682f92b)."""
+    of suspicious commands: data egress + reverse shells (security-review 5682f92b)."""
 
     def test_curl_post_file_body_blocked(self) -> None:
         # curl -d @<file> reads a local file as the POST body — the classic
@@ -2313,7 +2324,7 @@ class TestRedactAndTruncate:
         assert redact_and_truncate(None) == ""
 
     def test_credential_straddling_boundary_not_leaked(self) -> None:
-        """A secret spanning the max_chars cut must not leak a partial (Talos e27617c6).
+        """A secret spanning the max_chars cut must not leak a partial (security-review e27617c6).
 
         Redaction runs over the full text before truncation. Truncating first
         would slice AKIA...EXAMPLE in half, leaving an unredactable prefix that
@@ -2437,7 +2448,7 @@ class TestStreamRedactor:
         emitted += r.flush()
         assert emitted == blob, "content lost/altered across cap+flush"
 
-    # ── Split `Authorization: Bearer <token>` holdback (Talos a8e5fe6a) ──
+    # ── Split `Authorization: Bearer <token>` holdback (security-review a8e5fe6a) ──
     # The Bearer credential pattern spans the whitespace after `:` and after
     # `Bearer`; whitespace is not in _CRED_CLASS, so without the partial-anchor
     # the header + spaces commit and the token leaks on the next chunk.
@@ -2495,7 +2506,7 @@ class TestStreamRedactor:
     def test_terminal_long_jwt_not_bisected(self) -> None:
         """A terminal JWT longer than the 512-char DoS floor stays fully redacted.
 
-        Heimdall round-2 follow-up to CR-289081658: without the JWT-aware cap the
+        security-review round-2 follow-up to without the JWT-aware cap the
         default 512-char holdback would bisect a long terminal token, emitting the
         first (len-512) chars raw before flush() redacted only the held tail.
         """
@@ -2513,7 +2524,7 @@ class TestStreamRedactor:
     def test_terminal_long_jwe_not_bisected(self) -> None:
         """A 5-segment compact JWE longer than the 512 floor stays fully redacted.
 
-        Heimdall round-3 (CR-289301655) finding 1: `_PARTIAL_JWT_TAIL_RE`'s
+        security-review round-3 finding 1: `_PARTIAL_JWT_TAIL_RE`'s
         trailing-segment quantifier must admit 5 segments (a compact JWE
         header.key.iv.ciphertext.tag) so it escalates the cap instead of bisecting
         the >512-char JWE at the 512 floor and leaking its raw head.
@@ -2532,7 +2543,7 @@ class TestStreamRedactor:
     def test_terminal_long_opaque_bearer_not_bisected(self) -> None:
         """A >512-char opaque (non-JWT) Bearer token stays fully redacted.
 
-        Heimdall round-3 (CR-289301655) finding 2: opaque OAuth/refresh/SSO bearer
+        security-review round-3 finding 2: opaque OAuth/refresh/SSO bearer
         tokens carry no `eyJ` header, so only the JWT anchor escalated the cap —
         an opaque bearer tail longer than 512 chars was bisected, streaming its
         head raw. `_BEARER_ANCHOR_PARTIAL_RE` now holds the whole anchor together
@@ -2551,7 +2562,7 @@ class TestStreamRedactor:
     def test_credential_anchored_tail_past_ceiling_fails_closed(self) -> None:
         """A credential-anchored tail past the 4096 ceiling fails closed.
 
-        Heimdall round-3 (CR-289301655) finding 3: a JWT/JWE/Bearer tail exceeding
+        security-review round-3 finding 3: a JWT/JWE/Bearer tail exceeding
         `_STREAM_HOLDBACK_JWT_MAX` must NOT be bisected (which would emit the
         token's head raw). feed() redacts+emits the safe prefix, appends the tag,
         and DROPS the oversized tail.
@@ -2570,7 +2581,7 @@ class TestStreamRedactor:
     def test_plain_cred_run_past_ceiling_still_committed(self) -> None:
         """A plain cred-class run with NO credential anchor is not dropped.
 
-        Heimdall round-3 (CR-289301655) no-data-loss guard: the fail-closed drop
+        security-review round-3 no-data-loss guard: the fail-closed drop
         fires ONLY for a credential-anchored tail. A benign long alphanumeric run
         past the ceiling is still committed verbatim (bisected, no data loss),
         keeping the DoS bound intact without corrupting non-secret output.
@@ -2587,7 +2598,7 @@ class TestScanMemoryImportGuard:
     """scan_memory()'s optional vector_memory import must degrade gracefully on
     ANY import-time failure — not only ImportError. A C-extension can raise
     OSError (or another Exception) at import; the old ``except ImportError``
-    let that crash the caller instead of skipping the scan (Talos 1fde6107 C2)."""
+    let that crash the caller instead of skipping the scan (security-review 1fde6107 C2)."""
 
     def test_non_importerror_degrades_to_empty(self, monkeypatch) -> None:
         import builtins
@@ -2609,7 +2620,7 @@ class TestScanMemoryImportGuard:
 # resource is POSIX-only. Import it conditionally + skip ONLY the class below
 # via skipif — a module-level pytest.importorskip would drop this ENTIRE file
 # (credential redaction, bash auditing, exfil-URL scanning, ...) on non-POSIX
-# platforms, far wider than intended (AutoSDE finding on Talos bdf0d7e5).
+# platforms, far wider than intended (review-bot finding on security-review bdf0d7e5).
 try:
     import resource as _resource_mod
 except ImportError:
@@ -2619,7 +2630,7 @@ except ImportError:
 @pytest.mark.skipif(_resource_mod is None, reason="resource module is POSIX-only")
 class TestApplyResourceLimits:
     """apply_resource_limits() returns a preexec_fn that caps a child's
-    resources (Talos bdf0d7e5 / V2285983353). The helper existed as dead code
+    resources (security-review bdf0d7e5). The helper existed as dead code
     once; these tests pin its behavior AND its wiring guarantees."""
 
     def test_returns_callable(self) -> None:

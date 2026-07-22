@@ -667,7 +667,7 @@ class TestSchemas:
 
 
 class TestArtifactGetCommentsFullBody:
-    """Body text is returned in full — no [:200] truncation (Mesh-2503)."""
+    """Body text is returned in full — no [:200] truncation."""
 
     def test_short_body_returned_in_full(self) -> None:
         body = "Fix the typo in section 3."
@@ -716,7 +716,7 @@ class TestArtifactGetCommentsFullBody:
 
 
 class TestArtifactGetCommentsAnchorFormatting:
-    """Anchor quotes: short shown in full, long bookended with TRUNCATED marker (Mesh-2503)."""
+    """Anchor quotes: short shown in full, long bookended with TRUNCATED marker."""
 
     def test_short_anchor_shown_in_full(self) -> None:
         quote = "Callers / Sources"
@@ -837,7 +837,7 @@ class TestArtifactGetCommentsAnchorFormatting:
 
 
 class TestArtifactGetCommentsEdgeCases:
-    """Edge cases: no comments, errors, agent comments, replies (Mesh-2503)."""
+    """Edge cases: no comments, errors, agent comments, replies."""
 
     def test_no_comments_message(self) -> None:
         with patch(

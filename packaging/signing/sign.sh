@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sign a KiroCrew .app bundle via CDSigner.
+# Sign a KiroCrew .app bundle via the enterprise signing service.
 #
 # Usage:
 #   bash packaging/signing/sign.sh <app-path> <channel> <version>
@@ -9,14 +9,14 @@
 #
 # Environment variables (required):
 #   AWS_SIGNING_BUCKET     — S3 bucket for signing artifacts
-#   AWS_SIGNER_ROLE_ARN    — Role ARN CDSigner assumes to read/write S3
-#   CDSIGNER_API_ENDPOINT  — CDSigner API Gateway endpoint URL
+#   AWS_SIGNER_ROLE_ARN    — Role ARN the signing service assumes to read/write S3
+#   CDSIGNER_API_ENDPOINT  — signing service API Gateway endpoint URL
 #
 # The script:
 #   1. Packages the .app into a tar.gz with entitlements metadata
 #   2. Uploads to pre-signed/{channel}/{version}/ in S3
-#   3. Submits a signing request to CDSigner API
-#   4. Polls until signing completes (CDSigner signs only; notarization is a
+#   3. Submits a signing request to the signing service API
+#   4. Polls until signing completes (the service signs only; notarization is a
 #      separate post-signing step via notarytool)
 #   5. Downloads the signed artifact to signed/ locally
 #   6. Verifies the signature
@@ -77,7 +77,7 @@ cp -R "$APP_PATH" "$PACKAGE_DIR/${APP_NAME}.app"
 # Strip pre-existing ad-hoc signatures from nested Mach-Os (macOS only --
 # codesign is unavailable elsewhere). electron-builder and the Python
 # runtime ship arm64 binaries with mandatory linker ad-hoc signatures;
-# stripping them first lets CDSigner apply clean Developer ID signatures
+# stripping them first lets the signing service apply clean Developer ID signatures
 # to every explicitly-listed embedded binary.
 if [ "$(uname -s)" = "Darwin" ]; then
   STRIPPED=0
@@ -91,8 +91,8 @@ fi
 cp "$SCRIPT_DIR/Entitlements.entitlements" "$PACKAGE_DIR/SIGNING_METADATA/Entitlements.entitlements"
 
 # Create tar.gz. On macOS, suppress AppleDouble (._*) entries and
-# xattr/ACL/flag metadata -- bsdtar embeds them by default and CDSigner's
-# artifact security scan rejects archives containing them. GNU tar on the
+# xattr/ACL/flag metadata -- bsdtar embeds them by default and the signing
+# service's artifact security scan rejects archives containing them. GNU tar on the
 # Linux CI runners never emits this metadata (flags kept Darwin-only since
 # GNU tar does not know --no-mac-metadata).
 TAR_PATH="$WORK_DIR/${APP_NAME}.tar.gz"
@@ -114,7 +114,7 @@ aws s3 cp "$TAR_PATH" "s3://${AWS_SIGNING_BUCKET}/${INPUT_KEY}" --quiet || {
 }
 
 # ── 3. Submit signing request ───────────────────────────────────────────────
-log "Submitting CDSigner request..."
+log "Submitting signing request..."
 
 # Build the manifest with full nested Mach-O coverage. Notarization requires
 # every nested binary (embedded Python backend, Squirrel ShipIt) to be
@@ -131,25 +131,25 @@ MANIFEST=$(SIGNER_ACCESS_ROLE_ARN="${AWS_SIGNER_ROLE_ARN}" \
   exit 4
 }
 
-# CD Signer ad-hoc signing API v2: POST /v2/sign-tasks. awscurl SigV4-signs
+# Signing service ad-hoc signing API v2: POST /v2/sign-tasks. awscurl SigV4-signs
 # from the AWS credential chain (env vars, incl. AWS_SESSION_TOKEN) -- no
 # credentials on the command line. The full response body is surfaced on
-# failure so auth/manifest/Bindle errors stay diagnosable.
+# failure so auth/manifest errors stay diagnosable.
 if ! command -v awscurl >/dev/null 2>&1; then
-  echo "ERROR: awscurl not found (required for CDSigner SigV4 signing)" >&2
+  echo "ERROR: awscurl not found (required for SigV4 signing)" >&2
   exit 1
 fi
 
 RESPONSE=$(awscurl --service signer-builder-tools --region us-west-2 \
   -X POST -H "Content-Type: application/json" -d "$MANIFEST" \
   "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" 2>&1) || {
-  echo "ERROR: CDSigner sign-task submission failed" >&2
+  echo "ERROR: sign-task submission failed" >&2
   echo "$RESPONSE" >&2
   exit 4
 }
 
 SIGN_TASK_ID=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['signTaskId'])" 2>/dev/null) || {
-  echo "ERROR: CDSigner submission returned no signTaskId:" >&2
+  echo "ERROR: submission returned no signTaskId:" >&2
   echo "$RESPONSE" >&2
   exit 4
 }

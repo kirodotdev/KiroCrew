@@ -1,4 +1,4 @@
-"""Regression tests for the Slack session-key alias fold (Mesh-2732).
+"""Regression tests for the Slack session-key alias fold.
 
 Since the channel-neutral transport refactor (commit 67602204), Slack thread
 sessions have two key forms: the legacy bare ``thread_ts`` and the canonical

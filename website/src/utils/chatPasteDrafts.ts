@@ -1,14 +1,14 @@
 /**
  * Per-slot collapsed-paste persistence. Backs the inline `[ Paste #N · M lines ]`
  * tokens in the chat input so they survive slot switches (and tab close /
- * refresh). Thin instance of `createSlotDraftStore` (Mesh-1909).
+ * refresh). Thin instance of `createSlotDraftStore`.
  *
  * WHY THIS EXISTS: the textarea text (incl. the paste token string) is persisted
  * per-slot by `chatDrafts`. The `PasteBlock[]` backing each token used to be
  * plain React state, cleared on slot switch, so switching away and back left the
  * token text without its block: the chip went dead and on send the literal
  * `[ Paste #N · M lines ]` string was sent instead of the content. Persisting
- * the blocks alongside the text draft keeps the two in sync (CR-279844240).
+ * the blocks alongside the text draft keeps the two in sync.
  *
  * Storage: localStorage with the SAME 30-day TTL as `chatDrafts` (NOT
  * sessionStorage like `chatFileDrafts`). The backing text draft already survives
@@ -25,8 +25,8 @@
  * BYTE BUDGET: the old per-slot 512 KB hard cap is gone. The factory's
  * store-level byte-aware LRU evicts OLDEST slots until the blob fits, never the
  * newest — so a large recent paste survives whether collapsed (here) or expanded
- * (into the `chatDrafts` text draft). That symmetry is the Mesh-1909 fix for the
- * collapsed-vs-expanded asymmetry surfaced in the CR-279844240 review.
+ * (into the `chatDrafts` text draft). That symmetry is the fix for the
+ * collapsed-vs-expanded asymmetry surfaced in the review.
  */
 import type { PasteBlock } from './pasteTokens'
 import { createSlotDraftStore } from './slotDraftStore'

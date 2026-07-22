@@ -12,6 +12,15 @@ cd "$REPO_ROOT"
 ALLOWLIST="scripts/scrub-allowlist.txt"
 FAILURES=0
 
+# --no-history skips the git-history scan (check 4). The working tree can be
+# clean long before history is (history rewrite is a separate, sign-off-gated
+# task), so CI runs the working-tree + credential + alias checks as a blocking
+# gate with --no-history, while a full local run still audits history.
+SKIP_HISTORY=0
+for arg in "$@"; do
+  [[ "$arg" == "--no-history" ]] && SKIP_HISTORY=1
+done
+
 red()   { printf '\033[1;31m%s\033[0m\n' "$*"; }
 green() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
@@ -54,11 +63,13 @@ fi
 # ---------------------------------------------------------------------------
 dim "[1/4] Scanning working tree for internal markers..."
 
-INTERNAL_PATTERN='amazon\.com|a2z\.com|aws\.dev|\.amazon\.|code\.amazon|t\.corp|sim\.amazon|isengard|phonetool|midway-auth|mwinit -|brazil ws|brazil-build|brazil-runtime|brazil-pkg-cache|account.?[0-9]{12}|CR-[0-9]{6,}|\bP[0-9]{6,}\b'
+INTERNAL_PATTERN='amazon\.com|a2z\.com|aws\.dev|\.amazon\.|code\.amazon|t\.corp|sim\.amazon|isengard|phonetool|midway-auth|mwinit|brazil ws|brazil-build|brazil-runtime|brazil-pkg-cache|meshclaw|Mesh-[0-9]|AVP-[0-9]|account.?[0-9]{12}|CR-[0-9]{6,}|\bP[0-9]{6,}\b'
 
 matches=$(grep -rniE "$INTERNAL_PATTERN" \
-  src/ website/src/ docs/ \
+  src/ website/src/ docs/ skills/ scripts/ config/ packaging/ \
+  ./*.md \
   --include='*.py' --include='*.ts' --include='*.tsx' --include='*.md' --include='*.json' \
+  --include='*.sh' --include='*.yaml' --include='*.yml' \
   2>/dev/null || true)
 
 # Filter out allowlisted paths
@@ -130,13 +141,22 @@ CRED_PATTERN='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|aws_secret_access_key\s*=\s*[A-Z
 
 cred_matches=$(grep -rniE "$CRED_PATTERN" . \
   --exclude-dir=.git --exclude-dir=node_modules \
+  --exclude-dir=.venv --exclude-dir=venv --exclude-dir=env \
+  --exclude-dir=dist --exclude-dir=build --exclude-dir=backend-dist \
+  --exclude-dir=site-packages --exclude-dir=__pycache__ \
   --include='*.py' --include='*.ts' --include='*.tsx' --include='*.json' \
   --include='*.md' --include='*.sh' --include='*.cfg' --include='*.toml' --include='*.yaml' --include='*.yml' \
   2>/dev/null || true)
 
-# Filter: allow the well-known test fixture key and test files
+# Filter: allow the well-known test fixture key and the two fixture dirs that
+# hold synthetic keys the redaction/leak-scanner tests assert on — the backend
+# ``test/`` suite and the frontend ``website/src/test/`` suite. These are
+# ANCHORED prefixes: a blanket ``/test/`` substring would silently exempt any
+# nested ``*/test/`` under shipped source (e.g. an app's ``test/``) from the
+# real-credential scan, weakening the gate below its intended scope.
 cred_matches=$(echo "$cred_matches" | grep -v "AKIAIOSFODNN7EXAMPLE" || true)
-cred_matches=$(echo "$cred_matches" | grep -v "^./test/" || true)
+cred_matches=$(echo "$cred_matches" | grep -v "^\./test/" || true)
+cred_matches=$(echo "$cred_matches" | grep -v "^\./website/src/test/" || true)
 cred_matches=$(echo "$cred_matches" | grep -v "smoke_gateway\|smoke_sandbox" || true)
 # Filter: allow documentation references to patterns (not actual keys)
 cred_matches=$(echo "$cred_matches" | grep -v 'AKIA\[0-9A-Z\]\|ASIA\[0-9A-Z\]\|\\$AWS_SECRET\|"aws_secret' || true)
@@ -156,6 +176,10 @@ fi
 # ---------------------------------------------------------------------------
 dim "[4/4] Scanning git history for internal references..."
 
+if [[ $SKIP_HISTORY -eq 1 ]]; then
+  dim "  ⊘ Git-history scan skipped (--no-history) — tracked separately"
+else
+
 HISTORY_PATTERN='@amazon\.com|@a2z\.com|midway-auth|mwinit|t\.corp|sim\.amazon|code\.amazon|isengard|phonetool|brazil-build|brazil-runtime|CR-[0-9]{6,}|\bP[0-9]{6,}\b'
 
 history_matches=$(git log --all --pretty='%h %ae %ce %s' 2>/dev/null \
@@ -166,11 +190,13 @@ if [[ -n "$history_matches" ]]; then
   red "FAIL: $count commits with internal references in history:"
   echo "$history_matches" | head -10
   [[ $count -gt 10 ]] && dim "  ... and $((count - 10)) more"
-  dim "  → Run the git-history rewrite before public push (see task P449402080)"
+  dim "  → Run the git-history rewrite before public push (tracked separately)"
   FAILURES=$((FAILURES + 1))
 else
   green "  ✓ Git history clean"
 fi
+
+fi  # end SKIP_HISTORY guard
 
 # ---------------------------------------------------------------------------
 # Summary

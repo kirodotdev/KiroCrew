@@ -273,8 +273,8 @@ class AcpSessionHandle:
         # Model id kiro-cli RESOLVED the session to (from currentModelId in the
         # session/new|load response), kept separate from _model (the user-picked
         # alias) so it feeds ONLY the context-window backfill — never slot.model
-        # (mirrors AcpClient._resolved_model_id; avoids the Mesh-2376 profile-id
-        # pinning trap where a resolved Bedrock profile id poisons slot.model).
+        # (mirrors AcpClient._resolved_model_id; avoids the profile-id
+        # pinning trap where a resolved profile id poisons slot.model).
         self._resolved_model_id: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
@@ -802,7 +802,7 @@ class AcpSessionHandle:
                         # instead of surfacing a bare error card. The kiro raise
                         # sites previously lacked the transient= flag, so the string
                         # fallback classifier missed the raw "InternalServerError"
-                        # dict. Mirrors client._raise_acp_error (Mesh-2356).
+                        # dict. Mirrors client._raise_acp_error.
                         raise AcpError(
                             f"ACP error: {msg.error}",
                             transient=_is_transient_raw_error(msg.error),
@@ -852,7 +852,7 @@ class AcpSessionHandle:
                         # to reset+resume and re-drive with a continue-nudge
                         # (auto-recovery) instead of orphaning the turn until the
                         # user's next message collides with "prompt already in
-                        # progress". Complementary to CR-284525375's stuck-session
+                        # progress". Complementary to the stuck-session
                         # surfacing (which handles what this cannot recover).
                         logger.warning(
                             "Stale turn on session %s unrecovered after %.1fs cancel "
@@ -969,7 +969,7 @@ class AcpSessionHandle:
                         # instead of surfacing a bare error card. The kiro raise
                         # sites previously lacked the transient= flag, so the string
                         # fallback classifier missed the raw "InternalServerError"
-                        # dict. Mirrors client._raise_acp_error (Mesh-2356).
+                        # dict. Mirrors client._raise_acp_error.
                         raise AcpError(
                             f"ACP error: {msg.error}",
                             transient=_is_transient_raw_error(msg.error),

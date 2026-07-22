@@ -1,6 +1,6 @@
 # Code Review Sage — Scale & CPU Optimization Plan
 
-Status: proposed · Owner: zejiangg · Scope: `apps/builtins/code_review_sage` + `acp/` + `website/src/apps/code-review-sage`
+Status: proposed · Owner: KiroCrew contributors · Scope: `apps/builtins/code_review_sage` + `acp/` + `website/src/apps/code-review-sage`
 
 ## Problem
 

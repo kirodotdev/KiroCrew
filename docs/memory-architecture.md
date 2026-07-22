@@ -79,8 +79,8 @@ Active work context — CRs, packages, branches, status.
 
 Example content:
 ```markdown
-## KiroCrew CR-264843843 Zoom Fix (REVISION 4)
-- CR: CR-264843843 revision 4
+## KiroCrew Zoom Fix (REVISION 4)
+- Revision 4
 - Changes: useZoom.ts CSS custom properties, ChatInput effectiveVh() fix
 - Status: Published, awaiting AutoSDE review
 ```
@@ -144,7 +144,7 @@ Short text snippets capturing specific past events from conversations — things
 
 Example entries:
 ```
-[importance=0.7] Fixed CR-264843843 rev 2 comments: useZoom cleanup, effectiveVh caching
+[importance=0.7] Fixed rev 2 comments: useZoom cleanup, effectiveVh caching
 [importance=0.4] User asked how to point to Java 17 for CoreRecsCradle build
 [importance=0.8] C360 Embedding test failure: score DecimalType(38,18) vs expected (38,0)
 ```
@@ -437,7 +437,7 @@ Separate from memory maintenance, the heartbeat also processes `~/.kirocrew/work
 
 ```markdown
 # Heartbeat Tasks
-- [ ] Check CR-264843843 for new AutoSDE comments. If found, fix and push.
+- [ ] Check the open review for new AutoSDE comments. If found, fix and push.
       If none, remove this item and notify user.  <!-- deliver:D0OWNER_DM -->
 - [ ] Monitor pipeline KiroCrew-pipeline for failures. Alert if blocked.
 ```

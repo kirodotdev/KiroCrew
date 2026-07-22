@@ -86,8 +86,8 @@ def _resolve_piper_binary(configured: str = "") -> str | None:
     common pip-install location at ``~/piper-venv/bin/piper``.
 
     Windows: not yet supported — upstream rhasspy/piper ships no Windows binary,
-    so this returns None and Piper TTS is unavailable (Polly works). Tracked in
-    Mesh-2364 (https://taskei.amazon.dev/tasks/Mesh-2364).
+    so this returns None and Piper TTS is unavailable (Polly works). Tracked as
+    follow-on work.
     """
     if configured:
         p = os.path.expanduser(configured)
@@ -285,7 +285,7 @@ async def _synthesize_piper(
             # unlink after the child exits (Linux launcher script /
             # macOS seatbelt profile).
             cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
-            cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+            cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
@@ -452,7 +452,7 @@ async def _synthesize_polly(
             # a backend and returns a cleanup path that we must unlink after
             # the child exits.
             cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
-            cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+            cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -546,8 +546,7 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
 
     Windows: ffmpeg is not guaranteed on PATH (the dashboard-streaming stitch
     path then fails); should be made optional + warn. The Slack thread-upload
-    path is unaffected. Tracked in Mesh-2364
-    (https://taskei.amazon.dev/tasks/Mesh-2364).
+    path is unaffected. Tracked as follow-on work.
     """
     if not paths:
         return None

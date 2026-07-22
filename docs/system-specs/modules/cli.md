@@ -325,7 +325,7 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
   - Logs are read from the journal: `sudo journalctl -u kirocrew -f`,
     or unprivileged if the user is in `systemd-journal` / `adm`.
 - **macOS** (`current_platform() == LAUNCHD`):
-  - Plist: `~/Library/LaunchAgents/com.amazon.kirocrew.gateway.plist`
+  - Plist: `~/Library/LaunchAgents/dev.kirocrew.gateway.plist`
   - Install: `launchctl load -w <plist>`. `RunAtLoad=true` and
     `KeepAlive` ensure auto-start and crash recovery.
   - Stdout and stderr are written to

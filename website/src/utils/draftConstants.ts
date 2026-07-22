@@ -1,6 +1,6 @@
 /**
  * Shared slot-draft constants. Neutral home so `chatDrafts`, `chatPasteDrafts`,
- * and friends stay in lockstep without one importing from another (Mesh-1909).
+ * and friends stay in lockstep without one importing from another.
  */
 
 /** Cap stored drafts to prevent unbounded growth from deleted slots. */
@@ -16,7 +16,7 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 300
 /** Byte budget for a SINGLE store's serialized blob. When exceeded, the
  *  byte-aware LRU evicts OLDEST slots until it fits (the newest slot is never
  *  evicted). Replaces the old arbitrary 512 KB per-slot hard cap so the most
- *  recent large draft survives whether collapsed or expanded (Mesh-1909).
+ *  recent large draft survives whether collapsed or expanded.
  *
  *  Sizing: localStorage gives ~5 MB per origin, SHARED across all keys. The two
  *  byte-capped stores are `mc-chat-drafts` and `mc-chat-paste-drafts`; at 2 MB

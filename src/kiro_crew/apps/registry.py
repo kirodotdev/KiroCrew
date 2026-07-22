@@ -434,7 +434,7 @@ async def _fetch_app_manifest(
             tmp_root,
         ]
         sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
-        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -769,7 +769,7 @@ async def _fetch_external_registry_index(
             tmp_root,
         ]
         sandboxed_cmd, _ = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
-        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -946,7 +946,7 @@ async def list_registry() -> list[dict[str, Any]]:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
             sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
-            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await asyncio.create_subprocess_exec(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -1073,11 +1073,11 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     """Send SIGTERM to the process group, escalate to SIGKILL if needed.
 
     Routed through platform_compat (killpg on POSIX, taskkill /T on Windows) so
-    the Brazil app-build timeout path doesn't AttributeError on win32.
+    the app-build timeout path doesn't AttributeError on win32.
     """
     # Async variants offload Windows taskkill to subprocess_executor so this
-    # Brazil-build timeout path never blocks the event loop on taskkill.exe
-    # (Mesh-2801). POSIX branch stays inline (os.killpg is non-blocking).
+    # The build timeout path never blocks the event loop on taskkill.exe.
+    # POSIX branch stays inline (os.killpg is non-blocking).
     try:
         await platform_compat.kill_process_tree_async(
             proc.pid, platform_compat.SIGTERM
@@ -1112,7 +1112,7 @@ async def _git_clone_or_pull(
         # Route through wrap_argv (OS sandbox) THEN cgroup_scope_argv, matching
         # the fresh-clone path below — the cgroup DoS ceiling is the outermost
         # layer but must not replace the wrap_argv sandbox on this
-        # agent-influenced git spawn (Talos bdf0d7e5).
+        # agent-influenced git spawn.
         pull_cmd, _cleanup = wrap_argv(
             ["git", "pull", "--ff-only", "origin", branch],
             mode=_context_clone_sandbox_mode(git_url),
@@ -1155,7 +1155,7 @@ async def _git_clone_or_pull(
         str(dest),
     ]
     sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
-    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     proc = await asyncio.create_subprocess_exec(
         *sandboxed_cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -1282,7 +1282,7 @@ async def _run_app_build(
     for cmd in build_cmds:
         log_lines.append(f"Running {' '.join(cmd)} in {build_dir}...")
         sandboxed_cmd, _cleanup = wrap_argv(cmd, mode="standard")
-        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             cwd=str(build_dir),
@@ -1438,7 +1438,7 @@ async def install_from_registry(
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
             sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
-            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await asyncio.create_subprocess_exec(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -1526,7 +1526,7 @@ async def install_from_registry(
 
             base_cmd = ["/bin/bash", "-c", safe_script]
             sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="standard")
-            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await asyncio.create_subprocess_exec(
                 *sandboxed_cmd,
                 cwd=str(app_source),

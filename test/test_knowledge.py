@@ -255,7 +255,7 @@ def _make_pdf(text: str = "Hello PDF regression") -> bytes:
 class TestFileReaderPdf:
     """PDF ingestion regression coverage.
 
-    Guards Mesh-3a362384: PDF folder ingestion was shipped (readers.py routes
+    Guards PDF folder ingestion was shipped (readers.py routes
     ``.pdf`` -> ``_read_pdf`` -> ``pdfplumber``) but ``pdfplumber`` was never
     declared as a runtime dependency, so the built env couldn't import it and
     every PDF degraded to the missing-dep sentinel. These tests fail loudly if
@@ -351,7 +351,7 @@ class TestHybridRetriever:
         # All 4 items should be present
         assert set(ids) == {"item1", "item2", "item3", "item4"}
 
-    # --- Recall for natural-language queries (Mesh-1676) ---
+    # --- Recall for natural-language queries ---
 
     def test_sanitize_strips_stopwords_and_or_joins(self):
         out = HybridRetriever._sanitize_fts5_query("VoC related to Budget Planning")
@@ -392,7 +392,7 @@ class TestHybridRetriever:
         ranked = dict(fused)
         assert ranked["vec_item"] > ranked["kw_item"]
 
-    # --- Citation metadata surfacing (Mesh-2494) ---
+    # --- Citation metadata surfacing ---
 
     def test_search_attaches_source_location(self, store):
         # A result for an item that has a source_locations row carries the

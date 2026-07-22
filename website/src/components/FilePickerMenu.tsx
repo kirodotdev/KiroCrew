@@ -97,7 +97,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     return false
   }, [onClose])
 
-  // Enter inserts the @-mention. Cmd/Ctrl+Enter preserves the pre-Mesh-2151
+  // Enter inserts the @-mention. Cmd/Ctrl+Enter preserves the earlier
   // binding — open in the viewer — now that the shared useListKeyboardNav hook
   // threads the modifier state through onChoose's 2nd arg (withModifier).
   const choose = useCallback((idx: number, withModifier = false) => {

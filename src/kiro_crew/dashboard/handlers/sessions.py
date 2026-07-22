@@ -469,7 +469,7 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
 
     Skips sessions currently open in the sidebar (any slot in
     ``state._slots``) and sessions with ``pinned=True`` on disk.
-    Bulk-archiving open unpinned/idle sessions is Mesh-610's scope.
+    Bulk-archiving open unpinned/idle sessions is out of scope here.
     """
     state: DashboardState = request.app["state"]
     if not state.conversation_log:

@@ -37,7 +37,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.workflows.runner import WorkflowRunner
 from kiro_crew.workflows.validate import validate
 
-logger = logging.getLogger("meshclaw.app.workflows")
+logger = logging.getLogger("kirocrew.app.workflows")
 
 
 def _redact_obj(obj: Any) -> Any:

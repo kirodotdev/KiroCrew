@@ -92,7 +92,7 @@ def _redact_for_ingest(text: str) -> str:
 
     Artifacts are the user's own local content (low risk), but a scratch
     artifact may contain a pasted credential. Per the security-controls rule
-    (and ARCC Bsc4 -- never persist secrets), run the same redaction the chat
+    (never persist secrets), run the same redaction the chat
     path applies before the text lands in the Knowledge store.
     """
     cleaned, _ = redact_credentials(text)

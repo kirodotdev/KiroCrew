@@ -1,4 +1,4 @@
-"""Tests for the publish sync engine + publication persistence (Mesh-1880).
+"""Tests for the publish sync engine + publication persistence.
 
 The public fork registers NO concrete publish provider (the registry is empty →
 ``get_provider`` raises ``PublishUnavailableError``). These tests exercise the
@@ -399,7 +399,7 @@ async def test_update_sharing_unpublished_raises(store):
 @pytest.mark.asyncio
 async def test_republish_preserves_push_error(store, fake_client):
     # On the re-publish path, a content-push failure must not be masked by the
-    # subsequent sharing update (which clears last_error). AutoSDE regression.
+    # subsequent sharing update (which clears last_error). review-bot regression.
     store.create(name="Doc", content="v1", kind="text", slug="d")
     await publish_sync.publish("d")
     store.update("d", content="v2", snapshot=True)  # new KiroCrew version
@@ -461,7 +461,7 @@ def test_tolerant_load_meta_without_publication(tmp_path):
 
 def test_tolerant_load_non_numeric_last_synced(tmp_path):
     # A corrupted/hand-edited meta.json with a non-numeric version must not
-    # crash the load — it falls back to 0 (AutoSDE: tolerant-load contract).
+    # crash the load — it falls back to 0 (review-bot: tolerant-load contract).
     store = ArtifactStore(root=tmp_path / "a")
     store.create(name="Doc", content="x", kind="text", slug="d")
     meta_path = tmp_path / "a" / "d" / "meta.json"
@@ -706,7 +706,7 @@ def _file_backed(store, tmp_path, content="old"):
 async def test_upstream_status_reports_ahead_for_file_backed(store, fake_client, tmp_path):
     """A file-backed publication participates in drift detection — the pull
     banner is not suppressed just because the artifact has a source_path
-    (Mesh-2735: the old blanket suppression made published working files
+    (the old blanket suppression made published working files
     silently push-only)."""
     art, _src = _file_backed(store, tmp_path)
     _track_publication(store, art.slug)

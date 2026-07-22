@@ -1,7 +1,7 @@
 # RFC: Local Notification Bus
 
 - Status: DRAFT
-- Author: zezhexu
+- Author: KiroCrew contributors
 - Created: 2026-07-10
 - Related: rfc-federated-app-platform.md (apps as notification producers), rfc-event-loop-fault-isolation.md (gateway process boundaries)
 

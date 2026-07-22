@@ -116,7 +116,7 @@ class TestInjectCronResultToDashboard:
 
 
 class TestPersistsResultToConversationLog:
-    """Mesh-1933: the result must be written to the canonical ConversationLog
+    """the result must be written to the canonical ConversationLog
     under the linked key cron:{id} so a dashboard follow-up turn
     (chat_runner.build_session_replay) has it as context."""
 

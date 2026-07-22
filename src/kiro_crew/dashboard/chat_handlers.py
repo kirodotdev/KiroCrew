@@ -220,7 +220,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # on stdin.drain(), and if the turn's finally runs during that
                 # suspension it must already see this steer to requeue it
                 # (append-after-await would land on an idle slot and orphan the
-                # message — zedmor's review, CR-290015501). The force-stop
+                # message — per code review). The force-stop
                 # clear() likewise races correctly: a hard kill during the
                 # await discards the entry, so a late write can't resurrect it.
                 slot._pending_steers.append(message)
@@ -248,7 +248,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     # Persist the steered message so it survives page reload
                     # (dirty-flush picks it up on next save cycle). Store the
                     # sanitized form — raw content must never reach an external
-                    # surface (AUTOSDE security-controls).
+                    # surface (security-controls).
                     slot.append(
                         "user",
                         _sanitized,
@@ -347,7 +347,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)
 
     # ── Orchestrator "Go All" detection ─────────────────────────────
-    # Deny-by-default trust boundary (P454989291 item 5): a turn tagged
+    # Deny-by-default trust boundary (item 5): a turn tagged
     # origin="widget" was pre-filled into the composer by an LLM-emitted
     # <mcwidget> postMessage. Even though the frontend now requires a human
     # gesture to send it, the message TEXT is still attacker-controlled — an
@@ -682,7 +682,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         title, _ = redact_credentials(title)
         slot.title = title
         slot._titled = True
-    # Bind to an artifact if provided (companion chat, Mesh-2772). Validate
+    # Bind to an artifact if provided (companion chat). Validate
     # against the artifact slug grammar so an injection-shaped value can never
     # land on the slot; anything invalid is silently dropped. Uniqueness (≤1
     # active bound session per slug) is a frontend-flow convention, not
@@ -1485,7 +1485,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     whose model differs, resetting each affected slot's session — a model
     switch always resets, same as ``api_chat_slot_model``. Slots mid-turn are
     skipped when ``skip_running`` is true to avoid the model-switch-mid-stream
-    duplicate-content bug (Mesh-1080); pass ``skip_running: false`` to force
+    duplicate-content bug; pass ``skip_running: false`` to force
     every slot. Returns the slot keys that were switched / skipped / unchanged /
     failed; a per-slot reset failure is isolated (that slot is reported in
     ``failed`` and keeps its old model) rather than aborting the whole switch.
@@ -1534,7 +1534,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             continue
         # Reset before flipping the model and isolate per-slot failures: if the
         # reset raises, leave slot.model untouched so the slot is never left on
-        # the new model with stale history (the Mesh-1080 inconsistency), and a
+        # the new model with stale history (the model/history inconsistency), and a
         # single failure doesn't abort the whole bulk switch.
         try:
             await state.sessions.reset(_history_key_for(name))
@@ -1806,7 +1806,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
 
     # If slot already exists (active session), just return it — no duplicate.
     # Check both by slot name AND by canonical session key to prevent two
-    # slots sharing the same kiro-cli process (Mesh-98).
+    # slots sharing the same kiro-cli process.
     canonical = _history_key_for(history_key)
     existing = state._slots.get(name)
     if not existing:

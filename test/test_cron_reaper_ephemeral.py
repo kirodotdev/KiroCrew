@@ -1,6 +1,6 @@
 """Tests for the reaper handling ephemeral (stateless) cron sessions.
 
-Mesh-1026 follow-up: when persistent_session=False, the active session key
+follow-up: when persistent_session=False, the active session key
 is f"cron:{job.id}:{run_id}" (unique per run), not f"cron:{job.id}".
 The reaper must use the actual active key when calling sessions.reset()
 and when logging SEL audit events — otherwise it targets a non-existent
@@ -100,7 +100,7 @@ class TestReaperUsesActiveSessionKey:
 
 
 class TestCronCallbackDeferredResetPreservesActiveKey:
-    """Regression for AutoSDE comment on CR-271270113 rev 2 (post 5).
+    """Regression for review-bot comment on rev 2 (post 5).
 
     Before this fix, _cron_callback cleared the active session key in its
     finally block unconditionally — even when session reset was deferred
@@ -131,7 +131,7 @@ class TestCronCallbackDeferredResetPreservesActiveKey:
         # The buggy pattern was an indentation-dedented clear right after
         # the if/else block. Pin that it is not present anymore.
         buggy_pattern = (
-            '                # Mesh-1026: clear the active-session registration either way.'
+            '                # clear the active-session registration either way.'
         )
         assert buggy_pattern not in src, (
             "Unconditional clear_active_session_key removed — it must only run "

@@ -1,5 +1,5 @@
 """Unit tests for kiro_crew.platform_compat — the cross-platform shim that lets
-KiroCrew run natively on Windows alongside macOS/Linux (Mesh-629).
+KiroCrew run natively on Windows alongside macOS/Linux.
 
 These exercise the PURE / platform-dispatching surface without spawning real
 processes: the signal constants, the file-lock context managers (POSIX path on
@@ -359,7 +359,7 @@ class TestChmodShims:
 
 
 # ---------------------------------------------------------------------------
-# POSIX-branch coverage for the new platform_compat helpers (Mesh-2329). The
+# POSIX-branch coverage for the new platform_compat helpers. The
 # tests below deliberately exercise the ``if IS_POSIX:`` / Linux ``/proc`` paths
 # and the POSIX ``except`` fall-throughs that run on the Linux build fleet. The
 # Windows branches (msvcrt / ctypes / wintypes / netstat / taskkill / WMI /
@@ -634,7 +634,7 @@ class TestTaskkillErrorMapping:
 
 
 class TestRestrictToOwnerArgvOnLinux:
-    """Regression guard for the Windows icacls DACL argv (bolichen-4d14 fix).
+    """Regression guard for the Windows icacls DACL argv fix.
 
     Runs on the Linux CI fleet by monkeypatching IS_WINDOWS + subprocess.run —
     the argv construction is platform-independent code, and without this the
@@ -798,7 +798,7 @@ class TestChmodShimsApply:
 class TestRestrictToOwner:
     """Fail-loud owner-only lockdown used by every ~/.kirocrew secret writer.
 
-    The bolichen-4d14 finding on CR-283504528 was that the earlier
+    The review finding was that the earlier
     ``if IS_POSIX: os.chmod(...)`` guard left Windows with NO per-file owner-only
     restriction on the token signing key, per-app secrets, refresh-token state,
     snapshot tarball, and cron internal-secret temp file — a secret-at-rest
@@ -837,7 +837,7 @@ class TestRestrictToOwner:
     def test_applies_owner_only_dacl_on_windows(self, tmp_path):
         # Windows path: shell out to icacls, then re-read the DACL via icacls
         # to confirm the expected owner-only shape (S-1-3-4 with F, no inherit).
-        # This is the actual defect bolichen-4d14 flagged, so verify it end-to-end.
+        # This is the actual defect the review flagged, so verify it end-to-end.
         if not pc.IS_WINDOWS:
             pytest.skip("Windows DACL branch")
         f = tmp_path / "secret.key"
@@ -855,7 +855,7 @@ class TestRestrictToOwner:
     def test_propagates_oserror_on_windows_when_icacls_missing(self, tmp_path, monkeypatch):
         # The fail-loud contract on Windows: icacls returning nonzero or
         # failing to launch MUST raise OSError so the caller's warn-and-continue
-        # handler fires (dead-code otherwise, per AutoSDE). Simulate by pointing
+        # handler fires (dead-code otherwise, per review-bot). Simulate by pointing
         # the resolver at a nonexistent binary; the SubprocessError branch of
         # subprocess.run is what raises FileNotFoundError -> OSError below.
         if not pc.IS_WINDOWS:
@@ -986,7 +986,7 @@ class TestFindListeningPidsErrors:
         return _run
 
     def test_windows_finds_ipv6_listener_via_netstat(self, monkeypatch):
-        # Regression: Mesh-2364. Windows netstat -ano prints IPv6 LISTEN rows
+        # Regression:. Windows netstat -ano prints IPv6 LISTEN rows
         # with proto column "TCP" (NOT "TCP6") and address form [::1]:<port>.
         # Before this fix `-p tcp` on the netstat argv dropped these entirely,
         # so `kirocrew stop` / `kirocrew restart` silently no-op'd when the

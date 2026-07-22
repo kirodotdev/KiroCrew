@@ -277,7 +277,7 @@ async def _bg_mcp_probe() -> None:
             pass
 
         # Route through probe_all() so the fan-out is bounded by its
-        # _PROBE_MAX_CONCURRENCY semaphore (Mesh-1968 / Mesh-2661). An
+        # _PROBE_MAX_CONCURRENCY semaphore. An
         # unbounded gather here floods the loop's default executor during a
         # network blip and can starve the heartbeat into a watchdog _exit.
         probed = await probe_all()

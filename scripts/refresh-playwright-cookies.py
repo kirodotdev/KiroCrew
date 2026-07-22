@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Convert ~/.midway/cookie (Netscape format) to Playwright storage state JSON.
+"""Convert a Netscape-format cookie jar to Playwright storage state JSON.
 
-Run after `mwinit`, then call browser_set_storage_state to reload cookies
-without restarting the MCP server.
+Export a cookie jar from a browser where you are already logged in, then call
+browser_set_storage_state to reload cookies without restarting the MCP server.
 """
 import json
 import os
 import sys
 import time
 
-MIDWAY_COOKIE_PATH = os.path.expanduser("~/.midway/cookie")
-STORAGE_STATE_PATH = os.path.expanduser("~/.midway/playwright-storage-state.json")
+COOKIE_JAR_PATH = os.path.expanduser("~/.kirocrew/browser-cookies.txt")
+STORAGE_STATE_PATH = os.path.expanduser("~/.kirocrew/playwright-storage-state.json")
 
 
 def parse_netscape_cookies(cookie_file_path):
@@ -42,16 +42,16 @@ def parse_netscape_cookies(cookie_file_path):
 
 
 def main():
-    if not os.path.exists(MIDWAY_COOKIE_PATH):
-        sys.exit(f"Error: {MIDWAY_COOKIE_PATH} not found. Run `mwinit` first.")
+    if not os.path.exists(COOKIE_JAR_PATH):
+        sys.exit(f"Error: {COOKIE_JAR_PATH} not found. Export a browser cookie jar there first.")
 
-    cookies = parse_netscape_cookies(MIDWAY_COOKIE_PATH)
+    cookies = parse_netscape_cookies(COOKIE_JAR_PATH)
     if not cookies:
-        sys.exit(f"Error: No cookies parsed from {MIDWAY_COOKIE_PATH}.")
+        sys.exit(f"Error: No cookies parsed from {COOKIE_JAR_PATH}.")
 
     expired = [c for c in cookies if 0 < c["expires"] < time.time()]
     if expired:
-        print(f"Warning: {len(expired)} cookie(s) already expired. Run `mwinit` to refresh.")
+        print(f"Warning: {len(expired)} cookie(s) already expired. Re-export the cookie jar.")
 
     # Write with restrictive permissions
     fd = os.open(STORAGE_STATE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

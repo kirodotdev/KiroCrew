@@ -15,7 +15,7 @@ from typing import Any
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path  # noqa: F401
 from kiro_crew.dashboard.handlers_system import (  # noqa: F401
     api_compliance_yolo_status,
-    api_midway_ttl,
+    api_sso_ttl,
     api_status,
     api_system,
 )
@@ -243,9 +243,6 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_spawn_list,
     api_spawn_status,
 )
-from kiro_crew.dashboard.handlers.mwinit import (  # noqa: E402, F401
-    api_mwinit_ws,
-)
 from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     MAX_PROMPT_BYTES,
     _extract_sop_description,
@@ -290,6 +287,9 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
     api_side_close,
     api_side_open,
     api_side_turn,
+)
+from kiro_crew.dashboard.handlers.sso_login import (  # noqa: E402, F401
+    api_sso_login_ws,
 )
 
 # ── Task Runner (extracted to handlers/taskrunner.py) ──

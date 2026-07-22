@@ -556,7 +556,7 @@ class AgentConfig:
             "when many MCP servers are configured. kiro-cli backend only. When "
             "enabled, KiroCrew forces deferral always-on (minPct=0/minTokens=0) "
             "via the per-session kiro settings overlay; disabling reverts to "
-            "sending full tool specs. No effect on the Claude Code backend.",
+            "sending full tool specs. No effect on an alternate ACP backend.",
         ),
     )
     session_sharing: bool = field(
@@ -566,8 +566,9 @@ class AgentConfig:
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
             "kiro-cli process per subagent. Reduces startup from ~3-5s to ~200ms "
             "and memory from ~400MB to near-zero per subagent. Default ON for the "
-            "kiro-cli backend; always off / ignored for Claude Code (which uses "
-            "AcpClient). Set false to opt kiro back onto per-subagent processes.",
+            "kiro-cli backend; always off / ignored for an alternate ACP backend "
+            "(which uses AcpClient). Set false to opt kiro back onto per-subagent "
+            "processes.",
         ),
     )
     max_subagents: int = field(
@@ -1342,15 +1343,15 @@ class DashboardConfig:
             enum=["", "dark", "light", "system"],
         ),
     )
-    mwinit_flags: str = field(
+    sso_login_flags: str = field(
         default="",
         metadata=_meta(
-            "mwinit Flags",
+            "SSO Login Flags",
             "Flags passed to the SSO login command by an edition that supplies a "
-            "real login handler (DashboardContributor.mwinit_handler). Empty = the "
-            "edition default. Inert in the public build (the core /api/mwinit is a "
-            "no-op stub); the companion validates the token allowlist when it uses "
-            "them.",
+            "real login handler (DashboardContributor.sso_login_handler). Empty = "
+            "the edition default. Inert in the public build (the core /api/sso-login "
+            "is a no-op stub); the companion validates the token allowlist when it "
+            "uses them.",
         ),
     )
     theme_color: str = field(
@@ -1509,7 +1510,7 @@ class SkillsConfig:
             "single shared 165k budget — unchanged behavior.",
         ),
     )
-    # ── Hermes-style auto skill creation (Mesh-677) ──
+    # ── Auto skill creation ──
     # All fields default to OFF so upgrades are zero-impact. Enable via
     # ``kirocrew config set skills.auto_create_from_sessions true`` or the
     # dashboard Settings → Skills panel (future).
@@ -3245,7 +3246,7 @@ class KiroCrewConfig:
                 terminal=dashboard_data.get("terminal", {"enabled": True}),
                 default_project=dashboard_data.get("default_project", ""),
                 theme_mode=dashboard_data.get("theme_mode", ""),
-                mwinit_flags=str(dashboard_data.get("mwinit_flags", "")),
+                sso_login_flags=str(dashboard_data.get("sso_login_flags", "")),
                 theme_color=dashboard_data.get("theme_color", ""),
                 recent_tint_count=_safe_int(dashboard_data.get("recent_tint_count", 0), 0),
                 onboarded=bool(dashboard_data.get("onboarded", False)),

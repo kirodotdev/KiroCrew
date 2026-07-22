@@ -91,7 +91,7 @@ def _normalize_name(name: str) -> str:
     (trailing whitespace from hand-edited JSON), OR a Unicode-equivalent form —
     e.g. an NFD-decomposed accent (``é`` as ``e`` + U+0301) or a compatibility
     ligature. A publisher controls its package's Unicode form, so without
-    canonicalization an NFD plugin name slips past an NFC-form ban (CR-284272012).
+    canonicalization an NFD plugin name slips past an NFC-form ban.
     """
     return unicodedata.normalize("NFKC", name).strip().casefold()
 
@@ -144,7 +144,7 @@ class AdmissionPolicy:
     approved: Optional[List[str]] = None
     # Kill-switch. Always wins, in any mode.
     banned: List[str] = field(default_factory=list)
-    # Per-capability ceiling, e.g. {"egress": ["*.amazon.com"], "paths": []}.
+    # Per-capability ceiling, e.g. {"egress": ["*.example.com"], "paths": []}.
     # A declared capability value not covered by the ceiling rejects the plugin.
     capability_ceiling: Dict[str, List[str]] = field(default_factory=dict)
 
@@ -188,7 +188,7 @@ _CHECKSUM_PATH = _POLICY_DEFAULT_PATH.parent / ".migrations" / "admission_policy
 # The permissive policy body seeded at first run.  ``mode=open`` + ``approved``
 # absent (None) reproduces today's admit-any-non-banned behavior, so a fresh
 # install is unaffected — the security gain is that the file's PRESENCE is now
-# the intended-open signal, and its ABSENCE fails closed (AVP-23427).
+# the intended-open signal, and its ABSENCE fails closed.
 _DEFAULT_POLICY_BODY: Dict[str, object] = {
     "mode": MODE_OPEN,
     "require_signature": False,
@@ -196,7 +196,7 @@ _DEFAULT_POLICY_BODY: Dict[str, object] = {
     "capability_ceiling": {},
     "_comment": (
         "Default permissive admission policy seeded by KiroCrew at first run. "
-        "Deleting this file DISABLES plugin admission (fail-closed, AVP-23427): "
+        "Deleting this file DISABLES plugin admission (fail-closed): "
         "load_admission_policy() then returns MODE_ENFORCE with an empty allowlist "
         "and the dashboard governance indicator shows Disabled. To restrict "
         "admission, set mode='enforce' and populate 'approved' / 'require_signature'."
@@ -210,7 +210,7 @@ def _fail_closed_policy() -> AdmissionPolicy:
     MODE_ENFORCE with an empty ``approved`` allowlist admits NOTHING beyond the
     always-applied kill-switch, and ``require_signature`` rejects even a signed
     plugin absent an allowlist entry.  This is the fail-closed posture for a
-    missing or unreadable policy (AVP-23427 / AWS-2 fail-closed).
+    missing or unreadable policy (fail-closed).
     """
     return AdmissionPolicy(mode=MODE_ENFORCE, require_signature=True, approved=[])
 
@@ -218,7 +218,7 @@ def _fail_closed_policy() -> AdmissionPolicy:
 def seed_default_policy() -> bool:
     """One-time: write the permissive default policy file at first run.
 
-    Establishes the AVP-23427 invariant that "file present & permissive =
+    Establishes the invariant that "file present & permissive =
     intended open state" is distinguishable from "file absent = tampering /
     misconfig = fail closed".  Guarded by a one-shot marker so that DELETING the
     policy afterward is never silently re-seeded — a later
@@ -316,7 +316,7 @@ def _audit_admission_fail_closed(reason: str) -> None:
 
 
 def _verify_seed_integrity(policy_bytes: bytes) -> None:
-    """Advisory integrity check on the seeded default policy (AVP-23427 rec #5).
+    """Advisory integrity check on the seeded default policy.
 
     Compares the on-disk policy against the sha256 baseline written at seed time.
     A mismatch is RECORDED (ERROR log + critical SEL + health mark) but does NOT
@@ -337,7 +337,7 @@ def _verify_seed_integrity(policy_bytes: bytes) -> None:
                 "(modified since first-run); recording integrity event",
                 _POLICY_DEFAULT_PATH,
             )
-            # Detection only (AVP-23427 rec #5): record for the audit trail but do
+            # Detection only: record for the audit trail but do
             # NOT drive the dashboard to "degraded".  The seeded policy is
             # user-owned and MEANT to be edited (e.g. to turn on enforcement), so
             # a mismatch is EXPECTED on legitimate edits — flagging every edit as
@@ -368,7 +368,7 @@ def load_admission_policy() -> AdmissionPolicy:
     seeded once at first run by :func:`seed_default_policy` (via
     ``agent.run_first_run_setup``), so a fresh install still admits plugins by
     intent; deleting that file therefore DISABLES admission (fail-closed) instead
-    of silently reverting to open (AVP-23427).  A present-but-unreadable file is
+    of silently reverting to open.  A present-but-unreadable file is
     likewise fail-closed.
     """
     raw = os.environ.get(_POLICY_ENV, "").strip()
@@ -380,7 +380,7 @@ def load_admission_policy() -> AdmissionPolicy:
     if path is None:
         # No env override and no file at the default path.  Something the
         # first-run seed (or a managed fleet) should have placed is absent —
-        # fail closed rather than silently admit everything (AVP-23427).
+        # fail closed rather than silently admit everything.
         logger.error(
             "no admission policy found (env %s unset, %s absent); failing closed",
             _POLICY_ENV,
@@ -478,8 +478,8 @@ def _capabilities_within_ceiling(
             continue
         if "*" in ceiling:
             continue
-        # Ceiling entries are case-SENSITIVE globs (e.g. "*.amazon.com" matches
-        # "api.amazon.com"), matching the documented policy shape. Use
+        # Ceiling entries are case-SENSITIVE globs (e.g. "*.example.com" matches
+        # "api.example.com"), matching the documented policy shape. Use
         # fnmatchcase (NOT fnmatch) so the admission decision is deterministic
         # across platforms — plain fnmatch runs through os.path.normcase, which
         # case-folds on macOS but not Linux, so the same policy would admit/reject

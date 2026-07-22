@@ -542,15 +542,15 @@ async def api_system(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
-async def api_midway_ttl(request: web.Request) -> web.Response:
-    """Midway credential TTL — SSH cert primary, cookie fallback."""
+async def api_sso_ttl(request: web.Request) -> web.Response:
+    """SSO credential TTL — SSH cert primary, cookie fallback."""
     # Identity status via the active PlatformContext.  The Default adapter
-    # delegates to ``midway.midway_status()`` — the real Midway SSH-cert probe,
+    # delegates to ``sso_status.sso_status()`` — the real SSO SSH-cert probe,
     # which spawns up to 4 subprocesses (5s timeout each) — while the Amazon
-    # companion returns the real Midway TTL.  ``IdentityProvider.status()`` is
+    # companion returns the real SSO TTL.  ``IdentityProvider.status()`` is
     # SYNCHRONOUS and BLOCKING in both editions, so it must be offloaded to a
     # thread-pool executor to avoid stalling the aiohttp event loop (matches the
-    # legacy ``midway_status_async()`` which wrapped midway_status() this way).
+    # legacy ``sso_status_async()`` which wrapped sso_status() this way).
     loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(None, current_context().identity.status)
     return web.json_response(data)

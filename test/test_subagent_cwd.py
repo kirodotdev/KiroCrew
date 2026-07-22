@@ -1,4 +1,4 @@
-"""Tests for the ``spawn_run`` ``cwd`` parameter (Mesh-1226).
+"""Tests for the ``spawn_run`` ``cwd`` parameter.
 
 Covers:
 - ``validate_cwd`` helper: absolute, exists, realpath, allowlist matching,
@@ -260,7 +260,7 @@ class TestSpawnCwd:
     ) -> None:
         """When pool is at capacity, the resolved cwd must survive the queue.
 
-        Regression guard for the AutoSDE-flagged bug where the queue tuple
+        Regression guard for the review-bot-flagged bug where the queue tuple
         only captured (task, parent, agent, max_turns) and cwd was silently
         dropped on dequeue, re-spawning the subagent in the default sandbox.
         """

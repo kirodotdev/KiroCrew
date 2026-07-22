@@ -3,7 +3,7 @@
  * - auto-collapse when the window shrinks below the panel's space threshold
  * - auto-reopen (with hysteresis) when space returns — only if it was the
  *   auto-collapse that closed it
- * - a manual toggle cancels any pending auto-reopen (AutoSDE post 12 fix)
+ * - a manual toggle cancels any pending auto-reopen (review round 12 fix)
  * - portal slot self-healing: if the actbar slot div isn't in the DOM when
  *   ChatPage looks for it, a MutationObserver latches it when it appears
  *   (fixes the mobile->desktop race that stranded the panel inline).

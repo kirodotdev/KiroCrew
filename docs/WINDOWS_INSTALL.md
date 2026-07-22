@@ -1,6 +1,6 @@
 # Installing & Testing KiroCrew on Windows
 
-KiroCrew runs **natively on Windows** (Mesh-2329) as a Python **source install**.
+KiroCrew runs **natively on Windows** as a Python **source install**.
 The cross-platform process / signal / file-lock / metrics behavior is routed
 through `kiro_crew.platform_compat`, so macOS + Linux behavior is unchanged and
 the same code path also runs on Windows.
@@ -67,7 +67,7 @@ that dir is appended to the MCP spawn `PATH` automatically
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP gateway (opt-in, OFF by default) | not yet — the AF_UNIX socket + `SO_PEERCRED` peer check are POSIX-only |
 
-The not-yet items are tracked as Windows feature-parity follow-ups (Mesh-2364).
+The not-yet items are tracked as Windows feature-parity follow-ups.
 
 ## Secret-at-rest posture on Windows
 
@@ -98,7 +98,7 @@ under NTFS.
   against the wildcard foreign address and the literal English `LISTENING`;
   some localized Windows editions emit translated state names. Workaround:
   `netstat -ano | findstr :5476` to find the PID and `taskkill /F /PID <pid>`.
-- **Web terminal / interactive `mwinit` panels** — unavailable on Windows
+- **Web terminal / interactive SSO login panels** — unavailable on Windows
   (they need `pty`/`fork`/`termios`); they return a clear "not supported on
   Windows" response instead of crashing.
 

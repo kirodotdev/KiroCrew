@@ -84,7 +84,7 @@ Context injection: formatted as `key: value` pairs in `[Semantic Memory]` block,
 
 SQLite table `episodic_memories` — conversation fragments with optional embeddings:
 - **Write**: text validation (10-2000 chars), **prompt-injection screening** (`_contains_injection`, same pattern set as the semantic-KV path), tag sanitization, importance clamping (0-1), FAISS dedup (cosine > 0.88). The dedup scan **skips tombstoned ("ghost") matches**: tombstone paths (merge, dashboard delete, cap eviction, stale retirement) set `is_deleted=1` but leave the vector in `_faiss_index`/`_faiss_id_map`, so a high-similarity hit may map to a deleted row. `_get_episodic()` filters `is_deleted=0` and returns `None` for those; the write loop `continue`s past a `None` match (mirroring `search_episodic`'s `if not mem or mem["is_deleted"]: continue`) instead of treating it as a conflict — otherwise a new memory matching a deleted one was silently rejected (data loss).
-- **Injection screening (XPIA defense-in-depth, Talos 696671aa)**: episodic text is derived from conversation transcripts, so a poisoned turn could persist steering instructions that get re-injected into future contexts. `write_episodic()` now runs `_contains_injection()` (before the embed call) and, on match, drops the entry and emits an auditable `injection_blocked` event with `memory_type='episodic'`. The stored audit snippet is scrubbed with `redact_exfiltration_urls()` + `redact_credentials()` first, since `/api/memory/events` surfaces it verbatim on the dashboard. This mirrors the semantic-KV screen at `validate_semantic()`. **Residual (accepted risk)**: this is a best-effort regex screen — a determined owner can still steer their own long-term memory with phrasing that evades the patterns; long-term memory poisoning is an accepted residual. The screen raises the bar against accidental/opportunistic XPIA persistence, not against a motivated self-owner.
+- **Injection screening (XPIA defense-in-depth, `696671aa`)**: episodic text is derived from conversation transcripts, so a poisoned turn could persist steering instructions that get re-injected into future contexts. `write_episodic()` now runs `_contains_injection()` (before the embed call) and, on match, drops the entry and emits an auditable `injection_blocked` event with `memory_type='episodic'`. The stored audit snippet is scrubbed with `redact_exfiltration_urls()` + `redact_credentials()` first, since `/api/memory/events` surfaces it verbatim on the dashboard. This mirrors the semantic-KV screen at `validate_semantic()`. **Residual (accepted risk)**: this is a best-effort regex screen — a determined owner can still steer their own long-term memory with phrasing that evades the patterns; long-term memory poisoning is an accepted residual. The screen raises the bar against accidental/opportunistic XPIA persistence, not against a motivated self-owner.
 - **Search**: FAISS vector similarity with decay scoring: `cosine_sim × (0.7 + 0.3×importance) × exp(-0.03×days)`, then MMR diversity reranking (Jaccard-based, λ=0.6)
 - **MMR reranking**: Maximal Marginal Relevance balances relevance with diversity. Greedy iterative selection penalizes candidates similar to already-selected results. Prevents redundant episodic fragments from consuming the context budget. Configurable via `mmr=False` parameter to disable.
 - **Relevance threshold**: `cosine_sim ≥ 0.55` required for context injection (empirically determined from 100-query benchmark: 50 relevant + 50 irrelevant, F1=0.980). Results below threshold are filtered in `get_episodic_context()` only — `search_episodic()` returns all results for dashboard/API use. FTS5 keyword fallback is unaffected (no cosine scores).
@@ -95,7 +95,7 @@ Context injection: top-8 results in `[Episodic Memory]` block, capped at 3000 ch
 
 ### In-Process Embedder (`embeddings.py`)
 
-Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kiro_crew/_vendor/llama_cpp`) — no external server, no HTTP hop, no runtime pip install. (The Ollama-era remote-URL path — and with it `_validate_url`/`_resolve_blocked_addr` SSRF hardening for Talos `76640a75` — was removed together with the network client: there is no embedding URL to validate anymore.)
+Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kiro_crew/_vendor/llama_cpp`) — no external server, no HTTP hop, no runtime pip install. (The Ollama-era remote-URL path — and with it `_validate_url`/`_resolve_blocked_addr` SSRF hardening from commit `76640a75` — was removed together with the network client: there is no embedding URL to validate anymore.)
 
 - `LlamaCppEmbedder.embed(text)` / `embed_batch(texts)` → returns 1024-dim vectors or `None` on any failure (graceful degradation)
 - **Non-blocking model load**: the GGUF load runs on a background daemon thread (`_kick_background_load()`, thread name `kc-embed-load`) — `embed()`/`embed_batch()` NEVER block on the load. When the model isn't in memory yet, the call kicks the background load and returns `None` immediately; memory degrades to keyword search until the load lands. The gateway/dashboard event loop is never stalled by embedding work. `wait_ready(timeout)` exists for sync contexts (tests, one-shot CLI flows) that legitimately want to block — never call it from an event-loop thread
@@ -140,10 +140,10 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 | Source | public KiroCrew CDN (`_DEFAULT_MODEL_URL`; sha256-pinned; `KIROCREW_EMBED_MODEL_URL` / `memory.embed_model_url` for mirrors) |
 | Runtime | Vendored llama-cpp-python 0.3.34 (MIT license, `kiro_crew/_vendor/`) |
 | Data flow | Text → in-process function call → float vectors (no data leaves machine) |
-| Policy | Self-approvable under [Public Dataset and ML Model Policy](https://policy.a2z.com/docs/83291/publication) |
+| Policy | Self-approvable under a public dataset / ML model policy |
 
 Conditions met for self-approval:
-1. Internal use only — model runs locally, no 3P API calls
+1. Local use only — model runs locally, no 3P API calls
 2. Apache-2.0 license — on approved list
 3. Outputs are float vectors — no excluded categories (health, financial, biometric, PII)
 4. Not recreating training data — generating embeddings, not content
@@ -223,7 +223,7 @@ macOS (Apple Silicon and Intel), Linux (x86_64, arm64/Graviton), and Windows sup
 | macOS Intel (x86_64) | `macos_x86_64/` | CPU (Metal OFF) | Built from the pinned 0.3.34 sdist for the universal desktop app's x64 slice |
 | Linux x86_64 | `linux_x86_64/` | CPU | manylinux2014 (glibc ≥ 2.17) — AL2 and AL2023 both work |
 | Linux aarch64/Graviton | `linux_aarch64/` | CPU | manylinux2014 (glibc ≥ 2.17) — AL2 and AL2023 both work |
-| Windows x86_64 | `win_amd64/` | CPU | DLLs found via `os.add_dll_directory` (Mesh-629) |
+| Windows x86_64 | `win_amd64/` | CPU | DLLs found via `os.add_dll_directory` |
 
 The model download requires only outbound HTTPS (no git/git-lfs) on all platforms.
 
@@ -326,7 +326,7 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 
 ## Auto Skill Creation (`skills.py` + `history.py`)
 
-Hermes-style autonomous skill creation from completed sessions (Mesh-677). Disabled by default; opt-in per user via `skills.auto_create_from_sessions`.
+Hermes-style autonomous skill creation from completed sessions. Disabled by default; opt-in per user via `skills.auto_create_from_sessions`.
 
 ### Flow
 

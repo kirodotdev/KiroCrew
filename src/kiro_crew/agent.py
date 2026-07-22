@@ -302,8 +302,8 @@ def _extra_mcp_servers() -> dict[str, dict]:
     """Edition-contributed MCP servers from the active PlatformContext.
 
     The Default adapter returns ``{}`` so the standalone spec is byte-for-byte
-    what it is today; the Amazon companion contributes builder-mcp (and other
-    internal servers).  Entries are already in kiro-cli's ``mcpServers`` shape
+    what it is today; the Amazon companion contributes the internal MCP server
+    (and other internal servers).  Entries are already in kiro-cli's ``mcpServers`` shape
     (``{"command", "args", optional "autoApprove", ...}``) — the consumer
     *merges* them into the ``mcpServers`` map rather than restructuring the
     spec, preserving the ``deny_unknown_fields`` invariant.
@@ -1264,7 +1264,7 @@ def build_agent_config() -> dict:
         mcp[name] = entry
 
     # Edition-contributed MCP servers (PlatformContext).  ADD-only: standalone
-    # contributes {} (unchanged), the Amazon companion adds builder-mcp etc.
+    # contributes {} (unchanged), the Amazon companion adds the internal MCP server etc.
     # Entries are already kiro-spec-shaped, so we only extend the map — no spec
     # restructuring, deny_unknown_fields invariant preserved.
     for name, spec in _extra_mcp_servers().items():
@@ -1313,7 +1313,7 @@ def _refresh_dynamic_fields(config: dict) -> None:
     # Edition-contributed MCP servers (PlatformContext).  ADD-only: only seed a
     # server the user doesn't already have, so user customizations on a refresh
     # are preserved.  Standalone contributes {} (unchanged); Amazon adds
-    # builder-mcp etc.  Already kiro-spec-shaped — no restructuring.
+    # the internal MCP server etc.  Already kiro-spec-shaped — no restructuring.
     for name, extra_spec in _extra_mcp_servers().items():
         mcp.setdefault(name, dict(extra_spec))
 
@@ -1385,7 +1385,7 @@ def _refresh_dynamic_fields(config: dict) -> None:
     # agent.model). An explicit pick (not the "auto" sentinel) is propagated into
     # the agent file so kiro-cli's --agent startup load matches it; otherwise the
     # stale agent-file model shadows config.json and session/set_model loses the
-    # startup race (Mesh-2292). "auto" defers to managed/shipped resolution above.
+    # startup race. "auto" defers to managed/shipped resolution above.
     mc_model = (mc_cfg.get("agent") or {}).get("model")
     if mc_model and mc_model != "auto":
         config["model"] = mc_model
@@ -1442,7 +1442,7 @@ def _norm_mcp_spec(spec: Any) -> Any:
     different optional-key *shapes*: a bare ``{"command": ...}`` one run, then
     ``"env": {}`` or ``"args": []`` the next. Comparing raw dicts treats those
     as distinct servers, so ``_normalize_mcp_server_keys`` mints an ever-growing
-    ``-2``/``-3``... suffix on every build / reinstall / update (Mesh-2593).
+    ``-2``/``-3``... suffix on every build / reinstall / update.
     Dropping empty optional collections makes semantically identical re-merges
     collapse onto the canonical alias. An empty ``env``/``args`` is a launch
     no-op for kiro-cli (missing == empty), so this is also the cleaner spec to
@@ -1465,7 +1465,7 @@ def _normalize_mcp_server_keys(config: dict) -> None:
     Dedup is by *normalized* spec (:func:`_norm_mcp_spec`), so a re-added key
     that differs only by an empty ``env``/``args`` reuses the existing alias
     instead of accumulating a fresh ``-N`` suffix on every build / reinstall /
-    update (Mesh-2593). Convergence: any already-suffixed sibling that is an
+    update. Convergence: any already-suffixed sibling that is an
     equivalent duplicate is folded back onto the surviving alias (its ``@ref``
     is redirected), so a config already polluted by the pre-fix bug self-heals.
 
@@ -1670,7 +1670,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # Resolution-aware fallback: a server can be defined in several sources
     # with different commands.  If the merged winner's command does not
     # resolve (e.g. a bare command whose binary isn't on the rebuild PATH —
-    # the classic builder-mcp shadowing case), fall back to the SAME server's
+    # the classic internal-MCP-server shadowing case), fall back to the SAME server's
     # spec from the other sources before dropping it, in priority order
     # (kirocrew > kiro-global > cc-global).  This prevents one source's
     # unresolvable command from killing a server another source can resolve.
@@ -1687,7 +1687,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         dir list — keeps agent-config-build resolution and probe resolution
         from diverging: a divergence previously let a server probe healthy on
         the dashboard while being silently dropped from the generated agent
-        config ("command not found: kirocrew", Mesh-2329). augmented_path
+        config ("command not found: kirocrew"). augmented_path
         covers ~/.aim/mcp-servers and ~/.toolbox/bin (previously hardcoded
         here) and appends the running interpreter's console-scripts dir
         (venv ``Scripts\\`` on Windows, ``bin/`` on POSIX) as a last-resort
@@ -1768,7 +1768,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
 
     # Rewrite slash-containing server keys to kiro-safe aliases (also migrates
     # already-broken configs); runs after merges so global-only servers and
-    # their stale @refs are normalized too. See mcp_server_alias / Mesh-1956.
+    # their stale @refs are normalized too. See mcp_server_alias.
     _normalize_mcp_server_keys(config)
 
     # Sync shared (user-installed) servers to tools/allowedTools.
@@ -1971,7 +1971,7 @@ def _install_knowledge_agent() -> None:
 
     This agent is used by the Knowledge Library's LLMPool for document
     extraction.  It uses claude-haiku-4.5 (cheapest model).  The previous
-    Amazon-internal ``builder-mcp`` / ReadInternalWebsites wiring is omitted
+    Amazon-internal MCP server / internal-websites wiring is omitted
     on public installs; the agent ships without MCP servers and relies on the
     model's own capabilities for extraction.  Symbol preserved for callers.
     """
@@ -2153,7 +2153,7 @@ def _install_heartbeat_agent() -> None:
     keeps cold-start cost low and reduces the surface the gateway has to
     police.
 
-    (The Amazon-internal ``builder-mcp`` CR/ticket/pipeline read wiring is
+    (The Amazon-internal MCP server code-review/ticket/pipeline read wiring is
     omitted on public installs, matching ``_install_research_agent`` /
     ``_install_knowledge_agent``.)
 

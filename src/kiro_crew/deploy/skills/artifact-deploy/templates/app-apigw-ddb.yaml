@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   KiroCrew One-Click Deploy - per-app STATEFUL backend (API Gateway HTTP API ->
-  Lambda -> DynamoDB). Palisade-safe (Lambda invoked only by API Gateway; no
+  Lambda -> DynamoDB). Guardrail-safe (Lambda invoked only by API Gateway; no
   world-accessible Function URL). The Lambda role is least-privilege: CloudWatch
-  Logs + CRUD on ONLY its own table (BSC6). One stack per slug.
+  Logs + CRUD on ONLY its own table. One stack per slug.
 
 Parameters:
   Slug:
@@ -74,7 +74,7 @@ Resources:
       PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/kirocrew-deploy-app-boundary'
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      # Least privilege (BSC6): CRUD scoped to THIS table's ARN only.
+      # Least privilege: CRUD scoped to THIS table's ARN only.
       Policies:
         - PolicyName: own-table-crud
           PolicyDocument:

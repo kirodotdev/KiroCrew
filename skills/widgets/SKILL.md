@@ -80,9 +80,9 @@ themes.
   <div class="text-sm font-semibold" style="color:var(--ok)">✅ Green across all stages</div>
   <div class="text-xs" style="color:var(--muted)">last build 08:42 UTC</div>
   <div class="text-xs">
-    <a href="https://code.amazon.com/reviews/CR-274235283"
+    <a href="https://github.com/example-org/example-repo/pull/1234"
        target="_blank" rel="noopener noreferrer"
-       style="color:var(--accent)">CR-274235283</a>
+       style="color:var(--accent)">#1234</a>
   </div>
 </div>
 </mcwidget>
@@ -122,52 +122,36 @@ or `underline` based on density — long copy benefits from underline,
 chips / badges look cleaner without.
 
 ```html
-<a href="https://code.amazon.com/reviews/CR-274235283"
+<a href="https://github.com/example-org/example-repo/pull/1234"
    target="_blank" rel="noopener noreferrer"
-   style="color:var(--accent)">CR-274235283</a>
+   style="color:var(--accent)">#1234</a>
 ```
 
 **Render identifiers as links wherever possible.** Inside widgets, bare
-IDs are wasted real-estate — the user can't click them. Whenever you
-mention a known-format identifier, render it as an `<a>` to its canonical
-URL. Same applies to people (PhoneTool), tickets, design docs, builds, etc.
+IDs and bare URLs are wasted real-estate — the user can't click a plain-text
+reference. Whenever you mention a known-format identifier or a bare URL,
+render it as an `<a>` to its canonical `https://` target.
 
-URL templates — use these mechanically:
+URL templates — use these mechanically. Substitute the placeholders
+(`<org>`, `<repo>`, `<n>`, `<id>`) with the real values and emit the
+identifier verbatim:
 
-The URL template always uses the same literal prefix as the identifier —
-emit the identifier verbatim, do not strip any prefix.
+| Identifier                          | URL template                                              |
+|-------------------------------------|-----------------------------------------------------------|
+| PR / merge request `#<n>`           | `https://github.com/<org>/<repo>/pull/<n>`                |
+| Issue `#<n>`                        | `https://github.com/<org>/<repo>/issues/<n>`              |
+| Commit `<sha>`                      | `https://github.com/<org>/<repo>/commit/<sha>`            |
+| Docs / wiki page `<slug>`           | `https://example.com/docs/<slug>`                         |
+| Generic bare URL                    | itself (`https://…`) — just wrap it in an `<a>`           |
 
-| Identifier                                | URL template                                                                      |
-|-------------------------------------------|-----------------------------------------------------------------------------------|
-| `CR-XXXXXXXX`                             | `https://code.amazon.com/reviews/CR-XXXXXXXX`                                     |
-| Brazil package `<pkg>`                    | `https://code.amazon.com/packages/<pkg>`                                          |
-| SIM ticket `<TEAM>-XXXX` (story/feature)  | `https://sim.amazon.com/issues/<TEAM>-XXXX`                                       |
-| SIM-T ticket `V<digits>` / `P<digits>` / `D<digits>` | `https://t.corp.amazon.com/V<digits>` (same pattern for `P<digits>` / `D<digits>`) |
-| Taskei `<TEAM>-XXXX` (e.g. Mesh-, AdsIC-)| `https://taskei.amazon.dev/tasks/<TEAM>-XXXX`                                     |
-| PhoneTool alias `<alias>`                 | `https://phonetool.amazon.com/users/<alias>`                                      |
-| Quip doc `<docId>`                        | `https://quip-amazon.com/<docId>`                                                 |
-| Wiki page `<Path>`                        | `https://w.amazon.com/bin/view/<Path>`                                            |
-| Sage post `<id>`                          | `https://sage.amazon.dev/posts/<id>`                                              |
-| Build `<id>`                              | `https://build.amazon.com/<id>`                                                   |
-| Apollo env `<env>` / stage `<stage>`      | `https://apollo.amazon.com/environments/<env>/stages/<stage>`                     |
-| MCM `MCM-XXXXXXXX`                        | `https://mcm.amazon.dev/cms/MCM-XXXXXXXX`                                         |
-| Pipeline `<name>`                         | `https://pipelines.amazon.com/pipelines/<name>`                                   |
-| AWS account `<accountId>` (isengard)      | `https://isengard.amazon.com/manage-accounts/<accountId>/manage`                  |
+For any identifier scheme not listed here, follow the same principle: map
+the bare reference to its canonical `https://` URL. If you don't know the
+canonical URL for an identifier, leave it as plain text rather than guessing.
 
-**SIM vs Taskei disambiguation.** Both use `<TEAM>-XXXX`. The agent has the
-context the identifier was mentioned in — use it:
+For chat messages, paste the full URL the user shares; never reconstruct.
 
-- If the surrounding text says "SIM", "ticket", "issue", or links to
-  `sim.amazon.com` / `i.amazon.com` → SIM.
-- If it says "Taskei", "task", or links to `taskei.amazon.dev` → Taskei.
-- Without any context, default to Taskei — most teams that adopt `<TEAM>-`
-  prefixes (Mesh-, AdsIC-, RANDA-, …) live in Taskei now. SIM is mostly
-  used for legacy stories and tickets handed in by partner teams.
-
-For Slack messages, paste the full URL the user shares; never reconstruct.
-
-When the visible label can be made shorter than the URL (e.g. a long Quip
-title), use a meaningful label (`<a href="…">CPB MPT migration HLD</a>`)
+When the visible label can be made shorter than the URL (e.g. a long doc
+title), use a meaningful label (`<a href="…">Migration design doc</a>`)
 rather than dumping the raw URL.
 
 ## Cost

@@ -614,7 +614,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/artifacts/{slug}/versions/{version}", api_artifact_version_detail)
     app.router.add_get("/api/artifacts/{slug}/events", api_artifact_events)
     app.router.add_post("/api/artifacts/{slug}/events", api_artifact_record_event)
-    # Publishing / sharing (Mesh-1880)
+    # Publishing / sharing
     app.router.add_post("/api/artifacts/{slug}/publish", api_artifact_publish)
     app.router.add_delete("/api/artifacts/{slug}/publish", api_artifact_unpublish)
     app.router.add_post("/api/artifacts/{slug}/publish/refresh", api_artifact_refresh_sharing)
@@ -635,7 +635,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/remote-artifacts/{provider}/clone", api_remote_artifacts_clone)
     app.router.add_post("/api/remote-artifacts/{provider}/fork", api_remote_artifacts_fork)
 
-    # Artifact folders (Mesh-2720). ``/api/artifact-folders`` (hyphen) never
+    # Artifact folders. ``/api/artifact-folders`` (hyphen) never
     # collides with the ``/api/artifacts/{slug}`` dynamic route.
     app.router.add_get("/api/artifact-folders", api_artifact_folders)
     app.router.add_post("/api/artifact-folders", api_artifact_folder_create)
@@ -749,7 +749,7 @@ def _write_secret_file(secret_path: Path, secret: str) -> None:
             # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
             # OSError, which would defeat the cleanup-and-reraise below — a
             # pre-existing file with loose perms would stay loose and the caller
-            # never learns (AutoSDE). On POSIX this applies chmod 0o600 by path;
+            # never learns. On POSIX this applies chmod 0o600 by path;
             # on Windows an owner-only DACL via icacls (fchmod doesn't exist on
             # Windows — previously this was a silent no-op).
             platform_compat.restrict_to_owner(secret_path)
@@ -807,7 +807,7 @@ async def _revive_intended_instances(
     neither abort the rest nor crash startup. A failed revive leaves
     ``was_connected`` true (the connect path never clears it on failure) and
     records a retained error, so its tab persists showing *why* it is down — the
-    user re-authenticates in their own environment (SSH agent / kerberos /
+    user re-authenticates in their own environment (SSH agent / SSO /
     whatever the host needs) and clicks Retry from the instance page. We do NOT
     pre-gate on any credential-staleness check: a failed connect simply surfaces
     its error, which is exactly the recovery affordance we want.
@@ -1166,7 +1166,7 @@ async def start_dashboard(
     app.router.add_get("/api/status", handlers.api_status)
     app.router.add_get("/api/system", handlers.api_system)
     app.router.add_get("/api/stream", handlers.api_stream)
-    app.router.add_get("/api/midway-ttl", handlers.api_midway_ttl)
+    app.router.add_get("/api/sso-ttl", handlers.api_sso_ttl)
     app.router.add_get("/api/dashboard/branding", handlers.api_branding)
     app.router.add_get("/api/health", handlers.api_health)
     app.router.add_get("/api/theme/boot", handlers.api_theme_boot)
@@ -1372,7 +1372,7 @@ async def start_dashboard(
     app.router.add_post("/api/aim/agents/install", handlers.api_aim_agents_install)
     app.router.add_post("/api/aim/agents/uninstall", handlers.api_aim_agents_uninstall)
     app.router.add_post("/api/aim/update", handlers.api_aim_update)
-    # Claude Code migration (kiro → CC)
+    # Companion-backend migration (kiro → alternate ACP backend)
     app.router.add_get("/api/cc/aim/missing", handlers.api_cc_aim_missing)
     app.router.add_post("/api/cc/aim/sync", handlers.api_cc_aim_sync)
     # Agent metadata (Phase 1)
@@ -1481,17 +1481,17 @@ async def start_dashboard(
     app.router.add_post("/api/portability/preview", handlers.api_portability_preview)
 
     # SSO login WS: an edition may supply the real login handler (CPP
-    # DashboardContributor.mwinit_handler); the public Default returns None so the
+    # DashboardContributor.sso_login_handler); the public Default returns None so the
     # built-in stub stays bound. Fail-closed via the canonical safe_context_call.
-    _mwinit_handler = (
+    _sso_login_handler = (
         safe_context_call(
-            lambda: current_context().dashboard.mwinit_handler(),
+            lambda: current_context().dashboard.sso_login_handler(),
             fallback=None,
-            log_message="dashboard.mwinit_handler lookup failed; using built-in stub",
+            log_message="dashboard.sso_login_handler lookup failed; using built-in stub",
         )
-        or handlers.api_mwinit_ws
+        or handlers.api_sso_login_ws
     )
-    app.router.add_get("/api/mwinit", _mwinit_handler)
+    app.router.add_get("/api/sso-login", _sso_login_handler)
     # Terminal (CLI panel)
     app.router.add_get("/api/ws/terminal/{session_id}", handlers.api_terminal_ws)
     app.router.add_post("/api/terminal/sessions", handlers.api_terminal_create)
@@ -1838,7 +1838,7 @@ async def start_dashboard(
         request: web.Request,
         handler: object,
     ) -> web.StreamResponse:
-        # DNS-rebinding defense-in-depth (AVP-23427): reject any request whose
+        # DNS-rebinding defense-in-depth: reject any request whose
         # Host header does not name a host we serve. Runs on EVERY method (GET
         # data-exfil is the rebinding payload) and independently of the CSRF
         # Origin check and loopback trust — a rebound request is loopback at the
@@ -2289,7 +2289,7 @@ async def start_api_server(
         request: web.Request,
         handler: object,
     ) -> web.StreamResponse:
-        # DNS-rebinding defense-in-depth (AVP-23427), parity with start_dashboard.
+        # DNS-rebinding defense-in-depth, parity with start_dashboard.
         if not check_host(request):
             sel().log_api_access(
                 caller="mcp_tool",

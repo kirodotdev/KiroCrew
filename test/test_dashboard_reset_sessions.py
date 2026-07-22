@@ -143,7 +143,7 @@ class TestResetAllSessionsShutdown:
     async def test_force_kill_fallback_exception_is_swallowed(self, monkeypatch) -> None:
         """If ``_sync_kill_provider`` itself raises, ``_safe_shutdown`` must still
         complete so ``asyncio.gather`` doesn't abort other providers' shutdowns
-        and ``start_pool`` runs. Regression guard for AutoSDE comment on CR-268228120.
+        and ``start_pool`` runs. Regression guard for a review-bot comment.
         """
         # Patch the DEFINING module (handlers.sessions), not the package
         # re-export — see test_force_kills_hung_provider_after_timeout.

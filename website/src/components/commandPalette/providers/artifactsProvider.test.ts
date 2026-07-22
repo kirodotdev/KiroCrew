@@ -8,8 +8,8 @@ import type { Result } from '../types'
 import type { Artifact } from '../../../types'
 
 /**
- * Unit tests for the pure {@link createArtifactsProvider} factory (Mesh-2151
- * Search Everywhere — Artifacts tab). Side effects are injected, so we pass a
+ * Unit tests for the pure {@link createArtifactsProvider} factory
+ * (Search Everywhere — Artifacts tab). Side effects are injected, so we pass a
  * plain mock fetch + open spy and assert the mapping (title/subtitle/id),
  * highlight indices, Enter wiring, and empty-query ordering preservation.
  */

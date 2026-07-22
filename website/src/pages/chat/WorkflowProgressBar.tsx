@@ -18,7 +18,7 @@ const TERMINAL_LINGER_MS = 4000
  *  phase, and the most recent narrator log line for any RUNNING workflow.
  *  Briefly shows ✓/✗ on terminal states, then drops the entry.
  *
- *  Each row is expandable: clicking toggles a Claude-Code-style phase tree
+ *  Each row is expandable: clicking toggles a hierarchical phase tree
  *  (powered by <WorkflowRunTree>) plus a "View source" / Edit / Rerun panel.
  *  The full run snapshot (with events + source) is fetched on expand and
  *  refreshed every ~2s while the run is still running. */

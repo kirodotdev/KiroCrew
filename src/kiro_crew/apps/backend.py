@@ -295,7 +295,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         and not (root / entry_point).exists()
     )
 
-    # CSE SEC-012 (Talos P472043259): the same operator off-switch that blocks
+    # Security hardening: the same operator off-switch that blocks
     # in-process third-party module loading (module_loader.load_app_module) must
     # also block spawning a third-party app's out-of-process backend, or the
     # `agent.apps_allow_third_party=false` promise ("refuse third-party app code
@@ -463,7 +463,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 venv_cmd, _ = wrap_argv(
                     ["python3", "-m", "venv", str(venv_dir)], mode="standard"
                 )
-                venv_cmd = cgroup_scope_argv(venv_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+                venv_cmd = cgroup_scope_argv(venv_cmd)  # cgroup DoS ceiling
                 subprocess.run(
                     venv_cmd,
                     check=True, capture_output=True, timeout=60, env=_env,
@@ -474,7 +474,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 [pip_bin, "install", "--quiet", "--disable-pip-version-check",
                  "-r", str(req_file)], mode="standard"
             )
-            pip_cmd = cgroup_scope_argv(pip_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+            pip_cmd = cgroup_scope_argv(pip_cmd)  # cgroup DoS ceiling
             subprocess.run(
                 pip_cmd,
                 capture_output=True, timeout=60, env=_env,
@@ -560,7 +560,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     )
                     sandboxed_npm = cgroup_scope_argv(
                         sandboxed_npm
-                    )  # cgroup DoS ceiling (Talos bdf0d7e5)
+                    )  # cgroup DoS ceiling
                     subprocess.run(
                         sandboxed_npm,
                         cwd=str(root), env=env, capture_output=True, timeout=120,
@@ -586,8 +586,8 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     ):
         venv_python = str(root / ".venv" / "bin" / "python3")
         # Fall back to the gateway's own interpreter (sys.executable) rather than a bare
-        # "python3": a bare name relies on PATH, which isn't guaranteed (e.g. the Brazil
-        # build farm ships only a versioned interpreter, so execvp("python3") raises
+        # "python3": a bare name relies on PATH, which isn't guaranteed (e.g. some
+        # build environments ship only a versioned interpreter, so execvp("python3") raises
         # FileNotFoundError and the backend dies immediately). Matches the module-style
         # branch above.
         python_bin = venv_python if (root / ".venv" / "bin" / "python3").is_file() else sys.executable
@@ -619,7 +619,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
 
     # Apply OS-level sandbox to app backend process
     sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard")
-    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
 
     logger.info(
         "Spawning app %s backend: %s", app_name, " ".join(sandboxed_cmd),
@@ -929,7 +929,7 @@ def _gate_mcp_registration(app_name: str, port: int, *, healthy: bool) -> None:
     """Register the app's MCP servers once its backend is healthy, or scrub them if not.
 
     Called from the health-check loop so the global mcp.json never carries an HTTP MCP url
-    for an app whose backend isn't actually serving (review CR-284432051: the boot/enable
+    for an app whose backend isn't actually serving (the boot/enable
     paths previously registered with an optimistic pre-health port — an enabled app whose
     backend never became healthy left a dead url that broke every kiro-cli session). On
     health success we (re)register with the confirmed live port; on failure we deregister
@@ -971,7 +971,7 @@ def _health_check_loop(app_name: str, port: int, health_path: str) -> None:
                         # Stopped/disabled between the health poll and here: do NOT
                         # register MCP for a backend that's no longer tracked — that would
                         # write the exact dead-URL entry this change exists to prevent
-                        # (AutoSDE race-condition finding). Mirror the top-of-loop guard.
+                        # (race-condition finding). Mirror the top-of-loop guard.
                         if app_name not in _processes:
                             return
                         _processes[app_name].healthy = True
@@ -979,7 +979,7 @@ def _health_check_loop(app_name: str, port: int, health_path: str) -> None:
                         "App %s backend healthy (port %d, attempt %d)",
                         app_name, port, attempt + 1,
                     )
-                    # Health-gated MCP registration (review CR-284432051): only now that the
+                    # Health-gated MCP registration: only now that the
                     # backend has passed /health do we write its HTTP MCP url (live port) to
                     # global mcp.json. Registering before this could leave a dead-but-enabled
                     # url for an app whose backend never became healthy — the kiro-cli outage.
@@ -1265,7 +1265,7 @@ def start_enabled_app_backends() -> list[str]:
 
     apps = list_apps()
 
-    # Boot reconcile (regression CR-281976055 / revert CR-284300496): scrub global
+    # Boot reconcile (regression fix): scrub global
     # mcp.json entries for any installed-but-NOT-enabled app that declares MCP servers.
     # A disabled app's backend is not running, so its HTTP MCP url points at a dead port;
     # left in ~/.kiro/settings/mcp.json it breaks EVERY kiro session (connect failure →
@@ -1367,7 +1367,7 @@ def start_enabled_app_backends() -> list[str]:
         if ap:
             started.append(name)
             logger.info("Auto-started backend for app %s on port %d", name, ap.port)
-            # MCP re-registration is HEALTH-GATED (review CR-284432051): the health-check
+            # MCP re-registration is HEALTH-GATED: the health-check
             # loop started by start_app_backend calls _gate_mcp_registration once /health
             # passes, writing the HTTP MCP url with the real allocated port (which may differ
             # from the manifest's illustrative port). Registering here — before health — is

@@ -1,23 +1,22 @@
-# Claude Code Provider — removed
+# Standalone provider — removed
 
 Last Updated: 2026-07-13 (Fable 5 registry entry + default-first available_models / bare-id alias dedup noted; KiroCrew collapsed to a single KiroACP / kiro-cli provider)
 
 > **This provider no longer exists in KiroCrew.** The public fork drives a single
 > backend — `kiro-cli` over the Agent Client Protocol (`agent.provider` is fixed
-> to `acp`). The standalone Claude Code provider (`providers/claude_code.py`),
-> the `BedrockProvider` (`providers/bedrock.py`), the `cc_agent`/`mirror`
-> modules, the `cc_*` / `bedrock_*` config fields, and the dashboard provider
-> selector were all removed during de-Amazoning. There is no provider to choose.
+> to `acp`). The removed standalone provider, the removed Bedrock provider, the
+> removed agent-renderer / mirror modules, their config fields, and the dashboard
+> provider selector were all removed during de-Amazoning. There is no provider to
+> choose.
 
 ## What remains (the dormant ACP seam)
 
 `acp/client.py` keeps an inert protocol seam (`ACP_BACKEND_CLAUDE` / the
-`_is_claude` branch) so an internal companion package can re-register a
-Claude-Code-over-`claude-agent-acp` backend without forking the client. The
-public core never selects it: `_resolve_kiro_bin` is the only backend the
-provider factory wires, and the dashboard exposes no provider choice. **Do not
-re-add the registration glue or a provider selector** — see the repo-root
-`CLAUDE.md` ("KiroCrew is KiroACP-only") and `MIGRATION_PLAN.md`.
+`_is_claude` branch) so an internal companion package can re-register an
+alternate `claude-agent-acp` backend without forking the client. The public core
+never selects it: `_resolve_kiro_bin` is the only backend the provider factory
+wires, and the dashboard exposes no provider choice. **Do not re-add the
+registration glue or a provider selector** — see the repo-root `CLAUDE.md`.
 
 The seam's binary-resolution details (`_resolve_claude_acp_bin`, the per-session
 `settings.local.json` permission routing, `CLAUDE_CONFIG_DIR` isolation) are

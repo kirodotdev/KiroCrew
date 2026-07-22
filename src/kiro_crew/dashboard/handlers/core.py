@@ -134,8 +134,8 @@ async def index(request: web.Request) -> web.Response:
 
     When the built SPA bundle is absent/unreadable, serve the static
     ``_DASHBOARD_HTML_NOT_FOUND`` guidance page (restart/rebuild instructions).
-    The legacy server-rendered ``dashboard.html`` fallback was removed (Talos
-    XSS follow-up 6d6c1a9b / V2285871874): it shipped an incomplete HTML
+    The legacy server-rendered ``dashboard.html`` fallback was removed (an
+    XSS follow-up): it shipped an incomplete HTML
     ``esc()`` and a permissive inline-script surface, and existed only as a
     build-time fallback. The React SPA (reviewed clean) is now the only shell.
 
@@ -521,7 +521,7 @@ def _find_suitable_python() -> str | None:
     """Find a non-free-threaded python3 >= 3.10 with pip.
 
     Delegates interpreter resolution to platform_compat.find_python_interpreter,
-    which rejects Brazil-path builds and — on Windows — the Microsoft Store alias
+    which rejects internal build-system paths and — on Windows — the Microsoft Store alias
     stub (spawning that stub is what prints "Python was not found" and is why
     this probe must never touch it). This caller adds two requirements the shared
     helper does not: the interpreter must NOT be free-threaded (whisper wheels
@@ -1024,11 +1024,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
-    # SSO login flags for an edition that supplies a real mwinit_handler. Bounded
-    # to a short string here; the companion login handler re-validates each token
-    # against its own flag allowlist before spawning the login PTY (defense in
-    # depth — this gate only stores the value). Inert in the public build.
-    "dashboard.mwinit_flags": {"type": "str", "max_len": 256},
+    # SSO login flags for an edition that supplies a real sso_login_handler.
+    # Bounded to a short string here; the companion login handler re-validates
+    # each token against its own flag allowlist before spawning the login PTY
+    # (defense in depth — this gate only stores the value). Inert in public build.
+    "dashboard.sso_login_flags": {"type": "str", "max_len": 256},
     # Instances (multi-instance management). Toggling enabled needs a gateway
     # restart to take effect (the SSH manager + CSP relaxation init at startup),
     # so the Instances settings panel surfaces a "restart required" hint.

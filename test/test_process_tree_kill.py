@@ -1,7 +1,7 @@
 """Tests for process tree killing in session.reset() and subagent._sigkill_session().
 
 Covers the killpg + escaped child sweep logic added to fix orphaned
-kiro-cli sessions (CR-266272045).
+kiro-cli sessions.
 """
 from __future__ import annotations
 

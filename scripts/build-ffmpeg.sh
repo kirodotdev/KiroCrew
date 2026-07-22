@@ -8,7 +8,6 @@
 #                  output   (pcm_s16le encoder, s16le/pipe muxer)
 #
 # License: LGPLv2.1 (no --enable-gpl, no --enable-nonfree)
-# Per Amazon Open Source guidance: https://w.amazon.com/bin/view/Open_Source/Package_Guidance/FFmpeg/
 #
 # Usage: bash scripts/build-ffmpeg.sh
 # Prerequisites: gcc, make, nasm/yasm (for x86 asm optimizations)

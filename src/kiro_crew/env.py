@@ -174,7 +174,7 @@ def activate_mise(env: MutableMapping[str, str] | None = None) -> list[str]:
     the user's mise ``node@20+``, which exits during ``initialize`` with a
     stderr-only "Node version 18 detected, but version 20 or higher is
     required" error and surfaces only as "MCP server disconnected during
-    'initialize' call" (Mesh-2371).
+    'initialize' call".
 
     Best-effort and non-fatal: a no-op (returns ``[]``) when mise is not
     installed, when disabled via ``KIROCREW_NO_MISE``, or when invoking /
@@ -239,7 +239,7 @@ def resolve_krb5_ccname(env: dict[str, str]) -> None:
     keyrings are session-scoped — they are NOT visible to subprocesses spawned
     by a background daemon.  So a child (kiro-cli / claude / a pooled MCP
     backend) inheriting ``os.environ`` sees no usable ticket, and Kerberos-gated
-    MCP servers (e.g. amazon-quick-mcp's kerberizer SSO) fail with
+    MCP servers (e.g. an SSO-backed MCP server) fail with
     "no Kerberos ticket" even though ``kinit`` succeeded in the user's shell.
 
     This mirrors :func:`_resolve_ssh_auth_sock` in ``acp.client``: repair the

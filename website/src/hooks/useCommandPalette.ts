@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 
 /**
  * Global trigger + open/close state for the Search Everywhere command palette
- * (Mesh-2151). Owns two bindings:
+ *. Owns two bindings:
  *
  *  - **double-Shift** (primary): two bare `Shift` keydowns within
  *    {@link DOUBLE_SHIFT_WINDOW_MS}. This is the IntelliJ "Search Everywhere"

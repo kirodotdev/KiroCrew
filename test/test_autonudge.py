@@ -178,7 +178,7 @@ async def test_idle_secs_clamped(svc):
 @pytest.mark.asyncio
 async def test_skip_when_delivery_returns_false(svc, monkeypatch):
     """A skipped delivery (slot mid-turn) must NOT bump cycle_count, and must
-    re-arm the timer with a backoff so the loop self-heals (Mesh-2147)."""
+    re-arm the timer with a backoff so the loop self-heals."""
     import asyncio
 
     import kiro_crew.autonudge as _an
@@ -224,7 +224,7 @@ async def test_skip_when_delivery_returns_false(svc, monkeypatch):
 async def test_fire_callback_exception_does_not_deactivate(svc, monkeypatch):
     """An exception in _on_fire is swallowed (treated as not-delivered):
     cycle_count unchanged, loop stays active, AND the timer self-heals by
-    re-arming with a backoff (Mesh-2147)."""
+    re-arming with a backoff."""
     import asyncio
 
     import kiro_crew.autonudge as _an
@@ -261,7 +261,7 @@ async def test_fire_callback_exception_does_not_deactivate(svc, monkeypatch):
 @pytest.mark.asyncio
 async def test_rearm_backoff_escalates_on_consecutive_failures(svc, monkeypatch):
     """Consecutive non-deliveries escalate the re-arm delay (15 → 30 → 60 …),
-    so a never-delivering loop backs off instead of hammering (Mesh-2147)."""
+    so a never-delivering loop backs off instead of hammering."""
     import asyncio
 
     import kiro_crew.autonudge as _an
@@ -303,7 +303,7 @@ async def test_rearm_backoff_escalates_on_consecutive_failures(svc, monkeypatch)
 @pytest.mark.asyncio
 async def test_failure_log_rate_limited_to_once_per_streak(svc, monkeypatch):
     """A permanently-failing callback logs a full traceback only on the first
-    failure of a streak, not every re-arm (Mesh-2147 log-spam fix)."""
+    failure of a streak, not every re-arm (log-spam fix)."""
     import asyncio
 
     import kiro_crew.autonudge as _an
@@ -345,7 +345,7 @@ async def test_failure_log_rate_limited_to_once_per_streak(svc, monkeypatch):
 @pytest.mark.asyncio
 async def test_failure_streak_resets_on_delivery(svc, monkeypatch):
     """A delivered fire clears the failure streak so the next skip starts the
-    backoff ramp fresh (Mesh-2147)."""
+    backoff ramp fresh."""
     import asyncio
 
     import kiro_crew.autonudge as _an
@@ -391,7 +391,7 @@ async def test_failure_streak_resets_on_delivery(svc, monkeypatch):
 @pytest.mark.asyncio
 async def test_fire_removed_loop_does_not_rearm_orphan(svc, monkeypatch):
     """If _on_fire removes the loop (e.g. slot missing) and returns False, the
-    re-arm path must NOT resurrect it with a fresh timer (Mesh-2147 orphan)."""
+    re-arm path must NOT resurrect it with a fresh timer (orphan)."""
     import kiro_crew.autonudge as _an
 
     sleep_calls: list[float] = []

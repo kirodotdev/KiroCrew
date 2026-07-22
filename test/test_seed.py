@@ -100,7 +100,7 @@ def test_seed_path_traversal_rejected(
 ) -> None:
     """Names with path separators or '..' are rejected before copytree runs.
 
-    Regression guard against AutoSDE security-controls findings: (1) names
+    Regression guard against review-bot security-controls findings: (1) names
     like ``../../.ssh`` would escape the fixtures tree; (2) names like
     ``"."`` or ``""`` resolve to the fixtures root itself, which would
     ``copytree`` the entire ``tests_fixtures/`` tree into ``$KIROCREW_HOME``.
@@ -164,7 +164,7 @@ def test_seed_cmd_exit_code_on_unset(
 def test_seed_cli_flag_registered(tmp_path: Path) -> None:
     """``kirocrew gateway --help`` mentions ``--seed FIXTURE``.
 
-    Tracer-bullet acceptance from the Mesh-956 ticket: prove the CLI
+    Tracer-bullet acceptance from the ticket: prove the CLI
     wiring end-to-end. In Phase 1.A the seed primitive is invoked as
     ``kirocrew gateway --seed <fixture>`` (it seeds ``$KIROCREW_HOME``
     and THEN continues into the gateway event loop) — we can't let the
@@ -364,11 +364,11 @@ def test_seed_cmd_safe_audit_logs_warning_on_swallowed_failure(
 ) -> None:
     """Regression: ``_safe_audit`` must log ``.warning`` (not ``.debug``) on failures.
 
-    CR-270884176 AutoSDE post #7 (security-controls, importance=1,
+    review-bot post #7 (security-controls, importance=1,
     rev 3) + post #10 (default, importance=0, rev 4): the original
-    bare ``except: pass`` violated the Shepherd 7b7feebd guideline
+    bare ``except: pass`` violated the security-review 7b7feebd guideline
     ("Callback failures must be logged"); the first fix (rev 4) used
-    ``logger.debug(...)`` which AutoSDE rev 4 then flagged as equally
+    ``logger.debug(...)`` which review-bot rev 4 then flagged as equally
     silent — the ``seed`` subcommand short-circuits in ``cli.py``
     BEFORE ``logging.basicConfig()`` runs, so ``.debug`` is swallowed
     by Python's last-resort handler (WARNING+ only).  The rev 5 fix
@@ -577,7 +577,7 @@ def test_seed_refuses_symlinked_nonempty_target_without_replace(
     does NOT route the user through the misleading NON_EMPTY → SYMLINK_REPLACE
     two-step failure.
 
-    Regression guard (CR-271908858 rev-3 AutoSDE finding): before the hoist,
+    Regression guard (rev-3 review-bot finding): before the hoist,
     this path fired ``GUARDRAIL_NON_EMPTY`` with "Pass --seed-replace to wipe
     it and re-seed", which actively misled users — following that advice
     immediately hit ``GUARDRAIL_SYMLINK_REPLACE`` on the next attempt.
@@ -676,7 +676,7 @@ def test_seed_cmd_missing_seed_replace_attr_defaults_false(
 
 
 # ------------------------------------------------------------------
-# AutoSDE rev 11 findings — regression tests.
+# review-bot rev 11 findings — regression tests.
 # ------------------------------------------------------------------
 
 
@@ -685,7 +685,7 @@ def test_seed_resolve_failure_fails_closed(
 ) -> None:
     """``resolve()`` raising ``OSError`` in the main-home check denies, not allows.
 
-    Regression guard for AutoSDE rev 11 post #31 (security-controls,
+    Regression guard for review-bot rev 11 post #31 (security-controls,
     importance=1) + #32: before the fix, ``except OSError: pass`` fell
     back to the unresolved path, silently bypassing the main-home guardrail.
     Combined with ``--seed-replace``, that could have wiped the dev's
@@ -724,7 +724,7 @@ def test_seed_empty_string_fixture_rejected(
 ) -> None:
     """``--seed ""`` (empty fixture name) rejected with GUARDRAIL_BAD_NAME.
 
-    Regression guard for AutoSDE rev 11 post #33: the CLI wiring used a
+    Regression guard for review-bot rev 11 post #33: the CLI wiring used a
     truthiness check (``if args.seed``), which is falsy for ``""``. A
     user passing ``--seed ""`` would silently start the gateway without
     seeding. The fix is ``is not None`` in cli.py AND the existing
@@ -748,7 +748,7 @@ def test_seed_cmd_empty_seed_routes_to_seed_cmd(
     guardrail, proving the CLI dispatch path reaches it instead of silently
     short-circuiting on truthiness.
 
-    This tests the end-to-end path for AutoSDE rev 11 post #33.
+    This tests the end-to-end path for review-bot rev 11 post #33.
     """
     target = tmp_path / "home"
     monkeypatch.setenv("KIROCREW_HOME", str(target))
@@ -782,7 +782,7 @@ def test_seed_audit_uses_rail_tag_not_raw_path(
     """Guardrail-tagged ``SeedError`` audit path must log ``guardrail=<constant>``
     instead of the exception message (which embeds resolved paths).
 
-    Regression guard for AutoSDE rev 11 post #34: the prior
+    Regression guard for review-bot rev 11 post #34: the prior
     ``reason={exc}`` formatting leaked ``$HOME``-derived paths into the
     SEL stream on every denial, contradicting the presence-only design
     of the success/error paths.
@@ -838,7 +838,7 @@ def test_seed_regular_file_target_rejected(
 ) -> None:
     """``$KIROCREW_HOME`` pointing at a regular file raises GUARDRAIL_NOT_A_DIRECTORY.
 
-    Regression guard (CR-270884176 nit #43, zejiangg): before this fix, a
+    Regression guard (review nit #43): before this fix, a
     regular-file ``$KIROCREW_HOME`` reached ``dst.iterdir()`` and raised a
     raw ``NotADirectoryError`` -> EXIT_IO_ERROR with a cryptic message. Now
     it fails fast with the plain ``seed: error:`` prefix and the SEL audit
@@ -864,7 +864,7 @@ def test_seed_empty_symlink_target_rejected(
 ) -> None:
     """Empty-but-existing symlinked ``$KIROCREW_HOME`` raises GUARDRAIL_SYMLINK_EMPTY.
 
-    Regression guard (CR-270884176 nit #40, ygurjala): before this fix, an
+    Regression guard (review nit #40): before this fix, an
     empty symlinked target fell through to ``shutil.copytree(src, dst)``
     which raised a bare ``FileExistsError`` -> EXIT_IO_ERROR. Now it fails
     with a symlink-specific guardrail so the user sees the same "point it at a
@@ -890,8 +890,8 @@ def test_seed_double_resolve_target_called_once_per_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``seed()`` calls ``_resolve_target`` exactly twice: once for main-home
-    check (resolved), once for copy/rmtree (raw). Regression guard (CR nit
-    #39, ygurjala): pin the call count so a future refactor can't silently
+    check (resolved), once for copy/rmtree (raw). Regression guard (review
+    nit #39): pin the call count so a future refactor can't silently
     collapse the two calls into one (would either break symlinked-target
     handling or the main-home guardrail, depending on which form was kept).
     """
@@ -920,7 +920,7 @@ def test_seed_symlink_to_file_rejected(
     """``$KIROCREW_HOME`` as a symlink pointing at a regular file raises
     GUARDRAIL_NOT_A_DIRECTORY.
 
-    Regression guard (CR-271908858 rev-1 AutoSDE finding): before this fix,
+    Regression guard (rev-1 review-bot finding): before this fix,
     the guard was ``not dst.is_symlink() and not dst.is_dir()`` — the
     ``not is_symlink()`` short-circuited for symlink-to-file, letting
     ``dst.iterdir()`` follow the link and raise a raw ``NotADirectoryError``.
@@ -956,7 +956,7 @@ def test_seed_dangling_symlink_rejected(
     """``$KIROCREW_HOME`` as a symlink to a nonexistent target raises
     GUARDRAIL_DANGLING_SYMLINK.
 
-    Regression guard (CR-271908858 rev-2 AutoSDE finding): before this
+    Regression guard (rev-2 review-bot finding): before this
     fix, a dangling symlink bypassed every ``exists()``-gated guard
     because ``Path.exists()`` follows the link and returns ``False`` when
     the target is missing. That let the link fall through to

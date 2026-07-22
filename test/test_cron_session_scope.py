@@ -1,4 +1,4 @@
-"""Tests for Mesh-233: session-scoped cron_remove_all."""
+"""Tests for session-scoped cron_remove_all."""
 
 from __future__ import annotations
 

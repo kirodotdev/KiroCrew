@@ -90,8 +90,8 @@ describe('ActivityViewer', () => {
             navLinks={[
               { url: prUrl, type: 'cr', label: 'PR #42', msgIdx: 0 },
               // Not in `sources` (a code-review host Changes can't render) — must stay reachable.
-              { url: 'https://code.amazon.com/reviews/CR-1', type: 'cr', label: 'CR-1', msgIdx: 0 },
-              { url: 'https://code.amazon.com/packages/KiroCrew', type: 'other', label: 'KiroCrew repo', msgIdx: 0 },
+              { url: 'https://git.example.com/reviews/CR-1', type: 'cr', label: 'CR-1', msgIdx: 0 },
+              { url: 'https://git.example.com/packages/KiroCrew', type: 'other', label: 'KiroCrew repo', msgIdx: 0 },
             ]}
           />
         </QueryClientProvider>

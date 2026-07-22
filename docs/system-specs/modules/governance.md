@@ -42,7 +42,7 @@ can reorder strictness or redefine matching):
   The `path` matcher normalizes **only the queried item** (`_norm_item`: expand
   `~`/`$VAR` → `os.path.abspath`, which anchors a relative path to the host CWD
   and collapses `.`/`..`) and matches it against the operator's pattern **expanded
-  but otherwise verbatim**. This does two jobs and avoids one trap (CR-284272012):
+  but otherwise verbatim**. This does two jobs and avoids one trap:
   (1) a `..` traversal cannot satisfy an allow-prefix (`/home/u/ws/../.bashrc`
   collapses to `/home/u/.bashrc` and no longer matches `/home/u/ws/**`, which an
   un-normalized `*` would wrongly span); (2) an agent-supplied **relative** item
@@ -82,8 +82,8 @@ evaluator edits.
 > additions) and their consumption sites, none of which are governed scopes. The
 > only capability scope in the catalog that post-dates the original governance
 > model, `capabilities.publish` (below), arrived via **PR #14** (artifacts
-> mirror), **not** this re-triage. See `platform-context.md` and
-> `skills/meshclaw-sync/left-out.md` for the per-item record.
+> mirror), **not** this re-triage. See `platform-context.md` for the design
+> record.
 
 ## Loading + precedence
 

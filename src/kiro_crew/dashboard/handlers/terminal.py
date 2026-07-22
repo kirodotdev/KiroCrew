@@ -249,7 +249,7 @@ async def _kill_session(sess: _TerminalSession) -> None:
         try:
             # Async variants offload Windows taskkill to subprocess_executor
             # so this PTY teardown path never blocks the event loop on
-            # taskkill.exe (Mesh-2801). POSIX os.killpg stays inline.
+            # taskkill.exe. POSIX os.killpg stays inline.
             await platform_compat.kill_process_tree_async(
                 sess.proc.pid, platform_compat.SIGTERM
             )

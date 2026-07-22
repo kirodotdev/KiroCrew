@@ -277,7 +277,7 @@ When a message arrives while a session is actively processing, it's queued inste
 
 ## Linked Thread Sync (`handler.py` + `interactions.py`)
 
-Bidirectional message mirroring between dashboard chat sessions and Slack threads (Mesh-244):
+Bidirectional message mirroring between dashboard chat sessions and Slack threads:
 
 - **Slack → Dashboard**: `handle_message()` checks `_slack_to_slot` reverse lookup; if linked, routes message to dashboard slot's `_run_chat()` queue
 - **Dashboard → Slack**: `_run_chat()` mirrors user messages and agent responses to the linked thread via `start_stream()` / `append_task()` / `stop_stream()`
@@ -337,7 +337,7 @@ LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered 
 
 Action IDs: `options_checkboxes` (toggle), `options_submit` (send). Checkbox `value` contains the choice text.
 
-Beyond the reply-finalization path in `handler.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons (Mesh-2603): the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
+Beyond the reply-finalization path in `handler.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
 
 ## Messaging Transport (`messaging.use_transport`)
 
@@ -426,7 +426,7 @@ Heartbeat sessions run unattended and cannot prompt a human for tool approval. `
 
 1. Strip leading status prefix (`Running: `) via `_HEARTBEAT_STATUS_PREFIXES`.
 2. Strip ACP `mcp__<server>__<Tool>` prefix.
-3. Strip runtime `@<server>/<Tool>` prefix (kiro-cli titles arrive as `Running: @builder-mcp/ReadInternalWebsites`).
+3. Strip runtime `@<server>/<Tool>` prefix (kiro-cli titles arrive as `Running: @internal-mcp/ReadInternalWebsites`).
 
 Only the **bare tool name** (e.g. `ReadInternalWebsites`) is tested against the frozenset. Unknown tools are denied and a SEL audit event (`outcome: denied`, `reason: not_in_heartbeat_safe_tools`) is emitted so operators can tune the list. SEL failure on the approve path fails closed (denies the tool).
 
@@ -514,10 +514,10 @@ Config example (remote access via URL):
 ## Security
 
 - Owner-locked via `KIROCREW_OWNER_ID` in `.env` (supports W/U prefix cross-matching)
-- **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces (V2160269460):
-  1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, verifies `enterprise_id` matches Amazon production (`E015GUGD2V6`) or sandbox (`E01C2B11VN2`). Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
+- **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces:
+  1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, verifies `enterprise_id` matches the configured production (`E0123ABC456`) or sandbox (`E0456DEF789`) grid. Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
   2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.
-  - Configurable extra enterprise IDs via `slack.allowed_enterprise_ids` in config.json (for subsidiary grids like Ring, PillPack)
+  - Configurable extra enterprise IDs via `slack.allowed_enterprise_ids` in config.json (for additional subsidiary grids)
   - All validation outcomes logged to SEL (`operation=slack.enterprise_validation`)
   - `kirocrew doctor` includes workspace validation check
 - **Deny-by-default**: if `KIROCREW_OWNER_ID` is unset or empty, Slack is disabled entirely at startup (`init_socket_mode` refuses to connect). The access check in `_route_message` also rejects all messages when owner ID is missing, as a secondary guard.
@@ -530,14 +530,14 @@ Config example (remote access via URL):
 
 ## Dependencies
 
-| Package | Version | Brazil Package | Purpose |
-|---|---|---|---|
-| `slack_sdk` | >= 3.0 | `Python-slack-sdk = 3.x` | Socket Mode + Web API |
-| `aiohttp` | — | `Python-aiohttp = 3.x` | Dashboard HTTP server |
-| `websockets` | — | `Python-websockets = 12.x` | Socket Mode transport |
-| `croniter` | — | — | Cron expression matching |
-| `snowballstemmer` | — | — | Snowball stemming for semantic KV keyword scoring |
-| `pysqlite3-binary` | — | — | FTS5/UPSERT compat on AL2 (Linux only) |
+| Package | Version | Purpose |
+|---|---|---|
+| `slack_sdk` | >= 3.0 | Socket Mode + Web API |
+| `aiohttp` | — | Dashboard HTTP server |
+| `websockets` | — | Socket Mode transport |
+| `croniter` | — | Cron expression matching |
+| `snowballstemmer` | — | Snowball stemming for semantic KV keyword scoring |
+| `pysqlite3-binary` | — | FTS5/UPSERT compat on AL2 (Linux only) |
 
 ### Secretary Service (`secretary.py`)
 

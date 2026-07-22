@@ -697,7 +697,7 @@ class TestCronSlackDefault:
             slack.post_message.assert_not_called()
 
 
-# ── OPTIONS button rendering (Mesh-2603) ──
+# ── OPTIONS button rendering ──
 
 
 class TestOptionsRendering:

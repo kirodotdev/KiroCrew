@@ -3,7 +3,7 @@ import type { NavigateFunction } from 'react-router-dom'
 import type { Result } from '../types'
 
 /**
- * Unit tests for the Settings provider (Mesh-2151 Search Everywhere).
+ * Unit tests for the Settings provider (Search Everywhere).
  */
 
 import { createSettingsProvider, resolveTabPrefix } from './settingsProvider'

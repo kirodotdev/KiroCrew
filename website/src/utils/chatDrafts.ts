@@ -1,7 +1,7 @@
 /**
  * Per-slot chat draft persistence. Drafts survive tab close, refresh, and
  * browser crashes via localStorage. Thin instance of `createSlotDraftStore`
- * (Mesh-1909); all behavior (TTL, LRU, byte-aware eviction, corruption guards,
+ *; all behavior (TTL, LRU, byte-aware eviction, corruption guards,
  * quota-safe write order) lives in the factory.
  */
 import { createSlotDraftStore } from './slotDraftStore'

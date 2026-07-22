@@ -501,7 +501,7 @@ class TestRunChatPrompts:
         asyncio.run(_run_chat(s, sl, "/prompts get agent-sop:secret"))
         assert any("blocked" in m[1].lower() for m in sl.messages)
 
-    @pytest.mark.skip(reason="Broken by chat.py split (6d4e4493) — mock setup needs updating for new _run_chat flow. Tracked: Mesh-1353")
+    @pytest.mark.skip(reason="Broken by chat.py split (6d4e4493) — mock setup needs updating for new _run_chat flow.")
     def test_at_prompt_blocked(self, aim_dir, mock_sel, monkeypatch):
         """@mention prompt blocked at read time by chat-level check."""
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"secret": "# S"})

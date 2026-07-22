@@ -270,7 +270,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. When enabled, KiroCrew forces deferral always-on (minPct=0/minTokens=0) via the per-session kiro settings overlay; disabling reverts to sending full tool specs. No effect on the Claude Code backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. When enabled, KiroCrew forces deferral always-on (minPct=0/minTokens=0) via the per-session kiro settings overlay; disabling reverts to sending full tool specs. No effect on an alternate ACP backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -284,7 +284,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Sharing",
-      "help": "Subagents reuse a shared ACP runtime instead of spawning a fresh kiro-cli process per subagent. Reduces startup from ~3-5s to ~200ms and memory from ~400MB to near-zero per subagent. Default ON for the kiro-cli backend; always off / ignored for Claude Code (which uses AcpClient). Set false to opt kiro back onto per-subagent processes.",
+      "help": "Subagents reuse a shared ACP runtime instead of spawning a fresh kiro-cli process per subagent. Reduces startup from ~3-5s to ~200ms and memory from ~400MB to near-zero per subagent. Default ON for the kiro-cli backend; always off / ignored for an alternate ACP backend (which uses AcpClient). Set false to opt kiro back onto per-subagent processes.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -2809,7 +2809,7 @@
         },
         "default_project": "",
         "theme_mode": "",
-        "mwinit_flags": "",
+        "sso_login_flags": "",
         "theme_color": "",
         "recent_tint_count": 0,
         "onboarded": false,
@@ -3042,15 +3042,15 @@
       "defaultValue": ""
     },
     {
-      "path": "dashboard.mwinit_flags",
+      "path": "dashboard.sso_login_flags",
       "kind": "core",
       "type": "string",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "mwinit Flags",
-      "help": "Flags passed to the SSO login command by an edition that supplies a real login handler (DashboardContributor.mwinit_handler). Empty = the edition default. Inert in the public build (the core /api/mwinit is a no-op stub); the companion validates the token allowlist when it uses them.",
+      "label": "SSO Login Flags",
+      "help": "Flags passed to the SSO login command by an edition that supplies a real login handler (DashboardContributor.sso_login_handler). Empty = the edition default. Inert in the public build (the core /api/sso-login is a no-op stub); the companion validates the token allowlist when it uses them.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

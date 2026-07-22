@@ -1,11 +1,11 @@
 /**
  * fuzzyMatch — a small, dependency-free scored fuzzy matcher for the
- * Search Everywhere command palette (Mesh-2151).
+ * Search Everywhere command palette.
  *
  * Given a `query` and a `candidate`, it returns a {@link FuzzyMatchResult}
  * `{ score, indices }` where `indices` are the positions in `candidate` that
  * matched query characters — providers use these to render highlight marks
- * (as React nodes, never HTML strings; see AUTOSDE frontend-security).
+ * (as React nodes, never HTML strings; see the `frontend-security` lint rule).
  *
  * The result shape mirrors Codex's `codex_file_search` output (a numeric score
  * plus highlight indices) so palette providers can sort and highlight uniformly.

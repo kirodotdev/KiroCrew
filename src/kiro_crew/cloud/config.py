@@ -65,5 +65,5 @@ class CloudConfig:
         p = path or (config_dir() / _FILENAME)
         p.parent.mkdir(parents=True, exist_ok=True)
         # Unique temp name per writer: concurrent cloud invocations must not
-        # race on a shared .tmp path (see atomic_write's rationale, Mesh-100).
+        # race on a shared .tmp path (see atomic_write's rationale).
         atomic_write(p, json.dumps(asdict(self), indent=2))

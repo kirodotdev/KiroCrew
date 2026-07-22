@@ -608,7 +608,7 @@ async def test_send_claim_aggregate_timeout_bound(
 ) -> None:
     """A gatewayd that accepts but never responds is bounded by ONE aggregate
     budget — not one budget per phase (connect/drain/readline), which would
-    triple the worst-case stall (AutoSDE finding f-d76c6f17)."""
+    triple the worst-case stall (review-bot finding f-d76c6f17)."""
     monkeypatch.setattr(claim_mod, "_CLAIM_TIMEOUT_SECS", 0.3)
     # Use /tmp directly — macOS tmp_path exceeds the 104-char AF_UNIX sun_path limit.
     sock = Path(tempfile.mkdtemp(dir="/tmp")) / "stall.sock"

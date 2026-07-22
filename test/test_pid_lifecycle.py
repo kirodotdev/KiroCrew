@@ -370,7 +370,7 @@ class TestResetStateUntracksParentPid:
         mock_untrack.assert_called_once_with(54321)
 
 
-# ── Untracked orphan MCP sweep tests (Mesh-1870) ───────────
+# ── Untracked orphan MCP sweep tests ───────────
 
 
 class TestFindOrphanMcpCandidates:
@@ -487,8 +487,8 @@ class TestFindOrphanMcpCandidates:
     def test_does_not_match_builder_mcp(self) -> None:
         """builder-mcp is NOT a KiroCrew-spawned process in this public fork.
 
-        Regression guard: the upstream MeshClaw reaper lists ``builder-mcp`` (an
-        Amazon-internal server it manages), but the de-Amazoned fork never spawns
+        Regression guard: the upstream project's reaper lists ``builder-mcp`` (an
+        internal server it manages), but the de-Amazoned fork never spawns
         it (the CPP companion contributes it, not the core). Reaping a user-owned
         ``builder-mcp`` orphan would SIGKILL an unrelated process, so the marker
         is deliberately absent here.
@@ -659,7 +659,7 @@ class TestKillOrphanMcps:
 
     def test_macos_subprocess_error_does_not_abort_loop(self) -> None:
         """A vanished PID raising SubprocessError on macOS must not abort
-        kills for subsequent PIDs (regression: AutoSDE rev4).
+        kills for subsequent PIDs (regression: review-bot rev4).
 
         `ps` exits non-zero for a PID that died between find and kill, raising
         subprocess.CalledProcessError (a SubprocessError, NOT an OSError). The
@@ -774,7 +774,7 @@ class TestOurOrphanPids:
         assert 500 not in result  # different uid
 
     def test_macos_excludes_launcher_children(self) -> None:
-        """ppid==launcher must NOT be reaped (regression: CR-282948194).
+        """ppid==launcher must NOT be reaped (regression guard).
 
         Orphans reparent to init (pid 1), never back to the launcher, so a
         launcher child is a live sibling and must be excluded; only the

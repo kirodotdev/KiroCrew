@@ -1,6 +1,6 @@
 """Tests for SessionMap.clear_slack_link — the unlink half of Slack linking.
 
-Covers Mesh-1969: removing a session's Slack link must drop both link fields,
+Covers removing a session's Slack link must drop both link fields,
 evict the reverse index, preserve the session entry/sid, and skip _save() when
 there was nothing to clear.
 """

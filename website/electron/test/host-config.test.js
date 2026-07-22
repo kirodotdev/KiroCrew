@@ -15,10 +15,10 @@ function mockStore(initial = {}) {
 
 describe("migrateRemoteHostConfig", () => {
   it("migrates legacy remoteHost to remoteHosts[port]", () => {
-    const store = mockStore({ remoteHost: "myhost.corp.amazon.com", kirocrewBinPath: "~/.local/bin/kirocrew", remoteHosts: {} });
+    const store = mockStore({ remoteHost: "myhost.corp.example.com", kirocrewBinPath: "~/.local/bin/kirocrew", remoteHosts: {} });
     const result = migrateRemoteHostConfig(store, 7778);
     assert.equal(result, true);
-    assert.deepEqual(store._data.remoteHosts, { 7778: { host: "myhost.corp.amazon.com", binPath: "~/.local/bin/kirocrew" } });
+    assert.deepEqual(store._data.remoteHosts, { 7778: { host: "myhost.corp.example.com", binPath: "~/.local/bin/kirocrew" } });
     assert.equal(store._data.remoteHost, undefined);
     assert.equal(store._data.kirocrewBinPath, undefined);
   });

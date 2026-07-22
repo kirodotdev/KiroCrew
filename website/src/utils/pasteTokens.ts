@@ -281,7 +281,7 @@ export const STORE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // and exhaust the localStorage quota, after which every other setItem (e.g.
 // saveChatConfig) throws QuotaExceededError and silently breaks the UI. A
 // byte-aware LRU keeps only the newest entries that fit. Matches the
-// DRAFT_MAX_STORE_BYTES budget the slot-draft stores adopt in Mesh-1909.
+// DRAFT_MAX_STORE_BYTES budget the slot-draft stores adopt in.
 export const STORE_MAX_BYTES = 2 * 1024 * 1024
 
 // `seq` is a monotonic insertion counter used as the recency tiebreaker.

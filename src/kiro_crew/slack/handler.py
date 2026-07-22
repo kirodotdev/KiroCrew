@@ -153,7 +153,7 @@ _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"
 
 # Max chars of reasoning to surface inline in Slack before truncating. Keeps
-# the 💭 Thinking block from becoming a wall of text (Mesh-1805); the full
+# the 💭 Thinking block from becoming a wall of text; the full
 # reasoning remains available in the dashboard Activity panel.
 _THINKING_PREVIEW_LIMIT = 600
 
@@ -284,7 +284,7 @@ def _tool_to_phase(tool_name: str, tool_kind: str = "") -> str:
             return "coding"
         if kind_lower in _WEB_KINDS:
             return "browsing"
-    # Extract base tool name for MCP tools (mcp__builder-mcp__Bash → Bash)
+    # Extract base tool name for MCP tools (mcp__example-mcp__Bash → Bash)
     base = tool_name.split("__")[-1] if "__" in tool_name else tool_name
     if base in _CODING_TOOLS:
         return "coding"
@@ -930,7 +930,7 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
         None,
     )
     if not match:
-        # Fallback: search Claude Code cc-plugins agents
+        # Fallback: search companion-backend cc-plugins agents
         cc_match = _resolve_cc_agent_name(name)
         return cc_match
     safe = validate_file_path(str(match))
@@ -994,7 +994,7 @@ def _list_all_agent_names(cc_plugins_dir: Path | None = None) -> str:
     hidden. Returns ``"(none found)"`` when empty.
 
     Note: this listing is unioned across both agent sources, but *activation*
-    is not. cc-plugins (Claude Code) agents only actually load when
+    is not. cc-plugins (companion-backend) agents only actually load when
     ``agent.provider=claude_code``; under the kiro-cli provider a ``!ta`` to a
     cc-plugins name resolves and is recorded, but the next kiro session looks
     for ``~/.kiro/agents/<name>.json`` and falls back if it is absent. Switch
@@ -2510,9 +2510,9 @@ async def handle_message(
     # ── Status keyword: reply with stats summary ──
     if text.strip().lower() == "status":
         # Identity status via the active PlatformContext (Default == OSS no-op
-        # stub returning ""; Amazon companion returns the real Midway line).
-        mw_line = await current_context().identity.status_line(prefix=" · midway")
-        await slack.post_message(channel, Stats().summary() + mw_line, reply_ts)
+        # stub returning ""; an enterprise companion returns the real SSO line).
+        sso_line = await current_context().identity.status_line(prefix=" · sso")
+        await slack.post_message(channel, Stats().summary() + sso_line, reply_ts)
         return
 
     # ── Sessions keyword: list recent sessions ──
@@ -2829,7 +2829,7 @@ async def handle_message(
             use_slack_stream = False
             return
         # Reserve the 💭 reasoning slot ABOVE the answer *before* the response
-        # message is created (Mesh-1805). This must run regardless of which
+        # message is created. This must run regardless of which
         # event arrived first: if a text/tool event precedes the first
         # reasoning chunk, posting the placeholder here is the only way to keep
         # reasoning above the answer (the reasoning-chunk branch never got the
@@ -3576,7 +3576,7 @@ async def handle_message(
         # No stream was started (e.g. no text chunks) — post the final text directly
         await slack.post_message(channel, clean_text or _NO_RESPONSE, reply_ts)
 
-    # Render reasoning as a condensed, subdued blockquote (Mesh-1805). When a
+    # Render reasoning as a condensed, subdued blockquote. When a
     # placeholder was posted above the answer, update it in place so the thread
     # reads reasoning → answer. Otherwise (the stream started before any
     # reasoning arrived) fall back to a post after the answer.

@@ -131,8 +131,8 @@ public.
 
 ### 3.4 Pre-publish content scan (block-and-warn)
 - Before upload, content runs through KiroCrew's secret/credential regexes plus
-  internal-data heuristics (Amazon aliases, `*.amazon.com` hosts, AWS account
-  IDs / ARNs).
+  internal-data heuristics (employee aliases, internal `*.example.com` hosts,
+  cloud account IDs / ARNs).
 - On a match, publishing is **blocked** and the findings are shown; you must
   explicitly choose "publish anyway" to override. Detection is best-effort, not
   a guarantee.

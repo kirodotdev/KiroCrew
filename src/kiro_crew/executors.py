@@ -5,7 +5,7 @@ for ``getaddrinfo`` (DNS) and by every ``run_in_executor(None, ...)`` caller.
 When long-running maintenance work (orphan-PID sweeps, cron subprocesses,
 agent-overlay rewrites) piles onto that default pool it can saturate it and
 starve the loop's own DNS resolution -- which is exactly the failure mode that
-turns a brief network blip into a multi-second event-loop stall (Mesh-1968).
+turns a brief network blip into a multi-second event-loop stall.
 
 This module provides *separate*, bounded pools for that blocking work so it
 can never contend with the loop's default executor.

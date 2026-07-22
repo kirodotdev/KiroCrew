@@ -2,9 +2,9 @@ import type { ReactNode } from 'react'
 
 /**
  * A single result row produced by a {@link ResourceProvider} for the
- * Search Everywhere command palette (Mesh-2151).
+ * Search Everywhere command palette.
  *
- * Highlighting note (AUTOSDE `frontend-security`): `indices` are positions
+ * Highlighting note (`frontend-security` lint rule): `indices` are positions
  * into `title` that matched the query. The palette renders the highlight by
  * splitting `title` on those indices and emitting `<mark>` / `<strong>` as
  * React nodes keyed off the indices — never by building an HTML string.
@@ -23,7 +23,7 @@ export interface Result {
   subtitleIndices?: number[]
   /**
    * Rendered icon node. By convention a `lucide-react` element with
-   * `className="lucide-inline"` (AUTOSDE `use-lucide-icons`); never inline
+   * `className="lucide-inline"` (`use-lucide-icons` lint rule); never inline
    * `<svg>` or an emoji.
    */
   icon: ReactNode
@@ -66,7 +66,7 @@ export interface Result {
   isNew?: boolean
   /**
    * Declarative description of what Enter / ⌘Enter / ⌥Enter should do for this
-   * result, per the §2 Enter matrix (Mesh-2151). This is the typed contract a
+   * result, per the §2 Enter matrix. This is the typed contract a
    * central {@link OnEnter} dispatcher switches on — it replaces the three
    * opaque `on*Activate` closures below as the source of truth.
    *
@@ -99,7 +99,7 @@ export interface ResourceProvider {
   label: string
   /**
    * Tab icon node. By convention a `lucide-react` element with
-   * `className="lucide-inline"` (AUTOSDE `use-lucide-icons`).
+   * `className="lucide-inline"` (`use-lucide-icons` lint rule).
    */
   icon: ReactNode
   /** Run the search for a query. May return a Promise or a value. */
@@ -108,7 +108,7 @@ export interface ResourceProvider {
 
 
 /**
- * Declarative Enter-action contract for a {@link Result} (Mesh-2151 §2).
+ * Declarative Enter-action contract for a {@link Result} (§2).
  *
  * A discriminated union (on `kind`) that captures *what* should happen on
  * Enter / ⌘Enter / ⌥Enter for a result, as data rather than as opaque
@@ -118,7 +118,7 @@ export interface ResourceProvider {
  * the Enter matrix unit-testable per result type — the failure analysis behind
  * the task-17 decomposition is in `docs/task-17-enter-matrix-findings.md`.
  *
- * The locked per-type matrix (Mesh-2151):
+ * The locked per-type matrix:
  *
  * | kind            | Enter (primary)                         | ⌘Enter (withModifier)            | ⌥Enter (preview)        |
  * |-----------------|-----------------------------------------|----------------------------------|-------------------------|
@@ -161,7 +161,7 @@ export type EnterAction =
 export type EnterActionKind = EnterAction['kind']
 
 /**
- * Central Enter dispatcher signature (Mesh-2151 §2). `CommandPalette.tsx`
+ * Central Enter dispatcher signature (§2). `CommandPalette.tsx`
  * implements one `onEnter(result, withModifier)` that reads `result.enter`
  * (falling back to the legacy `on*Activate` closures while providers are
  * migrated) and routes on the action `kind`:

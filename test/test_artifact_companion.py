@@ -1,4 +1,4 @@
-"""Tests for the artifact companion chat backend (Mesh-2772).
+"""Tests for the artifact companion chat backend.
 
 Covers WS-A of the companion-chat feature:
 
@@ -97,7 +97,7 @@ class TestArtifactBindingField:
             True,  # bool — must not coerce
             123,  # non-string
             "../../etc/passwd",  # injection-shaped
-            "valid-slug\n",  # trailing-newline $-anchor bypass (AutoSDE, needs \Z)
+            "valid-slug\n",  # trailing-newline $-anchor bypass (review-bot, needs \Z)
             "UPPER-CASE",  # violates slug grammar
             "-leading-hyphen",
             "trailing-hyphen-",
@@ -203,7 +203,7 @@ class TestArtifactBindingPersistence:
         "tampered",
         [
             "../../etc/passwd",  # injection-shaped
-            "valid-slug\n",  # trailing-newline $-anchor bypass (AutoSDE, needs \Z)
+            "valid-slug\n",  # trailing-newline $-anchor bypass (review-bot, needs \Z)
             "<script>alert(1)</script>",  # markup injection
             "UPPER-CASE",  # violates slug grammar
             "a" * 81,  # too long
@@ -213,7 +213,7 @@ class TestArtifactBindingPersistence:
     def test_tampered_meta_artifact_dropped_on_restore(self, tmp_path, monkeypatch, tampered):
         """History JSONL is attacker-tamperable with disk access — an invalid
         `artifact` value must be dropped on BOTH restore paths, never reaching
-        to_dict()/WS broadcasts (AutoSDE security-controls, rev 3)."""
+        to_dict()/WS broadcasts (review-bot security-controls, rev 3)."""
         from kiro_crew.dashboard.chat_persistence import (
             _rehydrate_slot_from_history,
             _save_slot_to_history,

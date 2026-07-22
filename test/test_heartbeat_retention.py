@@ -183,7 +183,7 @@ class TestHeartbeatRetention:
 
 
 class TestDeliverySuppression:
-    """Tests for the gateway-level delivery suppression logic (Mesh-1121).
+    """Tests for the gateway-level delivery suppression logic.
 
     The gateway suppresses _deliver_result when is_keep_response() returns True.
     """

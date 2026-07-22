@@ -1,4 +1,4 @@
-"""Tests for the gateway singleton lock (Mesh-2386).
+"""Tests for the gateway singleton lock.
 
 Covers the P1 acceptance criteria: a second gateway on the same KIROCREW_HOME is
 refused naming the holder pid, a stale lock is reclaimed, and distinct homes

@@ -1,6 +1,6 @@
 /**
  * Per-slot pending-file-attachment persistence (paths staged in the compose box
- * before send). Thin instance of `createSlotDraftStore` (Mesh-1909).
+ * before send). Thin instance of `createSlotDraftStore`.
  *
  * Storage differs from `chatDrafts` intentionally: sessionStorage, not
  * localStorage. Attachment paths reference uploaded files that may be

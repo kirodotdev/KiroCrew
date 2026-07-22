@@ -2162,7 +2162,7 @@ class SessionManager:
                 # between snapshot and kill, but _kill_escaped_children uses
                 # start-time comparison to skip recycled PIDs safely.
                 # macOS pgrep/ps spawns are offloaded to subprocess_executor
-                # to keep the reset path responsive (Mesh-2801 scope expansion).
+                # to keep the reset path responsive.
                 _loop = asyncio.get_running_loop()
                 fresh = await _loop.run_in_executor(
                     subprocess_executor(), _get_child_pids, pid
@@ -2185,7 +2185,7 @@ class SessionManager:
                     try:
                         # Async variants offload Windows taskkill to
                         # subprocess_executor so this reset path never blocks
-                        # the event loop on taskkill.exe (Mesh-2801).
+                        # the event loop on taskkill.exe.
                         await platform_compat.kill_process_tree_async(
                             pid, platform_compat.SIGKILL
                         )
@@ -2202,7 +2202,7 @@ class SessionManager:
                 if child_pids:
                     try:
                         # macOS `ps` spawns inside _is_our_child; offload
-                        # to subprocess_executor (Mesh-2801 scope expansion).
+                        # to subprocess_executor.
                         _sweep_loop = asyncio.get_running_loop()
                         await _sweep_loop.run_in_executor(
                             subprocess_executor(), _kill_escaped_children, child_pids
@@ -2586,7 +2586,7 @@ class SessionManager:
                         # Persist the provider label so detect_provider_switch
                         # on next startup doesn't see a missing entry, default
                         # to "acp", and falsely fire a switch for users still
-                        # on claude_code (AutoSDE r1 #24).
+                        # on claude_code.
                         _prov_label = "claude_code" if _is_claude_backend(sess.provider) else "acp"
                         self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                 elif ClaudeCodeProvider is not None and isinstance(
@@ -3088,7 +3088,7 @@ class SessionManager:
 
         Offloaded to the bounded maintenance pool (not the default executor) so
         the per-PID os.kill loop + file lock can't block the event loop or
-        starve its DNS resolution (Mesh-1968)."""
+        starve its DNS resolution."""
         try:
             mcp_killed = await asyncio.get_running_loop().run_in_executor(
                 maintenance_executor(), _cleanup_orphaned_mcp_servers
@@ -3229,13 +3229,13 @@ class SessionManager:
             # idle expiry + orphaned-MCP sweep + deniedCommands re-enforcement,
             # plus the new RSS-threshold recycle, are dispatched by the watchdog.
             # Each hook carries the exact error handling of the block it was
-            # lifted from (the orphan-MCP hook keeps the Mesh-1968 maintenance-
+            # lifted from (the orphan-MCP hook keeps the maintenance-
             # executor offload). The orphan-PID sweep below is intentionally left
             # inline (CR 2 extracts it into a hook).
             await self._watchdog.tick()
 
             # Sweep session root kiro-cli processes left behind by crashed
-            # gateway instances (P472042997). Offloaded to a thread to keep
+            # gateway instances. Offloaded to a thread to keep
             # blocking I/O (os.kill, file lock, /proc reads) off the event loop.
             try:
                 roots_killed = await asyncio.get_running_loop().run_in_executor(
@@ -3251,7 +3251,7 @@ class SessionManager:
 
             # Sweep orphaned sandbox launcher scripts and seatbelt profiles
             # from ~/.kirocrew/run/.  PID-tagged filenames; the blocking
-            # os.kill/os.remove loop is kept off the event loop (Mesh-1968).
+            # os.kill/os.remove loop is kept off the event loop.
             try:
                 sandbox_removed = await asyncio.get_running_loop().run_in_executor(
                     maintenance_executor(), cleanup_stale_sandbox_profiles
@@ -3310,7 +3310,7 @@ class SessionManager:
             except Exception:
                 logger.debug("Orphan PID sweep failed", exc_info=True)
 
-            # Untracked orphan MCP sweep (defense-in-depth, Mesh-1870)
+            # Untracked orphan MCP sweep (defense-in-depth)
             try:
                 sweep_pids, sweep_ok = _collect_active_pids(self._sessions)
                 sweep_pids.update(self._pool_pids())

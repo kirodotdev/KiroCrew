@@ -1,4 +1,4 @@
-"""Tests for config.local.json overlay mechanism (Mesh-1536)."""
+"""Tests for config.local.json overlay mechanism."""
 
 from __future__ import annotations
 

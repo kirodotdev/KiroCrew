@@ -5,7 +5,7 @@
  * underlines under misspelled words, but it does NOT ship a default UI for
  * reading `dictionarySuggestions` or invoking `replaceMisspelling`. Without
  * this module, right-clicking a misspelled word in the dashboard does
- * nothing — the gap reported in Mesh-447.
+ * nothing — the gap this module closes.
  *
  * Logic and wiring are split so the template builder is unit-testable without
  * stubbing Electron:

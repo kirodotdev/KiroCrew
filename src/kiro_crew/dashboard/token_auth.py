@@ -365,7 +365,7 @@ _BYPASS_EXACT = {
 }
 
 # Anchored bypass for installed-app static UI bundles only (federated-app
-# RFC §3.8). Matches /apps/{name}/ui/<anything>, where {name} is the
+# design). Matches /apps/{name}/ui/<anything>, where {name} is the
 # canonical app-name pattern. Must NOT match /apps/{name}/api/... — that
 # path is the gateway-authenticated reverse proxy to the app backend
 # (handle_app_api_proxy in kiro_crew/apps/routes.py) and continues to
@@ -825,7 +825,7 @@ def write_app_secret(app_name: str, secret: str) -> None:
     try:
         # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
         # OSError, which would defeat the cleanup-and-reraise below for this
-        # app secret (AutoSDE). On POSIX applies chmod 0o600 by path; on
+        # app secret. On POSIX applies chmod 0o600 by path; on
         # Windows an owner-only DACL via icacls (fchmod doesn't exist on
         # Windows — previously an IS_POSIX no-op that let per-app secrets
         # land readable by other local users).

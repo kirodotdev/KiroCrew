@@ -376,8 +376,7 @@ async def run_gatewayd(
         # Windows: not yet supported — AF_UNIX / start_unix_server (and the
         # SO_PEERCRED peer check below) are POSIX-only; a TCP-loopback or named-pipe
         # abstraction is needed. The MCP gateway is opt-in and OFF by default, so this
-        # is no parity loss at launch. Tracked in Mesh-2364
-        # (https://taskei.amazon.dev/tasks/Mesh-2364).
+        # is no parity loss at launch. Tracked as follow-on work.
         server = await asyncio.start_unix_server(
             _on_client_connected,
             path=str(socket_path),
@@ -388,7 +387,7 @@ async def run_gatewayd(
         # 0700 $KIROCREW_HOME directory; the per-connection SO_PEERCRED check in
         # _handle_connection is the second layer.
         socketsec.chmod_socket_0600(socket_path)
-        # Mesh-2861: clean up stale spill files from prior runs (older than 24h).
+        # Clean up stale spill files from prior runs (older than 24h).
         try:
             await asyncio.get_running_loop().run_in_executor(
                 maintenance_executor(), cleanup_old_spill_files
@@ -1252,7 +1251,7 @@ async def _apply_abort(frame: dict[str, Any], pool: "BackendPool") -> dict[str, 
     """Apply an ``abort`` frame: cancel in-flight requests for all stubs under
     the named PIDs.
 
-    This is the gateway-authoritative abort path (Mesh-2808 Scope A):
+    This is the gateway-authoritative abort path:
     on session hard-stop, the gateway sends abort for the killed runtime's
     PIDs so gatewayd can propagate MCP cancel notifications to backends.
     Backend recycle happens on the subsequent stub disconnect path, not here.

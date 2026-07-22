@@ -25,16 +25,22 @@ ACP JSON-RPC protocol — plus MCP tools.
 ## This is a public OSS fork — do not re-introduce Amazon-internal couplings
 
 This repo is the de-Amazoned public fork of an internal package. When adding or
-changing code, **never reintroduce** any of the following (see
-`DEAMAZON_REPORT.md` + `MIGRATION_PLAN.md` for the full record):
+changing code, **never reintroduce** any of the following:
 
 - Build/infra: Brazil (`Config`, `AUTOSDE.yaml`, `CODE_APPROVERS.yaml`),
   `npm-pretty-much`, toolbox bundler, AIM hooks, CodeArtifact registries.
   Use setuptools + public PyPI / public npm only.
-- Services/auth: Midway, `mwinit`, MCS, Kerberos, federate, AEA tunnels,
-  Cognito/RUM ids, builder-mcp, `arcc`, Quip, Taskei/SIM/mimir.
-- These subsystems are **stubbed** (`midway.py`, `browser/auth.py`,
-  `dashboard/handlers/mwinit.py`, `tunnel/manager.py`, `aim_agents.py`): their
+- Services/auth: enterprise SSO, MCS, Kerberos, federated login, device-posture
+  tunnels, Cognito/RUM ids, builder-mcp, `arcc`, Quip, Taskei/SIM/mimir. The
+  internal marker names (Midway, mwinit, brazil, taskei, meshclaw, AIM, etc.)
+  have been scrubbed from code, comments, and docs — do not reintroduce them.
+  The `scripts/scrub-lint.sh` CI gate blocks regressions in the scanned source
+  roots (`src/`, `website/src/`, `scripts/`, `config/`, `packaging/`, top-level).
+  `docs/` is genericized but broadly allowlisted (it legitimately describes the
+  platform-seam / SSO-marker concepts), so it is NOT gate-enforced — keep docs
+  clean by convention.
+- These subsystems are **stubbed** (`sso_status.py`, `browser/auth.py`,
+  `dashboard/handlers/sso_login.py`, `tunnel/manager.py`, `aim_agents.py`): their
   public symbols are preserved as no-ops so the import graph stays intact — keep
   them stubbed, don't wire them back to internal services.
 - KiroCrew is **KiroACP-only**: the sole provider is the ACP adapter driving
@@ -60,14 +66,13 @@ changing code, **never reintroduce** any of the following (see
 credential redaction, destructive-command deny patterns, `~/.aws` / `~/.ssh`
 sensitive-path blocking, SEL audit log.
 
-**Fork-initiated UX divergences (do not let a MeshClaw sync re-introduce):** the
+**Fork-initiated UX divergences (do not let an upstream sync re-introduce):** the
 artifact **Iterate** button is hidden (`SHOW_ARTIFACT_ITERATE` in
 `ArtifactDetailPage.tsx`), the **Channels** app is hidden from the App Store
 (`"hidden": True` on its `_BUILTIN_APPS` entry + the `AppsPage` Browse filter),
 the **Board** app is removed, and the Voice panel adds a local **Piper** TTS
 provider upstream lacks. These are launch product choices, recorded with their
-exact mechanisms in `skills/meshclaw-sync/left-out.md` → "Fork-initiated UX /
-feature divergences" (verdict `SKIP_FORKUX`).
+exact mechanisms tracked with the upstream sync tooling (kept out-of-tree).
 
 > Stale references: `website/Config` (Brazil) and `website/AUTOSDE.yaml` are
 > leftover internal files not used by the public build — don't treat them as
@@ -77,7 +82,7 @@ feature divergences" (verdict `SKIP_FORKUX`).
 
 `src/kiro_crew/platform/` is the **Composed Platform Providers (CPP)** edition
 seam **and** the two-level security **Governance model**. It is load-bearing and
-generic core infrastructure — it survives the MeshClaw sync. See
+generic core infrastructure — it survives the upstream sync. See
 `docs/system-specs/modules/platform-context.md` + `.../governance.md`, and
 `AGENTS.md` → "Platform layer" for the full map.
 
@@ -164,7 +169,7 @@ bash CLI commands. `kirocrew-cron` + `kirocrew-core` are the managed servers
 
 ## Platform support
 
-macOS, Linux (x86_64 and ARM/Graviton), **and Windows** (native, Mesh-2329).
+macOS, Linux (x86_64 and ARM/Graviton), **and Windows** (native).
 Route every POSIX-only process/signal/metrics/file-lock call through
 `kiro_crew.platform_compat` — never raw `os.getuid`/`os.killpg`/`os.getpgid`/
 `signal.SIG*`/`fcntl`/`os.kill(pid, 0)` (the last *terminates* the target on

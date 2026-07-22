@@ -1,4 +1,4 @@
-"""Mirror-suppression regression guard for Slack unlink (Mesh-1969).
+"""Mirror-suppression regression guard for Slack unlink.
 
 The actual bug this feature fixes: a Slack-linked session mirrors EVERY
 dashboard turn back to the thread. Unlink must stop that. This drives

@@ -765,7 +765,7 @@ def _app_activation_denied(name: str) -> str | None:
     host}`` profile — an honest, stable bind target.  (It must NOT use an empty
     key, which would classify to surface ``unknown`` and silently match nothing;
     an empty key previously mis-classified to ``slack`` and accidentally picked up
-    slack-bound profiles — CR-284272012.)  Best-effort beyond the always-on
+    slack-bound profiles.)  Best-effort beyond the always-on
     checks: a ``PlatformCompositionError`` propagates (fail-closed CPP); any other
     error degrades to "no opinion" (None).
     """
@@ -799,7 +799,7 @@ def _app_activation_denied(name: str) -> str | None:
         # degraded; session_key=_host so the SEL source is the honest "host"
         # surface (not "unknown"/"slack").  Wrapped so a late-import failure cannot
         # raise out of this except-branch and convert the soft fail-open into a
-        # hard fail (CR-284272012).
+        # hard fail.
         try:
             from kiro_crew.platform.governance_profiles import (
                 HOST_SESSION_KEY,
@@ -1284,7 +1284,7 @@ def _edition_builtin_apps() -> list[dict[str, Any]]:
 
     The Default ``AppsLoader`` returns empty ``manifest_sources`` so the
     standalone discovery set is exactly the package's ``builtins/`` dir — no
-    extra apps, byte-for-byte today's behavior.  The Amazon companion returns a
+    extra apps, byte-for-byte today's behavior.  The internal companion returns a
     directory (inside the companion package) holding the feature-app
     ``app.json`` manifests; each such dir is scanned with the SAME
     ``discover_builtin_apps`` logic (subdir-with-app.json → app dict), so the
@@ -1319,7 +1319,7 @@ def _edition_bundled_app_names() -> list[str]:
 
     The Default ``AppsLoader`` returns the OSS builtins (``auto_research`` /
     ``file_explorer``) which are already covered by the package's ``builtins/``
-    discovery, so this is a no-op for standalone.  The Amazon companion declares
+    discovery, so this is a no-op for standalone.  The internal companion declares
     its feature-app names; used by orphan detection so a declared app is never
     mis-orphaned even if its manifest dir is momentarily unavailable.
     """
@@ -1382,7 +1382,7 @@ def register_builtin_apps() -> int:
     1. ``_BUILTIN_APPS`` hardcoded list (legacy, being phased out)
     2. Auto-discovered from ``builtins/`` directory via ``discovery.py``
     3. Edition-contributed builtins from the active PlatformContext's
-       ``AppsLoader.manifest_sources()`` (empty in standalone; the Amazon
+       ``AppsLoader.manifest_sources()`` (empty in standalone; the internal
        companion contributes its feature apps).  ADD-only: the hardcoded list
        and the package's own builtins still take precedence on name collision.
     """
@@ -1403,8 +1403,8 @@ def register_builtin_apps() -> int:
     # state so they don't linger in the App Store / nav after the change.
     #   - knowledge: promoted from App Store to registerBuiltinSurface()
     #   - orchestrated: Autopilot merged into the unified Chat surface (mode flag)
-    #   - board: removed from the fork (mirrors upstream CR-289326017, alongside
-    #     the Channels hide P472750613); drop stale beta-install dirs so the
+    #   - board: removed from the fork (mirrors the upstream project, alongside
+    #     the Channels hide); drop stale beta-install dirs so the
     #     orphaned entry doesn't resurface in the App Store Browse grid.
     _escalated = ["knowledge", "orchestrated", "board"]
     for esc_name in _escalated:
@@ -1700,7 +1700,7 @@ def detect_orphaned_builtins(*, force_refresh: bool = False) -> set[str]:
 
     # Combine hardcoded list + auto-discovered names + edition-contributed
     # builtins (PlatformContext).  Standalone adds nothing (manifest_sources ==
-    # [] and bundled_app_names() == OSS builtins already covered); the Amazon
+    # [] and bundled_app_names() == OSS builtins already covered); the internal
     # companion's feature apps are recognized as builtins here so they are not
     # mis-flagged as orphans after registration.  ``bundled_app_names()`` is
     # also honored as a declaration so a declared app whose manifest dir is

@@ -23,7 +23,7 @@ import { useRecentsProvider } from './commandPalette/providers/recentsProvider'
 import { useSettingsProvider } from './commandPalette/providers/settingsProvider'
 
 /**
- * Search Everywhere command palette (Mesh-2151).
+ * Search Everywhere command palette.
  *
  * A portal-rendered, centered modal — the IntelliJ-style "search everything"
  * surface. It owns:
@@ -60,7 +60,7 @@ import { useSettingsProvider } from './commandPalette/providers/settingsProvider
  * listener sees them.
  *
  * Highlighting renders matched indices as React `<strong>` nodes split out of
- * the title — never `dangerouslySetInnerHTML` (AUTOSDE `frontend-security`).
+ * the title — never `dangerouslySetInnerHTML` (`frontend-security` lint rule).
  * Visuals reuse the shared design tokens + the portal/result-row pattern from
  * `SkillPickerMenu.tsx`; no hardcoded Tailwind colors.
  */
@@ -133,17 +133,17 @@ export default function CommandPalette({
   // (`createSlot` + `setPendingInput`) paths the inline `$`/`@` pickers use, plus
   // the context-aware `enterInsertOrNewSession` helper (insert into the active
   // chat, else open a new seeded session). Token resolution stays server-side on
-  // submit (BSC1) — the palette only ever emits a plain `$skill` / `@prompt` /
+  // submit (input validation) — the palette only ever emits a plain `$skill` / `@prompt` /
   // `@knowledge` string. Used by the `insert-token` + `open-knowledge` branches
   // of {@link dispatchEnter}.
   const { enterInsertOrNewSession, newSessionWithToken, navigate } = usePaletteActions()
 
   // ⌘Enter on a Knowledge row attaches the entry as context to the active chat
-  // (Mesh-2151 §2 / task 26). There is no global attach-by-id API — the shipped
+  // (§2 / task 26). There is no global attach-by-id API — the shipped
   // path is the `@knowledge <query>` composer prefix the chat surface intercepts
   // (`useKnowledgeFetch.extractKnowledgeQuery`) to pull entries in as context.
   // So we reuse that entry-point: seed the active chat (else a new session) with
-  // `@knowledge <title>`. BSC1: a plain token string — the FE picker / server
+  // `@knowledge <title>`. Input validation: a plain token string — the FE picker / server
   // search resolve it; no filesystem access from user-controlled values.
   const attachKnowledgeAsContext = useCallback(
     (ref: KnowledgeRef) => enterInsertOrNewSession(`@knowledge ${ref.title}`),
@@ -164,7 +164,7 @@ export default function CommandPalette({
   // Settings — instant client-side search over the codegen settings registry.
   const settings = useSettingsProvider()
 
-  // Tab strip order (Mesh-2151 §1): All · Sessions · Knowledge · Skills ·
+  // Tab strip order (§1): All · Sessions · Knowledge · Skills ·
   // Prompts, with Artifacts + Pages + Actions riding along after the v1 corpus.
   const tabs = useMemo<ResourceProvider[]>(
     () => [all, sessions, knowledge, skills, prompts, artifacts, pages, actions, settings],
@@ -229,7 +229,7 @@ export default function CommandPalette({
   queryRef.current = query
 
   /**
-   * Central Enter dispatcher (Mesh-2151 §2, {@link OnEnter}). Switches on the
+   * Central Enter dispatcher (§2, {@link OnEnter}). Switches on the
    * result's declarative {@link EnterAction} (`result.enter`) and routes to the
    * per-type branch; `withModifier` is `true` for ⌘/Ctrl+Enter (the
    * always-new-session / attach-as-context branch of the matrix).
@@ -266,14 +266,14 @@ export default function CommandPalette({
             }
             break
           case 'insert-token': {
-            // Skills / Prompts (Mesh-2151 §2 / task 24). Primary Enter is
+            // Skills / Prompts (§2 / task 24). Primary Enter is
             // context-aware: insert the token (`$<skill>` / `@<prompt>`, from
             // the result payload) into the active chat composer, or — when no
             // chat is active — open a new session seeded with it.
             // `enterInsertOrNewSession` encodes that branch off the live
             // `hasActiveChat` predicate. ⌘Enter is always "new seeded session".
             // The token is a plain string; allowlisted resolution happens
-            // server-side on submit (BSC1, see paletteActions.ts).
+            // server-side on submit (input validation, see paletteActions.ts).
             if (withModifier) {
               newSessionWithToken(action.token)
             } else {
@@ -282,7 +282,7 @@ export default function CommandPalette({
             break
           }
           case 'open-knowledge':
-            // Knowledge (Mesh-2151 §2 / task 26). Primary Enter opens /
+            // Knowledge (§2 / task 26). Primary Enter opens /
             // navigates to the entry; ⌘Enter attaches it as context to the
             // active chat. Both reuse the provider-bound closures
             // (`onActivate` → openEntry, `onCmdActivate` → attachAsContext);
@@ -296,7 +296,7 @@ export default function CommandPalette({
             }
             break
           case 'navigate':
-            // Pages (Mesh-2151 §2 / task 27): navigate to the page route. Pages
+            // Pages (§2 / task 27): navigate to the page route. Pages
             // are pure navigation targets — ⌘Enter takes NO distinct action, so
             // `withModifier` is intentionally ignored (⌘Enter == Enter). The
             // provider bound `navigate(action.route)` into `onActivate`; reuse
@@ -305,7 +305,7 @@ export default function CommandPalette({
             result.onActivate()
             break
           case 'invoke':
-            // Actions (Mesh-2151 §2 / task 27): run the free action callback.
+            // Actions (§2 / task 27): run the free action callback.
             // Actions are pure command-invocations — ⌘Enter takes NO distinct
             // action, so `withModifier` is intentionally ignored
             // (⌘Enter == Enter). The callback rides on the declarative payload,

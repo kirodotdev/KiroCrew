@@ -216,7 +216,7 @@ def _safe_err(exc: BaseException) -> str:
     return msg
 
 
-# --- local_dir input validation (AutoSDE f-* security-controls) ------------
+# --- local_dir input validation (security-controls) ------------
 # local_dir is request-supplied and LLM-influenceable via the chat-native skill,
 # and flows to the filesystem + the `aws s3 sync` subprocess. Validate it with a
 # validation.py schema (type/length/charset) and confine the resolved real path

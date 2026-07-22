@@ -42,16 +42,66 @@ website/src/.*CR-
 
 # Documentation (contains internal references that will be scrubbed/removed before publish)
 docs/
-DEAMAZON_REPORT.md
-MIGRATION_PLAN.md
 CHANGELOG.md
+
+# CLAUDE.md's "do not reintroduce" policy paragraph names the internal marker
+# words (Midway, mwinit, brazil, taskei, meshclaw, AIM) as the denylist itself —
+# that self-documenting line must be allowed to name what it forbids.
+CLAUDE.md:.*internal marker names
 
 # This script and its allowlist
 scripts/scrub-lint.sh
 scripts/scrub-allowlist.txt
 
+# Security path-blocklists: ``.midway`` is blocked so the agent cannot read a
+# credential dir an enterprise companion may create (a security feature, kept).
+website/src/utils/safePath.ts:.*\.midway
+src/kiro_crew/sandbox.py:.*\.midway
+
+# Back-compat SSO-marker default + legacy profile alias (see platform/profile.py):
+# the enterprise companion's managed launcher may still use these.
+src/kiro_crew/platform/profile.py:.*\.midway
+
+# Functional literals: mcp_cleanup purges dead ``meshclaw-cron``/``meshclaw-core``
+# MCP entries left by upgraded installs; removing them orphans those entries.
+# (Both casings — the doc comments say "MeshClaw", the literals say "meshclaw".)
+src/kiro_crew/mcp_cleanup.py:.*[Mm]esh[Cc]law
+test/test_installer_shim_and_cleanup.py:.*[Mm]esh[Cc]law
+
+# Legacy CloudFormation stack/bucket names in the migration guide — renaming
+# them would make the find/delete remediation commands point at nothing.
+src/kiro_crew/deploy/skills/artifact-deploy/MIGRATION.md:.*meshclaw
+
+# MeshClaw -> KiroCrew migration tool: "MeshClaw"/"~/.meshclaw" name the user's
+# OLD install being imported (a legitimate user-facing migration source).
+transfer/
+
 # Deploy scan module (detects internal content - the regex IS the feature)
 src/kiro_crew/deploy/scan.py
+
+# macOS Apple bundle id (com.amazon.kiro.crew): the app's signed identity, baked
+# into every shipped .app and ONBOARDED with the code-signing service per exact
+# identifier. Renaming it is a coordinated task (re-onboard the signing identity
+# first), NOT a string scrub — kept intentionally. Not a secret (README.md).
+packaging/signing/generate-manifest.py:.*com\.amazon\.kiro\.crew
+packaging/signing/manifest-template.json:.*com\.amazon\.kiro\.crew
+packaging/signing/sign-dmg.sh:.*com\.amazon\.kiro\.crew
+packaging/build-desktop.sh:.*com\.amazon\.kiro\.crew
+docs/signing-runbook.md:.*com\.amazon\.kiro\.crew
+
+# Public AWS documentation URLs (docs.aws.amazon.com / aws.amazon.com) — generic
+# AWS product references, not internal couplings.
+src/kiro_crew/cli_cloud.py:.*aws\.amazon\.com/cli
+src/kiro_crew/cloud/aws.py:.*docs\.aws\.amazon\.com
+src/kiro_crew/cloud/ssm.py:.*docs\.aws\.amazon\.com
+
+# Live public AWS service class-name string the dashboard credit pill calls
+# (CodeWhisperer RTS GetUsageLimits) — a functional API identifier, not a leak.
+src/kiro_crew/dashboard/handlers/kiro_usage_api.py:.*codewhisperer
+
+# code_review_sage CR-URL parser tests: synthetic CR-12345678 ids and a
+# code.amazon.com sample URL are the parser's asserted test fixtures.
+src/kiro_crew/apps/builtins/code_review_sage/tests/
 
 # Deploy tests use AWS example account 123456789012 (well-known placeholder)
 test/test_deploy_web_profiles.py

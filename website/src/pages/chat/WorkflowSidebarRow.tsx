@@ -1,7 +1,7 @@
 /**
  * WorkflowSidebarRow — expandable workflow-run card for the ActivityViewer
  * "Workflows" tab. Collapsed = compact summary (status + name + phase + last
- * log). Expanded = full Claude-Code-style phase tree (via WorkflowRunTree)
+ * log). Expanded = full hierarchical phase tree (via WorkflowRunTree)
  * plus a "View source" / Edit / Rerun panel (via WorkflowSourcePanel).
  *
  * Both surfaces (chat WorkflowProgressBar + this sidebar row) reuse the same

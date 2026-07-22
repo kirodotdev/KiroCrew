@@ -146,7 +146,7 @@ class TestBuildSeatbeltProfile:
         # .aws should not appear as a subpath deny
         assert f'(subpath "{home}/.aws")' not in profile
 
-    # ── AVP-23427: hardlink bypass ──
+    # ── hardlink bypass ──
     def test_strict_denies_hardlink_creation_to_dirs(self):
         """Each read-denied dir must ALSO deny file-link (hardlink) creation, so a
         sandboxed agent cannot mint a hardlink at a non-denied path (/tmp) that
@@ -568,12 +568,12 @@ class TestAgentExecutableResolver:
 
 
 class TestSandboxNoWarningWhenExpected:
-    """Mesh-2054: no WARNING for an *acknowledged* no-sandbox state.
+    """no WARNING for an *acknowledged* no-sandbox state.
 
     CSE SEC-009 makes an unacknowledged no-sandbox fallback a loud WARNING
     (covered in test_sandbox_no_isolation.py). When the operator has opted in
     via ``agent.sandbox_allow_no_isolation`` the message is demoted to INFO —
-    this preserves Mesh-2054's "don't spam on expected states" intent.
+    this preserves the upstream project's "don't spam on expected states" intent.
     """
 
     @patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True)
@@ -649,7 +649,7 @@ class TestCleanupStaleSandboxProfiles:
 class TestResourceLimitPreexec:
     """resource_limit_preexec() is the cached companion to sandboxed_spawn_argv:
     it hands every agent-influenced spawn the kernel resource ceiling
-    (Talos bdf0d7e5 / V2285983353)."""
+    (security-review bdf0d7e5)."""
 
     def _reset_cache(self):
         import kiro_crew.sandbox as sb
@@ -684,7 +684,7 @@ class TestResourceLimitPreexec:
     def test_non_posix_returns_none(self):
         """On non-POSIX (os.name != 'posix'), returns None — create_subprocess_exec
         rejects any non-None preexec_fn on Windows with ValueError, so the
-        contract must be None there (AutoSDE CR-289826109)."""
+        contract must be None there (review-bot)."""
         import kiro_crew.sandbox as sb
 
         self._reset_cache()
@@ -760,7 +760,7 @@ class TestSessionHostPreexec:
 class TestCgroupScopeArgv:
     """cgroup_scope_argv() wraps agent spawns in a transient systemd --user
     --scope with pids.max + memory.max — the default-on fork-bomb / memory-DoS
-    ceiling the finding's headline threats require (Talos bdf0d7e5)."""
+    ceiling the finding's headline threats require (security-review bdf0d7e5)."""
 
     def _reset_probe(self):
         import kiro_crew.sandbox as sb

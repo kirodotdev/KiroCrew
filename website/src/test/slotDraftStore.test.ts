@@ -157,7 +157,7 @@ describe('slotDraftStore', () => {
     })
   })
 
-  describe('byte-aware store-level LRU (Mesh-1909)', () => {
+  describe('byte-aware store-level LRU', () => {
     it('evicts oldest slots until the serialized blob fits the byte budget', () => {
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', maxStoreBytes: 2000, sanitize: isString })
       const d: Record<string, string> = {}
@@ -179,7 +179,7 @@ describe('slotDraftStore', () => {
       s.save(d)
       const persisted = s.load()
       // Older slot evicted, but the newest large draft survives intact — this is
-      // the collapsed-vs-expanded symmetry guarantee from CR-279844240.
+      // the collapsed-vs-expanded symmetry guarantee from.
       expect(persisted['old']).toBeUndefined()
       expect(persisted['newest']).toBe('y'.repeat(5000))
     })

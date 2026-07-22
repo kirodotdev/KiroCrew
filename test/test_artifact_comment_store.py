@@ -212,7 +212,7 @@ def _anchored(cid: str, quote: str, **kw) -> ArtifactComment:
 
 class TestAnchorRescan:
     """Content writes through update() rescan comment anchors and flip the
-    dedicated ``anchor_orphaned`` field (Mesh-2752). The flag is symmetric
+    dedicated ``anchor_orphaned`` field. The flag is symmetric
     (restored content clears it) and never touches ``sync_state``, which
     tracks provider push status."""
 
@@ -264,7 +264,7 @@ class TestAnchorRescan:
 
 class TestCommentActivityEvents:
     """record_comment_event appends ``comment`` lifecycle entries with the
-    action / snippet / reason metadata (Mesh-2752)."""
+    action / snippet / reason metadata."""
 
     def test_deleted_event_appended(self, store):
         store.record_comment_event(

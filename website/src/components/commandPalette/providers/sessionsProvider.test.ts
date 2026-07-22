@@ -7,8 +7,8 @@ import {
 } from './sessionsProvider'
 
 /**
- * Unit tests for the pure {@link createSessionsProvider} factory (Mesh-2151
- * Search Everywhere, step 12). Exercises the provider's public contract with a
+ * Unit tests for the pure {@link createSessionsProvider} factory
+ * (Search Everywhere, step 12). Exercises the provider's public contract with a
  * mock `fetchSessions` + open spies — no React hooks, React-Query, or Redux.
  *
  * The provider keeps backend hits even when the client-side fuzzy pass does not

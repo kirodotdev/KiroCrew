@@ -8,7 +8,7 @@ import { createSlot, setPendingInput } from '../../store/chatSlice'
 
 /**
  * Shared §2 Enter-matrix engine for the Search Everywhere command palette
- * (Mesh-2151, step 17).
+ * (step 17).
  *
  * The palette has two classes of result. **Invokable** results (Skills,
  * Prompts) drop a `$skill` / `@prompt` *token* into a chat. **Navigable**
@@ -17,7 +17,7 @@ import { createSlot, setPendingInput } from '../../store/chatSlice'
  * insert-vs-new-session decision — so Skills and Prompts share one
  * implementation instead of duplicating it (jscpd duplication gate).
  *
- * ## Security (BSC1 — Input Validation, ARCC `cnt_u7sfVeParu7OlX`)
+ * ## Security (Input Validation)
  *
  * Invokable activation MUST route through the **existing shipped allowlist
  * resolvers**, never a second FE-side resolution path, and MUST NOT build any

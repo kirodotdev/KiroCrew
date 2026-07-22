@@ -30,7 +30,7 @@ class TestHelpers:
 
     def test_snippet_truncation_never_leaves_open_delimiter(self):
         # A long query whose match + delimiters exceed the cap must not produce
-        # a dangling "<<<" without its ">>>" (AutoSDE f-8cbcdff3).
+        # a dangling "<<<" without its ">>>" (review-bot f-8cbcdff3).
         needle = "q" * 400
         content = "pre " + needle + " post"
         snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], needle)

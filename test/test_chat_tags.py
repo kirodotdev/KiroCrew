@@ -460,7 +460,7 @@ class TestColumns:
 
     @pytest.mark.asyncio
     async def test_reorder_columns_with_int_id_does_not_crash_audit(self, tmp_path, monkeypatch):
-        """Regression: AutoSDE flagged ',
+        """Regression: review-bot flagged ',
         '.join(ids[:10]) raising TypeError on non-string elements,
         which would skip the SEL audit event after the state mutation."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

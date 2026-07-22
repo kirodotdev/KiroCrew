@@ -1,6 +1,6 @@
 """Security regression tests for the cron command/script execution path.
 
-Covers remediation of finding P454794507 — a prompt-injected ``cron_add`` could
+Covers remediation of finding — a prompt-injected ``cron_add`` could
 schedule a shell ``command`` (or register a ``script``) that read credential
 files / secret env vars and exfiltrated them, because the command ran via
 ``sh -c`` under a weak sandbox outside the kiro-cli ACP permission/hook flow.
@@ -280,7 +280,7 @@ def test_blocked_command_emits_sel_denial(monkeypatch, tmp_path):
 
 def test_vet_script_file_blocks_sensitive_symlink(monkeypatch, tmp_path):
     """A crons-dir entry that resolves to a credential path must be blocked,
-    not opened (symlink defense — finding P454794507 AutoSDE review)."""
+    not opened (symlink defense — finding review-bot review)."""
     import kiro_crew.mcp_cron as mcp_cron_mod
 
     target = tmp_path / "looks_like_creds"

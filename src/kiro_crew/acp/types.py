@@ -60,7 +60,7 @@ METHOD_SET_CONFIG_OPTION = "session/set_config_option"
 
 ACP_BACKEND_CLAUDE = "claude"
 
-# ── Claude Code permission modes ──
+# ── Claude backend permission modes ──
 # Values an edition writes into a per-session settings.local.json
 # ``permissions.defaultMode`` when it drives the dormant ``ACP_BACKEND_CLAUDE``
 # seam. ``default`` = per-tool approval; ``auto`` = the SDK auto-accept mode

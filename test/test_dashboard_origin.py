@@ -158,7 +158,7 @@ class TestBuildDashboardUrl:
         assert url == "http://localhost:5476?token=a%26b%3Dc%23d"
 
     def test_truthy_non_bool_local_only_still_requires_token(self) -> None:
-        """AutoSDE hardening: 'local_only is not True' catches truthy non-booleans."""
+        """review-bot hardening: 'local_only is not True' catches truthy non-booleans."""
         with pytest.raises(ValueError, match="token is required"):
             build_dashboard_url("http://host:5476", "", local_only="yes")  # type: ignore[arg-type]
 
@@ -192,7 +192,7 @@ class TestFormatDashboardUrls:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
-    @patch(f"{_MOD}.machine_hostname", return_value="myhost.corp.amazon.com")
+    @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
     @patch(f"{_MOD}.socket.gethostbyname", return_value="10.0.0.1")
     def test_local_with_resolvable_host_adds_remote_hint(self, _dns: object, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://localhost:5476", port=5476, local_only=True)
@@ -200,33 +200,33 @@ class TestFormatDashboardUrls:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
-    @patch(f"{_MOD}.machine_hostname", return_value="myhost.corp.amazon.com")
+    @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
     @patch(f"{_MOD}.socket.gethostbyname", return_value="10.0.0.1")
     def test_custom_host_suppresses_remote_hint(self, _dns: object, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://localhost:5476", port=5476, has_custom_host=True)
         assert not any("Remote" in ln for ln in lines)
 
     @patch.dict("os.environ", {}, clear=True)
-    @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.amazon.com")
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.example.com")
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_devspaces_proxy_shown_when_not_local(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://host:5476?token=t", port=5476, local_only=False)
         assert any("Proxy" in ln and "proxy.devspaces" in ln for ln in lines)
 
     @patch.dict("os.environ", {}, clear=True)
-    @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.amazon.com")
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.example.com")
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_devspaces_proxy_hidden_when_local(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://localhost:5476", port=5476, local_only=True)
         assert not any("Proxy" in ln for ln in lines)
 
     @patch.dict("os.environ", {}, clear=True)
-    @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.amazon.com")
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.example.com")
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_token_propagated_to_proxy_url(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://host:5476?token=abc", port=5476, local_only=False)
         proxy_line = [ln for ln in lines if "Proxy" in ln][0]
-        assert "proxy.devspaces.amazon.com?token=abc" in proxy_line
+        assert "proxy.devspaces.example.com?token=abc" in proxy_line
 
     def test_not_local_without_token_raises(self) -> None:
         with pytest.raises(ValueError, match="token is required"):
@@ -250,7 +250,7 @@ class TestCheckOriginLoopbackTrust:
         """Create a minimal mock request with Origin header and allowed_origins.
 
         *host* sets the request ``Host`` header (used by the same-origin
-        loopback fallback — Mesh-1864).
+        loopback fallback).
         """
         from unittest.mock import MagicMock
 
@@ -309,12 +309,12 @@ class TestCheckOriginLoopbackTrust:
         request = self._make_request("", remote="10.0.0.5")
         assert check_origin(request) is False
 
-    # --- Mesh-1864: same-origin loopback fallback (embedded multi-instance iframe) ---
+    # --- same-origin loopback fallback (embedded multi-instance iframe) ---
 
     def test_same_origin_loopback_port_trusted(self) -> None:
         """The embedded instance iframe is served at <host>:<tunnelPort> and opens
         its WS to that same location.host, so Origin == Host. Trust it even though
-        the port is not in allowed_origins (Mesh-1864)."""
+        the port is not in allowed_origins."""
         request = self._make_request(
             "http://kirocrew.localhost:7779",
             host="kirocrew.localhost:7779",
@@ -555,7 +555,7 @@ class TestBuildHostCanonicalRedirect:
 
 class TestBuildAllowedHosts:
     """build_allowed_hosts derives the DNS-rebinding Host allowlist from the
-    same allowed_origins set the CSRF check uses (AVP-23427)."""
+    same allowed_origins set the CSRF check uses."""
 
     def test_loopback_floor_always_present(self) -> None:
         from kiro_crew.dashboard.origin import build_allowed_hosts
@@ -592,7 +592,7 @@ class TestBuildAllowedHosts:
 
 class TestCheckHost:
     """check_host is an independent DNS-rebinding barrier: it runs for every
-    method and does NOT trust loopback remote (AVP-23427)."""
+    method and does NOT trust loopback remote."""
 
     def _make_request(self, host: str, allowed=None, remote: str = "127.0.0.1"):
         from unittest.mock import MagicMock
@@ -652,14 +652,14 @@ class TestCheckHost:
 
     def test_missing_host_denied_from_non_loopback(self) -> None:
         """Deny-by-default: a headerless request from a non-loopback remote is
-        rejected rather than blanket-allowed (AutoSDE security-controls)."""
+        rejected rather than blanket-allowed (review-bot security-controls)."""
         from kiro_crew.dashboard.origin import check_host
 
         assert check_host(self._make_request(None, remote="10.0.0.5")) is False
 
     def test_empty_allowlist_denied(self) -> None:
         """Deny-by-default: a missing/empty allowed_origins must NOT bypass the
-        Host check (AutoSDE security-controls, fail-open guard)."""
+        Host check (review-bot security-controls, fail-open guard)."""
         from kiro_crew.dashboard.origin import check_host
 
         req = self._make_request("evil.com", allowed=set())

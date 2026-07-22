@@ -1,6 +1,6 @@
 # Session Manager Module
 
-Last Updated: 2026-07-14 (cross-platform process management via platform_compat — Mesh-2329; warm pool / model precedence / orphan-sweep companion runtimes; DM channel session-key model + dm_scope + generation reset + mid-turn steer/queue; Slack thread linking, bidirectional dashboard-Slack sync, slash commands)
+Last Updated: 2026-07-14 (cross-platform process management via platform_compat; warm pool / model precedence / orphan-sweep companion runtimes; DM channel session-key model + dm_scope + generation reset + mid-turn steer/queue; Slack thread linking, bidirectional dashboard-Slack sync, slash commands)
 
 ## Overview
 
@@ -102,7 +102,7 @@ check (`dashboard/handlers/cron.py`).
   of errors the lifted inline blocks swallowed). Hooks registered in
   `SessionManager.__init__`: `idle_expiry` (gate + clamped timeout published
   onto `self._idle_sweep_enabled`/`self._idle_timeout` by `_cleanup_loop`),
-  `orphan_mcp` (maintenance-executor offload, Mesh-1968), `denied_commands`
+  `orphan_mcp` (maintenance-executor offload), `denied_commands`
   (re-enforcement offloaded to the maintenance executor — deliberate
   sync→thread change from the old inline block), and `rss_threshold`. The
   orphan-PID / session-root / sandbox-profile sweeps remain inline in
@@ -199,9 +199,9 @@ parent snapshot + accumulated side history.
 
 ### Cross-Provider Continuity
 
-kiro session IDs and Claude Code session IDs are NOT interchangeable:
+kiro session IDs and the removed provider's session IDs are NOT interchangeable:
 - kiro: arbitrary string, stored in `~/.kiro/sessions/cli/<sid>.{json,jsonl}`
-- Claude Code: UUID v4, stored in `~/.claude/projects/<encoded-cwd>/<sid>.jsonl`
+- removed provider: UUID v4, stored in `~/.claude/projects/<encoded-cwd>/<sid>.jsonl`
 
 When a user switches provider mid-session (e.g. config change from `acp` to
 `claude_code`), conversation continuity is maintained via **history replay**,
@@ -462,7 +462,7 @@ This addresses user complaints about KiroCrew overwriting customizations on non-
 
 `_cleanup_orphaned_mcp_servers()` kills MCP server processes that survived
 session teardown.  kiro-cli-chat spawns MCP servers (kiro_crew mcp-core/cron,
-builder-mcp, andes-mcp, aim slack-mcp) in separate process groups.  When a
+the internal MCP server, slack-mcp) in separate process groups.  When a
 session dies, `killpg` only reaches the kiro-cli process group — MCP servers
 in other groups get reparented to init and leak memory.
 
@@ -515,7 +515,7 @@ untracked orphans and SIGKILLed them mid-chat (surfacing as
 
 All process liveness/kill/PID-file-lock operations in `session.py` and
 `session_pid.py` go through `kiro_crew.platform_compat` so KiroCrew runs natively on
-Windows as well as macOS/Linux (Mesh-2329). The critical correctness reason is that
+Windows as well as macOS/Linux. The critical correctness reason is that
 **`os.kill(pid, 0)` is NOT a liveness probe on Windows — it terminates the process** —
 so every liveness check uses `platform_compat.pid_exists(pid)` (or the tri-state
 `pid_liveness`) instead, kills use `kill_pid` / `kill_process_tree`, the PID-reuse

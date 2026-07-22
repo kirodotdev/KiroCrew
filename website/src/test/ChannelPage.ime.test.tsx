@@ -22,7 +22,7 @@ const mockChannel = {
 
 const PLACEHOLDER = 'Message the channel... (type @ to mention)'
 
-describe('ChannelPage — IME composition Enter guard (Mesh-2693)', () => {
+describe('ChannelPage — IME composition Enter guard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(api).channelsList = vi.fn().mockResolvedValue({ channels: [mockChannel] })

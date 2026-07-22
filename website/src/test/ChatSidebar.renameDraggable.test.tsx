@@ -1,5 +1,5 @@
 /**
- * Regression for Mesh-1908: clicking inside the inline session-rename input
+ * Regression: clicking inside the inline session-rename input
  * did not move the caret to the click point. Root cause: the session row is
  * draggable, and a draggable ancestor makes the browser treat a mousedown in a
  * descendant text input as a drag-gesture start, suppressing native caret
@@ -112,7 +112,7 @@ function rowFor(container: HTMLElement): HTMLElement {
 beforeEach(() => localStorage.clear())
 afterEach(() => vi.clearAllMocks())
 
-describe('Mesh-1908: session row drag is disabled during inline rename', () => {
+describe('session row drag is disabled during inline rename', () => {
   // The legacy lane uses dnd-kit drag; the logical drag-enabled state is
   // surfaced via data-draggable (dnd-kit's `disabled` prop is otherwise not
   // reflected as a DOM attribute). Drag must be off during rename so the input

@@ -360,7 +360,7 @@ def test_probe_unshare_fast_path_on_loop_when_backend_set(monkeypatch):
     """When _backend == 'namespace', _probe_unshare() returns True immediately
     without calling _probe_unshare_once — even on a running event loop.
 
-    Regression test for AutoSDE finding post 36: userns_available() was
+    Regression test for review-bot finding post 36: userns_available() was
     bypassing the warm cache and deferring on-loop, returning False even
     though the host is known-good.
     """

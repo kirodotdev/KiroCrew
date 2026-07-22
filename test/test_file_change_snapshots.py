@@ -7,7 +7,7 @@ Covers:
   * ``_flush_file_changes`` — dedups, scrubs credentials, attaches to last assistant message
     or creates a synthetic one when the turn aborts before any assistant text.
 
-These tests target the file-chips feature added in CR-276050100. They drive
+These tests target the file-chips feature added. They drive
 new-line coverage on chat_runner.py from ~0% to a substantial fraction without
 touching the live ACP runtime — every test stays in pure-Python land.
 """

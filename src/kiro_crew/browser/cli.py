@@ -1,8 +1,8 @@
 """Browser CLI — Playwright setup (OSS stub).
 
 The browser auth subcommands (`health`, `inject`, `refresh`, `federate`) were
-wired to an Amazon-internal SSO/cookie flow that is not shipped in the
-open-source build. They are preserved as recognized subcommands but report
+wired to an enterprise SSO/cookie flow that is not shipped in the open-source
+build. They are preserved as recognized subcommands but report
 "not available in OSS".
 
 Usage:
@@ -178,7 +178,7 @@ def _cmd_auth_refresh() -> None:
     """Storage-state refresh — delegates to the auth layer (OSS: not available)."""
     from kiro_crew.browser import auth as _auth
 
-    if _auth.refresh_cookie_via_mcs():
+    if _auth.refresh_cookie_via_sso():
         print("browser auth refresh: ok")
         return
     print("browser auth refresh: not available in OSS")
@@ -189,7 +189,7 @@ def _cmd_auth_federate(url: str) -> None:
     """Federated SSO — delegates to the auth layer (OSS: not available)."""
     from kiro_crew.browser import auth as _auth
 
-    result = _auth.federate_auth(url)
+    result = _auth.federated_login(url)
     if result.get("ok"):
         print(json.dumps({k: v for k, v in result.items() if k != "cookies"}, indent=2))
         return

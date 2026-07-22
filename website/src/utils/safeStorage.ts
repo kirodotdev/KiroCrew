@@ -40,7 +40,7 @@ const HEIGHT_CACHE_PREFIX = 'vc_heights_'
  *
  * Why tiers (not just `vc_heights_*`): in practice the quota hog is often a
  * DIFFERENT key — e.g. the `mc-paste-store-v1` sent-paste side table can reach
- * multiple MB on its own (see Mesh-2139). When no `vc_heights_*` keys exist,
+ * multiple MB on its own. When no `vc_heights_*` keys exist,
  * single-tier reclaim freed nothing, `safeSetItem` gave up, and the write was
  * silently lost — defeating the whole point of this module.
  */
@@ -119,8 +119,12 @@ function reclaimSpace(): boolean {
 
 function warnDev(key: string, err: unknown): void {
   if (import.meta.env.DEV) {
+    // Pass key + err as trailing args, NOT interpolated into the first
+    // (format-string) arg: a key containing console format specifiers (%s/%d/%c)
+    // would otherwise be interpreted as a format directive (CodeQL: use of
+    // externally-controlled format string).
     // eslint-disable-next-line no-console
-    console.warn(`safeStorage: persist of "${key}" failed`, err)
+    console.warn('safeStorage: persist of "%s" failed', key, err)
   }
 }
 

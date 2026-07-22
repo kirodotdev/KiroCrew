@@ -1,8 +1,7 @@
 # Claim-push: event-driven caller identity for pooled MCP stubs
 
-Status: implemented. Ticket: Mesh "Claim-push caller identity" (follow-up to
-Mesh-2659). Supersedes the recaller poll as the primary identity-repair path;
-the poll remains as a fallback.
+Status: implemented. Supersedes the recaller poll as the primary
+identity-repair path; the poll remains as a fallback.
 
 ## Problem
 
@@ -13,15 +12,14 @@ No `session_key` on the register means every call from that connection is
 anonymous.
 
 Warm-pool runtimes register before any session owns them, so their key is
-empty. The recaller (CR-288436923) repaired this by polling for
+empty. The recaller repaired this by polling for
 `session_pid_<pid>.txt` — but only for 180 s. Pool runtimes routinely idle
 longer than that before being claimed; after the budget expired, the
 connection stayed anonymous for life. Observed blast radius of an empty
 caller:
 
 - `spawn_run` records `parent_session=""` → subagent completion events fall
-  back to notification-only (main agent never wakes; Mesh-2659's original
-  complaint),
+  back to notification-only (main agent never wakes),
 - the FE "N agents running" indicator cannot attribute the subagent to its
   owning session (and historically ghost-attributed it to whatever session
   was active),

@@ -74,7 +74,7 @@ def test_allowed_tool_is_approved_during_decomposition():
 
 def test_no_ctx_denies_by_default():
     """Without a ContextBuilder there is no hook store to gate the request, so
-    deny by default rather than approving (CSE SEC-006, AutoSDE deny-by-default)."""
+    deny by default rather than approving (CSE SEC-006, review-bot deny-by-default)."""
     provider = _provider_requesting_tool()
     sessions = _sessions_with(provider)
 

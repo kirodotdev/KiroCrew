@@ -150,7 +150,7 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
       //
       // Hard-clamp (no rubber-band): this panel is `shrink-0` inside an
       // `overflow-hidden` row, so the row/viewport cap is a LAYOUT INVARIANT
-      // (Mesh-2813) — letting width exceed it, even transiently, pushes content
+      // — letting width exceed it, even transiently, pushes content
       // off-screen. Rubber-band is for soft scroll edges, not overflow guards.
       setWidth(clampPanelWidth(startWRef.current - dx, minWidth, rowWidth(), reserveWidth))
     },
@@ -158,13 +158,13 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
       // ALWAYS clear the suppression flag — the hook fires onEnd on every
       // pointer-up (even a sub-threshold tap on the thin handle), so the resize /
       // reserveWidth re-clamp guards can never get wedged on `true` and re-expose
-      // the Mesh-2230/2813 overflow. A tap did nothing else, so stop here.
+      // the overflow. A tap did nothing else, so stop here.
       draggingRef.current = false
       if (!committed) return
       // Persist the dragged PREFERRED width (widthRef holds it: a resize
       // suppressed mid-drag never touched it) so returning to a larger screen
       // restores it — then clamp only the LIVE render down to what currently
-      // fits. Clamping before persisting would lose the preferred width (Mesh-2238).
+      // fits. Clamping before persisting would lose the preferred width.
       const preferred = widthRef.current
       if (storageKey) safeSetItem(storageKey, String(preferred))
       setWidth(clampPanelWidth(preferred, minWidth, rowWidth(), reserveWidth))

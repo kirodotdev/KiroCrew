@@ -13,13 +13,13 @@ from kiro_crew.dashboard.chat_nav import (
 
 class TestBuildLinkSummaryPrompt:
     def test_single_link_no_context(self):
-        links = [{"url": "https://code.amazon.com/reviews/CR-123"}]
+        links = [{"url": "https://git.example.com/reviews/CR-123"}]
         prompt = _build_link_summary_prompt(links)
-        assert "1. URL: https://code.amazon.com/reviews/CR-123" in prompt
+        assert "1. URL: https://git.example.com/reviews/CR-123" in prompt
         assert "Context:" not in prompt
 
     def test_single_link_with_context(self):
-        links = [{"url": "https://quip-amazon.com/abc", "context": "Design doc for memory"}]
+        links = [{"url": "https://docs.example.com/abc", "context": "Design doc for memory"}]
         prompt = _build_link_summary_prompt(links)
         assert "Context: Design doc for memory" in prompt
 

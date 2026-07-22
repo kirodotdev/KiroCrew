@@ -1,8 +1,8 @@
 """Tests for CHAT_TURN_TIMEOUT applied uniformly across _run_chat dispatch sites.
 
-Background: the constant was originally introduced in CR-268843007 as a 600s
+Background: the constant was originally introduced as a 600s
 recovery-path budget, scoped to a single subagent-injection failure path. It
-was hoisted to a shared constant in CR-272778307 and added to chat_runner.py's
+was later hoisted to a shared constant and added to chat_runner.py's
 queue-drain path, but the primary user-typed turn (chat_handlers.py), the
 cron injection path (handlers/messaging.py), the Slack/dashboard nudge path
 (slack/gateway.py:_handle_nudge), and the cron-script delivery path

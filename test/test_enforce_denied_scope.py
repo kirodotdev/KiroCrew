@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from kiro_crew.agent import _denied_cmd_mtimes, _enforce_denied_commands, _load_json
 
-# Non-UTF-8 bytes (a macOS AppleDouble "._foo.json" stub) — exercises Mesh-2851.
+# Non-UTF-8 bytes (a macOS AppleDouble "._foo.json" stub) — exercises.
 _APPLEDOUBLE_BYTES = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X\xa3\xff\xfe" + b"\x00" * 32
 
 
@@ -101,7 +101,7 @@ class TestEnforceDeniedScope:
         """A non-UTF-8 *.json file (e.g. a macOS AppleDouble "._foo.json"
         resource-fork stub) must be skipped, not crash gateway startup.
 
-        Regression for Mesh-2851: read_text raises UnicodeDecodeError (a
+        Regression for read_text raises UnicodeDecodeError (a
         ValueError, not an OSError), which escaped the old
         (json.JSONDecodeError, OSError) except clause.
         """
@@ -127,7 +127,7 @@ class TestEnforceDeniedScope:
     def test_load_json_returns_empty_on_non_utf8(self, tmp_path: Path):
         """_load_json (the central loader used by _sanitize_agent_hooks and
         many other startup-repair paths) returns {} for a non-UTF-8 file
-        instead of raising UnicodeDecodeError. Regression for Mesh-2851."""
+        instead of raising UnicodeDecodeError."""
         bad = tmp_path / "._agent.json"
         bad.write_bytes(_APPLEDOUBLE_BYTES)
 

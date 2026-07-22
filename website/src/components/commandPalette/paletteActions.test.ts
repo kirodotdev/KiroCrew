@@ -3,7 +3,7 @@ import { resolveInvokableEnter } from './paletteActions'
 
 /**
  * Unit tests for the pure §2 Enter-matrix primitive {@link resolveInvokableEnter}
- * (Mesh-2151 Search Everywhere, step 17). The `usePaletteActions` hook is a thin
+ * (Search Everywhere, step 17). The `usePaletteActions` hook is a thin
  * store/router wrapper exercised via the provider tests + the palette component
  * tests; the security-relevant decision (insert vs new-session) lives here and
  * is tested in isolation.
@@ -47,7 +47,7 @@ describe('resolveInvokableEnter — returns a callback (lazy)', () => {
   it('forwards the exact token unchanged (no FE-side rewriting)', () => {
     const s = sinks()
     // Token text is passed through verbatim; backend resolvers do the
-    // allowlisting (BSC1). The FE never mutates or path-resolves it.
+    // allowlisting (input validation). The FE never mutates or path-resolves it.
     const raw = '$nested/skill-name_v2'
     resolveInvokableEnter(true, raw, s)()
     expect(s.insertToken).toHaveBeenCalledWith(raw)

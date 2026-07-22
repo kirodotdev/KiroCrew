@@ -519,8 +519,8 @@ Phase boundaries are internal to implementation — all land in one CR but can b
 
 ## References
 
-- Commit `45defbb` (2026-02-24, bolichen) — "fix: hard-stop chat generation and preserve history on update." Rationale for the current hard-kill policy.
-- Commit `76eb780` (2026-04-02, rkrohan) — "feat: add !stop command to force-halt agent execution mid-stream." Introduced `!stop`.
+- Commit `45defbb` (2026-02-24) — "fix: hard-stop chat generation and preserve history on update." Rationale for the current hard-kill policy.
+- Commit `76eb780` (2026-04-02) — "feat: add !stop command to force-halt agent execution mid-stream." Introduced `!stop`.
 - ACP spec — `https://agentclientprotocol.com/protocol/prompt-turn#cancellation`. Defines `stopReason: "cancelled"` as the acknowledgement protocol.
 - `docs/system-specs/modules/acp-client.md` — current ACP client contract.
 - `docs/system-specs/modules/session.md` — current `SessionManager` API.

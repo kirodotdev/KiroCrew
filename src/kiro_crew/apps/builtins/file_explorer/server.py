@@ -422,7 +422,7 @@ def _git_status(repo_root: Path) -> dict:
         cmd_branch, _ = wrap_argv(
             ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"]
         )
-        cmd_branch = cgroup_scope_argv(cmd_branch)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        cmd_branch = cgroup_scope_argv(cmd_branch)  # cgroup DoS ceiling
         branch = subprocess.run(
             cmd_branch,
             capture_output=True,
@@ -437,7 +437,7 @@ def _git_status(repo_root: Path) -> dict:
         out["branch_error"] = str(exc)
     try:
         cmd_status, _ = wrap_argv(["git", "-C", str(repo_root), "status", "--porcelain=1", "-z"])
-        cmd_status = cgroup_scope_argv(cmd_status)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        cmd_status = cgroup_scope_argv(cmd_status)  # cgroup DoS ceiling
         proc = subprocess.run(
             cmd_status,
             capture_output=True,
@@ -537,7 +537,7 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
     cmd += ["--", query, str(root)]
     try:
         wrapped_cmd, _ = wrap_argv(cmd)
-        wrapped_cmd = cgroup_scope_argv(wrapped_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        wrapped_cmd = cgroup_scope_argv(wrapped_cmd)  # cgroup DoS ceiling
         proc = subprocess.run(
             wrapped_cmd,
             capture_output=True,

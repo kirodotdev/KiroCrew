@@ -164,8 +164,8 @@ _GIT_PUBLISH_GLUE_RE = re.compile(r"git(?:\$\([^)]*\)|`[^`]*`)+push|git_push")
 # the program, so a ``push`` subcommand immediately following an unresolvable
 # program token is treated as a publish (FAIL CLOSED); ``_is_push_to_protected_branch``
 # then reads the push target and denies a protected / bare / ambiguous one while
-# still allowing an explicit feature-branch target.  Ported from KiroClaw
-# CR-289796406 + CR-289806273 (Talos 3eeb3852 / TT V2285983365).
+# still allowing an explicit feature-branch target.  Ported from the upstream
+# project.
 _GIT_PUBLISH_SUBST_PROGRAM_RE = re.compile(
     r"(?:^|[;&|`\n])\s*"
     r"(?:\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_]\w*)"
@@ -550,7 +550,16 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     "Library/Application Support/kiro-cli",
     "Library/Application Support/amazon-q",
     ".kirocrew/.env",
-    # Security Event Log trust root (Talos finding cdf82704). The SEL is a
+    # Browser-auth cookie jar + the Playwright storage-state it is converted into
+    # both hold reusable authenticated-session cookies (the OSS browser-auth stub
+    # reads a Netscape cookie jar the user exports; ``browser/setup.py`` writes the
+    # storage state 0600). Agent file tools must not read them through the shared
+    # gate, or a prompt-injected turn could exfiltrate live browser sessions. The
+    # browser helpers open these paths directly (not via is_sensitive_path), so
+    # legitimate cookie injection still works.
+    ".kirocrew/browser-cookies.txt",
+    ".kirocrew/playwright-storage-state.json",
+    # Security Event Log trust root. The SEL is a
     # tamper-evident, HMAC-SHA256-chained audit trail (``sel.py``): each entry
     # signs over the previous entry's hash using the key in ``sel_hmac.key``.
     # An audited agent that could fs_read the key could forge/rewrite the entire
@@ -588,7 +597,7 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".kirocrew/security_policy.json",
     ".kirocrew/profiles",
     ".kirocrew/admission_policy.json",
-    # KiroCrew's own dashboard-auth secrets (Mesh-2369). ``token_signing.key``
+    # KiroCrew's own dashboard-auth secrets. ``token_signing.key``
     # (dashboard/token_secret.py) signs every access + refresh token;
     # ``refresh_chains.json`` (dashboard/refresh_tokens.py) stores refresh-token
     # chain state; ``.local_secret`` (server.py / cli_commands.py / mcp_core.py /
@@ -649,7 +658,7 @@ _READ_CMDS = r"(?:cat|head|tail|less|more|strings|xxd|base64|cp|scp|open|vi|vim|
 # a bare ``git`` would over-block read-only inspection (``git log/status/diff/
 # show/blame/grep -- <sensitive path>``) that operators run during incident
 # triage. The verb-independent catch-all still flags a sensitive-path token
-# regardless of git verb, so this only trims false positives (CR-284272012).
+# regardless of git verb, so this only trims false positives.
 _WRITE_CMDS = (
     r"(?:tee|mv|dd|truncate|ln|install|sed|chmod|chown|rm|rmdir|touch|mkdir|rsync"
     r"|tar|unzip|gunzip|gzip|cpio|patch"
@@ -694,7 +703,7 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # ``=`` (VAR=path), AND ``:``/``,``/``;`` (option:path, PATH-style
         # colon lists, comma/semicolon-joined args) — without the latter a
         # ``FOO=bar:~/.aws/credentials`` or ``PATH=/x:~/.ssh/id_rsa`` token slips
-        # past the backstop while no verb branch fires either (CR-284272012).
+        # past the backstop while no verb branch fires either.
         rf"(?:(?:{_READ_CMDS}.*|{_WRITE_CMDS}.*|{_SCRIPT_OPEN}.*|.*[<>|]\s*)"
         rf"{sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){sensitive_path})",
@@ -1049,7 +1058,7 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
 # heavy percent-encoding detector stay unconditional for every host.
 
 # Host group (group 1) matches THREE host shapes so a raw-IP exfil destination
-# is not silently skipped (Talos 78224f3f): a DNS name with a letter TLD, a raw
+# is not silently skipped: a DNS name with a letter TLD, a raw
 # IPv4 literal (``192.168.1.1``, incl. link-local/metadata ``169.254.169.254``),
 # or a bracketed IPv6 literal (``[::1]``, ``[fd00::1]``). The prior regex required
 # a ``.<letters>`` TLD, so ``http://169.254.169.254/latest/…/<secret>`` never
@@ -1167,7 +1176,7 @@ def _is_safe_presigned(domain: str, query: str) -> bool:
 
 
 # Hard, unambiguous credential markers scanned across the FULL URL path+query
-# (Talos 78224f3f) — a real AWS key / SSH-or-PEM header / Slack token in a URL is
+# — a real AWS key / SSH-or-PEM header / Slack token in a URL is
 # exfil even to an otherwise-safe host, and even with no ``?`` query (secret in
 # the PATH). Distinct from the broader _EXFIL_PATTERNS base64/length heuristics,
 # which stay query-only (long base64 PATH segments — CDN asset ids, git object
@@ -1262,7 +1271,7 @@ def _exfil_url_warning(
     if query and _is_safe_presigned(domain, query):
         return None
 
-    # Hard credential markers ANYWHERE in the path or query (Talos 78224f3f).
+    # Hard credential markers ANYWHERE in the path or query.
     # The base64/length heuristics below are query-only, so a secret embedded in
     # the URL PATH (``https://evil/AKIA…`` — no ``?``) escaped them entirely, and
     # a raw-IP host never even matched _URL_RE. These markers (AKIA/ASIA,
@@ -1384,7 +1393,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     #      lazily to the first END marker. ``[\s\S]`` (not a base64 char class)
     #      is required so encrypted keys — whose ``Proc-Type:``/``DEK-Info:``
     #      headers carry ``:`` and ``,`` — are fully spanned rather than cut
-    #      short at the first non-base64 char (Talos 05687e60).
+    #      short at the first non-base64 char.
     #   2. Truncated block (no END) — consume only *subsequent* PEM body lines:
     #      each continuation must start with a newline and be a base64 line or a
     #      ``Proc-Type:``/``DEK-Info:`` metadata header. This deliberately does
@@ -1405,7 +1414,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     #      both a truncated key AND a complete encrypted key whose body exceeds
     #      the full-block cap). Because the lookahead consumes nothing, TWO+
     #      consecutive blank lines still terminate the run — trailing prose is
-    #      preserved (no over-redaction). (CR-289301166.)
+    #      preserved (no over-redaction).
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"(?:"
     r"[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
@@ -1444,10 +1453,10 @@ _CREDENTIAL_PATTERNS = re.compile(
     # ``scheme://user:pass@`` prefix (the password lives here).
     r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?|amqp(?:s)?)"
     # User portion is `*` (not `+`): empty-user connection strings (e.g. MongoDB
-    # Atlas IAM `mongodb+srv://:secret@…`) still redact the password (Heimdall,
-    # ported from KiroCrew CR-286281237).
+    # Atlas IAM `mongodb+srv://:secret@…`) still redact the password (ported
+    # from the upstream project).
     r"://[^\s:/@]*:[^\s/@]+@"
-    # ── JWT / JWE / OAuth Bearer tokens (Talos cc1d6bdd; JWE hardening a8e5fe6a) ──
+    # ── JWT / JWE / OAuth Bearer tokens ──
     # `eyJ` is the base64url encoding of every JWT header's `{"` prefix; a signed
     # JWT (JWS) is three `.`-separated base64url segments (header.payload.sig) and
     # an encrypted JWT (JWE, RFC 7516) is five (header.key.iv.ciphertext.tag), so
@@ -1465,7 +1474,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     # §3.2), HTTP/2 mandates lowercase names, and the `Bearer` scheme is
     # case-insensitive (RFC 6750 §2.1) — so `authorization: bearer …` emitted by
     # requests / net/http / HTTP2 frame logs is redacted too. The separator is
-    # JSON-aware (Talos round-2, CR-289081658): an optional quote may precede the
+    # JSON-aware: an optional quote may precede the
     # `:`/`=` and the token, so a serialized header `{"Authorization": "Bearer
     # <tok>"}` in a structured-log/JSON request dump is redacted as well. Both
     # alternatives are scoped tightly: the JWT segment class cannot cross the
@@ -1495,7 +1504,7 @@ def get_credential_patterns() -> list[re.Pattern[str]]:
 _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 
 
-# ── Label-independent bare-secret detection (Talos bf7b1baf) ──
+# ── Label-independent bare-secret detection ──
 # A 40-char AWS *secret access key* (the value paired with an AKIA/ASIA access
 # key ID) is a bare run of the base64 alphabet with NO distinctive prefix and NO
 # key= label, so none of the labelled/prefixed patterns in _CREDENTIAL_PATTERNS
@@ -1607,8 +1616,8 @@ def _vowel_ratio(token: str) -> float:
 def _looks_like_secret_key(token: str) -> bool:
     """Return True if *token* has the shape of a bare AWS secret access key.
 
-    Conservative, multi-gate classifier for a label-less 40-char base64 secret
-    (Talos bf7b1baf). Every gate must pass; the design bias is toward NOT
+    Conservative, multi-gate classifier for a label-less 40-char base64 secret.
+    Every gate must pass; the design bias is toward NOT
     redacting (a false negative merely reverts to today's behavior, a false
     positive corrupts benign output). Gates, cheapest-first:
 
@@ -1731,7 +1740,7 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
             warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
 
     # 3. Detect and redact BARE 40-char AWS secret keys with no label/prefix
-    # (Talos bf7b1baf). These carry no distinctive marker for _CREDENTIAL_PATTERNS
+    # These carry no distinctive marker for _CREDENTIAL_PATTERNS
     # to anchor on, so an entropy + structural heuristic is the only way to catch
     # a standalone secret value. Scan the ORIGINAL text (not the already-mutated
     # result) so match offsets are stable; skip any run whose text has already
@@ -1884,7 +1893,7 @@ _STREAM_HOLDBACK_MAX = 512
 # PEM header hold-back: matches an in-progress "BEGIN [type] PRIVATE KEY"
 # phrase in the tail of the commit buffer.  When found, we refuse to commit
 # at the whitespace boundary so the full multi-word marker stays inside one
-# redaction pass (Heimdall, ported from KiroCrew CR-286281237).
+# redaction pass (ported from the upstream project).
 _PEM_HOLD_RE = re.compile(
     r"BEGIN[\s](?:RSA[\s]?|DSA[\s]?|EC[\s]?|OPENSSH[\s]?)?(?:PRIVATE)?[\s]?$",
     re.IGNORECASE,
@@ -1894,8 +1903,7 @@ _PEM_HOLD_RE = re.compile(
 # floor, so a terminal JWT longer than _STREAM_HOLDBACK_MAX would be bisected by
 # the default cap and emitted half-redacted. When the withheld tail *looks like*
 # the start of a JWT, we raise the cap to this larger ceiling so the whole token
-# is rejoined before emission while still keeping the buffer bounded (Talos
-# round-2 follow-up to CR-289081658).
+# is rejoined before emission while still keeping the buffer bounded.
 _STREAM_HOLDBACK_JWT_MAX = 4096
 
 # The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
@@ -1966,7 +1974,7 @@ class StreamRedactor:
         i = len(self._buf)
         while i > 0 and self._buf[i - 1] in _CRED_CLASS:
             i -= 1
-        # PEM header hold-back (Heimdall, ported from KiroCrew CR-286281237): the
+        # PEM header hold-back (ported from the upstream project): the
         # multi-word phrase "BEGIN RSA PRIVATE KEY" splits on whitespace.  If the
         # tail of the commit window contains an in-progress PEM header prefix,
         # refuse to commit at this boundary.
@@ -2259,7 +2267,7 @@ def audit_bash_command(command: str) -> str | None:
 
 
 # Data-egress / reverse-shell command shapes — the exfiltration-specific subset
-# of SUSPICIOUS_BASH_PATTERNS (Talos 5682f92b). These are enforced at the
+# of SUSPICIOUS_BASH_PATTERNS. These are enforced at the
 # tool-invocation gate (denied), unlike the full SUSPICIOUS_BASH_PATTERNS list
 # which stays advisory: that list also carries destructive-but-local shapes
 # (rm -rf, dd if=, chmod on system dirs, DROP TABLE) that a user may legitimately
@@ -2468,7 +2476,7 @@ def audit_injection_dropped(
     Called when :func:`contains_injection` flags untrusted external content
     (e.g. a Slack thread-parent message or thread metadata authored by a
     non-owner) and the content is dropped before reaching the LLM prompt
-    (Talos 1fde6107). Recording the attempt keeps prompt-injection attempts
+    Recording the attempt keeps prompt-injection attempts
     visible in the audit trail rather than silently discarded.
 
     Best-effort: an SEL logging failure is logged at WARNING and never
@@ -2511,7 +2519,7 @@ def should_record_observe_history(
     """Return True if an observe-mode message should be recorded.
 
     Only authorized users' messages are recorded to prevent non-owner
-    prompt injection via shared channel traffic (Shepherd bdd39e84).
+    prompt injection via shared channel traffic.
     """
     return channel_history is not None and user_authorized
 
@@ -2521,7 +2529,7 @@ def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
 
     Redaction runs over the full text BEFORE the ``max_chars`` slice so a
     credential (or base64/URL blob) straddling the truncation boundary cannot
-    leak as an unredacted partial fragment (Talos e27617c6). Truncating first
+    leak as an unredacted partial fragment. Truncating first
     would cut a secret in half, leaving a prefix that no longer matches the
     credential regex and therefore escapes redaction.
     """

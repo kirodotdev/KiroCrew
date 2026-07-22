@@ -2,7 +2,7 @@
 
 ## Overview
 
-This feature adds a provider-agnostic session file cleanup mechanism to the KiroCrew gateway. Each LLM provider backend stores session data differently on disk — the ACP provider uses `~/.kiro/sessions/cli/{session_id}.json` and `{session_id}.jsonl` files, while Claude Code and Bedrock have different (or no) persistence. The cleanup mechanism integrates with the existing subagent lifecycle at three points: normal completion, reaper force-kill, and tombstone pruning.
+This feature adds a provider-agnostic session file cleanup mechanism to the KiroCrew gateway. Each LLM provider backend stores session data differently on disk — the ACP provider uses `~/.kiro/sessions/cli/{session_id}.json` and `{session_id}.jsonl` files, while the removed standalone provider and Bedrock had different (or no) persistence. The cleanup mechanism integrates with the existing subagent lifecycle at three points: normal completion, reaper force-kill, and tombstone pruning.
 
 The design adds a `session_id` property and a `cleanup_session` method to `LLMProvider`, a `cleanup` parameter to `SessionManager.release()`, session ID tracking in subagent persistence, and a startup sweep that runs during orphan reconciliation.
 
@@ -96,18 +96,18 @@ ACP sessions are stored as individual files: `~/.kiro/sessions/cli/{session_id}.
 ```python
 @property
 def session_id(self) -> str:
-    """Return the Claude Code session ID."""
+    """Return the removed provider's session ID."""
     return self._session_id if hasattr(self, "_session_id") and self._session_id else ""
 
 async def cleanup_session(self, session_id: str) -> None:
-    """Clean up Claude Code session state.
+    """Clean up the removed provider's session state.
 
     Ephemeral mode: no-op (subprocess already cleaned up).
     Per-session mode: delete session state directory.
     """
     if self.connection_mode == "ephemeral" or not session_id:
         return
-    # Claude Code stores session state in ~/.claude/sessions/{session_id}/
+    # The removed provider stored session state in ~/.claude/sessions/{session_id}/
     sessions_dir = Path.home() / ".claude" / "sessions"
     target = sessions_dir / session_id
     if not _is_safe_path(target, sessions_dir):
@@ -258,7 +258,7 @@ New fields:
 
 **Validates: Requirements 1.2**
 
-### Property 2: Claude Code per_session cleanup deletes session directory
+### Property 2: Removed-provider per_session cleanup deletes session directory
 
 *For any* valid session ID, when `cleanup_session` is called on a ClaudeCodeProvider in `per_session` mode and the corresponding session directory exists, the directory shall be deleted after the call completes.
 
@@ -338,8 +338,8 @@ Properties to implement as PBT:
 
 - ACP cleanup happy path: create `.json` + `.jsonl`, call cleanup, verify gone
 - ACP cleanup with missing files: call cleanup when files don't exist
-- Claude Code ephemeral no-op: verify no filesystem calls in ephemeral mode
-- Claude Code per_session cleanup: create directory, call cleanup, verify removed
+- Removed-provider ephemeral no-op: verify no filesystem calls in ephemeral mode
+- Removed-provider per_session cleanup: create directory, call cleanup, verify removed
 - Bedrock no-op: verify no filesystem calls
 - SubagentManager completion flow: mock provider, verify cleanup called
 - SubagentManager error completion: mock provider, verify cleanup still called

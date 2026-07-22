@@ -1,4 +1,4 @@
-"""Tests for channel agent model inheritance (Mesh-1513).
+"""Tests for channel agent model inheritance.
 
 Verifies that ``SessionManager.get_or_create()`` falls back to the global
 ``agent.model`` config when no explicit model is passed.  This ensures

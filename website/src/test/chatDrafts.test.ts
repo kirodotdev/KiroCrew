@@ -188,7 +188,7 @@ describe('chatDrafts', () => {
     expect(loadDrafts()).toEqual({ 'chat-legacy': 'pre-ttl content' })
   })
 
-  it('saveDrafts before loadDrafts does not wipe persisted timestamps (AutoSDE rev 3 bug 1)', () => {
+  it('saveDrafts before loadDrafts does not wipe persisted timestamps (review rev 3 bug 1)', () => {
     // Pre-seed disk state as if a prior session persisted drafts + timestamps
     localStorage.setItem(DRAFTS_KEY, JSON.stringify({ 'chat-prior': 'existing' }))
     localStorage.setItem('mc-chat-drafts-ts', JSON.stringify({ 'chat-prior': Date.now() }))
@@ -208,7 +208,7 @@ describe('chatDrafts', () => {
     expect(typeof ts['chat-new']).toBe('number')
   })
 
-  it('loadDrafts persists pruned state so expired drafts do not resurrect (AutoSDE rev 3 bug 2)', () => {
+  it('loadDrafts persists pruned state so expired drafts do not resurrect (review rev 3 bug 2)', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     const drafts: Record<string, string> = {}
@@ -225,7 +225,7 @@ describe('chatDrafts', () => {
     expect(loadDrafts()).toEqual({})
   })
 
-  it('loadDrafts filters out non-string values (AutoSDE rev 3 bug 3)', () => {
+  it('loadDrafts filters out non-string values (review rev 3 bug 3)', () => {
     // Simulate corrupted / hand-edited storage
     localStorage.setItem(DRAFTS_KEY, JSON.stringify({
       'good': 'valid',
@@ -237,7 +237,7 @@ describe('chatDrafts', () => {
     expect(loadDrafts()).toEqual({ good: 'valid' })
   })
 
-  it('loadDrafts persists stamped timestamps so legacy entries don\'t reset TTL on every reload (AutoSDE rev 4 bug 1)', () => {
+  it('loadDrafts persists stamped timestamps so legacy entries don\'t reset TTL on every reload (review rev 4 bug 1)', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     // Pre-TTL install: draft exists on disk without timestamp sidecar.
@@ -259,7 +259,7 @@ describe('chatDrafts', () => {
     expect(tsAfterSecondLoad['chat-legacy']).toBe(firstStamp)
   })
 
-  it('persistNow writes timestamps before drafts to prevent TTL reset on partial quota failure (AutoSDE rev 4 bug 2)', () => {
+  it('persistNow writes timestamps before drafts to prevent TTL reset on partial quota failure (review rev 4 bug 2)', () => {
     // Simulate QuotaExceededError on the SECOND setItem call only. The first
     // call must be the timestamps (so drafts never land without their TTL).
     const calls: string[] = []

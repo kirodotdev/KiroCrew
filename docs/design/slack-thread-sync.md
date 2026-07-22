@@ -1,4 +1,4 @@
-# Mesh-244: Live Slack Thread Sync
+# Live Slack Thread Sync
 
 ## Summary
 

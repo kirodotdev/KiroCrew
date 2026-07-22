@@ -510,13 +510,13 @@ class TestConfigPutRoundTrip:
 
 
 class TestDefensiveGuards:
-    """Regression tests for AutoSDE rev 2 findings (posts #9, #10)."""
+    """Regression tests for review-bot rev 2 findings (posts #9, #10)."""
 
     @pytest.mark.asyncio
     async def test_guard_audit_sel_failure_preserves_status_code(self, monkeypatch):
         """If sel() raises on a guard rejection, client must still get 403/503, not 500.
 
-        Regression for AutoSDE post #9: unwrapped sel().log_api_access() on
+        Regression for review-bot post #9: unwrapped sel().log_api_access() on
         the origin/availability/concurrency guards would propagate and mask
         the intended HTTPForbidden/HTTPServiceUnavailable.
         """
@@ -539,7 +539,7 @@ class TestDefensiveGuards:
     async def test_client_construction_failure_closes_ws_and_emits_end_audit(self, monkeypatch):
         """If TranscribeStreamingClient() raises, WS must close and end audit emit.
 
-        Regression for AutoSDE post #10: unwrapped resolver/client construction
+        Regression for review-bot post #10: unwrapped resolver/client construction
         would leak a prepare()d WebSocket and leave an unmatched
         stt_stream_start in the audit trail.
         """
@@ -577,7 +577,7 @@ class TestDefensiveGuards:
     async def test_start_audit_sel_failure_closes_ws_and_emits_end_audit(self, monkeypatch):
         """If the stt_stream_start sel call raises, WS must close and end audit emit.
 
-        Regression for AutoSDE post #13: unwrapped sel().log_api_access() for
+        Regression for review-bot post #13: unwrapped sel().log_api_access() for
         stt_stream_start would propagate after ws.prepare() sent the 101
         upgrade, leaking the WebSocket and leaving an unmatched start event.
         """
@@ -616,7 +616,7 @@ class TestDefensiveGuards:
     async def test_cleanup_ws_close_failure_still_emits_end_audit(self, monkeypatch):
         """If the cleanup ws.close() raises on broken transport, end audit still fires.
 
-        Regression for AutoSDE post #18: unwrapped await ws.close() on the
+        Regression for review-bot post #18: unwrapped await ws.close() on the
         normal cleanup path would skip _emit_end_audit when the transport
         is broken, leaving an unmatched stt_stream_start in the audit trail.
         """

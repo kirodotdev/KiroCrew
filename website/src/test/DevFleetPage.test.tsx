@@ -434,7 +434,7 @@ describe('DevFleetPage', () => {
       branch: 'feat/x',
       pr: { number: 42, state: 'OPEN', url: 'https://github.com/org/repo/pull/42', title: 'Add pagination' },
       issues: [{ number: 147, url: 'https://github.com/org/repo/issues/147' }],
-      tickets: [{ id: 'TT-5', url: 'https://t.corp/TT-5' }],
+      tickets: [{ id: 'TT-5', url: 'https://tracker.example.com/TT-5' }],
       summary: 'feat: add pagination to users API',
       commits: [],
     }
@@ -455,7 +455,7 @@ describe('DevFleetPage', () => {
     expect(issueLink).toHaveAttribute('rel', 'noopener noreferrer')
     const ticketLink = screen.getByText('TT-5')
     expect(ticketLink.tagName.toLowerCase()).toBe('a')
-    expect(ticketLink).toHaveAttribute('href', 'https://t.corp/TT-5')
+    expect(ticketLink).toHaveAttribute('href', 'https://tracker.example.com/TT-5')
     // The purpose one-liner renders in the drill-in.
     expect(screen.getByText('feat: add pagination to users API')).toBeInTheDocument()
   })

@@ -1,5 +1,5 @@
 /**
- * Settings keyword synonyms (Mesh-2151 Search Everywhere — Settings provider).
+ * Settings keyword synonyms (Search Everywhere — Settings provider).
  *
  * Manual overlay of additional search terms that are NOT in the label or
  * description. Merged into the search corpus by the settings provider so

@@ -45,7 +45,7 @@ def test_recorder_is_cached(monkeypatch):
 
 
 def test_degrades_to_noop_when_otel_missing(monkeypatch):
-    """Mesh-2829: with opentelemetry absent from the env closure, the provider
+    """with opentelemetry absent from the env closure, the provider
     must degrade to a no-op recorder instead of crashing the eager boot chain."""
     import kiro_crew.metrics.provider as provider_mod
 

@@ -1,6 +1,6 @@
 """Tests for ``api_sessions_clear`` scope.
 
-Regression guard for Mesh-744: ``DELETE /api/sessions`` used to
+Regression guard for ``DELETE /api/sessions`` used to
 unconditionally delete ALL history sessions, including pinned ones.
 The handler is now history-only — it skips:
 
@@ -8,7 +8,7 @@ The handler is now history-only — it skips:
 - any session whose on-disk metadata has ``pinned=True``.
 
 Bulk-archiving *open* unpinned/idle sessions is out of scope and is
-tracked separately by Mesh-610 (Clean Up button).
+tracked separately by (Clean Up button).
 """
 
 from __future__ import annotations
@@ -158,8 +158,8 @@ async def test_returns_400_when_no_conversation_log() -> None:
 async def test_skips_any_open_slot_even_if_unpinned_and_idle() -> None:
     """Any slot present in ``state._slots`` is protected — Clear All is history-only.
 
-    Bulk-archiving *open* unpinned/idle sessions is Mesh-610's job (Clean Up
-    button), not this handler's. See Mesh-744 for scope.
+    Bulk-archiving *open* unpinned/idle sessions is the upstream project's job (Clean Up
+    button), not this handler's. See scope.
     """
     k1, k2 = _history_key_for("chat-1"), _history_key_for("chat-2")
     sessions = [{"key": k1}, {"key": k2}]
@@ -194,7 +194,7 @@ async def test_skips_open_slot_with_filesystem_underscore_key() -> None:
     but _history_key_for returns colon keys (dashboard:chat-X). The handler must
     protect both formats so open sessions aren't deleted.
 
-    Regression test for the key format mismatch bug found during Mesh-744 testing.
+    Regression test for the key format mismatch bug found during testing.
     """
     # Simulate what list_sessions actually returns: underscore format from filesystem
     fs_key_1 = _history_key_for("chat-1-123").replace(":", "_", 1)  # open in sidebar

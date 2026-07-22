@@ -1819,7 +1819,7 @@ async def test_index_serves_guidance_when_bundle_missing(tmp_path, monkeypatch) 
     of a bare error. It must remain request-independent and secret-free -- the
     same cold-start security contract as the normal shell (this handler is
     served unauthenticated). The legacy dashboard.html fallback was removed
-    (Talos V2285871874); dist/index.html is the sole shell source.
+    (security-review); dist/index.html is the sole shell source.
     """
     import kiro_crew.dashboard.handlers.core as core
 

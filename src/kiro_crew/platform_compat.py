@@ -443,7 +443,7 @@ def find_listening_pids(port: int) -> list[int]:
     # No `-p tcp`: that flag restricts output to IPv4 TCP on Windows and
     # silently drops IPv6 listeners entirely, so `kirocrew stop` /
     # `kirocrew restart` no-op on a dual-stack or `[::]`-bound gateway
-    # (Mesh-2364). Windows netstat labels IPv6 rows with proto column
+    # Windows netstat labels IPv6 rows with proto column
     # "TCP" too — the bracketed address form is what distinguishes v4 vs
     # v6, not the proto token — so once `-p tcp` is dropped the existing
     # port suffix match already handles both families uniformly.

@@ -83,7 +83,7 @@ export function parseTags(raw: unknown): string[] {
 // Cap how many semantic rows we render at once. The store can hold thousands of
 // entries (vector-only mode); rendering them all synchronously — each row does a
 // JSON.parse + JSON.stringify(…, null, 2) + esc() — froze the Settings page for
-// 10-20s on open (Mesh-2827). The full set stays in memory for key-suggestion
+// 10-20s on open. The full set stays in memory for key-suggestion
 // dedup; only the rendered window is bounded. Filter to reach entries past the cap.
 export const SEMANTIC_RENDER_CAP = 100
 

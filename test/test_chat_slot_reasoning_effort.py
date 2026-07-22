@@ -1,4 +1,4 @@
-"""Tests for POST /api/chat/slots/{slot}/reasoning-effort endpoint (Mesh-1412)."""
+"""Tests for POST /api/chat/slots/{slot}/reasoning-effort endpoint."""
 
 from __future__ import annotations
 
@@ -325,7 +325,7 @@ class TestChatSlotReasoningEffortLiveProvider:
 
 class TestValidateReasoningEffortPersistence:
     """Persistence-layer allowlist guard prevents subprocess arg injection
-    via tampered metadata (per AutoSDE security-controls finding)."""
+    via tampered metadata (per review-bot security-controls finding)."""
 
     @pytest.mark.parametrize("level", ["", "low", "medium", "high", "xhigh", "max"])
     def test_passes_through_allowlisted(self, level: str):

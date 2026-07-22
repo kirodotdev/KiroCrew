@@ -152,9 +152,9 @@ async def handle_message_transport(
     _lower = text.strip().lower()
     if _lower == "status":
         # Use the platform identity seam (native migrated to this) rather than
-        # importing the OSS Midway stub directly — keeps the CPP boundary intact
-        # and returns the real Midway line under the Amazon companion context.
-        mw = await current_context().identity.status_line(prefix=" · midway")
+        # importing the OSS SSO stub directly — keeps the CPP boundary intact
+        # and returns the real SSO line under the enterprise companion context.
+        mw = await current_context().identity.status_line(prefix=" · sso")
         await slack.post_message(channel, Stats().summary() + mw, reply_ts)
         return
     if _lower == "ping":

@@ -474,7 +474,7 @@ def _list_tools() -> list[dict[str, Any]]:
             "name": "wait",
             "description": (
                 "Pause execution for a specified duration while preserving full session "
-                "context. Use when waiting for external systems (AutoSDE review, CI "
+                "context. Use when waiting for external systems (code review, CI "
                 "pipeline, deployment). Max 1800s (30 min)."
             ),
             "inputSchema": {
@@ -498,7 +498,7 @@ def _list_tools() -> list[dict[str, Any]]:
                 "Register a webhook listener so an external system can inject a message "
                 "into a dedicated agent session later. Returns the webhook URL and session "
                 "key. Use this when you need to hand off to an external process (e.g. "
-                "submit a code review, then wait for AutoSDE to call back with results). "
+                "submit a code review, then wait for the review bot to call back with results). "
                 "The external system POSTs to the returned URL with the results."
             ),
             "inputSchema": {
@@ -506,7 +506,7 @@ def _list_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "hook_id": {
                         "type": "string",
-                        "description": "Unique identifier for this hook (e.g. 'autosde:pr-123')",
+                        "description": "Unique identifier for this hook (e.g. 'review:pr-123')",
                     },
                     "context_summary": {
                         "type": "string",
@@ -1384,7 +1384,7 @@ def _list_tools() -> list[dict[str, Any]]:
                 "file search, @-mention auto-complete, the [PROJECT] context line, "
                 "and project-level .kiro/steering/**/*.md. "
                 "\n\n"
-                "Use after a skill scaffolds a new working tree (e.g. brazil-workspace) "
+                "Use after a skill scaffolds a new working tree (e.g. a new workspace) "
                 "so the agent retargets to the new source instead of the old one. "
                 'To clear the project, pass path="" with clear=true. '
                 "\n\n"
@@ -1824,7 +1824,7 @@ def _vet_messaging_governance(caller_session: str) -> str | None:
         # constraint as redact_via_context). Still emit the file-backed
         # governance_degraded SEL (no stdout) so the fail-open is auditable.
         # Wrapped so a late-import failure cannot raise ImportError out of this
-        # except-branch and hard-fail the stdio tool call (CR-284272012).
+        # except-branch and hard-fail the stdio tool call.
         try:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
@@ -1981,7 +1981,7 @@ def _session_key_header_error(sk: str) -> str | None:
     http.client encodes header values as latin-1, so a non-latin-1 char in the
     session key (e.g. an em-dash from a tab title) raises UnicodeEncodeError
     before the request is sent. Detect it up front and tell the user to rename
-    the tab, rather than surfacing the raw codec error (Mesh-2241).
+    the tab, rather than surfacing the raw codec error.
     """
     try:
         sk.encode("latin-1")
@@ -2254,7 +2254,7 @@ def _artifact_reemit_hint(slug: str, name: str, kind: str = "widget") -> str:
     moment it's about to render the artifact in chat. The artifacts
     skill says ``slug=`` is required on every re-emission of a saved
     artifact, but skill rules can be overlooked at emission time —
-    Mesh-1715 session logs confirmed an LLM had the slug in front of
+    session logs confirmed an LLM had the slug in front of
     it twice (artifact_get response + artifact_update response) and
     still emitted ``<mcwidget title="...">`` without the attribute,
     creating a duplicate artifact when the user clicked save.
@@ -2470,7 +2470,7 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
 
 
 def _format_anchor(anchor: dict) -> str:
-    """Format an anchor quote for the artifact_get_comments output (Mesh-2503).
+    """Format an anchor quote for the artifact_get_comments output.
 
     Short quotes (≤300 chars) are shown in full. Longer quotes are bookended
     with the first and last 100 chars plus an explicit TRUNCATED marker
@@ -2975,7 +2975,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         deadline = time.monotonic() + seconds
         # Ping session-keepalive every 60s so the gateway's is_responsive()
         # doesn't flag this session as stale and SIGTERM the ACP subprocess.
-        # See taskei f361a79a-ce4f-4b82-a96a-2acdc7e582f4.
         _next_ping = time.monotonic()
         while True:
             now = time.monotonic()
@@ -3337,7 +3336,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # ``artifact_update`` on the pre-existing slug instead. Without
         # this hint, the agent's only signal that a duplicate happened is
         # the user noticing in the library, which is exactly the failure
-        # mode Mesh-1715 surfaced (Fight Club: agent created
+        # mode observed in session logs (agent created
         # ``rules-of-fight-club`` even though ``a07ece9a8c3309aa`` named
         # "The Rules of Fight Club" already existed).
         # Resolve the kind the same way the store will (CR-1 kind inference):
@@ -3478,7 +3477,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # string it should use when surfacing the artifact in chat. Without
         # this the slug rule from the artifacts skill is easy to overlook
         # at emission time even though it's right there at the top of this
-        # response — verified by Mesh-1715 session logs where the LLM had
+        # response — verified by session logs where the LLM had
         # the slug in front of it twice and still emitted without it.
         kind = d.get("kind", "widget")
         if kind == "widget":
@@ -3588,7 +3587,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # summarising the revert in chat. The dashboard's diff renderer
         # reads those headers to show the "Open file" button — without
         # them, the user sees a diff with no way to drop into the file
-        # in the side panel (Mesh-1654 round 7 follow-up).
+        # in the side panel.
         live_version = d.get("version", "?")
         source_path = d.get("source_path") or ""
         out_lines = [

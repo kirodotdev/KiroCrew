@@ -313,9 +313,9 @@ class EvalRunner:
                     # eval sessions are short (1-7 turns) and won't exceed the
                     # message threshold that maybe_consolidate checks. We need to
                     # force consolidation so cross-session memory is available.
-                    # TODO(ychengm): This bypasses offset tracking — use
+                    # TODO: This bypasses offset tracking — use
                     # maybe_consolidate(log_key, force=True) when that API is
-                    # available (see Mesh-611 / CR-268591039).
+                    # available.
                     await consolidator._consolidate(log_key, include_history=True)
                 except Exception:
                     logger.warning("Consolidation failed for %s", log_key, exc_info=True)

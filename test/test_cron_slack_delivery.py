@@ -145,7 +145,7 @@ class TestFailurePathSlackGuarded:
 
 
 class TestCronJobIsSilent:
-    """_cron_job_is_silent resolves the parent cron job's silent flag (Mesh-2451).
+    """_cron_job_is_silent resolves the parent cron job's silent flag.
 
     A silent cron's subagent completions must not post to Slack. The gateway
     delivery decision ORs this helper with info.silent, so a silent cron is

@@ -29,7 +29,7 @@ class ProviderRegistry(Protocol):
     """The LLM-provider factory + ACP-backend registration seam.
 
     The public edition ships Kiro-CLI-ACP only.  The companion uses
-    ``register_acp_backends`` to re-register Claude Code through the dormant
+    ``register_acp_backends`` to re-register a Claude backend through the dormant
     ``ACP_BACKEND_CLAUDE`` seam without the core changing.
     """
 
@@ -41,8 +41,8 @@ class ProviderRegistry(Protocol):
         ``current_context().providers.create_factory(cfg)``. The Default returns
         exactly ``cfg.create_provider_factory()`` (identity), so the public
         edition is unchanged; a companion can return an alternate factory (e.g.
-        re-registering the Claude Code / Bedrock ACP backend) — but kiro-cli stays
-        the default for both editions unless the companion is explicitly opted in.
+        re-registering an alternate ACP backend) — but kiro-cli stays the default
+        for both editions unless the companion is explicitly opted in.
         """
         ...
 
@@ -189,7 +189,7 @@ class SlackEnterpriseGate(Protocol):
         destructive tool with the same bare name as an allowlisted read-only one
         and get it auto-approved during an unattended heartbeat — a hole in the
         deny-by-default boundary. Pin the exact server (e.g.
-        ``"@builder-mcp/ReadInternalWebsites"``).
+        ``"@example-mcp/SomeReadOnlyTool"``).
 
         ADD-only by construction: this can only widen the allowlist with names
         the companion vouches for; it can never remove a core entry or relax the
@@ -203,10 +203,10 @@ class SlackEnterpriseGate(Protocol):
 class IdentityProvider(Protocol):
     """SSO/identity resolution.
 
-    Public default = local token, no SSO (the ``midway.py`` no-op stubs).  The
-    companion resolves through Midway / MCS / Kerberos.
+    Public default = local token, no SSO (the ``sso_status.py`` no-op stubs).  The
+    companion resolves through an enterprise SSO / credential provider.
 
-    ``status_line`` is async to match the existing ``get_midway_status_line``
+    ``status_line`` is async to match the existing ``get_sso_status_line``
     coroutine the dashboard awaits.
 
     ``credential_watch_paths`` lists credential files whose rotation should
@@ -220,7 +220,7 @@ class IdentityProvider(Protocol):
 
     def status(self) -> Dict[str, object]: ...
 
-    async def status_line(self, prefix: str = "*Midway:*") -> str: ...
+    async def status_line(self, prefix: str = "*SSO:*") -> str: ...
 
     def whoami(self) -> Optional[str]: ...
 
@@ -267,7 +267,7 @@ class McpToolingProvider(Protocol):
     """Extra MCP servers + skill catalog the edition contributes.
 
     Public default = none beyond the managed servers.  The companion injects
-    builder-mcp and the internal AIM skill paths.
+    the internal MCP server and the internal skill paths.
     """
 
     def extra_mcp_servers(self) -> Dict[str, dict]: ...
@@ -332,7 +332,8 @@ class KnowledgeProvider(Protocol):
 
     The knowledge sync engine keys connectors by ``source_type`` (the public
     core ships ``local_folder`` / ``obsidian_vault``).  Public default = none;
-    the companion contributes internal connectors (e.g. a Quip connector) that
+    the companion contributes internal connectors (e.g. an internal document
+    connector) that
     the sync scheduler merges into its connector map.
     """
 
@@ -441,7 +442,7 @@ class DashboardContributor(Protocol):
     """Edition-contributed dashboard routes + background services + login handler.
 
     Public default = no-op: contributes no routes, runs no services, and supplies
-    no SSO login handler (the public ``/api/mwinit`` stays the core stub).  The
+    no SSO login handler (the public ``/api/sso-login`` stays the core stub).  The
     companion mounts internal gateway routes (e.g. the secretary / taskkeeper
     services) and the real SSO PTY login handler.
 
@@ -470,7 +471,7 @@ class DashboardContributor(Protocol):
         """
         ...
 
-    def mwinit_handler(self) -> Optional[Callable]:
+    def sso_login_handler(self) -> Optional[Callable]:
         """Return the SSO-login WS handler, or ``None`` to keep the core stub."""
         ...
 
@@ -554,7 +555,7 @@ class FeatureApp(Protocol):
     """One bundled App-Kit app the active profile ships.
 
     Public default set is empty (or the OSS builtins).  The companion bundles
-    mimir / code_reviewer / team_manager / secretary / taskkeeper / quip.
+    internal feature apps (code reviewer, team manager, secretary, etc.).
 
     NOT YET WIRED: the core does not yet read ``PlatformContext.feature_apps``;
     edition apps are registered via ``AppsLoader.manifest_sources`` /

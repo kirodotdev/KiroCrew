@@ -3,7 +3,7 @@
 import os
 
 # Retained for backward compatibility; intentionally empty in the public build
-# (no Amazon-internal registry/toolbox package). Callers treat empty as "skip".
+# (no internal registry/package). Callers treat empty as "skip".
 ARCC_REGISTRY = ""
 ARCC_TOOLBOX_PACKAGE = ""
 

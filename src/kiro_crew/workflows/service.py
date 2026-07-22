@@ -233,8 +233,8 @@ class WorkflowService:
         # uses the tool-less ``kirocrew-lite`` agent. That is the lever that makes a
         # fresh session cheap: the dominant cold-start cost was loading the full
         # MCP toolset + system prompt; lite carries no tools, so the turn is just
-        # the generation. REJECT_ALL is belt-and-suspenders against the Claude Code
-        # backend injecting tools without set_mode. The session is torn down
+        # the generation. REJECT_ALL is belt-and-suspenders against an alternate
+        # ACP backend injecting tools without set_mode. The session is torn down
         # (cleanup=True) the instant authoring finishes — nothing persists.
         key = f"wf-author:{self._new_run_id()}"
         provider, *_ = await self._sessions.get_or_create(key, agent="kirocrew-lite")

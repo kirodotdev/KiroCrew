@@ -7,7 +7,7 @@
 // allow-popups-to-escape-sandbox" with srcdoc, giving it a null origin. The
 // LLM content runs in an isolated context — it cannot access parent DOM,
 // cookies, localStorage, or navigate the parent page. allow-popups (+escape)
-// lets target="_blank" links open in a real new tab (Mesh-1678); reverse-
+// lets target="_blank" links open in a real new tab; reverse-
 // tabnabbing stays blocked by the mandated rel="noopener noreferrer" on
 // widget links. Same security model as Claude's artifacts (Anthropic).
 //
@@ -56,14 +56,14 @@ export const THEME_VAR_NAMES = [
 // CSP for the sandboxed widget iframe. `scriptOrigin` is the dashboard's own
 // origin (window.location.origin); the iframe loads the same-origin Tailwind v4
 // runtime from exactly `scriptOrigin + TAILWIND_RUNTIME_PATH`, replacing public
-// cdn.tailwindcss.com (which AEA-enforced environments block and which crashed
-// the page on artifact render, Mesh-2518).
+// cdn.tailwindcss.com (which locked-down network environments block and which
+// crashed the page on artifact render).
 //
-// script-src is least-privilege (ARCC cnt_XWQ2MLdcuH25VA, "allowlist only
+// script-src is least-privilege ("allowlist only
 // necessary sources"): the dashboard origin is pinned to the single vendored
 // runtime FILE, not the whole origin, so an injected/compromised widget cannot
 // load arbitrary scripts from other dashboard endpoints. 'unsafe-eval' is NOT
-// granted (ARCC cnt_ArLamIpfHaFn9Z): the Tailwind v4 runtime uses zero
+// granted: the Tailwind v4 runtime uses zero
 // eval/Function/WebAssembly and Chart.js/D3 do not need it, so widget JS gets no
 // dynamic-exec primitive inside the sandbox. 'unsafe-inline' stays: arbitrary
 // inline widget <script>/<style> is the core feature and cannot use nonce/hash.
@@ -161,7 +161,7 @@ const HEIGHT_REPORTER_BODY = `(function(){
   window.addEventListener('load', function(){ setTimeout(schedule, 100); });
   schedule();
   document.addEventListener('click', function(e){
-    // NOTE (P454989291): this isTrusted check runs INSIDE the sandboxed iframe
+ // NOTE: this isTrusted check runs INSIDE the sandboxed iframe
     // and is NOT the security trust boundary. LLM-emitted <script> in this same
     // document can call parent.postMessage({type:'mc-widget-action',...})
     // directly and skip this handler entirely. The real protection is on the
@@ -191,8 +191,8 @@ const HEIGHT_REPORTER_BODY = `(function(){
 /** Same-origin path to the Tailwind v4 browser runtime. A Vite plugin
  * (tailwindRuntimePlugin in vite.config.ts) copies @tailwindcss/browser's IIFE
  * build here at build time from the tracked npm dependency — so it is served
- * from the dashboard's own origin (not the public CDN that AEA blocks) and is
- * NOT a committed blob (BSC14 supply-chain). Prefixed with window.location.origin
+ * from the dashboard's own origin (not the public CDN that locked-down networks block) and is
+ * NOT a committed blob (supply-chain guidance). Prefixed with window.location.origin
  * below because the sandboxed iframe is null-origin and can't use a bare path.
  * Defined once in ./vendorPaths and imported above so the consumer path can't
  * drift from vite.config.ts's dev-serve + build-emit sites. */
@@ -268,7 +268,7 @@ const COMMENT_BRIDGE_BODY = `(function(){
     // indexOf returns the FIRST occurrence, so selecting a later repeat of the
     // same text (e.g. a single common word) stored prefix/suffix and
     // startOffset/endOffset for the wrong spot, making the highlight teleport to
-    // the first occurrence on re-render (Mesh-2468). Range.toString() over the
+    // the first occurrence on re-render. Range.toString over the
     // body contents and the pre-selection slice keeps the offset space
     // consistent and mirrors the matcher (findRange) which works off text-node
     // textContent; innerText would insert block newlines Range.toString omits.
@@ -533,7 +533,7 @@ export function buildSrcdoc({
 
   // Dashboard's own origin — serves the Vite-emitted, same-origin Tailwind v4
   // runtime asset so the null-origin iframe makes NO public-CDN fetch (the
-  // fetch AEA-enforced environments block). window is guaranteed here (the SSR
+  // fetch locked-down network environments block). window is guaranteed here (the SSR
   // path returns above), so location.origin is always defined.
   const scriptOrigin = window.location.origin
 
@@ -614,7 +614,7 @@ function buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter }: BuildS
   const themeCss = buildThemeCss(themeVars, mode)
   const styleCss = themeCss ? `${BASE_BODY_CSS} ${themeCss}` : BASE_BODY_CSS
   // The `html` interpolation here is gated by typeof-document guard above
-  // — production code never enters this branch — but to keep AutoSDE happy
+  // — production code never enters this branch — but to keep the review tooling happy
   // we don't interpolate it at all: instead, we encode it as an HTML-safe
   // attribute that the iframe's hydration would never see. Tests that need
   // the parsed body content should run under jsdom (the default).

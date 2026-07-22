@@ -77,7 +77,7 @@ VSD_PYEOF
     # Builtin fallback (fail-closed): reject well-known sensitive roots.
     local sens
     for sens in "$HOME/.aws" "$HOME/.ssh" "$HOME/.kube" "$HOME/.gnupg" \
-                "$HOME/.config/gcloud" "/etc" "$HOME/.meshclaw/keys" "$HOME/.kiro"; do
+                "$HOME/.config/gcloud" "/etc" "$HOME/.kirocrew/keys" "$HOME/.kiro"; do
       if [[ "$resolved" == "$sens" || "$resolved" == "$sens"/* ]]; then
         echo "error: source directory is inside a sensitive root — refusing: $resolved" >&2
         exit 1

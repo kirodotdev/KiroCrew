@@ -30,8 +30,8 @@ from kiro_crew.browser.setup import (
 
 SAMPLE_COOKIES = """\
 # Netscape HTTP Cookie File
-midway-auth.amazon.com\tFALSE\t/\tTRUE\t9999999999\tuser_name\tbolichen
-#HttpOnly_.midway-auth.amazon.com\tTRUE\t/\tTRUE\t9999999999\ttpm_metrics\teyJTdHVmZg==
+sso.example.com\tFALSE\t/\tTRUE\t9999999999\tuser_name\ttestuser
+#HttpOnly_.sso.example.com\tTRUE\t/\tTRUE\t9999999999\ttpm_metrics\teyJTdHVmZg==
 """
 
 
@@ -115,7 +115,7 @@ class TestInjectCookiesViaPlaywright:
     def test_default_path_used_when_no_cookie_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         p = tmp_path / "cookie"
         p.write_text(SAMPLE_COOKIES)
-        monkeypatch.setattr(setup_mod, "MIDWAY_COOKIE_PATH", p)
+        monkeypatch.setattr(setup_mod, "SSO_COOKIE_PATH", p)
         result = inject_cookies_via_playwright()
         assert result["count"] == 2
 
@@ -203,7 +203,7 @@ class TestGeneratePlaywrightConfig:
 class TestRefreshStorageState:
     def test_returns_error_when_cookie_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         missing = tmp_path / "no_cookie"
-        monkeypatch.setattr(setup_mod, "MIDWAY_COOKIE_PATH", missing)
+        monkeypatch.setattr(setup_mod, "SSO_COOKIE_PATH", missing)
         result = refresh_storage_state()
         assert result["ok"] is False
         # OSS build has no bundled browser-auth cookie source.
@@ -212,7 +212,7 @@ class TestRefreshStorageState:
     def test_returns_error_when_no_cookies_parsed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         p = tmp_path / "cookie"
         p.write_text("# Netscape HTTP Cookie File\n# just comments\n")
-        monkeypatch.setattr(setup_mod, "MIDWAY_COOKIE_PATH", p)
+        monkeypatch.setattr(setup_mod, "SSO_COOKIE_PATH", p)
         result = refresh_storage_state()
         assert result["ok"] is False
         assert "no cookies" in result["error"]
@@ -220,9 +220,9 @@ class TestRefreshStorageState:
     def test_success_creates_storage_state_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         p = tmp_path / "cookie"
         p.write_text(SAMPLE_COOKIES)
-        midway_dir = tmp_path / ".midway"
-        midway_dir.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr(setup_mod, "MIDWAY_COOKIE_PATH", p)
+        sso_dir = tmp_path / ".sso"
+        sso_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(setup_mod, "SSO_COOKIE_PATH", p)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = refresh_storage_state()
         assert result["ok"] is True
@@ -233,9 +233,9 @@ class TestRefreshStorageState:
     def test_success_storage_state_valid_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         p = tmp_path / "cookie"
         p.write_text(SAMPLE_COOKIES)
-        midway_dir = tmp_path / ".midway"
-        midway_dir.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr(setup_mod, "MIDWAY_COOKIE_PATH", p)
+        sso_dir = tmp_path / ".sso"
+        sso_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(setup_mod, "SSO_COOKIE_PATH", p)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = refresh_storage_state()
         storage_path = Path(result["path"])
@@ -247,9 +247,9 @@ class TestRefreshStorageState:
     def test_success_returns_expired_count(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         p = tmp_path / "cookie"
         p.write_text(SAMPLE_COOKIES)
-        midway_dir = tmp_path / ".midway"
-        midway_dir.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr(setup_mod, "MIDWAY_COOKIE_PATH", p)
+        sso_dir = tmp_path / ".sso"
+        sso_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(setup_mod, "SSO_COOKIE_PATH", p)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = refresh_storage_state()
         assert "expired" in result

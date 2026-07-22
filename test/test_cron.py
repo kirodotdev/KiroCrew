@@ -714,7 +714,7 @@ class TestComputeNextRunTs:
 
 
 class TestTimezoneScheduling:
-    """Tests for Mesh-622: timezone-aware cron scheduling."""
+    """Tests for timezone-aware cron scheduling."""
 
     def test_job_tz_returns_zoneinfo(self) -> None:
         job = CronJob(id="j1", name="t", message="m", timezone="America/Toronto")
@@ -876,7 +876,7 @@ class TestTimezoneScheduling:
 
 
 class TestGetJob:
-    """CronService.get_job(job_id) returns the CronJob by id (Mesh-2451)."""
+    """CronService.get_job(job_id) returns the CronJob by id."""
 
     def test_get_job_by_id(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)

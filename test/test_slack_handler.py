@@ -233,7 +233,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_edit_mode_snapshot_not_truncated(self, monkeypatch):
         """Edit-mode live previews must show the complete accumulated text, not a
-        trailing-token-truncated snapshot (CR-286287441): the complete tail (`42`)
+        trailing-token-truncated snapshot: the complete tail (`42`)
         must appear in an intermediate snapshot, not only in the final message.
         A throwaway StreamRedactor().feed() would withhold the trailing token;
         redact(accumulated) on the complete snapshot is lossless."""
@@ -335,7 +335,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_reasoning_placeholder_posted_above_answer(self, monkeypatch):
         """Reasoning chunk before text → 💭 placeholder posts above the answer
-        and is updated in place at the end (Mesh-1805 ordering fix)."""
+        and is updated in place at the end (ordering fix)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
         provider = FakeProvider(
@@ -377,7 +377,7 @@ class TestHandleMessage:
     async def test_reasoning_reserved_above_answer_when_text_first(self, monkeypatch):
         """Even when a text event arrives BEFORE the first reasoning chunk,
         _ensure_stream_started reserves the 💭 slot above the answer so reasoning
-        still reads before the answer (Mesh-1805 hardening — no order dependence)."""
+        still reads before the answer (hardening — no order dependence)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
         provider = FakeProvider(
@@ -436,7 +436,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_empty_reasoning_placeholder_cleaned_up(self, monkeypatch):
         """A placeholder posted for an empty reasoning chunk is deleted at end
-        of turn (Mesh-1805 cleanup branch)."""
+        of turn (cleanup branch)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
         provider = FakeProvider(
@@ -465,7 +465,7 @@ class TestHandleMessage:
     async def test_cancelled_turn_deletes_thinking_placeholder(self, monkeypatch):
         """If the message is cancelled (deleted) mid-flight, the reserved 💭
         placeholder is cleaned up alongside the suppressed response
-        (Mesh-1805 cancel-path cleanup branch)."""
+        (cancel-path cleanup branch)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
         provider = FakeProvider(
@@ -498,7 +498,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_thinking_update_failure_is_logged(self, monkeypatch):
         """A failure updating the 💭 placeholder in place is swallowed (logged),
-        not propagated (Mesh-1805 update-failure guard)."""
+        not propagated (update-failure guard)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
 
@@ -3036,7 +3036,7 @@ class TestCondenseThinking:
 
     def test_hard_cut_when_no_word_boundary(self):
         """A long run with no early whitespace falls back to a hard cut at the
-        limit (Mesh-1805 — the `cut < limit // 2` guard)."""
+        limit (— the `cut < limit // 2` guard)."""
         text = "x" * 700  # 700 chars, no spaces → rfind returns -1 → hard cut
         out = _condense_thinking(text, limit=600)
         assert "full reasoning in dashboard Activity" in out
@@ -3059,7 +3059,7 @@ class TestCondenseThinking:
 
 
 class _RecordingSessions:
-    """Minimal session store recording approval-policy writes (Mesh-2247)."""
+    """Minimal session store recording approval-policy writes."""
 
     def __init__(self) -> None:
         self.policies: dict[str, str] = {}
@@ -3080,7 +3080,7 @@ class _ApprovingProvider:
 
 
 class TestSlackTrustSubagentPropagation:
-    """Slack Trust must set the session approval policy so subagents inherit it (Mesh-2247)."""
+    """Slack Trust must set the session approval policy so subagents inherit it."""
 
     @pytest.mark.asyncio
     async def test_trust_sets_session_approval_policy_auto(self):
@@ -3120,7 +3120,7 @@ class TestSlackTrustSubagentPropagation:
     @pytest.mark.asyncio
     async def test_late_trust_click_sets_session_approval_policy_auto(self):
         """Late-click trust path (no pending approval) also propagates the
-        policy so subagents inherit it (Mesh-2247, covers the late-click site)."""
+        policy so subagents inherit it (covers the late-click site)."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         set_owner_id("U1")

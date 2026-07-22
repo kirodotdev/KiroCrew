@@ -1,6 +1,6 @@
 """Tests for ``kiro_crew.frontend.ensure_dev_dist_symlink``.
 
-Covers the runtime dist-resolution contract described in Mesh-1270:
+Covers the runtime dist-resolution contract described:
 
 * pre-bundled real directory is left alone (packaged install / prior build)
 * valid symlink is kept

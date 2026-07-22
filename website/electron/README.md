@@ -41,7 +41,7 @@ Output goes to `electron/dist/`.
 
 ## Updating
 
-After pulling new code and rebuilding (`brazil-build clean && brazil-build`):
+After pulling new code and rebuilding (`npm run build`):
 
 ```bash
 # Rebuild and reinstall the desktop app
@@ -51,8 +51,8 @@ sudo rm -rf /Applications/KiroCrew.app
 sudo cp -R "$APP_DIR/KiroCrew.app" /Applications/KiroCrew.app
 
 # Restart the gateway (if using Launch Agent)
-launchctl stop com.amazon.kirocrew.gateway
-launchctl start com.amazon.kirocrew.gateway
+launchctl stop dev.kirocrew.gateway
+launchctl start dev.kirocrew.gateway
 ```
 
 ## Uninstall
@@ -62,8 +62,8 @@ launchctl start com.amazon.kirocrew.gateway
 sudo rm -rf /Applications/KiroCrew.app
 
 # Remove the Launch Agent (if configured from main README)
-launchctl unload ~/Library/LaunchAgents/com.amazon.kirocrew.gateway.plist 2>/dev/null
-rm -f ~/Library/LaunchAgents/com.amazon.kirocrew.gateway.plist
+launchctl unload ~/Library/LaunchAgents/dev.kirocrew.gateway.plist 2>/dev/null
+rm -f ~/Library/LaunchAgents/dev.kirocrew.gateway.plist
 ```
 
 ## Remote Tunnel Mode (Headless CDE)
@@ -76,7 +76,7 @@ via SSH instead of reading the local `.local_secret`.
 
 1. An SSH tunnel forwarding the remote gateway port to localhost:
    ```bash
-   ssh -L 5476:localhost:5476 YOUR_HOST.corp.amazon.com
+   ssh -L 5476:localhost:5476 YOUR_HOST.example.com
    ```
    Or use a macOS LaunchAgent (see `docs/persistent-sessions/`).
 

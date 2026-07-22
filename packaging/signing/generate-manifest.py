@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the CDSigner signing manifest with full nested Mach-O coverage.
+"""Generate the signing manifest with full nested Mach-O coverage.
 
 Why this exists: Apple notarization requires EVERY nested Mach-O binary to be
-Developer-ID signed with hardened runtime + secure timestamp. CDSigner only
-auto-detects frameworks/dylibs under Contents/Frameworks; everything under
+Developer-ID signed with hardened runtime + secure timestamp. The signing
+service only auto-detects frameworks/dylibs under Contents/Frameworks; everything under
 Contents/Resources (our embedded Python backend: the interpreter, every .so
 C-extension, every vendored .dylib) plus Squirrel's ShipIt helper must be
 listed explicitly in `embedded_requirements`, or notarization returns
@@ -53,8 +53,8 @@ _ENTITLEMENTS = {"entitlements_path": "SIGNING_METADATA/Entitlements.entitlement
 _BUNDLE_SUFFIXES = (".app", ".framework", ".appex", ".xpc", ".bundle", ".plugin")
 
 # The only places a Mach-O may live in a layout this generator understands:
-#   Contents/MacOS/       -- main executable, signed by CDSigner's app pass
-#   Contents/Frameworks/  -- bundles auto-signed by CDSigner + explicit shell
+#   Contents/MacOS/       -- main executable, signed by the signing service's app pass
+#   Contents/Frameworks/  -- bundles auto-signed by the service + explicit shell
 #                            entries from collect_shell_entries()
 #   Contents/Resources/   -- embedded backend, enumerated by collect_entries()
 _UNDERSTOOD_SCOPES = (
@@ -133,7 +133,7 @@ def identifier_for(rel_path: str, app_id: str = APP_ID) -> str:
     if stem.startswith("Contents/Resources/"):
         stem = stem[len("Contents/Resources/"):]
     stem = os.path.splitext(stem)[0]
-    # Proven pattern (matches other Amazon CDSigner pipelines): collapse
+    # Proven pattern (matches other signing pipelines): collapse
     # everything non-alphanumeric, including dots, to hyphens so every
     # identifier segment is well-formed.
     suffix = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-")
@@ -182,13 +182,13 @@ def validate_layout(machos: "list[str]") -> "list[str]":
             segments = rel.split("/")[2:-1]
             in_bundle = any(s.endswith((".app", ".framework")) for s in segments)
             # Loose .dylibs directly under Frameworks/ are auto-signed by
-            # CDSigner's app pass (documented + verified); only a loose
+            # the signing service's app pass (documented + verified); only a loose
             # EXECUTABLE with no bundle in its path has no signing rule.
             if not in_bundle and not rel.endswith(".dylib"):
                 errors.append(
                     f"Loose Mach-O executable under Contents/Frameworks: {rel}\n"
                     "    Not inside any .app/.framework bundle, so neither "
-                    "CDSigner auto-signing nor the generated entries cover "
+                    "the service's auto-signing nor the generated entries cover "
                     "it. Move it into a bundle or extend the generator "
                     "deliberately."
                 )
@@ -223,7 +223,7 @@ def collect_shell_entries(app_path: str) -> "dict[str, dict]":
         plus one per helper executable, all under the framework's identifier
         (the recipe Apple has accepted)
       - frameworks without Helpers (Mantle, ReactiveObjC, Squirrel) stay
-        unlisted: CDSigner's app pass auto-signs them. ShipIt, the loose
+        unlisted: the signing service's app pass auto-signs them. ShipIt, the loose
         executable in Squirrel's Resources dir, is covered by
         collect_entries().
     """
@@ -265,7 +265,7 @@ def collect_shell_entries(app_path: str) -> "dict[str, dict]":
                         if not os.path.islink(full) and is_macho(full):
                             helpers.append(os.path.relpath(full, app_path))
             if not helpers:
-                continue  # auto-signed by CDSigner's app pass
+                continue  # auto-signed by the signing service's app pass
             ident = read_bundle_identifier(bundle)
             if not ident:
                 raise RuntimeError(f"no CFBundleIdentifier readable for {rel}")
@@ -284,7 +284,7 @@ def collect_shell_entries(app_path: str) -> "dict[str, dict]":
 def collect_entries(app_path: str, app_id: str = APP_ID) -> "dict[str, dict]":
     """Backend manifest entries, matching the recipe proven to both sign and
     notarize for Python-runtime apps on this API:
-      - EXCLUDE .dylib files (CDSigner signs dynamic libraries
+      - EXCLUDE .dylib files (the signing service signs dynamic libraries
         automatically during the app pass; listing them explicitly is
         rejected by the signing server's validation)
       - EXCLUDE Contents/MacOS/* (main executable, signed by the app pass)
@@ -295,14 +295,14 @@ def collect_entries(app_path: str, app_id: str = APP_ID) -> "dict[str, dict]":
     entries: "dict[str, dict]" = {}
     for rel in collect_all_machos(app_path):
         if rel.endswith(".dylib") and not rel.startswith("Contents/Resources/"):
-            # Frameworks dylibs are auto-signed by CDSigner's app pass;
+            # Frameworks dylibs are auto-signed by the signing service's app pass;
             # Resources dylibs are NOT (verified empirically) and must be listed.
             continue
         if rel.startswith("Contents/MacOS/"):
             continue
         in_resources = rel.startswith("Contents/Resources/")
         # Loose executables in a framework's Resources dir (Squirrel's
-        # ShipIt today) are NOT auto-signed by CDSigner's app pass and must
+        # ShipIt today) are NOT auto-signed by the signing service's app pass and must
         # be listed (verified empirically -- the original 72-binary
         # rejection included ShipIt). Matched by LOCATION, not by name, so
         # a future Squirrel-like helper is signed instead of silently
@@ -327,7 +327,7 @@ def collect_entries(app_path: str, app_id: str = APP_ID) -> "dict[str, dict]":
 def main() -> int:
     # --list-machos <App.app>: print every Mach-O in the bundle, one
     # absolute path per line, for the pre-sign ad-hoc signature strip in
-    # sign.sh (strip everything; CDSigner re-signs dylibs and the main
+    # sign.sh (strip everything; the signing service re-signs dylibs and the main
     # executable itself during the app pass).
     if len(sys.argv) == 3 and sys.argv[1] == "--list-machos":
         app_path = sys.argv[2]
@@ -371,7 +371,7 @@ def main() -> int:
     app_id = app_identifier(app_path)
     # Keep the manifest header in lockstep with the actual bundle: sign.sh
     # packages the tarball under the real .app name, so a renamed app with
-    # a hardcoded template name would make CDSigner look for a path that
+    # a hardcoded template name would make the signing service look for a path that
     # is not in the archive. The template values remain as documentation;
     # the bundle is the source of truth.
     app_name = os.path.basename(os.path.normpath(app_path))
@@ -401,7 +401,7 @@ def main() -> int:
         f"embedded_requirements: {len(merged)} total "
         f"({len(backend)} backend Mach-Os incl. Resources dylibs, "
         f"{len(shell)} Electron shell, {len(static)} template overrides; "
-        "Frameworks dylibs auto-signed by CDSigner)",
+        "Frameworks dylibs auto-signed by the signing service)",
         file=sys.stderr,
     )
     json.dump(doc, sys.stdout, indent=2)

@@ -723,8 +723,8 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
             # Per-item SQLite writes are OFFLOADED (asyncio.to_thread): a sync
             # write can block up to the busy_timeout under a concurrent writer,
             # and rebuild_embeddings is awaited on the gateway event loop — an
-            # inline write would freeze chat/liveness (AUTOSDE
-            # no-blocking-call-on-event-loop). store.db is a per-thread connection
+            # inline write would freeze chat/liveness (the
+            # no-blocking-call-on-event-loop rule). store.db is a per-thread connection
             # (threading.local, WAL); the loop awaits each serially, so there is
             # no concurrent-connection use.
             if vec:
@@ -760,7 +760,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
                 # OFFLOAD the write: rebuild_embeddings is awaited on the gateway
                 # event loop, and a synchronous SQLite write can block up to the
                 # busy_timeout when another writer holds the lock — freezing chat /
-                # liveness (AUTOSDE no-blocking-call-on-event-loop). ``store.db`` is
+                # liveness (the no-blocking-call-on-event-loop rule). ``store.db`` is
                 # a per-thread connection (threading.local, WAL), so the worker
                 # thread safely uses its OWN connection to the same db; the loop
                 # awaits it serially, so there is no concurrent-connection use.

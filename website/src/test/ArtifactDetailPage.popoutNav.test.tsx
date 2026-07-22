@@ -100,7 +100,7 @@ describe('ArtifactDetailPage popout navigation containment', () => {
     await waitFor(() => expect(screen.getByText('library page target')).toBeInTheDocument())
   })
 
-  it('main dashboard: the "Iterate" affordance is hidden pending redesign (P472753393)', async () => {
+  it('main dashboard: the "Iterate" affordance is hidden pending redesign', async () => {
     // The header "Iterate" button is gated behind SHOW_ARTIFACT_ITERATE (false),
     // so it does not render even in the main dashboard (its `!popout` branch).
     // When the redesign re-enables the flag, restore this to click the button

@@ -77,7 +77,7 @@ jobs:
       - name: Build desktop app
         run: make desktop
         env:
-          # Unsigned here by design: CDSigner signs the .app downstream in
+          # Unsigned here by design: the signing service signs the .app downstream in
           # sign-and-notarize.yml. Local certificate discovery must stay off.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 

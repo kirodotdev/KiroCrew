@@ -907,7 +907,7 @@ class TestIdleReaper:
     async def test_shutdown_drains_abandoned_reaping_workers(self):
         # Simulate a reaper that shutdown() cancelled mid-teardown: it left the
         # workers it was shutting down stashed on _reaping_workers. shutdown()
-        # must still drain them (AutoSDE CR-289829600 post 3).
+        # must still drain them (review-bot post 3).
         pool = _make_pool_with_fake_workers(pool_size=2)
         abandoned = [FakeWorker(), FakeWorker()]
         for w in abandoned:

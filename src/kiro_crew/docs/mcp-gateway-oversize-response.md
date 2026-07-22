@@ -1,4 +1,4 @@
-# MCP Gateway: Oversized Response Handling (Mesh-2861)
+# MCP Gateway: Oversized Response Handling
 
 ## Problem
 
@@ -77,7 +77,7 @@ Any spill failure (disk full, permissions) → original forwarded unmodified.
 ### Inline marker format
 
 ```
-[KiroCrew: response truncated -- full 1482937 bytes at /home/user/.kirocrew/mcp_spill/builder-mcp-gw-12345-7-1721200000.json. Read with bash: head/grep/jq.]
+[KiroCrew: response truncated -- full 1482937 bytes at /home/user/.kirocrew/mcp_spill/example-mcp-gw-12345-7-1721200000.json. Read with bash: head/grep/jq.]
 ```
 
 ## Troubleshooting

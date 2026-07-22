@@ -84,7 +84,7 @@ def test_shutdown_event_wait_for_timeout() -> None:
 
 
 def test_shutdown_event_does_not_bind_to_default_loop_via_get_event_loop() -> None:
-    """Regression for AutoSDE feedback on CR-271610787.
+    """Regression for review-bot feedback.
 
     Proves the proxy does NOT bind to the default loop on first access.
     """

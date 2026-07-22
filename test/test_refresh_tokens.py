@@ -277,9 +277,9 @@ def test_tr_u_15d_handler_rate_limiter_per_ip_isolation():
 
 def test_tr_u_15e_handler_rate_limiter_empty_ip_fails_closed():
     """Empty client_ip MUST fail closed: an empty IP means we cannot
-    rate-limit, so we deny outright. Defense-in-depth per AutoSDE
-    security-controls (deny-by-default). Per Guardian-review finding
-    #2 on CR-281631553: bucketing under a shared sentinel still allowed
+    rate-limit, so we deny outright. Defense-in-depth per review-bot
+    security-controls (deny-by-default). Per security-review finding
+    #2 on bucketing under a shared sentinel still allowed
     60/min, which contradicted the docstring claim of fail-closed.
     """
     from kiro_crew.dashboard.handlers import auth_refresh
@@ -321,7 +321,7 @@ def test_tr_i_17_corrupted_state_file_starts_empty(tmp_path: Path):
     """TR-I-17: corrupted state file is treated as empty rather than crashing.
 
     Renamed from test_TR_U_18 to match the spec naming — TR-I (integration)
-    rather than TR-U (unit). Per AutoSDE finding (CR-281631553 post 34).
+    rather than TR-U (unit). Per review-bot finding (post 34).
     """
     state_file = tmp_path / "rt.json"
     state_file.write_text("not valid json {[")
@@ -334,8 +334,8 @@ def test_tr_u_18_concurrent_writers(tmp_path: Path):
     """TR-U-18: 10 threads each marking a unique jti — no data loss.
 
     Verifies the file-locked write path in RefreshStateManager.mark_consumed
-    serializes correctly under concurrent access. Per spec (and AutoSDE
-    finding CR-281631553 post 34).
+    serializes correctly under concurrent access. Per spec (and review-bot
+    finding post 34).
     """
     state_file = tmp_path / "rt.json"
     mgr = RefreshStateManager(state_path=state_file)
@@ -431,7 +431,7 @@ def test_tr_u_23_logout_revokes_chain_and_clears_cookies(
 ):
     """POST /api/auth/logout must revoke the refresh chain AND clear both
     cookies, so a stolen refresh cookie cannot survive logout. Per
-    Guardian-review finding #3 on CR-281631553.
+    security-review finding #3.
     """
     from unittest.mock import MagicMock
 
@@ -504,8 +504,8 @@ def test_tr_u_24_logout_without_cookie_still_clears(
 
 def test_tr_u_25_secure_flag_only_on_https():
     """Cookies must set Secure=True only when the request is HTTPS. Localhost
-    HTTP must not set it (browser would refuse to send it back). Per Guardian
-    finding #5 on CR-281631553. Forward-compatible for KiroCrew OSS behind
+    HTTP must not set it (browser would refuse to send it back). Per the security reviewer
+    finding #5 on. Forward-compatible for KiroCrew OSS behind
     a real HTTPS reverse proxy.
     """
     from unittest.mock import MagicMock

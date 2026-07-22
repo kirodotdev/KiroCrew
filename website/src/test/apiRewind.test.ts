@@ -1,6 +1,6 @@
 /**
  * Tests for api.rewind — the new client method that calls the
- * /api/chat/slots/{slot}/rewind backend endpoint introduced in Mesh-1244.
+ * /api/chat/slots/{slot}/rewind backend endpoint introduced in.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

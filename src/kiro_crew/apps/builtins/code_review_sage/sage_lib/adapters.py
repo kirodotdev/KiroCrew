@@ -67,7 +67,7 @@ def detect_platform(link: str) -> str:
     The host is validated against an allowlist of the PARSED URL hostname (not a
     substring of the raw link), so a URL where ``github.com`` merely appears in
     the path/query/userinfo (e.g. ``https://evil.example/github.com/x/pull/1``)
-    is rejected. Aligns with ARCC SSRF/allowlist guidance (parse to components,
+    is rejected. Aligns with SSRF/allowlist guidance (parse to components,
     default-deny)."""
     if not link or not isinstance(link, str):
         raise UnsupportedPlatform("empty or non-string link")
@@ -101,7 +101,7 @@ def github_pr_parts(link: str) -> tuple[str, str, str]:
 def parse_repo_url(link: str) -> tuple[str, str]:
     """Parse ``(owner, repo)`` from a GitHub REPO URL (no ``/pull/``).
 
-    Mirrors ``detect_platform``'s PARSED-hostname allowlist (default-deny, ARCC
+    Mirrors ``detect_platform``'s PARSED-hostname allowlist (default-deny,
     SSRF/allowlist guidance) but accepts a bare repo URL like
     ``https://github.com/<owner>/<repo>`` so a batch of that repo's open PRs can
     be enumerated. Raises ``UnsupportedPlatform`` for a non-GitHub host and

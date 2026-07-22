@@ -1,4 +1,4 @@
-"""Subprocess-spawn audit — Talos finding 92e24570 (V2287169889).
+"""Subprocess-spawn audit — security-review finding 92e24570.
 
 Every subprocess spawn in ``src/kiro_crew`` must be either
 
@@ -75,7 +75,7 @@ _ROUTED_TOKENS = ("sandboxed_spawn_argv", "wrap_argv")
 
 # Token marking a routed function as also applying a kernel resource ceiling
 # (RLIMIT_NPROC/NOFILE/CPU/AS) to its child via ``preexec_fn`` — the second
-# layer of the spawn guarantee (Talos bdf0d7e5 / V2285983353). Every
+# layer of the spawn guarantee (security-review bdf0d7e5). Every
 # sandbox-routed function must reference it: the sandbox gives the child
 # filesystem + credential isolation, this gives it a fork-bomb / resource
 # ceiling. Functions whose ONLY spawns are fixed-argv internal probes (no
@@ -312,7 +312,7 @@ def _collect_routed_spawns_without_cgroup() -> set[str]:
 
 
 def test_every_spawn_is_routed_or_allowlisted():
-    """No spawn may be unrouted-and-unlisted (Talos 92e24570 tripwire)."""
+    """No spawn may be unrouted-and-unlisted (security-review 92e24570 tripwire)."""
     unrouted = _collect_unrouted_spawns()
     unexpected = unrouted - BENIGN_SPAWNS
     assert not unexpected, (
@@ -322,7 +322,7 @@ def test_every_spawn_is_routed_or_allowlisted():
         "kiro_crew.sandbox.sandboxed_spawn_argv (OS sandbox + scrubbed env), "
         "or, if the command/args/cwd are NOT agent-influenced, add the "
         "file::function key to BENIGN_SPAWNS in this test with a justification. "
-        "See Talos finding 92e24570 / V2287169889."
+        "See security-review finding 92e24570."
     )
 
 
@@ -350,7 +350,7 @@ def test_agent_influenced_sites_are_routed():
     ):
         assert key not in unrouted, (
             f"{key} must route its spawn through sandboxed_spawn_argv "
-            "(Talos 92e24570) but is no longer sandbox-wrapped."
+            "(security-review 92e24570) but is no longer sandbox-wrapped."
         )
 
 
@@ -361,7 +361,7 @@ def test_every_routed_spawn_applies_resource_limits():
     ``preexec_fn`` from ``resource_limit_preexec()`` gives it a kernel-enforced
     ceiling (RLIMIT_NPROC/NOFILE/CPU/AS) so a fork bomb or runaway allocation in
     a compromised tool / MCP server cannot exhaust the host. This is the
-    regression tripwire for Talos bdf0d7e5 (V2285983353): the helper was merged
+    regression tripwire for security-review bdf0d7e5: the helper was merged
     once as dead code (defined, zero callers). If you add a new agent-influenced
     spawn, pass ``preexec_fn=resource_limit_preexec()`` — or, if the spawn is a
     fixed-argv internal probe with no agent-influenced child, add its
@@ -374,7 +374,7 @@ def test_every_routed_spawn_applies_resource_limits():
         + "\n\nPass preexec_fn=kiro_crew.sandbox.resource_limit_preexec() to the "
         "spawn (kernel RLIMIT ceiling — fork bomb / FD / mem / CPU), or add the "
         "file::function key to PREEXEC_EXEMPT with a justification. "
-        "See Talos finding bdf0d7e5 / V2285983353."
+        "See security-review finding bdf0d7e5."
     )
 
 
@@ -396,7 +396,7 @@ def test_every_routed_spawn_applies_cgroup_scope():
     The RLIMIT preexec caps a single process's FDs; the cgroup scope
     (``cgroup_scope_argv`` → pids.max + memory.max) is the actual default-on
     fork-bomb + memory-DoS ceiling the finding's headline threats require
-    (Talos bdf0d7e5). A function satisfies this by calling ``cgroup_scope_argv``
+    (security-review bdf0d7e5). A function satisfies this by calling ``cgroup_scope_argv``
     directly or by routing through ``sandboxed_spawn_argv`` (which applies the
     scope internally). The ``PREEXEC_EXEMPT`` fixed-argv internal probes are
     also exempt here — same rationale (no agent-influenced child to bound).
@@ -408,5 +408,5 @@ def test_every_routed_spawn_applies_cgroup_scope():
         + "\n\nWrap the final argv with kiro_crew.sandbox.cgroup_scope_argv() "
         "(pids.max + memory.max fork-bomb / memory-DoS ceiling), or route the "
         "spawn through sandboxed_spawn_argv which applies it. "
-        "See Talos finding bdf0d7e5 / V2285983353."
+        "See security-review finding bdf0d7e5."
     )

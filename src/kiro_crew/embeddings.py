@@ -89,8 +89,8 @@ _DOWNLOAD_BACKOFF_BASE_SECS = 60.0
 _DOWNLOAD_BACKOFF_CAP_SECS = 1800.0
 # Escape hatch for tests/CI: never kick a 610MB model download from a test run.
 _SKIP_DOWNLOAD_ENV = "KIROCREW_SKIP_MODEL_DOWNLOAD"
-# Distribution: public CloudFront CDN in front of the SHARED model bucket
-# (meshclaw-models-116101834266) — the same object MeshClaw serves, so both
+# Distribution: public CloudFront CDN in front of the SHARED model bucket —
+# the same object the upstream project serves, so both
 # products fetch one canonical, sha256-verified GGUF instead of maintaining
 # duplicate copies. Plain HTTPS, no git access and no cloud SDK required. The
 # sha256 pin above is the trust anchor for every source, so a tampered CDN

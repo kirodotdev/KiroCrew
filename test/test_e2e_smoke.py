@@ -5,10 +5,10 @@ gateway subprocess, hit its HTTP endpoints with the token from the READY
 line, and verify core functionality works end-to-end.
 
 Gated behind ``KIROCREW_E2E=1`` because they spawn a real gateway process
-(5-15s startup). CI runs them via ToD shared fleet; local devs opt in.
+(5-15s startup). CI runs them on a shared test fleet; local devs opt in.
 
-Requires: ``kiro_crew.testing.harness`` (CR-275699038, merged) and composable
-CLI flags (CR-274772612, merged).
+Requires: ``kiro_crew.testing.harness`` and composable
+CLI flags.
 """
 
 from __future__ import annotations

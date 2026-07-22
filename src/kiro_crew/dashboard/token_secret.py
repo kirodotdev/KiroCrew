@@ -57,7 +57,7 @@ def _load_or_create_secret() -> bytes:
                 try:
                     # restrict_to_owner (fail-loud), NOT chmod_safe: chmod_safe
                     # swallows OSError, which would make this security-warning
-                    # handler dead code (AutoSDE). POSIX applies ``chmod 0o600``;
+                    # handler dead code. POSIX applies ``chmod 0o600``;
                     # Windows applies an owner-only DACL via icacls — no NTFS
                     # posture regression from the earlier IS_POSIX no-op, which
                     # left the key signing all auth tokens/cookies world-readable.

@@ -1,4 +1,4 @@
-"""Tests for `kirocrew gateway` composable CLI flags (Mesh-1465).
+"""Tests for `kirocrew gateway` composable CLI flags.
 
 Covers argparse parsing, --test-mode bundle expansion with override
 semantics, and the --approval yolo safety rail.

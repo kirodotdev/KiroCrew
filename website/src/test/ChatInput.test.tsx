@@ -309,12 +309,12 @@ describe('ChatInput', () => {
     })
   })
 
-  // Mesh-1940: applyHeight snaps an overflowing textarea to the bottom when the
+  // applyHeight snaps an overflowing textarea to the bottom when the
   // caret is at the end, so typing past the ~6-line cap keeps the caret visible.
   // jsdom has no layout, so we stub the relevant props (and make height='0' zero
   // scrollTop, as a real browser does) and stub document.activeElement rather
   // than calling ta.focus() — real focus leaks into the autoFocusKey suite.
-  describe('caret-follow scroll (Mesh-1940)', () => {
+  describe('caret-follow scroll', () => {
     afterEach(() => {
       delete (document as unknown as { activeElement?: unknown }).activeElement
     })
@@ -669,7 +669,7 @@ describe('ChatInput', () => {
     })
   })
 
-  // ── Reasoning effort merged into model button (Mesh-1412) ──
+  // ── Reasoning effort merged into model button ──
   describe('reasoning effort button', () => {
     it('renders for acp provider', () => {
       const onClick = vi.fn()
@@ -955,7 +955,7 @@ describe('ChatInput', () => {
       }
     })
 
-    it('collapses a streaming optimize into a single undo boundary (Mesh-2064)', async () => {
+    it('collapses a streaming optimize into a single undo boundary', async () => {
       // The recording effect skips writes while the optimizer owns the textarea,
       // and the completion effect records one boundary when it finishes — so even
       // if runOptimize ever wrote its result incrementally, a single Ctrl+Z
@@ -1309,7 +1309,7 @@ describe('ChatInput', () => {
   })
 })
 
-// --- Prompt undo/redo (Mesh-2029) ---
+// --- Prompt undo/redo ---
 // A controlled harness so onChange -> value round-trips exactly like ChatPage,
 // which is what makes the explicit undo history observable end-to-end.
 function ControlledInput({ initial = '', extra = {} }: { initial?: string; extra?: Record<string, unknown> }) {
@@ -1317,7 +1317,7 @@ function ControlledInput({ initial = '', extra = {} }: { initial?: string; extra
   return <ChatInput {...defaultProps} value={v} onChange={setV} {...extra} />
 }
 
-describe('ChatInput undo/redo (Mesh-2029)', () => {
+describe('ChatInput undo/redo', () => {
   const undo = (ta: HTMLElement) => fireEvent.keyDown(ta, { key: 'z', ctrlKey: true })
   const redoShift = (ta: HTMLElement) => fireEvent.keyDown(ta, { key: 'z', ctrlKey: true, shiftKey: true })
 
@@ -1425,7 +1425,7 @@ describe('ChatInput undo/redo (Mesh-2029)', () => {
   })
 
   it('reseeds synchronously when the draft lands in the same commit as the switch', () => {
-    // Mesh-2064: if ChatPage ever restores the draft in the SAME commit as the
+    // if ChatPage ever restores the draft in the SAME commit as the
     // slot switch (no lag), the first keystroke must not be folded into the undo
     // base — Ctrl+Z must still reach the restored draft.
     const drafts: Record<string, string> = { 'slot-a': 'alpha draft', 'slot-b': 'beta draft' }

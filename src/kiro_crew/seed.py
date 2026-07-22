@@ -434,7 +434,7 @@ def _safe_audit(*, outcome: str, resources: str) -> None:
     (WARNING+ only). ``.warning`` survives the last-resort handler and
     emits one line to stderr on the rare path where SEL init fails —
     preserving the security-controls audit-observability requirement
-    (CR-265184362 / Shepherd 7b7feebd).  SEL init failures are rare
+    requirement.  SEL init failures are rare
     (once per read-only $HOME install), so the stderr line is not
     spammy; the alternative — silent drop — would violate the guideline
     even if the debug-level comment at the call site pretended otherwise.

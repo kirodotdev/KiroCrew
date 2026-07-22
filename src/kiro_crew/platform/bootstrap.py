@@ -201,9 +201,10 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     # Register any edition-contributed ACP backends now that the context is
     # installed.  The Default ProviderRegistry.register_acp_backends() is a
     # no-op (standalone ships Kiro-CLI-ACP only), so this is a no-op for the
-    # public edition; the Amazon companion re-registers Claude Code through the
-    # dormant ACP_BACKEND_CLAUDE seam here.  Best-effort — a backend-registration
-    # failure must not abort boot (the provider factory still resolves).
+    # public edition; the Amazon companion re-registers a Claude backend through
+    # the dormant ACP_BACKEND_CLAUDE seam here.  Best-effort — a
+    # backend-registration failure must not abort boot (the provider factory
+    # still resolves).
     try:
         ctx.providers.register_acp_backends()
     except Exception:

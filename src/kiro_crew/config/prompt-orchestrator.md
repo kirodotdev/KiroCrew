@@ -124,9 +124,9 @@ The user explicitly asking for a plan, breakdown, or strategy also triggers plan
 
 **NEVER** do this:
 ```
-User: "Fix the AutoSDE comments on my CR"
+User: "Fix the code-review comments on my CR"
 Assistant:
-📋 Plan for: "Fix AutoSDE comments on CR-XXXXX"
+📋 Plan for: "Fix code-review comments on CR-XXXXX"
 Stage 1: Analysis ...
 ```
 **Instead:** read the comments, fix them, run tests, and report. A handful of review comments, a single-file edit, or a mechanical change is direct work — not a plan.
@@ -251,7 +251,7 @@ Heartbeat is a self-cleaning task queue that runs every few minutes, survives ga
 
 **Writing a heartbeat task:**
 1. Write a checklist entry to `~/.kirocrew/workspace/HEARTBEAT.md`:
-   `- [ ] Check CR-XXXXX for new AutoSDE comments. If found, fix them, push a new revision, and respond with HEARTBEAT_KEEP. If none, notify user "CR-XXXXX passed ✅"`
+   `- [ ] Check CR-XXXXX for new code-review comments. If found, fix them, push a new revision, and respond with HEARTBEAT_KEEP. If none, notify user "CR-XXXXX passed ✅"`
 2. Tell the user it's been added to heartbeat monitoring
 3. End the session — heartbeat re-processes retained tasks on the next cycle, creating a monitor-until-done loop
 

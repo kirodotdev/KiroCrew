@@ -1,4 +1,4 @@
-"""Spill-to-file for oversized MCP tool responses (Mesh-2861).
+"""Spill-to-file for oversized MCP tool responses.
 
 When a tool/call result exceeds ``response_spill_threshold_bytes``, the full
 text payload is written to a sidecar file under ``~/.kirocrew/mcp_spill/`` and

@@ -462,7 +462,7 @@ class TestKirocrewGranularSensitive:
 
 
 class TestAutoSdeRound1Findings:
-    """Regression tests for AutoSDE round-1 findings on the granular policy.
+    """Regression tests for review-bot round-1 findings on the granular policy.
 
     #15 security-controls: listing .kirocrew/ root must not leak sensitive
         entry NAMES (config.json, *.key, memory.db, sessions/).
@@ -557,7 +557,7 @@ class TestAutoSdeRound1Findings:
     def test_app_is_read_only_get_routes_only(self):
         """#16: the file explorer exposes no write verbs — every dispatch
         route is GET. A write path here would bypass the auto-skill guards
-        (Mesh-677: redaction, SEL audit, slug validation)."""
+        (redaction, SEL audit, slug validation)."""
         import inspect
 
         src = inspect.getsource(server)

@@ -547,7 +547,7 @@ describe('appendSlotMessage steer reconcile', () => {
   })
 
   it('does not consume a non-steer optimistic message even when content matches the echo exactly', () => {
-    // AutoSDE CR-290147649 finding: the exact-content-match path must also
+    // Code-review finding: the exact-content-match path must also
     // require meta.steer — a plain optimistic user message that happens to
     // have identical text to the steer echo is a different message and must
     // keep its own bubble.
@@ -1133,7 +1133,7 @@ describe('slotHistory — session navigation stack', () => {
       type: 'chat/createSlot/fulfilled',
       // originActiveSlot === activeSlot ('A'): the create resolved while the
       // user was still on A (fast create / didn't switch away), so the new slot
-      // activates normally. Mesh-2908 only guards the switched-away case.
+      // activates normally. only guards the switched-away case.
       meta: { arg: undefined, requestId: 'r1', requestStatus: 'fulfilled' as const, originActiveSlot: 'A' },
       payload: { key: 'new-slot' },
     })
@@ -1770,13 +1770,13 @@ describe('selectComposerBusy', () => {
   })
 })
 
-// Mesh-2908: a slow createSlot (backend round-trip under memory pressure) must
+// a slow createSlot (backend round-trip under memory pressure) must
 // not hijack the view if the user switched to another session while it was
 // pending. Mirrors the switched-away guard every other async thunk already has
 // (switchSlot/refreshSlot/warmSlotCache). Without the guard, createSlot.fulfilled
 // unconditionally reassigns activeSlot + clears messages, stealing the tab the
 // user is now typing in ("New Chat copies my text into the new chat").
-describe('createSlot.fulfilled switched-away guard (Mesh-2908)', () => {
+describe('createSlot.fulfilled switched-away guard', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
 
   // origin is the activeSlot captured when the create was dispatched; the
@@ -1828,6 +1828,38 @@ describe('createSlot.fulfilled switched-away guard (Mesh-2908)', () => {
     const state = reducer(busy, fulfilled('new-slot', null))
     expect(state.activeSlot).toBe('slot-b')
     expect(state.creatingSlot).toBe(false)
+  })
+
+  it('does not pollute Object.prototype when a slot key is __proto__ (isUnsafeKey guard)', () => {
+    // A crafted WS payload carrying slot="__proto__" must NOT reach the shared
+    // prototype through the per-slot state maps. The reducer's isUnsafeKey()
+    // early-return drops the frame entirely, so nothing is written for a hostile
+    // key and Object.prototype stays clean.
+    const proto = Object.prototype as Record<string, unknown>
+    const msg: ChatMessage = { role: 'user', content: 'pwned', cls: '' }
+    const state = reducer(
+      { ...initial, activeSlot: 'other' },
+      appendSlotMessage({ slot: '__proto__', message: msg }),
+    )
+    // Object.prototype was not extended, and no fresh object inherits slot data.
+    expect(({} as Record<string, unknown>).content).toBeUndefined()
+    expect(proto.content).toBeUndefined()
+    // The hostile frame was dropped: no own-property was created under either the
+    // raw '__proto__' key or the sanitized fallback.
+    expect(Object.prototype.hasOwnProperty.call(state.slotMessages, '__proto__')).toBe(false)
+    expect(state.slotMessages['unsafe-key:__proto__']).toBeUndefined()
+  })
+
+  it('handles a real slot key normally (isUnsafeKey guard does not over-block)', () => {
+    // Confidence check: a legitimate slot key still writes through — the guard
+    // only trips on __proto__/constructor/prototype.
+    const msg: ChatMessage = { role: 'user', content: 'hi', cls: '' }
+    const state = reducer(
+      { ...initial, activeSlot: 'other' },
+      appendSlotMessage({ slot: 'chat-7', message: msg }),
+    )
+    expect(state.slotMessages['chat-7']).toBeDefined()
+    expect(state.slotMessages['chat-7'].at(-1)?.content).toBe('hi')
   })
 })
 

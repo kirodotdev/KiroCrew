@@ -51,7 +51,7 @@ def test_spawn_run_no_args():
 
 def test_spawn_run_orphan_warning_when_parent_unresolved():
     """Empty parent_session + successful spawns -> loud orphan warning, and
-    NO contradictory completion-event promise (AutoSDE CR-290347380)."""
+    NO contradictory completion-event promise (review-bot)."""
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):
         mock_post.return_value = {"id": "abc123"}
@@ -65,7 +65,7 @@ def test_spawn_run_orphan_warning_when_parent_unresolved():
 
 def test_spawn_run_no_orphan_warning_when_all_spawns_fail():
     """Empty parent_session but ZERO spawned agents -> no misleading ⚠ orphan
-    warning about spawned subagents that do not exist (AutoSDE CR-290347380).
+    warning about spawned subagents that do not exist (review-bot).
     The queued-tasks message may still mention the unresolved parent (that
     part is accurate — queued tasks inherit it), but the spawned-subagents
     warning block must be absent."""
@@ -88,7 +88,7 @@ def test_spawn_run_no_orphan_warning_when_parent_resolved():
 
 def test_spawn_run_queued_only_orphan_no_completion_promise():
     """All spawns queued (capacity) + empty parent_session -> the queued
-    message must NOT promise completion events either (AutoSDE CR-290347380
+    message must NOT promise completion events either (review-bot
     round 3): queued tasks inherit the same empty parent_session."""
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):

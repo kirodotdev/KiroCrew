@@ -35,7 +35,7 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-      # Least privilege (BSC6): CloudWatch Logs only.
+      # Least privilege: CloudWatch Logs only.
       # R23 F1: mandatory permissions boundary — the deploy principal's
       # iam:CreateRole is conditioned on this boundary being attached.
       PermissionsBoundary: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/kirocrew-deploy-app-boundary'

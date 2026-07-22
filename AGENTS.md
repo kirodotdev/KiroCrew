@@ -275,7 +275,7 @@ trust root for the security ceiling. Full spec:
   adapters that reproduce today's open-source behavior. `bootstrap.py` —
   `boot_platform`/`bootstrap_context` compose the context, assert the floors,
   install it. `discovery.py` / `profile.py` — companion discovery + edition
-  resolution (`standalone` | `amazon`). `security_authority.py` — the `@final`
+  resolution (`standalone` | `enterprise`). `security_authority.py` — the `@final`
   ADD-only deny floor (`PolicyAuthority` + `assert_security_floor`).
   `admission.py` — signed-plugin admission (the trust-root precedent the
   governance loader mirrors).
@@ -315,7 +315,7 @@ React + TypeScript SPA in the `website/` directory. Built assets are bundled int
 
 ### Platform Support
 
-KiroCrew runs on macOS, Linux (x86_64 and ARM/Graviton), and **Windows** (native, Mesh-2329).
+KiroCrew runs on macOS, Linux (x86_64 and ARM/Graviton), and **Windows** (native).
 macOS/Linux install via the `bin/kirocrew` launcher; **Windows runs natively from a Python
 source install** — CPython 3.12 + a venv + `pip install -e .`, launched as `python -m
 kiro_crew gateway`. See `docs/WINDOWS_INSTALL.md`.
@@ -354,7 +354,7 @@ Other Windows specifics:
   opened `encoding="utf-8"`.
 - **Signal handling** (`slack/gateway.py`): `loop.add_signal_handler()` raises
   `NotImplementedError` on the Windows ProactorEventLoop — fall back to `signal.signal(SIGINT)`.
-- **Web terminal / interactive mwinit PTY** (`dashboard/handlers/terminal.py`): rely on
+- **Web terminal / interactive SSO-login PTY** (`dashboard/handlers/terminal.py`): rely on
   `pty`/`fork`/`termios` — POSIX-only; they degrade to a clear "not supported on Windows"
   response rather than crashing.
 - **System metrics** (`handlers_system.py`): macOS `sysctl`/`vm_stat`; Linux `/proc/*`;

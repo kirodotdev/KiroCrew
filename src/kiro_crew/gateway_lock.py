@@ -1,4 +1,4 @@
-"""Single-writer guard for a ``KIROCREW_HOME`` (Mesh-2386).
+"""Single-writer guard for a ``KIROCREW_HOME``.
 
 Two ``kirocrew gateway`` processes bound to the same home each open the same
 ``sessions/*.jsonl`` as ``ConversationLog`` writers. The steady-save fast path

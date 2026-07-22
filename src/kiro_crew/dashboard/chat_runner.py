@@ -1339,8 +1339,9 @@ def _expand_dollar_skills(
     tokens are left untouched.
 
     Resolution + security live in ``SkillsLoader.resolve_dollar_skills`` (allowlist
-    match, no path construction — per ARCC BSC1). This function adds the runner-side
-    concerns: redaction of the loaded content, a user-visible chip, and SEL audit.
+    match, no path construction — per input-validation guidance). This function adds
+    the runner-side concerns: redaction of the loaded content, a user-visible chip,
+    and SEL audit.
 
     Returns ``(expanded_message, count)`` where *count* is the number of skills
     appended (0 if none resolved).
@@ -1530,8 +1531,7 @@ def _settle_consumed_steers(slot: "_ChatSlot", snapshot: str) -> None:
     substring containment would false-positive short steers against longer
     ones or against the wrapper text itself, and a falsely-settled steer is
     silently lost when the turn dies. A steer registered after kiro-cli
-    snapshotted (not among the blocks) stays pending (zedmor's review,
-    CR-290015501). Settling is COUNT-AWARE: each snapshot block settles at
+    snapshotted (not among the blocks) stays pending. Settling is COUNT-AWARE: each snapshot block settles at
     most one pending entry, so a duplicate identical steer registered after
     the snapshot stays pending instead of being swept by set membership.
     When the echo carries no usable text (older backend, redacted echo),
@@ -1747,7 +1747,7 @@ async def _run_chat(
     # Partial-output guard for transient-5xx retry: flipped True once ANY
     # assistant token streams or a tool call fires this turn. A transient
     # backend 5xx is only retried while this is False, so a re-prompt can't
-    # double-stream text or re-run a side-effecting tool (Mesh-2150).
+    # double-stream text or re-run a side-effecting tool.
     _turn_emitted = False
     # Refresh the one-shot post-token recovery allowance at the START of a
     # GENUINE new user turn, so each real user message gets exactly one recovery.
@@ -2151,7 +2151,7 @@ async def _run_chat(
                     window_for_provider_client,
                 )
 
-                # Mesh-1726: drop the just-flushed current-turn user message
+                # drop the just-flushed current-turn user message
                 # from replay. chat_handlers.py:146 (or queue dequeue at L1898)
                 # always appended exactly one message before _run_chat fires,
                 # and the periodic flush_loop may have already written it to
@@ -3362,7 +3362,7 @@ async def _run_chat(
                     # This is an interactive user denial — the user chose to reject
                     # the tool. Refusal-recovery is only for system-side blocks —
                     # the hook-deny (TOOL_DENY) path, which is the other site that
-                    # appends to _refusal_reasons. See Mesh-1952 design intent.
+                    # appends to _refusal_reasons.
 
                 if outcome != "approved":
                     # mark batch_rejected as true and continue loop instead of breaking
@@ -3531,7 +3531,7 @@ async def _run_chat(
         # the finally's dequeue re-dispatches it against the resumed session,
         # which restores the prior committed work so the model continues rather
         # than restarts. Bounded so a permanently-broken session surfaces a clean
-        # "start a new chat" instead of looping. Complementary to CR-284525375,
+        # "start a new chat" instead of looping. Complementary to a companion guard,
         # which surfaces the stuck sessions this cannot recover.
         if _stop_reason == STOP_REASON_STALE_RECOVER:
             needs_session_reset = True  # checked in finally block (reset + resume)
@@ -4042,14 +4042,14 @@ async def _run_chat(
             # only the model backend hiccupped — so do NOT reset the session
             # (needs_session_reset stays False). Re-prompt the SAME live session
             # with bounded backoff, reusing the llm_helpers transient classifier
-            # + backoff curve landed for unattended callers in CR-281120435
-            # (Mesh-1157). The `not _turn_emitted` guard means no assistant tokens
+            # + backoff curve landed for unattended callers.
+            # The `not _turn_emitted` guard means no assistant tokens
             # or tool calls have been delivered this turn, so re-prompting can't
             # double-stream output or re-run a side-effecting tool. Auth/validation
             # errors are excluded by the classifier and fall through to the bare
             # error below (fail-fast). On budget exhaustion this elif goes false
             # and the bare-error else surfaces a clean ❌ on a still-resumable
-            # session (Mesh-2150).
+            # session.
             slot._transient_5xx_retries += 1
             _delay = transient_retry_delay(slot._transient_5xx_retries)
             logger.info(
@@ -4180,7 +4180,7 @@ async def _run_chat(
         slot._acp_client = None
         # Ensure file changes always surface, even on cancel/error. Wrapped so
         # a raise here cannot skip the re-arm below and re-introduce the orphan
-        # bug this fix prevents (Mesh-2147).
+        # bug this fix prevents.
         try:
             _flush_file_changes(slot)
         except Exception:
@@ -4188,7 +4188,7 @@ async def _run_chat(
         # ── AutoNudge: (re)arm the idle timer on EVERY turn-exit path. ──
         # Must be in finally, not the happy path: a turn that ends via timeout
         # / AcpProcessDied / AcpError / cancel would otherwise never re-arm,
-        # silently orphaning the loop (Mesh-2147).
+        # silently orphaning the loop.
         try:
             from kiro_crew.autonudge import (
                 get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_runner

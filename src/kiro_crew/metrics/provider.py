@@ -30,7 +30,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.recorder import MetricsRecorder
 
-# Mesh-2829: KiroCrew declares opentelemetry-sdk as a required dependency, so
+# KiroCrew declares opentelemetry-sdk as a required dependency, so
 # this guard is defense-in-depth — not for a genuinely optional dep, but for a
 # partial / --no-deps / broken env-closure install where the SDK is absent. This
 # module is on the eager boot chain (cli.py -> dashboard -> ... -> history.py ->
@@ -94,7 +94,7 @@ def _build_recorder() -> MetricsRecorder:
     """Read config once and build a live or no-op recorder accordingly."""
     global _provider
     if not _OTEL_AVAILABLE:
-        # Mesh-2829: opentelemetry missing from the env closure. Degrade to the
+        # opentelemetry missing from the env closure. Degrade to the
         # no-op recorder instead of ever reaching this point via a crash.
         logger.warning("opentelemetry not installed; telemetry disabled")
         return MetricsRecorder(None)

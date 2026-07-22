@@ -306,7 +306,7 @@ cannot).
 - `scripts/list.sh` / `scripts/cost.sh` / `scripts/persist.sh` /
   `scripts/detach_backend.py` — lifecycle management utilities
 
-## Security (ARCC-aligned)
+## Security
 
 - **Credentials hard rule** — the agent NEVER executes credential writes and
   NEVER reads credentials files. "Configure a profile" means: *generate* the
@@ -315,13 +315,13 @@ cannot).
   `aws sts get-caller-identity --profile X` (a read). After a successful deploy,
   fill `webapp_metadata.deploy_target.profile` with the profile NAME (display
   only — never a credential value).
-- **BSC6** — never run with admin credentials if a scoped deploy profile
+- **Least privilege** — never run with admin credentials if a scoped deploy profile
   exists; the deploy identity needs only S3 + CloudFront + CloudFormation on the
   managed stack.
 - **Internal-data leak** — before deploying, scan the app dir for internal
   tokens (internal hostnames, corp identifiers) and
   refuse on a hit. This is public.
-- **BSC12/BSC9** — the bucket stays **private** (CloudFront OAC only);
+- **Private by default** — the bucket stays **private** (CloudFront OAC only);
   CloudFront adds security headers (nosniff / HSTS / `frame-ancestors 'self'` +
   loopback so the dashboard can live-preview the site) and enforces
   TLS 1.2+ via `redirect-to-https`.
@@ -334,12 +334,12 @@ cannot).
 - **M2 backend** — DONE via **API Gateway HTTP API → Lambda** behind CloudFront
   `/<slug>/api/*` (`app-apigw.yaml` + `deploy-backend.sh`). Live-validated:
   `/<slug>/` and `/<slug>/api/` both 200 on one public link.
-  Chosen over a raw Lambda Function URL because Amazon iam-identity/corp accounts run
-  **Palisade/Epoxy**, which auto-mitigates *world-accessible* Lambda Function URLs
+  Chosen over a raw Lambda Function URL because some managed corporate accounts run
+  automated guardrails that auto-mitigate *world-accessible* Lambda Function URLs
   (`Principal:*`). API Gateway keeps the Lambda non-world-accessible (scoped
   `apigateway.amazonaws.com` invoke) so no auto-mitigation fires. `app-lambda.yaml`
   (Function URL + CloudFront OAC) is kept as the lighter variant for unrestricted
-  (non-Amazon) accounts.
+  accounts.
 - **M3 lifecycle** — DONE: `list.sh` / `persist.sh` / `detach_backend.py`, plus the
   **in-account scheduled reaper** (`install-reaper.sh` → EventBridge-timed Lambda;
   `templates/reaper.yaml` + `scripts/reaper_lambda/`) that deletes expired

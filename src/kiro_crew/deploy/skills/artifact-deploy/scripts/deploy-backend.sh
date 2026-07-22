@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # KiroCrew One-Click Deploy - per-app backend (M2.2). API Gateway HTTP API ->
 # Lambda, fronted by the shared CloudFront distribution at /<slug>/api/*.
-# Palisade-safe: the Lambda is invoked only by API Gateway (no world-accessible
+# Guardrail-safe: the Lambda is invoked only by API Gateway (no world-accessible
 # Function URL). Pass --table to also provision a DynamoDB table (stateful apps).
 #
 # Usage:
@@ -151,5 +151,5 @@ fi
 
 echo ""
 echo "✅ backend wired: https://$DOMAIN/$SLUG/api/"
-echo "   API Gateway origin; Lambda not world-accessible (Palisade-safe).$([[ $TABLE == 1 ]] && echo ' DynamoDB table: kirocrew-deploy-app-'$SLUG || true)"
+echo "   API Gateway origin; Lambda not world-accessible (guardrail-safe).$([[ $TABLE == 1 ]] && echo ' DynamoDB table: kirocrew-deploy-app-'$SLUG || true)"
 [[ "$WAIT" == "1" ]] || echo "   (CloudFront propagating ~3-5 min; pass --wait to block)"

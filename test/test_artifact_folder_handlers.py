@@ -1,4 +1,4 @@
-"""Tests for the artifact-folder HTTP handlers (Mesh-2720).
+"""Tests for the artifact-folder HTTP handlers.
 
 Mirrors ``test_artifacts_handlers.py``: MagicMock requests + a real
 :class:`ArtifactStore` and :class:`ArtifactFolderStore` rooted at tmp dirs.
@@ -298,7 +298,7 @@ class TestArtifactCreateWithFolder:
         assert len(_body(resp)["artifacts"]) == 2
 
 
-# ── Audit context (Mesh-2720 / AutoSDE security-controls) ────────────────────
+# ── Audit context (review-bot security-controls) ────────────────────
 
 
 class TestUpdateFolderAudit:
@@ -488,7 +488,7 @@ class TestFolderIconRedaction:
 
 class TestMixedInternalPathRegistration:
     def test_artifact_folders_is_a_mixed_internal_path(self) -> None:
-        """Regression (fork adaptation of Mesh-2720): the 5 artifact_folder_*
+        """Regression (fork adaptation): the 5 artifact_folder_*
         MCP tools authenticate via X-Internal-Secret. token_auth prefix
         matching is ``path == p or path.startswith(p + "/")``, so
         "/api/artifact-folders" is NOT covered by the "/api/artifacts" entry

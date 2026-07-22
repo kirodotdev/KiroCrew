@@ -532,7 +532,7 @@ def _reset_platform_context(monkeypatch):
     the standalone default on next access.
 
     Also pins ``KIROCREW_PROFILE=standalone`` by default so a dev box that has a
-    real ``~/.midway`` directory does not make ``boot_platform`` resolve the
+    real SSO-marker directory does not make ``boot_platform`` resolve the
     ``amazon`` profile and fail closed (no companion installed) for the many
     pre-existing tests that drive ``run_gateway`` / boot.  A test that wants the
     amazon profile overrides this env via its own ``monkeypatch.setenv`` (it

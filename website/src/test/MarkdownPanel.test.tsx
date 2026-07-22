@@ -68,7 +68,7 @@ describe('MarkdownPanel OverflowMenu', () => {
     expect(writeText).toHaveBeenCalledExactlyOnceWith('')
   })
 
-  // ── Phase 6 (Mesh-1654): Add to artifacts (no-modal flow) ─────────────
+  // ── Phase 6: Add to artifacts (no-modal flow) ─────────────
 
   // ── Coverage push for new hook paths ────────────────────────────────────
 

@@ -1,4 +1,4 @@
-"""Tests for Mesh-133 temporary chat mode (dashboard + Slack)."""
+"""Tests for temporary chat mode (dashboard + Slack)."""
 
 from __future__ import annotations
 

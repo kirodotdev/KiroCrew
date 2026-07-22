@@ -6,7 +6,7 @@ import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 
 /**
- * Regression tests for the terminal web-font refit (Mesh-2148, CR-281899628).
+ * Regression tests for the terminal web-font refit.
  *
  * `remeasureAndFit` works around the absence of a public xterm "re-measure now"
  * API by toggling `term.options.fontFamily` to trigger xterm's internal
@@ -55,7 +55,7 @@ describe('remeasureAndFit', () => {
   it('is pinned to xterm 5.5.x — the version whose CharSizeService re-measures on a fontFamily change', () => {
     // If this fails, xterm was bumped past 5.5. Before updating the pin,
     // re-verify remeasureAndFit's fontFamily toggle still forces a
-    // CharSizeService re-measure (otherwise the Mesh-2148 clipping regresses
+    // CharSizeService re-measure (otherwise the clipping regresses
     // silently — there is no public re-measure API to depend on instead).
     expect(xtermVersion).toMatch(/^5\.5\./)
   })

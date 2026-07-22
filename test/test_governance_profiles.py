@@ -153,7 +153,7 @@ def test_extends_missing_parent_still_denies_its_surface(profiles_dir):
     # resolves to deny-all (fail-closed), not None (which would fall through to
     # the policy ceiling alone, bypassing operator narrowing). Mirrors
     # test_invalid_profile_with_valid_bind_still_denies_its_surface for the
-    # Pass-2 (extends) path. (CR-284272012 Heimdall blocking finding.)
+    # Pass-2 (extends) path. (security-review blocking finding.)
     _write(
         profiles_dir,
         "cron",
@@ -210,7 +210,7 @@ def test_extends_chain_rejection_is_order_independent(profiles_dir):
     # files happen to sort.  Here the mid-parent ``mmm`` sorts BEFORE the child
     # ``zzz`` (so it is composed first, clearing its live ``extends``); a verdict
     # read from the live dict would then WRONGLY compose ``zzz`` (fail-open).  The
-    # snapshot-of-original-extends fix must still deny-all.  (CR-284272012.)
+    # snapshot-of-original-extends fix must still deny-all.
     _write(profiles_dir, "bbb", {"name": "bbb", "tools": {"mode": "allow", "allow": ["read"]}})
     _write(
         profiles_dir,

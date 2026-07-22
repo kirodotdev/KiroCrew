@@ -331,7 +331,7 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   )
 }
 
-// ── Folders (Mesh-2720) ──────────────────────────────────────────────────
+// ── Folders ──────────────────────────────────────────────────
 // The library's DnD has only `folder-drop` droppables (folder cards/rows,
 // breadcrumb segments, the Unfiled lane), so pointer containment is the whole
 // story: a drop target is "over" only while the cursor is inside it. No
@@ -690,7 +690,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     : ''
   return (
     // Draggable onto folder cards / breadcrumb segments / table folder rows
-    // (Mesh-2720). PointerSensor's activation distance keeps plain clicks
+    //. PointerSensor's activation distance keeps plain clicks
     // opening the card.
     <DndDraggable id={`artifact:${a.slug}`} data={{ type: 'artifact', slug: a.slug, name: a.name, folderId: a.folder_id || '' } satisfies LibraryDrag}>
       {({ setNodeRef, listeners, isDragging }) => (
@@ -1112,7 +1112,7 @@ function FolderRow({ folder, folders, depth, expanded, onToggle, actions, dropHi
 
 /** Nested, collapsible tree table (browse mode): folders in pre-order with
  * their artifacts indented beneath, Unfiled at the end. Collapsed by default —
- * expansion is client-local (localStorage), by design (Mesh-2720 §2.5). */
+ * expansion is client-local (localStorage), by design (§2.5). */
 function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, materializingPath = null }: {
   items: Artifact[]
   folders: ArtifactFolder[]
@@ -1245,7 +1245,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
   )
 
-  // ── Folder browse scope (Mesh-2720) ──────────────────────────────────────
+  // ── Folder browse scope ──────────────────────────────────────
   // The open folder rides the URL (?folder=<id>) so gallery navigation is
   // back-button-friendly and linkable. Any active filter bypasses folder
   // scoping entirely — matches show flat across all folders.

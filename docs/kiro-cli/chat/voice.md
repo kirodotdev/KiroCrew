@@ -213,8 +213,8 @@ Polly only verifies that the `aws` CLI is on `PATH`, not that credentials are
 valid. If your AWS credentials are expired or missing, the `aws polly`
 invocation fails inside synthesis, is logged, and the reply falls back to
 text — **no ephemeral is posted** in this case. If voice replies stop working
-after an `ada` token expires, run `ada credentials update` in your terminal
-and try again.
+after your AWS credentials expire, refresh them (e.g. `aws configure` or your
+credential provider) and try again.
 
 ### Content Handling
 
@@ -234,8 +234,8 @@ Responses are cleaned for natural speech before synthesis:
   calls the AWS CLI (`aws polly synthesize-speech`) under the hood, so any
   credential method the CLI supports will work:
 
-  1. Run `ada credentials update --account <ACCOUNT_ID> --role <ROLE> --profile polly`
-     in your terminal to set up a named profile.
+  1. Run `aws configure --profile polly` (or your credential provider) in your
+     terminal to set up a named profile.
   2. In **Settings → Chat → Voice (TTS)**, enter `polly` in the
      **AWS Profile** field (or set `"aws_profile": "polly"` in config.json).
   3. Leave the profile blank to use your default AWS CLI credentials

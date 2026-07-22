@@ -297,7 +297,7 @@ class ConversationLog:
         When *exclude_last_n* > 0, drops that many trailing raw entries
         BEFORE role filtering. Used by the dashboard to avoid re-injecting
         the just-flushed current-turn user message as history when the
-        background flush wins the race against kiro-cli spawn (Mesh-1726).
+        background flush wins the race against kiro-cli spawn.
         """
         messages = self._read_messages(key)
         if exclude_last_n > 0:
@@ -1046,7 +1046,7 @@ class ConversationLog:
         logger.info("Rotated session file %s (%d → %d lines)", path.name, len(lines), len(kept))
 
 
-# ── Module-level helpers for auto skill eligibility (Mesh-677) ──
+# ── Module-level helpers for auto skill eligibility ──
 #
 # Kept at module level so they're trivially unit-testable without
 # instantiating HistoryConsolidator.
@@ -1144,7 +1144,7 @@ class HistoryConsolidator:
         history_idle_secs: float = 3 * 3600,
         vector_store: "VectorMemoryStore | None" = None,
         migrated: bool = False,
-        # ── Hermes-style auto skill creation (Mesh-677) ──
+        # ── Auto skill creation ──
         # All-default so callers unaware of this feature continue to work.
         skills_loader: "SkillsLoader | None" = None,
         auto_skills_enabled: bool = False,
@@ -1377,7 +1377,7 @@ class HistoryConsolidator:
                     "implicit corrections the user made without saying 'remember'."
                 )
 
-            # ── Hermes auto skill creation (Mesh-677) ──
+            # ── Auto skill creation ──
             # Only eligible when the feature is enabled, we have a loader to
             # write to, we're on the history path (so prefs-only doesn't retrigger
             # extraction), and the session has enough tool calls to be non-trivial.
@@ -1466,7 +1466,7 @@ class HistoryConsolidator:
             ):
                 await run_in_embed_pool(self._save_lessons, raw_lessons)
 
-            # Auto skill creation / refinement (Mesh-677, Hermes loop).
+            # Auto skill creation / refinement.
             # Guarded by flag + eligibility — failures are logged, never fatal.
             if auto_skills_eligible:
                 try:

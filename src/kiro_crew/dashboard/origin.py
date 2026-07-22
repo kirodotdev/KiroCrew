@@ -433,7 +433,7 @@ def build_allowed_origins(
 def build_allowed_hosts(allowed_origins: set[str]) -> set[str]:
     """Derive the ``Host``-header allowlist from the CSRF origin allowlist.
 
-    DNS-rebinding defense-in-depth (AVP-23427): the ``Host`` header must name a
+    DNS-rebinding defense-in-depth: the ``Host`` header must name a
     host we actually serve. We reuse the SAME source of truth as the CSRF Origin
     check (``allowed_origins``) so the two layers can never drift — every origin
     the dashboard trusts contributes its hostname. The comparison is
@@ -483,7 +483,7 @@ def check_origin(
     origin_base = "/".join(origin.split("/")[:3]) if "://" in origin else ""
     if origin_base in allowed:
         return True
-    # Same-origin loopback fallback (Mesh-1864): allow a loopback Origin when it
+    # Same-origin loopback fallback: allow a loopback Origin when it
     # matches the request's own Host, i.e. a genuine same-origin request. This
     # is what the multi-instance embedded iframe produces — it is served at
     # ``<host>:<tunnelPort>`` and opens its WebSocket to that very same
@@ -511,7 +511,7 @@ def check_origin(
 def check_host(request: web.Request) -> bool:
     """Validate the request ``Host`` header against the dashboard's host allowlist.
 
-    Independent DNS-rebinding barrier (AVP-23427). A rebound request arrives on
+    Independent DNS-rebinding barrier. A rebound request arrives on
     the loopback socket (the victim's browser resolved the attacker domain to
     127.0.0.1) but carries the attacker's domain in ``Host``. So, unlike
     :func:`check_origin`, this:

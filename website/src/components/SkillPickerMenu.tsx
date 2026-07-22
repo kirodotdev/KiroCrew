@@ -6,11 +6,11 @@ import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 
-// Mesh-588 — $skill inline trigger autocomplete.
+// — $skill inline trigger autocomplete.
 // Mirrors FilePickerMenu but lists skills (from /api/skills, all sources:
 // kirocrew + workspace + AIM). Selecting one inserts a `$leaf` token; the
 // backend SkillsLoader.resolve_dollar_skills then expands it (allowlist match
-// on the leaf segment — no path is constructed from user input, per ARCC BSC1).
+// on the leaf segment — no path is constructed from user input, per input-validation guidance).
 
 interface SkillItem {
   key: string          // full key, e.g. "WorkforceEmploymentKnowledgeBase/oncall-handover"

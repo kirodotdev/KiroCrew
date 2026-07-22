@@ -1,6 +1,6 @@
 """Tests for the `persistent_session` flag on the `cron_add` MCP tool.
 
-Covers Mesh-1026. The flag must be:
+Covers. The flag must be:
 - Exposed in the tool input schema (discoverable by LLMs)
 - Default True when omitted (backward-compat)
 - Stored on the CronJob when False
@@ -89,7 +89,7 @@ class TestCronAddPersistentSession:
 class TestCronAddPersistentSessionValidation:
     """validation.py enforces the flag's type before it reaches _call_tool_inner.
 
-    Mesh-1026 security follow-up (AutoSDE comment on CR-271270113):
+    security follow-up (review-bot comment on):
     raw LLM-supplied args must pass through CRON_ADD_SCHEMA, never be
     consumed directly. This class pins the validator's contract.
     """

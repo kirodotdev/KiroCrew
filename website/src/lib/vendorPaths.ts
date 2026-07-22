@@ -1,7 +1,7 @@
 // Single source of truth for the same-origin Tailwind v4 browser runtime asset.
 //
 // Consumed by three sites that MUST agree, or the runtime silently 404s and
-// every widget/artifact renders unstyled (Mesh-2518 would regress):
+// every widget/artifact renders unstyled (would regress):
 //   - src/lib/widgetSrcdoc.ts : the <script src> the sandboxed iframe loads
 //   - vite.config.ts (dev)    : configureServer middleware SERVE_PATH
 //   - vite.config.ts (build)  : generateBundle emit fileName
@@ -14,5 +14,5 @@
 export const TAILWIND_RUNTIME_PATH = '/vendor/tailwindcss-browser.js'
 
 /** Build-time source of the runtime, copied from the tracked @tailwindcss/browser
- * npm dependency (NOT a committed blob — BSC14 supply-chain). vite.config.ts only. */
+ * npm dependency (NOT a committed blob — supply-chain guidance). vite.config.ts only. */
 export const TAILWIND_RUNTIME_SRC = './node_modules/@tailwindcss/browser/dist/index.global.js'

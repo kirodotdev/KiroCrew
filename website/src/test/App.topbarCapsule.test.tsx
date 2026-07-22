@@ -77,8 +77,8 @@ describe('App top bar — readout capsule collapse', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const dot = await screen.findByLabelText('Gateway connected')
     expect(dot.getAttribute('aria-expanded')).toBe('true')
-    // metrics segment visible while expanded (the fork capsule has no mwinit
-    // segment — Midway is stubbed in this fork)
+    // metrics segment visible while expanded (the fork capsule has no
+    // enterprise-SSO segment — that SSO flow is stubbed in this fork)
     expect(screen.getByLabelText('System metrics')).toBeTruthy()
 
     fireEvent.click(dot)

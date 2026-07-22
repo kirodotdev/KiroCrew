@@ -9,7 +9,7 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 )
 
 /**
- * Tests for the Search Everywhere palette (Mesh-2151, step 12):
+ * Tests for the Search Everywhere palette (step 12):
  *  - {@link useCommandPalette} global trigger (⌘K / Ctrl+K + double-Shift), and
  *  - the {@link CommandPalette} modal's open render, Tab tab-scoping, Enter
  *    activation, and close paths (Escape wiring + close button + row click).
@@ -352,7 +352,7 @@ describe('CommandPalette — keyboard & activation', () => {
 })
 
 /**
- * Per-type Enter matrix — central {@link dispatchEnter} routing (Mesh-2151 §2,
+ * Per-type Enter matrix — central {@link dispatchEnter} routing (§2,
  * task 28).
  *
  * Drives the palette's active (All) tab to render exactly one fixture result

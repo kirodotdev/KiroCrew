@@ -1,8 +1,8 @@
 """Example dynamic workflow: KiroCrew-native scheduled morning triage.
 
-Shows the primitives that make KiroCrew workflows MORE than Claude Code
-workflows — persistence, cron self-scheduling, memory-aware behavior, nudges,
-and Slack delivery. Illustrative only — DSL not implemented yet.
+Shows the primitives that make KiroCrew workflows MORE than an external agent
+CLI's workflows — persistence, cron self-scheduling, memory-aware behavior,
+nudges, and Slack delivery. Illustrative only — DSL not implemented yet.
 
 Author once; it re-arms itself daily and learns which finders are noisy.
 """
@@ -44,6 +44,7 @@ async def workflow(ctx):
 
     # --- triage each ticket in parallel; nudge any step that stalls ---
     ctx.phase("Triage")
+
     async def triage_one(t):
         return await ctx.agent(
             f"Triage ticket {t['id']}: {t.get('title', '')}",

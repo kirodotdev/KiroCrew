@@ -1,4 +1,4 @@
-"""Tests for incognito/temporary session support (Mesh-133).
+"""Tests for incognito/temporary session support.
 
 Non-persistent sessions disable memory consolidation while keeping
 conversation log persistence intact for tab recovery and gateway restart.
@@ -270,7 +270,7 @@ class TestResumeFromHistory:
 
     @pytest.mark.asyncio
     async def test_resume_missing_memory_mode_defaults_persistent(self, tmp_path, monkeypatch):
-        """Legacy sessions (pre-Mesh-133) without memory_mode metadata default to persistent."""
+        """Legacy sessions (pre-) without memory_mode metadata default to persistent."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         _write_session(state.conversation_log, "legacy", [("user", "hi")])
@@ -534,7 +534,7 @@ class TestMcpCoreSessionKeyPassthrough:
         assert req.get_header("X-session-key") is None
 
     def test_post_surfaces_http_error_json_body(self):
-        """Regression (P451748812): on an HTTP 400 the structured
+        """Regression: on an HTTP 400 the structured
         ``{"error": ...}`` body lives in ``HTTPError.read()``, not ``str(e)``
         (which is only ``"HTTP Error 400: Bad Request"``). ``_post`` must
         decode the body so the learn_add wrapper's ``unknown session`` mapping
@@ -580,7 +580,7 @@ class TestMcpCoreSessionKeyPassthrough:
     def test_post_redacts_credentials_in_http_error_body(self):
         """An HTTP error body is untrusted external content — credentials in it
         must be redacted before the error dict reaches a caller that may echo
-        it to the LLM/dashboard/Slack (AutoSDE security-controls rule).
+        it to the LLM/dashboard/Slack (review-bot security-controls rule).
         """
         import io
         import urllib.error
@@ -618,7 +618,7 @@ class TestMcpCoreSessionKeyPassthrough:
             )
             from kiro_crew.mcp_core import _call_tool_inner
             out = _call_tool_inner(
-                "learn_add", {"rule": "use conduit for ADA", "category": "tool"}
+                "learn_add", {"rule": "use tool-b for auth", "category": "tool"}
             )
 
         assert "not saved" in out.lower()
@@ -1195,7 +1195,7 @@ class TestSessionSlotRecovery:
     async def test_learn_add_allowed_for_bare_slack_thread_ts_without_jsonl(
         self, tmp_path, monkeypatch
     ):
-        """Regression (P451748812): a Slack thread keys its session off the
+        """Regression: a Slack thread keys its session off the
         bare ``thread_ts`` (e.g. ``1781215864.487849``), not a ``slack:``
         prefix. The first ``learn_add`` in a fresh thread arrives *before*
         the session JSONL is flushed (the transcript is written only after

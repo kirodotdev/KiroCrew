@@ -3,7 +3,7 @@
 The key invariant: cron execution and the periodic orphan-reaping sweeps use
 *separate* pools, so a burst of long-running concurrent cron jobs can never
 occupy all the maintenance threads and starve the sweeps that reap leaked
-kiro-cli/MCP children (the documented root cause of the loop wedge, Mesh-1968).
+kiro-cli/MCP children (the documented root cause of the loop wedge).
 """
 
 from __future__ import annotations

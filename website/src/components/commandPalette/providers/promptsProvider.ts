@@ -9,7 +9,7 @@ import { usePaletteActions } from '../paletteActions'
 import type { Result, ResourceProvider } from '../types'
 
 /**
- * Prompts provider for the Search Everywhere command palette (Mesh-2151).
+ * Prompts provider for the Search Everywhere command palette.
  *
  * Backs the **Prompts** tab with the saved prompts & Agent SOPs returned by
  * `api.prompts()` (the `/api/prompts` endpoint that {@link PromptsTab} renders
@@ -27,7 +27,7 @@ import type { Result, ResourceProvider } from '../types'
  * React-Query key `['prompts']` (shared with `PromptsTab` and the inline
  * `@`-picker) so reopening the palette is free. Highlight `indices` index into
  * the rendered `title` and are emitted as React `<mark>` nodes by the palette,
- * never as HTML strings (AUTOSDE `frontend-security`).
+ * never as HTML strings (`frontend-security` lint rule).
  */
 
 const PROVIDER_ID = 'prompts'
@@ -74,7 +74,7 @@ export interface PromptsProviderDeps {
   previewPrompt?: (ref: PromptRef) => void
 }
 
-/** Icon convention: lucide element with `lucide-inline` (AUTOSDE use-lucide-icons). */
+/** Icon convention: lucide element with `lucide-inline` (`use-lucide-icons` lint rule). */
 function promptIcon() {
   return createElement(ScrollText, { className: 'lucide-inline' })
 }
@@ -132,7 +132,7 @@ export function createPromptsProvider(deps: PromptsProviderDeps): ResourceProvid
  * React hook that returns a live Prompts provider wired to React-Query and the
  * chat store.
  *
- * Per the AUTOSDE `use-react-query` rule the prompt list is fetched through
+ * Per the `use-react-query` lint rule the prompt list is fetched through
  * React-Query under the key `['prompts']` (identical to `PromptsTab` and the
  * inline `@`-picker, so the cache is shared). `queryClient.fetchQuery` is used
  * rather than `useQuery` because a {@link ResourceProvider}'s `search` is an

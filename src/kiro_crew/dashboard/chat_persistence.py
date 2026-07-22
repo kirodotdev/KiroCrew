@@ -85,7 +85,8 @@ _REASONING_EFFORT_FALLBACK = EFFORT_VALUES
 
 # Runtime state: validation set + ordered list (ACP order preserved).
 # Persisted JSON is untrusted input — values flow into a subprocess CLI arg
-# (Claude Code's --effort flag) and the ACP /effort slash command, so BSC1
+# (the removed standalone provider's --effort flag) and the ACP /effort slash
+# command, so BSC1
 # set-membership validation applies on the read path too, not just the API.
 _reasoning_effort_values: set[str] = set(_REASONING_EFFORT_FALLBACK)
 _reasoning_effort_ordered: list[str] = list(_REASONING_EFFORT_FALLBACK_ORDER)
@@ -833,7 +834,7 @@ def _save_slot_to_history(
             meta_line["folder_id"] = slot.folder_id
         if slot._app:
             meta_line["app"] = slot._app
-        # Artifact companion binding (Mesh-2772) — persisted so a bound
+        # Artifact companion binding — persisted so a bound
         # session restored after a gateway restart (or resumed from the
         # History page) comes back as the artifact's active bound session.
         if slot._artifact:

@@ -13,7 +13,7 @@ function refs() {
 
 function mk(id: string): ArtifactComment {
   return {
-    id, origin: 'local', scope: 'private', author: 'nrb', is_agent: false,
+    id, origin: 'local', scope: 'private', author: 'alex', is_agent: false,
     body: 'x', thread_id: id, status: 'open', sync_state: 'local_only',
     created_at: '', updated_at: '',
   }

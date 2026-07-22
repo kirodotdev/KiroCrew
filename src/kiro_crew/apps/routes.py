@@ -110,7 +110,7 @@ async def _run_lifecycle_script(
     from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
     base_cmd = ["/bin/bash", "-c", safe_script]
     sandboxed_cmd, cleanup = wrap_argv(base_cmd, mode="standard")
-    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     env = minimal_env(NONINTERACTIVE="1")
     if extra_env:
         env.update(extra_env)
@@ -140,7 +140,7 @@ async def _run_lifecycle_script(
                 # killpg on POSIX, taskkill /T on Windows — via platform_compat.
                 # Async variant offloads the Windows taskkill spawn to
                 # subprocess_executor so this lifecycle-script timeout path
-                # never blocks the event loop on taskkill.exe (Mesh-2801).
+                # never blocks the event loop on taskkill.exe.
                 await platform_compat.kill_process_tree_async(
                     proc.pid, platform_compat.SIGTERM
                 )
@@ -279,7 +279,7 @@ def collect_publish_providers(
     Pure and testable — pass ``configured_resolver(app_name, pp_dict) -> bool`` to avoid
     touching the filesystem in tests. Each returned provider carries a ``configured``
     flag so the artifact page can render the publish action when configured or a
-    "set it up" link otherwise. Built-in providers (e.g. Artifactory) are registered
+    "set it up" link otherwise. Built-in providers (e.g. the internal registry) are registered
     on the frontend; this function contributes only the app-declared ones.
 
     Endpoint allowlist (§9.3 security): app-declared provider endpoints MUST match
@@ -336,7 +336,7 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
 
     Returns enabled apps' publish providers plus the core deploy provider (folded
     from the former deploy_web app), each with a ``configured`` flag. Built-in
-    providers (Artifactory) are registered frontend-side and are not returned here.
+    providers (the internal registry) are registered frontend-side and are not returned here.
     """
     providers = collect_publish_providers(list_apps())
     # Core deploy provider (always present, regardless of any app install state)
@@ -814,7 +814,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         if resources == "gateway":
             reg = register_app(name)
             backend = await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
-            # MCP re-registration is HEALTH-GATED (review CR-284432051). register_app ran before
+            # MCP re-registration is HEALTH-GATED. register_app ran before
             # the backend was up, so an HTTP MCP server with backend.port:"auto" carries the
             # manifest's illustrative port. The backend's health-check loop calls
             # _gate_mcp_registration once /health passes, rewriting the url to the real allocated
@@ -1041,7 +1041,7 @@ async def handle_open_app(request: web.Request) -> web.Response:
         from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
         base_cmd = ["/bin/sh", "-c", open_cmd]
         sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="standard")
-        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.DEVNULL,
@@ -1501,7 +1501,7 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
         sandboxed_cmd, _cleanup = wrap_argv(
             clone_cmd, mode=_context_clone_sandbox_mode(git_url)
         )
-        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,

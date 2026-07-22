@@ -25,7 +25,7 @@ function seeded(keys: string[], activeSlot: string | null = null) {
   return state
 }
 
-describe('chatSlice sseSlots reconciliation (Mesh-2835)', () => {
+describe('chatSlice sseSlots reconciliation', () => {
   it('prunes per-slot caches for slots absent from the authoritative list', () => {
     const state = seeded(['chat-1', 'chat-2', 'chat-3'])
     const next = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-3')]))
@@ -75,7 +75,7 @@ describe('chatSlice sseSlots reconciliation (Mesh-2835)', () => {
   })
 })
 
-describe('notificationsSlice ring cap (Mesh-2835)', () => {
+describe('notificationsSlice ring cap', () => {
   const notif = (ts: number): Notification => ({ kind: 'cron', title: `t${ts}`, body: 'b', ts: String(ts) })
 
   it('caps items at NOTIFICATIONS_RING_CAP, dropping oldest first', () => {

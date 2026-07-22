@@ -8,9 +8,9 @@ packaging.
 
 Sources:
 - `openclaw` — Node/TS pnpm monorepo shipping an `openclaw` CLI + long-running
-  Gateway daemon + native macOS/iOS/Android apps. (`/Users/zedmor/workplace/openclaw`)
+  Gateway daemon + native macOS/iOS/Android apps. (local checkout `openclaw`)
 - `hermes-agent` — Python (uv) project shipping a `hermes` CLI + gateway +
-  Electron/Tauri desktop. (`/Users/zedmor/workplace/hermes-agent`)
+  Electron/Tauri desktop. (local checkout `hermes-agent`)
 - `kirocrew` — this repo.
 
 ---
@@ -104,7 +104,7 @@ deliberately **delegates all backend auth to `kiro-cli`**.
 | | openclaw | hermes-agent | **KiroCrew** |
 |---|---|---|---|
 | Auth surface | inside `openclaw onboard` | inside `hermes setup` / `hermes … auth login` | **`kiro-cli login`** (external) |
-| Mechanisms | API key; **reuse existing CLI logins** (Claude Code/Codex/Gemini) *tested with a real completion before saving*; **PKCE OAuth** w/ localhost:1455 callback + paste-URL for headless | API key (`.env` chmod 600); **device-code OAuth** for Nous/Codex/xAI/MiniMax; reuse Qwen CLI login; Anthropic paste-token | GitHub / Google / **AWS Builder ID** / **IAM Identity Center** / Okta / Entra — all via kiro-cli's own browser + device-code flow |
+| Mechanisms | API key; **reuse existing CLI logins** (an external agent CLI / Codex / Gemini) *tested with a real completion before saving*; **PKCE OAuth** w/ localhost:1455 callback + paste-URL for headless | API key (`.env` chmod 600); **device-code OAuth** for Nous/Codex/xAI/MiniMax; reuse Qwen CLI login; Anthropic paste-token | GitHub / Google / **AWS Builder ID** / **IAM Identity Center** / Okta / Entra — all via kiro-cli's own browser + device-code flow |
 | Subscription/purchase | bring-your-own provider acct; no billing in-app | **Nous Portal** subscription (one plan, 300+ models) via browser OAuth | **Kiro subscription** — handled entirely by kiro-cli / kiro.dev; KiroCrew does not reimplement it |
 | Credential storage | per-agent SQLite (`auth-profiles.json`), **SecretRefs** (env/file/exec, 1Password/Vault/pass), process-local sentinels | `~/.hermes/.env` (600) + `~/.hermes/auth.json` (file-locked OAuth store) | kiro-cli owns its own creds; KiroCrew stores none for the LLM |
 | AWS as LLM | Bedrock via `mode:"aws-sdk"` | **Bedrock via boto3 full credential chain** — "on EC2/ECS/Lambda attach an IAM role, no keys" | (Bedrock provider was removed in the OSS fork; ACP/kiro-cli only) |

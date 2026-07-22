@@ -1,4 +1,4 @@
-"""Tests for mwinit WebSocket handler with RSA-OAEP encryption."""
+"""Tests for the SSO-login WebSocket handler stub."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def mock_sel():
         yield m
 
 
-class TestMwinitWsAuth:
+class TestSsoLoginWsAuth:
     """Test authentication checks."""
 
     @pytest.mark.asyncio
@@ -28,7 +28,7 @@ class TestMwinitWsAuth:
         request.get.return_value = None  # no user — middleware misconfigured
         request.remote = "127.0.0.1"
 
-        response = await handlers.api_mwinit_ws(request)
+        response = await handlers.api_sso_login_ws(request)
 
         assert isinstance(response, web.Response)
         assert response.status == 401
@@ -50,7 +50,7 @@ class TestMwinitWsAuth:
         mock_ws.closed = False
 
         with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
-            result = await handlers.api_mwinit_ws(request)
+            result = await handlers.api_sso_login_ws(request)
 
         mock_ws.prepare.assert_called_once_with(request)
         mock_sel.return_value.log_api_access.assert_called()
@@ -60,12 +60,12 @@ class TestMwinitWsAuth:
         assert result is mock_ws
 
 
-class TestMwinitWsLogging:
+class TestSsoLoginWsLogging:
     """Test SEL audit logging."""
 
     @pytest.mark.asyncio
     async def test_logs_ws_open(self, mock_sel) -> None:
-        """Logs mwinit.ws.open on successful auth."""
+        """Logs sso_login.ws.open on successful auth."""
         request = MagicMock()
         request.get.return_value = "testuser"
         request.remote = "127.0.0.1"
@@ -77,14 +77,14 @@ class TestMwinitWsLogging:
         mock_ws.closed = False
 
         with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
-            await handlers.api_mwinit_ws(request)
+            await handlers.api_sso_login_ws(request)
 
         calls = mock_sel.return_value.log_api_access.call_args_list
         ops = [c.kwargs.get("operation") or c[1].get("operation") for c in calls]
-        assert "mwinit.ws.open" in ops
+        assert "sso_login.ws.open" in ops
 
 
-class TestMwinitWsIdleTimeout:
+class TestSsoLoginWsIdleTimeout:
     """Test WebSocket idle timeout behavior."""
 
     @pytest.mark.asyncio
@@ -101,6 +101,6 @@ class TestMwinitWsIdleTimeout:
         mock_ws.closed = False
 
         with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws) as mock_ws_cls:
-            await handlers.api_mwinit_ws(request)
+            await handlers.api_sso_login_ws(request)
 
         mock_ws_cls.assert_called_once_with(heartbeat=30, timeout=300)

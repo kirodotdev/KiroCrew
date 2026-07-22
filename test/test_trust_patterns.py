@@ -1,4 +1,4 @@
-"""Tests for session-scoped trusted patterns (Mesh-1544)."""
+"""Tests for session-scoped trusted patterns."""
 
 from __future__ import annotations
 

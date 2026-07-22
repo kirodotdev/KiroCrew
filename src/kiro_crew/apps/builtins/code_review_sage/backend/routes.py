@@ -9,7 +9,7 @@ across CRs, not per-CR ``/api/spawn`` sub-agents — so reviews run silently.
 
 Why this exists: when an LLM orchestrator session was merely *asked* to shell
 ``review_driver.py``, it could instead run Phase 1 inline and stop — leaving a
-gate-only record, a stale report, and no Phase 2 (observed on CR-280647712).
+gate-only record, a stale report, and no Phase 2 (observed in practice).
 Routing the kickoff through this route removes that discretion entirely.
 
 Registered at gateway startup by ``apps/routes.py:register_app_routes`` (loaded

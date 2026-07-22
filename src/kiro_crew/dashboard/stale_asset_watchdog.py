@@ -20,7 +20,7 @@ existed").
 
 The presence check mirrors ``handlers/core.py:index()``'s serve criterion
 exactly (``dist/index.html`` is a file — the legacy ``dashboard.html`` fallback
-was removed, Talos V2285871874), so a partial-prune state where an empty
+was removed), so a partial-prune state where an empty
 ``dist/`` directory node remains cannot mask a genuine vanish.
 """
 
@@ -74,7 +74,7 @@ def assets_present() -> bool:
 
     Mirrors the criterion used by ``handlers/core.py:index()``: the React
     bundle's ``dist/index.html`` must be present (the legacy ``dashboard.html``
-    fallback was removed — Talos V2285871874). Checking ``_DIST_INDEX.is_file()``
+    fallback was removed). Checking ``_DIST_INDEX.is_file()``
     (not ``_DIST_DIR.is_dir()``) is critical: an empty ``dist/`` directory node
     is a valid partial-prune state where the handler serves the guidance page,
     and the watchdog must recognise that as "assets vanished."

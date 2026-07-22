@@ -134,7 +134,7 @@ class TestApplySecurityHeaders:
             assert "https://*" + " " not in frame_src  # no bare https wildcard
 
     def test_defense_in_depth_headers_present(self) -> None:
-        """P475357944 (CWE-1021/693/200/319): by default the pipeline sets
+        """(CWE-1021/693/200/319): by default the pipeline sets
         clickjacking / MIME-sniffing / referrer / HSTS headers + CSP
         frame-ancestors 'self'. With no embed parent token, the posture is
         unchanged: bare 'self' + X-Frame-Options."""

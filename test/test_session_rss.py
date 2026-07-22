@@ -206,7 +206,7 @@ class TestRssThresholdCheck:
 
     @pytest.mark.asyncio
     async def test_child_map_built_once_per_tick(self) -> None:
-        # AutoSDE perf finding: _build_child_map scans all of /proc, so it must
+        # review-bot perf finding: _build_child_map scans all of /proc, so it must
         # run once per sweep, not once per candidate.
         manager = _make_manager(rss_max_mb=1000)
         manager._sessions["dashboard:a"] = _session_stub(busy=False)

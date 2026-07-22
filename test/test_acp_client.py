@@ -245,7 +245,7 @@ class TestAcpClientToolHooks:
         client._observed_tool_calls["tc1"] = ("Reading /x/SKILL.md", "read")
         # tool_output embeds a real AWS-key credential pattern inside SKILL.md
         # frontmatter: the Post-fire path MUST redact it (parity with chat_runner's
-        # PostToolUse) before handing it to the hook engine — addresses AutoSDE
+        # PostToolUse) before handing it to the hook engine — addresses review-bot
         # security-controls.
         raw_output = "---\nname: x\nsecret: AKIAIOSFODNN7EXAMPLE\n---"
         await client._maybe_fire_post_tool_hooks(self._result_ev(output=raw_output))
@@ -269,7 +269,7 @@ class TestAcpClientToolHooks:
     async def test_post_fire_truncates_tool_output_to_2000(self, monkeypatch):
         """Post-fire MUST bound tool_output to 2000 chars before firing user hooks.
 
-        Regression for CR-288022569 NIT: the redacted tool_output was passed to
+        Regression guard: the redacted tool_output was passed to
         the hook engine unbounded — chat_runner/subagent.py cap it at [:2000].
         Redact-then-truncate is deliberate (redact the FULL output first so a
         secret past char 2000 is still scrubbed, THEN truncate). The credential
@@ -296,7 +296,7 @@ class TestAcpClientToolHooks:
     async def test_pre_fire_redacts_credential_in_tool_input(self, monkeypatch):
         """Pre-fire MUST redact tool_input before handing it to the hook engine.
 
-        Regression for CR-288022569 AutoSDE security-controls: tool_event.tool_input
+        Regression for review-bot security-controls: tool_event.tool_input
         is LLM-generated and was passed to user hook scripts RAW. It must be
         redacted (credentials + exfil URLs) first, mirroring the Post path. A JSON
         string is used because fire_tool_hooks json.loads the input; the marker
@@ -320,7 +320,7 @@ class TestAcpClientToolHooks:
     async def test_pre_fire_redacts_credential_in_dict_tool_input(self, monkeypatch):
         """A DICT tool_input containing a credential MUST also be redacted.
 
-        Regression for CR-288022569 AutoSDE security-controls: the isinstance(str)
+        Regression for review-bot security-controls: the isinstance(str)
         guard bypassed redaction for dict/list inputs, so LLM-generated dict inputs
         reached user hook scripts RAW. Non-str inputs are now serialized to JSON,
         redacted, and passed as a redacted JSON string (fire_tool_hooks json.loads
@@ -344,7 +344,7 @@ class TestAcpClientToolHooks:
     async def test_pre_fire_uses_unknown_tool_name_when_title_none(self, monkeypatch):
         """A title-less tool_call MUST fire with tool_name 'unknown' (Post parity).
 
-        Regression for CR-288022569: the Pre path passed tool_event.title (which may
+        Regression for the Pre path passed tool_event.title (which may
         be None) while the Post path recovers a name and falls back — the Pre path
         now applies the same 'unknown' fallback so a hook matcher sees a consistent
         name across Pre and Post.
@@ -364,7 +364,7 @@ class TestAcpClientToolHooks:
         """A tool_result whose tool_call_id is absent from _observed_tool_calls
         MUST fire Post with tool_name 'unknown' (Pre parity), not '' (empty string).
 
-        Regression for CR-288022569: the Post path previously used a ("", "")
+        Regression for the Post path previously used a ("", "")
         default tuple, so a missing/unrecorded tool_call resolved to an empty
         tool_name — inconsistent with the Pre path's 'unknown' fallback.
         """
@@ -417,7 +417,7 @@ class TestAcpClientToolHooks:
     async def test_read_prompt_response_update_fires_hooks(self, monkeypatch):
         """send_message -> _read_prompt_response (worker-pool path) fires hooks.
 
-        Regression for CR-288022569: worker-pool subagents (knowledge/llm_pool)
+        Regression for worker-pool subagents (knowledge/llm_pool)
         drive tools through send_message -> _read_prompt_response, not the stream
         _dispatch_events. Its update branch must fire Pre+Post hooks so those
         clients reach hook parity — the live gateway test caught an llm_pool
@@ -2229,7 +2229,7 @@ class TestDrainStderrRedaction:
 
 
 class TestDrainStderrSuppression:
-    """Mesh-1943: _drain_stderr drops high-frequency content-free adapter
+    """_drain_stderr drops high-frequency content-free adapter
     diagnostics (thinking_tokens "Unexpected case" lines) without warning or
     polluting the diagnostic ring buffer, while still proving liveness."""
 
@@ -6018,7 +6018,7 @@ class TestProcessMessageUnknownServerRequest:
 class TestFormatAcpError:
     """Tests for _format_acp_error — Bedrock-aware error rewriting.
 
-    Covers the bug filed at task 86089e43 (Mesh-1751): ACP backend errors used
+    Covers the bug filed at task 86089e43: ACP backend errors used
     to be surfaced as the raw JSON-RPC dict (`Prompt error: {'code': -32603,
     ...}`), which dead-ends users when the picker can't expose a valid
     alternative. The helper rewrites known Bedrock failures into actionable
@@ -6178,7 +6178,7 @@ class TestFormatAcpError:
         assert "AKIAIOSFODNN7EXAMPLE" not in warnings[0].getMessage()
 
     def test_internal_server_error_rewrite(self):
-        """The real transient 5xx repro (Mesh-2149, live 2026-06-14) must
+        """The real transient 5xx repro (live 2026-06-14) must
 
         classify as a momentary backend error rather than dumping the raw
         -32603 JSON-RPC dict at the user.
@@ -6311,7 +6311,7 @@ class TestFormatAcpError:
 
 class TestIsTransientRawError:
     """_is_transient_raw_error classifies retryability from the RAW JSON-RPC
-    error (Mesh-2356) so the verdict is independent of the formatted message."""
+    error so the verdict is independent of the formatted message."""
 
     def test_internal_server_error_is_transient(self):
         from kiro_crew.acp.client import _is_transient_raw_error
@@ -6342,7 +6342,7 @@ class TestIsTransientRawError:
 
         # 5xx signal carried in `message` (not `data`) must still be caught:
         # the classifier scans the combined haystack, so this no longer fails
-        # fast the way a data-only scan would (Mesh-2356 SHOULD-FIX). Auth is
+        # fast the way a data-only scan would (SHOULD-FIX). Auth is
         # still checked first, so an auth error with a stray 50x stays terminal.
         assert _is_transient_raw_error({"message": "InternalServerError", "data": ""}) is True
         assert _is_transient_raw_error({"message": "HTTP 503", "data": "Internal error"}) is True
@@ -7616,7 +7616,7 @@ class TestAcpClientIsShellSignal:
         """The permission event must read the cached signal with .get(), not
         .pop(): a later tool_call_update refinement for the same toolCallId
         reads the same cache, so popping would make it wrongly see is_shell=
-        False. Regression for the AutoSDE .pop()-consumes-the-entry bug."""
+        False. Regression for the review-bot .pop()-consumes-the-entry bug."""
         from kiro_crew.acp.client import AcpClient
 
         client = AcpClient(work_dir=tmp_path)

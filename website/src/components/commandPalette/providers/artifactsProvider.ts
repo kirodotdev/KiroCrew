@@ -10,7 +10,7 @@ import type { Artifact } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
 
 /**
- * Artifacts provider for the Search Everywhere command palette (Mesh-2151).
+ * Artifacts provider for the Search Everywhere command palette.
  *
  * Backs the **Artifacts** tab. Wraps `api.artifacts(...)` with the opt-in
  * `?snippet=1` + `?content=1` params (the artifact list endpoint's
@@ -23,7 +23,7 @@ import type { Result, ResourceProvider } from '../types'
  *
  * The backend does the relevance filtering (name + tags + description +
  * content), so the {@link fuzzyMatch} pass here is only for client-side
- * highlight indices on the returned titles (per AUTOSDE `frontend-security` —
+ * highlight indices on the returned titles (per the `frontend-security` lint rule —
  * highlights render as React `<mark>` nodes keyed off `indices`, never HTML
  * strings). Title matches additionally bias the client-side ordering; non-title
  * (body-only) matches are kept with a neutral score so backend hits are never
@@ -111,7 +111,7 @@ export function createArtifactsProvider(deps: ArtifactsProviderDeps): ResourcePr
  * React hook that returns a live Artifacts provider wired to React-Query and
  * the router.
  *
- * Per the AUTOSDE `use-react-query` rule the server fetch goes through
+ * Per the `use-react-query` lint rule the server fetch goes through
  * React-Query with the key `['palette', 'artifacts', q]`. `fetchQuery` is used
  * rather than `useQuery` because a {@link ResourceProvider}'s `search` is an
  * imperative call from the palette, not a render-time subscription. The list is

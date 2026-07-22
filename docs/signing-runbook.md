@@ -20,7 +20,7 @@ Key facts:
 - Bundle ID: `com.amazon.kiro.crew`
 - Signing account: `116101834266`. CI role: `kirocrew-signing-invoker` (OIDC,
   main + environment:prod only). S3 access role: `kirocrew-cdsigner-access`.
-- CDSigner endpoint: `https://api.signer.builder-tools.aws.dev` (SigV4,
+- CDSigner endpoint: `https://signing.example.com` (SigV4,
   service `signer-builder-tools`, region `us-west-2`).
 - The signing manifest is generated at sign time by
   `packaging/signing/generate-manifest.py` from the actual .app contents.

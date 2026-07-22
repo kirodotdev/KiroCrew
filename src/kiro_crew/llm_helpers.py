@@ -65,7 +65,7 @@ _TRANSIENT_MARKERS = (
     "dispatch failure",  # AWS SDK connector-level I/O failure (conn/DNS/TLS drop)
     "dispatchfailure",  # Rust DispatchFailure variant (unspaced)
     "is unavailable on bedrock",  # capacity/region rollout (formatted message)
-    "transient error (http 5xx)",  # _format_acp_error's generic-5xx message (Mesh-2356)
+    "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
 )
 
 
@@ -90,7 +90,7 @@ def _is_transient_acp_error(msg: str) -> bool:
 # interactive dashboard/Slack path (dashboard.chat_runner) consumes the ACP
 # stream directly and cannot funnel through stream_and_collect. These thin
 # wrappers let it reuse the SAME classifier, retry budget, and backoff curve —
-# one source of truth, no duplicated heuristics (Mesh-2150).
+# one source of truth, no duplicated heuristics.
 
 # Public name for the transient retry budget (number of retries after the
 # initial attempt). Re-exported so external callers don't import the private.
@@ -114,7 +114,7 @@ def acp_error_is_transient(exc: BaseException) -> bool:
     string-matching the formatted message for exceptions raised without the flag
     (legacy raise paths, non-``AcpError`` exceptions, tests).
 
-    Fixes Mesh-2356: ``_format_acp_error`` rewrites a generic 5xx into a friendly
+    Fixes a case where ``_format_acp_error`` rewrites a generic 5xx into a friendly
     string that the marker-based string classifier alone did not recognise, so
     the retry never fired."""
     flag = getattr(exc, "transient", None)
@@ -356,7 +356,7 @@ async def stream_and_collect(
             #     False so the inner arm doesn't compound their attempts.
             #   - `not result_text`: only retry if NO tokens have streamed yet.
             #     A partial response must not be retried — the re-run would
-            #     duplicate the already-emitted output (Mesh-1157).
+            #     duplicate the already-emitted output.
             if (
                 retry_transient
                 and not result_text

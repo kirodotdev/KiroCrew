@@ -1,6 +1,6 @@
 # RFC: Config System, Named Memory Stores & Plugin Architecture
 
-**Author:** zezhexu  
+**Author:** KiroCrew contributors  
 **Date:** 2026-03-25 (rev 2: 2026-03-25)  
 **Status:** Draft  
 **Branch (parked):** `feat/workspace-scoped-vector-memory`  
@@ -211,7 +211,7 @@ Key design decisions:
 
 - **Memory store metadata** — each store has a `description` field (human-readable purpose). This metadata enables future LLM-driven store selection: the agent can read store descriptions and pick the right one for the task, rather than requiring manual selection. Think of stores as "knowledge domains" — oncall knowledge, project context, team conventions.
 
-- **Merge semantics (addressing AutoSDE comment)** — workspace-level `agent` overrides are merged at the **raw dict level** before constructing the dataclass, not after. This avoids the dataclass-defaults trap where a partial `agent` object fills unspecified fields with dataclass defaults instead of top-level values:
+- **Merge semantics (addressing review comment)** — workspace-level `agent` overrides are merged at the **raw dict level** before constructing the dataclass, not after. This avoids the dataclass-defaults trap where a partial `agent` object fills unspecified fields with dataclass defaults instead of top-level values:
 
   ```python
   def resolve_effective_config(
@@ -264,7 +264,7 @@ Store resolution at session start:
 1. Agent config specifies `memory_store` → use that
 2. Not specified → use `default_memory_store` from global config (defaults to `"default"`)
 
-**Memory boundary permeability (addressing zejiangg comment):** Memory stores are soft boundaries, not hard walls. The default behavior is isolation — each store has its own SQLite DB and FAISS index. But cross-store access is possible:
+**Memory boundary permeability (addressing review comment):** Memory stores are soft boundaries, not hard walls. The default behavior is isolation — each store has its own SQLite DB and FAISS index. But cross-store access is possible:
 
 - **Read-through:** an agent can explicitly query another store via API (`GET /api/memory/semantic?memory_store=oncall-knowledge`). This is opt-in per request, not automatic.
 - **ConversationLog stays global** — sessions already track their store in metadata. Cross-store history search works. Consolidation writes to the session's designated store.
@@ -342,7 +342,7 @@ Key design decisions:
 
 - **`embedding_provider` field** per store selects the `EmbeddingBackend`. Default: `"llama_cpp"` when enabled, `"none"` otherwise.
 
-- **Per-plugin remote consent (addressing AutoSDE comment)** — instead of piggy-backing on the embedding-specific `allow_remote_embedding` flag, each store/plugin that communicates with an external service declares `"remote": true`. The system enforces a general-purpose `allow_remote_access` top-level flag. A store with `"remote": true` is rejected at load time unless `allow_remote_access` is also true. This cleanly separates the consent mechanism from embedding semantics.
+- **Per-plugin remote consent (addressing review comment)** — instead of piggy-backing on the embedding-specific `allow_remote_embedding` flag, each store/plugin that communicates with an external service declares `"remote": true`. The system enforces a general-purpose `allow_remote_access` top-level flag. A store with `"remote": true` is rejected at load time unless `allow_remote_access` is also true. This cleanly separates the consent mechanism from embedding semantics.
 
 - **Plugin discovery** — plugins are Python entry points (`kirocrew.memory_backends`, `kirocrew.embedding_backends`). Built-in backends registered by default.
 
@@ -405,13 +405,13 @@ Phase 4 requires Phase 2 (plugin config needs the schema system). Phase 3 is a s
 - Phase 3: each named store has isolated `memory.db`, dashboard memory tab is store-aware, existing default store data untouched, consolidation writes to correct store
 - Phase 4: at least one alternative backend (e.g. pgvector) works end-to-end via config change only, `"remote": true` consent enforced
 
-## Appendix: CR Review Comments Addressed (rev 2)
+## Appendix: Code Review Comments Addressed (rev 2)
 
 | # | Author | Comment | Resolution |
 |---|--------|---------|------------|
-| 1 | AutoSDE | Evolution path diagram inconsistent with dependency graph | Reconciled both diagrams. Solid vs dashed arrows distinguish hard vs soft deps. |
-| 2 | AutoSDE | Merge semantics ambiguity — dataclass defaults trap | Specified dict-level merge before dataclass construction. Added `resolve_effective_config()` code. |
-| 3 | AutoSDE | `allow_remote_embedding` too narrow for plugin consent | Replaced with per-store `"remote": true` + top-level `allow_remote_access` gate. |
-| 4 | zejiangg | Workspace as knowledge domain — richer metadata, AI selection | Fully decoupled memory stores from workspaces. They're orthogonal dimensions — agent picks both independently. Stores have `description` for future LLM-driven selection. |
-| 5 | zejiangg | Memory boundary permeability — when to cross boundaries | Added boundary permeability section: soft boundaries, opt-in cross-store read, global lessons. |
-| 6 | zejiangg | Test plan per phase | Added "Test Strategy" section with concrete test plans for all 4 phases. |
+| 1 | Code-review bot | Evolution path diagram inconsistent with dependency graph | Reconciled both diagrams. Solid vs dashed arrows distinguish hard vs soft deps. |
+| 2 | Code-review bot | Merge semantics ambiguity — dataclass defaults trap | Specified dict-level merge before dataclass construction. Added `resolve_effective_config()` code. |
+| 3 | Code-review bot | `allow_remote_embedding` too narrow for plugin consent | Replaced with per-store `"remote": true` + top-level `allow_remote_access` gate. |
+| 4 | Reviewer | Workspace as knowledge domain — richer metadata, AI selection | Fully decoupled memory stores from workspaces. They're orthogonal dimensions — agent picks both independently. Stores have `description` for future LLM-driven selection. |
+| 5 | Reviewer | Memory boundary permeability — when to cross boundaries | Added boundary permeability section: soft boundaries, opt-in cross-store read, global lessons. |
+| 6 | Reviewer | Test plan per phase | Added "Test Strategy" section with concrete test plans for all 4 phases. |

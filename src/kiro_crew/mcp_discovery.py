@@ -665,7 +665,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         # through the sandbox chokepoint: OS-level isolation plus a
         # credential-scrubbed environment (on top of the augmented PATH built
         # above). ``strip_python_env`` keeps KiroCrew's PYTHONPATH/PYTHONHOME out
-        # of a foreign Python MCP server. See Talos finding 92e24570.
+        # of a foreign Python MCP server. See the related security-review finding.
         wrapped_argv, env, sandbox_cleanup = sandboxed_spawn_argv(
             [resolved, *(server.args or [])],
             mode="standard",
@@ -798,7 +798,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         # When the probe failed, drain any stderr the child wrote and append
         # a redacted tail to the error message. Most MCP servers print a
         # useful diagnostic (Python traceback, ModuleNotFoundError,
-        # brazil-runtime-exec FindupException, etc.) on startup failure;
+        # a build-tool exception, etc.) on startup failure;
         # without this, callers only see opaque strings like "timeout" or
         # "no response" with no hint of the underlying cause.
         #
@@ -861,7 +861,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
 # Cap how many MCP servers we probe concurrently.  Each probe spawns a
 # subprocess (or opens a remote connection) and resolves DNS on the event
 # loop's default executor; an unbounded fan-out across 25+ servers floods that
-# pool during a network blip and stalls the loop (Mesh-1968).
+# pool during a network blip and stalls the loop.
 _PROBE_MAX_CONCURRENCY = 5
 
 
@@ -898,7 +898,7 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     """Compare MCP commands accounting for path resolution.
 
     The agent config stores resolved absolute paths (e.g.
-    /home/user/.toolbox/bin/deep-research) while mcp.json stores the
+    /home/user/.local/bin/deep-research) while mcp.json stores the
     short name (deep-research). These refer to the same binary and
     should not trigger a sync.
     """

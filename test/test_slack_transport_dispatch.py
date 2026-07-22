@@ -70,7 +70,7 @@ def _run_transport(monkeypatch, thread_agent=None, agent_override=None):
     if thread_agent is not None:
         # Thread overrides are keyed by the canonical namespaced session key
         # (slack:<ts>), matching handle_message/handle_message_transport
-        # derivation since the session-key canonicalization fix (Mesh-2732).
+        # derivation since the session-key canonicalization fix.
         thread_map[canonical_key(_MSG_TS)] = thread_agent
     monkeypatch.setattr(transport_dispatch, "_thread_agents", thread_map)
 
@@ -319,7 +319,7 @@ class TestTransportPrivacyModifiers:
     token must never reach the LLM."""
 
     # Privacy flags are keyed by the canonical namespaced session key
-    # (slack:<ts>) since the session-key canonicalization fix (Mesh-2732).
+    # (slack:<ts>) since the session-key canonicalization fix.
     _KEY = canonical_key(_MSG_TS)
 
     def _clear_flags(self, session_key):
@@ -508,7 +508,7 @@ class TestTransportNativeParity:
 class TestTransportStatusIdentitySeam:
     """The `status` shortcut must use the platform identity seam
     (current_context().identity.status_line) — the CPP boundary native
-    migrated to — not a direct Midway-stub import."""
+    migrated to — not a direct SSO-stub import."""
 
     def test_status_uses_identity_seam(self, monkeypatch):
         from types import SimpleNamespace
@@ -530,12 +530,12 @@ class TestTransportStatusIdentitySeam:
         ))
         posts = [kw["text"] for m, kw in slack.transcript if m == "post_message"]
         # Status reply includes the identity seam's suffix; no LLM session.
-        assert any(" · midway=OK" in p for p in posts), posts
+        assert any(" · sso=OK" in p for p in posts), posts
         assert sessions.agents == []
 
-    def test_no_direct_midway_stub_import(self):
+    def test_no_direct_sso_stub_import(self):
         import kiro_crew.slack.transport_dispatch as td
-        assert not hasattr(td, "get_midway_status_line")
+        assert not hasattr(td, "get_sso_status_line")
 
 
 class TestTransportToolGateWiring:

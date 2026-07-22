@@ -37,7 +37,7 @@ Options:
 
 Examples:
   sync-to-remote.sh                                          # sync to default host:port
-  sync-to-remote.sh dev-dsk-me-2b-abc123.us-west-2.amazon.com 7780
+  sync-to-remote.sh remote-host.example.com 7780
   sync-to-remote.sh --dry-run                                # preview only
 EOF
   exit "${1:-0}"
@@ -200,7 +200,7 @@ done
 
 # --- [6] Dotfiles ---
 echo "  [6/7] Dotfiles (skipped by default)..."
-# Uncomment to sync dotfiles — may overwrite remote shell config (Brazil hooks, mwinit aliases)
+# Uncomment to sync dotfiles — may overwrite remote shell config (shell hooks, SSO aliases)
 # run scp -q ~/.gitconfig ~/.bashrc ~/.zshrc "$HOST":~/ 2>/dev/null || true
 
 # --- [7] Sessions ---

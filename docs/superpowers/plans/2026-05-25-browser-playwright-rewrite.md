@@ -4,9 +4,9 @@
 
 **Goal:** Replace the 3000-line CDP browser module with a thin auth shim (~300 lines) that delegates all browsing to Playwright MCP.
 
-**Architecture:** KiroCrew provides only what Playwright MCP cannot: Amazon auth (Midway cookies, federate SSO, SPNEGO/Kerberos). The agent uses Playwright MCP tools (`browser_navigate`, `browser_click`, `browser_snapshot`, etc.) for all interaction. KiroCrew's role is (1) install Playwright + browsers during setup, (2) prepare auth before browsing starts, (3) inject cookies into the Playwright browser context, and (4) provide a skill/prompt that guides the agent through auth validation.
+**Architecture:** KiroCrew provides only what Playwright MCP cannot: enterprise SSO auth (session cookies, federated SSO, SPNEGO/Kerberos). The agent uses Playwright MCP tools (`browser_navigate`, `browser_click`, `browser_snapshot`, etc.) for all interaction. KiroCrew's role is (1) install Playwright + browsers during setup, (2) prepare auth before browsing starts, (3) inject cookies into the Playwright browser context, and (4) provide a skill/prompt that guides the agent through auth validation.
 
-**Tech Stack:** Python 3.10+, Playwright (npm `@playwright/mcp`), existing Midway/MCS auth
+**Tech Stack:** Python 3.10+, Playwright (npm `@playwright/mcp`), existing enterprise SSO auth
 
 ---
 
@@ -18,7 +18,7 @@
 | `browser/session.py` | 724 | **DELETE** — Playwright MCP does click/fill/type/snap |
 | `browser/snapshot.py` | 199 | **DELETE** — `browser_snapshot` does this |
 | `browser/chrome.py` | 499 | **SLIM** — keep only `find_chrome()` for profile location; Playwright installs its own |
-| `browser/auth.py` | 477 | **KEEP** — federate flow, midway cookies, KRB5CCNAME, health check |
+| `browser/auth.py` | 477 | **KEEP** — federated SSO flow, SSO cookies, KRB5CCNAME, health check |
 | `browser/cli.py` | 417 | **REWRITE** — slim to auth commands + Playwright install |
 | `mcp_browser.py` | 689 | **DELETE** — Playwright MCP replaces our custom MCP server |
 | `browser/__init__.py` | 1 | **KEEP** (update docstring) |
@@ -29,7 +29,7 @@
 ```
 src/kiro_crew/browser/
 ├── __init__.py          # docstring only
-├── auth.py              # KEEP: midway cookies, federate_auth, KRB5CCNAME, health
+├── auth.py              # KEEP: SSO cookies, federated_login, KRB5CCNAME, health
 ├── setup.py             # NEW (~80 lines): install playwright, install browsers, configure MCP
 └── cli.py               # REWRITE (~100 lines): kirocrew browse auth|setup|install
 
@@ -41,7 +41,7 @@ src/kiro_crew/skills/
 └── browser-auth.md      # NEW: skill that guides agent through auth + Playwright usage
 
 test/
-├── test_browser_auth.py # KEEP (already covers federate, midway, health)
+├── test_browser_auth.py # KEEP (already covers federated login, SSO, health)
 └── test_browser_setup.py # NEW: tests for playwright install + MCP config
 ```
 
@@ -85,20 +85,20 @@ git rm test/test_browser_cli.py
 
 - [ ] **Step 2: Remove dead imports in auth.py**
 
-`auth.py` imports `from kiro_crew.browser.cdp import CDPClient, CDPError`. The `inject_cookies` and `inject_mcs` functions use CDPClient directly. These functions are no longer needed since Playwright manages its own cookies. Remove:
+`auth.py` imports `from kiro_crew.browser.cdp import CDPClient, CDPError`. The `inject_cookies` and `inject_sso` functions use CDPClient directly. These functions are no longer needed since Playwright manages its own cookies. Remove:
 - `inject_cookies()`
 - `inject_from_file()`
-- `inject_mcs()`
-- `get_midway_token()`
+- `inject_sso()`
+- `get_sso_token()`
 - The `CDPClient`/`CDPError` import
 
 Keep:
-- `parse_netscape_cookies()` (used by setup to read midway cookies)
-- `federate_auth()` (used by auth CLI to complete SSO)
-- `_krb5_env()` / `_curl_cmd()` (used by federate_auth)
-- `health()` / `ensure()` / `has_kerberos_ticket()` / `has_mcscli()`
-- `refresh_cookie_via_mcs()` / `refresh_aea()` / `mcs_keys_process_running()`
-- `cookie_path()` / `MIDWAY_COOKIE_PATH`
+- `parse_netscape_cookies()` (used by setup to read SSO cookies)
+- `federated_login()` (used by auth CLI to complete SSO)
+- `_krb5_env()` / `_curl_cmd()` (used by federated_login)
+- `health()` / `ensure()` / `has_kerberos_ticket()` / `has_sso_cli()`
+- `refresh_cookie_via_sso()` / `refresh_aea()` / `sso_keys_process_running()`
+- `cookie_path()` / `SSO_COOKIE_PATH`
 
 - [ ] **Step 3: Remove dead imports in other files**
 
@@ -119,7 +119,7 @@ In `src/kiro_crew/cli_setup.py`:
 
 ```bash
 python -m pytest test/test_browser_auth.py -v
-python -c "from kiro_crew.browser.auth import health, federate_auth, parse_netscape_cookies"
+python -c "from kiro_crew.browser.auth import health, federated_login, parse_netscape_cookies"
 ```
 
 - [ ] **Step 5: Commit**
@@ -275,7 +275,7 @@ def ensure_playwright_installed() -> None:
         return
 
     if not shutil.which("npx"):
-        raise RuntimeError("npx not found — install Node.js first (toolbox install node)")
+        raise RuntimeError("npx not found — install Node.js first")
 
     logger.info("Installing Playwright MCP...")
     subprocess.run(
@@ -299,15 +299,15 @@ def get_playwright_mcp_config() -> dict[str, Any]:
 
 
 def inject_cookies_via_playwright(cookie_file: str | None = None) -> dict[str, Any]:
-    """Prepare Midway cookies in Playwright-compatible format.
+    """Prepare SSO cookies in Playwright-compatible format.
 
     Returns a dict that can be passed as launch config or used with
     browser_evaluate to inject cookies at runtime.
     """
-    from kiro_crew.browser.auth import MIDWAY_COOKIE_PATH, parse_netscape_cookies
+    from kiro_crew.browser.auth import SSO_COOKIE_PATH, parse_netscape_cookies
     from pathlib import Path
 
-    path = Path(cookie_file) if cookie_file else MIDWAY_COOKIE_PATH
+    path = Path(cookie_file) if cookie_file else SSO_COOKIE_PATH
     raw_cookies = parse_netscape_cookies(path)
 
     # Convert to Playwright cookie format
@@ -356,9 +356,9 @@ The CLI is now just for auth operations and Playwright setup. All browsing happe
 
 Usage:
     kirocrew browse setup              # Install Playwright + browsers
-    kirocrew browse auth health        # Check Midway/Kerberos auth status
+    kirocrew browse auth health        # Check enterprise SSO/Kerberos auth status
     kirocrew browse auth inject        # Inject cookies into running Playwright browser
-    kirocrew browse auth federate <url># Complete federate SSO flow for a URL
+    kirocrew browse auth federate <url># Complete federated SSO flow for a URL
 """
 
 from __future__ import annotations
@@ -369,11 +369,11 @@ from typing import Any
 
 from kiro_crew.browser.auth import (
     _krb5_env,
-    federate_auth,
+    federated_login,
     has_kerberos_ticket,
     health as auth_health,
     parse_netscape_cookies,
-    MIDWAY_COOKIE_PATH,
+    SSO_COOKIE_PATH,
 )
 from kiro_crew.browser.setup import (
     ensure_playwright_installed,
@@ -399,7 +399,7 @@ def run_browse(args: list[str]) -> None:
         elif subcmd == "inject":
             _cmd_auth_inject()
         elif subcmd == "federate" and len(args) >= 3:
-            _cmd_auth_federate(args[2])
+            _cmd_auth_federated_login(args[2])
         else:
             print(f"Unknown auth subcommand: {subcmd}", file=sys.stderr)
             sys.exit(1)
@@ -413,9 +413,9 @@ def _print_help() -> None:
 
 Commands:
   setup                Install Playwright + browsers
-  auth health          Check Midway/Kerberos/MCS auth status
+  auth health          Check enterprise SSO/Kerberos auth status
   auth inject          Print cookies in Playwright-injectable format (JSON)
-  auth federate <url>  Complete federate SSO for a URL, print id_token URL
+  auth federate <url>  Complete federated SSO for a URL, print id_token URL
 
 After setup, use Playwright MCP tools (browser_navigate, browser_click, etc.)
 for all browsing. Auth cookies are injected automatically via the browser-auth skill.
@@ -447,9 +447,9 @@ def _cmd_auth_inject() -> None:
     print(json.dumps(result, indent=2))
 
 
-def _cmd_auth_federate(url: str) -> None:
-    """Complete federate SSO and print the final URL."""
-    result = federate_auth(url)
+def _cmd_auth_federated_login(url: str) -> None:
+    """Complete federated SSO and print the final URL."""
+    result = federated_login(url)
     print(json.dumps(result, indent=2))
     if not result.get("ok"):
         sys.exit(1)
@@ -481,19 +481,19 @@ git commit -m "refactor(browser): rewrite CLI to auth-only commands"
 **Files:**
 - Create: `src/kiro_crew/skills/browser-auth.md`
 
-This skill instructs the agent HOW to use Playwright MCP with Amazon auth. It's loaded when `[BROWSE]` marker is present.
+This skill instructs the agent HOW to use Playwright MCP with enterprise-SSO auth. It's loaded when `[BROWSE]` marker is present.
 
 - [ ] **Step 1: Write the skill**
 
 ```markdown
 ---
 name: browser-auth
-description: Authenticate and browse Amazon internal sites using Playwright MCP tools. Use when [BROWSE] marker is present.
+description: Authenticate and browse enterprise-internal sites using Playwright MCP tools. Use when [BROWSE] marker is present.
 ---
 
-# Browser Auth — Amazon Internal Browsing
+# Browser Auth — Enterprise-Internal Browsing
 
-You are browsing Amazon internal websites using Playwright MCP tools. Before navigating, validate auth.
+You are browsing enterprise-internal websites using Playwright MCP tools. Before navigating, validate auth.
 
 ## Step 1: Check Auth
 
@@ -504,9 +504,9 @@ kirocrew browse auth health
 
 **If healthy:** Proceed to Step 2.
 **If unhealthy:** Tell the user what's missing:
-- "no Kerberos ticket" → user must run `kinit -f`
-- "midway expired" → user must run `mwinit -o`
-- "no AEA posture" → user must run `mwinit --refresh-aea`
+- "no Kerberos ticket" → user must run their Kerberos login
+- "SSO session expired" → user must re-run your SSO login
+- "no AEA posture" → user must refresh SSO posture
 
 Do NOT proceed until auth is healthy.
 
@@ -516,7 +516,7 @@ Do NOT proceed until auth is healthy.
 kirocrew browse auth inject
 ```
 
-This prints Midway cookies in JSON format. Use `browser_evaluate` to inject them:
+This prints SSO cookies in JSON format. Use `browser_evaluate` to inject them:
 
 ```javascript
 // Inject cookies into browser context
@@ -526,7 +526,7 @@ for (const c of cookies) {
 }
 ```
 
-Or better — navigate to `midway-auth.amazon.com` first, inject cookies there, then navigate to your target.
+Or better — navigate to `sso.example.com` first, inject cookies there, then navigate to your target.
 
 ## Step 3: Navigate
 
@@ -540,13 +540,13 @@ Use Playwright MCP tools:
 ## Step 4: Handle Auth Gates
 
 If after navigation you see:
-- **midway-auth.amazon.com/login** in the URL → cookies expired, re-run Step 2
-- **idp.federate.amazon.com** in the URL → run federate flow:
+- **sso.example.com/login** in the URL → cookies expired, re-run Step 2
+- **idp.example.com** in the URL → run federated login flow:
   ```bash
   kirocrew browse auth federate "<original_url>"
   ```
   Then navigate to the `final_url` from the JSON output.
-- **/sentry/** in the URL → user needs `mwinit -s` for Sentry cookie
+- **/sentry/** in the URL → user needs a Sentry cookie from your SSO login
 
 ## Rules
 
@@ -557,8 +557,8 @@ If after navigation you see:
 
 ## Prerequisites
 
-- `kinit -f` (Kerberos ticket for federate flow)
-- `mwinit -o -s` (Midway + Sentry cookies)
+- your Kerberos login (Kerberos ticket for federated login flow)
+- your SSO login (session + Sentry cookies)
 - `kirocrew browse setup` (one-time Playwright install)
 ```
 
@@ -583,25 +583,25 @@ Replace the entire `kirocrew browse` section (lines ~123-182) with:
 ```markdown
 ## Browser (Playwright MCP)
 
-You have access to Playwright MCP tools for browsing Amazon internal websites. Use them when the message contains the `[BROWSE]` marker (injected when user clicks the 🌐 button).
+You have access to Playwright MCP tools for browsing enterprise-internal websites. Use them when the message contains the `[BROWSE]` marker (injected when user clicks the 🌐 button).
 
 **IMPORTANT: You may ONLY browse when the message contains `[BROWSE]`.** Without this marker, use `ReadInternalWebsites` instead.
 
-**How it works:** Playwright runs a headless Chromium instance. Amazon auth (Midway cookies, Kerberos, Sentry) must be injected manually since headless mode has no `--auth-server-allowlist`.
+**How it works:** Playwright runs a headless Chromium instance. Enterprise-SSO auth (session cookies, Kerberos, Sentry) must be injected manually since headless mode has no `--auth-server-allowlist`.
 
 ### Quick Start
 
 1. Validate auth: `kirocrew browse auth health`
-2. If unhealthy, tell user what to run (`kinit -f`, `mwinit -o`)
+2. If unhealthy, tell user what to run (your Kerberos login, your SSO login)
 3. Get cookies: `kirocrew browse auth inject` → inject via `browser_evaluate`
 4. Navigate: `browser_navigate` → `browser_take_screenshot` → show user
 5. Interact: `browser_click`, `browser_fill_form`, `browser_snapshot`
 
 ### Auth Gate Recovery
 
-- **midway-auth redirect** → re-inject cookies
-- **federate redirect** → `kirocrew browse auth federate "<url>"` → navigate to `final_url`
-- **sentry redirect** → user needs `mwinit -s`
+- **SSO login redirect** → re-inject cookies
+- **federated login redirect** → `kirocrew browse auth federate "<url>"` → navigate to `final_url`
+- **sentry redirect** → user needs a Sentry cookie from your SSO login
 
 ### Rules
 
@@ -696,11 +696,11 @@ git commit -m "feat(config): add Playwright MCP as default server"
 Remove these functions (they use CDPClient which is deleted):
 - `inject_cookies(cdp, cookies)` 
 - `inject_from_file(cdp, path)`
-- `inject_mcs(cdp, targets)`
-- `get_midway_token(site_url)`
+- `inject_sso(cdp, targets)`
+- `get_sso_token(site_url)`
 - The import: `from kiro_crew.browser.cdp import CDPClient, CDPError`
 
-Keep everything else (health, ensure, federate_auth, parse_netscape_cookies, etc.)
+Keep everything else (health, ensure, federated_login, parse_netscape_cookies, etc.)
 
 - [ ] **Step 2: Update test_browser_auth.py**
 
@@ -713,7 +713,7 @@ Keep:
 - `TestHealth`
 - `TestEnsure`
 - `TestKrb5Env`
-- `TestFederateAuth`
+- `TestFederatedLogin`
 
 - [ ] **Step 3: Run tests**
 
@@ -777,7 +777,7 @@ git commit -m "refactor(dashboard): remove browser auth retry handler — handle
 - [ ] **Step 1: Update module docstring**
 
 ```python
-"""KiroCrew browser auth — Midway/Kerberos/Federate SSO for Playwright MCP."""
+"""KiroCrew browser auth — enterprise SSO/Kerberos for Playwright MCP."""
 ```
 
 - [ ] **Step 2: Full test suite run**
@@ -815,4 +815,4 @@ git commit -m "chore(browser): final cleanup — verify all tests pass after rew
 
 **What agents gain:** Battle-tested Playwright interaction, better reliability, tab management, form handling, file uploads, proper wait-for conditions — all maintained by the Playwright team, not us.
 
-**What we maintain:** Only the Amazon auth layer (~300 lines) that no external tool can provide.
+**What we maintain:** Only the enterprise-SSO auth layer (~300 lines) that no external tool can provide.

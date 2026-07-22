@@ -3,7 +3,7 @@ import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar from '../components/InstanceTabBar'
-import type { InstanceView, MidwayStatus } from '../api/client'
+import type { InstanceView, SsoStatus } from '../api/client'
 
 vi.mock('../api/client', () => {
   class ApiError extends Error {
@@ -38,10 +38,10 @@ const conn = (over: Partial<InstanceView> = {}): InstanceView => ({
   ...over,
 })
 
-const okMidway: MidwayStatus = { state: 'ok', seconds_remaining: 72000, expires_at: null, reason: 'valid' }
+const okSso: SsoStatus = { state: 'ok', seconds_remaining: 72000, expires_at: null, reason: 'valid' }
 
 /** Typed builder for the `api.listInstances` mock resolved value. */
-const listResp = (instances: InstanceView[]) => ({ active: true, instances, warm_set_cap: 5, midway: okMidway })
+const listResp = (instances: InstanceView[]) => ({ active: true, instances, warm_set_cap: 5, sso: okSso })
 
 beforeEach(() => {
   vi.clearAllMocks()

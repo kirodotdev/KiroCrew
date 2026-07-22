@@ -11,11 +11,11 @@
  *   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
  *
  * This wiring has been silently dropped once already: the original feature
- * CR-275803011 shipped it correctly, but CR-276396575 ("workspace sync")
+ * shipped it correctly, but ("workspace sync")
  * rewrote App.tsx and accidentally reverted both the import and the effect --
  * the same clobber that took out the nav/embed features later restored in
  * d3daac1 / dfbc99c. The terminal line was never restored, so the button
- * vanished from every build for ~5 weeks until CR-287631374 re-added it.
+ * vanished from every build for ~5 weeks until re-added it.
  *
  * Existing MonacoCodeBlock / terminalRegistry tests exercise the gate GIVEN
  * the flag -- none assert that App actually sets it, which is exactly why the

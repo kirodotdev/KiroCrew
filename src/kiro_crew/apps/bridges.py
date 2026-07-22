@@ -504,15 +504,16 @@ def _register_mcp_servers(app_name: str, manifest: AppManifest, live_port: int |
     on a non-default port is still reachable by agents. ``live_port`` lets the boot/enable
     path pass the just-allocated port directly (health not yet confirmed).
 
-    FAIL-SAFE for ``backend.port:"auto"`` HTTP servers (regression: CR-281976055 /
-    revert CR-284300496): a manifest's ``mcpServers.<name>.url`` carries an ILLUSTRATIVE
+    FAIL-SAFE for ``backend.port:"auto"`` HTTP servers (regression fix):
+    a manifest's ``mcpServers.<name>.url`` carries an ILLUSTRATIVE
     fixed port (e.g. ``:9100``). If we wrote that verbatim while the backend is NOT
     running (app disabled / down / registered before the port is known), the entry is a
     reachable-LOOKING but dead URL. kiro-cli merges global mcp.json into EVERY session and
     tries to connect to it on every request; a connect failure surfaces as a "transient
     HTTP 5xx / backend hiccup", gets retried 3× by the transient-retry path, then shown as
-    a hard error — breaking ALL kiro requests, not just this app's. (Claude Code reads a
-    different config file, so it was unaffected — the kiro-vs-CC asymmetry in the report.)
+    a hard error — breaking ALL kiro requests, not just this app's. (An alternate ACP
+    backend reads a different config file, so it was unaffected — the asymmetry in the
+    report.)
     So: an HTTP server with NO resolvable LIVE port is NOT written at all (and any stale
     entry for it is scrubbed) — never a dead URL the kiro binary might still dial whether
     or not it honours a ``disabled`` flag. The boot/enable path calls

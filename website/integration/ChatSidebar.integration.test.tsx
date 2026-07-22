@@ -155,9 +155,9 @@ describe('ChatSidebar Folder Grouping', () => {
     const input = screen.getByPlaceholderText('Folder name…')
     // Escape is bound via onKeyDown on the input itself (useImeGuard.bindEnter).
     // Dispatch the key straight at the node instead of user.keyboard, which
-    // routes through document.activeElement: the input focuses on a rAF effect
-    // (Mesh-2683), so under load activeElement could still be <body> and Escape
-    // would miss the cancel handler (Mesh-2738 flake). Targeting the node is
+    // routes through document.activeElement: the input focuses on a rAF effect,
+    // so under load activeElement could still be <body> and Escape
+    // would miss the cancel handler (a flake). Targeting the node is
     // focus-timing-independent.
     fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' })
 
@@ -301,7 +301,7 @@ describe('ChatSidebar Folder Grouping', () => {
 
   // Regression: folder rename via the hover Rename button. Upstream drives this
   // through a folder ⋯ menu (whose Radix close-focus-restore blurs the
-  // just-opened rename input — CR-286161833 bug class); the fork's entry point
+  // just-opened rename input — a known bug class); the fork's entry point
   // is an inline hover button, so the menu-close race can't fire here, but the
   // test still guards the user-visible survival: the input mounts, stays
   // mounted through the rAF focus flush, and commits.

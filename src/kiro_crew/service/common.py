@@ -81,7 +81,7 @@ def restart_command_hint() -> str:
 
     The correct command depends on how the service is installed, and the
     scopes are not interchangeable — printing the wrong one sends the user
-    down a dead end (Mesh-2583):
+    down a dead end:
 
     * ``SYSTEMD`` — the unit is **system-level** at
       ``/etc/systemd/system/kirocrew.service`` (see

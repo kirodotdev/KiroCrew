@@ -1,5 +1,5 @@
 """Idempotency + orphaned-stop-card regression tests for the dashboard stop /
-interrupt handlers (provider-agnostic — ported from MeshClaw CR-289653406,
+interrupt handlers (provider-agnostic — ported from the upstream project,
 defect 3). The CC-provider-specific classes in the upstream file are dropped:
 KiroCrew is KiroACP-only and providers/claude_code.py does not exist here."""
 

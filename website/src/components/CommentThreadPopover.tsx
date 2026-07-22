@@ -6,7 +6,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
 /**
- * Floating thread popover (Quip-style): clicking a gutter bubble / highlight in
+ * Floating thread popover (document-comment style): clicking a gutter bubble / highlight in
  * the doc opens this card right at the anchor, showing the whole conversation
  * (root + replies) with an inline reply box + actions — far more room than the
  * narrow sidebar. The sidebar stays as the chronological feed; this is the

@@ -1,5 +1,5 @@
 /**
- * Pure helpers for the ChatSidebar "Recent" filter (CR-287800085).
+ * Pure helpers for the ChatSidebar "Recent" filter.
  *
  * The recency window is stored as a single millisecond count; these functions
  * translate between that count, the amount/unit the custom picker shows, the

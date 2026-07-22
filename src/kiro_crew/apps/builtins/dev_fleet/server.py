@@ -191,7 +191,7 @@ _START_EPOCH = time.time()
 
 def _build_pending() -> bool:
     """True when the built SPA dist mtime is NEWER than this module's import time
-    (gateway process start). Mirrors MeshClaw v0.6.4 _beta_build_pending() semantics:
+    (gateway process start). Mirrors the upstream _beta_build_pending() semantics:
     a completed Pull+Build has artifacts waiting to be applied on the next restart."""
     try:
         # parents[3] == the kiro_crew package root (dev_fleet -> builtins ->
@@ -280,7 +280,7 @@ _GIT_TRUSTED_HELPERS: dict[str, str] | None = None
 _FALLBACK_REPOS: list[str] | None = None
 
 
-# Which checkout powers the live gateway (the MeshClaw reference showed this
+# Which checkout powers the live gateway (the upstream reference showed this
 # per-row as is_live; users need to see what occupies the main instance).
 _LIVE_WORKTREE: str | None = None
 _LIVE_CHECK_AT: float = 0.0

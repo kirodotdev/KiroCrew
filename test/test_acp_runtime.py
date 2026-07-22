@@ -2540,7 +2540,7 @@ def test_backfill_context_window_no_model_is_safe(monkeypatch):
 def test_backfill_uses_resolved_model_id_from_session_config(monkeypatch):
     """#5b (parity): store_session_config captures currentModelId into
     _resolved_model_id, so context-window backfill works even when the user
-    never called set_model — and _model stays empty (no Mesh-2376 pinning)."""
+    never called set_model — and _model stays empty (no pinning)."""
     import kiro_crew.acp.session_handle as sh
 
     monkeypatch.setattr(sh.model_registry, "window", lambda mid: 300000)
@@ -2920,7 +2920,7 @@ def test_protected_runtime_pid_lands_in_sweep_active_set():
     their PID via ``register_protected_pid``, and ``_collect_active_pids`` seeds
     from ``_protected_pids()``. This asserts both a companion and a bg runtime
     PID land in the sweep's active set (so phase-2 never confirms them orphans) —
-    the KiroCrew analog of MeshClaw CR-288064441's end-to-end guard.
+    the KiroCrew analog of the upstream project's end-to-end guard.
     """
     from kiro_crew.session_pid import (
         _collect_active_pids,

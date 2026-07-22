@@ -1,6 +1,6 @@
 /**
  * Tests for the Slack link/unlink actions surfaced by the session menu
- * (Mesh-1969). Slack is now a *connected* sub-section (SlackLinkSection, keyed
+ *. Slack is now a *connected* sub-section (SlackLinkSection, keyed
  * on slotKey) rendered by SessionActionsMenu, so this exercises it through the
  * header (ChatHeaderMenu) with the slot seeded in the store and the shared
  * ['slack-channels'] query mocked — no slack props are passed anymore.

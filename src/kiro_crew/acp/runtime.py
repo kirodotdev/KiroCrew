@@ -548,8 +548,8 @@ class AcpRuntime:
             # would NOT catch — the kiro-cli tree then leaks on every session
             # recycle). Offloaded to the subprocess executor: on Windows the
             # shim shells out to taskkill (a blocking subprocess.run), which
-            # must not run on the event loop (AUTOSDE
-            # no-blocking-call-on-event-loop).
+            # must not run on the event loop (no blocking call on the event
+            # loop).
             loop = asyncio.get_running_loop()
             try:
                 await loop.run_in_executor(

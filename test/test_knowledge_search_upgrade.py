@@ -139,7 +139,7 @@ class TestInProcessEmbedder:
         assert captured["text"].startswith("Short Title Brief summary")
 
     def test_embed_for_item_embeds_full_target_size_chunk(self, monkeypatch):
-        """A full target-size chunk must embed untruncated (Mesh-2205 Phase 0).
+        """A full target-size chunk must embed untruncated (Phase 0).
 
         The old _EMBED_CONTENT_BUDGET=2000 clipped ~88% of normal chunks (a chunk is
         ~CHUNK_TOKEN_SIZE+CHUNK_OVERLAP tokens). The bound is now derived above the

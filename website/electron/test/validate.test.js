@@ -4,9 +4,9 @@ const { HOSTNAME_RE, BINPATH_RE, REMOTE_PORT_RE, REMOTE_PATH_RE, validateRemoteS
 
 describe("HOSTNAME_RE", () => {
   it("accepts valid corp hostnames", () => {
-    assert.ok(HOSTNAME_RE.test("myhost.corp.amazon.com"));
-    assert.ok(HOSTNAME_RE.test("dev-dsk-user-2b-abc123.us-west-2.amazon.com"));
-    assert.ok(HOSTNAME_RE.test("cm-armdev.corp.amazon.com"));
+    assert.ok(HOSTNAME_RE.test("myhost.corp.example.com"));
+    assert.ok(HOSTNAME_RE.test("dev-dsk-user-2b-abc123.us-west-2.example.com"));
+    assert.ok(HOSTNAME_RE.test("cm-armdev.corp.example.com"));
   });
 
   it("accepts SSH config aliases (single-word, no dot required)", () => {
@@ -27,8 +27,8 @@ describe("HOSTNAME_RE", () => {
     assert.ok(!HOSTNAME_RE.test("host|pipe.com"));
     // Invalid DNS
     assert.ok(!HOSTNAME_RE.test("a..b"));
-    assert.ok(!HOSTNAME_RE.test("-host.amazon.com"));
-    assert.ok(!HOSTNAME_RE.test("host-.amazon.com"));
+    assert.ok(!HOSTNAME_RE.test("-host.example.com"));
+    assert.ok(!HOSTNAME_RE.test("host-.example.com"));
   });
 
   it("accepts shortest valid FQDN (a.b)", () => {
@@ -110,8 +110,8 @@ describe("REMOTE_PATH_RE", () => {
 
 describe("validateRemoteSettings", () => {
   it("returns null for valid settings", () => {
-    assert.equal(validateRemoteSettings("myhost.corp.amazon.com", "~/.local/bin/kirocrew"), null);
-    assert.equal(validateRemoteSettings("myhost.corp.amazon.com", "$HOME/.local/bin/kirocrew"), null);
+    assert.equal(validateRemoteSettings("myhost.corp.example.com", "~/.local/bin/kirocrew"), null);
+    assert.equal(validateRemoteSettings("myhost.corp.example.com", "$HOME/.local/bin/kirocrew"), null);
   });
 
   it("returns null for empty host (skips remote)", () => {
@@ -119,7 +119,7 @@ describe("validateRemoteSettings", () => {
   });
 
   it("returns null for empty bin (uses default)", () => {
-    assert.equal(validateRemoteSettings("myhost.corp.amazon.com", ""), null);
+    assert.equal(validateRemoteSettings("myhost.corp.example.com", ""), null);
   });
 
   it("accepts SSH config alias as hostname", () => {

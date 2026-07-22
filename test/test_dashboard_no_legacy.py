@@ -1,4 +1,4 @@
-"""Regression guard for P472043682 — legacy fallback dashboard removed.
+"""Regression guard for — legacy fallback dashboard removed.
 
 The legacy in-tree dashboard shell (``static/dashboard.html`` + its JS/CSS)
 and the vendored DOMPurify were dead code and an XSS surface. This test pins

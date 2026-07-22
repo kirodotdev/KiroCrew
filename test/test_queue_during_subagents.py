@@ -149,7 +149,7 @@ class TestSerializeSlotsSubagentsRunning:
 
     Async because get_or_create_slot() can trigger push_slots_update() ->
     _send_ws_all() -> asyncio.ensure_future(), which needs a running loop
-    (see CR-268763863 precedent)."""
+    (see precedent)."""
 
     async def test_flag_true_when_agents_running(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

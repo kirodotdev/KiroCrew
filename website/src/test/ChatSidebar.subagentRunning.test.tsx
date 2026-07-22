@@ -1,5 +1,5 @@
 /**
- * Chat sidebar "N agents running" subtitle (Mesh-2716, CR-288335237):
+ * Chat sidebar "N agents running" subtitle:
  * a session row surfaces its live subagents — counted from chat.subagents (the
  * store's active slot) + slotActivity[slot].subagents (background slots),
  * matching only non-terminal statuses (running/tool/pending). The subtitle

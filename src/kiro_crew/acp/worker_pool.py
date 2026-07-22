@@ -1,6 +1,6 @@
 """Reusable bounded worker-pool engine for long-lived agent sessions.
 
-A provider-agnostic pool of warm workers that any MeshClaw app can reuse to run
+A provider-agnostic pool of warm workers that any KiroCrew app can reuse to run
 agent work as **direct, long-lived sessions** instead of per-task ``/api/spawn``
 sub-agents (which produce an agent card, a ``:lock:`` approval prompt, a Slack
 relay, and a reaper slot). The engine owns only the *pooling* concerns; the

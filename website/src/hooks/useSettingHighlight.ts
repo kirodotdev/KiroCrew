@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 
 /**
- * useSettingHighlight — deep-link + highlight hook for Settings (Mesh-2151).
+ * useSettingHighlight — deep-link + highlight hook for Settings.
  *
  * Reads `?highlight=<id>` from the URL, resolves the id to a label via
  * SETTINGS_REGISTRY, finds the element by `data-setting-label`, scrolls it

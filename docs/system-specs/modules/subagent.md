@@ -404,7 +404,7 @@ small results still inline in full).
 | `agent.completion_keep_chars` | int (`0` disables truncation) | `3000` | Character cap applied after `completion_keep` |
 
 The helper `apply_completion_keep(text, mode, max_chars)` lives in
-`context_management.py`. `head` is identical to the pre-Mesh-1608
+`context_management.py`. `head` is identical to the earlier
 behavior. `tail` is appropriate for agents that summarize at the end
 (developer/reviewer/on-call). `both` keeps roughly half the budget at
 each end with a middle elision marker.
@@ -445,7 +445,7 @@ Decision + lifecycle:
 
 - `SubagentManager._should_use_session_sharing(info)` gates the path: config flag
   on, parent session eligible (`SessionManager.is_session_sharing_eligible`), and
-  no CC-specific overrides (`model` / `allowed_tools` / `bare`).
+  no backend-specific overrides (`model` / `allowed_tools` / `bare`).
 - `_create_shared_session()` resolves the parent's `AcpRuntime` via
   `_get_parent_runtime()` (falling back to `SessionManager.get_subagent_runtime()`
   — a companion runtime), calls `runtime.create_session()`, and wraps the handle
@@ -458,5 +458,5 @@ Decision + lifecycle:
   subagents may still use. The runtime is killed when the parent session ends
   (`SessionManager.release_subagent_runtime`, invoked from `reset()`).
 
-Non-kiro (Claude Code) parents are never eligible and always use the legacy
-`AcpClient` per-process path regardless of the flag.
+Non-kiro (alternate ACP backend) parents are never eligible and always use the
+legacy `AcpClient` per-process path regardless of the flag.

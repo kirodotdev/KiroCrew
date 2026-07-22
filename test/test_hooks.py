@@ -42,8 +42,8 @@ class TestToolMatches:
         assert not _tool_matches("*_bash", "execute_python")
 
     def test_contains_wildcard(self):
-        assert _tool_matches("*phone*", "builder-mcp--phonetool")
-        assert not _tool_matches("*phone*", "builder-mcp--search")
+        assert _tool_matches("*phone*", "enterprise-mcp--phonebook")
+        assert not _tool_matches("*phone*", "enterprise-mcp--search")
 
 
 class TestMessageHooks:
@@ -174,7 +174,7 @@ class TestToolHooks:
         assert mgr.on_tool_call("ls -la /workplace").action == TOOL_ALLOW
 
     def test_exfil_command_denied_at_gate(self):
-        """Talos 5682f92b: data-egress / reverse-shell command shapes must be
+        """security-review 5682f92b: data-egress / reverse-shell command shapes must be
         DENIED at the tool-invocation gate (previously only passively audited).
 
         These carry the exfiltration reason specifically (they do not also name a
@@ -331,7 +331,7 @@ class TestToolCallEvaluatesRawCommand:
         assert result.action == TOOL_DENY
 
     def test_shell_tool_without_recoverable_command_is_denied(self):
-        """Deny-by-default (AutoSDE security-controls): a shell tool whose raw
+        """Deny-by-default (review-bot security-controls): a shell tool whose raw
         command could not be extracted must NOT be gated on the untrusted
         title alone — it is denied. Otherwise the title-only fallback IS the
         bypass this fix closes."""
@@ -378,7 +378,7 @@ class TestShellCommandProperty:
     def test_from_tool_input_json_permission_event(self):
         """permission_request events set tool_input (JSON), NOT raw_tool_params
         — this is the dashboard's primary gate path, so the fallback is
-        load-bearing. Regression for the AutoSDE finding that the first cut
+        load-bearing. Regression for the review-bot finding that the first cut
         only read raw_tool_params and was a no-op on permission events."""
         from kiro_crew.acp.types import AcpEvent
 

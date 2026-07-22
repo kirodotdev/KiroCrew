@@ -12,7 +12,7 @@ const REMOTE_PATH_RE = /^[a-zA-Z0-9~\/._][a-zA-Z0-9\/._~:\-]*$/;
 
 function validateRemoteSettings(host, bin, remotePort, remotePath) {
   if (host && host.length > 253) return "Hostname too long (max 253 characters).";
-  if (host && !HOSTNAME_RE.test(host)) return "Invalid hostname — must be a DNS name or SSH config alias (e.g. myhost.corp.amazon.com or clouddesk).";
+  if (host && !HOSTNAME_RE.test(host)) return "Invalid hostname — must be a DNS name or SSH config alias (e.g. myhost.corp.example.com or clouddesk).";
   if (bin && bin.startsWith("-")) return "Binary path must not start with a dash.";
   if (bin && bin.includes("..")) return "Binary path must not contain path traversal (../).";
   if (bin && !BINPATH_RE.test(bin)) return "Invalid binary path — only filesystem path characters allowed (no spaces).";

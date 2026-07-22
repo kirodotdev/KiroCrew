@@ -127,7 +127,7 @@ describe('useWebSocket reconnect unread suppression', () => {
   })
 })
 
-describe('Mesh-2093: unread fires on chat_done not chat_chunk', () => {
+describe('unread fires on chat_done not chat_chunk', () => {
   let testStore: ReturnType<typeof createTestStore>
 
   beforeEach(() => {

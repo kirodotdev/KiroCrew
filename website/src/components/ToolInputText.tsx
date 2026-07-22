@@ -4,7 +4,7 @@ import { parseDiffLines, isDiffText, DIFF_BG, DIFF_FG } from '../utils/diffUtils
 /** Turn JSON string-escape whitespace (\n, \t, \r) into real characters so a
  *  multi-line command embedded in a JSON payload renders across lines in the
  *  surrounding <pre whitespace-pre-wrap>, instead of collapsing to one line
- *  littered with literal \n sequences (Mesh-2357). A genuine literal
+ *  littered with literal \n sequences. A genuine literal
  *  backslash-n in a shell command is JSON-encoded as \\n, whose leading \\ is
  *  consumed as its own escape pair first — so it is preserved as \n (not turned
  *  into a newline). Other escapes (\", \/) are left intact so the JSON stays
@@ -29,7 +29,7 @@ function unescapeJsonWhitespace(s: string): string {
 /** Inline tool input renderer with diff coloring and JSON syntax highlighting.
  *  Used in approval popups, activity viewer, and collapsed tool groups.
  *
- *  `raw` (default false) toggles the Mesh-2357 whitespace unescape: when false
+ *  `raw` (default false) toggles the whitespace unescape: when false
  *  (Formatted), JSON string escapes \n/\t/\r render as real line breaks so a
  *  multi-line command is legible; when true (Raw), the text is highlighted but
  *  left byte-for-byte verbatim so the approver can inspect the exact payload,
@@ -40,7 +40,7 @@ export function ToolInputText({ text, raw = false }: { text: string; raw?: boole
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     if (text.length > 50_000) return <span>{text}</span>
     // Formatted mode unescapes \n / \t so a multi-line command value renders
-    // across real lines in the <pre whitespace-pre-wrap> host (Mesh-2357). Raw
+    // across real lines in the <pre whitespace-pre-wrap> host. Raw
     // mode leaves the payload verbatim for faithful pre-approval inspection.
     const jsonText = raw ? text : unescapeJsonWhitespace(text)
     const parts: ReactNode[] = []

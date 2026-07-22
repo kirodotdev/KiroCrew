@@ -1,6 +1,6 @@
 """Tests for GET /api/kiro-hooks handler.
 
-Covers the 5 paths identified in CR-269738410 review:
+Covers the 5 paths identified in review:
 1. OSError/JSONDecodeError on agent_cfg.read_text() → empty hooks
 2. _shipped_defaults() returning non-existent path → bundled fallback
 3. Malformed JSON where raw is not a dict → isinstance guard

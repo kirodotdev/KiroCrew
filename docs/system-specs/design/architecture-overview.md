@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> ⚠️ **Do not enter Critical or Restricted classified data into KiroCrew. Your cloud desktop and laptop are not approved to handle this data classification. See the [Data Handling Standard](https://policy.a2z.com/docs/99/publication).**
+> ⚠️ **Do not enter sensitive or classified data into KiroCrew unless your environment is approved to handle that data classification. Follow your organization's data handling policy.**
 
 Last Updated: 2026-05-18
 
@@ -51,7 +51,7 @@ User → CLI / Slack / Dashboard → KiroCrew
 - **Minimal dependencies** — stdlib core; `slack-sdk` + `aiohttp` only external deps
 - **Project-level config** — `agents/` and `skills/` editable without code changes
 - **Isolated workspace** — LLM sessions and tasks operate in per-session subdirectories under `workspace_root()` (`/Volumes/workplace/kirocrew-workspace` on macOS, `~/workplace/kirocrew-workspace` on Linux)
-- **React SPA frontend** — Vite builds to `static/dist/`, served by aiohttp; SPA fallback middleware for React Router; if the dist bundle is absent the gateway serves a static "not found" guidance page (the legacy `dashboard.html` fallback was removed — Talos V2285871874)
+- **React SPA frontend** — Vite builds to `static/dist/`, served by aiohttp; SPA fallback middleware for React Router; if the dist bundle is absent the gateway serves a static "not found" guidance page (the legacy `dashboard.html` fallback was removed)
 - **Frontend security** — DOMPurify sanitizes all `dangerouslySetInnerHTML`; `sudo tee -a` for `/etc/hosts` (no shell injection)
 - **Custom domain** — `kirocrew setup` uses `kirocrew.localhost` (RFC 6761, no /etc/hosts needed)
 

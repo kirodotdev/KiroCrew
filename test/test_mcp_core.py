@@ -245,7 +245,7 @@ class TestKnowledgeSearchCache:
 
 
 class TestSessionKeyHeaderError:
-    """The header-safety guard for session keys (Mesh-2241)."""
+    """The header-safety guard for session keys."""
 
     def test_ascii_key_is_header_safe(self):
         from kiro_crew.mcp_core import _session_key_header_error

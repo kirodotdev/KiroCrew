@@ -7,10 +7,10 @@
  * whose onBlur cancels the edit (setRenamingSlot(null)) — so the field flickers
  * open and vanishes.
  *
- * History: the first form of this bug (Mesh-2628) only cost the caret — the
+ * History: the first form of this bug only cost the caret — the
  * input stayed, you just had to click it before typing — and was fixed with a
  * useEffect that re-grabs focus + selects on the next rAF. The menu-unification
- * refactor (CR-286161833) changed the close/focus-restore timing so the restore
+ * refactor changed the close/focus-restore timing so the restore
  * now lands after that rAF, escalating "caret not placed" into "edit cancelled".
  *
  * Fix: suppress Radix's trigger-focus-restore on the rename path only
@@ -42,7 +42,7 @@ import { http, HttpResponse } from 'msw'
 // active element, focus the trigger, one frame after the consumer's rAF), which
 // is the exact behaviour the rename guard defends against. Against the real
 // library the restore is a jsdom no-op (it focuses a non-focusable <div>
-// trigger), so a broken rename path would pass — which is how CR-286161833
+// trigger), so a broken rename path would pass — which is how this regression
 // slipped through. The right-click path uses ContextMenu; the ⋯ path uses
 // DropdownMenu, so mock both.
 vi.mock('@radix-ui/react-context-menu', () => import('./__mocks__/@radix-ui/react-context-menu'))

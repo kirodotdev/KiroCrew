@@ -573,7 +573,7 @@ class TestEpisodicCRUD:
 
 
 class TestEpisodicInjectionScreening:
-    """Episodic writes are injection-scanned (XPIA persistence, Talos 696671aa)."""
+    """Episodic writes are injection-scanned (XPIA persistence, security-review 696671aa)."""
 
     def test_injection_text_rejected(self, tmp_path: Path) -> None:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
@@ -816,7 +816,7 @@ class TestEmbedFnLazyRebind:
     def test_factory_returning_empty_list_probe_does_not_bind(self, tmp_path: Path) -> None:
         """If probe returns an empty list (zero-dim or misconfigured model), do not bind.
 
-        Regression for review feedback on CR-276762517: the original `if probe:` check
+        Regression for review feedback on the original `if probe:` check
         was falsy for `[]` AND for `0` AND for `None`, conflating "probe failed" with
         "probe returned a degenerate response." The tightened check rejects empty/None
         explicitly so a misconfigured model can't slip through as a working embed_fn.
@@ -836,7 +836,7 @@ class TestEmbedFnLazyRebind:
     def test_rebind_lock_serializes_concurrent_factory_calls(self, tmp_path: Path) -> None:
         """Two threads racing into the rebind block share at most one factory call per cooldown.
 
-        Regression for review feedback on CR-276762517: without the lock, both threads
+        Regression for review feedback on without the lock, both threads
         could observe `embed_fn is None` and `cooldown elapsed` simultaneously, then both
         call the factory + probe. With the lock, the loser sees the cooldown bumped and skips.
         """
@@ -890,7 +890,7 @@ class TestMmrJaccardCacheAndRecall:
     pairwise Jaccard, rather than truncating the pool toward `limit`.
 
     Truncating by relevance would silently drop a relevant-but-diverse tail item that
-    MMR is specifically meant to surface (reviewer zejiangg, CR-280115836). Recall is
+    MMR is specifically meant to surface. Recall is
     preserved by keeping the pool; cost is reduced by computing each candidate↔candidate
     similarity at most once (it depends only on the two token sets, not the query).
     """
@@ -1019,7 +1019,7 @@ class TestMmrRerankNegativeScores:
         assert out[0]["score"] == 0.90
 
     def test_all_negative_similar_texts_returns_all_requested(self):
-        # AutoSDE edge case: all-negative scores + identical token sets push the MMR
+        # review-bot edge case: all-negative scores + identical token sets push the MMR
         # value to <= -1.0 (e.g. relevance=-1, max_sim=1 -> 0.6*-1 - 0.4*1 = -1.0). A
         # best_mmr floor of -1.0 with strict `>` would select nothing and break early,
         # returning fewer than `limit` results. With best_mmr=-inf, all are returned.

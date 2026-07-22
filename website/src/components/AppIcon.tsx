@@ -74,7 +74,7 @@ export default function AppIcon({
   // React's useId yields ':r0:' style tokens; sanitize for use in SVG ids.
   const idPrefix = `ai${rawId.replace(/[^a-zA-Z0-9]/g, '')}`
   // Sanitize the fetched SVG (strips <script>/<foreignObject onload> etc.)
-  // BEFORE inlining — required by the frontend-security AUTOSDE rule and a
+  // BEFORE inlining — required by the `frontend-security` lint rule and a
   // defense-in-depth backstop on top of the strict isAppAssetSvg allowlist.
   // The SVG profile preserves the <mask>/url(#…)/fill markup these icons need.
   const scopedMarkup = useMemo(() => {

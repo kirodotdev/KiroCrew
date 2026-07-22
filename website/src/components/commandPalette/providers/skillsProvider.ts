@@ -9,7 +9,7 @@ import { resolveInvokableEnter, usePaletteActions } from '../paletteActions'
 import type { Result, ResourceProvider } from '../types'
 
 /**
- * Skills provider for the Search Everywhere command palette (Mesh-2151).
+ * Skills provider for the Search Everywhere command palette.
  *
  * Backs the **Skills** tab with the skills returned by `api.skills()` (the
  * `/api/skills` endpoint, the same source `SkillsTab` and the inline
@@ -20,7 +20,7 @@ import type { Result, ResourceProvider } from '../types'
  *  - `onCmdActivate` (⌘Enter) — always open a new session seeded with `$<name>`.
  *  - `onAltActivate` (⌥Enter) — open the skill's SKILL.md (read / preview).
  *
- * ## Security (BSC1 — ARCC `cnt_u7sfVeParu7OlX`)
+ * ## Security (Input Validation)
  *
  * The provider only ever emits the plain token `$<name>` and routes it through
  * the existing chat-submit path (`setPendingInput` / `createSlot`). Server-side
@@ -33,7 +33,7 @@ import type { Result, ResourceProvider } from '../types'
  * task spec). The list is cached under the React-Query key `['skills']` (shared
  * with `SkillsTab` / the inline `$`-picker) so reopening the palette is free.
  * Highlight `indices` index into the rendered `title` and are emitted as React
- * nodes by the palette, never as HTML strings (AUTOSDE `frontend-security`).
+ * nodes by the palette, never as HTML strings (`frontend-security` lint rule).
  */
 
 const PROVIDER_ID = 'skills'
@@ -83,7 +83,7 @@ export interface SkillsProviderDeps {
   openSkillDoc: (ref: SkillRef) => void
 }
 
-/** Icon convention: lucide element with `lucide-inline` (AUTOSDE use-lucide-icons). */
+/** Icon convention: lucide element with `lucide-inline` (`use-lucide-icons` lint rule). */
 function skillIcon() {
   return createElement(Sparkles, { className: 'lucide-inline' })
 }
@@ -132,7 +132,7 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
           icon: skillIcon(),
           score: match.score,
           indices: match.indices,
-          // Declarative Enter contract (Mesh-2151 §2 / task 24). The central
+          // Declarative Enter contract (§2 / task 24). The central
           // `dispatchEnter` in CommandPalette routes on this: primary Enter is
           // context-aware (insert `$<skill>` into the active composer, else new
           // seeded session) and ⌘Enter is always a new seeded session, both
@@ -144,7 +144,7 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
           // ⌥Enter opens the doc. The resolver is invoked at *activation* time
           // (deferred thunk) — not eagerly while building the list — so merely
           // listing or previewing a skill never routes through the allowlist
-          // resolver (BSC1: resolution is an activation, not a side effect of
+          // resolver (input validation: resolution is an activation, not a side effect of
           // rendering a row).
           onActivate: () =>
             resolveInvokableEnter(hasActiveChat, token, {
@@ -166,7 +166,7 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
  * React hook that returns a live Skills provider wired to React-Query and the
  * chat store via {@link usePaletteActions}.
  *
- * Per the AUTOSDE `use-react-query` rule the skill list is fetched through
+ * Per the `use-react-query` lint rule the skill list is fetched through
  * React-Query under the key `['skills']` (identical to `SkillsTab` and the
  * inline `$`-picker, so the cache is shared). `queryClient.fetchQuery` is used
  * rather than `useQuery` because a {@link ResourceProvider}'s `search` is an

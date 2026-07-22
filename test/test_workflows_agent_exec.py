@@ -66,19 +66,19 @@ async def test_default_uses_fresh_ephemeral_session_and_releases() -> None:
 async def test_subagents_get_full_tooled_agent_not_lite() -> None:
     """A workflow's ctx.agent() steps are the WORKERS — they must have full tool
     access (MCPs, file/web tools), so they use the default full agent, NOT the
-    tool-less meshclaw-lite used for authoring. Default agent=None ⇒ the backend
+    tool-less agent-lite used for authoring. Default agent=None ⇒ the backend
     resolves the full default agent (with its complete toolset)."""
     sessions = FakeSessions()
     fn = build_agent_fn(sessions, run_id="wf_x")
     await fn("do real work", {})
     _key, kw = sessions.created[0]
-    assert kw["agent"] is None  # NOT "meshclaw-lite" — full default agent + tools
+    assert kw["agent"] is None  # NOT "agent-lite" — full default agent + tools
 
     # An explicit per-step agent override still flows through (e.g. a specialist).
     sessions2 = FakeSessions()
     fn2 = build_agent_fn(sessions2, run_id="wf_y")
-    await fn2("specialized", {"agent": "meshclaw-sde"})
-    assert sessions2.created[0][1]["agent"] == "meshclaw-sde"
+    await fn2("specialized", {"agent": "agent-sde"})
+    assert sessions2.created[0][1]["agent"] == "agent-sde"
 
 
 async def test_named_session_is_reused_and_not_released() -> None:

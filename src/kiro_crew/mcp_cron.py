@@ -73,7 +73,7 @@ _UNIT_SECS = {
 # regex does — because tools such as ``curl -d @~/.aws/credentials`` or
 # ``wget --post-file=$HOME/.ssh/id_rsa`` read files via flags with no recognizable
 # read-command prefix, evading that regex (verified: the canonical exfil payload
-# from finding P454794507 slipped through the three stock guards).
+# slipped through the three stock guards).
 _CRON_CRED_PATH_RE = re.compile(
     r"(?:^|[\s'\"=@/~`]|\$\{?HOME\}?)"
     r"(?:" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
@@ -173,7 +173,7 @@ def _vet_cron_capability_governance() -> str | None:
         raise
     except Exception:
         # Wrapped: a late-import failure must not raise out of this except-branch
-        # and hard-fail the stdio kirocrew-cron tool call (CR-284272012).
+        # and hard-fail the stdio kirocrew-cron tool call.
         try:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
@@ -240,7 +240,7 @@ def _vet_shell_command(command: str) -> str | None:
     ``scan_exfiltration_urls``), plus a cron-surface-specific deny of any
     credential-path or protected-secret-env reference (the stock guards miss
     flag-based file reads like ``curl -d @FILE`` and body-exfil, which is the
-    exact gap in finding P454794507).
+    exact gap this closes).
 
     Returns an ``"Error: ..."`` string to surface to the caller, or ``None`` if
     the command is clean. The returned message is redacted so it never echoes
@@ -304,7 +304,7 @@ def _vet_script_contents(text: str) -> str | None:
     that false-positive on ordinary Python source, and destructive-op risk is
     covered by the now-required ``cron_add`` approval prompt (Fix 3). Credential
     exfiltration — which a human rubber-stamping the prompt would not catch — is
-    the threat this gate closes. (Finding P454794507, defense-in-depth item 5.)
+    the threat this gate closes (defense-in-depth item 5).
     """
     if _CRON_CRED_PATH_RE.search(text):
         return (
@@ -355,7 +355,7 @@ def _log_cron_denial(tool_name: str, error: str) -> None:
 
     The blocked command/script never reaches the kiro-cli ACP permission/hook
     flow (which normally produces the tool-invocation audit trail), so the denial
-    must be recorded here to preserve the audit trail (Finding P454794507).
+    must be recorded here to preserve the audit trail.
     ``error`` is the already-redacted "Error: ..." message from the _vet_* guards.
     """
     try:

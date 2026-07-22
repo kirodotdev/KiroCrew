@@ -116,7 +116,7 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-// Mesh-2908: the per-slot draft fix relies on a load-bearing effect ORDER --
+// the per-slot draft fix relies on a load-bearing effect ORDER --
 // ALL THREE per-composer persist effects (text, files, pastes) must be declared
 // before the effect that advances composerSlotRef.current. React runs effects
 // in declaration order, so if the advance ran first a persist effect batched
@@ -126,7 +126,7 @@ beforeEach(() => {
 // commit); this static source-order assertion does, and goes red the instant
 // someone reorders the effects or moves the advance up. All three persist
 // writes are asserted (not just text) because the advance now guards all three.
-describe('ChatPage composerSlotRef effect ordering (Mesh-2908)', () => {
+describe('ChatPage composerSlotRef effect ordering', () => {
   it('declares all three composer-persist effects before advancing composerSlotRef', () => {
     // Deliberately brittle: this matches exact code substrings from ChatPage.tsx
     // to lock a load-bearing effect-declaration order. An innocuous rename/reformat
@@ -142,7 +142,7 @@ describe('ChatPage composerSlotRef effect ordering (Mesh-2908)', () => {
     expect(fileIdx, 'file-persist effect (setFileDraft off composerSlotRef) not found').toBeGreaterThan(-1)
     expect(pasteIdx, 'paste-persist effect (setPasteDraft off composerSlotRef) not found').toBeGreaterThan(-1)
     expect(advanceIdx, 'composerSlotRef advance not found').toBeGreaterThan(-1)
-    const order = 'persist effect must be declared BEFORE the composerSlotRef advance (Mesh-2908 draft-smear guard). If effects moved, UPDATE the substrings; do not delete this guard.'
+    const order = 'persist effect must be declared BEFORE the composerSlotRef advance (draft-smear guard). If effects moved, UPDATE the substrings; do not delete this guard.'
     expect(textIdx, order).toBeLessThan(advanceIdx)
     expect(fileIdx, order).toBeLessThan(advanceIdx)
     expect(pasteIdx, order).toBeLessThan(advanceIdx)
@@ -155,7 +155,7 @@ describe('ChatPage composerSlotRef effect ordering (Mesh-2908)', () => {
   // and activeSlotRef never disagree in a test. Guard the fix statically
   // instead: send() must resolve its target from uiSlot (= activeSlotRef.current),
   // never the bare closure activeSlot. Goes red if someone reverts `?? uiSlot`.
-  it('sends to uiSlot (activeSlotRef), not the stale closure activeSlot (Mesh-2908 Symptom B)', () => {
+  it('sends to uiSlot (activeSlotRef), not the stale closure activeSlot (Symptom B)', () => {
     // Same brittle-by-design string match: if the send-target lines are renamed,
     // UPDATE the substrings to the new form; do not delete this guard.
     const here = dirname(fileURLToPath(import.meta.url))
@@ -319,7 +319,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
   })
 
   it('async upload resolving after slot switch lands in the request slot', async () => {
-    // Regression guard for the async-upload race flagged in CR-272843488 review:
+    // Regression guard for the async-upload race flagged in review:
     // user starts an upload in slot-a, switches to slot-b before the promise
     // resolves, and the uploaded file must land in slot-a's persisted draft —
     // not silently appear in slot-b's live state.
@@ -395,7 +395,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
   })
 
   it('restores paste blocks to the active slot on connection error', async () => {
-    // The Mesh-1468 restore path puts the token text back in the input; the
+    // The restore path puts the token text back in the input; the
     // backing blocks must come back too, or the restored draft shows a dead token.
     const { api } = await import('../api/client')
     vi.mocked(api.sendChat).mockRejectedValueOnce(new Error('Network error'))
@@ -423,7 +423,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     })
   })
 
-  it('slow New Chat that resolves after a slot switch does not steal the typed text (Mesh-2908)', async () => {
+  it('slow New Chat that resolves after a slot switch does not steal the typed text', async () => {
     // Symptom A: memory is high, user clicks New Chat, the create backend call
     // hangs. User switches to slot-b and types. When the slow create finally
     // resolves it must NOT hijack the view and drag slot-b's text into the new
@@ -464,7 +464,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     expect(saved['new-slot']).toBeUndefined()
   })
 
-  it('restores draft to localStorage on connection error (Mesh-1468)', async () => {
+  it('restores draft to localStorage on connection error', async () => {
     // Override sendChat to simulate network failure for this test only
     const { api } = await import('../api/client')
     vi.mocked(api.sendChat).mockRejectedValueOnce(new Error('Network error'))

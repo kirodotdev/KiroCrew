@@ -13,7 +13,7 @@ import {
 
 /**
  * Covers the pure window math behind the ChatSidebar "Recent" filter
- * (CR-287800085). The component wiring lives in ChatSidebar.tsx, but the
+ *. The component wiring lives in ChatSidebar.tsx, but the
  * decomposition / clamp / boundary logic is extracted here so it can be tested
  * without a full render, mirroring the sibling `unreadDrain` extraction.
  */

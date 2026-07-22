@@ -1,5 +1,5 @@
 /**
- * Regression for Mesh-1980: a session that matches more than one tag-column
+ * Regression: a session that matches more than one tag-column
  * filter renders once per matching column. Every row is a framer-motion
  * node with a layoutId; if that id is keyed only on the slot key, the two
  * copies share a layoutId inside the one LayoutGroup and Framer paints only
@@ -149,7 +149,7 @@ function layoutIdIn(container: HTMLElement, columnId: string): string | null {
   return rows[0].getAttribute('data-layout-id')
 }
 
-describe('Mesh-1980: multi-tag session in two columns', () => {
+describe('multi-tag session in two columns', () => {
   it('renders the same slot once in each matching column', () => {
     const { container } = renderSidebar()
     expect(rowsFor(container, COL_PLANNED_BLOCKED)).toHaveLength(1)

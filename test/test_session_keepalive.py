@@ -2,7 +2,7 @@
 
 Regression coverage for the bug where the `wait` MCP tool blocked the
 ACP subprocess so long that is_responsive() went stale and the gateway
-SIGTERM'd it (exit code -15). See taskei f361a79a.
+SIGTERM'd it (exit code -15).
 """
 
 from __future__ import annotations

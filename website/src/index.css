@@ -1204,7 +1204,7 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .msg-content .diff-block>pre{padding:0}
 .msg-content .diff-block,.msg-content .code-block{margin:8px 0}
 
-/* Auto-sizing message-edit bubble (Mesh-1883). A hidden ::after mirror, fed by
+/* Auto-sizing message-edit bubble. A hidden::after mirror, fed by
    the data-replicated-value attribute, drives the single grid track so the
    overlapping <textarea> grows with its own content in BOTH dimensions —
    matching the read-only bubble's width for any message length, capped by the

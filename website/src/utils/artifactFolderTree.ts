@@ -1,7 +1,7 @@
 import type { ArtifactFolder } from '../types'
 
 /**
- * Pure helpers for the artifact-library folder tree (Mesh-2720).
+ * Pure helpers for the artifact-library folder tree.
  *
  * These operate on the flat `{id, parent_id}` folder list returned by
  * `GET /api/artifact-folders`. All walks are cycle-guarded (visited set /

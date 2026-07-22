@@ -496,7 +496,7 @@ _AIM_TIMEOUT = 60
 def _aim_cap_type() -> str:
     """Return the AIM capability subcommand based on active provider.
 
-    Claude Code uses 'plugins' while kiro-cli uses 'agents'.
+    A companion-registered backend uses 'plugins' while kiro-cli uses 'agents'.
     """
     cfg = KiroCrewConfig.load()
     return "plugins" if cfg.agent.provider == "claude_code" else "agents"
@@ -838,9 +838,9 @@ async def api_models(request: web.Request) -> web.Response:
         # Mirror AcpClient._spawn() sandbox: wrap_argv + env + process isolation.
         # Note: AcpClient._spawn() is for interactive ACP sessions (stdin/stdout
         # pipes); this is a one-shot read-only command, so we replicate the
-        # sandbox setup directly.  See AUTOSDE.yaml security-controls.
+        # sandbox setup directly.  See the security-controls rule.
         argv, cleanup = wrap_argv(argv)
-        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
         try:
             env = {**os.environ}
             env["PATH"] = augmented_path(env.get("PATH", ""))
@@ -1166,7 +1166,7 @@ async def api_aim_agents_uninstall(request: web.Request) -> web.Response:
             logger.warning("SEL logging failed for cross-provider sync", exc_info=True)
 
         # Also uninstall skills so sync_aim_packages does not reinstall the
-        # package from a stale skills artifact (Mesh-1330).  Packages with no
+        # package from a stale skills artifact.  Packages with no
         # skills component return non-zero here — log and continue.
         rc3, out3 = await _run_aim("skills", "uninstall", package, "--non-interactive")
         if rc3 != 0:

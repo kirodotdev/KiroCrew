@@ -9,7 +9,7 @@ import {
 
 /**
  * Shared dnd-kit plumbing for folder-tree surfaces (chat sidebar, artifact
- * library). Extracted from ChatSidebar (Mesh-2720) so the artifact views reuse
+ * library). Extracted from ChatSidebar so the artifact views reuse
  * the exact same wrappers instead of duplicating them.
  */
 

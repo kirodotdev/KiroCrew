@@ -162,7 +162,7 @@ capped at 2 MiB; the store enforces a per-content cap of 25 MiB
 (`validation.ARTIFACT_CONTENT_MAX`) imports that same constant so the tool and
 store paths never disagree.
 
-**Folders (Mesh-2720):** `Artifact.folder_id` (`""` = unfiled) is an opaque,
+**Folders:** `Artifact.folder_id` (`""` = unfiled) is an opaque,
 rename-safe membership id, tolerant-loaded for legacy meta.json.
 `ArtifactStore.set_folder()` is a metadata-only move (NO version bump);
 `list(folder=)` filters (None = all, `""` = unfiled, id = that folder).
@@ -411,8 +411,9 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   there is no out-of-process writer, so no recurring reconcile is needed.)
 - **Security.** Ingested text *and* the LLM-originated artifact name (used as
   the source/item title) are passed through `redact_credentials()` and
-  `redact_exfiltration_urls()` before landing in the Knowledge store (ARCC Bsc4
-  — never persist secrets), consistent with the chat-ingest path. File-backed
+  `redact_exfiltration_urls()` before landing in the Knowledge store (per
+  input-validation guidance — never persist secrets), consistent with the
+  chat-ingest path. File-backed
   artifacts whose `source_path` resolves to a sensitive path are refused (with a
   SEL audit event), mirroring the folder-watcher file-read guard.
 - **Dedup tie-in.** A file-backed artifact whose `source_path` is also inside a
@@ -422,7 +423,7 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   persistent folder copy wins over the artifact copy), so the overlap
   self-resolves rather than needing special-casing here.
 
-## Companion Chat (Mesh-2772)
+## Companion Chat
 
 The artifact detail page can host a **companion chat panel**: the artifact
 renders alongside a live agent session bound to it. This is the backend half.
@@ -469,14 +470,14 @@ In scope for the foundation:
 Out of scope (separate tasks):
 
 - **Whiteboard layout** — saved arrangements of (artifact_id, x, y, w, h) —
-  parent task [Mesh-1437](https://taskei.amazon.dev/tasks/Mesh-1437).
+  tracked as follow-on work.
 - **Live refresh bindings** — cron / Python script / MCP-tool source types
-  that auto-rewrite `current.html` on a schedule — task
-  [Mesh-1565](https://taskei.amazon.dev/tasks/Mesh-1565). The hook will be a
-  new `meta.json.refresh_binding` field consumed by a refresh service.
+  that auto-rewrite `current.html` on a schedule — tracked as follow-on work.
+  The hook will be a new `meta.json.refresh_binding` field consumed by a
+  refresh service.
 - **Right-panel inline render** — clicking an `<a>` to an artifact in chat
   opens the artifact in a side panel rather than the standalone page —
-  related to [Mesh-1534](https://taskei.amazon.dev/tasks/Mesh-1534).
+  related follow-on work.
 - **Cross-user sharing**, **embeddings/full-text search**, **install from
   URL/community widget store** — future expansions.
 

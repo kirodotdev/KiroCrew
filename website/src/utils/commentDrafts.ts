@@ -1,7 +1,7 @@
 /**
  * Per-file inline comment draft persistence. Pending (unsubmitted) comments
  * survive `MarkdownPanel` close, page refresh, and browser crashes via
- * localStorage. Thin instance of `createSlotDraftStore` (Mesh-1978); keyed by
+ * localStorage. Thin instance of `createSlotDraftStore`; keyed by
  * filePath, capped at COMMENT_DRAFT_MAX_FILES, no TTL. Uses `evictAfterWrite` so
  * a failed persist (e.g. QuotaExceeded) never silently drops in-memory drafts.
  */

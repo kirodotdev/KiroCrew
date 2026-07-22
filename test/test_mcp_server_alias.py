@@ -1,4 +1,4 @@
-"""Regression tests for kiro-safe MCP server-key aliasing (Mesh-1956).
+"""Regression tests for kiro-safe MCP server-key aliasing.
 
 kiro-cli resolves agent ``tools``/``allowedTools`` entries (``@server``) by
 splitting on ``/``, so a server key containing ``/`` (e.g. the npm-scoped
@@ -127,7 +127,7 @@ class TestNormalizeMcpServerKeys:
         assert cfg["tools"] == ["@playwright-mcp", "@playwright-mcp-2"]
 
     def test_empty_optional_keys_collapse_no_suffix(self):
-        # Mesh-2593: a re-added slash key that differs from the canonical alias
+        # a re-added slash key that differs from the canonical alias
         # only by an empty ``args``/``env`` is the SAME server -> it must reuse
         # the alias (overwrite) instead of minting a -2 suffix. This is the loop
         # that produced playwright-mcp-2..5 on every build/reinstall/update.

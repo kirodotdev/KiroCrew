@@ -112,7 +112,7 @@ def _err(message: str, status: int = 400) -> web.Response:
 
 
 def _notify_artifact_update(state: Any, slug: str, version: int, *, deleted: bool = False) -> None:
-    """Best-effort WS broadcast of an artifact content change (Mesh-2772).
+    """Best-effort WS broadcast of an artifact content change.
 
     Called from the mutation funnel (create / content update / revert /
     relocate / delete) — the same choke points as the SEL audit, so panel
@@ -289,7 +289,7 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     All LLM-originated string fields (``name``, ``description``, ``tags``,
     and — when ``include_content=True`` — ``content``) pass through
     ``redact_exfiltration_urls()`` + ``redact_credentials()`` per
-    AUTOSDE.yaml's ``security-controls`` rule. Artifact metadata is set
+    the ``security-controls`` rule. Artifact metadata is set
     by the agent via ``artifact_save`` / ``artifact_update``, so any
     field originating in LLM output must not reach the dashboard surface
     unredacted.
@@ -319,7 +319,7 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     # Publication block (Artifactory) is structural — view_url is an internal
     # CloudFront URL and aliases are user input — but ``last_error`` can echo
     # an arbitrary upstream error string, so redact it like other surfaced
-    # text per AUTOSDE security-controls.
+    # text per the security-controls rule.
     pub = out.get("publication")
     if isinstance(pub, dict) and isinstance(pub.get("last_error"), str) and pub["last_error"]:
         pub["last_error"] = _redact_text(pub["last_error"])
@@ -975,7 +975,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
-    # ── Auto-dedup by source_path (Mesh-1654 Phase 6) ─────────────────────
+    # ── Auto-dedup by source_path ─────────────────────
     # When the caller passes a source_path that matches an existing artifact,
     # silently bump the existing one to a new version rather than creating a
     # parallel duplicate. This makes the "Add to artifacts" action on file
@@ -1089,7 +1089,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             _notify_artifact_update(state, art.slug, art.version)
             return _json_response(_serialize(art, include_content=True), status=200)
     # Resolve an optional folder placement (id or human path; mkdir -p missing
-    # segments) so a save can file the artifact in one call (Mesh-2720). Off the
+    # segments) so a save can file the artifact in one call. Off the
     # event loop — mkdir -p may persist new folders (blocking fsync).
     merr = _validate_inbound_webapp_metadata(body)
     if merr:
@@ -1160,7 +1160,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
         outcome="success",
         extra={"slug": art.slug, "kind": art.kind, "version": art.version},
     )
-    # New library entries appear live in every open window (Mesh-2772).
+    # New library entries appear live in every open window.
     _notify_artifact_update(state, art.slug, art.version)
     return _json_response(_serialize(art, include_content=True), status=201)
 
@@ -1212,7 +1212,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         session_id_hdr = request.headers.get("X-Session-Key")
         if session_id_hdr == "dashboard:ui":
             session_id_hdr = None
-        # Snapshot semantics (Mesh-1654 round 5): saves don't bump version
+        # Snapshot semantics: saves don't bump version
         # by default — that's the user's "save while editing" path. Agent
         # updates via MCP always snapshot (each iteration is a meaningful
         # state change worth versioning, like a git commit). The dashboard
@@ -1293,7 +1293,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             extra={"slug": slug},
         )
         return _err(str(exc), status=500)
-    # Optional folder placement (Mesh-2720). Metadata-only — does not bump the
+    # Optional folder placement. Metadata-only — does not bump the
     # version. The dedicated PATCH /folder route is the canonical path; this
     # honours a ``folder`` key on the generic update for convenience/parity.
     if "folder" in body:
@@ -1332,7 +1332,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         outcome="success",
         extra=_success_extra,
     )
-    # Live refresh (Mesh-2772): broadcast only when the artifact's content
+    # Live refresh: broadcast only when the artifact's content
     # actually changed — a content-carrying PATCH (Save / Snapshot / MCP
     # artifact_update) or a revert (event_type="reverted" is a content
     # rollback even when the body carries no content field). Metadata-only
@@ -1372,7 +1372,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         return _err("restricted session cannot delete artifacts", status=403)
     slug = request.match_info.get("slug", "")
     # Capture the pre-delete version so the deleted-variant WS event carries the
-    # last-known version (Mesh-2772). The upstream cleanup block that fetched
+    # last-known version. The upstream cleanup block that fetched
     # this was tied to the removed Artifactory path, so fetch it here directly.
     try:
         _existing = get_default_store().get(slug)
@@ -1420,7 +1420,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         outcome="success",
         extra={"slug": slug},
     )
-    # Deleted variant (Mesh-2772): open views of this slug toast + leave.
+    # Deleted variant: open views of this slug toast + leave.
     _notify_artifact_update(
         state, slug, _existing.version if _existing is not None else 0, deleted=True
     )
@@ -1578,7 +1578,7 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     return _json_response({"slug": art.slug, "event": latest})
 
 
-# ── Publishing / sharing (Artifactory — Mesh-1880) ───────────────────────────
+# ── Publishing / sharing (Artifactory) ───────────────────────────────────────
 
 _VALID_VISIBILITY = ("PRIVATE", "SHARED", "PUBLIC")
 
@@ -1621,7 +1621,7 @@ def _sync_error_response(
         status, outcome = 500, "error"
     # The exception text can originate from untrusted Artifactory MCP responses
     # — redact credentials / exfiltration URLs before it reaches the dashboard
-    # AND the SEL audit log (AUTOSDE security-controls).
+    # AND the SEL audit log (security-controls).
     safe_msg = _redact_text(str(exc))
     _audit(tool=tool, request=request, outcome=outcome, error=safe_msg, extra={"slug": slug})
     return _err(safe_msg, status=status)
@@ -2013,7 +2013,7 @@ async def api_artifact_pull_latest(request: web.Request) -> web.Response:
         outcome="success",
         extra={"slug": slug, "pulled": bool(result.get("pulled"))},
     )
-    # A pull lands upstream content as a new local snapshot (Mesh-2772).
+    # A pull lands upstream content as a new local snapshot.
     if result.get("pulled"):
         _notify_artifact_update(state, slug, art.version)
     # ``_serialize`` already ran the redactors over the (≤25 MiB) content body
@@ -2281,12 +2281,12 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
         outcome="success",
         extra={"slug": slug, "source_path": source_path},
     )
-    # A source_path swap changes what live reads return (Mesh-2772).
+    # A source_path swap changes what live reads return.
     _notify_artifact_update(state, slug, art.version)
     return _json_response(_serialize(art, include_content=True))
 
 
-# ── Folders (Mesh-2720) ─────────────────────────────────────────────────────
+# ── Folders ─────────────────────────────────────────────────────
 
 
 def _serialize_folder(folder: dict[str, Any], *, path: str | None = None) -> dict[str, Any]:
@@ -3482,7 +3482,7 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
     if len(text) > 10000:
         return _err("text exceeds 10000 chars")
     # Never trust the incoming body — redact before storing/sending, same as
-    # post/reply (AUTOSDE security-controls).
+    # post/reply (security-controls).
     text = _redact_text(text)
 
     store = get_default_store()
@@ -3536,7 +3536,7 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
     return _json_response({"comment": {"id": comment_id, "remote_synced": remote_synced}})
 
 
-# ── Provider negotiation (Mesh-2445) ─────────────────────────────────────────
+# ── Provider negotiation ─────────────────────────────────────────
 
 
 def _sharing_model_dict(sm: Any) -> dict[str, Any]:

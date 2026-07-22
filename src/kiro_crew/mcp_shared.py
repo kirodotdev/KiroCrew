@@ -31,7 +31,7 @@ from kiro_crew.validation import (
 
 logger = logging.getLogger(__name__)
 
-# Max tools/call requests buffered while a tool worker is busy (Mesh-3020).
+# Max tools/call requests buffered while a tool worker is busy.
 # Overflow gets an immediate JSON-RPC busy error instead of silence.
 PENDING_CALLS_MAX = 32
 
@@ -84,7 +84,7 @@ _NEGATIVE_CACHE_TTL: float = 60.0  # seconds
 # session yet).  Long enough to debounce the warning storm during a
 # parallel MCP startup, short enough that we recover to deny-enforcing
 # behavior within seconds once the session is registered.  This addresses
-# the AutoSDE security-controls concern: don't keep fail-open active for
+# the security-controls concern: don't keep fail-open active for
 # 5 minutes when the underlying race resolves in milliseconds.
 _STARTUP_RACE_CACHE_TTL: float = 5.0  # seconds
 # After this many consecutive failures, suppress the warning log entirely
@@ -450,8 +450,8 @@ def run_mcp_stdio_loop(
     check periodically. The cancelled request emits no response (per MCP spec).
 
     ``tools/call`` requests that arrive while a worker is busy are buffered in
-    a bounded FIFO queue and dispatched in order as the worker frees (Mesh-3020
-    -- silently dropping them left the client waiting forever on a response
+    a bounded FIFO queue and dispatched in order as the worker frees
+    (silently dropping them left the client waiting forever on a response
     that never came). Queue overflow gets an immediate busy error response.
 
     On Windows ``select.select`` cannot poll ``sys.stdin`` (it only accepts
@@ -580,7 +580,7 @@ def run_mcp_stdio_loop(
             elif method == "ping" and req_id is not None:
                 respond(req_id, {})
             # Buffer tools/call requests that arrive while busy so they get a
-            # response when the worker frees (Mesh-3020: dropping them left the
+            # response when the worker frees (dropping them left the
             # client waiting forever). Cancels against queued ids are honored
             # at dispatch time via _cancelled_ids.
             elif method == "tools/call" and req_id is not None:

@@ -1,10 +1,9 @@
 """Playwright MCP browser setup (OSS stub).
 
-The upstream build wired browser setup to an Amazon-internal package installer
-and an Amazon-auth cookie/storage-state flow. In the open-source build those
-steps are neutralized: every public symbol is preserved so importing modules
-keep working, but Amazon-auth setup is a no-op and reports
-"not available in OSS".
+The upstream build wired browser setup to a managed package installer and an
+enterprise-SSO cookie/storage-state flow. In the open-source build those steps
+are neutralized: every public symbol is preserved so importing modules keep
+working, but SSO setup is a no-op and reports "not available in OSS".
 """
 
 from __future__ import annotations
@@ -18,13 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.browser.auth import MIDWAY_COOKIE_PATH, parse_netscape_cookies
+from kiro_crew.browser.auth import SSO_COOKIE_PATH, parse_netscape_cookies
 
 
 def is_playwright_installed() -> bool:
     """Check whether the Playwright MCP package is resolvable on PATH (OSS stub).
 
-    The Amazon-internal package manager that originally backed this check is not
+    The managed package manager that originally backed this check is not
     available in the open-source build, so this returns False gracefully.
     """
     return False
@@ -33,9 +32,9 @@ def is_playwright_installed() -> bool:
 def ensure_playwright_installed() -> None:
     """Browser setup is not available in the open-source build (no-op stub).
 
-    The upstream flow installed Playwright MCP via an Amazon-internal package
-    manager and wired Amazon-auth cookie injection. Neither is shipped in OSS,
-    so this is a no-op rather than raising.
+    The upstream flow installed Playwright MCP via a managed package manager and
+    wired enterprise-SSO cookie injection. Neither is shipped in OSS, so this is
+    a no-op rather than raising.
     """
     return None
 
@@ -78,7 +77,7 @@ def generate_playwright_config() -> Path:
     """Generate ~/.kirocrew/playwright-config.json with correct absolute paths.
 
     The open-source build ships a generic Chromium config with no
-    Amazon-internal auth-server allowlist.
+    enterprise auth-server allowlist.
     """
     config_path = Path.home() / ".kirocrew" / "playwright-config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,10 +110,10 @@ def refresh_storage_state() -> dict[str, Any]:
     a Playwright-compatible storage-state file. Returns a not-available result
     when no cookie source exists, which is the default in the open-source build.
     """
-    if not MIDWAY_COOKIE_PATH.exists():
+    if not SSO_COOKIE_PATH.exists():
         return {"ok": False, "error": "browser auth not available in OSS"}
 
-    cookies = parse_netscape_cookies(MIDWAY_COOKIE_PATH)
+    cookies = parse_netscape_cookies(SSO_COOKIE_PATH)
     if not cookies:
         return {"ok": False, "error": "no cookies parsed"}
 
@@ -199,11 +198,11 @@ def inject_cookies_via_playwright(cookie_file: str | None = None) -> dict[str, A
     """Parse the browser cookie file and return cookies in Playwright format.
 
     Args:
-        cookie_file: Path to Netscape cookie file. Defaults to MIDWAY_COOKIE_PATH.
+        cookie_file: Path to Netscape cookie file. Defaults to SSO_COOKIE_PATH.
 
     Returns:
         Dict with "cookies" list and "count" integer.
     """
-    path = Path(cookie_file) if cookie_file is not None else MIDWAY_COOKIE_PATH
+    path = Path(cookie_file) if cookie_file is not None else SSO_COOKIE_PATH
     cookies = parse_netscape_cookies(path)
     return {"cookies": cookies, "count": len(cookies)}

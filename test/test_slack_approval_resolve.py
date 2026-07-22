@@ -1,4 +1,4 @@
-"""Tests for Slack dispatch approval-mode resolution (Mesh-2257).
+"""Tests for Slack dispatch approval-mode resolution.
 
 The two Slack dispatch sites previously hardcoded APPROVAL_INTERACTIVE,
 ignoring the resolved approval mode that dashboard/subagent paths honor.
@@ -43,7 +43,7 @@ class TestResolveApprovalMode:
         assert _resolve_approval_mode(_orch("yolo", "interactive")) == APPROVAL_INTERACTIVE
 
     def test_runtime_yolo_active_resolves_auto(self, monkeypatch) -> None:
-        # Runtime /meshclaw yolo (safety_override) must auto-approve on BOTH
+        # Runtime /kirocrew yolo (safety_override) must auto-approve on BOTH
         # native and transport paths — folded in at this chokepoint.
         monkeypatch.setattr("kiro_crew.slack.events.is_yolo_mode", lambda: True)
         assert _resolve_approval_mode(_orch(None, "interactive")) == APPROVAL_AUTO

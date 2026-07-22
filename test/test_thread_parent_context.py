@@ -252,7 +252,7 @@ class TestThreadParentTextInjection:
             thread_ts="1234.5678",
             thread_parent_text="Here is the standup summary",
         )
-        # Parent text is framed as UNTRUSTED DATA (Talos 1fde6107), not as
+        # Parent text is framed as UNTRUSTED DATA (security-review 1fde6107), not as
         # trusted prior-session output.
         assert "UNTRUSTED" in msg
         assert "Here is the standup summary" in msg
@@ -493,7 +493,7 @@ class TestHandlerFetchesThreadParent:
         assert "Parent message" not in full_message
 
 
-# ── Tests: XPIA hardening for thread parent / metadata (Talos 1fde6107) ──
+# ── Tests: XPIA hardening for thread parent / metadata (security-review 1fde6107) ──
 
 
 class TestThreadContextInjectionScreening:
@@ -660,7 +660,7 @@ class TestThreadContextInjectionScreening:
 
 class TestThreadInjectionDropIsAudited:
     """A dropped injection attempt must emit an SEL audit event so the attempt
-    stays visible in the audit trail (Talos 1fde6107)."""
+    stays visible in the audit trail (security-review 1fde6107)."""
 
     def test_parent_injection_drop_emits_audit(self, tmp_path, monkeypatch):
         import kiro_crew.context as context_module

@@ -1,9 +1,9 @@
 /**
- * Regression test for Mesh-1345: keep ChatInput enabled while the slot is
+ * Regression test: keep ChatInput enabled while the slot is
  * compacting so users can type and queue messages the same way they can
  * during streaming.
  *
- * Before Mesh-1345 the ChatInput was gated by
+ * Previously the ChatInput was gated by
  *   disabled={slotStopping || slotState === 'compacting'}
  * which blanked the textarea (pointer-events-none + "Stopping…" placeholder)
  * for the 10s–120s that LLM summarisation can take. The backend already
@@ -109,7 +109,7 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-describe('ChatPage — input during compaction (Mesh-1345)', { timeout: 15_000 }, () => {
+describe('ChatPage — input during compaction', { timeout: 15_000 }, () => {
   it('keeps the textarea interactive while slotState is compacting', async () => {
     await renderWithState({ slotRunning: true, slotStopping: false, slotState: 'compacting' })
 

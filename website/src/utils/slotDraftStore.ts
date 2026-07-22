@@ -1,5 +1,5 @@
 /**
- * Generic per-slot draft persistence factory (Mesh-1909). Extracts the
+ * Generic per-slot draft persistence factory. Extracts the
  * load -> sanitize -> TTL-prune -> LRU/byte-cap -> persist skeleton shared by
  * `chatDrafts`, `chatFileDrafts`, `chatPasteDrafts`, `goalDrafts`, and
  * `commentDrafts`. Each module becomes a thin instance configured through
@@ -12,14 +12,14 @@
  *     budget. The newest slot is NEVER evicted, even if it alone exceeds the
  *     budget, so the most-recent large draft always survives. This byte-aware
  *     LRU replaces `chatPasteDrafts`' old per-slot hard byte cap and fixes the
- *     collapsed-vs-expanded asymmetry surfaced in CR-279844240 (Mesh-1905):
+ *     collapsed-vs-expanded asymmetry surfaced in review:
  *     a big paste now persists whether it lives in a `PasteBlock` (collapsed)
  *     or spliced into the text draft (expanded), instead of being dropped only
  *     in the collapsed case.
  *
  * All functions are safe against corrupt / missing / quota-exhausted storage:
  * worst case the affected slot is dropped, never a throw. Writes go through
- * `safeSetItem` / `safeSetSessionItem` (Phase 0, CR-286231498) so a quota hit
+ * `safeSetItem` / `safeSetSessionItem` (Phase 0) so a quota hit
  * reclaims disposable cache and retries instead of silently losing the write.
  *
  * Cross-tab: `persistNow` overwrites the whole key, so two open tabs are

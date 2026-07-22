@@ -53,14 +53,14 @@ _stores_lock = threading.Lock()
 
 # Per-section budget BASE — the char count each section's percentage cap is
 # taken from. Kept at 165k so memory / lessons / history keep their existing
-# sizes: per the design agreement (Joe Guo), memory's budget is NOT shrunk to
+# sizes: per the design agreement, memory's budget is NOT shrunk to
 # make room for skills. Instead skills/steering get their own ADDITIONAL caps
 # and the global ceiling (_MAX_CONTEXT_CHARS, DERIVED below as the sum of all
 # section caps) grows accordingly — so sections never share one pool and
 # truncate each other.
 _CONTEXT_BUDGET_BASE = 165_000  # ~55k tokens
 
-# Delimiters that wrap untrusted Slack thread-parent text (Talos 1fde6107).
+# Delimiters that wrap untrusted Slack thread-parent text.
 # The content is screened for injection and framed as UNTRUSTED DATA; these
 # fence markers are also stripped from the content itself so a crafted parent
 # message cannot forge the closing fence and "break out" of the block.
@@ -135,7 +135,7 @@ _MULTIBYTE_TABLE = str.maketrans(
 # memory/lessons space. Previously every section shared one fixed 165k pool, so
 # the position-based hard truncation silently dropped tail content (lessons,
 # provenance) once skills+steering pushed the total over. Splitting into
-# independent caps (per Joe Guo's design) is what makes usage-ranked top-K
+# independent caps (per the design) is what makes usage-ranked top-K
 # meaningful; the cost is a larger startup context (the sum), NOT a smaller
 # memory budget.
 def _budget(fraction: float) -> int:
@@ -168,7 +168,7 @@ _EPISODIC_INJECT_CAP = 3_000
 _MODE_IDENTITY_RE = re.compile(r"## 🔒 Mode Identity.*?(?=\n## |\Z)", re.DOTALL)
 _COMPRESSED_HISTORY_CAP = _budget(0.27)  # budget for LLM-compressed thread summary  = 27%
 
-# Global ceiling = SUM of the independent section caps (Joe Guo's design: the
+# Global ceiling = SUM of the independent section caps (by design: the
 # global cap is Σ section caps, not a shared pool the sections fight over). Only
 # the larger history variant (compressed) is counted — one history form is
 # present per build. A small preamble headroom covers the fixed blocks (critical
@@ -228,7 +228,7 @@ class _ResolvedCaps:
 
     @property
     def max_context(self) -> int:
-        """Global ceiling = Σ independent section caps (Joe Guo's design).
+        """Global ceiling = Σ independent section caps (by design).
 
         Computed from the fields so there is ONE summation (this) — the module
         constant ``_MAX_CONTEXT_CHARS`` is itself derived from this property at
@@ -730,7 +730,7 @@ async def compress_thread_history(
     the most recent exchanges.
 
     *exclude_last_n* is forwarded to ``conversation_log.recent`` to drop
-    the just-flushed current-turn user message from history (Mesh-1726).
+    the just-flushed current-turn user message from history.
     """
     from kiro_crew.llm_helpers import stream_and_collect  # circular import
     from kiro_crew.session import BACKGROUND_KEY  # circular import
@@ -825,7 +825,7 @@ def build_session_replay(
     without needing this injection).
 
     *exclude_last_n* is forwarded to ``conversation_log.recent_chained`` to
-    drop the just-flushed current-turn user message from replay (Mesh-1726).
+    drop the just-flushed current-turn user message from replay.
 
     *model_window* scales the replay budget to the active model's context
     window (the dashboard's primary history vehicle — it must shrink on a
@@ -1091,7 +1091,7 @@ class ContextBuilder:
         caps = _resolve_caps(model_window)
         parts: list[str] = []
 
-        # Minimal-context mode (Mesh-1632): only date/time + agent identity.
+        # Minimal-context mode: only date/time + agent identity.
         # Saves ~30-50k tokens per cron run for simple polling jobs.
         if minimal_context:
             _, tz = get_local_tz()
@@ -1520,7 +1520,7 @@ class ContextBuilder:
         # channel history (they serve different purposes: ch_ctx has recent
         # messages, parent text has the original post that started the thread).
         #
-        # XPIA hardening (Talos 1fde6107): the thread parent / metadata is
+        # XPIA hardening: the thread parent / metadata is
         # fetched verbatim from Slack and may have been authored by a
         # non-owner (anyone can reply to, or start, a thread the bot is in).
         # It must NOT be framed as trusted prior-session output. Screen it for
@@ -1532,7 +1532,7 @@ class ContextBuilder:
         _parent_injection = _parent_present and contains_injection(thread_parent_text)
         if _parent_injection:
             # Drop the parent text and audit the attempt so injection via the
-            # thread-root message stays visible in the SEL trail (Talos 1fde6107).
+            # thread-root message stays visible in the SEL trail.
             audit_injection_dropped(
                 surface="slack_thread_parent",
                 session_key=session_key or "",
@@ -1685,7 +1685,7 @@ class ContextBuilder:
             # thread_meta carries the fetched Slack thread-root text (redacted
             # upstream) embedded in a metadata line. Like thread_parent_text it
             # may originate from a non-owner author, so screen it for prompt
-            # injection and drop on match (Talos 1fde6107) before it lands
+            # injection and drop on match before it lands
             # immediately ahead of the current user request. A dropped match is
             # audited to SEL so the attempt stays visible in the audit trail.
             if thread_meta:

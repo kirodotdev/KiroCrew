@@ -460,7 +460,7 @@ class TestModelDownloadManager:
         Inherited upstream quirk: the too-small branch unlinks the staging
         file before formatting its error message from ``staging.stat()``, so
         the surfaced error is a generic "HTTPS download failed" rather than
-        "too small" (recorded in skills/meshclaw-sync/left-out.md). The
+        "too small" (a known upstream quirk left as-is). The
         safety property under test — an undersized file is never installed —
         holds either way.
         """

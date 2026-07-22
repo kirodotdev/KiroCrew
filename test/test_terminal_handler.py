@@ -603,7 +603,7 @@ class TestApiTerminalWs:
 
 
 class TestScrollbackRedaction:
-    """The reconnect-replay scrollback feature (ported from MeshClaw d00e6ac6).
+    """The reconnect-replay scrollback feature (ported from the upstream project).
 
     The port re-anchors redaction onto ``kiro_crew.security`` whose redactors
     return ``(text, warnings)`` tuples (upstream's ``redaction`` module returns

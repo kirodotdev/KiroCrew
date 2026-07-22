@@ -48,8 +48,8 @@ review** (not a separate pass):
    flagged the *introducing* change? If not, **which dimension was blind, and
    what specific check would have caught this class of defect?**
 3. **Quality gate — keep it high-level and reusable (generalize, don't memorize).**
-   Admit a lesson only if it is general (not a one-off), non-trivial (not an
-   AutoSDE/lint nit), and fits a dimension. Then write it as **high-level guidance a
+   Admit a lesson only if it is general (not a one-off), non-trivial (not a
+   lint nit), and fits a dimension. Then write it as **high-level guidance a
    reviewer can apply to future, unrelated changes**, under these hard limits:
    - **`guidance`: 1–2 short sentences naming the defect *class* and the check.**
      No code snippets, no function/variable/file names, no CR numbers. It must read

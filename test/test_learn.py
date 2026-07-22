@@ -15,25 +15,25 @@ def _make_lesson(rule: str, category: str = "knowledge", negative: str | None = 
 class TestLessonStore:
     def test_save_and_load(self, tmp_path: Path) -> None:
         store = LessonStore(base_dir=tmp_path)
-        store.save(_make_lesson("Use conduit instead of isengard", "tool", "Never use isengard"))
+        store.save(_make_lesson("Use tool-b instead of tool-a", "tool", "Never use tool-a"))
 
         loaded = store.load_all()
         assert len(loaded) == 1
-        assert "conduit" in loaded[0].rule
+        assert "tool-b" in loaded[0].rule
         assert loaded[0].category == "tool"
-        assert loaded[0].negative == "Never use isengard"
+        assert loaded[0].negative == "Never use tool-a"
 
     def test_remove_matching(self, tmp_path: Path) -> None:
         store = LessonStore(base_dir=tmp_path)
-        store.save(_make_lesson("Use conduit"))
-        store.save(_make_lesson("Use brazil-build"))
-        assert store.remove("conduit")
+        store.save(_make_lesson("Use tool-b"))
+        store.save(_make_lesson("Use tool-c"))
+        assert store.remove("tool-b")
         assert len(store.load_all()) == 1
-        assert "brazil-build" in store.load_all()[0].rule
+        assert "tool-c" in store.load_all()[0].rule
 
     def test_remove_no_match(self, tmp_path: Path) -> None:
         store = LessonStore(base_dir=tmp_path)
-        store.save(_make_lesson("Use conduit"))
+        store.save(_make_lesson("Use tool-b"))
         assert not store.remove("nonexistent")
         assert len(store.load_all()) == 1
 
@@ -43,11 +43,11 @@ class TestLessonStore:
 
     def test_get_context_with_lessons(self, tmp_path: Path) -> None:
         store = LessonStore(base_dir=tmp_path)
-        store.save(_make_lesson("Always use conduit", negative="Never use isengard"))
+        store.save(_make_lesson("Always use tool-b", negative="Never use tool-a"))
 
         ctx = store.get_context()
-        assert "conduit" in ctx
-        assert "isengard" in ctx
+        assert "tool-b" in ctx
+        assert "tool-a" in ctx
         assert "Learned corrections" in ctx
 
     def test_load_corrupted_line(self, tmp_path: Path) -> None:

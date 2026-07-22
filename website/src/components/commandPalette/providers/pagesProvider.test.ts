@@ -3,8 +3,8 @@ import type { NavigateFunction } from 'react-router-dom'
 import type { Result } from '../types'
 
 /**
- * Unit tests for the pure {@link createPagesProvider} factory (Mesh-2151
- * Search Everywhere, step 12). The page candidate list is the union of the
+ * Unit tests for the pure {@link createPagesProvider} factory
+ * (Search Everywhere, step 12). The page candidate list is the union of the
  * surface registry (mocked here) and the hardcoded non-rail EXTRA_PAGES, so we
  * stub `getBuiltinSurfaces` and pass a spy `navigate`.
  */

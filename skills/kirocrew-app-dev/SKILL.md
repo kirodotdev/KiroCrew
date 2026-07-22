@@ -1,6 +1,6 @@
 ---
 name: kirocrew-app-dev
-description: "Build, package, and publish KiroCrew external apps. Covers app.json manifest, UI components, crons, skills, self-healing install, GitFarm publishing, and common pitfalls."
+description: "Build, package, and publish KiroCrew external apps. Covers app.json manifest, UI components, crons, skills, self-healing install, git publishing, and common pitfalls."
 ---
 
 # KiroCrew App Development
@@ -27,8 +27,7 @@ my-app/
 ├── scripts/
 │   ├── install.sh        # Optional accelerator (NOT required)
 │   └── uninstall.sh      # Cleanup script
-├── Config                # Brazil package metadata (for GitFarm)
-└── packageInfo           # Brazil package info
+└── README.md             # Optional docs
 ```
 
 ## app.json Manifest
@@ -54,7 +53,7 @@ my-app/
     }
   ],
   "permissions": {
-    "mcpTools": ["ReadInternalWebsites", "InternalCodeSearch"],
+    "mcpTools": ["browser_navigate", "local_knowledge_search"],
     "network": true
   },
   "ui": {
@@ -153,7 +152,9 @@ _jsx('button', {
 
 ### Reference Implementation
 
-**CR Tendy** is the canonical reference app: [KiroCrewApp-CrTendy on GitFarm](https://code.amazon.com/packages/KiroCrewApp-CrTendy/trees/mainline)
+For a working example, look at the bundled builtin apps under
+`src/kiro_crew/apps/builtins/` — they follow the same manifest, UI, and cron
+patterns described here and are a good starting point to copy from.
 
 Visual mock of the target style:
 
@@ -167,7 +168,7 @@ Visual mock of the target style:
   <!-- Header -->
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
     <div style="display:flex; align-items:center; gap:10px">
-      <span style="font-size:18px; font-weight:600">CR Tendy</span>
+      <span style="font-size:18px; font-weight:600">Review Tender</span>
       <span style="background:#e8d5f5; color:#7c3aed; padding:2px 8px; border-radius:9999px; font-size:10px; font-weight:600">Every 15 min</span>
     </div>
     <div style="display:flex; align-items:center; gap:10px">
@@ -179,11 +180,11 @@ Visual mock of the target style:
 
   <!-- Card -->
   <div style="background:#1a1b26; border:1px solid #2d2f3d; border-radius:6px; padding:14px; margin-bottom:12px">
-    <div style="font-size:13px; font-weight:600; color:#7c3aed; margin-bottom:8px">Open CRs Being Tended (2)</div>
+    <div style="font-size:13px; font-weight:600; color:#7c3aed; margin-bottom:8px">Open Reviews Being Tended (2)</div>
 
     <!-- Table row example -->
     <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #2d2f3d; font-size:12px">
-      <a style="color:#7c3aed; text-decoration:none">CR-275730057</a>
+      <a style="color:#7c3aed; text-decoration:none">#1234</a>
       <span style="font-size:11px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">Fix manifest dict format</span>
       <span style="background:#fef3c7; color:#b45309; padding:2px 7px; border-radius:9999px; font-size:10px; font-weight:600">iterating</span>
       <span style="margin-left:auto">
@@ -410,23 +411,22 @@ Keep the self-heal idempotent — every command should be a no-op if already don
 
 ## Publishing to App Store
 
-### 1. GitFarm Package
+### 1. Git Repository
 
-Create a bare GitFarm package (no Brazil build system needed):
-- Package name convention: `KiroCrewApp-MyAppName`
-- Include: `app.json`, `ui/`, `skills/`, `scripts/`, `Config`, `packageInfo`
+Publish the app as a plain git repository (any git host — e.g. GitHub):
+- Include: `app.json`, `ui/`, `skills/`, `scripts/`
+- Any git-cloneable URL works (`https://github.com/<org>/<repo>`, `git@host:...`, `ssh://...`)
 
 ### 2. App Registry Entry
 
-Submit a CR to the KiroCrew repo adding an entry to `app-registry.json`:
+Open a pull request to the KiroCrew repo adding an entry to `app-registry.json`:
 ```json
 {
   "name": "my-app",
-  "repo": "ssh://git.amazon.com/pkg/KiroCrewApp-MyAppName",
-  "branch": "mainline",
+  "gitUrl": "https://github.com/<org>/my-app",
+  "branch": "main",
   "resources": [],
-  "lifecycle": "stable",
-  "versionSet": null
+  "lifecycle": "stable"
 }
 ```
 
@@ -434,7 +434,7 @@ Display metadata (description, tags, author) comes from `app.json` in the app's 
 
 ### 3. Updates
 
-Updates are automatic via semver diff — bump `version` in `app.json`, push to GitFarm. Users with update-check crons see a banner in the UI.
+Updates are automatic via semver diff — bump `version` in `app.json`, push to the repo. Users with update-check crons see a banner in the UI.
 
 ### Update-Check Cron Pattern
 
@@ -459,7 +459,7 @@ Add to `app.json` crons array:
 ```json
 {
   "name": "my-app-update-check",
-  "message": "Check if a newer version of MY-APP is available. READ-ONLY. Steps: (1) Remote version: run `git archive --remote=ssh://git.amazon.com/pkg/KiroCrewApp-MyApp mainline app.json | tar -xO` from $HOME. Parse 'version'. (2) Installed version: read ~/.kirocrew/apps/my-app/app.json. (3) Compare semver. Write ONLY to ~/.kirocrew/workspace/my-app/update-status.json: {checked:true, installedVersion, remoteVersion, updateAvailable:bool, checkedAt:ISO}. Silent.",
+  "message": "Check if a newer version of MY-APP is available. READ-ONLY. Steps: (1) Remote version: run `git archive --remote=https://github.com/<org>/my-app main app.json | tar -xO` from $HOME. Parse 'version'. (2) Installed version: read ~/.kirocrew/apps/my-app/app.json. (3) Compare semver. Write ONLY to ~/.kirocrew/workspace/my-app/update-status.json: {checked:true, installedVersion, remoteVersion, updateAvailable:bool, checkedAt:ISO}. Silent.",
   "every": 86400,
   "silent": true,
   "persistent_session": false
@@ -517,7 +517,7 @@ fetch('/api/chat?ws=1', {
 
 ## Installation Flow (User Perspective)
 
-1. `kirocrew app install <path-or-gitfarm-url>`
+1. `kirocrew app install <path-or-git-url>`
 2. Gateway restart: `kirocrew gateway restart`
 3. App appears in sidebar immediately (if UI defined)
 4. First cron run (within `every` seconds) self-heals all setup
@@ -529,10 +529,7 @@ Apps generate local install artifacts that must NOT be committed to the repo:
 
 ```
 /build
-/packageInfo
-/packageInfo.bak
 /release-info
-/.brazil
 .app_secret
 app-crons.json
 installed.json
@@ -543,13 +540,13 @@ The `data/` directory contains runtime config (`config.json`) with resolved path
 
 ## Git Workflow for Installed Apps
 
-The installed app at `~/.kirocrew/apps/MY-APP/` IS a git repo with origin pointing to the GitFarm package. You can commit and push directly from there:
+The installed app at `~/.kirocrew/apps/MY-APP/` IS a git repo with origin pointing to the source repository. You can commit and push directly from there:
 
 ```bash
-cd ~/.kirocrew/apps/my-app && git add -A && git commit -m "message" && git push origin mainline
+cd ~/.kirocrew/apps/my-app && git add -A && git commit -m "message" && git push origin main
 ```
 
-No separate GitFarm workspace needed. The installed app IS the workspace.
+No separate workspace needed. The installed app IS the workspace.
 
 ## Common Pitfalls
 

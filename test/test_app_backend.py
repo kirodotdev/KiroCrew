@@ -251,7 +251,7 @@ class TestBackendLifecycle:
         assert any("escapes app root" in r.message for r in caplog.records)
 
     def test_third_party_backend_refused_when_gate_off(self, tmp_path, app_env, monkeypatch, caplog):
-        # Talos P472043259: the apps_allow_third_party off-switch must also block
+        # security-review finding: the apps_allow_third_party off-switch must also block
         # the OUT-OF-PROCESS backend spawn, not just in-process module loads. A
         # file-path (third-party) backend must be refused (None, before any Popen)
         # when the switch is off.
@@ -343,7 +343,7 @@ class TestBackendLifecycle:
     def test_third_party_dotted_entry_refused_when_gate_off(
         self, tmp_path, app_env, monkeypatch, caplog
     ):
-        # Talos P472043259 bypass: a third-party app (origin != builtin) must NOT
+        # security-review bypass: a third-party app (origin != builtin) must NOT
         # escape the off-switch by declaring a dotted module-style entryPoint. The
         # gate keys on provenance, not entry format, so this is DENIED before any spawn.
         import logging
@@ -598,7 +598,7 @@ class _FakeHealthResp:
 
 
 class TestHealthGatedMcpRegistration:
-    """Health-gated MCP registration (review CR-284432051 + AutoSDE race finding).
+    """Health-gated MCP registration (review + review-bot race finding).
 
     The health-check loop must register an app's MCP servers ONLY when the backend is
     still tracked and healthy, and scrub them when it never becomes healthy — never write
@@ -629,7 +629,7 @@ class TestHealthGatedMcpRegistration:
                 bmod._processes.clear()
 
     def test_does_not_register_if_stopped_mid_healthcheck(self, monkeypatch):
-        # AutoSDE race finding: app removed from _processes between the poll and the lock →
+        # review-bot race finding: app removed from _processes between the poll and the lock →
         # must NOT register MCP for a now-dead backend.
         import kiro_crew.apps.backend as bmod
         self._fast_health(bmod, monkeypatch)

@@ -5,9 +5,9 @@ import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
 
 // Covers the arm -> confirm -> delete -> revert state machine added in
-// CR-287255321. This logic is on a destructive, irreversible action and
+//. This logic is on a destructive, irreversible action and
 // had two real bugs (premature button re-enable before await load(),
-// and confirmDeleteId not resetting on a failed delete) caught by AutoSDE
+// and confirmDeleteId not resetting on a failed delete) caught by code review
 // during review -- these tests lock in both fixes.
 
 const mkJob = (overrides: Partial<CronJob> = {}): CronJob => ({

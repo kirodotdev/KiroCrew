@@ -120,19 +120,20 @@ KIRO_CLI_BIN = "kiro-cli"
 KIRO_CLI_SUBCMD = "acp"
 
 CLAUDE_ACP_BIN = "claude-agent-acp"
-# Claude Code CLI binary.  The claude-agent-acp adapter delegates the actual
-# model turn to @anthropic-ai/claude-agent-sdk, which needs a per-platform
-# native Claude binary (~250 MB each).  Those ship as npm optionalDependencies
-# that a plain ``npm i -g @agentclientprotocol/claude-agent-acp`` may omit, so
-# the SDK can fail session/new with "Claude native binary not found for
-# <platform>".  The SDK does NOT auto-discover a `claude` on PATH — it only
-# looks for that bundled native package — so the host having Claude Code
-# installed is not enough; we point the adapter at it explicitly via
-# CLAUDE_CODE_EXECUTABLE (the env var the adapter forwards to the SDK as
-# pathToClaudeCodeExecutable).  ``augmented_path()`` includes the common Node
-# install locations (mise/nvm/fnm/volta shims, npm global bin), so this
-# resolves with no user action when Claude Code is on PATH; otherwise the
-# adapter surfaces its own native-binary error.
+# On-disk name of the Claude backend CLI.  The claude-agent-acp adapter
+# delegates the actual model turn to @anthropic-ai/claude-agent-sdk, which
+# needs a per-platform native binary (~250 MB each).  Those ship as npm
+# optionalDependencies that a plain ``npm i -g
+# @agentclientprotocol/claude-agent-acp`` may omit, so the SDK can fail
+# session/new with "Claude native binary not found for <platform>".  The SDK
+# does NOT auto-discover a `claude` on PATH — it only looks for that bundled
+# native package — so having it installed on the host is not enough; we point
+# the adapter at it explicitly via CLAUDE_CODE_EXECUTABLE (the env var the
+# adapter forwards to the SDK as pathToClaudeCodeExecutable).
+# ``augmented_path()`` includes the common Node install locations
+# (mise/nvm/fnm/volta shims, npm global bin), so this resolves with no user
+# action when the binary is on PATH; otherwise the adapter surfaces its own
+# native-binary error.
 CLAUDE_CODE_BIN = "claude"
 # npm package that provides the claude-agent-acp binary.  Install it publicly
 # with ``npm i -g @agentclientprotocol/claude-agent-acp`` (or add it as a
@@ -152,7 +153,7 @@ _CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
 # claude-agent-acp "Unexpected case: {...thinking_tokens...}" line.  Mechanism
-# (confirmed by reading the vendored adapter, dist/acp-agent.js): claude-code
+# (confirmed by reading the vendored adapter, dist/acp-agent.js): the backend
 # emits a `system` message with subtype `thinking_tokens`, but the adapter's
 # `switch (message.subtype)` enumerates ~18 known subtypes (init, status,
 # compact_boundary, memory_recall, api_retry, ...) and routes anything else to
@@ -163,7 +164,7 @@ _CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
 # so dropping them loses nothing).
 #
 # This is a forward-compat gap in the adapter, NOT new behavior in a specific
-# claude-code build: the `thinking_tokens` event is present in both 2.1.165.357
+# backend build: the `thinking_tokens` event is present in both 2.1.165.357
 # and 2.1.168.358 (verified by string-matching both bundled `claude` binaries —
 # identical occurrences), so it predates the .168 update that drew attention to
 # it.  Exactly when it began appearing in our logs is unconfirmed.  The cleaner
@@ -409,7 +410,7 @@ def _resolve_claude_acp_bin() -> list[str] | None:
         # (is_executable_file excludes it), so it correctly falls through to be
         # wrapped with node below — matching the POSIX no-x-bit behavior.
         # Casing-normalize (Windows): a `which`-resolved .EXE must reach a
-        # toolbox-style shim with its true on-disk name (see _normalize_exe_casing).
+        # launcher-style shim with its true on-disk name (see _normalize_exe_casing).
         if platform_compat.is_executable_file(script):
             return [_normalize_exe_casing(script) or script]
         node_on_path = shutil.which("node", path=search_path)
@@ -420,14 +421,14 @@ def _resolve_claude_acp_bin() -> list[str] | None:
 
 
 def _resolve_claude_code_executable() -> str | None:
-    """Find the Claude Code CLI binary for CLAUDE_CODE_EXECUTABLE.
+    """Find the Claude backend CLI binary for CLAUDE_CODE_EXECUTABLE.
 
     The claude-agent-acp adapter forwards this env var to
     @anthropic-ai/claude-agent-sdk as ``pathToClaudeCodeExecutable``, letting
     the SDK use an existing ``claude`` install instead of the per-platform
     native binary package (~250 MB) that a plain npm install may omit.  The SDK
     does not search PATH itself, so this resolution is required even when the
-    host has Claude Code installed.
+    host has the ``claude`` binary installed.
 
     Resolution order:
       1. ``CLAUDE_CODE_EXECUTABLE`` env var (explicit override; honoured as-is).
@@ -447,7 +448,7 @@ def _resolve_claude_code_executable() -> str | None:
         return mise_resolved
 
     search_path = augmented_path(os.environ.get("PATH", ""))
-    # Casing-normalize (Windows): a `which`-resolved .EXE reaches the toolbox shim
+    # Casing-normalize (Windows): a `which`-resolved .EXE reaches the launcher shim
     # with its true on-disk name (see _normalize_exe_casing).
     return _normalize_exe_casing(shutil.which(CLAUDE_CODE_BIN, path=search_path))
 
@@ -595,7 +596,7 @@ class AcpError(Exception):
     retry layer (``llm_helpers``, ``chat_runner``) decides retryability
     independently of how :func:`_format_acp_error` words the user-facing
     message. ``None`` means "unclassified" — callers fall back to
-    string-matching the formatted message (Mesh-2356).
+    string-matching the formatted message.
     """
 
     def __init__(self, *args: object, transient: bool | None = None) -> None:
@@ -658,8 +659,8 @@ _NOT_LOGGED_IN_MESSAGE = (
 # Single source of truth for "is this ACP backend error a momentary,
 # retry-worthy hiccup?". The user-facing message formatter AND the
 # retry-eligibility classifier both key off these patterns, so the two can
-# never drift again. That drift is exactly the Mesh-2356 bug: the formatter
-# rewrote a generic 5xx into a friendly string that the marker-based retry
+# never drift again. That drift is exactly the bug this guards against: the
+# formatter rewrote a generic 5xx into a friendly string that the marker-based retry
 # classifier no longer recognised, so the retry never fired.
 #
 # Scopes mirror _format_acp_error's if/elif chain: model-unavailable matches
@@ -788,7 +789,7 @@ def _format_acp_error(error: object) -> str:
             # retry rather than switch models or back off.
             #
             # Match the combined `data + message` haystack so a 5xx token in
-            # either field is caught (Mesh-2356). Scanning `message` is safe
+            # either field is caught. Scanning `message` is safe
             # here precisely because we require a real transient *token* (named
             # exception, HTTP/status-50[0234]/529, or an explicit retry hint):
             # -32603's canonical message is literally "Internal error", which
@@ -1156,7 +1157,7 @@ def _make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> st
 def _select_tool_title(title: object, raw_input: object) -> str | None:
     """Pick the pill label, preferring a human-readable `description` when present.
 
-    Claude Code's Bash tool emits a `description` field alongside `command`
+    Some backends' Bash tool emits a `description` field alongside `command`
     (e.g. "List KiroCrew ACP module files" rather than `ls /workplace/...`).
     We surface it on the pill when supplied; otherwise we fall back to the
     SDK-provided `title` (the literal tool invocation). Used by both
@@ -1197,10 +1198,11 @@ class AcpClient:
         self._agent = agent
         self._sandbox_mode = sandbox_mode
         self._acp_backend = acp_backend
-        # Claude Code permission mode (Auto-mode / permission-UI parity). Inert
-        # on the kiro-cli path and unused by the public core; a companion that
-        # drives the _is_claude seam reads/writes it and wires the permission-mode
-        # method set + settings.local.json defaultMode. None = the backend default.
+        # Claude backend permission mode (Auto-mode / permission-UI parity).
+        # Inert on the kiro-cli path and unused by the public core; a companion
+        # that drives the _is_claude seam reads/writes it and wires the
+        # permission-mode method set + settings.local.json defaultMode. None =
+        # the backend default.
         self._permission_mode = permission_mode
         self._session_key = session_key
         # When set, this client emits a per-tool-call SEL audit from the ACP
@@ -1343,10 +1345,10 @@ class AcpClient:
         Overridable seam for the dormant ``_is_claude`` backend. The Default is
         ``[]`` so the public core (kiro-cli only, which gets its servers via
         ``--agent``) is byte-identical. An internal companion that re-registers
-        Claude Code over the ``ACP_BACKEND_CLAUDE`` seam overrides this to inject
-        the kirocrew-core/cron + user MCP servers — the claude adapter does not
-        read ``kirocrew.mcp.json`` on its own, so without this a claude session
-        would have zero MCP tools.
+        a Claude backend over the ``ACP_BACKEND_CLAUDE`` seam overrides this to
+        inject the kirocrew-core/cron + user MCP servers — the claude adapter
+        does not read ``kirocrew.mcp.json`` on its own, so without this a claude
+        session would have zero MCP tools.
         """
         return []
 
@@ -1567,7 +1569,7 @@ class AcpClient:
         claude-agent-acp branch below is the dormant protocol seam (see
         ``ACP_BACKEND_CLAUDE``): the public provider factory never selects it,
         so it is unreachable here, but an internal companion that re-registers
-        the Claude Code provider reuses this same client over the seam.
+        a Claude backend reuses this same client over the seam.
         """
         self._work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1663,9 +1665,9 @@ class AcpClient:
         # Resolve SSH_AUTH_SOCK dynamically — the gateway's env may be stale
         # after an ssh-agent restart.
         _resolve_ssh_auth_sock(env)
-        # Resolve KRB5CCNAME to a FILE: ccache — the kernel keyring (AL2023
-        # default) is invisible to this child, so Kerberos-gated MCP servers
-        # (e.g. amazon-quick-mcp) fail without it. Covers the session agent and
+        # Resolve KRB5CCNAME to a FILE: ccache — the kernel keyring (the default
+        # on some Linux distros) is invisible to this child, so Kerberos-gated MCP
+        # servers fail without it. Covers the session agent and
         # all ACP-provider subagents, which spawn through this same path.
         resolve_krb5_ccname(env)
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
@@ -1772,7 +1774,7 @@ class AcpClient:
         """Discover and track the full process tree after MCP servers are loaded.
 
         Merges with any early snapshot taken in _spawn().  MCP servers
-        (builder-mcp, node) may not exist until after _initialize_session().
+        (the internal MCP server, node) may not exist until after _initialize_session().
         """
         _loop = asyncio.get_running_loop()
         descendants = await _loop.run_in_executor(
@@ -1846,7 +1848,7 @@ class AcpClient:
                 # (no process groups) — platform_compat dispatches both. Async
                 # variant offloads the Windows taskkill spawn to
                 # subprocess_executor so the event loop keeps ticking while
-                # taskkill.exe runs (Mesh-2801).
+                # taskkill.exe runs.
                 await platform_compat.kill_process_tree_async(
                     pid, platform_compat.SIGTERM
                 )
@@ -1862,7 +1864,7 @@ class AcpClient:
                 return
             except asyncio.TimeoutError:
                 pass
-        # Force kill (async variant offloads Windows taskkill — Mesh-2801).
+        # Force kill (async variant offloads Windows taskkill).
         try:
             await platform_compat.kill_process_tree_async(
                 pid, platform_compat.SIGKILL
@@ -2177,7 +2179,7 @@ class AcpClient:
         self._last_activity = time.monotonic()
 
         # Seek to end of JSONL so we only read new tool results.
-        # claude-agent-acp stores sessions via Claude Code SDK, not ~/.kiro/ — skip.
+        # claude-agent-acp stores sessions via its own SDK, not ~/.kiro/ — skip.
         if self._session_id and not self._is_claude:
             _jpath = Path.home() / ".kiro" / "sessions" / "cli" / f"{self._session_id}.jsonl"
             try:
@@ -3677,7 +3679,7 @@ class AcpClient:
         if hook_store is None:
             return
         try:
-            # Redact tool_input before firing user hooks (parity with Post path); addresses AutoSDE security-controls.
+            # Redact tool_input before firing user hooks (parity with Post path); addresses security-controls review.
             _redacted_input = tool_event.tool_input
             if isinstance(_redacted_input, str):
                 _redacted_input, _ = redact_credentials(_redacted_input)
@@ -3695,7 +3697,7 @@ class AcpClient:
                 hook_store,
                 # Fall back to 'unknown' when the event carries no title, matching
                 # the Post path's tool_name recovery so a hook matcher sees a
-                # consistent name across Pre/Post; addresses AutoSDE finding.
+                # consistent name across Pre/Post; addresses a code-review finding.
                 tool_event.title or "unknown",
                 _redacted_input,
                 agent_role=self._agent or None,
@@ -3730,14 +3732,14 @@ class AcpClient:
         hook_store = get_global_hook_store()
         if hook_store is None:
             return
-        # Fall back to "unknown" to match the Pre path (AutoSDE Pre/Post tool_name consistency).
+        # Fall back to "unknown" to match the Pre path (Pre/Post tool_name consistency).
         tool_name = self._observed_tool_calls.get(
             tool_result_event.tool_call_id or "", ("unknown", "")
         )[0] or "unknown"
         if tool_name.startswith("Running: "):
             tool_name = tool_name[9:]
         try:
-            # Redact before firing user hooks (parity with chat_runner PostToolUse); addresses AutoSDE security-controls.
+            # Redact before firing user hooks (parity with chat_runner PostToolUse); addresses security-controls review.
             _redacted_output, _ = redact_credentials(tool_result_event.tool_output or "")
             _redacted_output, _ = redact_exfiltration_urls(_redacted_output)
             # Bound the payload handed to user hook scripts to the first 2000 chars
@@ -3858,7 +3860,7 @@ class AcpClient:
                 purpose, _ = redact_exfiltration_urls(purpose)
                 purpose, _ = redact_credentials(purpose)
             # Prefer rawInput.description over the SDK-provided title (e.g.
-            # Claude Code's Bash tool emits "List KiroCrew ACP module files"
+            # some backends' Bash tool emits "List KiroCrew ACP module files"
             # alongside `ls /workplace/...`). For claude-agent-acp this rarely
             # fires here because the initial tool_call has empty rawInput —
             # the refinement path in `_extract_tool_call_refinement` is what

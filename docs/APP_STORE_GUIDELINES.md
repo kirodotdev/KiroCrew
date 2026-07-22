@@ -85,7 +85,7 @@ Declare what your app contributes to KiroCrew:
 }
 ```
 
-### Cron Registration Bridge (Mesh-483)
+### Cron Registration Bridge
 
 When `resources: "gateway"`, KiroCrew automatically registers and deregisters cron jobs declared in your `app.json` manifest:
 

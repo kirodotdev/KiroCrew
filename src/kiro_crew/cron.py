@@ -116,8 +116,8 @@ class CronJob:
     consecutive_failures: int = 0  # count of consecutive identical failures (incl. first alert)
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["2026-04-06"]
     timezone: str = ""  # IANA timezone for skip evaluation
-    persistent_session: bool = True  # False → fresh ephemeral session per run (Mesh-1026)
-    minimal_context: bool = False  # True → skip memory/lessons/skills/history (Mesh-1632)
+    persistent_session: bool = True  # False → fresh ephemeral session per run
+    minimal_context: bool = False  # True → skip memory/lessons/skills/history
     hide_in_chat: bool = False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
     model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
 
@@ -178,7 +178,7 @@ class CronJob:
             self._audit_pause_change("auto_pause_cleared")
 
 
-# ── Session-context helper (Mesh-1026) ──
+# ── Session-context helper ──
 
 
 def build_cron_session_context(job: CronJob) -> tuple[str, str]:
@@ -188,7 +188,7 @@ def build_cron_session_context(job: CronJob) -> tuple[str, str]:
       - session_key is stable across runs: ``cron:{job.id}``
       - prompt prepends ``job.last_result`` so the agent has recent context
 
-    When ``job.persistent_session`` is False (Mesh-1026 stateless mode):
+    When ``job.persistent_session`` is False:
       - session_key is unique per call: ``cron:{job.id}:{uuid}``
         → each run opens a fresh agent session; no context accumulation
       - prompt is the bare ``job.message`` — no last_result injection
@@ -388,7 +388,7 @@ class CronService:
         self._cancelled_jobs: set[str] = set()  # job IDs cancelled by the user
         self._job_jitter: dict[str, float] = {}  # job ID → jitter seconds applied
         self._job_run_meta: dict[str, tuple[float, str]] = {}  # job_id → (start_time, trigger)
-        # Mesh-1026: job_id → active session_key for the in-flight run.
+        # job_id → active session_key for the in-flight run.
         # Populated by the dispatcher (gateway callback) so the reaper can
         # target per-run ephemeral keys when persistent_session=False.
         self._active_session_keys: dict[str, str] = {}
@@ -476,7 +476,7 @@ class CronService:
 
     async def _force_reap(self, job_id: str, elapsed: float, deadline: int = _JOB_TIMEOUT_SECS) -> None:
         """Kill a cron job's session process and cancel its task."""
-        # Mesh-1026: use the active per-run session key if registered;
+        # use the active per-run session key if registered;
         # fall back to the stable key for persistent or legacy callers.
         session_key = self._active_session_keys.get(job_id) or f"cron:{job_id}"
         self._reaped_jobs.add(job_id)
@@ -564,7 +564,7 @@ class CronService:
         :func:`kiro_crew.executors.subprocess_executor` via
         :func:`platform_compat.kill_process_tree_async` / ``kill_pid_async``
         instead of blocking the reaper loop's event loop for the duration of
-        ``taskkill.exe`` (Mesh-2801). The child-tree probe helpers
+        ``taskkill.exe``. The child-tree probe helpers
         (``_get_child_pids`` / ``_get_start_time`` / ``_read_basename``) also
         shell out to ``ps`` / ``pgrep`` on macOS, so they are offloaded to the
         same executor.
@@ -592,7 +592,7 @@ class CronService:
                 return
             # Snapshot child tree before killing — children in different
             # PGIDs survive killpg. The macOS pgrep/ps spawns happen on the
-            # subprocess_executor so the loop keeps ticking (Mesh-2801).
+            # subprocess_executor so the loop keeps ticking.
             loop = asyncio.get_running_loop()
             raw_children = getattr(client, "_child_pids", None)
             child_pids: dict = (
@@ -636,7 +636,7 @@ class CronService:
                 # broadcast guard (refuses pgid<=1 / own group; see
                 # platform_compat.kill_process_tree). Async variant offloads
                 # Windows taskkill to subprocess_executor so the reaper loop
-                # never blocks the event loop on taskkill.exe (Mesh-2801).
+                # never blocks the event loop on taskkill.exe.
                 await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
             except ValueError:
                 # Guard refused the pid outright (non-int/reserved) — nothing
@@ -981,7 +981,7 @@ class CronService:
                     return True
         return False
 
-    # ── Active session tracking (Mesh-1026) ──
+    # ── Active session tracking ──
 
     def register_active_session_key(self, job_id: str, session_key: str) -> None:
         """Record the session key used by the current run of ``job_id``.
@@ -1536,7 +1536,7 @@ class CronService:
                 for j in self._jobs
             ],
         }
-        # Atomic write: unique tmp → rename (Mesh-100)
+        # Atomic write: unique tmp → rename
         # Deferred import to avoid circular dependency (pre-existing)
         from kiro_crew.atomic_write import atomic_write
 

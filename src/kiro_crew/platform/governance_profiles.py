@@ -67,7 +67,7 @@ def audit_governance_degraded(
     this helper makes it observable: a log line, a process-global health mark (for
     the dashboard indicator), AND a file-backed ``governance_degraded`` SEL record.
 
-    ``failed_closed=True`` (AVP-23427) marks the DENY disposition: the log is
+    ``failed_closed=True`` marks the DENY disposition: the log is
     emitted at ERROR (vs WARNING for a fail-open degrade) and the SEL is written
     with ``critical=True`` (synchronous), matching other security-critical audits.
 
@@ -273,7 +273,7 @@ class ProfileStore:
         # files happen to be processed — a 2-deep chain ``c→b→a`` would compose
         # (fail-OPEN) when ``b`` sorts before ``c`` but deny-all when it sorts
         # after.  Snapshotting the original chain depth makes the verdict
-        # deterministic and order-independent (CR-284272012).
+        # deterministic and order-independent.
         _orig_extends = {name: prof.extends for name, prof in by_name.items()}
         for name, profile in list(by_name.items()):
             if profile.extends:
@@ -405,7 +405,7 @@ def governance_permits(
     shared with the JSON-RPC stream) is suppressed at the point it is emitted; the
     file-backed ``governance_degraded`` SEL is still written either way.
 
-    ``fail_closed=True`` (AVP-23427) inverts the degrade disposition for an
+    ``fail_closed=True`` inverts the degrade disposition for an
     AUTHORIZATION chokepoint whose wrong-permit is an exfiltration (artifact
     publish): a governance-evaluation error then returns a DENYING
     ``Decision(False, ...)`` and audits ``failed_closed=True`` (ERROR + critical

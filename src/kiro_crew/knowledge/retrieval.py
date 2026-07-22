@@ -17,7 +17,7 @@ from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
-# Recall for natural-language queries (Mesh-1676).
+# Recall for natural-language queries.
 # Common English stopwords + connective phrasing are dropped before FTS5
 # matching so a query like "VoC related to Budget Planning" does not require the
 # literal tokens "related"/"to" to appear in a matching document.
@@ -30,7 +30,7 @@ _STOPWORDS = frozenset({
 })
 
 # Weight applied to the vector leg in RRF fusion so semantically-strong matches
-# dominate when the keyword leg returns weak/literal junk (Mesh-1676).
+# dominate when the keyword leg returns weak/literal junk.
 VECTOR_RRF_WEIGHT = 2.0
 
 
@@ -49,7 +49,7 @@ class HybridRetriever:
         vec = self._vector_search(query, limit=limit * 2)
 
         # Vector leg is weighted higher so semantic matches dominate when the
-        # keyword leg is weak (Mesh-1676). Weights align positionally
+        # keyword leg is weak. Weights align positionally
         # with (kw, gr, vec).
         fused = self._rrf_fuse(kw, gr, vec, weights=(1.0, 1.0, VECTOR_RRF_WEIGHT))
 
@@ -242,7 +242,7 @@ class HybridRetriever:
         so it is treated as a literal FTS5 string -- the user's input never
         contributes FTS5 operators (parameterized quoting; BSC1 Input
         Validation). Stopwords are dropped and the remaining tokens OR-joined
-        (Mesh-1676) so natural-language queries no longer require every
+        so natural-language queries no longer require every
         literal token to appear in a matching document.
         """
         raw_tokens = [t for t in query.split() if t]
@@ -345,7 +345,7 @@ class HybridRetriever:
         Optional per-list ``weights`` (aligned positionally with
         ``ranked_lists``) let a leg contribute more to the fused score. The
         vector leg is weighted higher so semantic matches dominate when keyword
-        matches are weak (Mesh-1676). When ``weights`` is None every
+        matches are weak. When ``weights`` is None every
         leg is weighted 1.0 (original behaviour).
         """
         scores: dict[str, float] = defaultdict(float)

@@ -219,7 +219,7 @@ describe('ArtifactDetailPage', () => {
     expect(screen.queryByText('Hourly CR snapshot')).not.toBeInTheDocument()
   })
 
-  // ── Phase 2 (Mesh-1654): native rendering for non-iframe kinds ──────────
+  // ── Phase 2: native rendering for non-iframe kinds ──────────
   it('markdown artifacts render natively (no iframe)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({
@@ -267,7 +267,7 @@ describe('ArtifactDetailPage', () => {
     expect(document.querySelector('iframe')).not.toBeNull()
   })
 
-  // ── Phase 3 (Mesh-1654): inline edit + revert ───────────────────────────
+  // ── Phase 3: inline edit + revert ───────────────────────────
   it('edit toggle is hidden for non-editable kinds (widget)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'widget' }))
     vi.mocked(api).artifactVersions = vi
@@ -331,9 +331,9 @@ describe('ArtifactDetailPage', () => {
     await waitFor(() => expect(screen.getByTitle(/Revert to v1/)).toBeInTheDocument())
   })
 
-  // ── Phase 4 (Mesh-1654): comments → chat ────────────────────────────────
+  // ── Phase 4: comments → chat ────────────────────────────────
   // Inline commenting feeds the Iterate flow, which is hidden pending redesign
-  // (P472753393) via SHOW_ARTIFACT_ITERATE. While hidden, the "select text to
+ // via SHOW_ARTIFACT_ITERATE. While hidden, the "select text to
   // add inline comments" tip must NOT appear on any kind. Flip these back to
   // assert presence when the Iterate redesign re-enables the flag.
   it('does not show the "select text to comment" tip while Iterate is hidden (markdown)', async () => {
@@ -358,7 +358,7 @@ describe('ArtifactDetailPage', () => {
     expect(screen.queryByText(/select text to add inline comments/i)).toBeNull()
   })
 
-  // ── Phase 5 (Mesh-1654): lifecycle event log + activity timeline ────────
+  // ── Phase 5: lifecycle event log + activity timeline ────────
   it('Activity section is always rendered', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact())
     vi.mocked(api).artifactVersions = vi
@@ -405,7 +405,7 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getByText(/no lifecycle events yet/i)).toBeInTheDocument()
   })
 
-  // ── Iterate affordances hidden pending redesign (P472753393) ────────────
+ // ── Iterate affordances hidden pending redesign ────────────
   // The header "Iterate" button is gated behind SHOW_ARTIFACT_ITERATE (false).
   // These assert it is ABSENT for every kind; flip back to assert presence when
   // the redesign re-enables the flag.
@@ -453,7 +453,7 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getAllByText(/via dashboard/i).length).toBeGreaterThan(0)
   })
 
-  // ── Mesh-2752: comment lifecycle events in the activity timeline ──────
+  // ── comment lifecycle events in the activity timeline ──────
   it('renders comment lifecycle events with snippet and reason', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown' }))
     vi.mocked(api).artifactVersions = vi
@@ -485,7 +485,7 @@ describe('ArtifactDetailPage', () => {
   it('Save and Snapshot buttons both render in edit mode with distinct titles', async () => {
     // Save = silent live update, Snapshot = bumps version. Both buttons
     // appear together in edit mode under the new explicit-snapshot model
-    // (Mesh-1654 round 5). We can't drive the Monaco editor in jsdom so
+    // (round 5). We can't drive the Monaco editor in jsdom so
     // we rely on the unit tests for the actual snapshot=true/false wiring
     // on the store side (test_artifacts.py::TestExplicitSnapshotModel).
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
@@ -596,7 +596,7 @@ describe('ArtifactDetailPage', () => {
     )
   })
 
-  // ── AutoSDE round 12 polish ─────────────────────────────────────────────
+  // ── review round 12 polish ─────────────────────────────────────────────
   it('Back button confirms before discarding unsaved edits (round 12)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', content: '# v1' }),
@@ -656,7 +656,7 @@ describe('ArtifactDetailPage', () => {
   })
 
   it('no Iterate button means no chat-slot creation entry point (hidden pending redesign)', async () => {
-    // With SHOW_ARTIFACT_ITERATE off (P472753393) the header button is gone,
+ // With SHOW_ARTIFACT_ITERATE off the header button is gone,
     // so there is no UI path to createChatSlot from the artifact page.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', content: '# v1' }),
@@ -775,7 +775,7 @@ describe('ArtifactDetailPage', () => {
 
   it('iterate button (with its comment-count badge) is absent while hidden', async () => {
     // The comment-count badge lived on the Iterate button. With the button
-    // hidden pending redesign (P472753393) neither the button nor the badge
+ // hidden pending redesign neither the button nor the badge
     // renders. Restore the badge assertion when the redesign re-enables it.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown' }),

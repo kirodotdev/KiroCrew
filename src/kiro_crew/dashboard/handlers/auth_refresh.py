@@ -59,8 +59,8 @@ def _rate_limited(client_ip: str, now: float | None = None) -> bool:
 
     Fails CLOSED when client_ip is empty: bucket unknown-IP requests
     under a single sentinel key so they share a rate limit. Never
-    silently bypass the cap — defense-in-depth per AutoSDE
-    security-controls (deny-by-default).
+    silently bypass the cap — defense-in-depth per the
+    security-controls rule (deny-by-default).
     """
     if not client_ip:
         # True fail-closed: an empty client_ip means we cannot
@@ -111,7 +111,7 @@ def _set_access_cookie(
     No-op when the session is already expired (max_age <= 0) — we never
     want to silently extend a stale session by falling back to the full
     TTL via the ``or`` operator (which fires because 0 is falsy). Per
-    AutoSDE finding f-... on rev3.
+    a security review finding.
     """
     port = request.app.get("port", 7777)
     cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
@@ -197,7 +197,7 @@ def _audit(
         )
     except Exception as exc:  # pragma: no cover
         # SEL must never block auth flows, but log the failure so it's observable.
-        # Per AutoSDE finding (CR-281631553 post 41).
+        # Per a security review finding.
         logger.debug("refresh_tokens: SEL audit failed: %s", exc)
 
 

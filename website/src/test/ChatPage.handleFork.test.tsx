@@ -28,7 +28,7 @@
  * without exporting handleFork from ChatPage (out of scope: "do not touch
  * non-test source files").
  *
- * AutoSDE B3 follow-up fix: the original `resolvedCfg` expression read
+ * Code-review follow-up fix: the original `resolvedCfg` expression read
  * `forkCfg ?? (forkCfgLoading ? await api.dashboardConfig() : forkCfg)`.
  * Once the ['dashboardConfig'] query settled with no data (query errored, or
  * simply resolved to undefined) `forkCfgLoading` was false, so the `:
@@ -161,7 +161,7 @@ describe('handleFork B3 cold-cache fix (bug-fix regression test, required per ru
   })
 
   it('does NOT downgrade to head-fork when forkCfg is absent and the query has already settled (not loading) -- the exact case the original B3 fix missed', async () => {
-    // This is the precise regression AutoSDE flagged: pre-fix, the expression
+    // This is the precise regression code review flagged: pre-fix, the expression
     // was `forkCfg ?? (forkCfgLoading ? await api.dashboardConfig() : forkCfg)`.
     // Once the query settles with no data (errored, or simply resolves to
     // undefined) `forkCfgLoading` becomes false, so the `: forkCfg` branch is

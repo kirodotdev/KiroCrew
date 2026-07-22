@@ -215,7 +215,7 @@ class SecurityEventLog:
                 self._last_hash = event.entry_hash
             try:
                 # Use os.open with explicit 0o600 mode to prevent other users
-                # from reading the security audit log (pentest finding P472042812).
+                # from reading the security audit log.
                 fd = os.open(
                     self._path,
                     os.O_CREAT | os.O_APPEND | os.O_WRONLY,
@@ -477,7 +477,7 @@ class SecurityEventLog:
         resolved a per-app profile) is recorded so an investigator can tell WHICH
         app's narrowing was bypassed. ``reason`` is redacted before persistence.
 
-        ``failed_closed=True`` inverts the disposition (AVP-23427): the chokepoint
+        ``failed_closed=True`` inverts the disposition: the chokepoint
         DENIED the action rather than degrading to permit.  The event is written
         with ``critical=True`` (synchronously, raising on a filesystem failure)
         and its ``outcome`` is ``"blocked"``, matching the severity of other
@@ -661,7 +661,7 @@ def _infer_source(session_key: str) -> str:
     governance check that is not driven by any user-facing surface (app
     activation, Slack workspace admission).  It gives operators a stable,
     honest bind target (``bind: {type: surface, id: host}``) instead of the
-    accidental ``slack`` an empty key used to classify to (CR-284272012).
+    accidental ``slack`` an empty key used to classify to.
     """
     if not session_key:
         return "unknown"

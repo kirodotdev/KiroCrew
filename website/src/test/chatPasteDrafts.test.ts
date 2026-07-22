@@ -79,7 +79,7 @@ describe('chatPasteDrafts', () => {
     }
   })
 
-  it('byte-aware LRU evicts oldest slots until the blob fits, keeping the newest (Mesh-1909)', () => {
+  it('byte-aware LRU evicts oldest slots until the blob fits, keeping the newest', () => {
     const drafts: Record<string, PasteBlock[]> = {}
     // 4 slots of ~1.5 MB each = ~6 MB, over the 2 MB per-store budget. Oldest are
     // evicted until it fits; the newest is never the casualty.

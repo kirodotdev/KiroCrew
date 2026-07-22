@@ -1,4 +1,4 @@
-"""Tests for minimal_context flag on CronJob (Mesh-1632).
+"""Tests for minimal_context flag on CronJob.
 
 When minimal_context=True:
 - build_session_context returns only date/time + agent identity (~200 tokens)

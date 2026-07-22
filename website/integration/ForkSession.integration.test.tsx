@@ -127,7 +127,7 @@ describe('Fork Session Integration', () => {
     await waitFor(() => expect(btn).not.toBeDisabled())
   })
 
-  it('fork never auto-submits the unsent composer draft (Mesh-2287)', async () => {
+  it('fork never auto-submits the unsent composer draft', async () => {
     // Option B: forking must NOT pick up the composer text. The fork request
     // carries no prompt, so nothing is auto-submitted into the new session and
     // the unsent draft stays parked in the source slot. Mirrors the post-fix

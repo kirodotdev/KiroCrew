@@ -233,7 +233,7 @@ class AcpWorker(Worker):
 
 
 class CCWorker(Worker):
-    """Long-lived Claude Code subprocess using stream-json I/O."""
+    """Long-lived external agent CLI subprocess using stream-json I/O."""
 
     def __init__(self) -> None:
         self._proc: Optional[asyncio.subprocess.Process] = None
@@ -271,7 +271,7 @@ class CCWorker(Worker):
         fetch_tools = os.environ.get("KIROCREW_KNOWLEDGE_FETCH_TOOLS", "").strip()
         if fetch_tools:
             cmd += ["--allowedTools", fetch_tools]
-        wrapped = cgroup_scope_argv(wrap_argv(cmd)[0])  # cgroup DoS ceiling (Talos bdf0d7e5)
+        wrapped = cgroup_scope_argv(wrap_argv(cmd)[0])  # cgroup DoS ceiling
         self._proc = await asyncio.create_subprocess_exec(
             *wrapped,
             stdin=asyncio.subprocess.PIPE,

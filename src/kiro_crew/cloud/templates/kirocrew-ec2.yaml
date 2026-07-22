@@ -217,7 +217,7 @@ Resources:
       # they're mutually exclusive with the top-level forms.
       NetworkInterfaces:
         - DeviceIndex: 0
-          # ── Documented accepted tradeoff (CSE P475357377, CWE-1188) ──
+          # ── Documented accepted tradeoff (CWE-1188) ──
           # A public IP widens attack surface, but is REQUIRED for egress when
           # only an IGW subnet is available (bootstrap would otherwise hang). It
           # is accepted, not an oversight, because it is defense-in-depth capped:

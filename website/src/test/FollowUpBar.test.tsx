@@ -155,7 +155,7 @@ describe('FollowUpBar', () => {
     })
   })
 
-  // ─── Split-button "send now" segment (Mesh-2676) ─────────────────────────
+  // ─── Split-button "send now" segment ─────────────────────────
   // Discoverable form of the double-click-to-send gesture: a distinct
   // lightning-bolt segment next to the chip body that sends immediately.
   describe('send-now split segment', () => {

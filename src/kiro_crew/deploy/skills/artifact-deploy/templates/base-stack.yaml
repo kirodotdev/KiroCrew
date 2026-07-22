@@ -90,7 +90,7 @@ Resources:
           return request;
         }
 
-  # BSC12 security headers on every response.
+  # security headers on every response.
   SecurityHeadersPolicy:
     Type: AWS::CloudFront::ResponseHeadersPolicy
     Properties:

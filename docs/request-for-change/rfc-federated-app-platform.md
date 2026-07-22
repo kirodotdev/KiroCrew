@@ -1,6 +1,6 @@
 # RFC: Federated App Platform — Dynamic ESM Loading with Import Maps
 
-**Author:** zezhexu  
+**Author:** KiroCrew contributors  
 **Date:** 2026-04-18  
 **Status:** Draft
 
@@ -17,7 +17,7 @@ KiroCrew's app system today supports installing agent/skill/cron bundles from lo
 3. **Built-in features that should be apps** — features like Agent Worlds (pixel art scenes), Channels (multi-agent chat), and Schedule (cron UI) are hardcoded into the KiroCrew frontend. They can't be independently versioned, disabled, or replaced. New features require modifying the core codebase.
 
 The goal is a platform where:
-- A developer creates a new Brazil package, writes a React component, publishes it
+- A developer creates a new package, writes a React component, publishes it
 - A user discovers it in KiroCrew's App Store, clicks Install, and gets a new sidebar page
 - The app looks and feels native — same theme, same components, same React tree
 - No iframes, no Web Components, no separate backend processes
@@ -371,7 +371,7 @@ The KiroCrew backend serves `~/.kirocrew/apps/{name}/ui/*` at `/apps/{name}/ui/*
 kirocrew app init agent-worlds --with-ui
 ```
 
-Creates a Brazil package `KiroCrewApp-AgentWorlds` with:
+Creates a package `KiroCrewApp-AgentWorlds` with:
 - `app.json` (manifest with sensible defaults)
 - `vite.config.ts` (pre-configured externals, library mode)
 - `src/index.tsx` (hello-world React component)
@@ -493,7 +493,7 @@ The app author doesn't think about:
 ### Phase 2: First App Extraction
 
 - Extract Agent Worlds as the proof-of-concept app
-  - Create `KiroCrewApp-AgentWorlds` Brazil package
+  - Create `KiroCrewApp-AgentWorlds` package
   - Move scene components from `frontend/src/pages/scenes/` to the app
   - Move `WorldsPage.tsx` logic into the app's `index.tsx`
   - Remove Worlds from KiroCrew core's router and sidebar

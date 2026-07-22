@@ -197,7 +197,7 @@ class ForkMetadata:
 
 @dataclass
 class ArtifactPublication:
-    """Artifactory publication state for an artifact (Mesh-1880).
+    """Artifactory publication state for an artifact.
 
     Present (non-``None`` on :class:`Artifact`) once an artifact has been
     published to Harmony Artifactory. The ``artifact_id`` and ``view_url`` are
@@ -312,10 +312,10 @@ class Artifact:
     #: Original filesystem path for file-backed artifacts created via
     #: 'Save as artifact' from the file viewer. Empty for chat-backed
     #: artifacts. Used as a deduplication key when the same path is
-    #: re-saved (Mesh-1654 Phase 6 — re-saving offers to bump the existing
+    #: re-saved (re-saving offers to bump the existing
     #: artifact's version rather than creating a parallel one).
     source_path: str = ""
-    #: Nested-folder membership (Mesh-2720). ``""`` = unfiled (library root).
+    #: Nested-folder membership. ``""`` = unfiled (library root).
     #: An opaque folder id (see :class:`ArtifactFolderStore`), never a path —
     #: so renaming a folder never rewrites artifact records. Setting it is a
     #: metadata-only mutation (:meth:`ArtifactStore.set_folder`) that does NOT
@@ -335,13 +335,13 @@ class Artifact:
     #: "(deleted session)" when the session no longer exists). Empty for
     #: non-session origins (bulk import, older artifacts).
     session_key: str = ""
-    #: Artifactory publication state (Mesh-1880). ``None`` until the artifact
+    #: Artifactory publication state. ``None`` until the artifact
     #: is published; carries the stable Artifactory id/URL, visibility,
     #: shared-with aliases, and version-sync bookkeeping once published.
     #: Persisted in meta.json (nested object); tolerant-loaded so older
     #: meta.json files without the field default to ``None``.
     publication: "ArtifactPublication | None" = None
-    #: Fork provenance (Mesh-1880 P1). ``None`` until the artifact is forked
+    #: Fork provenance. ``None`` until the artifact is forked
     #: from a remote Artifactory artifact. Records the upstream identity so
     #: pull-latest and upstream linking work. Persisted in meta.json.
     fork_metadata: "ForkMetadata | None" = None
@@ -357,8 +357,7 @@ class Artifact:
     #: from the latest numbered snapshot. Lets the frontend enable the
     #: Snapshot button anytime live has drifted from history — including
     #: cases where a file-backed artifact's source changed externally
-    #: between the last snapshot and now (Mesh-1654 round 6, requested
-    #: by nrb). Not persisted; set by ``get()``.
+    #: between the last snapshot and now. Not persisted; set by ``get()``.
     live_dirty: bool = False
     #: Structured metadata for ``kind="webapp"`` artifacts — a deployed application
     #: (deploy target, architecture, lifecycle/TTL, cost estimate, teardown handle).
@@ -377,7 +376,7 @@ class Artifact:
         if not include_content:
             d.pop("content", None)
         if persist:
-            # AutoSDE round 13: live_dirty is a transient, GET-time-computed
+            # live_dirty is a transient, GET-time-computed
             # field. Persisting it via meta.json would create staleness
             # bugs (e.g. silent save flips it to True, but we'd write False
             # if the meta is touched again before a snapshot).
@@ -724,7 +723,7 @@ class ArtifactStore:
     def get(self, slug: str, *, version: int | None = None) -> Artifact:
         """Return an artifact (with content) by slug, optionally a specific version.
 
-        Live-pointer behavior (Mesh-1654): for file-backed artifacts (those
+        Live-pointer behavior: for file-backed artifacts (those
         with a ``source_path``), the *current* read returns the live file
         content from disk, NOT the artifact storage's snapshot. This means
         edits made via the file viewer (or any other tool that writes the
@@ -739,7 +738,7 @@ class ArtifactStore:
         slug = _validate_slug(slug)
         with self._lock:
             meta = self._load_meta(slug)
-            # Lazy backfill (Mesh-1654 Phase 5): legacy artifacts written
+            # Lazy backfill: legacy artifacts written
             # before the events field existed pick up a synthetic created/
             # edited history on first read. ``_backfill_events`` is idempotent
             # — once events_backfilled is True, this is a no-op. Persist the
@@ -802,7 +801,7 @@ class ArtifactStore:
         try:
             # Resolve before the security check so traversal segments
             # (`..`) and symlinks pointing into sensitive locations can't
-            # bypass is_sensitive_path. AutoSDE round 12: a benign-looking
+            # bypass is_sensitive_path. A benign-looking
             # `source_path` with `../../etc/shadow` would otherwise sneak
             # past, since is_sensitive_path() inspects the literal string.
             p = Path(source_path).expanduser().resolve()
@@ -835,7 +834,7 @@ class ArtifactStore:
                 return None
             # Bound the read at the FILE level, not after-the-fact: read
             # MAX_CONTENT_BYTES+1 bytes from disk, decode (errors='replace'
-            # for invalid sequences). AutoSDE round 13: previously called
+            # for invalid sequences). Previously called
             # p.read_text() which loads the entire file into memory before
             # the size check — a multi-GB file pointed to by source_path
             # would exhaust memory before truncation triggered. Bounding
@@ -924,7 +923,7 @@ class ArtifactStore:
         for chat-backed). When ``snapshot`` is True the new state is also
         captured as a numbered version with a lifecycle event. When False
         (the default), the save is silent — the version dropdown stays the
-        same and no event is emitted (Mesh-1654 round 5: explicit-snapshot
+        same and no event is emitted (explicit-snapshot
         model, requested by nrb).
 
         ``actor`` distinguishes lifecycle event types when a snapshot is
@@ -966,7 +965,7 @@ class ArtifactStore:
             art.updated_at = _now_iso()
 
             # Snapshot of current live state (no new content provided).
-            # Mesh-1654 round 6: the user can click Snapshot at any time
+            # the user can click Snapshot at any time
             # to capture the live state — including after silent saves OR
             # after the source file changed externally for file-backed
             # artifacts. We read live content the same way get() does and
@@ -1004,8 +1003,8 @@ class ArtifactStore:
                 self._rescan_comment_anchors_locked(slug, live_content)
 
                 if snapshot:
-                    # Validate event_type BEFORE side effects (AutoSDE round
-                    # 13). Otherwise an invalid event_type raises after the
+                    # Validate event_type BEFORE side effects.
+                    # Otherwise an invalid event_type raises after the
                     # version bump and versions/v{N}.html write, leaving an
                     # orphaned file on disk because _write_meta is never
                     # reached. Validate first; commit second.
@@ -1147,7 +1146,7 @@ class ArtifactStore:
         """Append a ``referenced`` event to ``slug``'s activity log without
         modifying its content or version. Used by ``WidgetFrame`` on mount
         to record that a chat impression of this artifact has been
-        rendered (Mesh-1715 follow-up). The activity timeline groups
+        rendered. The activity timeline groups
         these events to show the artifact's cross-session reach.
 
         ``message_ts`` and ``widget_index`` go into the event's
@@ -1530,7 +1529,7 @@ class ArtifactStore:
             return art
 
     def set_fork_metadata(self, slug: str, fm: "ForkMetadata") -> Artifact:
-        """Attach fork provenance to an artifact (Mesh-1880 P1)."""
+        """Attach fork provenance to an artifact."""
         slug = _validate_slug(slug)
         with self._lock:
             art = self._load_meta(slug)
@@ -1575,7 +1574,7 @@ class ArtifactStore:
             return art
 
     def set_folder(self, slug: str, folder_id: str) -> Artifact:
-        """Move an artifact into a folder (Mesh-2720) — metadata-only.
+        """Move an artifact into a folder — metadata-only.
 
         Setting ``folder_id`` (``""`` = unfiled/root) is a pure metadata
         mutation: it does NOT bump the version, write a snapshot, or emit a
@@ -1934,8 +1933,8 @@ class ArtifactStore:
         # Defense in depth: route the read through the gated helper so the
         # is_sensitive_path() check fires on every filesystem read, even when
         # ``src`` is a store-internal path constructed by the store itself.
-        # AUTOSDE security-controls rule: "all file reads must go through
-        # hooks.py which enforces is_sensitive_path()".
+        # Per the security-controls rule: all file reads must go through
+        # hooks.py which enforces is_sensitive_path().
         self._write_text(target, self._read_text(src))
 
     def _write_meta(self, art: Artifact) -> None:
@@ -2052,7 +2051,7 @@ class ArtifactStore:
         if not slug:
             raise ArtifactError(f"meta.json missing slug: {path}")
         # Events: lifecycle audit log. Tolerate older meta.json files written
-        # before the field existed (Mesh-1654 Phase 5) — they get an empty
+        # before the field existed — they get an empty
         # list and pick up a synthetic backfilled history on next get().
         raw_events = raw.get("events", []) or []
         events: _List[dict] = []
@@ -2229,7 +2228,7 @@ class ArtifactStore:
         path.rmdir()
 
 
-# ── Artifact folders (Mesh-2720) ────────────────────────────────────────────
+# ── Artifact folders ────────────────────────────────────────────
 
 #: Human-path separator for folder addressing at the MCP/API boundary
 #: (e.g. ``"Opportunity Planner/Reports"``). Distinct from the display

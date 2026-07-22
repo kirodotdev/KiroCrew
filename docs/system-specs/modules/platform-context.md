@@ -2,13 +2,13 @@
 
 The `kiro_crew.platform` package defines the **Composed Platform Providers
 (CPP)** contract: the seam that lets one core serve both the open-source
-edition and an Amazon-internal companion without the core ever importing
-Amazon-specific code.
+edition and an enterprise companion without the core ever importing
+enterprise-specific code.
 
 > Authoring note: KiroCrew is the public edition of this seam. The daily
-> de-amazon content sync from the upstream authoring home strips the
-> Amazon-tinted Defaults (e.g. the internal git host, `.midway` sandbox dirs)
-> down to the public baseline; the Amazon companion re-adds them via overrides.
+> de-branding content sync from the upstream authoring home strips the
+> enterprise-tinted Defaults (e.g. the internal git host, `.midway` sandbox dirs)
+> down to the public baseline; the enterprise companion re-adds them via overrides.
 > The contract (interfaces + consumption-site wiring) is generic core
 > infrastructure and survives the sync.
 
@@ -16,8 +16,8 @@ Amazon-specific code.
 
 The core defines a set of **extension points** — interfaces where behavior
 differs between editions — and ships a `Default*` adapter for each that
-reproduces today's KiroCrew behavior. An internal companion package (module
-separate from `kiro_crew`) depends on the public wheel and supplies Amazon
+reproduces today's KiroCrew behavior. An enterprise companion package (module
+separate from `kiro_crew`) depends on the public wheel and supplies enterprise
 adapters for the same interfaces.
 
 The dependency runs one way: **the companion depends on the core; the core never
@@ -32,32 +32,32 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | Field | Kind | Default adapter | Companion supplies |
 |-------|------|-----------------|--------------------|
 | `contract_version` | carrier (int) | `CONTRACT_VERSION` | must match core |
-| `profile` | carrier (str) | `"standalone"` | `"amazon"` |
+| `profile` | carrier (str) | `"standalone"` | `"enterprise"` |
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
-| `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers Claude Code |
-| `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers Harmony Artifactory / Chorus providers |
+| `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers a companion-registered backend |
+| `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers enterprise artifact/publish providers |
 | `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + backend env |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
 | `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
-| `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed Amazon allowlist |
-| `identity` | adapter | `DefaultIdentityProvider` (`midway.py` stub) | Midway / MCS |
+| `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
+| `identity` | adapter | `DefaultIdentityProvider` (`sso_status.py` stub) | enterprise SSO / directory |
 | `embeddings` | adapter | `DefaultEmbeddingSource` (dormant seam — the public runtime is the bundled in-process llama-cpp model via `embeddings.register_embedding_backend`; `endpoint_url`/`sign_request` kept for contract stability) | internal source + SigV4 |
-| `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (empty) | builder-mcp + AIM skills |
+| `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (empty) | enterprise MCP server + skills |
 | `registry` | adapter | `DefaultAppRegistryPolicy` (public-forge baseline) | internal git hosts |
 | `apps_loader` | adapter | `DefaultAppsLoader` (OSS builtins) | internal app sources (code-reviewer; team_manager/mimir follow-on) |
-| `package_manager` | adapter | `DefaultPackageManager` (brew/pip) | toolbox installer |
-| `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | Quip connector (`extra_connectors`) |
+| `package_manager` | adapter | `DefaultPackageManager` (brew/pip) | managed installer |
+| `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op) | internal tunnel supervisor |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off) | RUM/Cognito config |
-| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler) | secretary/taskkeeper routes + mwinit PTY login |
-| `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | MCS-Jail process isolation |
+| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler) | secretary/taskkeeper routes + enterprise SSO PTY login |
+| `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
 | `feature_apps` | tuple | `()` | (provenance map only — not consumed; apps register via `apps_loader`) |
 
 > `registry` note — the public `DefaultAppRegistryPolicy` encodes the
-> public-forge baseline and ships no internal-host set. The Amazon companion
-> re-adds the internal GitFarm host (and any further internal git hosts) via its
+> public-forge baseline and ships no internal-host set. The enterprise companion
+> re-adds the internal git host (and any further internal git hosts) via its
 > own override.
 
 Core code reads adapters directly when it has the context, or via
@@ -84,12 +84,12 @@ installs the context. `bootstrap_context`:
 ## Profile resolution
 
 `resolve_profile(cfg, *, entry_points)` precedence (first match wins):
-1. `KIROCREW_PROFILE` env (`standalone` | `amazon`; unknown → standalone).
+1. `KIROCREW_PROFILE` env (`standalone` | `enterprise`; unknown → standalone).
 2. Non-empty `kirocrew.plugins` entry-point group (companion installed).
 3. Identity signal: a present `~/.midway` directory (a cheap stat, no
    subprocess) — **only when the opt-in `KIROCREW_MIDWAY_PROFILE_PROBE` env var
    is truthy**. OFF by default so a stray `~/.midway` left by some other tool
-   cannot force the public edition into the `amazon` profile (which has no
+   cannot force the public edition into the `enterprise` profile (which has no
    companion to compose and would fail-closed at boot, bricking every command).
    The companion's managed launcher sets `KIROCREW_MIDWAY_PROFILE_PROBE=1`.
 4. Otherwise `standalone`.
@@ -107,7 +107,7 @@ once loaded.
 `kirocrew.plugins` entry-point group via `importlib.metadata`:
 - Empty → **raise** `PlatformCompositionError` (refuse to boot with OSS defaults).
 - More than one → raise (ambiguous).
-- Loads the single entry point (`build_amazon_context`) and returns its context.
+- Loads the single entry point (`build_enterprise_context`) and returns its context.
 
 `bootstrap_context` then asserts `contract_version` match and runs
 `assert_security_floor` before installing the companion context.
@@ -130,7 +130,7 @@ remove or weaken the baseline — is enforced structurally:
   reused verbatim from `security.is_denied` via the `extra_patterns` parameter.
 
 The enforcement hot path (`hooks.py` tool-deny) reads
-`current_context().security.is_denied(...)`, so an Amazon overlay is enforced at
+`current_context().security.is_denied(...)`, so an enterprise overlay is enforced at
 the synchronous tool-call boundary. Standalone overlay is empty → identical.
 
 > ADD-only constrains the **contract boundary** (a plugin/companion). It does
@@ -180,9 +180,9 @@ Policy shape (`admission_policy.json`):
   "mode": "enforce",
   "require_signature": true,
   "trust_keys": {"p13n": "<publisher key>"},
-  "approved": ["amazon"],
+  "approved": ["enterprise"],
   "banned": ["some-rogue-plugin"],
-  "capability_ceiling": {"egress": ["*.amazon.com"], "tools": ["builder-mcp"]}
+  "capability_ceiling": {"egress": ["*.example.com"], "tools": ["enterprise-mcp"]}
 }
 ```
 
@@ -195,7 +195,7 @@ Policy shape (`admission_policy.json`):
 
 `CONTRACT_VERSION` bumps on any field add/rename or interface-semantics change.
 A companion built against a different version refuses to compose. Because the
-companion's `build_amazon_context` starts from `build_default_context` and only
+companion's `build_enterprise_context` starts from `build_default_context` and only
 `dataclasses.replace`s the fields it overrides, any extension point the core
 later adds is inherited at its default until the companion writes an override.
 
@@ -233,19 +233,19 @@ Protocol change). All are v1 additions with **no `CONTRACT_VERSION` bump**. G6
 was first built on the stacked branch `feat/govseam-post-pr18` (it depends on
 PR #18's `mcp_gateway/` reshape) and was consolidated onto this branch once that
 work merged. The re-triage added **no new Protocols and no new `SCOPE_CATALOG`
-rows**; the full per-SHA verdict record is in `skills/meshclaw-sync/left-out.md`.
+rows**; the full per-SHA verdict record is kept with the upstream sync tooling.
 
 ## Companion packaging
 
 The companion declares (in its `pyproject.toml`):
 ```toml
 [project.entry-points."kirocrew.plugins"]
-amazon = "kirocrew_amazon.compose:build_amazon_context"
+enterprise = "kirocrew_enterprise.compose:build_enterprise_context"
 [project.scripts]
-kirocrew-amazon = "kirocrew_amazon.cli:main"
+kirocrew-enterprise = "kirocrew_enterprise.cli:main"
 dependencies = ["kirocrew"]
 ```
-The `kirocrew-amazon` binary sets `KIROCREW_PROFILE=amazon` and delegates to the
+The `kirocrew-enterprise` binary sets `KIROCREW_PROFILE=enterprise` and delegates to the
 core `main` — the explicit composition-root path that a security review reads.
 
 ## Consumption-site wiring
@@ -308,7 +308,7 @@ delegates to that same global. Wired sites:
 - `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
   additively (`setdefault`) into the agent config build + dynamic refresh.
 - `slack/events.py` / `slack/handler.py` / `dashboard/handlers_system.py` —
-  Slack enterprise gate + Midway status route through `slack_gate` / `identity`.
+  Slack enterprise gate + SSO status route through `slack_gate` / `identity`.
 - `mcp_gateway/manager.py` — `GatewayManager._spawn_once` resolves
   `current_context().identity.credential_watch_paths()` (v1 method addition to
   `IdentityProvider`; Default returns `[]`) and threads each path to the
@@ -402,8 +402,8 @@ delegates to that same global. Wired sites:
   `kiro_crew.platform.context`; `platform/` keeps zero imports of `kiro_crew.tunnel`.
 - `dashboard/server.py` — tunnel enable-gate
   ORs in `current_context().tunnel.enabled()`. **Dashboard contributor (wave 3):**
-  in `start_dashboard` only, the `/api/mwinit` route binds
-  `dashboard.mwinit_handler()` (or the built-in stub when `None`),
+  in `start_dashboard` only, the `/api/sso-login` route binds
+  `dashboard.sso_login_handler()` (or the built-in stub when `None`),
   `dashboard.contribute_routes(app)` mounts edition routes before the SPA
   catch-all + `AppRunner.setup()`, and `dashboard.start_services(app)` /
   `stop_services(app)` ride `app.on_startup` / `app.on_cleanup` — appended BEFORE
@@ -421,7 +421,7 @@ delegates to that same global. Wired sites:
   through `current_context().providers.create_factory(cfg)` instead of
   `cfg.create_provider_factory()` directly. The Default returns exactly
   `cfg.create_provider_factory()` (identity), so the public edition is unchanged;
-  the companion selects the Claude-Code-on-Bedrock backend only when opted in. The
+  the companion selects its Bedrock-hosted backend only when opted in. The
   fallback is passed as a lazy `fallback_factory` so the happy path builds the
   factory exactly once (no eager double-build) and a failure inside the fallback
   is still caught by the shim.

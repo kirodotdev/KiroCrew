@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "displayName": "Workflows",
   "description": "Author, run, and watch dynamic workflows — agent-authored Python scripts that orchestrate KiroCrew agents with a live phase/progress view.",
-  "author": "zedmor",
+  "author": "kirocrew",
   "tags": [
     "workflows",
     "orchestration",

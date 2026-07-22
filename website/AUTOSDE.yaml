@@ -84,7 +84,7 @@ custom-rules:
       The old `p-6 max-w-[960px] mx-auto` wrapper breaks this contract — it prevents
       `overflow-y-auto` from working correctly, causing double scrollbars or content
       clipping. The `PageHeader` + `px-6 pb-8 overflow-y-auto flex-1 min-h-0` pattern
-      was established in the HooksPage redesign (CR-262065498) to fix this.
+      was established in the HooksPage redesign to fix this.
 
       Required structure:
       1. `<PageHeader title="..." subtitle="..." />` at top
@@ -207,8 +207,8 @@ custom-rules:
       adds `role="button"`, `tabIndex={0}`, and keyboard Enter/Space handling
       automatically.
 
-      Reference: https://i.amazon.com/Mesh-1120 (accessibility audit identified
-      ~81 instances of inaccessible clickable divs in the KiroCrew dashboard).
+      Reference: an accessibility audit identified ~81 instances of inaccessible
+      clickable divs in the KiroCrew dashboard.
 
       Bad:
       ```tsx
@@ -252,8 +252,8 @@ custom-rules:
       This applies to `<Btn>`, `<button>`, and `<Clickable>` elements that contain
       only icons (Lucide components) without adjacent text.
 
-      Reference: https://i.amazon.com/Mesh-1120 (accessibility audit found
-      numerous icon-only buttons without labels across the dashboard).
+      Reference: an accessibility audit found numerous icon-only buttons
+      without labels across the dashboard.
 
   - id: no-emoji-as-icons
     blocking: true

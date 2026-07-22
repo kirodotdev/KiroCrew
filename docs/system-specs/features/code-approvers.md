@@ -4,15 +4,15 @@ Last Updated: 2026-05-28
 
 ## Overview
 
-Tier-based CR reviewer routing via `CODE_APPROVERS.yaml` in both KiroCrew and KiroCrewWebsite packages. Automatically assigns reviewers based on file paths changed, with a drift validator test that fails the build if patterns don't match actual files.
+Tier-based pull-request reviewer routing via `CODE_APPROVERS.yaml` in both KiroCrew and KiroCrewWebsite packages. Automatically assigns reviewers based on file paths changed, with a drift validator test that fails the build if patterns don't match actual files.
 
 ## Tiers
 
 | Tier | Approval Required | Scope |
 |------|-------------------|-------|
-| T1 | 1 random kirocrew-core member | Small fixes, non-critical paths |
-| T2 | 2 random kirocrew-core members | Security, harness, config, prompts, overlapping CRs |
-| T3 | Both bolichen + zejiangg required | Frozen memory modules |
+| T1 | 1 random core-team member | Small fixes, non-critical paths |
+| T2 | 2 random core-team members | Security, harness, config, prompts, overlapping PRs |
+| T3 | Two designated maintainers required | Frozen memory modules |
 
 ## Drift Validator
 
@@ -23,7 +23,7 @@ Tier-based CR reviewer routing via `CODE_APPROVERS.yaml` in both KiroCrew and Ki
 The Code Reviewer is now a built-in app (`src/kiro_crew/apps/builtins/code_reviewer/`) with a full Python backend. It is disabled by default (`defaultEnabled: false`) and can be enabled via the App Store or config.
 
 Key capabilities:
-- **Workspace browsing** — `POST /api/browse` with ARCC SAX-04 controls (path containment, sensitive-path blocklist, capped results)
+- **Workspace browsing** — `POST /api/browse` with input-validation controls (path containment, sensitive-path blocklist, capped results)
 - **Git revert** — `POST /api/repos/{ws}/{pkg}/revert` with non-destructive multi-commit revert, conflict detection (409), rollback to original HEAD
 - **Git reset** — `POST /api/repos/{ws}/{pkg}/reset` with mode selection (soft/mixed/hard), pushed-boundary warning
 - **AI review SSE** — `POST /api/ai-review/complete` broadcasts `ai-review.completed` event with fail-closed redaction

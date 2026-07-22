@@ -34,7 +34,7 @@ import { useAppSelector } from '../store'
  * - Minimizing collapses it to a tiny corner chip rather than destroying it; the
  *   chip is the re-open affordance and only exists while there's browse activity.
  *   New frames update the image but never force a collapsed panel back open.
- * Read-only by design (no debug port; interactive control is out of scope — Mesh-1998).
+ * Read-only by design (no debug port; interactive control is out of scope —).
  */
 
 interface FrameDetail {

@@ -44,7 +44,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      # Least privilege (BSC6): everything scoped to kirocrew-deploy-app-*
+      # Least privilege: everything scoped to kirocrew-deploy-app-*
       # resources + the shared bucket + the one distribution. The only broad
       # action is apigateway:DELETE on /apis/* (HTTP API ids are random and
       # cannot be name-scoped); a future hardening is tag-based scoping.
@@ -102,7 +102,7 @@ Resources:
                 Effect: Allow
                 Action: [s3:GetObject, s3:DeleteObject]
                 Resource: 'arn:aws:s3:::kirocrew-web-*/*'
-              # ── Documented scoped exception (CSE P476046776, CWE-269) ──
+              # ── Documented scoped exception (CWE-269) ──
               # The reaper's whole job is unattended teardown of expired deploys,
               # so it MUST hold cloudformation:DeleteStack (Sid Cfn) and the
               # teardown-only IAM verbs iam:DeleteRole/DeleteRolePolicy/

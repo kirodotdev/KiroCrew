@@ -282,7 +282,7 @@ class TestCreate:
         assert resp.status == 500
         assert "sensitive path" in _json_body(resp)["error"]
 
-    # ── source_path auto-dedup (Mesh-1654 Phase 6) ──────────────────────
+    # ── source_path auto-dedup (Phase 6) ──────────────────────
     @pytest.mark.asyncio
     async def test_first_save_with_source_path_creates_201(
         self, isolated_store, patch_restricted
@@ -369,7 +369,7 @@ class TestCreate:
     async def test_mcp_dedup_resave_tags_event_as_agent(
         self, isolated_store, patch_restricted
     ) -> None:
-        # AutoSDE round 12: the dedup path used to hardcode actor='user' so
+        # review-bot round 12: the dedup path used to hardcode actor='user' so
         # MCP-driven re-saves silently appeared on the activity timeline as
         # 'edited by user' instead of 'iterated by agent'. Now the handler
         # infers actor from X-Internal-Secret like api_artifact_update.
@@ -434,7 +434,7 @@ class TestUpdate:
     async def test_dashboard_save_without_snapshot_keeps_version(
         self, isolated_store, patch_restricted
     ) -> None:
-        # New behavior (Mesh-1654 round 5, explicit-snapshot model): a
+        # New behavior (round 5, explicit-snapshot model): a
         # dashboard PATCH with no snapshot flag updates the live state but
         # does NOT bump version. Versioning becomes deliberate.
         isolated_store.create(name="x", content="v1", slug="x")
@@ -594,8 +594,8 @@ class TestRecordEvent:
     """Tests for ``POST /api/artifacts/<slug>/events``.
 
     This endpoint exists so ``WidgetFrame`` can log a ``referenced`` event
-    each time a chat impression of a saved artifact mounts (Mesh-1715
-    follow-up). It deliberately rejects content-mutating event types —
+    each time a chat impression of a saved artifact mounts. It
+    deliberately rejects content-mutating event types —
     those have to come through create/update so version-bump bookkeeping
     stays coupled to actual content changes.
     """
@@ -765,7 +765,7 @@ class TestRecordEvent:
     async def test_same_impression_in_session_recorded_once(
         self, isolated_store, patch_restricted
     ) -> None:
-        # The reported Mesh-1715 bug: reloading / revisiting a tab clears
+        # The reported bug: reloading / revisiting a tab clears
         # the frontend sessionStorage debounce, so the same chat session
         # re-POSTs a `referenced` for the same impression. The store must
         # record it once — the second POST returns suppressed:true.

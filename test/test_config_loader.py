@@ -2215,7 +2215,7 @@ class TestArchiveRetentionDays:
     def test_schema_permits_null_sentinel(self) -> None:
         """The generated JSON Schema must accept ``null`` for this field.
 
-        Regression guard (Mesh-1832): ``null`` is the disable sentinel. If the
+        Regression guard: ``null`` is the disable sentinel. If the
         schema emits a bare ``{"type": "integer"}`` then, on any host where
         jsonschema is installed, ``validate_config_data`` strips the null and
         the loader silently reverts to the default 30 (cleanup stays ON — the

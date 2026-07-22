@@ -187,7 +187,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "s3:PutBucketPublicAccessBlock", "s3:GetBucketPublicAccessBlock",
                 "s3:PutBucketOwnershipControls", "s3:GetBucketOwnershipControls",
                 "s3:PutEncryptionConfiguration", "s3:PutBucketTagging", "s3:DeleteBucket",
-                # Versioning + lifecycle on the retained OriginBucket (P476046791):
+                # Versioning + lifecycle on the retained OriginBucket:
                 # CFN calls these bucket-level APIs during base-stack create/update.
                 "s3:PutBucketVersioning", "s3:GetBucketVersioning",
                 "s3:PutLifecycleConfiguration", "s3:GetLifecycleConfiguration",
@@ -346,7 +346,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Action": [
                     "dynamodb:CreateTable", "dynamodb:DeleteTable",
                     "dynamodb:DescribeTable", "dynamodb:UpdateTable",
-                    "dynamodb:UpdateContinuousBackups",  # enable PITR (P476046773)
+                    "dynamodb:UpdateContinuousBackups",  # enable PITR
                     "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:DeleteItem",
                     "dynamodb:Query", "dynamodb:Scan", "dynamodb:TagResource",
                 ],

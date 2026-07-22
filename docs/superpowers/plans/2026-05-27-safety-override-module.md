@@ -147,7 +147,7 @@ class TestDeactivation:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py -v 2>&1 | head -40`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_safety_override.py -v 2>&1 | head -40`
 Expected: FAIL — `ModuleNotFoundError: No module named 'kiro_crew.safety_override'`
 
 - [ ] **Step 3: Write the `safety_override.py` module**
@@ -420,7 +420,7 @@ def reset_singleton() -> None:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_safety_override.py -v`
 Expected: All tests PASS
 
 - [ ] **Step 5: Commit**
@@ -429,7 +429,7 @@ Expected: All tests PASS
 git add src/kiro_crew/safety_override.py test/test_safety_override.py
 git commit -m "feat(security): add SafetyOverride module with time-limited YOLO
 
-Implements Mesh-1648: replaces permanent YOLO with capped overrides.
+Implements the YOLO override governance work: replaces permanent YOLO with capped overrides.
 - 24h max TTL (config), 6h (dashboard), 30min (Slack)
 - Renewal with 5-min grace window after expiry
 - SEL audit on every lifecycle event (activate/renew/expire/deactivate)
@@ -506,7 +506,7 @@ class TestStatus:
 
 - [ ] **Step 2: Run tests**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_safety_override.py -v`
 Expected: All PASS
 
 - [ ] **Step 3: Commit**
@@ -562,7 +562,7 @@ In `src/kiro_crew/dashboard/chat_runner.py` at line 730 and 1360, `state.is_yolo
 
 - [ ] **Step 3: Run existing YOLO startup tests**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py -v`
 Expected: May need adjustment (test expects `state.is_yolo_active()` to work — it will since we kept the delegation)
 
 - [ ] **Step 4: Commit**
@@ -766,7 +766,7 @@ At line 2488 replace `return is_yolo_mode()` with `return safety_override().is_a
 
 - [ ] **Step 6: Run tests**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
@@ -852,7 +852,7 @@ with:
 
 - [ ] **Step 5: Run tests**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py test/test_dashboard_approval.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py test/test_dashboard_approval.py -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
@@ -973,7 +973,7 @@ def test_apply_startup_yolo_logs_sel() -> None:
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_dashboard_yolo_startup.py test/test_safety_override.py -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
@@ -1034,7 +1034,7 @@ In `src/kiro_crew/dashboard/server.py`, add near the other admin/system routes:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1121,7 +1121,7 @@ async def _post_to_owner(text: str) -> None:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
+Run: `cd /path/to/KiroCrew && python -m pytest test/test_safety_override.py test/test_dashboard_yolo_startup.py -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1160,12 +1160,12 @@ If there's a remaining `state.enable_yolo()` at line 1461, replace with:
 
 - [ ] **Step 3: Run full test suite**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m pytest test/ -x --timeout=60 -q 2>&1 | tail -30`
+Run: `cd /path/to/KiroCrew && python -m pytest test/ -x --timeout=60 -q 2>&1 | tail -30`
 Expected: All tests pass (or only unrelated failures)
 
 - [ ] **Step 4: Run type checking**
 
-Run: `cd /workplace/bolichen/KiroCrew/src/KiroCrew && python -m mypy src/kiro_crew/safety_override.py --ignore-missing-imports`
+Run: `cd /path/to/KiroCrew && python -m mypy src/kiro_crew/safety_override.py --ignore-missing-imports`
 Expected: No errors
 
 - [ ] **Step 5: Commit final cleanup**
@@ -1197,6 +1197,6 @@ Find the section that describes YOLO/approval mode and update to reflect:
 git add docs/security-deep-dive.md
 git commit -m "docs(security): update YOLO section for time-limited override
 
-Reflects Mesh-1648: no permanent mode, 24h cap, re-auth flow,
+Reflects the YOLO override governance work: no permanent mode, 24h cap, re-auth flow,
 fleet governance endpoints."
 ```

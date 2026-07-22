@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import VectorMemoryCard, { SEMANTIC_RENDER_CAP } from '../pages/overview/VectorMemoryCard'
 import { renderWithProviders } from './helpers'
 
-// Regression for Mesh-2827: the Semantic Memory table used to render every
+// Regression: the Semantic Memory table used to render every
 // entry synchronously, freezing the Settings page for 10-20s in vector-only
 // mode. The table must now cap the rendered rows at SEMANTIC_RENDER_CAP and
 // rely on the filter (key OR value) to reach entries past the cap.
@@ -39,7 +39,7 @@ vi.mock('../api/client', () => ({
 const footerMatcher = (re: RegExp) => (_: string, el: Element | null) =>
   el?.tagName === 'P' && re.test(el.textContent || '')
 
-describe('VectorMemoryCard — Semantic Memory render cap (Mesh-2827)', () => {
+describe('VectorMemoryCard — Semantic Memory render cap', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('caps rendered rows and filters by key to reach entries past the cap', async () => {

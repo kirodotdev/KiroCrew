@@ -256,7 +256,7 @@ class TestDeliverCrossSurfaceUserMessage:
         sent = tp.send_message.await_args.args[1]
         # _prepare_mirror_msg truncates to 500 THEN redacts (redact_via_context),
         # matching the Slack echo. Distinct from security.redact_and_truncate,
-        # which redacts-then-truncates (Talos e27617c6) — the mirror echo keeps
+        # which redacts-then-truncates (security-review e27617c6) — the mirror echo keeps
         # the truncate-first order so the 500-char budget is measured pre-redaction.
         assert sent == "💬 " + redact_via_context(raw[:500])
 

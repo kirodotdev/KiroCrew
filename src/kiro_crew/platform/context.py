@@ -61,10 +61,10 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
 # extension points — landed under this same v1, no bump.)
 CONTRACT_VERSION = 1
 
-# Valid profiles.  ``standalone`` is the public default; ``amazon`` loads the
-# internal companion.  ``enterprise`` is reserved for a future third edition.
+# Valid profiles.  ``standalone`` is the public default; ``enterprise`` loads a
+# companion package that composes a non-default context (e.g. an SSO overlay).
 PROFILE_STANDALONE = "standalone"
-PROFILE_AMAZON = "amazon"
+PROFILE_ENTERPRISE = "enterprise"
 
 
 class PlatformCompositionError(RuntimeError):
@@ -128,8 +128,8 @@ class PlatformContext:
     governance: "Optional[GovernanceCeiling]" = None
 
     @property
-    def is_amazon(self) -> bool:
-        return self.profile == PROFILE_AMAZON
+    def is_enterprise(self) -> bool:
+        return self.profile == PROFILE_ENTERPRISE
 
 
 # ── Active-context accessor ──
@@ -155,7 +155,7 @@ def current_context() -> PlatformContext:
     the lazy path runs at most once before that.
 
     Cost / ordering note: while ``_ACTIVE`` is None the lazy path loads config +
-    resolves the profile (a ``~/.midway`` stat).  On the STANDALONE happy path it
+    resolves the profile (a cheap SSO-marker stat).  On the STANDALONE happy path it
     runs once and memoizes into ``_ACTIVE``, so subsequent hot-path callers
     (``hooks.on_tool_call``, ``redact_via_context``) pay only an attribute read.
     A NON-standalone profile re-raises every call (it never caches a fail-open
@@ -165,8 +165,8 @@ def current_context() -> PlatformContext:
 
     Fail-closed guard: the lazy default is only safe when the host actually
     resolves to the standalone profile.  If the profile resolves to a
-    non-standalone edition (e.g. an Amazon host with the opt-in ``~/.midway``
-    probe or ``KIROCREW_PROFILE=amazon``) but no context was installed — meaning
+    non-standalone edition (e.g. a host with the opt-in SSO-identity
+    probe or ``KIROCREW_PROFILE=enterprise``) but no context was installed — meaning
     boot failed/was-skipped and a caller would otherwise get open-source defaults
     with no security overlay or credential redaction — refuse to compose and
     raise :class:`PlatformCompositionError`.  Defense-in-depth so a future

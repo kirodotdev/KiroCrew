@@ -1,4 +1,4 @@
-"""Unit tests for nested artifact folders (Mesh-2720) — the data layer.
+"""Unit tests for nested artifact folders — the data layer.
 
 Covers :class:`ArtifactFolderStore` (CRUD, cycle guard, path resolution with
 mkdir -p, cascade-vs-keep delete) plus the ``ArtifactStore`` integration points:

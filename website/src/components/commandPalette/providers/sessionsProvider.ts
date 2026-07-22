@@ -11,7 +11,7 @@ import { fuzzyMatch, makeScoreThenNameComparator, substringIndices } from '../..
 import type { Result, ResourceProvider } from '../types'
 
 /**
- * Sessions provider for the Search Everywhere command palette (Mesh-2151).
+ * Sessions provider for the Search Everywhere command palette.
  *
  * Backs the **Sessions** tab. Wraps `api.sessionsSearch(q)` (the existing
  * `/api/sessions/search` full-text endpoint) and maps each hit to a
@@ -26,7 +26,7 @@ import type { Result, ResourceProvider } from '../types'
  *
  * The backend already does the relevance filtering, so the {@link fuzzyMatch}
  * pass here is only for **client-side highlight indices** on the returned
- * titles (per the §2 design + AUTOSDE `frontend-security` — highlights render
+ * titles (per the §2 design + `frontend-security` lint rule — highlights render
  * as React `<mark>` nodes keyed off `indices`, never as HTML strings). Title
  * matches additionally bias the client-side ordering; non-title (body-only)
  * matches are kept with a neutral score so backend results are never dropped.
@@ -131,7 +131,7 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
           icon: sessionIcon(),
           score: match ? match.score : 0,
           indices: match ? match.indices : [],
-          // Declarative Enter contract (Mesh-2151 §2). The central
+          // Declarative Enter contract (§2). The central
           // `dispatchEnter` in CommandPalette routes on this; for sessions
           // both Enter and ⌘Enter open/switch to the session (task 23 — no
           // distinct modifier action). `onActivate`/`onCmdActivate` are kept
@@ -145,7 +145,7 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
 
       // Title matches first, then deterministic name order. Skip the re-rank on
       // an empty query so the backend's recency ordering is preserved (Sessions
-      // tab + All-tab recents rely on it — AutoSDE f-fa877fb9).
+      // tab + All-tab recents rely on it — per a review finding).
       if (q.length > 0) {
         results.sort(makeScoreThenNameComparator<Result>(r => r.score, r => r.title))
       }
@@ -158,7 +158,7 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
  * React hook that returns a live Sessions provider wired to React-Query and
  * the chat store.
  *
- * Per the AUTOSDE `use-react-query` rule the server fetch goes through
+ * Per the `use-react-query` lint rule the server fetch goes through
  * React-Query with the key `['palette', 'sessions', q]` (mirrors
  * `SkillPickerMenu`'s `['skills']` keying). `queryClient.fetchQuery` is used
  * rather than `useQuery` because a {@link ResourceProvider}'s `search` is an

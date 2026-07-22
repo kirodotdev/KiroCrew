@@ -44,7 +44,7 @@ The CLI (`cli.py:main()`) auto-detects and sets the env var at startup.
 
 User overrides can be placed in `~/.kirocrew/config.local.json`. This file is
 deep-merged on top of `config.json` at load time and is never touched by
-`kirocrew setup` or toolbox upgrades.
+`kirocrew setup` or package upgrades.
 
 Resolution order:
 1. Load `config.json` (managed by KiroCrew, may be regenerated on upgrade)

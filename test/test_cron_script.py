@@ -307,7 +307,7 @@ class TestMcpToolClient:
         client._proc.terminate.assert_called_once()
 
     def test_rpc_disconnect_includes_rc_and_stderr_tail(self, tmp_path):
-        """Mesh-2370: a handshake EOF must surface exit code + stderr tail."""
+        """a handshake EOF must surface exit code + stderr tail."""
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
         stderr_path.write_text("Node version 18 detected, but version 20 or higher is required.\n")

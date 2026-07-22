@@ -235,7 +235,7 @@ Memory write operations are not exposed to apps — only the Gateway's internal 
 * App UI runs in the shared React tree (no JS isolation) — acceptable for trusted, reviewed code
 * Install scripts run with the same trust level as any code you clone and run
 
-**Automated app review:** App repo CRs will include an AutoSDE review pass checking for manifest validation, destructive API usage, potential prompt injection in `injectContext` calls, hardcoded secrets, and permission mismatches. Advisory initially — human reviewer makes the final call.
+**Automated app review:** App repo pull requests will include an automated code-review pass checking for manifest validation, destructive API usage, potential prompt injection in `injectContext` calls, hardcoded secrets, and permission mismatches. Advisory initially — human reviewer makes the final call.
 
 ### 6.6 Audit
 
@@ -260,7 +260,7 @@ All security-relevant operations are logged via SEL:
 |**Phase 1: Client SDK**	|✅ Complete	|`@kirocrew/app-sdk` (dashboard UI hooks, host-provided via import map) and `kirocrew-client` (Python, pip) — HTTP client, WebSocket, retry, context injection, manifest validation, app lifecycle, gateway manager, agent/skill/MCP installation helpers	|
 |**Phase 2: App Identity**	|🔧 In progress	|Per-app secrets, app-scoped tokens, `request["app"]` in middleware, resource `_app` tagging, destructive operation scoping	|
 |**Phase 3: Validation**	|⏳ Next	|Mochi migration to SDK	|
-|**Phase 4: Hardening**	|⏳ Planned	|AutoSDE app review	|
+|**Phase 4: Hardening**	|⏳ Planned	|Automated app review	|
 
 **What's ready for review:** Phase 0 (App Store) and Phase 1 (Client SDK) have working implementations. This design review covers the overall architecture and security model that governs all phases.
 

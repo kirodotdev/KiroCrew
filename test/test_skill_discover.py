@@ -1,7 +1,7 @@
 """Tests for the multi-provider skill discover/install dashboard handlers.
 
 Covers the UX-improvement behaviors added on top of the initial skill
-browser (CR-290072353):
+browser:
 
 - install returns 409 with code="exists" when the skill is already
   installed and no overwrite flag is set (I4)

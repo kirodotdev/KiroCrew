@@ -10,7 +10,7 @@ const initialState: NotificationsState = { items: [] }
 
 /** Ring-buffer cap on the notifications list. Without it, `items` grows
  *  monotonically for the tab's lifetime (ack only flips a flag) — part of
- *  the long-lived-tab heap retention class (Mesh-2835). Applied on both the
+ *  the long-lived-tab heap retention class. Applied on both the
  *  live SSE path and the fetch path so the page and the bell see one
  *  consistent bounded list; oldest entries drop first. Older history stays
  *  in the backend notification log. */

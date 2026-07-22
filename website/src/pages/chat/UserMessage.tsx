@@ -172,7 +172,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
           (<br>). Container pre-wrap was removed because react-markdown emits
           literal "\n" text nodes between block elements; under pre-wrap those
           rendered as visible blank lines and inflated the gaps between list
-          items and paragraphs (Mesh-2695). Assistant markdown keeps standard
+          items and paragraphs. Assistant markdown keeps standard
           CommonMark soft-break-collapse. */}
       {isSteer ? (
         <>

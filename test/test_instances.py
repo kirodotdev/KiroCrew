@@ -1465,12 +1465,12 @@ class TestSelfHealRefreshRestart:
 
         t = _SshTunnel("cd-1", "h", 1, 2)
 
-        # WSSH transport drop carrying ANSI + passthrough "midway/mwinit" prose is
+        # WSSH transport drop carrying ANSI + passthrough auth-prompt prose is
         # NOT an auth verdict — it classifies as a transport drop, and the ANSI is
         # stripped from the surfaced detail (never reflected raw).
         t._stderr_buf = (
             "\x1b[1G\x1b[31m[Message from WSSH Proxy Service] "
-            "Your SSH session ended unexpectedly. Run mwinit if midway expired.\x1b[0m\n"
+            "Your SSH session ended unexpectedly. Re-authenticate if your session expired.\x1b[0m\n"
         )
         err = t._exit_error(255)
         assert "transport drop" in err.lower()

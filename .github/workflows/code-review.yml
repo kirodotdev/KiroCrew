@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   autosde-rules:
-    name: AutoSDE Rule Check
+    name: Automated Rule Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -24,7 +24,7 @@ jobs:
           git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # Deterministic replication of the blocking AutoSDE rules from
+      # Deterministic replication of the blocking rules from
       # website/AUTOSDE.yaml. These catch the unambiguous cases; the semantic
       # half (aria-label on icon-only buttons, no-emoji, template-literal HTML)
       # is covered by the auto-running Claude review in claude-review.yml.
@@ -118,7 +118,7 @@ jobs:
           fi
           echo "::endgroup::"
 
-  # The semantic AI layer of code review (the AutoSDE rules that cannot be
+  # The semantic AI layer of code review (the rules that cannot be
   # expressed as a grep) lives in claude-review.yml, which auto-runs on every
   # PR and fails the check on high-severity findings.
 

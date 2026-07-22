@@ -6,7 +6,7 @@ scanned for secrets + internal-data leaks. On any finding the caller
 it never silently redacts. Best-effort detection, not a guarantee.
 
 Reuses KiroCrew's existing credential regexes (``security.get_credential_patterns()``)
-and adds internal-data heuristics (Amazon hosts, ARNs, account ids) plus
+and adds internal-data heuristics (internal hosts, ARNs, account ids) plus
 deploy-specific patterns (private-key headers, GitHub PATs, OpenAI/Stripe keys).
 """
 from __future__ import annotations

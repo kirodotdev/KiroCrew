@@ -3,7 +3,7 @@
   "version": "0.9.3",
   "displayName": "Code Review Sage",
   "description": "Self-evolving deep code reviewer for GitHub PRs with a prioritized focus report. Findings post as a PENDING (draft) review you submit.",
-  "author": "zejiangg",
+  "author": "kirocrew",
   "tags": [
     "code-review",
     "learning",

@@ -1,4 +1,4 @@
-"""Tests for the LOCAL artifact comment HTTP handlers (Mesh-1880).
+"""Tests for the LOCAL artifact comment HTTP handlers.
 
 Covers post / reply / mark-review / resolve / reopen / delete and the GET list
 for artifacts WITHOUT a publication (so the provider fetch-on-view path is
@@ -438,7 +438,7 @@ def _agent_req(*, body: dict | None = None, match: dict | None = None) -> MagicM
 
 
 class TestAgentDeleteComment:
-    """Agent disposition contract on DELETE (Mesh-2752): header-inferred actor,
+    """Agent disposition contract on DELETE: header-inferred actor,
     required reason, provider-origin refusal, and the activity-feed trail."""
 
     @pytest.mark.asyncio

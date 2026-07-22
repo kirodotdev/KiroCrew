@@ -262,7 +262,7 @@ Use them to narrow when the user gives constraints.
 
 Tags are free-form, ≤ 16 per artifact. Useful tag conventions:
 - Workflow scope: `cr`, `pipeline`, `ticket`, `oncall`, `op`
-- Data source: `slack`, `taskei`, `quip`
+- Data source: `slack`, `web`, `upload`
 - State: `wip`, `archived`
 
 Kind is one of `widget` (default), `html`, `markdown`, `svg`, `json`, `text`.

@@ -315,7 +315,7 @@ def test_seeded_home_importable_without_pytest(
 ) -> None:
     """``seeded_home`` must be importable when pytest is unavailable.
 
-    Regression guard (CR-271908858 rev-1 AutoSDE finding #1): the runtime
+    Regression guard (rev-1 review-bot finding #1): the runtime
     wheel ships ``kiro_crew.testing`` without pytest in its dependencies,
     so any hard ``import pytest`` at module top breaks the contract that
     ``from kiro_crew.testing import seeded_home`` works from any test

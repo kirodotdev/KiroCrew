@@ -8,7 +8,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "browser.chrome-extension-mode",
     "label": "Chrome Extension Mode",
-    "description": "Attach to your running Chrome with all existing auth (Midway, Sentry, MCS). Recommended for macOS.",
+    "description": "Attach to your running Chrome with all existing logins and sessions. Recommended for macOS.",
     "tab": "browser",
     "type": "toggle",
     "occurrence": 1

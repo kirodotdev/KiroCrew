@@ -8,8 +8,8 @@ import {
 import type { Result } from '../types'
 
 /**
- * Unit tests for the pure {@link createPromptsProvider} factory (Mesh-2151
- * Search Everywhere, step 19 — the Prompts provider + its §2 Enter matrix).
+ * Unit tests for the pure {@link createPromptsProvider} factory
+ * (Search Everywhere, step 19 — the Prompts provider + its §2 Enter matrix).
  *
  * The factory is hook-free and takes its side effects as injected callbacks, so
  * we pass plain spies and assert: identity, fuzzy listing/filtering over the
@@ -18,8 +18,8 @@ import type { Result } from '../types'
  * `usePromptsProvider` hook through the shared allowlist-resolver entry points
  * (`paletteActions`); the matrix-level routing is asserted in
  * `paletteMatrix.test.ts`. Here we assert the factory forwards the prompt *ref*
- * verbatim to each callback — it never rewrites or path-resolves the name (BSC1
- * — ARCC `cnt_u7sfVeParu7OlX`).
+ * verbatim to each callback — it never rewrites or path-resolves the name
+ * (input validation).
  */
 
 const PROMPTS: PromptItem[] = [
@@ -141,7 +141,7 @@ describe('createPromptsProvider — §2 Enter matrix', () => {
     arr[0].onActivate()
     const ref = insertPrompt.mock.calls[0][0] as PromptRef
     // The factory hands over the raw fullName; it must not be turned into a
-    // filesystem path here (BSC1). The hook prefixes "@" — there is no "/.."
+    // filesystem path here (input validation). The hook prefixes "@" — there is no "/.."
     // traversal or absolute-path construction at the FE layer.
     expect(ref.fullName).toBe('eng/review')
     expect(ref.fullName.startsWith('/')).toBe(false)

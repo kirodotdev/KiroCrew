@@ -1,4 +1,4 @@
-"""Publish sync engine (Mesh-1880) — provider-agnostic orchestration.
+"""Publish sync engine — provider-agnostic orchestration.
 
 Combines the pure data layer (``artifacts.ArtifactStore`` — reads/writes the
 ``publication`` block) with a pluggable :class:`PublishProvider` (resolved via
@@ -91,8 +91,8 @@ _STANDALONE_THEME_VARS: dict[str, str] = {
 }
 
 # CSP for the published standalone widget document (wrap_widget_html), rendered
-# in a null-origin sandboxed iframe. Accepted risk (pentest P472043635 / Talos
-# 15f03f11): 'unsafe-eval' is required by the Tailwind Play CDN
+# in a null-origin sandboxed iframe. Accepted risk (security review):
+# 'unsafe-eval' is required by the Tailwind Play CDN
 # (cdn.tailwindcss.com), a client-side JIT compiler that calls new Function();
 # 'unsafe-inline' is required because widget bodies are LLM-authored inline
 # <script>/<style> that cannot be nonce/hash-pinned at author time. Residual
@@ -227,8 +227,8 @@ def unwrap_widget_html(html: str) -> str | None:
 
 def _redact_untrusted(text: str, source: str) -> str:  # noqa: ARG001
     """Redact credential patterns / exfiltration URLs from artifact text before
-    it reaches an external surface (a publish provider). AUTOSDE
-    security-controls.
+    it reaches an external surface (a publish provider). Per the
+    security-controls rule.
 
     Redaction is UNCONDITIONAL — the ``source`` label is no longer trusted as a
     bypass (kept for call-site readability). ``source`` is set once at create
@@ -328,8 +328,8 @@ async def publish(
     shared_with = shared_with or []
 
     # Ensure the destination tooling is installed before either branch. For a
-    # first publish this silently self-installs the Toolbox-native MCP (and
-    # migrates legacy AIM users) so the publish completes with no manual setup;
+    # first publish this silently self-installs the provider's native MCP (and
+    # migrates legacy users) so the publish completes with no manual setup;
     # only a genuine install failure surfaces the manual hint as a 503.
     provider = _resolve_provider(
         art.publication.provider if art.publication is not None else provider_name
@@ -346,7 +346,7 @@ async def publish(
         # publication.last_error; update_sharing then clears last_error. Capture
         # the push error first and restore it afterward so a content-sync
         # failure during re-publish isn't silently masked by a "success"
-        # sharing response (AutoSDE).
+        # sharing response.
         refreshed = await asyncio.to_thread(store.get, slug)
         push_error = refreshed.publication.last_error if refreshed.publication else ""
         # Skip the sharing reconcile for providers whose sharing is not
@@ -709,8 +709,8 @@ def _kind_for_content_type(content_type: str) -> str:
 # Content types we can safely pull into a local artifact as UTF-8 text. A binary
 # upstream (image / PDF / Office doc) read as text would land as mojibake, so
 # pull and clone refuse anything outside this allowlist and point the user back
-# to Artifactory. (Heimdall flagged the same content-type → text gap on the
-# parallel CR-282805996.)
+# to the artifact registry. (A code review flagged the same content-type → text
+# gap on a parallel change.)
 _PULLABLE_CONTENT_TYPES = {
     "text/plain",
     "text/markdown",
@@ -795,7 +795,7 @@ async def upstream_status(slug: str) -> dict[str, object]:
     source = base["source"]
     # File-backed artifacts participate fully: drift detection reads only
     # remote metadata/content (no local file access), and ``pull_upstream``
-    # writes pulled content through to the backing file (Mesh-2735 — the old
+    # writes pulled content through to the backing file (the old
     # blanket suppression made a published working file silently push-only).
     if not isinstance(source, str):
         return base
@@ -884,7 +884,7 @@ async def pull_upstream(
       ``resolve()`` + ``is_sensitive_path`` write guards), so upstream edits
       reach the working file. The file's pre-pull bytes are preserved — as the
       ``live_dirty`` checkpoint when they drifted from the last snapshot, else
-      in the existing snapshot history (Mesh-2735).
+      in the existing snapshot history.
 
     Best-effort: never raises for provider failures.
     """

@@ -2,7 +2,7 @@
 
 Each ``Default*`` adapter delegates to the existing module-level symbol it
 replaces (``agent._MANAGED_MCP_SERVERS``, ``sandbox._STRICT_DIRS``,
-``security.redact``, ``midway.*``, ``embeddings._MODEL_ID``, …) so the
+``security.redact``, ``sso_status.*``, ``embeddings._MODEL_ID``, …) so the
 standalone edition is behaviorally identical to today — the contract adds an
 indirection layer, not a behavior change.
 
@@ -15,13 +15,13 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from kiro_crew import midway, security
+from kiro_crew import security, sso_status
 
 # ``agent``, ``sandbox``, ``embeddings``, ``apps.registry`` and ``slack.enterprise``
 # import ``kiro_crew.platform`` at module-load time, so importing them at the top
 # of this module (loaded during ``platform`` package init via ``bootstrap``)
 # would create a cycle — those stay local to each method and carry a
-# ``# circular import`` annotation.  ``security`` and ``midway`` are imported at
+# ``# circular import`` annotation.  ``security`` and ``sso_status`` are imported at
 # top level here because neither reaches ``platform`` at MODULE-LOAD time.
 # Exception (deferred-only): ``security.scan_exfiltration_urls`` /
 # ``redact_exfiltration_urls`` read ``current_context().credentials
@@ -39,7 +39,8 @@ class DefaultProviderRegistry:
 
     def register_acp_backends(self) -> None:
         # The public edition registers no extra ACP backends.  The companion
-        # re-registers Claude Code here via the acp/client.py:_is_claude seam.
+        # re-registers a Claude backend here via the acp/client.py:_is_claude
+        # seam.
         return None
 
 
@@ -138,13 +139,13 @@ class DefaultSlackEnterpriseGate:
 
 
 class DefaultIdentityProvider:
-    """No-SSO local identity — the ``midway.py`` no-op stubs."""
+    """No-SSO local identity — the ``sso_status.py`` no-op stubs."""
 
     def status(self) -> Dict[str, object]:
-        return midway.midway_status()
+        return sso_status.sso_status()
 
-    async def status_line(self, prefix: str = "*Midway:*") -> str:
-        return await midway.get_midway_status_line(prefix)
+    async def status_line(self, prefix: str = "*SSO:*") -> str:
+        return await sso_status.get_sso_status_line(prefix)
 
     def whoami(self) -> Optional[str]:
         # The public edition has no SSO principal beyond what kiro-cli reports.
@@ -311,8 +312,8 @@ class DefaultDashboardContributor:
     async def stop_services(self, app: Any) -> None:
         return None
 
-    def mwinit_handler(self) -> Optional[Callable[..., Any]]:
-        # None → the dashboard keeps its built-in /api/mwinit stub handler.
+    def sso_login_handler(self) -> Optional[Callable[..., Any]]:
+        # None → the dashboard keeps its built-in /api/sso-login stub handler.
         return None
 
     def on_user_message(self, app: Any, message: str) -> None:

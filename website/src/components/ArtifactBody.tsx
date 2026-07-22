@@ -51,7 +51,7 @@ export function extForKind(kind: Artifact['kind']): string {
 
 /** Whether this artifact kind supports inline editing.
  * Widget / html are agent-managed (raw HTML editing has too many edge cases —
- * see Mesh-1654 design discussion); markdown / text / json / svg are
+ * see design discussion); markdown / text / json / svg are
  * editable text formats. */
 export function isEditableKind(kind: Artifact['kind']): boolean {
   return kind === 'markdown' || kind === 'text' || kind === 'json' || kind === 'svg'

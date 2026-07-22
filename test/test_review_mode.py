@@ -629,7 +629,7 @@ class TestHandleReviewReviseSubmit:
         })
 
         # Deterministic: capture fire-and-forget tasks and await them, avoiding
-        # the time-based sleep heuristic flagged by AutoSDE.
+        # the time-based sleep heuristic flagged by review-bot.
         background_tasks: list[asyncio.Task] = []
         orig_create_task = asyncio.create_task
 

@@ -29,8 +29,8 @@ from typing import Any, Callable, Optional, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 # Path of a Netscape cookie jar, if the user maintains one. Kept generic; the
-# default location matches the historic name but nothing requires it to exist.
-MIDWAY_COOKIE_PATH = Path.home() / ".midway" / "cookie"
+# default location is under the KiroCrew home and nothing requires it to exist.
+SSO_COOKIE_PATH = Path.home() / ".kirocrew" / "browser-cookies.txt"
 
 _NOT_AVAILABLE = {"available": False, "reason": "not available in OSS"}
 
@@ -47,21 +47,21 @@ class BrowserAuthProvider(Protocol):
 
     def cookie_path(self) -> Path: ...
 
-    def has_mcscli(self) -> bool: ...
+    def has_sso_helper(self) -> bool: ...
 
-    def mcs_keys_process_running(self) -> bool: ...
+    def sso_keys_process_running(self) -> bool: ...
 
-    def refresh_cookie_via_mcs(self) -> bool: ...
+    def refresh_cookie_via_sso(self) -> bool: ...
 
-    def refresh_aea(self) -> bool: ...
+    def refresh_device_posture(self) -> bool: ...
 
-    def has_kerberos_ticket(self) -> bool: ...
+    def has_sso_ticket(self) -> bool: ...
 
     def health(self) -> dict[str, Any]: ...
 
     def ensure(self) -> dict[str, Any]: ...
 
-    def federate_auth(self, target_url: str) -> dict[str, Any]: ...
+    def federated_login(self, target_url: str) -> dict[str, Any]: ...
 
 
 # Module-level provider slot. ``None`` → the OSS stubs below apply unchanged.
@@ -98,7 +98,7 @@ def _delegate(method: str, default: Callable[[], Any]) -> Any:
 
 
 def cookie_path() -> Path:
-    return _delegate("cookie_path", lambda: MIDWAY_COOKIE_PATH)
+    return _delegate("cookie_path", lambda: SSO_COOKIE_PATH)
 
 
 def parse_netscape_cookies(path: Path) -> list[dict[str, Any]]:
@@ -135,29 +135,29 @@ def parse_netscape_cookies(path: Path) -> list[dict[str, Any]]:
     return cookies
 
 
-def has_mcscli() -> bool:
+def has_sso_helper() -> bool:
     """No enterprise credential helper in the OSS build (edition may override)."""
-    return _delegate("has_mcscli", lambda: False)
+    return _delegate("has_sso_helper", lambda: False)
 
 
-def mcs_keys_process_running() -> bool:
+def sso_keys_process_running() -> bool:
     """No enterprise credential helper in the OSS build (edition may override)."""
-    return _delegate("mcs_keys_process_running", lambda: False)
+    return _delegate("sso_keys_process_running", lambda: False)
 
 
-def refresh_cookie_via_mcs() -> bool:
+def refresh_cookie_via_sso() -> bool:
     """Cookie refresh via an enterprise helper (edition may override)."""
-    return _delegate("refresh_cookie_via_mcs", lambda: False)
+    return _delegate("refresh_cookie_via_sso", lambda: False)
 
 
-def refresh_aea() -> bool:
+def refresh_device_posture() -> bool:
     """Device-posture refresh (edition may override)."""
-    return _delegate("refresh_aea", lambda: False)
+    return _delegate("refresh_device_posture", lambda: False)
 
 
-def has_kerberos_ticket() -> bool:
-    """Kerberos/SPNEGO ticket presence (edition may override)."""
-    return _delegate("has_kerberos_ticket", lambda: False)
+def has_sso_ticket() -> bool:
+    """SSO/SPNEGO ticket presence (edition may override)."""
+    return _delegate("has_sso_ticket", lambda: False)
 
 
 def health() -> dict[str, Any]:
@@ -170,20 +170,20 @@ def ensure() -> dict[str, Any]:
     return _delegate("ensure", lambda: dict(_NOT_AVAILABLE))
 
 
-def federate_auth(target_url: str) -> dict[str, Any]:
-    """Enterprise federate SSO flow (edition may override).
+def federated_login(target_url: str) -> dict[str, Any]:
+    """Enterprise federated SSO flow (edition may override).
 
     OSS default returns ``ok=False`` so callers degrade gracefully and simply
     navigate without injected SSO cookies. When a companion provider is present
-    its ``federate_auth(target_url)`` is called with the target URL.
+    its ``federated_login(target_url)`` is called with the target URL.
     """
     prov = _provider
     if prov is not None:
-        fn = getattr(prov, "federate_auth", None)
+        fn = getattr(prov, "federated_login", None)
         if callable(fn):
             try:
                 return fn(target_url)
             except Exception:
-                logger.warning("browser-auth provider federate_auth() failed; using default",
+                logger.warning("browser-auth provider federated_login() failed; using default",
                                exc_info=True)
     return {"ok": False, "error": "not available in OSS", "cookies": []}

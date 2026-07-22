@@ -74,7 +74,7 @@ export function BrowserPanel() {
         <SettingsCard>
           <SettingsToggle
             label="Chrome Extension Mode"
-            description="Attach to your running Chrome with all existing auth (Midway, Sentry, MCS). Recommended for macOS."
+            description="Attach to your running Chrome with all existing logins and sessions. Recommended for macOS."
             checked={extensionMode}
             onChange={handleToggle}
           />

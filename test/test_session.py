@@ -2040,7 +2040,7 @@ class TestCleanupLoop:
     async def test_cleanup_loop_runs_sandbox_sweep_via_executor(self, cfg, caplog):
         """Sandbox sweep is invoked through run_in_executor on maintenance_executor.
 
-        Asserts the offload specifically (the AutoSDE blocking fix): the sweep
+        Asserts the offload specifically (the blocking-call fix): the sweep
         must execute on a maintenance-executor worker thread, NOT the event
         loop thread, so its blocking os.listdir/os.kill/os.remove I/O cannot
         freeze the loop.
@@ -2874,7 +2874,7 @@ class TestCloseAllPersistence:
             await mgr.close_all()
         # provider= is now persisted so the next-startup detect_provider_switch
         # doesn't see a missing label and falsely fire an acp/cc switch
-        # (AutoSDE r1 #24).
+        # (review round 1 #24).
         mock_set.assert_called_once_with(
             "dashboard:slot0",
             "sid-persist-test",

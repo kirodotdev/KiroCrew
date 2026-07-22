@@ -183,7 +183,7 @@ def _build_ssh_tunnel_argv(
     """
     # Windows: not yet supported — requires the OpenSSH client (`ssh`) on PATH,
     # which isn't guaranteed; ssh-process kill handling also needs a Windows audit.
-    # Tracked in Mesh-2364 (https://taskei.amazon.dev/tasks/Mesh-2364).
+    # Tracked as follow-on work.
     forward = f"{_LOOPBACK}:{local_port}:{_LOOPBACK}:{remote_port}"
     argv = [
         "ssh",

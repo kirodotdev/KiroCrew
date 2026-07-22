@@ -559,7 +559,7 @@ async def _handle_sessions(
     # explicitly-allowed users may read them. The dispatcher in
     # ``_handle_slash`` already filters slash commands by allowlist, so in
     # production this branch is unreachable today. The check is still
-    # required by the AUTOSDE security-controls rule (deny-by-default) and
+    # required by the security-controls rule (deny-by-default) and
     # protects against future refactors that bypass the dispatcher gate.
     # The ``sessions`` keyword path applies the same check at handler.py
     # before delegating to ``_handle_sessions_command``.
@@ -591,7 +591,7 @@ async def _handle_sessions(
         # patterns aren't split mid-string by the truncation step. The
         # SEL on-disk file is not internally redacted (sel.py only
         # redacts on forward), so this is defense-in-depth for the
-        # AUTOSDE security-controls "never trust output" rule applied
+        # security-controls "never trust output" rule applied
         # to exception messages from third-party libraries.
         redacted_exc, _ = redact_exfiltration_urls(str(exc))
         redacted_exc, _ = redact_credentials(redacted_exc)
@@ -631,9 +631,9 @@ async def _handle_status(
 ) -> None:
     """Show runtime stats summary."""
     # Identity status via the active PlatformContext (Default == OSS no-op stub
-    # returning ""; Amazon companion returns the real Midway status line).
-    mw_line = await current_context().identity.status_line(prefix=" · midway")
-    await respond(Stats().summary() + mw_line)
+    # returning ""; an enterprise companion returns the real SSO status line).
+    sso_line = await current_context().identity.status_line(prefix=" · sso")
+    await respond(Stats().summary() + sso_line)
 
 
 register_slash_command("status", _handle_status, "show runtime stats")
@@ -952,7 +952,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 line = prefix + ", ".join(shown)
                 if len(shown) < total:
                     line += f"  _…and {total - len(shown)} more_"
-                # Defense-in-depth redaction (AUTOSDE "never trust output").
+                # Defense-in-depth redaction ("never trust output").
                 line = redact_credentials(redact_exfiltration_urls(line)[0])[0]
                 return {"type": "section", "text": {"type": "mrkdwn", "text": line}}
 
@@ -1031,7 +1031,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         # already filters ``app_home_opened`` events via ``is_allowed_user``
         # at events.py before calling _publish_home_tab, so in production
         # this branch is unreachable today. The check is still required by
-        # the AUTOSDE security-controls rule (deny-by-default) and protects
+        # the security-controls rule (deny-by-default) and protects
         # against future refactors that bypass the dispatcher gate. Mirrors
         # the slash-command pattern at events._handle_sessions.
         if not (is_owner(user_id) or is_allowed_user(user_id)):
@@ -1114,7 +1114,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 # it to SEL ``error=``, mirroring the slash and keyword
                 # error-path patterns. SEL forwards externally redact, but
                 # the on-disk audit file is not internally redacted, so this
-                # is defense-in-depth for the AUTOSDE security-controls
+                # is defense-in-depth for the security-controls
                 # "never trust output" rule applied to exception messages.
                 redacted_exc, _ = redact_exfiltration_urls(str(exc))
                 redacted_exc, _ = redact_credentials(redacted_exc)
@@ -1506,7 +1506,7 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
     Normalized to handle_message's auto/interactive contract; reads/yolo are
     gated separately (gateway approval-event path, global YOLO/trust).
     """
-    # Runtime YOLO (owner-toggled via /meshclaw yolo, TTL-capped safety_override)
+    # Runtime YOLO (owner-toggled via the `yolo` slash command, TTL-capped safety_override)
     # auto-approves all tools. The native loop checks is_yolo_mode() inline; the
     # transport TurnDriver only sees this resolved mode, so fold YOLO in here at
     # the single per-message chokepoint (evaluated fresh each message) — both
@@ -1937,7 +1937,7 @@ async def _route_message(
 
     # Observe mode: record history from authorized users only.
     # Previously recorded all channel traffic, but non-owner messages
-    # could influence LLM context (Shepherd bdd39e84).
+    # could influence LLM context.
     if activation == ACTIVATION_OBSERVE:
         if should_record_observe_history(orch.channel_history, _user_authorized):
             assert orch.channel_history is not None  # narrowed by helper
@@ -2186,12 +2186,12 @@ async def _route_message(
     #
     # The "challenge-and-redirect" flow (every message intercepted and turned
     # into a presigned dashboard-session link via send_channel_challenge) was
-    # an Amazon-internal-only security posture and has been DELIBERATELY REMOVED
+    # an enterprise-only security posture and has been DELIBERATELY REMOVED
     # for external/open-source usage.
     #
-    # DO NOT re-introduce it during an upstream (MeshClaw) sync. If a sync
+    # DO NOT re-introduce it during an upstream sync. If a sync
     # surfaces a `_CHALLENGE_REDIRECT_ENABLED` gate or a `send_channel_challenge`
-    # call here, DROP that hunk — see skills/meshclaw-sync/SKILL.md.
+    # call here, DROP that hunk.
     logger.info(
         "Message from %s in %s (activation=%s): %s",
         sender_id,

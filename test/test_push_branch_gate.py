@@ -55,10 +55,10 @@ class TestIsPushToProtectedBranch:
         assert _is_push_to_protected_branch(f"{PUSH} github mainline") is True
         assert _is_push_to_protected_branch(f"{PUSH} origin master") is True
 
-    def test_meshclaw_only_branches_not_protected(self) -> None:
-        """KiroCrew protects only git defaults; MeshClaw integration branch names
+    def test_nondefault_integration_branches_not_protected(self) -> None:
+        """KiroCrew protects only git defaults; other integration branch names
         are ordinary feature branches here and stay pushable."""
-        assert _is_push_to_protected_branch(f"{PUSH} origin beta-braveheart") is False
+        assert _is_push_to_protected_branch(f"{PUSH} origin beta-integration") is False
         assert _is_push_to_protected_branch(f"{PUSH} origin develop") is False
         assert _is_push_to_protected_branch(f"{PUSH} origin release/1.0") is False
 
@@ -195,7 +195,7 @@ class TestIsGitPublishDetection:
     def test_program_substitution_evasion_detected(self) -> None:
         # Program NAME produced by an expansion the shell resolves to git before
         # exec -- the literal ``git`` token never appears in the source text.
-        # Port of KiroClaw CR-289796406 + CR-289806273 (Talos 3eeb3852).
+        # Port of the upstream project (security-review 3eeb3852).
         P = "pus" + "h"
         assert _is_git_publish("$(echo git) %s origin main" % P) is True
         assert _is_git_publish("`echo git` %s origin main" % P) is True
@@ -254,7 +254,7 @@ class TestGitPushEnforcement:
 
     def test_substitution_program_push_blocked(self, captured_sel_events) -> None:
         # Verb obfuscated via an expansion that resolves to git; the branch gate
-        # still reads the target and blocks a protected one (Talos 3eeb3852).
+        # still reads the target and blocks a protected one (security-review 3eeb3852).
         P = "pus" + "h"
         assert is_denied("$(echo git) %s origin main" % P).startswith(
             "Blocked by security policy"

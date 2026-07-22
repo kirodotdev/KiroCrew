@@ -6,8 +6,7 @@ answer it. A Slack button click resolves the *dashboard slot's* approval future
 (via ``state.resolve_approval``) and must NOT answer the ACP backend directly —
 the dashboard ``_run_chat`` loop remains the sole caller of approve/reject.
 
-Regression coverage for the "no approval request for linked sessions" bug
-(Taskei 93d9646e).
+Regression coverage for the "no approval request for linked sessions" bug.
 """
 
 from __future__ import annotations

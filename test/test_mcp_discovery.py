@@ -1848,7 +1848,7 @@ class TestReadStdioJsonrpcResponse:
         """A non-JSON banner (the aim self-update case) is skipped, not fatal."""
         stream = _make_stream(
             [
-                b"chorus-mcp v0.1.4 starting (backend: wss://chorus.aws.dev)\n",
+                b"example-mcp v0.1.4 starting (backend: wss://mcp.example.com)\n",
                 b'{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}\n',
             ]
         )
@@ -1985,7 +1985,7 @@ class TestProbeServerBannerTolerance:
         proc.stderr = AsyncMock()
         proc.stdout.readline = AsyncMock(
             side_effect=[
-                b"chorus-mcp v0.1.4 starting (backend: wss://chorus.aws.dev)\n",
+                b"example-mcp v0.1.4 starting (backend: wss://mcp.example.com)\n",
                 b'{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}\n',
                 b'{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read"}]}}\n',
                 b"",

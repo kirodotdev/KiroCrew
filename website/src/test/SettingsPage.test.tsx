@@ -1,12 +1,12 @@
 /**
  * Tests for the Settings page tab roster.
  *
- * Regression guard ported (PARTIAL) from MeshClawWebsite dfbc99cd: the aaf7cfe
- * stale-branch merge once overwrote SettingsPage.tsx from an older base and
+ * Regression guard ported (PARTIAL) from the upstream project: a stale-branch
+ * merge once overwrote SettingsPage.tsx from an older base and
  * dropped the Browser tab whose panel file survived — so no panel test failed;
  * there was simply no test asserting SettingsPage *lists* the tabs. These close
- * that gap for the fork's tab roster. (Upstream's Cloud Sync assertion is
- * dropped — the fork has no GitFarm Cloud-Sync tab; we assert the Browser tab
+ * that gap for the fork's tab roster. (The upstream Cloud Sync assertion is
+ * dropped — the fork has no Cloud-Sync tab; we assert the Browser tab
  * instead. There is no Provider tab: KiroCrew collapsed to its single KiroACP /
  * kiro-cli provider, so there is no provider to select.)
  */

@@ -851,7 +851,7 @@ async function promptRemoteHost() {
     ${css}
   </style></head><body>
     <label>Remote host for :${port}</label>
-    <input id="h" value="${esc(currentHost)}" placeholder="myhost.corp.amazon.com" autofocus>
+    <input id="h" value="${esc(currentHost)}" placeholder="myhost.corp.example.com" autofocus>
     <div class="hint">Leave empty to use local token (no SSH).</div>
     <label>kirocrew binary path</label>
     <input id="b" value="${esc(currentBin)}" placeholder="${DEFAULT_REMOTE_BIN}">

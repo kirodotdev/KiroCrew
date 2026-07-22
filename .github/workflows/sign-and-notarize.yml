@@ -1,14 +1,14 @@
 name: Sign and Notarize macOS (reusable)
 
-# Reusable workflow: CDSigner-sign the macOS app, notarize + staple it, then
-# publish it. Called by nightly.yml (channel: nightly) and release.yml
+# Reusable workflow: sign the macOS app via the signing service, notarize +
+# staple it, then publish it. Called by nightly.yml (channel: nightly) and release.yml
 # (channel: insider | stable). See docs/signing-runbook.md for the full
 # chain and the credential rotation procedure.
 #
 # Three jobs, chained:
 #   sign      -- flatten build artifacts, attest provenance, upload unsigned
 #                artifacts to pre-signed/ in the PRIVATE signing bucket,
-#                submit the .app to CDSigner. Nothing here is public-facing.
+#                submit the .app to the signing service. Nothing here is public-facing.
 #                (This job was historically duplicated in nightly.yml and
 #                release.yml under the misleading name "publish".)
 #   notarize  -- everything macOS-bound: Apple notarization, staple, the
@@ -79,7 +79,7 @@ permissions:
 
 jobs:
   sign:
-    name: Sign with CDSigner (${{ inputs.channel }})
+    name: Sign with signing service (${{ inputs.channel }})
     runs-on: ubuntu-latest
     # OIDC subject alignment: tag-triggered callers (release.yml) present
     # ref:refs/tags/<tag>, which the signing role does not trust. The prod
@@ -124,10 +124,10 @@ jobs:
             release/*.tar.gz
             release/*.AppImage
 
-      # Install the CDSigner SigV4 client (awscurl) BEFORE AWS credentials are
+      # Install the SigV4 client (awscurl) BEFORE AWS credentials are
       # configured, so a compromised or version-drifted release can never observe
       # the signing-role credentials at install time. Pinned for the same reason.
-      - name: Install awscurl (SigV4 client for CDSigner)
+      - name: Install awscurl (SigV4 client for signing service)
         if: env.HAS_CDSIGNER
         run: |
           # Dedicated venv: `pip install --user` is refused by PEP 668
@@ -176,7 +176,7 @@ jobs:
             echo "APP_PATH=" >> "$GITHUB_ENV"
           fi
 
-      - name: Sign with CDSigner
+      - name: Sign with signing service
         id: sign
         if: env.HAS_CDSIGNER && env.APP_PATH != ''
         env:
@@ -196,7 +196,7 @@ jobs:
           {
             echo "## Sign (${CHANNEL})"
             echo "- Version: ${VERSION}"
-            echo "- Signed: ${{ env.HAS_CDSIGNER && env.APP_PATH != '' && 'Yes' || 'No (CDSigner not configured)' }}"
+            echo "- Signed: ${{ env.HAS_CDSIGNER && env.APP_PATH != '' && 'Yes' || 'No (signing service not configured)' }}"
             echo "- Artifacts:"
             ls release/ | sed 's/^/  - /'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -205,7 +205,7 @@ jobs:
     name: Notarize + staple (${{ inputs.channel }})
     needs: sign
     # Skip cleanly (rather than fail) when signing is not configured
-    # (fork / repo without CDSigner secrets) -- there is nothing to notarize.
+    # (fork / repo without signing-service secrets) -- there is nothing to notarize.
     if: needs.sign.outputs.signed_zip_key != ''
     runs-on: macos-14
     # Worst-case wait budget: two notarytool submissions (app, then DMG)
@@ -269,7 +269,7 @@ jobs:
           ls -la work/
 
       # The credential lives in Secrets Manager (never GitHub secrets --
-      # Amazon custody, CloudTrail audit, rotation lifecycle). It is fetched,
+      # dedicated secret-store custody, CloudTrail audit, rotation lifecycle). It is fetched,
       # masked, used, and discarded inside this single step.
       - name: Notarize with Apple notary service
         if: env.HAS_SIGNING_SECRETS

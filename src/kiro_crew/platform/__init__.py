@@ -1,7 +1,7 @@
 """KiroCrew platform contract — the Composed Platform Providers (CPP) seam.
 
 Public API for booting and reading the platform context.  Core code imports
-from ``kiro_crew.platform`` only; the Amazon companion imports
+from ``kiro_crew.platform`` only; an enterprise companion imports
 ``build_default_context`` + the interfaces and supplies its own adapters.
 
 See ``docs/system-specs/modules/platform-context.md``.
@@ -19,7 +19,7 @@ from kiro_crew.platform.admission import (
 from kiro_crew.platform.bootstrap import boot_platform, bootstrap_context, build_default_context
 from kiro_crew.platform.context import (
     CONTRACT_VERSION,
-    PROFILE_AMAZON,
+    PROFILE_ENTERPRISE,
     PROFILE_STANDALONE,
     PlatformCompositionError,
     PlatformContext,
@@ -41,7 +41,7 @@ from kiro_crew.platform.security_authority import (
 
 __all__ = [
     "CONTRACT_VERSION",
-    "PROFILE_AMAZON",
+    "PROFILE_ENTERPRISE",
     "PROFILE_STANDALONE",
     "PLUGIN_GROUP",
     "PlatformContext",

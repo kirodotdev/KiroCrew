@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-/* ── Mesh-588: $skill trigger in ChatInput. Mock api so the mounted
+/* ── $skill trigger in ChatInput. Mock api so the mounted
  *    SkillPickerMenu's lazy api.skills() fetch is deterministic. ── */
 const mockApi = vi.hoisted(() => ({ skills: vi.fn() }))
 vi.mock('../api/client', () => ({ api: mockApi }))

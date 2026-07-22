@@ -5,7 +5,7 @@ it from a laptop is the dashboard (reachable over the reverse SSH tunnel). This
 module gives the dashboard a near-real-time mirror **without opening any debug
 port on the browser**.
 
-Design (why this shape — see also Mesh-2068 follow-up for the active pump):
+Design (why this shape):
 - The Playwright MCP proxy already intercepts every ``browser_take_screenshot``
   response and re-encodes it to JPEG (``mcp_playwright_proxy._save_screenshot``).
   It additionally POSTs that already-captured frame to the gateway's loopback
@@ -14,10 +14,10 @@ Design (why this shape — see also Mesh-2068 follow-up for the active pump):
 - This rides Playwright's existing (authenticated, pipe-based) control channel —
   it does **not** add a ``--remote-debugging-port``. An earlier revision attached
   to a CDP debug port for smoother frames; that port was an unauthenticated,
-  full-control endpoint on a Midway-cookie-bearing browser (a net-new
+  full-control endpoint on an auth-cookie-bearing browser (a net-new
   local-process-takeover surface), so it was dropped in favour of this design.
 - Cadence is sparse — frames arrive only when the agent itself screenshots. A
-  follow-up (Mesh-2068 active pump) can inject idle-gated screenshots for a
+  follow-up (an active pump) can inject idle-gated screenshots for a
   steady ~1-2 fps if needed; the WS contract here is unchanged by that.
 
 This module is intentionally tiny: the gateway owns no browser connection, only

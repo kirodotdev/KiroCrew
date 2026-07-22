@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import type { Artifact, ArtifactFolder } from '../types'
 
 /**
- * React-query plumbing for artifact-library folders (Mesh-2720).
+ * React-query plumbing for artifact-library folders.
  *
  * Query keys:
  *  - `['artifact-folders']` — the flat folder list (with per-folder item_count).

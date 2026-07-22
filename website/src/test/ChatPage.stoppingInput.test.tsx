@@ -1,15 +1,15 @@
 /**
- * Regression test for Mesh-2004: keep ChatInput enabled while a turn is being
+ * Regression test: keep ChatInput enabled while a turn is being
  * stopped so users can type and queue a follow-up the same way they can during
- * streaming or compaction (Mesh-1345).
+ * streaming or compaction.
  *
- * Before Mesh-2004 the ChatInput was gated by
+ * Previously the ChatInput was gated by
  *   disabled={slotStopping}
  * which blanked the textarea (pointer-events-none + "Stopping…" placeholder)
  * for the up-to-10s soft-cancel window, so quick "stop and redirect" steering
  * was lost. The backend already queues POST /api/chat while slot.running is
  * true (it never rejects on stop_state) and stop runs with preserve_queue=True
- * (Mesh-1889), so the gate was purely a frontend artefact.
+ *, so the gate was purely a frontend artefact.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
@@ -106,7 +106,7 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-describe('ChatPage — input while stopping (Mesh-2004)', { timeout: 15_000 }, () => {
+describe('ChatPage — input while stopping', { timeout: 15_000 }, () => {
   it('keeps the textarea interactive while slotStopping is true', async () => {
     await renderWithState({ slotRunning: true, slotStopping: true, slotState: 'stopping' })
 

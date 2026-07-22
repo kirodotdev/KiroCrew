@@ -26,10 +26,10 @@ function stubRowWidth(w: number) {
   return () => { HTMLElement.prototype.getBoundingClientRect = orig }
 }
 
-// Regression for Mesh-2230: a persisted width sized on a wide monitor must not
+// Regression: a persisted width sized on a wide monitor must not
 // push the panel (shrink-0, in an overflow-hidden row) past a smaller viewport,
 // which clipped the right-edge header actions (diff toggle / Edit·Preview).
-describe('DetailPanel width clamp (Mesh-2230)', () => {
+describe('DetailPanel width clamp', () => {
   const ORIG = window.innerWidth
   beforeEach(() => localStorage.clear())
   afterEach(() => { cleanup(); setViewport(ORIG) })
@@ -71,11 +71,11 @@ describe('DetailPanel width clamp (Mesh-2230)', () => {
     expect(panelWidth(container)).toBe(480)
   })
 
-  // Regression for Mesh-2238: a resize firing *during* a drag must not clobber
+  // Regression: a resize firing *during* a drag must not clobber
   // the width the user dragged to. The resize listener is suppressed mid-drag,
   // and on mouseup the dragged (preferred) width is persisted while the live
   // render is clamped down to the (now smaller) viewport.
-  it('preserves the dragged preferred width across a resize mid-drag (Mesh-2238)', () => {
+  it('preserves the dragged preferred width across a resize mid-drag', () => {
     setViewport(2000) // cap = 1200
     localStorage.setItem('mc-test-w', '400')
     const { container } = render(
@@ -99,7 +99,7 @@ describe('DetailPanel width clamp (Mesh-2230)', () => {
   // Regression: a sub-threshold tap on the 6px handle must still reset the drag
   // suppression flag. usePointerDrag fires onEnd on every pointer-up (committed
   // or not), so a stray click can't wedge draggingRef=true and make later resize
-  // re-clamps early-return forever (which would re-expose the Mesh-2230/2813 overflow).
+  // re-clamps early-return forever (which would re-expose the overflow).
   it('resets the drag guard after a sub-threshold click so later resizes still clamp', () => {
     setViewport(2000) // cap = 1200
     localStorage.setItem('mc-test-w', '1100')
@@ -117,13 +117,13 @@ describe('DetailPanel width clamp (Mesh-2230)', () => {
   })
 })
 
-// Regression for Mesh-2813: the width cap must be the panel's room in its flex
+// Regression: the width cap must be the panel's room in its flex
 // ROW (rowWidth − reserveWidth), not a fraction of the whole window. A window
 // fraction let the shrink-0 panel exceed its row, collapse the chat pane, and
 // overflow off-screen with content reflowing past the viewport edge. Here the
 // row is measured (stubbed) and always narrower than the 60% viewport bound, so
 // the row-minus-reserve cap is the one that binds.
-describe('DetailPanel row-aware width clamp (Mesh-2813)', () => {
+describe('DetailPanel row-aware width clamp', () => {
   const ORIG = window.innerWidth
   let restoreRow: (() => void) | undefined
   beforeEach(() => localStorage.clear())

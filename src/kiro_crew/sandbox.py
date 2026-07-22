@@ -160,7 +160,7 @@ def _sandbox_policy():
     """Return the active context's SandboxPolicy adapter.
 
     The Default adapter delegates to ``_STRICT_DIRS`` / ``_CC_DIRS`` above, so a
-    standalone process gets today's exact lists; the Amazon companion extends
+    standalone process gets today's exact lists; the internal companion extends
     them.
     """
     return current_context().sandbox
@@ -517,7 +517,7 @@ def _build_launcher_script(
     uid = os.getuid()
     gid = os.getgid()
     # Source the sensitive-dir lists from the active PlatformContext so the
-    # Amazon companion can extend them (+ .midway/.ada).  The Default adapter
+    # The internal companion can extend them (+ .midway/.ada).  The Default adapter
     # returns ``list(_STRICT_DIRS)`` / ``list(_CC_DIRS)``, so standalone is
     # unchanged.  ``_STANDARD_DIRS`` is not an extension point (no interface
     # method) and stays on the module global.
@@ -756,7 +756,7 @@ def main():
                 "{strict_host_key_opt}"
             )
 
-        # ── Step 5: Drop capabilities + set NO_NEW_PRIVS (P472042955) ──
+        # ── Step 5: Drop capabilities + set NO_NEW_PRIVS ──
         # Inside the user namespace, the child has CAP_SYS_ADMIN (owner of the
         # NS) which lets it umount the credential bind-mounts. Drop ALL
         # capabilities from the bounding set and set NO_NEW_PRIVS before exec.
@@ -774,10 +774,10 @@ def main():
             if _ret != 0:
                 sys.exit("sandbox: BLOCKED — failed to set NO_NEW_PRIVS (prctl returned %d)" % _ret)
 
-        # ── Step 6: Install seccomp-BPF filter (P472042955) ──
+        # ── Step 6: Install seccomp-BPF filter ──
         # Deny mount/umount2/unshare/setns/pivot_root/link/linkat to prevent
         # the sandboxed process from undoing bind-mounts or creating hardlinks
-        # to protected credential inodes (P472042777).
+        # to protected credential inodes.
         #
         # Additionally deny kill(-1, sig) — the signal BROADCAST that reaches
         # every same-uid process on the host (gateway, other sessions). This
@@ -891,7 +891,7 @@ def main():
                 if _ret != 0:
                     sys.exit("sandbox: BLOCKED — failed to install seccomp-BPF filter (prctl returned %d)" % _ret)
 
-        # ── Step 7: Pre-exec hardlink scan (P472042777) ──
+        # ── Step 7: Pre-exec hardlink scan ──
         # Scan the agent workspace + /tmp for hardlinks (nlink > 1) whose
         # inode matches a protected credential file. If found, refuse to exec.
         _protected_inodes = set()
@@ -1009,7 +1009,7 @@ def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
     """Build a Seatbelt .sb profile denying reads of sensitive dirs."""
     home = str(Path.home())
     # Source the sensitive-dir lists from the active PlatformContext (Default
-    # adapter == today's module globals; Amazon companion adds .midway/.ada).
+    # adapter == today's module globals; internal companion adds .midway/.ada).
     if sandbox_level == "standard":
         dirs = _STANDARD_DIRS
     elif sandbox_level == "cc":
@@ -1038,7 +1038,7 @@ def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
             rules.append(f'(deny file-read* (require-all (subpath "{escaped}") {exceptions}))')
         else:
             rules.append(f'(deny file-read* (subpath "{escaped}"))')
-        # AVP-23427: deny creating a HARDLINK whose target is under this dir.
+        # Deny creating a HARDLINK whose target is under this dir.
         # Seatbelt's file-read* deny is path-based, so a hardlink at a
         # non-denied path (e.g. /tmp) reads the same inode past the deny rule.
         # ``file-link`` fires on the link TARGET, so this stops the sandboxed
@@ -1050,7 +1050,7 @@ def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
         target = os.path.join(home, f)
         escaped = target.replace('"', '\\"')
         rules.append(f'(deny file-read* (literal "{escaped}"))')
-        # AVP-23427: also deny hardlinking the protected file (see above).
+        # Also deny hardlinking the protected file (see above).
         rules.append(f'(deny file-link (literal "{escaped}"))')
 
     # .ssh: deny all access except reading known_hosts (strict only)
@@ -1064,7 +1064,7 @@ def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
             f' (require-not (literal "{ssh_kh_escaped}"))))'
         )
         rules.append(f'(deny file-write* (subpath "{ssh_escaped}"))')
-        # AVP-23427: block hardlinking any .ssh file (private keys) out of the
+        # Block hardlinking any .ssh file (private keys) out of the
         # denied subtree.  Blanket over the whole subpath — no known_hosts
         # exception, since a hardlink to known_hosts has no legitimate use.
         rules.append(f'(deny file-link (subpath "{ssh_escaped}"))')
@@ -1154,7 +1154,7 @@ def _delegate_to_kiro_internal_sandbox(
     is refused and the spawn falls back to KiroCrew's own seatbelt. The env
     scrub is applied exactly as the seatbelt wrap would have applied it.
 
-    Deliberately does NOT resolve the real kiro binary: the toolbox shim is
+    Deliberately does NOT resolve the real kiro binary: the launcher shim is
     part of kiro's own sandbox mechanism on this path, so bypassing it here
     would defeat the delegated layer.
     """
@@ -1387,7 +1387,7 @@ def _allow_unsandboxed_exec() -> bool:
 
     When False (default), wrap_argv will RAISE instead of returning unmodified
     argv when no sandbox backend is available. This is the fail-closed behavior
-    required by pentest finding P472042906.
+    required by a penetration-test finding.
 
     Read lazily from config to avoid an import cycle with the config loader.
     """
@@ -1602,7 +1602,7 @@ def wrap_argv(
 
     if backend == "none":
         # FAIL-CLOSED: refuse to execute without sandbox unless explicitly opted in.
-        # This addresses pentest finding P472042906 — the previous behavior silently
+        # This addresses a penetration-test finding — the previous behavior silently
         # returned unmodified argv, allowing the agent subprocess to access all
         # credential paths without any OS-level isolation.
         if not _allow_unsandboxed_exec():
@@ -1626,7 +1626,7 @@ def wrap_argv(
                     "(Linux user namespaces, or macOS sandbox-exec). "
                 )
             # Emit SEL audit event for this security-relevant denial so it
-            # appears in the tamper-evident audit log (AutoSDE requirement).
+            # appears in the tamper-evident audit log (security-review requirement).
             try:
                 from kiro_crew.sel import sel  # circular import: sandbox is low-level
 
@@ -1761,7 +1761,7 @@ def sandboxed_spawn_argv(
     # site. No-op (with a one-time loud warning) where cgroup delegation is
     # unavailable. Safe re: the cleanup path — that is returned separately, not
     # re-derived from an argv index, so prepending systemd-run does not disturb
-    # it. See docs/resource-protection.md (Talos bdf0d7e5).
+    # it. See docs/resource-protection.md.
     wrapped = cgroup_scope_argv(wrapped)
     # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
     # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it
@@ -1787,7 +1787,7 @@ def sandboxed_spawn_argv(
 # the kernel enforces at fork()/alloc time (no reaper race). We place each
 # agent-influenced spawn in a transient systemd --user --scope, which works
 # UNPRIVILEGED when the user session has cgroup v2 delegation (pids + memory
-# controllers). See docs/resource-protection.md (Talos bdf0d7e5).
+# controllers). See docs/resource-protection.md.
 
 # Default cgroup ceilings (per agent scope). Overridable via the same
 # ``resource_limits`` config block used by apply_resource_limits.

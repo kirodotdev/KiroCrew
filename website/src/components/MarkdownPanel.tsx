@@ -307,7 +307,7 @@ export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refre
   // Reset the per-mutation success flags whenever the menu closes so the
   // 'Added!' / 'Snapshotted!' acknowledgement doesn't bleed into the next
   // open if the user closed quickly. Destructure the callbacks so the dep
-  // array stays stable across renders (AutoSDE round 13: object refs from
+  // array stays stable across renders (review round 13: object refs from
   // hooks change every render, causing the effect to re-fire constantly).
   const knowledgeReset = knowledge.reset
   const artifactResetAdd = artifact.resetAdd

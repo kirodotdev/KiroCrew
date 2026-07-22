@@ -12,9 +12,8 @@ Two values are tracked, both formerly written as top-level kiro-spec keys:
 - ``model_managed`` (bool): whether an agent's ``model`` should track the
   shipped ``defaults.json`` (so a default bump propagates) or is an explicit
   user pick frozen against future bumps.
-- ``cc_model`` (str): a per-agent Claude Code model for the ``claude_code``
-  provider (the CC backend can't pick a per-agent model from ``--agent`` the
-  way kiro-cli does).
+- ``cc_model`` (str): a per-agent model for the ``claude_code`` provider (that
+  backend can't pick a per-agent model from ``--agent`` the way kiro-cli does).
 
 State file (``~/.kirocrew/agent_model_state.json``, honoring ``KIROCREW_HOME``)::
 
@@ -90,14 +89,14 @@ def set_model_managed(name: str, value: bool) -> None:
 
 
 def get_cc_model(name: str) -> str | None:
-    """Return the agent's Claude Code model, or ``None`` when unset."""
+    """Return the agent's claude_code-provider model, or ``None`` when unset."""
     with _lock:
         value = _entry(_read(), name).get(_CC_MODEL)
     return value if isinstance(value, str) and value else None
 
 
 def set_cc_model(name: str, value: str | None) -> None:
-    """Set (or clear, when ``value`` is falsy) the agent's Claude Code model."""
+    """Set (or clear, when ``value`` is falsy) the agent's claude_code model."""
     with _lock:
         data = _read()
         entry = data.get(name)

@@ -10,7 +10,7 @@ import { indexTextNodes, rangeForAnchor } from '../hooks/useMarkdownCommentHighl
  * Custom Highlight API could do in the dashboard.
  *
  * Per feedback:
- *  - one Quip-style gutter bubble PER anchored thread (not per line); its count
+ *  - one document-comment-style gutter bubble PER anchored thread (not per line); its count
  *    is the thread size (1 root + its replies);
  *  - same-line rect fragments (e.g. split at a comma / inline-element boundary)
  *    are merged into a single highlight box;

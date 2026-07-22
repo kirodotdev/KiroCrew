@@ -1,5 +1,5 @@
-// Security regression tests for P454989291 (widget postMessage trust-boundary
-// bypass). A widget action must NEVER auto-submit a user-role turn: it may only
+// Security regression tests for the widget postMessage trust-boundary
+// bypass. A widget action must NEVER auto-submit a user-role turn: it may only
 // pre-fill the composer, requiring an explicit human gesture (Enter) to send.
 // When the user does send pre-filled text, the turn is tagged meta.origin=widget.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -103,7 +103,7 @@ beforeEach(() => {
   vi.mocked(api.sendChat).mockClear()
 })
 
-describe('ChatPage widget action pre-fill (P454989291)', { timeout: 15_000 }, () => {
+describe('ChatPage widget action pre-fill', { timeout: 15_000 }, () => {
   it('pre-fills the composer and does NOT auto-send on a widget action', async () => {
     const store = makeStore('slot-w', [{ key: 'slot-w' }])
     await renderAndWaitForInput(store)

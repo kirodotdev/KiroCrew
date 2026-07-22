@@ -42,7 +42,7 @@ class TestStatusSnapshot:
         assert state.status_snapshot()["no_crons"] is True
 
     def test_governance_health_field_present(self, state: DashboardState) -> None:
-        # AVP-23427: the snapshot surfaces governance enforcement health.
+        # the snapshot surfaces governance enforcement health.
         snap = state.status_snapshot()
         assert snap["governance"] in {"active", "degraded", "disabled", "unknown"}
 

@@ -295,7 +295,7 @@ def test_governance_posture_blocks_empty_enterprise_id_when_pinned():
     # Slack returns enterprise_id="" for EVERY non-Enterprise-Grid workspace (the
     # common case). An empty id cannot satisfy an explicitly-pinned
     # allowed_enterprise_ids ceiling, so it must FAIL CLOSED — not silently pass
-    # via the old `if not value: continue`. (CR-284272012 Heimdall blocking.)
+    # via the old `if not value: continue`. (security-review blocking.)
     from kiro_crew.platform import context as ctx_mod
 
     resp = {"enterprise_id": "", "team_id": "T1", "team": "NonGrid", "url": "https://x"}

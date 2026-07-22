@@ -104,18 +104,17 @@ Browsing uses **Playwright MCP tools**, not kirocrew CLI. The `kirocrew browse` 
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew browse setup` | Install Playwright MCP + browsers via AIM |
-| `kirocrew browse auth health` | Check Midway/Kerberos/MCS auth status (prints JSON) |
-| `kirocrew browse auth inject` | Get cookies for Playwright injection (prints JSON) |
-| `kirocrew browse auth federate <url>` | Complete federate SSO for a URL, print final URL |
+| `kirocrew browse setup` | Install Playwright MCP + browsers |
+| `kirocrew browse auth health` | Check browser auth / cookie status (prints JSON) |
+| `kirocrew browse auth refresh` | Write Playwright storage state from an exported cookie jar |
 
 **Browsing workflow:** Load the `browser-auth` skill (or follow it directly):
-1. `kirocrew browse auth health` — check auth; if unhealthy, tell user to run `kinit -f` / `mwinit -o` / etc.
-2. `kirocrew browse auth refresh` — write Playwright storage state from midway cookies (pre-loads auth into browser context)
+1. `kirocrew browse auth health` — check auth; if unhealthy or no cookies, tell the user to export a fresh cookie jar from a browser where they're logged in
+2. `kirocrew browse auth refresh` — write Playwright storage state from the exported cookie jar (pre-loads auth into the browser context)
 3. Use Playwright MCP tools: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_fill_form`, `browser_take_screenshot`, `browser_evaluate`
-4. If you hit `idp.federate.amazon.com`, run `kirocrew browse auth federate <url>` and navigate to the returned `final_url`
+4. On a 401 / login redirect, the session cookies expired — the user re-exports the cookie jar and you re-run `kirocrew browse auth refresh`
 
-**Note:** Playwright auto-installs during `kirocrew setup`. On ARM AL2 fallback to `ReadInternalWebsites` MCP.
+**Note:** Playwright auto-installs during `kirocrew setup`.
 
 ## Autonomous Task Runner
 

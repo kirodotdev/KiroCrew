@@ -8,7 +8,7 @@ import type { ResourceProvider, Result } from '../types'
 import { getProviders as getRegisteredProviders, getProvider } from './index'
 
 /**
- * All aggregator (Mesh-2151 Search Everywhere).
+ * All aggregator (Search Everywhere).
  *
  * Backs the **All** tab. It is itself a {@link ResourceProvider}, but instead
  * of owning a data source it fans the query out to every *other* registered
@@ -37,7 +37,7 @@ const DEFAULT_PER_PROVIDER_LIMIT = 5
 /** Default number of recents shown on an empty query. */
 const DEFAULT_RECENTS_LIMIT = 8
 
-/** Icon convention: lucide element with `lucide-inline` (AUTOSDE use-lucide-icons). */
+/** Icon convention: lucide element with `lucide-inline` (`use-lucide-icons` lint rule). */
 function inlineIcon(): ReactNode {
   return createElement(Sparkles, { className: 'lucide-inline' })
 }

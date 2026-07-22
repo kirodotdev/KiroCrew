@@ -820,7 +820,7 @@ async def _gateway(
     approval_mode: str | None = None,
 ) -> None:
     """Load config and start the Slack Socket Mode gateway."""
-    # Activate mise once at gateway start (Mesh-2371) so every subprocess we
+    # Activate mise once at gateway start so every subprocess we
     # later spawn — MCP servers, script crons, kiro-cli — inherits the user's
     # mise-managed toolchain. Without this, Node-based MCP servers spawn against
     # the system /usr/bin/node (v18 on AL2) and die during `initialize` with a

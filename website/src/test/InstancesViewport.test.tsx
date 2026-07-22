@@ -212,7 +212,7 @@ describe('InstancesViewport', () => {
   })
 
   it('does NOT flash the panel over a healthy warm iframe while the query has no entry yet (activeInst undefined)', async () => {
-    // Regression (AutoSDE CR-285905697): a warm+connected active tab whose
+    // Regression (code review): a warm+connected active tab whose
     // instance is momentarily absent from the query results (initial load /
     // refetch) must keep showing its live iframe, NOT overlay the error panel.
     vi.mocked(api.listInstances).mockResolvedValue({ instances: [], warm_set_cap: 5 })

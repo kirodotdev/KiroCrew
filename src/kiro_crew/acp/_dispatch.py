@@ -65,7 +65,7 @@ def build_session_new_params(
     ``cwd`` and ``mcpServers`` are ALWAYS present. kiro-cli treats a missing
     ``mcpServers`` field as malformed and exits cleanly (rc=0, no stderr) — so
     both backends must send it, even as an empty list. The ``claude_meta`` flag
-    adds the Claude Code SDK envelope the claude-agent-acp backend requires.
+    adds the SDK envelope the claude-agent-acp backend requires.
     """
     params: dict[str, Any] = {
         "cwd": str(cwd),
@@ -200,7 +200,7 @@ def make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> str
 def select_tool_title(title: object, raw_input: object) -> str | None:
     """Pick the pill label, preferring a human-readable ``description`` when present.
 
-    Claude Code's Bash tool emits a ``description`` field alongside ``command``
+    Some backends' Bash tool emits a ``description`` field alongside ``command``
     (e.g. "List KiroCrew ACP module files" rather than ``ls /workplace/...``).
     We surface it on the pill when supplied; otherwise we fall back to the
     SDK-provided ``title`` (the literal tool invocation). Used for both the

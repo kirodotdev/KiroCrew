@@ -24,13 +24,13 @@ there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
             └─────────────┘
 ```
 
-**Note:** `BedrockProvider` (`providers/bedrock.py`) and the standalone
-`ClaudeCodeProvider` (`providers/claude_code.py`) were **deleted** during
-de-Amazoning, along with the `cc_*` / `bedrock_*` config fields and the
+**Note:** the removed Bedrock provider and the removed standalone provider were
+**deleted** during de-Amazoning, along with their config fields and the
 multi-provider dispatch factory. `acp/client.py` keeps a dormant
 `ACP_BACKEND_CLAUDE` seam (`AcpProvider` can in principle drive
-`claude-agent-acp`) so an internal companion can re-register Claude Code, but
-the public provider factory never selects it — `kiro-cli` is the only backend.
+`claude-agent-acp`) so an internal companion can re-register a Claude backend,
+but the public provider factory never selects it — `kiro-cli` is the only
+backend.
 See [`../features/claude-code-provider.md`](../features/claude-code-provider.md).
 
 ### LLMProvider ABC (`providers/base.py`)
@@ -78,7 +78,7 @@ and speaks JSON-RPC 2.0 over stdio.
 
 **Dormant backend seam:** `AcpProvider`/`AcpClient` retain an `acp_backend`
 parameter (`"" ` → kiro-cli; `"claude"` / `ACP_BACKEND_CLAUDE` → `claude-agent-acp`)
-so an internal companion can re-register a Claude-Code backend over the same
+so an internal companion can re-register a Claude backend over the same
 client. **The public provider factory only ever selects kiro-cli** — the claude
 branch is unreachable in this build. Its binary-resolution + config-isolation
 details live in [`acp-client.md`](acp-client.md); do not re-add the registration
@@ -146,7 +146,7 @@ If the parent session is alive but returned no policy, deny-by-default applies �
 
 Provider-level recovery mechanisms that fire automatically without user intervention:
 
-**Interactive transient-5xx retry** (a270bd1f, Mesh-1157; post-token recovery c6fe60a): The interactive dashboard/Slack `chat_runner` stream loop retries a transient backend 5xx (InternalServerError / DispatchFailure / ConnectionReset, JSON-RPC `-32603`) through the shared `llm_helpers` transient classifier + backoff, **without** resetting the still-alive session. Auth/validation errors are excluded (fail-fast); on retry-budget exhaustion a clean error surfaces on a still-resumable session. This extends the unattended `stream_and_collect` retry path (previously deferred for the interactive loop) to interactive callers.
+**Interactive transient-5xx retry** (a270bd1f; post-token recovery c6fe60a): The interactive dashboard/Slack `chat_runner` stream loop retries a transient backend 5xx (InternalServerError / DispatchFailure / ConnectionReset, JSON-RPC `-32603`) through the shared `llm_helpers` transient classifier + backoff, **without** resetting the still-alive session. Auth/validation errors are excluded (fail-fast); on retry-budget exhaustion a clean error surfaces on a still-resumable session. This extends the unattended `stream_and_collect` retry path (previously deferred for the interactive loop) to interactive callers.
 
 A transient 5xx that arrives *after* the turn already emitted output (the `_turn_emitted` guard is set once any assistant token streams or a tool call fires) no longer drops the turn. Instead it **RECOVERS ONCE**: the streamed partial is preserved as a finalized assistant message, a brief recovery notice is appended, and a *continue* instruction (not the original prompt) is re-queued onto the SAME live ACP session — which still holds the interrupted turn's context (original prompt, streamed partial, and any completed tool results) — so the model resumes from where it stopped rather than restarting. The recovery is one-shot per genuine user turn: the allowance is consumed only when a recovery is actually enqueued and is refreshed at the start of the next real user turn, never on the synthetic recovery turn, so a repeated post-token 5xx during recovery surfaces a clean error instead of looping. When Stop is active or the turn is nested (`_prompt_depth != 0`) the partial + notice are still shown but nothing is re-queued (the allowance is left unconsumed). This recovery **also applies to turns that already fired a tool call** — an ACCEPTED TRADEOFF (owner decision), rather than failing fast: a mid-stream 5xx is rare, and the continue instruction tells the model to resume and not re-run tools that already completed. A residual double-execution risk remains only for a side-effecting/destructive tool that was still *in flight* when the 5xx hit; the owner accepts that narrow risk in favor of recovering the turn.
 
@@ -170,7 +170,7 @@ on `PATH`, and run `kiro-cli login`. `kirocrew doctor` reports its status.
   same interface as `AcpClient`, so downstream callers are unchanged). Any
   failure after `spawn()` kills the runtime so a half-initialised session never
   leaks an orphaned `kiro-cli`.
-- **Claude Code (`is_claude_backend` True)** → legacy `AcpClient.ensure_ready()`.
+- **Alternate ACP backend (`is_claude_backend` True)** → legacy `AcpClient.ensure_ready()`.
 
 `AcpProvider.is_session_sharing_eligible` returns `not is_claude_backend`; it is
 what `SessionManager.is_session_sharing_eligible()` consults to decide whether a

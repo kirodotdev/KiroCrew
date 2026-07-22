@@ -238,7 +238,7 @@ class TestCycleFileMatching:
             assert check_stagnation("a1b2c3d4")
 
     def test_near_miss_findings_are_redacted_before_surfacing(self, tmp_path: Path):
-        # SECURITY INVARIANT (AutoSDE f-d59673cd): broadening the matcher must NOT
+        # SECURITY INVARIANT (review-bot f-d59673cd): broadening the matcher must NOT
         # widen the exfiltration surface — a finding under a near-miss name is
         # still LLM-authored content, so get_findings() must run the SAME
         # credential + exfil-URL redaction on it as on a canonical-named file.

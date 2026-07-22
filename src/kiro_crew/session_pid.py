@@ -862,7 +862,7 @@ def _protected_pids() -> set[int]:
         return set(_PROTECTED_PIDS)
 
 
-# ── Untracked orphan MCP sweep (defense-in-depth, Mesh-1870) ──────────
+# ── Untracked orphan MCP sweep (defense-in-depth) ──────────
 # Catches KiroCrew-spawned MCP subtrees that escaped PID-file tracking.
 # Split into find + kill so the caller can re-verify active PIDs between phases.
 
@@ -872,10 +872,10 @@ _ORPHAN_MIN_AGE_SECONDS = 120  # Never reap processes younger than this
 # Entrypoints that positively identify a KiroCrew-spawned MCP/worker process.
 # Each marker MUST be unique to a process KiroCrew itself launches — the sweep
 # SIGKILLs any user-owned orphan that matches, so a marker naming a server the
-# core does not spawn would reap an unrelated process. The upstream MeshClaw
-# reaper also lists ``builder-mcp`` (the Amazon-internal server it manages), but
-# this public fork never spawns ``builder-mcp`` (the CPP companion contributes
-# it, not the core), so that marker is deliberately omitted here.
+# core does not spawn would reap an unrelated process. The upstream project's
+# reaper also lists an enterprise-only MCP server it manages, but this public
+# fork never spawns that server (the CPP companion contributes it, not the
+# core), so that marker is deliberately omitted here.
 _MCP_ENTRYPOINT_MARKERS = (
     b"kirocrew_sandbox_",  # sandbox wrapper script (session-spawned)
     b"kiro_crew.mcp_gateway.stub",  # gateway pool worker (not gatewayd itself)

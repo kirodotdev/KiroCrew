@@ -18,7 +18,7 @@ import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMat
 import type { ResourceProvider, Result } from '../types'
 
 /**
- * Pages provider (Mesh-2151 Search Everywhere).
+ * Pages provider (Search Everywhere).
  *
  * Source of truth is the surface registry (`src/surfaces/registry.ts`) — the
  * very same `getBuiltinSurfaces()` list `App.tsx` renders the left rail from —
@@ -39,7 +39,7 @@ import type { ResourceProvider, Result } from '../types'
 
 const PROVIDER_ID = 'pages'
 
-/** Icon convention: lucide element with `lucide-inline` (AUTOSDE use-lucide-icons). */
+/** Icon convention: lucide element with `lucide-inline` (`use-lucide-icons` lint rule). */
 function inlineIcon(Icon: typeof LayoutGrid): ReactNode {
   return createElement(Icon, { className: 'lucide-inline' })
 }
@@ -128,7 +128,7 @@ export function createPagesProvider(navigate: NavigateFunction): ResourceProvide
           icon: page.icon,
           score: match.score,
           indices: match.indices,
-          // Declarative §2 Enter action (Mesh-2151 / task 27): Pages are pure
+          // Declarative §2 Enter action (/ task 27): Pages are pure
           // navigation targets — Enter navigates to `route`, and ⌘Enter has no
           // distinct behavior (the dispatcher ignores the modifier for this
           // kind). `onActivate` stays bound to `navigate(route)` as the

@@ -17,7 +17,7 @@ def test_prompt_isolates_and_delimits_transcript():
     """The title prompt must instruct the model to name ONLY the delimited
     transcript and ignore residual session history — the shared _bg session
     retains a sibling session's context between recycles, which previously
-    bled into titles (Mesh-2330)."""
+    bled into titles."""
     msgs = [
         {"role": "user", "content": "Update the doc refs to bullseye Set a goal"},
         {"role": "assistant", "content": "Done — the icon is the lucide Goal component."},

@@ -1,4 +1,4 @@
-"""Tests for Mesh-1726: fresh-slot first-turn duplicate user-message injection.
+"""Tests for fresh-slot first-turn duplicate user-message injection.
 
 Race condition: dashboard chat handler appends the user message to slot.messages
 and the periodic flush loop (5 s) writes it to JSONL. Meanwhile _run_chat awaits

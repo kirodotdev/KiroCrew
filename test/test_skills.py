@@ -178,7 +178,7 @@ class TestSkillsLoader:
 
 
 class TestTriggeredSkills:
-    """Tests for fuzzy trigger matching (P397239580)."""
+    """Tests for fuzzy trigger matching."""
 
     def _loader_with_skill(self, tmp_path, triggers, monkeypatch=None):
         skills_dir = tmp_path / "skills"
@@ -1282,7 +1282,7 @@ class TestResolveDollarSkills:
         # An AIM-installed skill under ~/.aim/skills/<pkg>/<leaf> must resolve via
         # $leaf WITHOUT being in extra_paths — the loader implicitly includes the
         # AIM root so the $skill resolver matches what the /api/skills picker
-        # offers (Mesh-588 frontend/backend parity).
+        # offers (frontend/backend parity).
         aim_root = tmp_path / "aim_skills"
         _create_skill(
             aim_root,

@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useRef } from 'react'
 
-/* ── Mock api/client BEFORE the component imports (Mesh-588) ── */
+/* ── Mock api/client BEFORE the component imports ── */
 const mockApi = vi.hoisted(() => ({
   skills: vi.fn(),
 }))

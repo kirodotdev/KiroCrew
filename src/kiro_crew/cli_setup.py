@@ -290,8 +290,8 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
 
     # 2a. Ensure `kirocrew` is reachable on PATH (the packaged Electron app
     #     doesn't run install.sh) and purge stale predecessor MCP entries left
-    #     in the user's global provider config by the MeshClaw → KiroCrew
-    #     rename. Both run only here, on the explicit setup/migration path.
+    #     in the user's global provider config by the rename from the upstream
+    #     project. Both run only here, on the explicit setup/migration path.
     from kiro_crew.agent import ensure_kirocrew_on_path
     from kiro_crew.mcp_cleanup import clean_stale_managed_mcp
 

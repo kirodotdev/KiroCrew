@@ -1,4 +1,4 @@
-"""Tests for the stale-asset watchdog (Mesh-2690)."""
+"""Tests for the stale-asset watchdog."""
 
 from __future__ import annotations
 
@@ -273,7 +273,7 @@ def test_assets_present_detects_dist_index(tmp_path: Path):
 def test_assets_present_false_without_dist_index(tmp_path: Path):
     """assets_present returns False when dist/index.html is absent.
 
-    The legacy ``dashboard.html`` fallback was removed (Talos V2285871874), so
+    The legacy ``dashboard.html`` fallback was removed (security-review), so
     the React bundle's ``dist/index.html`` is the sole presence criterion.
     """
     from kiro_crew.dashboard import stale_asset_watchdog as mod

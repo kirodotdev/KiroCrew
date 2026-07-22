@@ -43,7 +43,7 @@ import {
 import type { SendMode } from '../pages/chat/ChatSettings'
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
-// (magic bytes), size, and runs malware scanning per ARCC SAX-04.
+// (magic bytes), size, and runs malware scanning per input-validation guidance.
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml'
 const FILE_ACCEPT = IMAGE_ACCEPT + ',.txt,.md,.json,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
@@ -136,7 +136,7 @@ function applyHeight(
   el.scrollTop = prevScrollTop
   // When typing at the end of overflowing content, snap to the bottom so the caret
   // stays visible — restoring prevScrollTop loses it (the value-commit re-resets
-  // scrollTop after this runs). Mesh-1940.
+  // scrollTop after this runs).
   const caretAtEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
   if (document.activeElement === el && el.scrollHeight > el.clientHeight && caretAtEnd) {
     el.scrollTop = el.scrollHeight
@@ -529,7 +529,7 @@ function ChatInput({
     if (!plusOpen && plusBtnRef.current) setPlusRect(plusBtnRef.current.getBoundingClientRect())
     setPlusOpen(o => !o)
   }
-  // Client-side `accept` is a UX hint only (ARCC SAX-04: server enforces type via
+  // Client-side `accept` is a UX hint only (input-validation guidance: server enforces type via
   // magic bytes, size, and malware scanning — never trust the extension/MIME here).
   const openPicker = (imageOnly: boolean) => {
     const el = fileInputRef.current

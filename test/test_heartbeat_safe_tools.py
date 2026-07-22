@@ -1,6 +1,6 @@
 """Tests for heartbeat tool allowlist + HEARTBEAT_KEEP gateway injection.
 
-Covers Mesh-734 / supersedes CR-268592581:
+Covers:
 - ``_is_heartbeat_safe_tool`` allowlist + verb-check fallback
 - ``HEARTBEAT_SAFE_TOOLS`` membership for the canonical safe tools
 - ``_HEARTBEAT_KEEP_INJECTION`` is the literal prefix expected by the agent
@@ -122,8 +122,7 @@ class TestIsHeartbeatSafeTool:
 
     def test_running_prefix_with_at_server_slash_tool(self) -> None:
         """Runtime titles arrive as ``Running: @server/Tool`` — the status
-        prefix and @server/ must be stripped to reach the bare tool name.
-        Regression test for Mesh-2310."""
+        prefix and @server/ must be stripped to reach the bare tool name."""
         assert _is_heartbeat_safe_tool("Running: @kirocrew-core/learn_list")
         assert _is_heartbeat_safe_tool("Running: @kirocrew-core/spawn_list")
         assert _is_heartbeat_safe_tool("Running: @kirocrew-cron/cron_list")
@@ -335,7 +334,7 @@ class TestHeartbeatApproval:
         """LLM-originated tool titles MUST be redacted before reaching any
         external surface, including the ``logger.warning`` on the deny path
         — KiroCrew logs surface in the dashboard. Per security-controls
-        guideline: never trust LLM output. (AutoSDE finding on rev 6.)
+        guideline: never trust LLM output. (review-bot finding on rev 6.)
         """
         import logging
         sel_mock = MagicMock()
@@ -374,7 +373,7 @@ class TestHeartbeatApproval:
         Approve-path invariant: every tool that runs has a corresponding
         SEL audit record. If SEL is down, we cannot satisfy the invariant
         and must therefore deny rather than allow an unaudited tool to run
-        in an unattended heartbeat session. (AutoSDE finding on rev 6.)
+        in an unattended heartbeat session. (review-bot finding on rev 6.)
         """
         sel_mock = MagicMock()
         sel_mock.log_tool_invocation.side_effect = RuntimeError("sel down")
@@ -422,7 +421,7 @@ class TestHeartbeatApproval:
 
 class TestHeartbeatHooks:
     """``_build_heartbeat_hooks`` must not let user ``auto_approve_tools``
-    widen the heartbeat allowlist (bolichen review on CR-277980962/r5).
+    widen the heartbeat allowlist (per code review).
 
     Without scoped hooks, ``llm_helpers._resolve_permission`` would consult
     ``HookManager.on_tool_call()`` BEFORE ``_heartbeat_approval`` and a user

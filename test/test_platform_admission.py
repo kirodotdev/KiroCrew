@@ -112,7 +112,7 @@ class TestKillSwitch:
         # A ban on the NFC form of a name must not be evadable by publishing under
         # the NFD-decomposed form (visually identical, different code points). A
         # publisher controls its package's Unicode form, so the kill-switch must
-        # NFKC-canonicalize both sides before comparing. (CR-284272012 Heimdall.)
+        # NFKC-canonicalize both sides before comparing. (security-review.)
         banned_nfc = "café-app"  # 'é' = U+00E9 (composed)
         plugin_nfd = "café-app"  # 'e' + U+0301 combining acute (decomposed)
         assert banned_nfc != plugin_nfd  # genuinely different code-point strings
@@ -256,14 +256,17 @@ class TestCapabilityCeiling:
 
     def test_capability_glob_ceiling_admits_concrete_value(self, patch_manifest):
         # A concrete host must be admitted when it matches a glob ceiling entry
-        # (e.g. "api.amazon.com" under "*.amazon.com") — the ceiling uses
+        # (e.g. "api.example.com" under "*.example.com") — the ceiling uses
         # fnmatch semantics, matching the documented policy shape.
         m = PluginManifest(
-            name="amazon", publisher="p13n", version="1", capabilities={"egress": ["api.amazon.com"]}
+            name="plugin-a", publisher="p13n", version="1",
+            capabilities={"egress": ["api.example.com"]},
         )
         patch_manifest(m)
-        ep = _FakeEntryPoint(name="amazon")
-        policy = AdmissionPolicy(mode=MODE_ENFORCE, capability_ceiling={"egress": ["*.amazon.com"]})
+        ep = _FakeEntryPoint(name="plugin-a")
+        policy = AdmissionPolicy(
+            mode=MODE_ENFORCE, capability_ceiling={"egress": ["*.example.com"]}
+        )
         assert evaluate_admission(ep, policy).allowed
 
     def test_unceilinged_capability_category_rejected(self, patch_manifest):
@@ -311,7 +314,7 @@ class TestEnforceRequiresManifest:
 
 class TestPolicyLoading:
     def test_no_policy_fails_closed(self, monkeypatch, tmp_path):
-        """AVP-23427: an absent policy file must fail closed, not admit-all."""
+        """an absent policy file must fail closed, not admit-all."""
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         monkeypatch.setattr(
             "kiro_crew.platform.admission._POLICY_DEFAULT_PATH", tmp_path / "nope.json"
@@ -351,7 +354,7 @@ class TestPolicyLoading:
         assert policy.approved is None
 
     def test_deletion_after_seed_fails_closed_no_reseed(self, monkeypatch, tmp_path):
-        """AVP-23427: deleting the seeded file must NOT re-seed; load fails closed."""
+        """deleting the seeded file must NOT re-seed; load fails closed."""
         import kiro_crew.platform.admission as adm
 
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
@@ -462,7 +465,7 @@ class TestDiscoveryGate:
         assert result is sentinel
 
     def test_first_boot_seeds_and_admits_companion(self, monkeypatch, tmp_path):
-        """AVP-23427 ordering: discovery (which runs before the gateway seed on a
+        """ordering: discovery (which runs before the gateway seed on a
         fleet's first boot) seeds the permissive default, so the companion is
         admitted instead of fail-closing when no policy file exists yet."""
         import kiro_crew.platform.admission as adm

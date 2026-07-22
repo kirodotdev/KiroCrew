@@ -40,7 +40,7 @@ class AcpSessionProvider(LLMProvider):
     """LLMProvider adapter over an AcpSessionHandle on a shared runtime.
 
     Exposes the same API surface as AcpClient so AcpProvider can treat them
-    interchangeably. For methods that only apply to the Claude Code backend
+    interchangeably. For methods that only apply to the Claude backend
     (permission modes), this returns safe no-op values.
 
     Lifecycle:
@@ -507,7 +507,7 @@ class AcpSessionProvider(LLMProvider):
         return False
 
     async def set_permission_mode(self, mode: str) -> None:
-        """No-op — kiro has no Claude Code permission modes."""
+        """No-op — kiro has no Claude backend permission modes."""
 
     @property
     def last_prompt_stats(self):

@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * CommandPalette §2 Enter-matrix test (Mesh-2151, step 19).
+ * CommandPalette §2 Enter-matrix test (step 19).
  *
  * Asserts the per-result-type Enter / ⌘Enter / ⌥Enter behavior across the v1
  * corpus (Skills · Prompts · Knowledge) and, critically, the **context-aware
  * insert-vs-new-session fallback** for invokable rows.
  *
- * Security spine (BSC1 — ARCC `cnt_u7sfVeParu7OlX`): invokable activation MUST
+ * Security spine (input validation): invokable activation MUST
  * route through the shipped allowlist-resolver entry point
  * ({@link resolveInvokableEnter} in `paletteActions`) and MUST NOT build any
  * filesystem path from raw input — the FE only ever emits a plain `$skill` /
@@ -127,7 +127,7 @@ describe('§2 matrix — Skills (insert-token) routes through the allowlist reso
 
     const { token } = H.resolveCalls[0]
     expect(token).toBe('$brazil')
-    // BSC1: no filesystem path is constructed at the FE layer.
+    // Input validation: no filesystem path is constructed at the FE layer.
     expect(token.startsWith('/')).toBe(false)
     expect(token.includes('/')).toBe(false)
     expect(token.includes('\\')).toBe(false)

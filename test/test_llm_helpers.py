@@ -296,7 +296,7 @@ class TestTransientErrorClassifier:
 
 class TestAcpErrorIsTransient:
     """acp_error_is_transient prefers the structured AcpError.transient flag and
-    falls back to the string classifier (Mesh-2356)."""
+    falls back to the string classifier."""
 
     def test_flag_true_wins_over_nontransient_message(self) -> None:
         from kiro_crew.llm_helpers import acp_error_is_transient
@@ -313,7 +313,7 @@ class TestAcpErrorIsTransient:
     def test_unflagged_5xx_message_falls_back_to_string(self) -> None:
         from kiro_crew.llm_helpers import acp_error_is_transient
 
-        # The Mesh-2356 regression: _format_acp_error's friendly 5xx string is
+        # The regression: _format_acp_error's friendly 5xx string is
         # now recognised by the string fallback even with no flag set.
         msg = (
             "The model backend hit a transient error (HTTP 5xx). This is usually "
@@ -416,7 +416,7 @@ class TestStreamAndCollectTransient:
     @pytest.mark.asyncio
     async def test_partial_response_not_retried(self) -> None:
         """A transient error AFTER tokens have streamed must NOT be retried —
-        re-running would duplicate the already-emitted output (Mesh-1157)."""
+        re-running would duplicate the already-emitted output."""
         call_count = 0
 
         async def _stream(msg):

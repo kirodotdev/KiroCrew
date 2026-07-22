@@ -3,8 +3,6 @@
 All atomic-write sites in KiroCrew should use this helper instead of
 deterministic ``.tmp`` filenames, which cause ENOENT when concurrent
 writers target the same file.
-
-See: Mesh-100
 """
 
 from __future__ import annotations

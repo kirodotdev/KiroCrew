@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import type { Artifact } from '../types'
 
-// AutoSDE finding (CR-284304497, post 24, ArtifactBody.tsx:169): when the
+// review finding (post 24, ArtifactBody.tsx:169): when the
 // iframe body's `srcdoc` transitions from a truthy value to null (e.g. the
 // artifact content empties while the panel is open), the effect's cleanup
 // revokes the old blob URL but `blobUrl` state must ALSO be cleared — otherwise

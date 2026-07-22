@@ -1,7 +1,7 @@
 """Identity-resolution topology tests (pre-work for the pid-namespace re-raise).
 
 Background (2026-07-18 incident): the PID-namespace sandbox change (24c320f6,
-reverted in CR-290268609; this fork ported then reverted it in ab96394b) broke
+reverted; this fork ported then reverted it in ab96394b) broke
 subagent identity resolution in live deployments while the full unit gate
 stayed green. Session hosts ran inside a PID namespace where
 ``os.getpid()``/``os.getppid()`` return namespace-local pids renumbered from 1,
@@ -32,8 +32,6 @@ This file provides the three unit-level defenses:
 3. **Call-site registry guard** — scans ``src/`` for ``session_pid_``
    references and fails when an unregistered file appears, so a fifth copy
    of the walk cannot land silently.
-
-Ticket: https://taskei.amazon.dev/tasks/cbb12036-7452-4dcb-a293-d6a078510b6a
 """
 
 from __future__ import annotations
@@ -64,7 +62,7 @@ VIEWS = [
             reason=(
                 "session_pid_<pid>.txt files are keyed by HOST pids; a "
                 "namespace-local pid view cannot resolve them (2026-07-18 "
-                "incident, commit 24c320f6 reverted in CR-290268609). A "
+                "incident, commit 24c320f6 reverted). A "
                 "pid-namespace re-raise CR must make identity resolution "
                 "namespace-aware and flip this to pass."
             ),
@@ -299,7 +297,7 @@ def test_stub_ancestor_chain_reaches_session_host(topo, monkeypatch, view) -> No
 
 
 # ---------------------------------------------------------------------------
-# Resolution path 5 (CR-290347380): KIROCREW_HOST_PID env shortcut.
+# Resolution path 5: KIROCREW_HOST_PID env shortcut.
 # The sandbox launcher exports its own HOST pid before any fork/namespace
 # work, so every resolver can look the session_pid file up DIRECTLY —
 # this is the namespace-aware path the pidns xfails above point at.
@@ -341,7 +339,7 @@ def test_mcp_core_host_pid_env_resolves_in_any_view(topo, monkeypatch, view) -> 
 
 
 # ---------------------------------------------------------------------------
-# Resolution path 6 (CR-290347380): gatewayd server-side peer-identity walk.
+# Resolution path 6: gatewayd server-side peer-identity walk.
 # Runs in gatewayd's OWN pid namespace (host pids via SO_PEERCRED), so it is
 # immune to the client's view by construction — the "view" axis does not
 # apply; what matters is that a host-pid walk from the peer resolves the key

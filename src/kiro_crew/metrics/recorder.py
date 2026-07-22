@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     # Annotation-only (``from __future__ import annotations`` defers evaluation).
     # Kept out of runtime imports so this module — and the no-op
     # ``MetricsRecorder(None)`` path provider.py falls back to — stays loadable
-    # when opentelemetry is absent (Mesh-2829 env-closure drift).
+    # when opentelemetry is absent (env-closure drift).
     from opentelemetry.metrics import Counter, Histogram, Meter, UpDownCounter
 
 from kiro_crew.metrics.schema import validate_attrs, validate_name

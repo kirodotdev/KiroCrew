@@ -7,7 +7,6 @@ disabled/opt-in by default. 54 backend tests pass; flake8/isort/mypy clean; tsc 
 publish-provider registry on the artifact page; app page slimming to a pure management
 console (see §1.1–§1.3). Follow-ups: IAM policy not yet run through Access Analyzer (§9.5);
 chat-native skill ships but its auto-registration via discovery `skills` propagation is pending.
-**Source research:** `/local/home/zejiangg/.kirocrew/workspace/research/5d1b29a9/FINDINGS.md`
 
 ---
 
@@ -18,7 +17,7 @@ Extend KiroCrew's scope — including **public usage** — by collaborating with
 artifacts as a publicly-available web page** served from the **user's own AWS account**.
 
 ### Audience
-**Anyone with their own AWS account — Amazon-internal *and* external alike.** "Bring
+**Anyone with their own AWS account — internal *and* external alike.** "Bring
 your own AWS" is the deliberate bar. The *user-owns-their-own-cloud* model (KiroCrew
 never hosts, never holds liability) applies identically to internal and external AWS
 users, so AWS S3 + CloudFront is the right fit for the whole segment. No-cloud / casual
@@ -49,13 +48,13 @@ credential non-goals keep the *credential/account* review surface unchanged (the
 
 **Flagship use case:** publish an existing KiroCrew artifact — **HTML, markdown file,
 or interactive widget** (these three are the primary target) — to a real **public
-URL**. Today `artifact_publish` shares only internally (Amazon Artifactory);
+URL**. Today `artifact_publish` shares only internally (an internal artifact registry);
 deploy-web makes the artifact publicly live via the user's own S3 + CloudFront.
 
 > **Design note (publish-interface generalization — ADOPTED via the provider registry,
-> see §1.1):** the original `artifact_publish` was tightly bound to Artifactory. Route B
+> see §1.1):** the original `artifact_publish` was tightly bound to the internal registry. Route B
 > now **generalizes the publish interface** so the destination is pluggable: every
-> destination (Artifactory, AWS, future apps) is a **registered provider** the artifact
+> destination (internal registry, AWS, future apps) is a **registered provider** the artifact
 > page renders generically. The markdown/widget render-to-static step still lives **inside
 > deploy-web**, not in core (§1.1) — core stays destination-agnostic and AWS-code-free.
 
@@ -71,15 +70,15 @@ deploy-web makes the artifact publicly live via the user's own S3 + CloudFront.
 > Route A was chosen (review-scope caution).
 
 **The artifact page is the single publish surface; every destination is a registered
-provider.** All publishing — the existing internal Artifactory visibility options
+provider.** All publishing — the existing internal-registry visibility options
 (PRIVATE / SHARED / PUBLIC) **and** the new public-web (AWS) destination — flows through
 one **publish-provider registry**. The artifact page renders publish actions purely from
 that registry; it has no hardcoded knowledge of any specific destination.
 
-| | Artifactory provider (built-in) | deploy-web provider (app) |
+| | Internal-registry provider (built-in) | deploy-web provider (app) |
 |---|---|---|
-| Destination | Amazon **Artifactory** | User's **own AWS** (S3 + CloudFront) |
-| Audience | **Internal** (Amazon employees) | **Public** internet |
+| Destination | **Internal artifact registry** | User's **own AWS** (S3 + CloudFront) |
+| Audience | **Internal** (internal employees) | **Public** internet |
 | Origin of registration | Core built-in registration list | App `app.json` manifest (`publishProvider`) |
 | Availability | Present in internal builds only | When the app is enabled + configured |
 | Renderer | Existing visibility/sharing dialog (unchanged) | Generic confirm-gate + scan-gate dialog |
@@ -88,8 +87,8 @@ that registry; it has no hardcoded knowledge of any specific destination.
 - **One publish surface.** The core artifact page's publish affordance is driven entirely
   by the **provider registry**. Each provider supplies its own renderer (dialog/flow); the
   page just lists the available providers and opens the selected provider's renderer.
-- **All destinations are providers, including Artifactory.** The existing
-  PRIVATE/SHARED/PUBLIC visibility options become the **Artifactory provider**, a
+- **All destinations are providers, including the internal registry.** The existing
+  PRIVATE/SHARED/PUBLIC visibility options become the **internal-registry provider**, a
   built-in registry entry that wraps the **existing visibility/sharing dialog with zero
   behavioral change**. It is no longer special-cased inline.
 - **deploy-web is a registered app provider.** Its renderer is a generic confirm-gate +
@@ -113,14 +112,14 @@ registry keeps core destination-agnostic.
 ### 1.2 External-fork removability (why Route B is *better* for the public build)
 
 The registry is the **single abstraction for all publish destinations**, which makes the
-external-facing build (KiroCrewExternal, the public Python fork) clean:
+external-facing build (the public Python fork) clean:
 
-- Artifactory is Amazon-internal only and does **not** exist outside Amazon.
-- Because Artifactory is now just a **built-in registry entry** (one registration in a
+- The internal artifact registry is internal-only and does **not** exist outside the company.
+- Because the internal registry is now just a **built-in registry entry** (one registration in a
   single list), the external fork removes **all** internal publishing by **dropping that
   one entry** — no scattered conditionals across the artifact page.
 - After removal, the artifact page still works: the registry simply has fewer providers
-  (e.g. only deploy-web, or none → a "set it up" prompt). No dead Artifactory UI, no
+  (e.g. only deploy-web, or none → a "set it up" prompt). No dead internal-registry UI, no
   inert internal-only buttons to hide.
 
 > Net: Route B both improves UX (publish from where artifacts live) **and** makes the
@@ -132,17 +131,17 @@ A publish provider is described by:
 
 | Field | Meaning |
 |---|---|
-| `id` | Stable provider id (e.g. `artifactory`, `deploy-web-aws`). |
-| `label` | Human-readable action label (e.g. "Share on Artifactory", "Publish to public web (your AWS)"). |
+| `id` | Stable provider id (e.g. `internal-registry`, `deploy-web-aws`). |
+| `label` | Human-readable action label (e.g. "Share on the internal registry", "Publish to public web (your AWS)"). |
 | `icon` | Icon name for the action. |
 | `origin` | `builtin` (core registration list) or `app` (declared in an app `app.json` manifest). |
-| `availability` / configured-check | When the action is offered. Built-in Artifactory: present in internal builds. App providers: app **enabled + configured** (resolved via the app's own config endpoint). |
-| `renderer` | The per-provider dialog/flow. Artifactory → the existing visibility/sharing dialog (unchanged). App providers → a generic confirm-gate + scan-gate dialog that posts to `endpoint`. |
+| `availability` / configured-check | When the action is offered. Built-in internal registry: present in internal builds. App providers: app **enabled + configured** (resolved via the app's own config endpoint). |
+| `renderer` | The per-provider dialog/flow. Internal registry → the existing visibility/sharing dialog (unchanged). App providers → a generic confirm-gate + scan-gate dialog that posts to `endpoint`. |
 | `endpoint` (app providers) | The app backend route the renderer calls (e.g. `/api/apps/deploy-web/deploy`). |
 
 **Two registration sources, one registry:**
 1. **Built-in providers** — registered in a single core list (e.g. a
-   `BUILTIN_PUBLISH_PROVIDERS` constant). Artifactory lives here. The external fork
+   `BUILTIN_PUBLISH_PROVIDERS` constant). The internal registry lives here. The external fork
    removes internal publishing by dropping this entry.
 2. **App providers** — declared via a `publishProvider` field in the app's `app.json`
    manifest; core aggregates the **enabled + configured** ones through
@@ -232,7 +231,7 @@ Two deterministic steps run in the Python module **before** assets are uploaded:
 
 **b) Pre-publish content scan (Q4)** — deploying makes content world-readable, so before
 upload the module runs the rendered output through KiroCrew's **existing
-`redaction.py`/`security.py` secret regexes** + internal-data heuristics (Amazon aliases,
+`redaction.py`/`security.py` secret regexes** + internal-data heuristics (employee aliases,
 `*.internal-corp` hosts, AWS account ids/ARNs). On a match: **block-and-warn** — show what
 was flagged and where, require an explicit "publish anyway"; **never silently redact**.
 Always show a content summary in the approval. Best-effort detection, not a guarantee.
@@ -597,11 +596,11 @@ deploy-web alone. deploy-web is the first consumer.
 - Built as a **Python builtin module** (aws CLI subprocess, not boto3) + UI page +
   thin chat skill (§8) — no per-app update cron (built-in; updated with KiroCrew).
 - **Route B publish surface (§1.1):** all publishing flows through a **provider
-  registry** on the artifact page. Artifactory (PRIVATE/SHARED/PUBLIC) is a built-in
+  registry** on the artifact page. The internal registry (PRIVATE/SHARED/PUBLIC) is a built-in
   provider wrapping the existing dialog unchanged; deploy-web is an app provider
   (enabled + configured gated). The deploy-web app page is a **pure console**
   (setup / health / manage sites) — no publish form. External fork drops internal
-  publishing by removing the single Artifactory registration entry (§1.2).
+  publishing by removing the single internal-registry registration entry (§1.2).
 
 **Deferred to v2+:** custom domains (ACM us-east-1 + Route 53); viewer access control
 (signed URLs / edge basic-auth / `s3 presign`); local SQLite cache; Lambda-backed

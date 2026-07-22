@@ -80,7 +80,7 @@ class TestModelRegistry:
 
     def test_kiro_dotted_aliases_resolve(self):
         # AIM-managed agents ship kiro dotted ids; they must map deterministically
-        # (NOT fall back to the flagship), preserving e.g. meshclaw-lite on sonnet.
+        # (NOT fall back to the flagship), preserving e.g. agent-lite on sonnet.
         assert (
             mr.to_provider_id("claude-sonnet-4.6", "claude_code")
             == "global.anthropic.claude-sonnet-4-6[1m]"

@@ -345,7 +345,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                 // model-id heuristic only when the backend hasn't reported a
                 // window yet (e.g. before the first usage_update). Using the
                 // heuristic unconditionally can inflate the token text ~5x when
-                // a "[1m]" model is actually served at 200k by Bedrock.
+                // a "[1m]" model is actually served at 200k by the backend.
                 const maxTokens = s.context_window_tokens && s.context_window_tokens > 0
                   ? s.context_window_tokens
                   : provider.getContextWindow(s.model)

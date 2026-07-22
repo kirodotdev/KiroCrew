@@ -85,10 +85,10 @@ function appImportMapPlugin(): Plugin {
  * Serve the Tailwind v4 browser runtime from the dashboard's own origin at
  * `/vendor/tailwindcss-browser.js`. The sandboxed widget iframe (a null-origin
  * blob) loads Tailwind from here instead of the public cdn.tailwindcss.com,
- * which AEA-enforced environments block — crashing the whole page on artifact
- * render (Mesh-2518). The file is copied from the tracked @tailwindcss/browser
- * npm dependency at build time (NOT a committed blob), satisfying BSC14
- * software-supply-chain.
+ * which restricted network environments block — crashing the whole page on
+ * artifact render. The file is copied from the tracked @tailwindcss/browser
+ * npm dependency at build time (NOT a committed blob), satisfying
+ * software-supply-chain policy.
  */
 function tailwindRuntimePlugin(): Plugin {
   const RUNTIME_SRC = TAILWIND_RUNTIME_SRC
@@ -187,12 +187,12 @@ export default defineConfig({
     // ``test:website`` script in package.json). Off in watch mode to keep
     // local iteration snappy.
     //
-    // ``cobertura-coverage.xml`` is the filename Coverlay scans for in the
-    // Dry Run Build artifacts; ``lcov.info`` is a fallback for tools that
-    // read lcov natively (devcentral, codecov, etc.). Output lands under
-    // ``build/`` so NpmPrettyMuch includes it in the brazil-published
-    // artifact tree — the default ``./coverage/`` would be outside the
-    // packaged output and Coverlay would never see it.
+    // ``cobertura-coverage.xml`` is the filename the CI coverage tool scans
+    // for in the build artifacts; ``lcov.info`` is a fallback for tools that
+    // read lcov natively (codecov, etc.). Output lands under ``build/`` so the
+    // build includes it in the published artifact tree — the default
+    // ``./coverage/`` would be outside the packaged output and the coverage
+    // tool would never see it.
     coverage: {
       provider: 'istanbul',
       reporter: ['text', 'cobertura', 'lcov'],

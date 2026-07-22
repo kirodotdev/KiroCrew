@@ -386,7 +386,7 @@ class TestMCPRegistration:
         assert data["mcpServers"]["test-app:my-mcp"]["url"] == "http://localhost:9101/mcp"
 
     def test_http_mcp_server_skipped_when_backend_not_yet_up(self, tmp_path, app_env, monkeypatch):
-        # REGRESSION (CR-281976055 / revert CR-284300496): if the backend isn't running
+        # REGRESSION (revert): if the backend isn't running
         # (port unknown), an HTTP MCP server must NOT be registered at all — registering
         # the manifest's illustrative dead port (:9100) into global ~/.kiro/settings/mcp.json
         # makes kiro-cli try to connect on EVERY session → "backend hiccup" → 3 retries →
@@ -646,8 +646,7 @@ class TestMCPProperties:
 
 
 class TestBootReconcile:
-    """Boot-time scrub of stale MCP entries for disabled apps (regression
-    CR-281976055 / revert CR-284300496)."""
+    """Boot-time scrub of stale MCP entries for disabled apps."""
 
     def test_boot_scrubs_stale_mcp_entry_for_disabled_app(self, tmp_path, monkeypatch):
         # A disabled app that left a (now-dead-port) MCP entry in global mcp.json must
@@ -683,7 +682,7 @@ class TestBootReconcile:
         assert "other:keep" in remaining            # unrelated entry untouched
 
     def test_enabled_app_never_healthy_mcp_entry_scrubbed(self, tmp_path, app_env, monkeypatch):
-        # Review CR-284432051: an ENABLED port:"auto" app registered with an optimistic
+        # Review scenario: an ENABLED port:"auto" app registered with an optimistic
         # pre-health port whose backend never passes /health must NOT leave a dead HTTP MCP
         # url behind — that's the exact shape that broke every kiro-cli session. The
         # health-gated path calls _gate_mcp_registration(healthy=False) on health failure,
@@ -725,7 +724,7 @@ class TestBootReconcile:
         assert servers["test-app:my-mcp"]["url"] == "http://localhost:9101/mcp"  # live port
 
     def test_boot_does_not_register_enabled_app_before_health(self, tmp_path, monkeypatch):
-        # Review CR-284432051: the boot loop must NOT register MCP servers for a freshly
+        # Review scenario: the boot loop must NOT register MCP servers for a freshly
         # spawned (healthy=False) enabled app — registration is deferred to the health-check
         # loop. Registering here is what could leave a dead url for a never-healthy app.
         import kiro_crew.apps.backend as backend_mod

@@ -1,4 +1,4 @@
-"""In-memory governance health signal for the dashboard indicator (AVP-23427).
+"""In-memory governance health signal for the dashboard indicator.
 
 A process-global record of the most recent governance fail-closed / integrity
 incident, set on the audit path (``governance_profiles.audit_governance_degraded``

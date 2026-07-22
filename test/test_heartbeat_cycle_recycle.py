@@ -1,6 +1,6 @@
 """Tests for the heartbeat cycle-end recycle path.
 
-Per bolichen review on CR-277980962/r5:
+Per code review:
 - A per-task ``reset(HEARTBEAT_KEY)`` in ``_heartbeat_task.finally`` deterministically
   tears down the session under concurrent ``asyncio.gather``'d sibling tasks
   sharing the same key — the next sibling streams against a torn-down provider.
@@ -228,13 +228,13 @@ class TestRecycleHeartbeat:
 
 class TestHeartbeatAgentInstall:
     """``_install_heartbeat_agent`` writes the kirocrew-heartbeat agent
-    config with a minimal MCP surface (gsanc review on CR-277980962/r5)."""
+    config with a minimal MCP surface (per code review)."""
 
     def test_installs_with_minimal_mcp_servers(self, tmp_path, monkeypatch):
         """Heartbeat agent gets kirocrew-core only on public installs — NOT
-        kirocrew-cron / arcc-governance / etc.  This is gsanc's
-        narrow-toolbelt fix for cold-start cost. (The Amazon-internal
-        builder-mcp wiring is omitted on public installs, matching
+        kirocrew-cron / governance / etc.  This is the
+        narrow-toolbelt fix for cold-start cost. (Any extra internal
+        wiring is omitted on public installs, matching
         ``_install_research_agent`` / ``_install_knowledge_agent``.)"""
         import json
 
@@ -350,7 +350,7 @@ class TestHeartbeatAgentInstall:
         assert config["mcpServers"] == {}
         # tools must be derived from mcpServers — never reference a
         # namespace without a matching mcpServers entry, otherwise kiro-cli
-        # fails to load the agent. (AutoSDE finding on rev 6.)
+        # fails to load the agent. (review-bot finding on rev 6.)
         assert config["tools"] == []
 
     def test_tools_derived_from_resolved_mcp_servers(self, tmp_path, monkeypatch):
@@ -361,7 +361,7 @@ class TestHeartbeatAgentInstall:
         builder-mcp but NOT kirocrew-core resolves to an empty toolbelt — and
         the tools list must NEVER reference a namespace without a matching
         mcpServers entry, otherwise kiro-cli fails to load the agent.
-        (AutoSDE finding on rev 6.)
+        (review-bot finding on rev 6.)
         """
         import json
 

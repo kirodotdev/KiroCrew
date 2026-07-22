@@ -4,7 +4,7 @@ Provides the recording Slack client, scripted provider, and fake session
 manager reused by ``test_slack_transport_dispatch`` and
 ``test_slack_transport_integration`` (imported via ``importlib``).
 
-NOTE: the internal MeshClaw CR-282178273 also shipped a set of golden
+NOTE: the upstream project also shipped a set of golden
 native-``handle_message`` transcript baselines here (``_GOLDEN_*`` +
 ``run_native_turn``). Those baselines were captured against the internal beta
 renderer (which posts a 💭 placeholder + deletes it) and would NOT match this

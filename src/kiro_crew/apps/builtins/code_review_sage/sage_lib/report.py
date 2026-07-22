@@ -32,8 +32,8 @@ _BLAST_W = {"SMALL": 0, "MEDIUM": 25, "LARGE": 40}
 
 # LLM-authored free-text fields. These are model output and must never be
 # surfaced raw: the dashboard reads the local rows.json / focus-report.html this
-# module writes DIRECTLY (no redaction in between), so we scrub here. Per ARCC
-# (untrusted-LLM-output: "should not be trusted at all") + the security-controls
+# module writes DIRECTLY (no redaction in between), so we scrub here. Per
+# untrusted-LLM-output guidance ("should not be trusted at all") + the security-controls
 # guideline (scan with redact_exfiltration_urls + redact_credentials before any
 # external surface). The artifact-archive path also redacts; this closes the
 # local-file gap. ``pipeline._redact`` is a no-op when the redaction lib is
@@ -305,7 +305,7 @@ def _safe_href(url: object) -> str:
     """Allowlist http(s) for a link rendered in the report HTML. The PR URL is
     LLM/PR-derived; output-encoding (html.escape) neutralizes quotes but NOT a
     ``javascript:``/``data:`` scheme, so a scheme allowlist is required for the
-    ``href`` attribute context (ARCC href/XSS guidance — default-deny). A
+    ``href`` attribute context (href/XSS guidance — default-deny). A
     non-http(s) URL collapses to ``#``."""
     try:
         if urlparse(str(url)).scheme.lower() in ("http", "https"):

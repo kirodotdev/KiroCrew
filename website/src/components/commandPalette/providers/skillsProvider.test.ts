@@ -7,14 +7,14 @@ import {
 import type { Result } from '../types'
 
 /**
- * Unit tests for the pure {@link createSkillsProvider} factory (Mesh-2151
- * Search Everywhere, step 17 — the Skills provider + its §2 Enter matrix). Side
+ * Unit tests for the pure {@link createSkillsProvider} factory
+ * (Search Everywhere, step 17 — the Skills provider + its §2 Enter matrix). Side
  * effects are injected, so we pass plain spies and assert filtering + the
  * context-aware Enter / ⌘Enter / ⌥Enter wiring + the `$<name>` token format.
  */
 
 const SKILLS: SkillItem[] = [
-  { name: 'brazil', description: 'Amazon build system' },
+  { name: 'brazil', description: 'build system' },
   { name: 'crux', description: 'Code reviews' },
 ]
 

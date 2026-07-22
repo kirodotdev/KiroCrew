@@ -888,7 +888,7 @@ class TestPendingProjectReset:
 
 
 class TestInteractiveDenyDoesNotTriggerRecovery:
-    """Mesh-2344: an interactive user denial (clicking Reject in the dashboard)
+    """an interactive user denial (clicking Reject in the dashboard)
     must NOT populate _refusal_reasons or trigger refusal-recovery. Only
     system-side blocks (hook deny at ~L1974) should trigger recovery."""
 

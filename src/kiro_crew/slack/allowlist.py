@@ -261,11 +261,11 @@ async def send_dashboard_link(
 
 # NOTE: `send_channel_challenge()` was DELIBERATELY REMOVED. It generated a
 # presigned dashboard-session link for EVERY inbound Slack message (the
-# "challenge-and-redirect" posture) — an Amazon-internal-only control not
+# "challenge-and-redirect" posture) — an enterprise-only control not
 # wanted for external/open-source usage, where Slack messages reach the agent
 # inline. `send_dashboard_link()` above (the explicit `/kirocrew dashboard`
 # command) is retained. Do NOT restore send_channel_challenge during an
-# upstream (MeshClaw) sync — see skills/meshclaw-sync/SKILL.md.
+# upstream sync.
 
 
 # ---------------------------------------------------------------------------

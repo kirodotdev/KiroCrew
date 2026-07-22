@@ -1,7 +1,7 @@
 # MCP Server Architecture
 
 How MCP (Model Context Protocol) servers are configured, probed, loaded,
-and distributed across KiroCrew, kiro-cli, and Claude Code.
+and distributed across KiroCrew, kiro-cli, and an external agent CLI.
 
 > **Design invariant:** KiroCrew does NOT write to provider globals
 > (`~/.kiro/settings/mcp.json`, `~/.claude.json`) under any normal code
@@ -9,16 +9,16 @@ and distributed across KiroCrew, kiro-cli, and Claude Code.
 > additions via per-agent files it fully owns
 > (`~/.kiro/agents/kirocrew.json`, `~/.claude/agents/kirocrew.mcp.json`).
 > This keeps KiroCrew-scoped tools out of every interactive kiro-cli and
-> Claude Code session the user runs outside KiroCrew.
+> external agent-CLI session the user runs outside KiroCrew.
 
 ## Config File Hierarchy
 
 | File | Owner | Purpose | Read by |
 |------|-------|---------|---------|
 | `~/.kiro/agents/kirocrew.json` | KiroCrew gateway (`rebuild_agent_config`) | Rendered Kiro agent: merged model + tools + MCP servers | kiro-cli when running as kirocrew agent |
-| `~/.claude/agents/kirocrew.md` + `~/.claude/agents/kirocrew.mcp.json` | _(removed)_ — the CC agent renderer was deleted with the Claude Code provider; KiroCrew is `kiro-cli`-only | Was the rendered Claude Code agent + MCP registry; no longer written | (no current reader — dormant CC seam only) |
+| `~/.claude/agents/kirocrew.md` + `~/.claude/agents/kirocrew.mcp.json` | _(removed)_ — the agent renderer was deleted with the standalone provider; KiroCrew is `kiro-cli`-only | Was the rendered agent + MCP registry; no longer written | (no current reader — dormant ACP seam only) |
 | `~/.kiro/settings/mcp.json` | User | Kiro global MCP servers | kiro-cli for ALL agents (merged into KiroCrew's agent file at render time) |
-| `~/.claude.json` (`mcpServers`) | User / Claude Code | Claude Code global MCP servers | Interactive CC sessions (merged into KiroCrew's CC agent file at render time) |
+| `~/.claude.json` (`mcpServers`) | User / external agent CLI | External agent-CLI global MCP servers | Interactive external agent-CLI sessions (merged into KiroCrew's rendered agent file at render time) |
 | `~/.kirocrew/mcp.json` | User (dashboard MCP panel) | KiroCrew-specific additions and per-server disables | KiroCrew gateway only |
 
 ### Merge Priority (in `rebuild_agent_config()`)
@@ -32,15 +32,16 @@ Highest wins at collisions:
    hand-edits, kiro-cli direct adds) survives the rebuild
 3. `~/.kiro/settings/mcp.json` — Kiro global (merged via `setdefault`
    **first**, so Kiro global wins between the two globals)
-4. `~/.claude.json` `mcpServers` — Claude Code global (merged via
+4. `~/.claude.json` `mcpServers` — external agent-CLI global (merged via
    `setdefault` **after** Kiro, so it only fills gaps the base/Kiro didn't
    already have; it must **not** shadow a Kiro-global entry)
 
 > **Kiro-first (changed 2026-06):** KiroCrew is ACP/kiro-cli-only, so Kiro
-> global now **outranks** the Claude Code global — the reverse of the prior
-> "CC wins over Kiro" rule. The CC global is retained only as a gap-filler so
-> the Claude Code (or another) provider can be re-enabled later without
-> rework. Fully removing the CC scope (`mcp_discovery` `SCOPE_CC_GLOBAL`, the
+> global now **outranks** the external agent-CLI global — the reverse of the
+> prior "external agent-CLI wins over Kiro" rule. The external agent-CLI global
+> is retained only as a gap-filler so a companion-registered backend (or another
+> provider) can be re-enabled later without rework. Fully removing the
+> external-agent-CLI scope (`mcp_discovery` `SCOPE_CC_GLOBAL`, the
 > dashboard `ccGlobal` toggle, the hidden provider-switch UI) is
 > **intentionally deferred** pending a provider-strategy decision; the
 > interface code is left intact.
@@ -136,37 +137,37 @@ Key implication: if a sub-agent needs kirocrew-core tools (`learn_add`,
 `spawn_run`, `send_message`), those must be in the agent config that
 kiro-cli reads. They are — `kirocrew.json` always contains them.
 
-## How Claude Code Uses MCP Servers (removed)
+## How the removed agent renderer used MCP Servers (removed)
 
 > **Removed during de-Amazoning — KiroCrew is KiroACP / `kiro-cli`-only**
-> (`agent.provider` is fixed to `acp`). The standalone Claude Code provider
-> (`providers/claude_code.py`), the CC agent renderer (`install_cc_agent_config`,
-> `_apply_cc_provider_defaults`) and the rendered `~/.claude/agents/kirocrew.md`
-> + `kirocrew.mcp.json` files were **deleted**. Nothing renders those files;
-> there is no Claude Code provider to select. This subsection is retained only as
-> a record of the former design.
+> (`agent.provider` is fixed to `acp`). The removed standalone provider, the
+> removed agent renderer (`install_cc_agent_config`, `_apply_cc_provider_defaults`)
+> and the rendered `~/.claude/agents/kirocrew.md` + `kirocrew.mcp.json` files were
+> **deleted**. Nothing renders those files; there is no such provider to select.
+> This subsection is retained only as a record of the former design.
 
-What the renderer used to do: when the provider was Claude Code, KiroCrew wrote a
-`kirocrew.md` agent definition plus a `kirocrew.mcp.json` server registry under
-`~/.claude/agents/` and passed the latter to CC via
-`--mcp-config ~/.claude/agents/kirocrew.mcp.json`, so the CC session loaded
+What the renderer used to do: when the removed provider was active, KiroCrew wrote
+a `kirocrew.md` agent definition plus a `kirocrew.mcp.json` server registry under
+`~/.claude/agents/` and passed the latter to the backend via
+`--mcp-config ~/.claude/agents/kirocrew.mcp.json`, so that session loaded
 KiroCrew's scoped server set instead of the user's `~/.claude.json` global.
 
 What remains today:
 
 - The **dormant `ACP_BACKEND_CLAUDE` / `_is_claude` protocol seam** in
   `src/kiro_crew/acp/client.py`, kept inert so an internal companion package can
-  re-register a Claude-Code-over-`claude-agent-acp` backend without forking the
-  client. The public core never selects it — do not re-add the registration glue
-  or a CC agent-file renderer. See
+  re-register a `claude-agent-acp` backend without forking the client. The public
+  core never selects it — do not re-add the registration glue or an agent-file
+  renderer. See
   [`system-specs/features/claude-code-provider.md`](system-specs/features/claude-code-provider.md)
-  ("Claude Code Provider — removed") and the repo-root `CLAUDE.md`.
-- The **CC-global gap-filler merge**: `~/.claude.json` `mcpServers` is still read
-  (lowest priority — `kirocrew > kiro-global > cc-global`) in
-  `rebuild_agent_config`, and the dashboard `ccGlobal` toggle / `SCOPE_CC_GLOBAL`
-  scope still exist, so a future provider re-enable needs no rework (see the
-  "Kiro-first (changed 2026-06)" note above). The merge layer is interface code
-  left intact; it does **not** imply a selectable CC provider exists today.
+  ("Standalone provider — removed") and the repo-root `CLAUDE.md`.
+- The **external-agent-CLI global gap-filler merge**: `~/.claude.json`
+  `mcpServers` is still read (lowest priority — `kirocrew > kiro-global >
+  cc-global`) in `rebuild_agent_config`, and the dashboard `ccGlobal` toggle /
+  `SCOPE_CC_GLOBAL` scope still exist, so a future provider re-enable needs no
+  rework (see the "Kiro-first (changed 2026-06)" note above). The merge layer is
+  interface code left intact; it does **not** imply a selectable provider exists
+  today.
 
 ## Agent Config vs Global Config
 
@@ -218,10 +219,10 @@ Historical context:
 2. The sync caused real harm: it polluted every interactive kiro-cli /
    Kiro IDE session with KiroCrew-owned tools, so it was removed
    permanently.
-3. The multi-provider refactor extends the same principle to Claude
-   Code: KiroCrew **never** writes to `~/.claude.json` either; the CC
-   agent file at `~/.claude/agents/kirocrew.mcp.json` is authoritative
-   for KiroCrew's CC sessions.
+3. The multi-provider refactor extends the same principle to an external
+   agent CLI: KiroCrew **never** writes to `~/.claude.json` either; the
+   rendered agent file at `~/.claude/agents/kirocrew.mcp.json` was
+   authoritative for KiroCrew's external agent-CLI sessions.
 
 **If kirocrew-core/kirocrew-cron ever appear in either global, it is
 legacy pollution from pre-fix builds.** Users can clean it up through the
@@ -318,8 +319,8 @@ The SDK's `installAgentConfig()`:
 | 2. kiro-cli | Reads `disabledTools`, filters before LLM | Always (no network) |
 | 3. MCP server | `GET /api/session-tool-policy` filters `tools/list` + `tools/call` | Network-dependent |
 
-Layer 3 is defense-in-depth for non-kiro-cli clients (CC, custom MCP
-hosts) that may not read `disabledTools`.
+Layer 3 is defense-in-depth for non-kiro-cli clients (an external agent
+CLI, custom MCP hosts) that may not read `disabledTools`.
 
 ## Startup Sequence
 
@@ -329,8 +330,8 @@ On gateway startup, `rebuild_agent_config()`:
 2. `_refresh_dynamic_fields()` — managed defaults, resolved binary path
 3. Merge `~/.kiro/settings/mcp.json` (setdefault — Kiro global, wins
    between the two globals)
-4. Merge `~/.claude.json` `mcpServers` (setdefault — CC global, fills gaps
-   only; lower priority than Kiro)
+4. Merge `~/.claude.json` `mcpServers` (setdefault — external agent-CLI
+   global, fills gaps only; lower priority than Kiro)
 5. Merge `~/.kirocrew/mcp.json` (`update`, wins over globals)
 6. Re-resolve any per-server skill-directory paths from the local skill
    locations (project `skills/`, `~/.kirocrew/skills`) so they never go
@@ -355,7 +356,7 @@ contains the entry.
 2. Verify `includeMcpJson: false` is set
 3. Run `kirocrew doctor` — checks MCP probe status
 4. Dashboard → MCP panel shows live probe results
-5. For CC sessions, also check `~/.claude/agents/kirocrew.mcp.json`
+5. For external agent-CLI sessions, also check `~/.claude/agents/kirocrew.mcp.json`
 
 ### "Status column shows Unknown forever"
 
@@ -364,12 +365,12 @@ config file, but the results only appear on the next refresh. Wait a
 few seconds and reload. If it stays "Unknown", the server is failing
 to handshake — check the dashboard error text or gateway logs.
 
-### "Tools available in KiroCrew but not in interactive kiro-cli / CC"
+### "Tools available in KiroCrew but not in interactive kiro-cli"
 
 This is **correct behavior**. `kirocrew-core`/`kirocrew-cron` are
 agent-scoped. They should NOT appear in interactive kiro-cli or
-Claude Code sessions. If they do, something wrote them to a provider
-global — file a bug.
+external agent-CLI sessions. If they do, something wrote them to a
+provider global — file a bug.
 
 ### "Removed a server from Kiro global but it came back"
 

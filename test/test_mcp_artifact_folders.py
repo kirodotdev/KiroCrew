@@ -1,4 +1,4 @@
-"""Tests for the artifact-folder MCP tool handlers (Mesh-2720).
+"""Tests for the artifact-folder MCP tool handlers.
 
 Covers dispatch for ``artifact_folder_list/create/rename/move/delete``,
 ``artifact_move``, and the ``folder`` passthrough on ``artifact_save`` —

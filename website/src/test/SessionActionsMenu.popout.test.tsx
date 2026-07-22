@@ -1,6 +1,6 @@
 /**
  * Regression tests for the session menu's popout items rendered INSIDE a
- * popout window (Mesh-1380 review). The header menu re-renders inside the
+ * popout window (review). The header menu re-renders inside the
  * popout (`ChatPage embedMode="chat"` includes `ChatHeaderMenu`), but a popout
  * never holds its OWN slot in the coordination map (BroadcastChannel doesn't
  * self-deliver), so keying purely off `isPoppedOut` would wrongly offer

@@ -79,14 +79,14 @@ Playwright is configured in `playwright.config.ts`:
 
 The integration tests cover the main workflows described in the Taskei tickets:
 
-**P400806161 - MSW Integration Tests**
+**MSW Integration Tests**
 - ✅ MemoryTab: load settings, save, consolidate flow
 - ✅ CronTab: load jobs, add job, toggle/delete
 - ✅ SkillsTab: load skills, expand/collapse, create/edit/delete
 - ✅ McpTab: list servers, toggle tools, enable/disable servers
 - ✅ HooksPage: create hooks, edit, delete, toggle, test execution
 
-**P400806184 - Playwright E2E Tests**
+**Playwright E2E Tests**
 - ✅ Navigate to Overview → verify stats load
 - ✅ Send chat message → see streaming response
 - ✅ Create cron job → verify in jobs table

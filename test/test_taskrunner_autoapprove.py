@@ -1,4 +1,4 @@
-"""Regression tests for Mesh-1859: task runner must honor explicit auto-approve.
+"""Regression tests for task runner must honor explicit auto-approve.
 
 Before the fix, task_executor.execute_task's EVENT_PERMISSION_REQUEST loop only
 handled TOOL_DENY and unconditionally fell through to the interactive

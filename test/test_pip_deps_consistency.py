@@ -269,7 +269,7 @@ def test_noop_recorder_when_otel_missing(monkeypatch):
 
     try:
         # Re-import provider — it should set _OTEL_AVAILABLE = False and
-        # degrade to the MetricsRecorder(None) no-op path (Mesh-2829 contract).
+        # degrade to the MetricsRecorder(None) no-op path (contract).
         spec = importlib.util.find_spec("kiro_crew.metrics.provider")
         assert spec is not None
         prov = importlib.util.module_from_spec(spec)

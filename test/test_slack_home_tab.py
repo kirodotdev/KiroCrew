@@ -83,9 +83,9 @@ class TestPublishHomeTabHappyPath:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_builds_valid_home_view(self, _mw, _fmt, _yolo):
         orch = _make_orch()
@@ -106,7 +106,7 @@ class TestPublishHomeTabHappyPath:
         assert "test-job" in text
         assert "always do X" in text
         assert "Active sessions" in text
-        assert "Midway" in text
+        assert "SSO" in text
         assert "Uptime" in text
         assert "Capabilities" in text
 
@@ -114,9 +114,9 @@ class TestPublishHomeTabHappyPath:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=True)
     @patch("kiro_crew.slack.events.format_schedule", return_value="daily")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_yolo_on_shown(self, _mw, _fmt, _yolo):
         orch = _make_orch()
@@ -203,9 +203,9 @@ class TestPublishHomeTabCapabilities:
         "kiro_crew.slack.events._get_skills_loader",
     )
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_shows_mcp_servers_and_skills(self, _mw, mock_loader, _servers, _yolo):
         mock_loader.return_value.list_skills.return_value = [
@@ -225,9 +225,9 @@ class TestPublishHomeTabCapabilities:
     @patch("kiro_crew.slack.events.list_servers", return_value=[])
     @patch("kiro_crew.slack.events._get_skills_loader")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_empty_capabilities(self, _mw, mock_loader, _servers, _yolo):
         mock_loader.return_value.list_skills.return_value = []
@@ -241,9 +241,9 @@ class TestPublishHomeTabCapabilities:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.list_servers", side_effect=RuntimeError("boom"))
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_capabilities_error_handled(self, _mw, _servers, _yolo):
         orch = _make_orch()
@@ -262,9 +262,9 @@ class TestPublishHomeTabUptime:
     @patch("kiro_crew.slack.events.list_servers", return_value=[])
     @patch("kiro_crew.slack.events._get_skills_loader")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_uptime_shown_in_status(self, _mw, mock_loader, _servers, mock_stats_cls, _yolo):
         mock_loader.return_value.list_skills.return_value = []
@@ -284,9 +284,9 @@ class TestPublishHomeTabVectorStore:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_reads_from_vector_store(self, _mw, _fmt, _yolo):
         """When vector_memory.get_lessons() returns a list, lessons display from it."""
@@ -308,9 +308,9 @@ class TestPublishHomeTabVectorStore:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅ 5.0h remaining",
+        return_value="*SSO:* ✅ 5.0h remaining",
     )
     async def test_vector_store_error_falls_back_to_jsonl(self, _mw, _fmt, _yolo):
         """When vector store raises, falls back to JSONL lessons."""
@@ -366,9 +366,9 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_section_header_always_rendered(self, _mw, _fmt, _yolo, tmp_path, monkeypatch):
         """The Sessions header appears even when there are no sessions on disk."""
@@ -387,9 +387,9 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_dashboard_session_rendered_under_main_chat(
         self, _mw, _fmt, _yolo, tmp_path, monkeypatch
@@ -420,9 +420,9 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_taskrunner_session_rendered_under_autopilot(
         self, _mw, _fmt, _yolo, tmp_path, monkeypatch
@@ -448,9 +448,9 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_caps_at_five_rows_per_kind(self, _mw, _fmt, _yolo, tmp_path, monkeypatch):
         """Home Tab requests at most _HOME_TAB_SESSIONS_PER_KIND rows per kind."""
@@ -484,9 +484,9 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_uses_section_blocks_not_task_card(
         self, _mw, _fmt, _yolo, tmp_path, monkeypatch
@@ -523,9 +523,9 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_collector_failure_falls_back_to_unavailable_message(
         self, _mw, _fmt, _yolo, monkeypatch
@@ -550,14 +550,14 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_collector_failure_emits_error_sel_audit(
         self, _mw, _fmt, _yolo, monkeypatch
     ):
-        """Regression for AutoSDE security-controls finding on rev-after-rebase.
+        """Regression for review-bot security-controls finding on rev-after-rebase.
 
         SEL audit must record the data-access attempt even when the collector
         raises, so a failure mode can't silently bypass the audit trail. The
@@ -597,9 +597,9 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_collector_failure_redacts_credentials_in_exc_message(
         self, _mw, _fmt, _yolo, monkeypatch
@@ -635,14 +635,14 @@ class TestPublishHomeTabSessions:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
     @patch(
-        "kiro_crew.midway.get_midway_status_line",
+        "kiro_crew.sso_status.get_sso_status_line",
         new_callable=AsyncMock,
-        return_value="*Midway:* ✅",
+        return_value="*SSO:* ✅",
     )
     async def test_unauthorized_user_blocked_with_denied_audit(
         self, _mw, _fmt, _yolo, tmp_path, monkeypatch
     ):
-        """Regression for AutoSDE security-controls / authorization rule on Home Tab.
+        """Regression for review-bot security-controls / authorization rule on Home Tab.
 
         Defense-in-depth: even though the dispatcher already gates app_home_opened
         events via is_allowed_user, the Sessions section must also enforce

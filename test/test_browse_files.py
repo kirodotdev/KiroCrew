@@ -3,7 +3,7 @@
 Mirrors test_browse_dirs.py but covers the additional ``files`` array,
 dirs-first sorting, build-artifact skip set, hidden-file filtering, and the
 realpath-based symlink check that closes the symlink-bypass for sensitive
-paths (added in CR-276050100).
+paths (added).
 """
 
 from __future__ import annotations

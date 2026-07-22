@@ -50,7 +50,7 @@ describe('widgetSrcdoc', () => {
 
   it('loads Tailwind same-origin (no public CDN) with v4 dark-mode directives', () => {
     const out = buildSrcdoc({ html: '', themeVars: {}, mode: 'dark' })
-    // AEA fix (Mesh-2518): must NOT fetch Tailwind from the public CDN.
+    // Locked-down-network fix: must NOT fetch Tailwind from the public CDN.
     expect(out).not.toContain('cdn.tailwindcss.com')
     // v4 drives dark: off a .dark class via a custom variant, not tailwind.config.
     expect(out).toContain('@custom-variant dark')

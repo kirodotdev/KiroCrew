@@ -14,6 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scrub-lint:
+    name: De-Amazon Scrub Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        # Full history is fetched lazily by the script only for the (skipped)
+        # history scan; the working-tree gate needs just the checkout.
+      - name: Scan working tree for internal markers
+        # Blocking gate: fails the build on any Amazon-internal marker in the
+        # public tree (internal domains/hosts, ticket ids, aliases, credential
+        # shapes) outside the intentional allowlist, so a sync cannot reintroduce
+        # a coupling. --no-history: git-history rewrite is a separate task.
+        run: ./scripts/scrub-lint.sh --no-history
+
   backend-lint:
     name: Backend Lint & Type Check
     runs-on: ubuntu-latest

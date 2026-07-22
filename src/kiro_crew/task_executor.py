@@ -353,7 +353,7 @@ async def execute_task(
                     # Honor the user-configured auto-approve trust (hook
                     # TOOL_AUTO_APPROVE from hooks.auto_approve_tools) before the
                     # interactive prompt — the task runner previously handled only
-                    # TOOL_DENY and always prompted, ignoring explicit trust (Mesh-1859).
+                    # TOOL_DENY and always prompted, ignoring explicit trust.
                     _auto_approved = False
                     if ctx:
                         tool_result = ctx.hooks.on_tool_call(
@@ -791,7 +791,7 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
     """Run the configured test command. Returns (success, output)."""
     # The test command and its working directory are both agent-influenced, so
     # route the spawn through the sandbox chokepoint: OS-level isolation plus a
-    # credential-scrubbed environment. See Talos finding 92e24570.
+    # credential-scrubbed environment.
     argv, env, cleanup = sandboxed_spawn_argv(list(test_cmd))
     try:
         proc = await asyncio.create_subprocess_exec(

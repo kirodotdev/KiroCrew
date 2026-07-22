@@ -361,7 +361,7 @@ function dateSegment(ts: number | string | undefined): string {
 }
 
 // Folder icons are a deliberate emoji surface (see website/AGENTS.md exceptions
-// + AUTOSDE no-emoji-as-icons): the backend auto-generates a single-emoji folder
+// + `no-emoji-as-icons` lint rule): the backend auto-generates a single-emoji folder
 // icon and FolderGlyph renders it, so this curated grid + free-input picker lets
 // the user pick one. Not a status/UI icon — the emoji IS the folder's data.
 /** Curated emoji set for the folder icon picker (folder / work / project themed). */
@@ -1733,7 +1733,7 @@ function ChatSidebar({
             // and you haven't opened the session since (unread). Redefined from
             // the old "any unseen output" trigger so it no longer lights
             // mid-stream; a pending approval gets its own yellow subtitle
-            // treatment instead. (CR-284529836)
+            // treatment instead.
             <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--accent)' }} title="Agent finished — your turn" />
           )}
           <div className="flex-1 min-w-0 overflow-hidden">
@@ -1753,7 +1753,7 @@ function ChatSidebar({
               {s.mode === 'orchestrator' && <span className="text-[11px] px-1 py-0 rounded bg-accent/15 text-accent font-medium" title="Autopilot mode">Autopilot</span>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
                *  margins would split the free space and strand the folder
-               *  chip mid-row (AutoSDE, CR-290079557). */}
+               *  chip mid-row. */}
               {(scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]]) || s.last_ts || s.created ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
                   {scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]] && (
@@ -2256,7 +2256,7 @@ function ChatSidebar({
 
       {/* Switch-all-to-model dialog — mirrors the Clean Up panel. Picking a
        *  model applies it to every live session (each switch resets that
-       *  session); running sessions are skipped by default (Mesh-1080). */}
+       *  session); running sessions are skipped by default. */}
       {bulkModelOpen && (
         <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
           <div className="font-medium text-text-strong mb-2"><Cpu size={14} className="lucide-inline" /> Switch All Sessions</div>

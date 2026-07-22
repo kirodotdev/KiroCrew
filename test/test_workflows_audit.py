@@ -42,18 +42,18 @@ GOOD = (
 async def test_run_emits_started_and_finished_audit_with_author() -> None:
     sink: list = []
     runner = WorkflowRunner(agent_fn=_echo, audit=_capturing_audit(sink))
-    await runner.run(GOOD, run_id="wf_a", now=NOW, args={"k": 1}, author="zedmor")
+    await runner.run(GOOD, run_id="wf_a", now=NOW, args={"k": 1}, author="a-contributor")
 
     types = [e[0] for e in sink]
     assert "run_started" in types
     assert "run_finished" in types
 
     started = next(f for t, _, f in sink if t == "run_started")
-    assert started["author"] == "zedmor"
+    assert started["author"] == "a-contributor"
     assert started["arg_keys"] == ["k"]  # arg KEYS only (not raw values)
 
     finished = next(f for t, _, f in sink if t == "run_finished")
-    assert finished["author"] == "zedmor"
+    assert finished["author"] == "a-contributor"
     assert finished["outcome"] == "ok"
     assert finished["agent_calls"] == 2
     assert finished["result_hash"] == _result_hash({"done": True})
@@ -62,7 +62,7 @@ async def test_run_emits_started_and_finished_audit_with_author() -> None:
 async def test_each_agent_call_is_audited() -> None:
     sink: list = []
     runner = WorkflowRunner(agent_fn=_echo, audit=_capturing_audit(sink))
-    await runner.run(GOOD, run_id="wf_b", now=NOW, author="zedmor")
+    await runner.run(GOOD, run_id="wf_b", now=NOW, author="a-contributor")
 
     agent_events = [f for t, _, f in sink if t == "agent_call"]
     assert len(agent_events) == 2

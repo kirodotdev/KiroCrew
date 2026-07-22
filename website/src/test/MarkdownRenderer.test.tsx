@@ -148,7 +148,7 @@ describe('MarkdownRenderer XSS sanitization', () => {
   })
 })
 
-describe('MarkdownRenderer GFM task-list checkboxes (Mesh-2052)', () => {
+describe('MarkdownRenderer GFM task-list checkboxes', () => {
   it('renders - [ ] and - [x] as checkbox inputs', () => {
     const { container } = render(
       <MarkdownRenderer content={'- [ ] unchecked\n- [x] checked'} />
@@ -422,7 +422,7 @@ describe('MarkdownRenderer strips leaked <tool_use> protocol markup', () => {
   })
 })
 
-describe('MarkdownRenderer softBreaks (Mesh-2695)', () => {
+describe('MarkdownRenderer softBreaks', () => {
   it('converts a soft line break to <br> when softBreaks is set', () => {
     const { container } = render(<MarkdownRenderer content={'line one\nline two'} softBreaks />)
     expect(container.querySelectorAll('br').length).toBe(1)

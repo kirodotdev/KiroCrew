@@ -1,4 +1,4 @@
-"""Unit tests for stop/kill cancel propagation (Mesh-2808).
+"""Unit tests for stop/kill cancel propagation.
 
 Covers:
 - Scope A: in-flight tracking, cancel notification emission on disconnect

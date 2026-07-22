@@ -1,4 +1,4 @@
-"""Mesh-2435: slot keys must be ASCII so the derived session key is header-safe.
+"""slot keys must be ASCII so the derived session key is header-safe.
 
 A dashboard session key is ``dashboard:{slot.key}`` and is sent to the gateway
 as the ``X-Session-Key`` request header. HTTP header values are latin-1
@@ -11,7 +11,7 @@ to ASCII *before* the lookup/create, so the stored slot key — and therefore th
 injected session key — is always header-safe, and create + repeat calls with the
 same raw name converge on the one slot. (The transport-layer guard that rejects a
 genuinely non-latin-1 session key is ``mcp_core._session_key_header_error``,
-landed under Mesh-2241 and covered by ``test_mcp_core.py``.)
+landed under and covered by ``test_mcp_core.py``.)
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class TestAsciiSlotKey:
     def test_control_chars_replaced(self):
         # CR/LF are ASCII, so they slip past an isascii() check, but in a slot
         # key they flow into the X-Session-Key header and enable header
-        # injection/splitting. They must be replaced (Mesh-2435 hardening).
+        # injection/splitting. They must be replaced (hardening).
         out = _ascii_slot_key("a\r\nX-Evil: 1")
         assert "\r" not in out and "\n" not in out
         assert out == "a--X-Evil: 1"

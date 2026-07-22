@@ -10,7 +10,7 @@ import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMat
 import type { Result, ResourceProvider } from '../types'
 
 /**
- * Knowledge provider for the Search Everywhere command palette (Mesh-2151).
+ * Knowledge provider for the Search Everywhere command palette.
  *
  * Backs the **Knowledge** tab. Wraps `api.knowledgeSearch(q)` (the existing
  * `/api/knowledge/search-for-context` full-text endpoint, the same one
@@ -26,7 +26,7 @@ import type { Result, ResourceProvider } from '../types'
  *
  * The backend already does the relevance filtering, so the {@link fuzzyMatch}
  * pass here is only for **client-side highlight indices** on the returned
- * titles (per the §2 design + AUTOSDE `frontend-security` — highlights render
+ * titles (per the §2 design + `frontend-security` lint rule — highlights render
  * as React `<mark>` nodes keyed off `indices`, never as HTML strings). Title
  * matches additionally bias the client-side ordering; non-title (body-only)
  * matches are kept with a neutral score so backend results are never dropped.
@@ -127,7 +127,7 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
           icon: knowledgeIcon(),
           score: match ? match.score : 0,
           indices: match ? match.indices : [],
-          // Declarative Enter contract (Mesh-2151 §2 / task 26). The central
+          // Declarative Enter contract (§2 / task 26). The central
           // `dispatchEnter` in CommandPalette routes on this: primary Enter
           // opens / navigates to the entry; ⌘Enter attaches it as context to
           // the active chat. The `entryId` is the knowledge entry id from this
@@ -141,7 +141,7 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
       })
 
       // Title matches first, then deterministic name order. Skip the re-rank on
-      // an empty query so the backend's ordering is preserved (AutoSDE f-fa877fb9).
+      // an empty query so the backend's ordering is preserved (a review finding).
       if (q.length > 0) {
         results.sort(compareResults)
       }
@@ -154,7 +154,7 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
  * React hook that returns a live Knowledge provider wired to React-Query and
  * the app router.
  *
- * Per the AUTOSDE `use-react-query` rule the server fetch goes through
+ * Per the `use-react-query` lint rule the server fetch goes through
  * React-Query with the key `['palette', 'knowledge', q]` (mirrors the Sessions
  * provider's `['palette','sessions',q]` keying). `queryClient.fetchQuery` is
  * used rather than `useQuery` because a {@link ResourceProvider}'s `search` is

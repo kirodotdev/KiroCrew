@@ -2800,7 +2800,7 @@ class TestTokenPersistenceBackfill:
 
 
 class TestKiroBackfillProfileGuard:
-    """Regression tests for Mesh-2376: the kiro/acp backfill must NOT store a
+    """Regression tests for the kiro/acp backfill must NOT store a
     resolved Bedrock inference-profile id into slot.model.
 
     kiro-cli reports the RESOLVED profile id (e.g.
@@ -4053,7 +4053,7 @@ class TestApiChatModePropagation:
 
     @pytest.mark.asyncio
     async def test_trust_slot_preserves_other_slot_trust(self, tmp_path, monkeypatch):
-        """Mesh-464: trusting slot B must not wipe trust from slot A."""
+        """trusting slot B must not wipe trust from slot A."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.push_slots_update = MagicMock()
@@ -4070,7 +4070,7 @@ class TestApiChatModePropagation:
 
     @pytest.mark.asyncio
     async def test_yolo_restores_per_slot_trust(self, tmp_path, monkeypatch):
-        """Mesh-464: YOLO does not mutate per-slot trust; disabling preserves it."""
+        """YOLO does not mutate per-slot trust; disabling preserves it."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.push_slots_update = MagicMock()
@@ -4096,7 +4096,7 @@ class TestApiChatModePropagation:
             assert s2._trust_reads is True  # preserved
 
     def test_yolo_auto_expires_and_clears_untrusted_policies(self, tmp_path, monkeypatch):
-        """Mesh-464: YOLO expiry clears policies for untrusted slots only."""
+        """YOLO expiry clears policies for untrusted slots only."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.push_slots_update = MagicMock()
@@ -4572,7 +4572,7 @@ class TestPlanExecutionViaButton:
 
 
 class TestWidgetOriginAutoRunGuard:
-    """P454989291 item 5 — deny-by-default backend guard.
+    """item 5 — deny-by-default backend guard.
 
     A chat turn tagged ``meta.origin == "widget"`` was pre-filled into the
     composer by an LLM-emitted ``<mcwidget>`` postMessage. Its TEXT is
@@ -7829,7 +7829,7 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_rejects_when_slot_cap_reached(self, tmp_path, monkeypatch):
-        """zejiangg rev 3 #46: fork must return 429 + denied audit when slot cap hit."""
+        """Review finding: fork must return 429 + denied audit when slot cap hit."""
         from unittest.mock import MagicMock
 
         mock_sel = MagicMock()
@@ -7863,7 +7863,7 @@ class TestForkSlot:
     async def test_fork_at_index_spans_chained_session_files(self, tmp_path):
         """Index space must match the frontend (chained), not the current file alone.
 
-        Regression for Mesh-1615: the slot detail endpoint returns
+        Regression for the slot detail endpoint returns
         ``read_messages_chained`` (all sibling session files sharing the
         slot's ``tab_id``), and the frontend builds its fork-button index
         against that list. Pre-fix, fork called ``read_messages`` and
@@ -9143,7 +9143,7 @@ class TestEmptyResponseRetry:
 
 
 class TestExpandDollarSkills:
-    """Runner-side ``_expand_dollar_skills`` (Mesh-588): redaction, chip,
+    """Runner-side ``_expand_dollar_skills``: redaction, chip,
     SEL audit, and empty/exception branches. The pure resolution logic is
     covered separately by test_skills.TestResolveDollarSkills; here we
     exercise the chat_runner wrapper that adds runner concerns."""
@@ -9282,14 +9282,14 @@ class TestExpandDollarSkills:
         assert kwargs.get("tool_name") == "skill_dollar_expansion"
 
 
-# ── Transient backend 5xx retry on the interactive chat path (Mesh-2150) ──
+# ── Transient backend 5xx retry on the interactive chat path ──
 
 
 class TestRunChatTransientRetry:
     """The interactive _run_chat stream loop reuses the llm_helpers transient
-    classifier + backoff (CR-281120435 / Mesh-1157) to retry a transient
+    classifier + backoff to retry a transient
     backend 5xx WITHOUT resetting the live session, guarded so a partial
-    (already-streamed) response is never re-run. Mesh-2150."""
+    (already-streamed) response is never re-run."""
 
     _TRANSIENT = (
         "Prompt error: {'message': 'Internal error: API Error: Internal server error'}"
@@ -9396,7 +9396,7 @@ class TestRunChatTransientRetry:
         original prompt — is re-queued onto the same live session. The retry
         appends the continued answer as a NEW message below. The user sees an
         append-only sequence [partial] [recover notice] [continued answer] with
-        nothing retracted. No chat_stream_reset event exists anymore (Mesh-2150)."""
+        nothing retracted. No chat_stream_reset event exists anymore."""
         from kiro_crew.acp.client import AcpError
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -9464,7 +9464,7 @@ class TestRunChatTransientRetry:
         transient 5xx, the partial assistant text is PRESERVED (persisted as an
         assistant message) and the message is NOT re-queued. Under the
         append-only design the partial + a retry notice are shown regardless of
-        eligibility; only the re-queue is gated (Mesh-2150)."""
+        eligibility; only the re-queue is gated."""
         from kiro_crew.acp.client import AcpError
         from kiro_crew.dashboard import chat_runner
         from kiro_crew.dashboard.chat import _run_chat
@@ -9761,7 +9761,7 @@ class TestRunChatTransientRetry:
         broadcast-only output, so it does NOT flip _turn_emitted. This pins the
         deliberate decision in the EVENT_THINKING_CHUNK branch — if thinking
         ever starts being persisted, this guard must become a turn-emit to
-        avoid a double-emit (Mesh-2150, reviewer: zejiangg)."""
+        avoid a double-emit."""
         from kiro_crew.acp.client import AcpError
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import (
@@ -9895,7 +9895,7 @@ class TestBulkModelSwitch:
         assert data["switched"] == ["idle"]
         assert data["skipped_running"] == ["busy"]
         assert idle.model == "claude-opus-4.8"
-        assert busy.model == "claude-opus-4.6"  # untouched mid-turn (Mesh-1080)
+        assert busy.model == "claude-opus-4.6"  # untouched mid-turn
         assert state.sessions.reset.await_count == 1
 
     @pytest.mark.asyncio

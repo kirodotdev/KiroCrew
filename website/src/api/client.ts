@@ -345,7 +345,7 @@ export interface InstanceTunnelStatus {
   }
 }
 
-export interface MidwayStatus {
+export interface SsoStatus {
   state: 'ok' | 'expiring' | 'expired' | 'unknown'
   seconds_remaining: number | null
   expires_at: number | null
@@ -396,7 +396,7 @@ export const api = {
   // should catch and render the enable toggle rather than an error. `active`
   // is true only when the SSH manager is actually running (the flag was on at
   // gateway startup) — enabled-but-not-active means a restart is required.
-  listInstances: () => get('/api/instances').then(j) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; midway: MidwayStatus }>,
+  listInstances: () => get('/api/instances').then(j) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; sso: SsoStatus }>,
   addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
   updateInstance: (id: string, body: Partial<AddInstanceBody>) =>
     patch('/api/instances/' + encodeURIComponent(id), body).then(j) as Promise<InstanceView>,
@@ -917,7 +917,7 @@ export const api = {
   updateArtifact: (slug: string, body: { content?: string; name?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),
   deleteArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}`).then(j),
-  // Artifact library folders (Mesh-2720)
+  // Artifact library folders
   artifactFolders: () => get('/api/artifact-folders').then(j),
   createArtifactFolder: (body: { name: string; parent_id?: string; color?: string }) =>
     post('/api/artifact-folders', body).then(j),
@@ -939,12 +939,12 @@ export const api = {
    * `originSessionKey` records which chat session saved it (for the Source column). */
   materializeArtifact: (path: string, originSessionKey?: string) =>
     post('/api/artifacts/materialize', { path, ...(originSessionKey ? { origin_session_key: originSessionKey } : {}) }).then(j),
-  // Artifact publishing / sharing (Mesh-1880). Local publish/sharing management
+  // Artifact publishing / sharing. Local publish/sharing management
   // only — remote-browse / clone / fork surfaces are not part of this edition.
   publishArtifact: (slug: string, body: { visibility?: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[]; provider?: string }) =>
     post(`/api/artifacts/${encodeURIComponent(slug)}/publish`, body).then(j),
   /** Publishing providers available for an artifact kind, with per-kind support
-   *  + sharing/sync/discovery descriptors (Mesh-2445). Drives the share-panel
+   *  + sharing/sync/discovery descriptors. Drives the share-panel
    *  picker (selector shown only when >1 capable provider). */
   getArtifactPublishProviders: (kind: string): Promise<{ providers: PublishProviderDescriptor[]; kind: string }> =>
     get(`/api/artifacts/publish-providers?kind=${encodeURIComponent(kind)}`).then(j),

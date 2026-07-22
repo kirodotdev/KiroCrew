@@ -369,7 +369,7 @@ class TestRewindSlot:
 class TestRewindChainedHistory:
     """POST /api/chat/slots/{slot}/rewind — chained-history index handling.
 
-    Regression for Mesh-1615. ``slot.messages`` holds at most the last 500
+    ``slot.messages`` holds at most the last 500
     messages of the chained view; older messages live in archived sibling
     session files and ``slot._disk_older_count`` records how many. The
     handler must validate against the chained length so error messages

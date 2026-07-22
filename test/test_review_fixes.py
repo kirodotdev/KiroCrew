@@ -1,4 +1,4 @@
-"""Tests for Shepherd ASR security fixes."""
+"""Tests for automated security-review security fixes."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class TestExpandedBashPatterns:
             "find . -name '*.py' -print",
             "git status",
             "git diff",
-            "curl https://api.amazon.com/v1/data",
+            "curl https://api.example.com/v1/data",
             "wget https://example.com/file.tar.gz",
             "python3 -m pytest",
             "truncate",
@@ -243,7 +243,7 @@ class TestYoloSlackCommandPath:
 
 
 class TestObserveModeAuthFilter:
-    """Tests for observe-mode channel_history.push auth gate (events.py, Shepherd bdd39e84)."""
+    """Tests for observe-mode channel_history.push auth gate (events.py, security-review bdd39e84)."""
 
     def test_unauthorized_user_blocked(self) -> None:
         from unittest.mock import MagicMock
@@ -370,7 +370,7 @@ class TestLoadCredentialsEnvPropagation:
 
 
 class TestYoloFromConfigGuard:
-    """Tests for config-sourced safety override (Mesh-1049 / Mesh-1648).
+    """Tests for config-sourced safety override.
 
     Verifies that set_yolo_mode(True) activates the safety override with
     source="config" and a 24h TTL via the SafetyOverride module.

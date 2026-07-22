@@ -36,11 +36,11 @@ _SHORT_DESC_CHARS = 160
 # starved by the rich-get-richer usage ordering.
 _NEW_SKILL_BOOST_WINDOW_SECS = 7 * 24 * 60 * 60
 
-# ── $skill inline trigger (Mesh-588) ──
+# ── $skill inline trigger ──
 # A ``$skillname`` token anywhere in a user message explicitly loads that skill,
-# across all three sources (kirocrew builtin, workspace, AIM extra paths).
+# across all three sources (kirocrew builtin, workspace, extra paths).
 # Resolution is allowlist-only: the token must match the last path segment of an
-# already-enumerated skill key (per ARCC BSC1 input-validation guidance — no path
+# already-enumerated skill key (per input-validation guidance — no path
 # is ever constructed from the raw token, which structurally blocks traversal like
 # ``$../../etc/passwd``). The charset is deliberately lowercase-led so shell-style
 # tokens (``$PATH``, ``$5``) and prose ($variable mid-sentence in caps) don't match
@@ -59,7 +59,7 @@ _MAX_DOLLAR_SKILLS = 5
 # while still picking up new skills within a few seconds.
 _ITER_CACHE_TTL_SECS = 5.0
 
-# ── Auto skill creation (Mesh-677, Hermes loop) ──
+# ── Auto skill creation ──
 
 # Namespace for auto-generated skills — keeps them out of the way of
 # hand-authored skills.  Final path: ``~/.kirocrew/skills/auto/<name>/SKILL.md``.
@@ -544,7 +544,7 @@ class SkillsLoader:
         logger.info("Deleted skill: %s", name)
         return True
 
-    # ── Auto skill creation (Mesh-677, Hermes loop) ──
+    # ── Auto skill creation ──
 
     def is_auto_generated(self, name: str) -> bool:
         """Return True if *name* refers to a skill in the auto namespace.
@@ -822,7 +822,7 @@ class SkillsLoader:
         """Build skills context for prompt injection (lazy-loaded).
 
         Pinned skills (``always: true`` frontmatter) get full content, always —
-        this is the "core" set (mark core/ARCC skills ``always: true`` to pin
+        this is the "core" set (mark core skills ``always: true`` to pin
         them). The remaining on-demand skills are ranked by usage (hottest
         first, with a recency boost for freshly-added skills) and summarized
         top-down until *budget* chars are consumed; the long tail is left
@@ -842,7 +842,7 @@ class SkillsLoader:
             return self._legacy_context(all_skills)
         # get_always_skills() returns the _iter() identifier — the same value
         # list_skills() exposes as "key" (the dir-relative path, e.g.
-        # "AIPowerUserCapabilities/brazil"), NOT the frontmatter "name". So the
+        # "team-capabilities/build-helper"), NOT the frontmatter "name". So the
         # pinned check below, _record_use() (also called with the _iter
         # identifier), and _rank_key()'s score(s["key"]) are all consistently
         # keyed by "key" — there is no key/name mismatch here.
@@ -850,7 +850,7 @@ class SkillsLoader:
 
         parts: list[str] = []
 
-        # Pinned (core / ARCC / always:true): full content, always injected.
+        # Pinned (core / always:true): full content, always injected.
         for s in all_skills:
             if s["key"] not in pinned:
                 continue
@@ -1023,7 +1023,7 @@ class SkillsLoader:
         ``WorkforceEmploymentKnowledgeBase/oncall-handover``. Matching is
         case-insensitive on the leaf.
 
-        Security (per ARCC BSC1 input validation): this is allowlist-only. The
+        Security (per input-validation guidance): this is allowlist-only. The
         token is *matched against* the vetted, already-enumerated skill set from
         ``_iter()`` — no filesystem path is ever built from the raw token. A
         token like ``$../../etc/passwd`` simply matches nothing. Content is loaded

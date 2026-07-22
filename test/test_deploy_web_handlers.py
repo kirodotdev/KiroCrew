@@ -165,7 +165,7 @@ def test_deploy_info_finding_overridable(monkeypatch):
 
 def test_deploy_blocks_sensitive_local_dir(monkeypatch, tmp_path):
     """Security: a local_dir that is (or contains) a sensitive credential path
-    must be rejected before any read/upload — see AutoSDE f-1558139c."""
+    must be rejected before any read/upload — see review-bot f-1558139c."""
     _set_profile(monkeypatch)
     src = tmp_path / "site"
     src.mkdir()
@@ -181,7 +181,7 @@ def test_deploy_blocks_sensitive_local_dir(monkeypatch, tmp_path):
 
 def test_deploy_rejects_invalid_local_dir_chars(monkeypatch):
     """validation.py schema rejects shell-metacharacter / control chars in
-    local_dir before any filesystem or subprocess use — see AutoSDE f-* (126)."""
+    local_dir before any filesystem or subprocess use — see review-bot f-* (126)."""
     _set_profile(monkeypatch)
     status, payload = _run(handlers._do_deploy(
         {"site_id": "s", "local_dir": "/tmp/foo;rm -rf /", "confirm": True}))
@@ -1035,7 +1035,7 @@ def test_reaper_engine_arch_happy_path(monkeypatch):
 
     assert result == "reaped"
     mock_cf.delete_distribution.assert_called_once_with(Id="E999", IfMatch="etag1")
-    # P476046789: destructive S3 calls now pin ExpectedBucketOwner (from ACCOUNT_ID).
+    # destructive S3 calls now pin ExpectedBucketOwner (from ACCOUNT_ID).
     mock_s3.delete_bucket.assert_called_once_with(
         Bucket="kirocrew-web-mysite", ExpectedBucketOwner="123456789012"
     )

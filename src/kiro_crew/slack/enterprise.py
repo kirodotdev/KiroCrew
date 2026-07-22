@@ -97,7 +97,7 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
     candidate id. Default-open (True) when no policy / no posture governs it, so a
     standalone host is unaffected. Fail-closed (deny) on ANY error — a
     PlatformCompositionError (a host that could not compose its companion) OR any
-    other unexpected error → deny (AVP-23427); a governance error must not
+    other unexpected error → deny; a governance error must not
     silently permit a workspace the operator's posture would restrict.
     """
     from kiro_crew.platform.context import PlatformCompositionError
@@ -131,7 +131,7 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
     except PlatformCompositionError:
         raise
     except Exception:
-        # Fail CLOSED (AVP-23427): a governance evaluation error must DENY the
+        # Fail CLOSED: a governance evaluation error must DENY the
         # workspace, not silently permit it (previously returned True).  session
         # key=_host so the degrade SEL records the honest "host" surface (this
         # in-process admission check is not driven by a Slack session).

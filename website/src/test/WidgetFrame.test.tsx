@@ -170,7 +170,7 @@ describe('WidgetFrame theme passthrough', () => {
     const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
     const srcdoc = getSrcdoc(container)
     expect(srcdoc).toMatch(/Content-Security-Policy/)
-    // AEA fix (Mesh-2518): Tailwind loads from the dashboard origin, not the CDN.
+    // Locked-down-network fix: Tailwind loads from the dashboard origin, not the CDN.
     expect(srcdoc).not.toMatch(/cdn\.tailwindcss\.com/)
     expect(srcdoc).toMatch(/\/vendor\/tailwindcss-browser\.js/)
     // script-src grants no 'unsafe-eval' and pins the dashboard origin to the
@@ -219,7 +219,7 @@ describe('WidgetFrame theme passthrough', () => {
     const srcdoc = getSrcdoc(container)
     expect(srcdoc).toMatch(/@custom-variant dark \(&:where\(\.dark, \.dark \*\)\)/)
     expect(srcdoc).toMatch(/<body class="dark">/)
-    // AEA fix (Mesh-2518): Tailwind must not load from the public CDN.
+    // Locked-down-network fix: Tailwind must not load from the public CDN.
     expect(srcdoc).not.toContain('cdn.tailwindcss.com')
     // Directives block must precede the runtime <script> so the dark variant
     // registers before first paint (ordering regression guard).
@@ -405,7 +405,7 @@ describe('WidgetFrame interactive event bridge', () => {
     expect(events[0].detail.text).toBe('[UI] cancel')
   })
 
-  // P454989291: shape validation / allowlist hardening of widget actions.
+ // shape validation / allowlist hardening of widget actions.
   it('ignores a widget action with a non-string action (no event dispatched)', async () => {
     const { container } = wrap(<WidgetFrame html="<p>test</p>" title="T" />)
     const iframe = container.querySelector('iframe')!

@@ -1,7 +1,7 @@
 /**
  * Integration test for src/apps/auto-research/ResearchLabPage.tsx.
  *
- * Coverlay flags this file as "new code" for CR-277933971 (0% new-line
+ * CI coverage flags this file as "new code" for (0% new-line
  * coverage). We exercise the major rendering paths end-to-end with a mocked
  * api client to satisfy the >=60% new-line-coverage rule. Breadth over depth:
  *   - Empty state + list (active + history) rendering

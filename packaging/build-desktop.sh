@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the standalone KiroCrew desktop app end-to-end.
 #
-# Pipeline (mirrors MeshClaw's python-build-standalone approach):
+# Pipeline (uses the python-build-standalone approach):
 #   1. Build the React dashboard (npm)         -> website/dist
 #   2. Provision a python-build-standalone (PBS) interpreter via uv
 #   3. pip-install kiro_crew + deps INTO the bundled interpreter

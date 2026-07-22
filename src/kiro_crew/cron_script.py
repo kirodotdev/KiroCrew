@@ -51,7 +51,7 @@ from kiro_crew.sel import sel
 # macOS >= 26, see sandbox._probe_sandbox_exec), so env scrubbing is the only
 # guaranteed control on those hosts. _AGENT_DENIED_ENV_KEYS = Slack tokens +
 # KIROCREW_OWNER_ID; KIROCREW_INTERNAL_SECRET is handed to scripts via a 0600
-# temp file instead of the env. (Finding P454794507, defense-in-depth item 4.)
+# temp file instead of the env (defense-in-depth item 4).
 _CRON_ENV_DENY: frozenset[str] = frozenset({"KIROCREW_INTERNAL_SECRET", *_AGENT_DENIED_ENV_KEYS})
 
 
@@ -335,10 +335,10 @@ class McpToolClient:
         if not argv:
             raise RuntimeError(f"MCP server '{server_name}' not found in agent config")
         sandboxed_argv, self._sandbox_cleanup = wrap_argv(list(argv), mode="standard")
-        sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         # Capture stderr to a tempfile instead of DEVNULL so spawn/handshake
-        # failures are legible (Mesh-2370). DEVNULL hid the real cause -- wrong
-        # Node version, expired Midway cookies, OOM kill, sandbox failure -- behind
+        # failures are legible. DEVNULL hid the real cause -- wrong
+        # Node version, expired auth cookies, OOM kill, sandbox failure -- behind
         # a generic "disconnected during 'initialize'" RuntimeError.
         self._stderr_file = tempfile.NamedTemporaryFile(
             mode="w+", prefix="mcp-stderr-", suffix=".log", delete=False
@@ -598,7 +598,7 @@ def run_script_sandboxed(
         clean_env = _clean_cron_env()
         clean_env["_KIROCREW_SECRET_FILE"] = secret_path
 
-        sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         proc = subprocess.Popen(
             sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=clean_env, start_new_session=True,
@@ -659,10 +659,9 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
     # exposure is covered by the storage-time deny-list (mcp_cron._vet_shell_command,
     # which blocks any .ssh reference) — the primary control. This sandbox is
     # defense-in-depth and is bypassed when the OS backend falls back to "none"
-    # (e.g. macOS >= 26 — see _clean_cron_env). (Finding P454794507, remediation
-    # item 2.)
+    # (e.g. macOS >= 26 — see _clean_cron_env).
     sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
-    sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
+    sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
     clean_env = _clean_cron_env()
     try:
         proc = subprocess.Popen(

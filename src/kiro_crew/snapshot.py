@@ -335,7 +335,7 @@ def snapshot_main(
     # restrict_to_owner (fail-loud), NOT chmod_safe: this tarball can contain
     # sel_hmac.key (see the warning below). chmod_safe swallows OSError and
     # would let the snapshot land group/world-readable while still printing
-    # success (AutoSDE). Fail loudly instead — better to abort than ship a
+    # success. Fail loudly instead — better to abort than ship a
     # secret-bearing archive under-protected. POSIX applies chmod 0o600;
     # Windows applies an owner-only DACL via icacls (previously an
     # IS_POSIX-gated no-op that left the archive readable by other users).

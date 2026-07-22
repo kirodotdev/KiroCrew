@@ -236,7 +236,8 @@ class AcpProvider(LLMProvider):
             "mcp_gateway_settings_mcp_json": mcp_gateway_settings_mcp_json,
             "mcp_gateway_socket": mcp_gateway_socket,
             # Claude permission mode (Auto-mode/permission-UI parity). None on the
-            # kiro-cli path — fully inert; a companion CC provider threads it.
+            # kiro-cli path — fully inert; a companion-registered backend threads
+            # it.
             "permission_mode": permission_mode,
         }
         if agent:
@@ -848,7 +849,7 @@ class AcpProvider(LLMProvider):
     async def stream_command(self, command: str) -> AsyncIterator[LLMEvent]:
         # claude-agent-acp does not implement the kiro-only
         # _kiro.dev/commands/execute method — route slash commands through
-        # session/prompt, which Claude Code interprets natively for its
+        # session/prompt, which the claude backend interprets natively for its
         # SDK-supported commands (/compact, /help, /model, /context, …).
         # Commands the SDK doesn't recognise (kiro-only ones like /agent,
         # /experiment, /hooks) flow through as conversational prompt text;
@@ -885,8 +886,8 @@ class AcpProvider(LLMProvider):
         else:
             message = "/compact"
         # claude-agent-acp does not implement _kiro.dev/commands/execute —
-        # send /compact through session/prompt, which Claude Code handles
-        # natively as a slash command.
+        # send /compact through session/prompt, which the claude backend
+        # handles natively as a slash command.
         if self.is_claude_backend:
             async for _ in self._client.stream_events(message):
                 pass
@@ -986,7 +987,7 @@ class AcpProvider(LLMProvider):
         """Delete kiro-cli session files (.json + .jsonl) at ~/.kiro/sessions/cli.
 
         (The claude seam's SDK transcript cleanup, ~/.claude/projects/, is
-        re-added by the internal companion alongside the Claude Code provider.)
+        re-added by the internal companion alongside its Claude backend.)
         """
         if not session_id:
             return
@@ -1003,7 +1004,7 @@ class AcpProvider(LLMProvider):
 
 
 def is_claude_backend(provider: Any) -> bool:
-    """Check if a provider is Claude Code via the ACP adapter.
+    """Check if a provider is a Claude backend via the ACP adapter.
 
     Free function for use from modules that hold the provider as the
     ``LLMProvider`` ABC and can't reach the ``AcpProvider.is_claude_backend``

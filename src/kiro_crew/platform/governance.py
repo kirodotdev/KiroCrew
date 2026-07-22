@@ -111,7 +111,7 @@ def _match_path(item: str, pattern: str) -> bool:
     Only the ITEM is normalized (``_norm_item``: expand → absolutize → lexically
     collapse ``.``/``..``); the PATTERN is only ``~``/``$VAR``-expanded and is
     matched verbatim.  Normalizing the item — never the pattern — does two jobs
-    and avoids one trap (CR-284272012):
+    and avoids one trap:
 
     * a ``..`` traversal cannot satisfy an ALLOW-mode prefix:
       ``/home/u/ws/../.bashrc`` normalizes to ``/home/u/.bashrc`` and no longer
@@ -206,7 +206,7 @@ def _norm_item(path_str: str) -> str:
        it (``normpath('//etc/passwd') == '//etc/passwd'``).  An item supplied as
        ``//etc/passwd`` would then not match a ``/etc/**`` deny even though the OS
        opens ``/etc/passwd`` — a deny bypass.  Collapse so the lexical form equals
-       what the OS resolves (CR-284272012).  A leading ``///+`` already normalizes
+       what the OS resolves.  A leading ``///+`` already normalizes
        to a single ``/``, so only the exact ``//`` case needs this.
 
     Collapsing ``..`` is what stops a traversal from satisfying an allow-prefix
@@ -367,7 +367,7 @@ def _looks_like_host(token: str) -> bool:
     rather than a denylist of every URI scheme: a hostname contains a ``.`` or a
     digit, or is exactly ``localhost``; a bare scheme word never does.  This is
     what stops a non-network scheme + numeric payload from yielding a phantom
-    host without having to enumerate ``tel``/``gopher``/``sms``/… (CR-284272012).
+    host without having to enumerate ``tel``/``gopher``/``sms``/… .
     """
     t = token.lower()
     return t == "localhost" or "." in t or any(c.isdigit() for c in t)
@@ -392,8 +392,7 @@ def _url_host(url: str) -> str:
       ``rest`` begins with a bare numeric port AND the parsed "scheme" looks like
       a host (``_looks_like_host``).  ``example.com:8080`` / ``localhost:3000`` →
       host; ``tel:80`` / ``mailto:443`` / ``gopher:1234`` → ``""`` (a bare-word
-      URI scheme is never a hostname), so they cannot yield a phantom host
-      (CR-284272012).
+      URI scheme is never a hostname), so they cannot yield a phantom host.
     """
     from urllib.parse import urlparse
 

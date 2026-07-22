@@ -1,4 +1,4 @@
-"""Tests for Mesh-244: Live Slack thread sync (bidirectional mirroring)."""
+"""Tests for Live Slack thread sync (bidirectional mirroring)."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock

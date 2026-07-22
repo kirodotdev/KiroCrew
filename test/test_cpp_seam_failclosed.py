@@ -22,7 +22,7 @@ import pytest
 from kiro_crew import cli
 from kiro_crew.config.loader import KiroCrewConfig, build_provider_factory
 from kiro_crew.platform import (
-    PROFILE_AMAZON,
+    PROFILE_ENTERPRISE,
     PlatformCompositionError,
     async_safe_context_call,
     build_default_context,
@@ -156,7 +156,7 @@ def _install_jail(cfg: KiroCrewConfig, jail: Any, *, jail_mode: str = "auto") ->
     fixture object — keeps the helper safe even if ``cfg`` is reused or rescoped.
     """
     cfg = dataclasses.replace(cfg, agent=dataclasses.replace(cfg.agent, jail=jail_mode))
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(dataclasses.replace(base, jail=jail))
 
 
@@ -524,7 +524,7 @@ def test_build_provider_factory_degrades_to_public(cfg: KiroCrewConfig) -> None:
         return sentinel
 
     cfg.create_provider_factory = _fake_create  # type: ignore[assignment,method-assign]
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(dataclasses.replace(base, providers=_RaisingProviders()))
     factory = build_provider_factory(cfg)
     # Degrade path returned EXACTLY the lazily-built public fallback, built once.
@@ -534,7 +534,7 @@ def test_build_provider_factory_degrades_to_public(cfg: KiroCrewConfig) -> None:
 
 def test_build_provider_factory_reraises_composition_error(cfg: KiroCrewConfig) -> None:
     """A PlatformCompositionError from the seam MUST propagate (fail-closed)."""
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(dataclasses.replace(base, providers=_CompositionErrorProviders()))
     with pytest.raises(PlatformCompositionError):
         build_provider_factory(cfg)
@@ -736,7 +736,7 @@ def test_default_dashboard_contributor_is_noop(cfg: KiroCrewConfig) -> None:
 
     d = DefaultDashboardContributor()
     assert d.contribute_routes(object()) is None
-    assert d.mwinit_handler() is None
+    assert d.sso_login_handler() is None
 
 
 @pytest.mark.asyncio
@@ -800,7 +800,7 @@ def _merge_connectors(cfg: KiroCrewConfig):
 
 
 def test_knowledge_extra_connectors_merges_after_builtins(cfg: KiroCrewConfig) -> None:
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     extra = {"quip": object()}
     set_context(dataclasses.replace(base, knowledge=_ExtraConnectorsProvider(extra)))
     merged = _merge_connectors(cfg)
@@ -808,14 +808,14 @@ def test_knowledge_extra_connectors_merges_after_builtins(cfg: KiroCrewConfig) -
 
 
 def test_knowledge_extra_connectors_degrades_to_builtins(cfg: KiroCrewConfig) -> None:
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(dataclasses.replace(base, knowledge=_RaisingKnowledge(RuntimeError("boom"))))
     merged = _merge_connectors(cfg)
     assert set(merged) == {"local_folder", "obsidian_vault"}  # built-ins only
 
 
 def test_knowledge_extra_connectors_reraises_composition_error(cfg: KiroCrewConfig) -> None:
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(
         dataclasses.replace(base, knowledge=_RaisingKnowledge(PlatformCompositionError("x")))
     )
@@ -829,10 +829,10 @@ def test_default_knowledge_provider_empty(cfg: KiroCrewConfig) -> None:
     assert DefaultKnowledgeProvider().extra_connectors(cfg) == {}
 
 
-# ── R4-5: DashboardContributor seam (mwinit_handler / contribute_routes / services) ──
+# ── R4-5: DashboardContributor seam (sso_login_handler / contribute_routes / services) ──
 #
 # Reproduces the production fail-closed contract from dashboard/server.py:
-#   mwinit_handler  : safe_context_call(lambda: ctx.dashboard.mwinit_handler(), fallback=None) or stub
+#   sso_login_handler  : safe_context_call(lambda: ctx.dashboard.sso_login_handler(), fallback=None) or stub
 #   contribute_routes: safe_context_call(lambda: ctx.dashboard.contribute_routes(app), fallback=None)
 #   start/stop      : async_safe_context_call(lambda: ctx.dashboard.start_services(app), fallback=None)
 
@@ -841,7 +841,7 @@ class _RaisingDashboard:
     def __init__(self, exc):
         self._exc = exc
 
-    def mwinit_handler(self):
+    def sso_login_handler(self):
         raise self._exc
 
     def contribute_routes(self, app):
@@ -854,15 +854,15 @@ class _RaisingDashboard:
         raise self._exc
 
 
-def test_dashboard_mwinit_handler_degrades_to_stub(cfg: KiroCrewConfig) -> None:
+def test_dashboard_sso_login_handler_degrades_to_stub(cfg: KiroCrewConfig) -> None:
     from kiro_crew.platform import current_context, safe_context_call
 
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(dataclasses.replace(base, dashboard=_RaisingDashboard(RuntimeError("boom"))))
     stub = object()
     handler = (
         safe_context_call(
-            lambda: current_context().dashboard.mwinit_handler(),
+            lambda: current_context().dashboard.sso_login_handler(),
             fallback=None,
             log_message="degrade",
         )
@@ -874,7 +874,7 @@ def test_dashboard_mwinit_handler_degrades_to_stub(cfg: KiroCrewConfig) -> None:
 def test_dashboard_contribute_routes_reraises_composition_error(cfg: KiroCrewConfig) -> None:
     from kiro_crew.platform import current_context, safe_context_call
 
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(
         dataclasses.replace(base, dashboard=_RaisingDashboard(PlatformCompositionError("x")))
     )
@@ -890,7 +890,7 @@ def test_dashboard_contribute_routes_reraises_composition_error(cfg: KiroCrewCon
 async def test_dashboard_start_services_degrades(cfg: KiroCrewConfig) -> None:
     from kiro_crew.platform import async_safe_context_call, current_context
 
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(dataclasses.replace(base, dashboard=_RaisingDashboard(RuntimeError("boom"))))
     # Transient error degrades (returns fallback) rather than bricking gateway start.
     result = await async_safe_context_call(
@@ -905,7 +905,7 @@ async def test_dashboard_start_services_degrades(cfg: KiroCrewConfig) -> None:
 async def test_dashboard_start_services_reraises_composition_error(cfg: KiroCrewConfig) -> None:
     from kiro_crew.platform import async_safe_context_call, current_context
 
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(
         dataclasses.replace(base, dashboard=_RaisingDashboard(PlatformCompositionError("x")))
     )
@@ -943,10 +943,10 @@ def test_knowledge_extra_connectors_site_uses_safe_context_call() -> None:
 
 def test_dashboard_contributor_sites_use_safe_context_call() -> None:
     """dashboard/server.py must wrap the DashboardContributor seam calls in the
-    fail-closed shims: sync ``safe_context_call`` for mwinit_handler /
+    fail-closed shims: sync ``safe_context_call`` for sso_login_handler /
     contribute_routes, async ``async_safe_context_call`` for start/stop_services."""
     src = _read_source("kiro_crew.dashboard.server")
-    for sym in ("mwinit_handler", "contribute_routes", "start_services", "stop_services"):
+    for sym in ("sso_login_handler", "contribute_routes", "start_services", "stop_services"):
         assert sym in src, f"production site for {sym} disappeared"
     assert "safe_context_call(" in src
     assert "async_safe_context_call(" in src

@@ -125,7 +125,7 @@ export function useDeleteTerminalSession() {
  * cell at open()/fit() time with whatever font is resolvable then; the terminal
  * font ('JetBrains Mono') is a Google web font (display=swap) that can swap in
  * *after* the first measure, widening the cell while `cols` stays stale, so the
- * screen overflows the pane and the right edge is clipped (Mesh-2148, worst in
+ * screen overflows the pane and the right edge is clipped (worst in
  * the narrow right sidebar). xterm exposes no public "re-measure now" API, so we
  * force CharSizeService.measure() via a transient fontFamily toggle (both sets
  * run synchronously, so nothing paints between them). Verified against xterm

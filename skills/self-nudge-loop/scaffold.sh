@@ -127,7 +127,7 @@ EXECUTE (<=5 tool calls per cycle, hard cap):
 7. Read the one spec file for the claimed task.
 8. Do ONE atomic thing: draft a fix, write a test, run a test, invoke one SOP. Never all at once.
 9. NEVER git push. NEVER destructive ops. NEVER reply to real production tickets — sandbox / read-only only.
-10. Midway auth: http.cookiejar.MozillaCookieJar(path).load() + urllib opener, OR curl -b ~/.midway/cookie -f -s. NEVER read ~/.midway/cookie as text. NEVER echo cookie contents in any error — scrub exceptions to type(e).__name__.
+10. Cookie-jar auth: http.cookiejar.MozillaCookieJar(path).load() + urllib opener, OR curl -b <cookie-jar> -f -s. NEVER read a credential/cookie file as text. NEVER echo cookie contents in any error — scrub exceptions to type(e).__name__.
 
 RECORD:
 11. Append progress to the claimed card (kanban-md edit --add-body) or to a Cycle Log section in LOOP.md.
@@ -159,10 +159,10 @@ One cycle = one step.
 
 1. Never \`git push\`. Humans push.
 2. Never run destructive ops.
-3. Never read credential files as text (\`~/.midway/cookie\`, \`~/.aws/*\`, \`~/.ssh/*\`).
+3. Never read credential files as text (\`~/.aws/*\`, \`~/.ssh/*\`, cookie jars).
 4. Never echo credential content in errors — scrub to \`type(e).__name__\`.
 5. If using kanban-md, \`kanban-md\` is the only board writer.
-6. Test execution lives in a sandbox/DevSpace, not the local workspace.
+6. Test execution lives in a sandbox, not the local workspace.
 7. One cycle, one step.
 8. Human approval required for Done. Loop only moves cards to Review.
 9. \`max_cycles: 30\` cap every arming.

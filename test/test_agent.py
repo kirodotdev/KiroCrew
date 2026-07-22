@@ -691,7 +691,7 @@ class TestResolveKirocrewBin:
     def test_skips_stale_shutil_which_result(self, tmp_path: Path):
         """Falls through to bare 'kirocrew' when shutil.which returns a
         path that no longer exists (e.g. deleted after Toolbox migration).
-        Regression test for CR-271317428 scenario where
+        Regression test for scenario where
         ~/.local/bin/kirocrew was removed but still cached in PATH lookup.
         """
         import kiro_crew.agent as agent_mod
@@ -1723,7 +1723,7 @@ class TestKiroHooksAutoimport:
         cap_warnings = [
             r for r in caplog.records if "global limit" in r.message.lower()
         ]
-        # AutoSDE rev 8 fix: `_merge_kiro_hooks` re-checks the cap at the
+        # review-bot rev 8 fix: `_merge_kiro_hooks` re-checks the cap at the
         # start of each event's inner loop, so the number of WARNINGs
         # depends on how scripts are distributed across events -- which
         # shifts with dict ordering changes or minor test edits.  The
@@ -1742,7 +1742,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``_MAX_TOTAL_USER_HOOKS`` caps combined explicit + autoimport.
 
-        CR-270764586 AutoSDE finding (agent.py:778, importance=0): the
+        review-bot finding (agent.py:778, importance=0): the
         original code in ``_apply_user_kiro_hooks`` called
         ``_merge_kiro_hooks`` twice — once for explicit entries, once for
         auto-discovered scripts.  Because ``_merge_kiro_hooks`` initializes
@@ -1843,7 +1843,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: per-event cap break must emit SEL audit.
 
-        CR-270764586 AutoSDE rev 8 finding (agent.py:682, importance=1,
+        review-bot rev 8 finding (agent.py:682, importance=1,
         security-controls): when ``_merge_kiro_hooks`` hits the per-event
         cap ``_MAX_USER_HOOKS_PER_EVENT``, remaining entries for that
         event were silently dropped with only a ``logger.warning`` and
@@ -1916,7 +1916,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: global cap break must emit SEL audit.
 
-        CR-270764586 AutoSDE rev 8 finding (agent.py:688, importance=1,
+        review-bot rev 8 finding (agent.py:688, importance=1,
         security-controls): sibling to the per-event cap gap.  When the
         global cap ``_MAX_TOTAL_USER_HOOKS`` is hit across all events,
         remaining hooks are silently dropped.  An auditor cannot
@@ -1980,7 +1980,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: unknown event type in user_hooks must emit SEL audit.
 
-        CR-270764586 AutoSDE rev 9 follow-up: when ``_merge_kiro_hooks``
+        review-bot rev 9 follow-up: when ``_merge_kiro_hooks``
         encounters an event name not in ``_VALID_HOOK_EVENTS`` (e.g.
         typo or future-event-name from a newer kiro-cli), the entire
         event-bucket is dropped.  This is a permission decision per
@@ -2031,7 +2031,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: non-list entries for a valid event must emit SEL audit.
 
-        CR-270764586 AutoSDE rev 9 finding (agent.py:669, importance=1,
+        review-bot rev 9 finding (agent.py:669, importance=1,
         security-controls): when ``_merge_kiro_hooks`` sees
         ``user_hooks["preToolUse"]`` is e.g. a string or dict (not a
         list), the whole bucket is dropped silently.  Auditors need a
@@ -2108,7 +2108,7 @@ class TestKiroHooksAutoimport:
         whole script must be rejected so the user notices and fixes the
         matcher instead of getting a silently-broader hook.
 
-        Also asserts (rev 7 AutoSDE fix): the SEL audit event uses the
+        Also asserts (rev 7 review-bot fix): the SEL audit event uses the
         literal ``"autoimport"`` tag for consistency with every other
         rejection branch in ``_autoimport_kiro_hooks``.  The pre-fix code
         passed the variable ``event`` (e.g. ``"preToolUse"``), which broke
@@ -2141,7 +2141,7 @@ class TestKiroHooksAutoimport:
             "matcher" in rec.message.lower() and "invalid" in rec.message.lower()
             for rec in caplog.records
         )
-        # Rev 7 AutoSDE fix: SEL tag must be the literal "autoimport",
+        # Rev 7 review-bot fix: SEL tag must be the literal "autoimport",
         # not the variable ``event`` (e.g. "preToolUse").  Under the
         # pre-fix code this assertion failed with event_tag == "preToolUse".
         assert len(sel_calls) == 1, (
@@ -2162,7 +2162,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: unknown ``# event:`` rejection must emit a SEL audit event.
 
-        CR-270764586 AutoSDE finding (agent.py:586, importance=1,
+        review-bot finding (agent.py:586, importance=1,
         security-controls): when ``_infer_hook_event`` returns ``None``
         (the header declares an event name outside ``_HOOK_EVENT_CANONICAL``),
         the script is rejected.  Before this fix, the rejection only emitted
@@ -2222,7 +2222,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``entry.resolve()`` failure rejection must emit SEL audit.
 
-        CR-270764586 AutoSDE finding (agent.py:556, rev 4, importance=1,
+        review-bot finding (agent.py:556, rev 4, importance=1,
         security-controls): the ``cannot resolve entry`` rejection branch
         (when ``entry.resolve()`` raises ``OSError``) was missing the
         ``_sel_hook_rejected`` call.  Every other rejection branch in
@@ -2282,7 +2282,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``resolved_entry.stat()`` failure must emit SEL audit.
 
-        CR-270764586 AutoSDE finding (agent.py:556, rev 4, importance=1,
+        review-bot finding (agent.py:556, rev 4, importance=1,
         security-controls): the ``cannot stat entry`` rejection branch
         (when ``resolved_entry.stat()`` raises ``OSError``) was missing
         the ``_sel_hook_rejected`` call.  Same audit-completeness class
@@ -2361,7 +2361,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: non-executable ``.sh`` skip must emit SEL audit.
 
-        CR-270764586 AutoSDE rev 6 follow-up (agent.py:581,
+        review-bot rev 6 follow-up (agent.py:581,
         importance=1, security-controls): the non-executable skip
         branch was the last rejection path in ``_autoimport_kiro_hooks``
         that logged at INFO only and did NOT call
@@ -2417,7 +2417,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``kiro_hooks_dir: "~"`` (resolved == HOME) must be rejected.
 
-        CR-270764586 AutoSDE finding (agent.py:746, rev 4, importance=0,
+        review-bot finding (agent.py:746, rev 4, importance=0,
         default): the original containment check allowed
         ``resolved == home`` to pass because the condition was
         ``(resolved != home and home not in resolved.parents)``.  When
@@ -2561,7 +2561,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``_validate_hook_command`` must run BEFORE header parsing.
 
-        CR-270764586 AutoSDE finding (agent.py:562, importance=1,
+        review-bot finding (agent.py:562, importance=1,
         security-controls): the original ordering parsed the script's
         ``# event:`` / ``# matcher:`` headers first and only then called
         ``_validate_hook_command``.  Defense-in-depth: even though the
@@ -2642,7 +2642,7 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_dir_stored_as_resolved_path(self, tmp_path: Path, monkeypatch):
         """Regression: ``_autoimport_kiro_hooks`` receives the *resolved* hooks dir.
 
-        CR-270764586 AutoSDE finding (agent.py:744, TOCTOU): the original
+        review-bot finding (agent.py:744, TOCTOU): the original
         code did ``hooks_dir = requested`` after validating ``resolved``.
         If a path component of ``requested`` was a symlink, it could be
         swapped between the validate-in-HOME check in
@@ -2715,7 +2715,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``kiro_hooks_dir`` with a null byte must not crash.
 
-        CR-270764586 ultrareview adversarial finding: ``Path("\\x00")``
+        deep-review adversarial finding: ``Path("\\x00")``
         raises ``ValueError: embedded null byte`` -- uncaught, this
         propagates up through ``install_agent()`` and crashes agent
         bootstrap (denial of service via LLM-writable config).
@@ -2749,7 +2749,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``iterdir()`` OSError on hooks_dir must emit SEL audit.
 
-        CR-270764586 ultrareview coverage finding: the ``cannot read
+        deep-review coverage finding: the ``cannot read
         <hooks_dir>`` rejection branch in ``_autoimport_kiro_hooks``
         (when ``hooks_dir.iterdir()`` raises ``OSError``, e.g. EACCES)
         was missing the ``_sel_hook_rejected`` call.  Without it, an
@@ -2797,7 +2797,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: non-string ``kiro_hooks_dir`` reverts to default silently.
 
-        CR-270764586 ultrareview coverage finding: an LLM-writable
+        deep-review coverage finding: an LLM-writable
         ``"kiro_hooks_dir": null`` or ``[]`` silently skips the
         containment check (the ``isinstance(custom_dir, str) and
         custom_dir`` guard) and uses the default ``~/.kiro/hooks``.
@@ -2845,7 +2845,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: HOME-containment survives HOME-as-symlink topology.
 
-        CR-270764586 ultrareview coverage finding: corp devdesks and
+        deep-review coverage finding: corp devdesks and
         macOS laptops often have ``$HOME`` as a symlink (e.g.
         ``/home/user -> /mnt/fast-disk/user``).  The strict-containment
         check uses ``home = Path.home().resolve()`` and ``resolved =
@@ -2909,7 +2909,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``hooks_dir.resolve()`` OSError must emit SEL audit.
 
-        CR-270764586 AutoSDE rev 5 follow-up (agent.py:509,
+        review-bot rev 5 follow-up (agent.py:509,
         security-controls): the initial ``hooks_dir.resolve()`` failure
         branch returned early with only a ``logger.debug`` -- no
         ``_sel_hook_rejected`` call.  Same audit-completeness gap class
@@ -2964,7 +2964,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: ``ValueError`` from ``entry.resolve()`` must not crash.
 
-        CR-270764586 AutoSDE rev 5 follow-up (agent.py:540, default):
+        review-bot rev 5 follow-up (agent.py:540, default):
         the two inner ``resolve()`` calls in ``_autoimport_kiro_hooks``
         only caught ``OSError``, not ``ValueError``.  A filename from
         ``iterdir()`` containing a null byte (FS shenanigans, adversarial
@@ -3017,7 +3017,7 @@ class TestKiroHooksAutoimport:
     ):
         """Regression: OSError from ``Path.resolve()`` falls back cleanly.
 
-        CR-270764586 ultrareview coverage finding: if
+        deep-review coverage finding: if
         ``requested.resolve()`` or ``Path.home().resolve()`` raises
         ``OSError`` (ENAMETOOLONG, ELOOP, EACCES on a path component),
         the code sets ``resolved = home = None`` and falls through to
@@ -3325,7 +3325,7 @@ class TestMcpMergePriority:
         assert "srv" not in config["mcpServers"]
 
     def test_kirocrew_override_does_not_corrupt_global_fallback(self, tmp_path: Path):
-        """Regression (AutoSDE): a kirocrew mcp.json override carrying an
+        """Regression (review-bot): a kirocrew mcp.json override carrying an
         unresolvable command must not mutate the shared kiro-global source dict
         that is reused as a fallback candidate. The resolvable kiro-global
         command must still be recovered via the fallback (server not dropped)."""
@@ -3345,7 +3345,7 @@ class TestMcpMergePriority:
 
 class TestRefreshDynamicFieldsSyncsConfigModel:
     """config.json agent.model must propagate into the kiro agent file so
-    kiro-cli's --agent startup load matches it (Mesh-2292)."""
+    kiro-cli's --agent startup load matches it."""
 
     def _write_mc_config(self, tmp_path: Path, model) -> Path:
         mc = tmp_path / "config.json"

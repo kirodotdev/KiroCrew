@@ -1,4 +1,4 @@
-"""Tests for queue cancel feature (Mesh-722).
+"""Tests for queue cancel feature.
 
 Covers:
 - _ChatSlot queue helper methods (queue_append, queue_insert, queue_pop, queue_remove_by_id)

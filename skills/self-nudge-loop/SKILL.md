@@ -159,7 +159,7 @@ When all true: agent posts the DoD checklist with ticks, calls `autonudge_stop(r
 |---|---|
 | **Context-window overflow after ~100 cycles** (each nudge+reply adds ~170 B; session SIGTERMs at `ContentWindowOverflow`) | `max_cycles: 30` per arming. Re-arm manually for more. |
 | **STOP sentinel ignored** when `stop_sentinel_path` is `""` at loop start — service fires even when agent halts | Never leave `stop_sentinel_path` blank. Point it at a real path (even if the file doesn't exist yet). |
-| **Midway cookie leak** via urllib `ValueError` echoing raw `~/.midway/cookie` contents into transcripts | Use `http.cookiejar.MozillaCookieJar(path).load()` + urllib opener, OR `curl -b ~/.midway/cookie`. Scrub auth-path exceptions to `type(e).__name__` only. |
+| **Credential-file leak** via urllib `ValueError` echoing raw cookie-jar contents (e.g. `~/.config/<app>/credentials`) into transcripts | Use `http.cookiejar.MozillaCookieJar(path).load()` + urllib opener, OR `curl -b <cookie-jar>`. Scrub auth-path exceptions to `type(e).__name__` only. |
 
 ### 3. kanban-md integration (optional but recommended)
 
@@ -198,7 +198,7 @@ EXECUTE (≤5 tool calls per cycle, hard cap):
 7. Read the single spec file for the claimed task.
 8. Do ONE atomic thing: draft a fix, write a test, run a test, invoke one SOP. Never all at once.
 9. NEVER git push. NEVER destructive ops. NEVER reply to real production tickets during verification — sandbox / read-only only.
-10. Midway auth: http.cookiejar.MozillaCookieJar(path).load() + urllib opener, OR `curl -b ~/.midway/cookie -f -s`. NEVER read ~/.midway/cookie as text. NEVER echo cookie contents in any error — scrub exceptions to type(e).__name__.
+10. Cookie-jar auth: http.cookiejar.MozillaCookieJar(path).load() + urllib opener, OR `curl -b <cookie-jar> -f -s`. NEVER read a credential/cookie file as text. NEVER echo cookie contents in any error — scrub exceptions to type(e).__name__.
 
 RECORD:
 11. Append progress to the claimed card (kanban-md edit --add-body) or to the anchor doc's Cycle Log section.
@@ -224,16 +224,16 @@ Before clicking 🎯 "Set a goal" → Start loop:
 - [ ] STOP sentinel absent: `ls <STOP_PATH>` says "No such file".
 - [ ] Popover fields: nudge (from template), `idle_secs=60`, `max_cycles=30`, `stop_sentinel_path=<STOP_PATH>` — **no blank fields**.
 - [ ] If arming via REST instead of the UI: remember the two-step token flow — `GET /api/token/local` with `X-Local-Secret` header first, then `POST /api/autonudge?token=…`. `X-Internal-Secret` alone **will not work** (returns 403 `Token required`).
-- [ ] Auth fresh if the loop touches authenticated APIs: `mwinit -l` / `ada credentials update` as needed.
+- [ ] Auth fresh if the loop touches authenticated APIs: re-export cookies / refresh credentials as needed.
 
 ### 6. Ten invariants every loop must respect
 
 1. Never `git push`. Humans push.
 2. Never run destructive ops.
-3. Never read credential files as text (`~/.midway/cookie`, `~/.aws/*`, `~/.ssh/*`).
+3. Never read credential files as text (`~/.aws/*`, `~/.ssh/*`, cookie jars).
 4. Never echo credential content in errors — scrub to `type(e).__name__`.
 5. If the project has a kanban-md board, `kanban-md` is the only board writer.
-6. Test execution lives on a DevSpace or sandbox — never in the local workspace for ops that touch live systems.
+6. Test execution lives in a sandbox — never in the local workspace for ops that touch live systems.
 7. One cycle, one step. Compound cycles build features.
 8. Human approval required for Done. Loop only moves cards to Review.
 9. `max_cycles: 30` cap every arming. Re-arm manually for more.

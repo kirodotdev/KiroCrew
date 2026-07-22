@@ -13,7 +13,7 @@ import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMat
 import type { ResourceProvider, Result } from '../types'
 
 /**
- * Actions provider (Mesh-2151 Search Everywhere).
+ * Actions provider (Search Everywhere).
  *
  * Backs the **Actions** tab with a small, static list of global commands
  * (New session, Toggle theme, Open Shortcuts) rather than a remote data
@@ -36,7 +36,7 @@ import type { ResourceProvider, Result } from '../types'
 const PROVIDER_ID = 'actions'
 const PROVIDER_LABEL = 'Actions'
 
-/** Icon convention: lucide element with `lucide-inline` (AUTOSDE use-lucide-icons). */
+/** Icon convention: lucide element with `lucide-inline` (`use-lucide-icons` lint rule). */
 function inlineIcon(Icon: typeof Command): ReactNode {
   return createElement(Icon, { className: 'lucide-inline' })
 }
@@ -134,7 +134,7 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
           icon: action.icon,
           score: match.score,
           indices: match.indices,
-          // Declarative §2 Enter action (Mesh-2151 / task 27): Actions are pure
+          // Declarative §2 Enter action (/ task 27): Actions are pure
           // command-invocations — Enter runs `action.run`, and ⌘Enter has no
           // distinct behavior (the dispatcher ignores the modifier for this
           // kind). `run` is carried on the action payload so the dispatcher can
@@ -170,7 +170,7 @@ export function useActionsProvider(opts: { openShortcuts: () => void }): Resourc
 
   // "New session" is a write (createSlot); route it through useMutation for
   // error/loading state and consistency with paletteActions.ts's createSlot
-  // mutation (AutoSDE use-react-query). onSuccess navigates to /chat so the
+  // mutation (`use-react-query` lint rule). onSuccess navigates to /chat so the
   // user lands in the new session rather than staying on the current page.
   const { mutate: doNewSession } = useMutation({
     mutationFn: () => dispatch(createSlot(undefined)).unwrap(),

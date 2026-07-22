@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "displayName": "Research Lab",
   "description": "Autonomous research campaigns powered by autonudge — pre-flight validation, live findings, stagnation detection, and lifecycle controls.",
-  "author": "zejiangg",
+  "author": "kirocrew",
   "tags": ["research", "autonomy", "autonudge"],
   "defaultEnabled": false,
   "permissions": {

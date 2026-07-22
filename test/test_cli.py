@@ -1409,7 +1409,7 @@ class TestIsKirocrewProcess:
         """Regression: the real service launch form
         ``python -m kiro_crew gateway`` must be recognized. Previously the
         matcher only accepted the dotted ``kiro_crew.gateway`` form, so
-        ``kirocrew stop`` no-op'd on service installs (P459471197).
+        ``kirocrew stop`` no-op'd on service installs.
 
         Patched through the cross-platform ``process_command_line`` seam (the
         Windows port routes _is_kirocrew_process through platform_compat rather
@@ -1812,7 +1812,7 @@ class TestRestart:
         assert "5678" in capsys.readouterr().out
 
     def test_toctou_stop_systemexit_is_swallowed_so_spawn_proceeds(self, capsys):
-        # AutoSDE finding on rev 1: lsof can show a listener, then the
+        # review-bot finding on rev 1: lsof can show a listener, then the
         # gateway exits before _stop() runs. _stop() then finds nothing
         # and calls sys.exit(1). For restart, that's the wrong behavior:
         # the user asked for a restart, not a stop, and an exit here would
@@ -2600,7 +2600,7 @@ class TestConfigDirOverride:
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 
-    Regression coverage for Mesh-1474: the CLI helpers in ``cli_commands.py``
+    Regression coverage for the CLI helpers in ``cli_commands.py``
     used to open ``/api/spawn`` without the per-session IPC secret, which
     caused 403 ``"gateway not running"`` errors when ``dashboard.url`` was
     set to a non-loopback host (token_auth_middleware then required either

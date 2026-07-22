@@ -19,7 +19,7 @@
  * blur it, letting a broken rename path pass. We therefore schedule the
  * restore on a double rAF so it deterministically lands one frame AFTER the
  * consumer's single-rAF focus, reproducing the real-browser worst case.
- * Without this the CR-286161833 regression passed its test.
+ * Without this the rename-focus regression passed its test.
  */
 import React, { useState, useContext, useRef, createContext } from 'react'
 

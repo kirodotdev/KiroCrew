@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Sandbox security smoke test — run on dev desktop to verify standard mode
-# Usage: ssh dev-dsk-bolichen-2a-88e4ee3f.us-west-2.amazon.com
+# Usage: ssh <your-dev-host>
 #        cd ~/workplace/kirocrew && bash test/smoke_sandbox.sh
 #
 # Prerequisites: kirocrew gateway running, ada profile "smoke" configured
-# Setup:  ada profile add --profile smoke --account <account_id> --provider conduit --role IibsAdminAccess-DO-NOT-DELETE
+# Setup:  ada profile add --profile smoke --account <account_id> --provider sso --role IibsAdminAccess-DO-NOT-DELETE
 
 set -uo pipefail
 
@@ -176,9 +176,9 @@ echo "━━━ 4. Denied Commands (should ALLOW) ━━━"
 echo "  Note: ada commands are blocked by kiro-cli at runtime"
 
 allowed_cmds=(
-    "ada credentials update --once --account $ACCOUNT --provider conduit --role IibsAdminAccess-DO-NOT-DELETE"
-    "ada credentials update --account $ACCOUNT --provider conduit --role IibsAdminAccess-DO-NOT-DELETE"
-    "ada profile add --profile test --account $ACCOUNT --provider conduit --role IibsAdminAccess-DO-NOT-DELETE"
+    "ada credentials update --once --account $ACCOUNT --provider sso --role IibsAdminAccess-DO-NOT-DELETE"
+    "ada credentials update --account $ACCOUNT --provider sso --role IibsAdminAccess-DO-NOT-DELETE"
+    "ada profile add --profile test --account $ACCOUNT --provider sso --role IibsAdminAccess-DO-NOT-DELETE"
     "ada profile list"
     "aws sts get-caller-identity --profile $PROFILE"
     "aws sts assume-role --role-arn arn:aws:iam::$ACCOUNT:role/Admin"
@@ -187,7 +187,7 @@ allowed_cmds=(
     "aws s3 ls s3://my-bucket --profile $PROFILE"
     "aws s3 cp s3://bucket/file ./local"
     "kubectl get pods"
-    "git clone ssh://git.amazon.com:2222/pkg/KiroCrew"
+    "git clone ssh://git.example.com:2222/pkg/KiroCrew"
 )
 
 for cmd in "${allowed_cmds[@]}"; do
@@ -281,20 +281,20 @@ if ada profile print --profile "$PROFILE" >/dev/null 2>&1; then
         skip "aws s3 ls failed (may be permissions, not sandbox)"
     fi
 else
-    skip "ada profile '$PROFILE' not configured — run: ada profile add --profile $PROFILE --account $ACCOUNT --provider conduit --role IibsAdminAccess-DO-NOT-DELETE"
+    skip "ada profile '$PROFILE' not configured — run: ada profile add --profile $PROFILE --account $ACCOUNT --provider sso --role IibsAdminAccess-DO-NOT-DELETE"
 fi
 
-# ─── Section 8: Live git-over-SSH (requires kinit) ───
+# ─── Section 8: Live git-over-SSH (requires SSO login) ───
 echo ""
 echo "━━━ 8. Live git-over-SSH ━━━"
 
-if sandbox_run ssh -o BatchMode=yes -o ConnectTimeout=5 -p 2222 git.amazon.com 2>&1 | grep -qi "successfully authenticated\|permission denied\|shell access"; then
-    pass "SSH to git.amazon.com reachable from sandbox"
+if sandbox_run ssh -o BatchMode=yes -o ConnectTimeout=5 -p 2222 git.example.com 2>&1 | grep -qi "successfully authenticated\|permission denied\|shell access"; then
+    pass "SSH to git.example.com reachable from sandbox"
 else
-    if sandbox_run ssh -o BatchMode=yes -o ConnectTimeout=5 -p 2222 git.amazon.com 2>&1 | grep -qi "bad owner\|no such file"; then
+    if sandbox_run ssh -o BatchMode=yes -o ConnectTimeout=5 -p 2222 git.example.com 2>&1 | grep -qi "bad owner\|no such file"; then
         fail "SSH config ownership bug still present in sandbox"
     else
-        skip "SSH to git.amazon.com inconclusive (may need kinit)"
+        skip "SSH to git.example.com inconclusive (may need SSO login)"
     fi
 fi
 

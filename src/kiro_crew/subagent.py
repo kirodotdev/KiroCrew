@@ -134,7 +134,7 @@ def _vet_spawn_governance(parent_session_key: str, agent: str) -> str | None:
 
     Best-effort beyond the always-on guards: a ``PlatformCompositionError``
     propagates (fail-closed CPP); any other error returns a denial reason
-    (fail-closed, AVP-23427) rather than None/no-opinion.
+    (fail-closed) rather than None/no-opinion.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
@@ -160,7 +160,7 @@ def _vet_spawn_governance(parent_session_key: str, agent: str) -> str | None:
     except PlatformCompositionError:
         raise
     except Exception:
-        # Fail CLOSED (AVP-23427): a governance evaluation error must DENY the
+        # Fail CLOSED: a governance evaluation error must DENY the
         # spawn, not silently permit it (previously returned None = no opinion =
         # allow).  PlatformCompositionError already propagates above; every other
         # error lands here and is audited before denial.
@@ -1428,7 +1428,7 @@ class SubagentManager:
         :func:`kiro_crew.executors.subprocess_executor` via
         :func:`platform_compat.kill_process_tree_async` / ``kill_pid_async``
         instead of blocking the reaper loop's event loop for the duration of
-        ``taskkill.exe`` (Mesh-2801).
+        ``taskkill.exe``.
         """
         try:
             # circular import: subagent → acp.client → session → subagent
@@ -1450,7 +1450,6 @@ class SubagentManager:
             # Snapshot child tree before killing — children in different
             # PGIDs survive killpg. macOS pgrep/ps spawns are offloaded to
             # subprocess_executor to keep the reaper loop responsive
-            # (Mesh-2801 scope expansion).
             loop = asyncio.get_running_loop()
             raw_children = getattr(client, "_child_pids", None)
             child_pids: dict = (
@@ -1491,7 +1490,7 @@ class SubagentManager:
             try:
                 # Async variants offload Windows taskkill to
                 # subprocess_executor so the reaper loop never blocks the
-                # event loop on taskkill.exe (Mesh-2801).
+                # event loop on taskkill.exe.
                 await platform_compat.kill_process_tree_async(
                     pid, platform_compat.SIGKILL
                 )

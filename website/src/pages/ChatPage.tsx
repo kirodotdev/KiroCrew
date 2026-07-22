@@ -347,7 +347,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   const metaFiles = (meta?.files || []) as string[]
 
   // No files — always render markdown (user messages support bold, code, links, etc.)
-  // softBreaks: preserve Shift+Enter line breaks as <br> (see MarkdownRenderer / Mesh-2695).
+  // softBreaks: preserve Shift+Enter line breaks as <br> (see MarkdownRenderer).
   if (!parsedFiles.length) {
     return <MarkdownRenderer content={content} softBreaks />
   }
@@ -534,7 +534,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   }, [saveDrafts])
   // Outgoing-slot flush key, advanced inside the slot-change effect after it
   // flushes that slot's draft. Distinct from composerSlotRef (the live persist
-  // key); both must trail their writes or the draft smear returns. Mesh-2908.
+  // key); both must trail their writes or the draft smear returns.
   const prevSlot = useRef<string | null>(null)
   // Latest-value ref for `activeSlot`, updated every render. Used by async
   // upload callbacks (takeScreenshot, uploadFiles) to detect when the user
@@ -545,7 +545,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // The slot the live composer state belongs to; the per-composer persist
   // effects key off this, not `activeSlot`. Advanced by a dedicated effect
   // declared AFTER those effects so a batched keystroke+switch can't smear one
-  // slot's draft onto another. See that advance effect for the full rationale. Mesh-2908.
+  // slot's draft onto another. See that advance effect for the full rationale.
   const composerSlotRef = useRef(activeSlot)
   const [input, setInput] = useState(() => activeSlot ? drafts.current[activeSlot] ?? '' : '')
 
@@ -576,7 +576,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // Browse mode is per-session (keyed by slot), not page-global: enabling it in
   // one session must not bleed into another. ChatPage never remounts on slot
   // switch, so a single boolean would leak across every session. Kept in-memory
-  // only (resets on reload), matching the prior non-persisted behavior. Mesh-2055.
+  // only (resets on reload), matching the prior non-persisted behavior.
   const [browseModeBySlot, setBrowseModeBySlot] = useState<Record<string, boolean>>({})
   const browseMode = activeSlot ? (browseModeBySlot[activeSlot] ?? false) : false
   const toggleBrowseMode = () => {
@@ -753,7 +753,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   browseModeRef.current = browseMode
   // Holds the exact text a widget action pre-filled into the composer, so the
   // eventual user-initiated send can be tagged meta.origin='widget' for
-  // forensic attribution (P454989291 item 4). Set on widget pre-fill, consumed
+ // forensic attribution. Set on widget pre-fill, consumed
   // and cleared in send(). A genuine from-scratch turn never sets this.
   const widgetPrefillRef = useRef<string | null>(null)
 
@@ -902,7 +902,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist the composer text against the slot it BELONGS to (composerSlotRef),
-  // not the live activeSlot (see the composerSlotRef note above). Mesh-2908.
+  // not the live activeSlot (see the composerSlotRef note above).
   useEffect(() => { inputRef.current = input; const s = composerSlotRef.current; if (s) { setDraft(drafts.current, s, input); saveDraftsDebounced() } }, [input, saveDraftsDebounced]) // eslint-disable-line react-hooks/exhaustive-deps -- draft key is composerSlotRef; slot-change effect handles the transition
   // Per-slot draft: save current → restore target (persisted to localStorage)
   useEffect(() => {
@@ -990,7 +990,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const pendingFilesRef = useRef(pendingFiles)
   useEffect(() => {
     pendingFilesRef.current = pendingFiles
-    // Key off composerSlotRef, not activeSlot (see the composerSlotRef note). Mesh-2908.
+    // Key off composerSlotRef, not activeSlot (see the composerSlotRef note).
     const s = composerSlotRef.current
     if (s) {
       setFileDraft(fileDrafts.current, s, pendingFiles)
@@ -1008,7 +1008,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     pasteBlocksRef.current = pasteBlocks
     // Live-persist the composer's blocks so a slot switch / refresh restores
     // them alongside the text draft (mirrors the pendingFiles effect above).
-    // Key off composerSlotRef, not activeSlot (see the composerSlotRef note). Mesh-2908.
+    // Key off composerSlotRef, not activeSlot (see the composerSlotRef note).
     const s = composerSlotRef.current
     if (s) {
       setPasteDraft(pasteDrafts.current, s, pasteBlocks)
@@ -1022,7 +1022,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // has already written its changed value against the OUTGOING slot before this
   // repoints the key at the incoming one. Declared last on purpose. Moving it
   // earlier (or back into the slot-change effect) would let a file/paste change
-  // batched with the switch smear onto the new slot. Mesh-2908.
+  // batched with the switch smear onto the new slot.
   useEffect(() => { composerSlotRef.current = activeSlot }, [activeSlot])
   const [uploadError, setUploadError] = useState('')
   const [uploadNotice, setUploadNotice] = useState('')
@@ -1305,7 +1305,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     if (!activeSlot) return
     try {
       // Fork WITHOUT a prompt: an unsent composer draft must never be
-      // auto-submitted into the freshly forked session (Mesh-2287). The
+      // auto-submitted into the freshly forked session. The
       // per-slot draft mechanism saves the source slot's composer text on
       // slot-switch, so the user's parked draft stays safe in the original
       // session and the fork opens with an empty composer.
@@ -1870,7 +1870,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // guarding against. Cheap belt-and-braces.
     if (!connected) return
     const raw = (optionText || inputRef.current).trim()
-    // Capture + clear the widget-origin tag (P454989291 item 4): attribute this
+ // Capture + clear the widget-origin tag: attribute this
     // turn to a widget only if the composer still carries the exact text a
     // widget action pre-filled. Cleared on every send so it can't go stale.
     const widgetOrigin = !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
@@ -1882,7 +1882,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // re-memoized). Under lag a reducer-driven activeSlot change can move the
     // active slot before ChatPage re-renders, so the closure would route into
     // the slot the user just left. Used for slash routing, the composer draft
-    // clear, and (below) the send target. Mesh-2908.
+    // clear, and (below) the send target.
     const uiSlot = activeSlotRef.current
 
     // Slash command interception (e.g. /side): runs before knowledge so a
@@ -1927,7 +1927,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       try { sessionStorage.removeItem(PREFILL_STORAGE_KEY) } catch { /* sessionStorage unavailable */ }
     }
     // Target the slot the user is actually looking at (uiSlot, from the ref),
-    // not the stale closure `activeSlot`. See the uiSlot note above. Mesh-2908.
+    // not the stale closure `activeSlot`. See the uiSlot note above.
     let slot = targetSlot ?? uiSlot
     // Only a normal (non-targeted) send consumes the one-shot "new session"
     // intent. A targeted send — e.g. submitting document comments to the
@@ -1985,7 +1985,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       } else {
         dispatch(setSlotRunning(false))
         dispatch(appendMessage({ role: 'error', content: 'Connection error', cls: '' }))
-        // Restore draft so the user doesn't lose their message (Mesh-1468).
+        // Restore draft so the user doesn't lose their message.
         // Also restore the paste blocks backing any tokens in `txt`, otherwise
         // the restored text shows a dead `[ Paste #N · M lines ]` literal.
         // Persist for `slot` unconditionally (recoverable on disk), but only
@@ -2014,7 +2014,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // outcomes.
     // send() no longer reads the closure `activeSlot` for its target. It reads
     // uiSlot = activeSlotRef.current, so it routes to the on-screen slot even
-    // between the reducer flip and this callback's re-memoization (Mesh-2908).
+    // between the reducer flip and this callback's re-memoization.
     // activeSlot is left in deps as a harmless no-op: dropping it churns the
     // array for no behavior change (the ref is always current regardless).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2036,7 +2036,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   useEffect(() => { if (connected && autoSendRef.current) { const txt = autoSendRef.current; autoSendRef.current = null; send(txt) } }, [send, connected, autoSendTick])  
 
   // Widget interactivity: when a mcwidget iframe fires an action, PRE-FILL the
-  // composer instead of auto-submitting (P454989291). Auto-send was a
+ // composer instead of auto-submitting. Auto-send was a
   // trust-boundary bypass: LLM-emitted <script> inside the sandboxed widget
   // iframe can call parent.postMessage directly, bypassing the in-iframe
   // isTrusted click guard, and the parent cannot distinguish that from a
@@ -3408,9 +3408,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               onSteer={steer}
               onFollowUpSend={(text?: string) => send(text)}
               disabled={
-                /* Streaming, compaction (Mesh-1345), and stopping (Mesh-2004) all
+                /* Streaming, compaction, and stopping all
                    keep the input interactive: api_chat queues on slot.running and
-                   stop preserves the queue (Mesh-1889), so typing + Enter queues a
+                   stop preserves the queue, so typing + Enter queues a
                    follow-up during the stop window instead of being silently blocked. */
                 false
               }

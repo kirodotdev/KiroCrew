@@ -14,14 +14,14 @@ import { copyToClipboard } from '../utils/clipboard'
 import { api } from '../api/client'
 import type { Artifact } from '../types'
 
-// Artifact "Iterate" affordances are hidden pending an artifact redesign
-// (task P472753393). Here that gates the "Submit comments to chat" bar — the
+// Artifact "Iterate" affordances are hidden pending an artifact redesign.
+// Here that gates the "Submit comments to chat" bar — the
 // side-panel analog of the full-page Iterate flow — while leaving the durable
 // comment stack (create/view/reply/resolve) fully intact. Flip to `true` (or
 // delete the gate) when the redesign lands.
-// NOTE (MeshClaw sync): the upstream keeps this visible — do NOT let a sync
-// re-show it; see skills/meshclaw-sync/SKILL.md → "Fork-initiated UX
-// divergences" (verdict SKIP_FORKUX). Mirrors ArtifactDetailPage.tsx.
+// NOTE: the upstream project keeps this visible — this is a deliberate
+// fork-initiated UX divergence, so do NOT let an upstream sync re-show it.
+// Mirrors ArtifactDetailPage.tsx.
 const SHOW_ARTIFACT_ITERATE = false
 
 interface Props {

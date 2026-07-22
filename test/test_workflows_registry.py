@@ -62,7 +62,7 @@ async def test_background_run_finishes_and_captures_result() -> None:
     runner = WorkflowRunner(agent_fn=_echo, audit=lambda *a, **k: None)
 
     rid = await runner.run_background(
-        GOOD, registry=reg, run_id="wf_bg1", now=NOW, name="demo", author="zedmor"
+        GOOD, registry=reg, run_id="wf_bg1", now=NOW, name="demo", author="a-contributor"
     )
     assert rid == "wf_bg1"
     # immediately addressable
@@ -71,7 +71,7 @@ async def test_background_run_finishes_and_captures_result() -> None:
     snap = await _wait_terminal(reg, rid)
     assert snap["status"] == STATUS_FINISHED
     assert snap["result"] == {"done": True}
-    assert snap["author"] == "zedmor"
+    assert snap["author"] == "a-contributor"
 
 
 async def test_events_stream_into_handle_live() -> None:

@@ -560,7 +560,7 @@ class TestEnqueueOrRunPrompt:
 
         assert ran is False  # busy → queued, did not run
         mock_coro.assert_not_called()
-        # Post-Mesh-722: _queue items are dicts with id+content.
+        # Post-_queue items are dicts with id+content.
         assert len(slot._queue) == 1
         assert slot._queue[0]["content"] == "queued msg"
         assert "id" in slot._queue[0]

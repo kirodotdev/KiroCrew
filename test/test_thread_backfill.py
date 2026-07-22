@@ -1,6 +1,6 @@
 """Tests for the generic pending-context drain + the thread->session persist map.
 
-Ported from MeshClaw upstream b493aa40 — but ONLY the generic half. The
+Ported from the upstream project — but ONLY the generic half. The
 headline Slack thread-backfill (``_backfill_thread_context``) fires exclusively
 on the challenge-and-redirect auto-link flow, which this fork DELIBERATELY
 removes (external Slack messages reach the agent inline; there is no

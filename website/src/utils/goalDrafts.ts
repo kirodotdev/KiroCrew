@@ -12,7 +12,7 @@
  * their goal. Persisting the last-entered draft per slot fixes that: after a
  * stop, re-opening restores exactly what the user last had.
  *
- * Thin instance of the shared `createSlotDraftStore` factory (Mesh-1909), same
+ * Thin instance of the shared `createSlotDraftStore` factory, same
  * as `chatDrafts` / `chatPasteDrafts` / `chatFileDrafts` — the TTL / LRU /
  * timestamp-sidecar / quota-safe persist machinery lives in one place there, so
  * this module is just the GoalDraft shape + validator. localStorage with the

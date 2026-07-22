@@ -31,7 +31,7 @@ function extractPreview(meta?: Record<string, unknown>): string {
     if (typeof obj.command === 'string') return obj.command
     // Pretty-print (2-space indent) so nested structure renders as real line
     // breaks in the <pre whitespace-pre-wrap> card, instead of a single
-    // unreadable line with escaped \n / \t sequences (Mesh-2357).
+    // unreadable line with escaped \n / \t sequences.
     return JSON.stringify(ti, null, 2)
   }
   if (typeof meta.__tool_use_purpose === 'string') return meta.__tool_use_purpose

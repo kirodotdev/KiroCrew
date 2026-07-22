@@ -1,6 +1,6 @@
 """Tests for persistent_session flag on CronJob.
 
-Bug: Mesh-1026 — stateful cron sessions accumulate context indefinitely for
+Bug: stateful cron sessions accumulate context indefinitely for
 polling-style jobs, causing LLM turns to drift from seconds to tens of minutes
 over days. Adding ``persistent_session=False`` gives each run a fresh session
 key and skips the ``last_result`` prefix.

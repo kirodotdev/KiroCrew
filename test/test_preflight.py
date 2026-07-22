@@ -22,7 +22,7 @@ class _StubIdentity:
     def status(self) -> dict:
         return {}
 
-    async def status_line(self, prefix: str = "*Midway:*") -> str:
+    async def status_line(self, prefix: str = "*SSO:*") -> str:
         return ""
 
     def whoami(self) -> None:

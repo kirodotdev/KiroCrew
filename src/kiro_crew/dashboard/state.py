@@ -92,7 +92,7 @@ def set_build_info(info: tuple[str, str]) -> None:
     """Record the running build's ``(branch, short_commit)`` for status payloads.
 
     Called once from the CLI gateway entrypoint (sync, pre-loop, post-detection).
-    Defaults to ``("", "")`` for non-git / toolbox installs, which the frontend
+    Defaults to ``("", "")`` for non-git / packaged installs, which the frontend
     renders by omitting the build-info rows.
     """
     global _build_info
@@ -566,7 +566,7 @@ def _ascii_slot_key(name: str) -> str:
     kirocrew-core sends as the ``X-Session-Key`` HTTP header on every gateway
     call. Header values are latin-1 per RFC 7230, so a non-latin-1 char (e.g.
     an em-dash from a title-derived slot name) would abort every tool call
-    (Mesh-2435). ASCII control characters (notably CR/LF) are excluded too, so
+   . ASCII control characters (notably CR/LF) are excluded too, so
     a name can never inject into or split the header. Idempotent;
     printable-ASCII names — including the auto-generated ``chat-N-<ts>`` keys —
     are returned unchanged. (Path-separator/traversal containment for keys later
@@ -594,7 +594,7 @@ def _normalize_slot_key(name: str) -> str:
     positions; ``_history_key_for`` strips the same prefixes when building the
     history key, so such names already share one transcript with their bare
     form and must share one slot), then :func:`_ascii_slot_key` (header
-    safety, Mesh-2435), then a filename fold using the same character class as
+    safety), then a filename fold using the same character class as
     ``history._safe_key``.
 
     Without the filename fold, a display-style slot name (e.g.
@@ -716,7 +716,7 @@ class _ChatSlot:
         self.agent = agent
         self.model = model
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
-        # Currently consumed by Claude Code (--effort flag); ACP/OpenCode wired later.
+        # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
         # "" = default chat, "orchestrator" = orchestrated chat
         self.mode = mode
@@ -742,7 +742,7 @@ class _ChatSlot:
         self._title_in_flight: bool = False
         # Records a chat_done retry that arrived during the on-send attempt.
         self._title_retry_pending: bool = False
-        # Artifact companion binding (Mesh-2772): set when this slot is a
+        # Artifact companion binding: set when this slot is a
         # companion chat session for an artifact (slug). At most one
         # non-archived slot per slug by convention — the frontend flow
         # maintains the invariant (archive-then-create); the backend accepts
@@ -808,7 +808,7 @@ class _ChatSlot:
         # One-shot guard for the post-token (text-only) transient retry: a turn
         # that has already streamed answer tokens may be re-prompted at most
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
-        # completed turn alongside _transient_5xx_retries (Mesh-2150).
+        # completed turn alongside _transient_5xx_retries.
         self._posttoken_retry_used: bool = False
         self._empty_response_retries: int = 0
         self._batch_rejected: bool = False
@@ -1240,7 +1240,7 @@ class _ChatSlot:
             "surface": self.mode,
             "workspace": self.workspace,
             "project": self.project,
-            # Artifact companion binding (Mesh-2772). Flows into GET
+            # Artifact companion binding. Flows into GET
             # /api/chat/slots and the WS `slots` snapshot — the frontend
             # resolves the active bound session for an artifact from here.
             "artifact": self._artifact,
@@ -1543,7 +1543,7 @@ class DashboardState:
             # True when the gateway has wired up a live Slack client (Socket Mode
             # connected). None in pure-dashboard mode or when Slack is disabled.
             "slack_connected": self.slack_client is not None,
-            # Governance enforcement health (AVP-23427): "active" (enforcing),
+            # Governance enforcement health: "active" (enforcing),
             # "disabled" (permissive default / not restricting), "degraded" (a
             # fail-closed trip, integrity mismatch, or unverified policy this
             # session), or "unknown" (policy not yet loaded).  Pure in-memory read.
@@ -2026,7 +2026,7 @@ class DashboardState:
         if name:
             # Slot keys flow into the session key (``dashboard:{slot.key}``)
             # that kirocrew-core sends as the ``X-Session-Key`` HTTP header
-            # (latin-1 per RFC 7230, Mesh-2435) AND into the persisted JSONL
+            # (latin-1 per RFC 7230) AND into the persisted JSONL
             # filename via the history layer's lossy ``_safe_key()`` fold.
             # Normalize to the filename charset *before* the lookup so the key
             # is header-, filesystem-, and restore-round-trip-safe: the key now
@@ -2341,7 +2341,7 @@ class DashboardState:
         revert / pull-latest / relocate / delete) so every open dashboard
         window — main, popouts, companion chat panels — can invalidate its
         artifact queries immediately instead of waiting for the 30s react-query
-        staleness window (Mesh-2772). Fire-and-forget, best-effort: the
+        staleness window. Fire-and-forget, best-effort: the
         staleness window remains the safety net if a client misses the event.
         """
         self._broadcast(
@@ -2425,7 +2425,7 @@ class DashboardState:
             elif msg_type == "artifact_update":
                 # Typed envelope (not the generic `notification` fallback) so
                 # useWebSocket and future consumers get a self-documenting
-                # event: {slug, version, deleted} (Mesh-2772).
+                # event: {slug, version, deleted}.
                 ws_msg = json.dumps(
                     {
                         "type": "artifact_update",

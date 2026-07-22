@@ -83,7 +83,7 @@ jobs:
   # Publishes the release wheel to the insider/stable CLI channel (cli/ +
   # latest-cli.json + PEP 503 index) -- previously release wheels only
   # reached GitHub Releases, so pip/cli.sh users could never track insider
-  # or stable. Depends only on the wheel (not build-desktop or CDSigner),
+  # or stable. Depends only on the wheel (not build-desktop or the signing service),
   # so a macOS signing failure never blocks the CLI release.
   publish-cli:
     name: Publish CLI (${{ needs.version.outputs.channel }} channel)

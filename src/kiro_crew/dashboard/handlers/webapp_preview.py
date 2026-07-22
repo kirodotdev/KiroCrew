@@ -401,7 +401,7 @@ def _resolve_and_read(
     if body is None:
         return None, None
     ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    # Round-5 F2 + Round-6 F1 (AUTOSDE backend-security-controls): files
+    # Per the backend-security-controls rule: files
     # under app_dir are agent-influenced output reaching the dashboard
     # surface — every response must pass the mandatory redaction scan.
     # Gating the scan on the GUESSED content type left a bypass: credential

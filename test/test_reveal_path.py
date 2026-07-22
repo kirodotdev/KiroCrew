@@ -1,4 +1,4 @@
-"""Tests for POST /api/reveal — Mesh-996 fix."""
+"""Tests for POST /api/reveal — fix."""
 
 from __future__ import annotations
 

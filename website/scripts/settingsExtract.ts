@@ -1,5 +1,5 @@
 /**
- * Settings registry extractor (Mesh-2151 Search Everywhere — Settings provider).
+ * Settings registry extractor (Search Everywhere — Settings provider).
  *
  * Parses `src/pages/settings/*.tsx` for JSX usages of settings primitives
  * (SettingsToggle, SettingsSelect, SettingsInput, SettingsStepper,

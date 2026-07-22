@@ -1,6 +1,6 @@
 """Tests for ``api_upload_file`` (POST /api/upload/file).
 
-The endpoint itself was shipped earlier; what's new in CR-281382825 is the
+The endpoint itself was shipped earlier; what's new in is the
 post-write diagnostic block that compares the bytes received in memory
 against the bytes that landed on disk and logs sha256 + magic + zipfile
 status. The block is wrapped in try/except so a diagnostic-internal

@@ -78,7 +78,7 @@ function Info({ k, v }: { k: string; v?: ReactNode }) {
   return <div className="flex justify-between gap-3 py-2 border-b border-border text-sm last:border-b-0"><span className="text-muted shrink-0">{k}</span><span className="text-text font-medium font-mono text-[13px] break-all text-right">{v ?? '—'}</span></div>
 }
 
-/** Governance enforcement health indicator (AVP-23427). Minimal colored text. */
+/** Governance enforcement health indicator. Minimal colored text. */
 function GovernanceStatus({ value }: { value?: 'active' | 'degraded' | 'disabled' | 'unknown' }) {
   const map = {
     active: { label: 'Active', color: 'var(--ok)', tip: 'Governance is enforcing an admission policy; no degradation detected.' },

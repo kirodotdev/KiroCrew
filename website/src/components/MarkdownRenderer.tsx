@@ -448,7 +448,7 @@ const SOFT_BREAK_RE = /[\t ]*(?:\r?\n|\r)/g
  * affected, so lists and paragraphs keep their normal block spacing. That is
  * what lets user messages drop container-level `white-space: pre-wrap`, which
  * had made react-markdown's inter-block newline text nodes render as literal
- * blank lines and inflated list/paragraph gaps (Mesh-2695).
+ * blank lines and inflated list/paragraph gaps.
  */
 function remarkSoftBreaks() {
   const visit = (node: { type?: string; value?: string; children?: unknown[] }) => {
@@ -802,7 +802,7 @@ import WidgetPlaceholder from './WidgetPlaceholder'
 /** Try to extract a file path from chat text immediately preceding a diff
  * block. Tools sometimes emit "Created /path/to/file:" or "Modified ..."
  * before a bare diff with no +++/--- headers; this hint lets DiffBlock's
- * Open file button work in those cases (Mesh-1654 round 9).
+ * Open file button work in those cases (round 9).
  */
 function extractPathHintFromText(text: string | undefined): string | undefined {
   if (!text) return undefined

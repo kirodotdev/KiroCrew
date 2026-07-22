@@ -51,7 +51,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
   // Default: prefer Output if present, else Input. Tracks user intent so we
   // don't yank focus away from a section the user explicitly opened.
   const [section, setSection] = useState<'input' | 'output'>(hasOutput ? 'output' : 'input')
-  // Raw vs Formatted payload rendering (Mesh-2357). Formatted (default)
+  // Raw vs Formatted payload rendering. Formatted (default)
   // unescapes \n/\t so multi-line commands are legible; Raw shows the exact
   // verbatim payload for faithful pre-approval inspection. Only surfaced for
   // JSON-ish payloads, where the two modes actually differ.
@@ -230,7 +230,7 @@ function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
   )
 }
 
-/** Formatted vs Raw payload toggle (Mesh-2357). Mirrors {@link ToolSegmented}'s
+/** Formatted vs Raw payload toggle. Mirrors {@link ToolSegmented}'s
  *  visual language — a two-segment capsule with an animated active pill — so
  *  the two controls read as siblings. Both segments are always enabled; the
  *  parent only renders this for JSON-ish payloads where the modes differ. */

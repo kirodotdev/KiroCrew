@@ -222,7 +222,7 @@ def run_aws(
     assert_chokepoint_allowed(args)
     argv = _build_argv(args, profile, region)
     sandboxed, cleanup = wrap_argv(argv, mode="standard")
-    sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling (Talos bdf0d7e5)
+    sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
     proc: Optional[subprocess.Popen[str]] = None
     try:
         try:

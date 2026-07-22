@@ -50,7 +50,7 @@ _AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$|^[a-zA
 
 # Artifact slug grammar — mirrors kiro_crew.artifacts._SLUG_RE (kept here so
 # consumers outside the store module share one public definition). Used to
-# validate the companion-chat `artifact` slot binding (Mesh-2772) at EVERY
+# validate the companion-chat `artifact` slot binding at EVERY
 # boundary it crosses: slot create (chat_handlers) and history-metadata
 # restore (chat_persistence) — a tampered history JSONL must not be able to
 # inject an arbitrary string that flows into to_dict()/WS broadcasts.
@@ -810,7 +810,7 @@ ARTIFACT_REVERT_SCHEMA = ToolSchema(
     ],
 )
 
-# Artifact comments (Mesh-1880). Comment ids are local UUIDs or provider-origin
+# Artifact comments. Comment ids are local UUIDs or provider-origin
 # ids (e.g. a remote provider's "<ts>-<uuid>"); allow alphanumerics + - . : _ .
 _ARTIFACT_COMMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
 _ARTIFACT_SCOPE_RE = re.compile(r"^(private|shared)$")
@@ -873,7 +873,7 @@ ARTIFACT_DELETE_COMMENT_SCHEMA = ToolSchema(
     ],
 )
 
-# Artifact folders (Mesh-2720). A folder reference is a folder id OR a
+# Artifact folders. A folder reference is a folder id OR a
 # ``/``-separated human path, so it can't share the slug regex — only bound
 # the length. Folder names cap at 100 chars (matches ArtifactFolderStore).
 _ARTIFACT_FOLDER_NAME_MAX = 100
@@ -978,7 +978,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         # sanitizers. The "command" regex only rejects control bytes and the
         # "script" regex only enforces a path:func shape — neither makes the
         # value safe to execute. The enforced security boundary for the
-        # model-supplied cron command/script lives elsewhere (finding P454794507):
+        # model-supplied cron command/script lives elsewhere:
         #   1. storage-time deny-list  -> mcp_cron._vet_shell_command / _vet_script_file
         #   2. exec-time OS sandbox     -> cron_script.run_command_sandboxed (mode="cc")
         #                                  + _clean_cron_env() env scrubbing

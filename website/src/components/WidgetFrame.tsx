@@ -12,7 +12,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 const MIN_HEIGHT = 80
 
 // Upper bound on the text a single widget action may pre-fill into the
-// composer (P454989291). A malicious LLM-emitted <script> can postMessage
+// composer. A malicious LLM-emitted <script> can postMessage
 // directly, so cap the dispatched text to keep it reviewable and prevent a
 // widget from stuffing the composer with an oversized payload.
 const MAX_WIDGET_ACTION_TEXT = 4000
@@ -264,7 +264,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
         }
       }
       if (e.data?.type === 'mc-widget-action') {
-        // SECURITY (P454989291): a widget action can ONLY pre-fill the composer
+ // SECURITY: a widget action can ONLY pre-fill the composer
         // (see the mc-widget-send handler in ChatPage) — it can never submit a
         // user-role turn on its own. We still validate/sanitize the shape here
         // because LLM-emitted <script> can postMessage directly (bypassing the

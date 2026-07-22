@@ -3,7 +3,7 @@ import { decideUnreadDrain } from '../pages/unreadDrain'
 
 /**
  * Covers the 3-case state machine for the ChatSidebar unread-filter auto-drain
- * (CR-271985293). The effect itself lives in ChatSidebar.tsx, but the decision
+ *. The effect itself lives in ChatSidebar.tsx, but the decision
  * logic is extracted into `decideUnreadDrain` specifically so it can be tested
  * without a full component render.
  */

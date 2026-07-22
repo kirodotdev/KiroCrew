@@ -8,8 +8,8 @@ import {
 import type { Result } from '../types'
 
 /**
- * Unit tests for the pure {@link createKnowledgeProvider} factory (Mesh-2151
- * Search Everywhere, step 19 — the Knowledge provider + its §2 Enter matrix).
+ * Unit tests for the pure {@link createKnowledgeProvider} factory
+ * (Search Everywhere, step 19 — the Knowledge provider + its §2 Enter matrix).
  *
  * The backend (`/api/knowledge/search-for-context`) already does the relevance
  * filtering, so the provider's {@link fuzzyMatch} pass is only for highlight

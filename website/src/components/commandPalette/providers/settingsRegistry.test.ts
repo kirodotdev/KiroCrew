@@ -5,7 +5,7 @@ import { extractAll } from '../../../../scripts/settingsExtract'
 import { SETTINGS_REGISTRY } from '../settingsRegistry.gen'
 
 /**
- * Anti-stale guard for the settings registry (Mesh-2151).
+ * Anti-stale guard for the settings registry.
  *
  * Runs the extractor in-memory over real source files and asserts the result
  * matches the checked-in generated registry. If this test fails:

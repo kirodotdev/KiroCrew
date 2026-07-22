@@ -6,7 +6,7 @@ and which one is the default. Profile *names* are the only credential-adjacent
 data stored — never keys, never tokens.
 
 Security boundary (mirrors ``kiro_crew.metrics.profile_install``, the
-AutoSDE-defended precedent for explicit named-profile installs):
+review-defended precedent for explicit named-profile installs):
 
 * Reads: profile *names* come from ``aws configure list-profiles`` (CLI output,
   names only). We never open ``~/.aws/config`` or ``~/.aws/credentials``.

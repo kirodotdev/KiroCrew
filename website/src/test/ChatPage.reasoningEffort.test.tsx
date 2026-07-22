@@ -1,5 +1,5 @@
 /**
- * Tests for reasoning effort button in ChatInput (Mesh-1412).
+ * Tests for reasoning effort button in ChatInput.
  * Tests the ChatInput component directly to avoid ChatPage's complex dependencies.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'

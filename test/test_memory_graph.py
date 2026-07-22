@@ -107,7 +107,7 @@ class TestMemoryGraphNodeExtraction:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = self._make_state(
             tmp_path,
-            projects="## KiroCrew\n- Repository: ssh://git.amazon.com\n- Branch: main",
+            projects="## KiroCrew\n- Repository: ssh://git.example.com\n- Branch: main",
         )
         request = MagicMock()
         request.app = {"state": state}
@@ -189,8 +189,8 @@ class TestMemoryGraphNodeExtraction:
         vs = MagicMock()
         vs.get_all_semantic.return_value = [
             {"key": "pref.editor", "value_json": '"vim"'},
-            {"key": "project.url", "value_json": "https://taskei.amazon.com/tasks/123"},
-            {"key": "project.repo", "value_json": "ssh://git.amazon.com/pkg/Foo"},
+            {"key": "project.url", "value_json": "https://tracker.example.com/tasks/123"},
+            {"key": "project.repo", "value_json": "ssh://git.example.com/pkg/Foo"},
         ]
         vs.get_lessons.return_value = []
         state.context_builder.memory.vector_store = vs
@@ -205,7 +205,7 @@ class TestMemoryGraphNodeExtraction:
         # Raw URL should appear in the title as-is, not cause a crash
         url_node = [n for n in sem_nodes if "project.url" in n["label"]]
         assert len(url_node) == 1
-        assert "https://taskei" in url_node[0]["title"]
+        assert "https://tracker" in url_node[0]["title"]
 
     @pytest.mark.asyncio
     async def test_graph_redacts_credentials_in_semantic_nodes(self, tmp_path, monkeypatch):

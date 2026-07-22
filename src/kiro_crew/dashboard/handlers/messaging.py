@@ -557,7 +557,7 @@ async def api_send_message(request: web.Request) -> web.Response:
     if blocks:
         blocks = _sanitize_blocks(blocks, redact_exfiltration_urls, redact_credentials)
 
-    # Mesh-2603: render [OPTIONS: ...] tags as interactive buttons on the
+    # render [OPTIONS: ...] tags as interactive buttons on the
     # plain-text path (when the caller did not supply explicit blocks — those
     # own their own layout). Strip the tag from the text used for both the
     # dashboard notification and the Slack post; an actions block is appended
@@ -1167,7 +1167,7 @@ async def api_browser_frame(request: web.Request) -> web.Response:
     debug port is involved — this rides the proxy's existing capture path.
 
     Loopback-gated: the proxy runs on the same host, and frames carry a live view
-    of the (Midway-authenticated) browse session, so off-host posts are refused.
+    of the (authenticated) browse session, so off-host posts are refused.
     """
     if not is_loopback(request.remote or ""):
         _sel().log_tool_invocation(

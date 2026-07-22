@@ -12,6 +12,27 @@ import { safeSetItem } from '../utils/safeStorage'
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
 
+/** The three keys that can pollute `Object.prototype` when used to index a
+ *  plain-object map (`obj[key] = ...`). Slot ids, subagent ids, run ids, and
+ *  session keys all flow in from WebSocket action payloads; a crafted payload
+ *  carrying `__proto__` / `constructor` / `prototype` would otherwise mutate the
+ *  shared prototype through the per-slot state maps in this slice. */
+/** True if `key` would pollute the prototype chain if used to index a plain
+ *  object. Every reducer that indexes a `Record<string, …>` state map by an
+ *  externally-supplied key rejects such a key up front (early return) — an
+ *  explicit guard the CodeQL prototype-pollution query recognizes as a barrier.
+ *  It is the single fail-closed chokepoint; a dropped frame for a hostile key is
+ *  the correct outcome (no legitimate slot/subagent/run id is `__proto__`).
+ *  Written as explicit `===` comparisons (not a Set lookup) so static analysis
+ *  can model it as a sanitizing guard. */
+const isUnsafeKey = (key: string): boolean =>
+  key === '__proto__' || key === 'constructor' || key === 'prototype'
+
+/** Defense-in-depth companion to the early-return guards: reroutes a poisoned
+ *  key to an inert own-property so any write that slips past a guard still can't
+ *  reach the prototype. Real keys pass through unchanged. */
+const safeKey = (key: string): string => (isUnsafeKey(key) ? `unsafe-key:${key}` : key)
+
 /** Single-sourced "N chunk(s) missed" degradation marker. Shared by the reducer's
  *  defensive non-batched path and the useWebSocket flush buffer (the live path)
  *  so the marker text and gap arithmetic cannot drift between the two copies.
@@ -199,9 +220,10 @@ function applyNonActiveFrame(
   p: { slot: string; role: string; content: string; ts?: string; seq?: number; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean },
 ) {
   const { slot, role, content, ts, seq, cls, meta, kind, batched } = p
-  const msgs = (state.slotMessages[slot] ??= [])
-  const run = (state.slotRun[slot] ??= { state: 'idle' })
-  const sa = (state.slotActivity[slot] ??= { toolLog: [], subagents: {} })
+  if (isUnsafeKey(slot)) return  // never index a state map with __proto__/constructor/prototype
+  const msgs = (state.slotMessages[safeKey(slot)] ??= [])
+  const run = (state.slotRun[safeKey(slot)] ??= { state: 'idle' })
+  const sa = (state.slotActivity[safeKey(slot)] ??= { toolLog: [], subagents: {} })
   const toolLog = sa.toolLog
 
   const effectiveKind = kind ?? (meta?.kind as string | undefined)
@@ -461,7 +483,7 @@ export const createSlot = createAsyncThunk<
     // The fulfilled reducer compares this against the active slot at resolution
     // time: if the user switched to a different session while the create was
     // pending (e.g. New Chat spun on "Creating" under memory pressure and they
-    // moved to another tab), the new slot must NOT hijack the view. Mesh-2908.
+    // moved to another tab), the new slot must NOT hijack the view.
     const originActiveSlot = (getState() as RootState).chat.activeSlot
     const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, undefined, clean_mode)
     const dashState = (getState() as RootState).dashboard
@@ -668,9 +690,10 @@ const chatSlice = createSlice({
     clearQuestionCard(state) { state.pendingQuestion = null },
     sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number }>) {
       const { slot, pct, used_tokens, window_tokens } = action.payload
-      state.slotContextPct[slot] = pct
+      if (isUnsafeKey(slot)) return
+      state.slotContextPct[safeKey(slot)] = pct
       if (window_tokens && window_tokens > 0) {
-        state.slotContextTokens[slot] = { used: used_tokens ?? 0, window: window_tokens }
+        state.slotContextTokens[safeKey(slot)] = { used: used_tokens ?? 0, window: window_tokens }
       }
     },
     appendMessage(state, action: PayloadAction<ChatMessage>) { state.messages.push(action.payload) },
@@ -679,7 +702,8 @@ const chatSlice = createSlice({
      *  grid pane show a just-sent user message immediately in the right place. */
     appendSlotMessage(state, action: PayloadAction<{ slot: string; message: ChatMessage }>) {
       const { slot, message } = action.payload
-      const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[slot] ??= [])
+      if (isUnsafeKey(slot)) return
+      const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
       // Reconcile a steer echo (server 'steer_push', meta.steer, no optimistic
       // flag) against the optimistic bubble that steer() added client-side
       // (meta.optimistic). Update it in place rather than pushing a duplicate
@@ -794,11 +818,15 @@ const chatSlice = createSlice({
       // prior turn can't falsely show a "stopping" state on the new turn.
     },
     setSlotStopping(state, action: PayloadAction<boolean>) { state.slotStopping = action.payload },
-    setStopPressedAt(state, action: PayloadAction<{ slotId: string; ts: number }>) { state.stopPressedAt[action.payload.slotId] = action.payload.ts },
+    setStopPressedAt(state, action: PayloadAction<{ slotId: string; ts: number }>) {
+      if (isUnsafeKey(action.payload.slotId)) return
+      state.stopPressedAt[safeKey(action.payload.slotId)] = action.payload.ts
+    },
     setSlotState(state, action: PayloadAction<SlotState>) { state.slotState = action.payload },
     setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string }>) {
       const { slot, ...detail } = action.payload
-      state.slotStatusDetail[slot] = detail
+      if (isUnsafeKey(slot)) return
+      state.slotStatusDetail[safeKey(slot)] = detail
     },
     clearMessages(state) { state.messages = []; state.slotHasMore = false; state.slotOldestIndex = 0; state.voiceAudio = null; state.voicePlaying = false },
     truncateAfterIndex(state, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
@@ -812,12 +840,13 @@ const chatSlice = createSlice({
      *  No-op for the active slot (its mirror is already live). */
     hydrateSlotMessages(state, action: PayloadAction<{ slot: string; messages: ChatMessage[] }>) {
       const { slot, messages } = action.payload
+      if (isUnsafeKey(slot)) return
       if (slot === state.activeSlot) return
       if (state.slotHydrated?.[slot]) return
       const cur = state.slotMessages[slot] ?? []
-      state.slotMessages[slot] = [...messages, ...cur]
+      state.slotMessages[safeKey(slot)] = [...messages, ...cur]
       if (!state.slotHydrated) state.slotHydrated = {}
-      state.slotHydrated[slot] = true
+      state.slotHydrated[safeKey(slot)] = true
     },
     setVoicePlaying(state, action: PayloadAction<boolean>) { state.voicePlaying = action.payload },
     setVoiceAudio(state, action: PayloadAction<string | null>) { state.voiceAudio = action.payload },
@@ -831,19 +860,21 @@ const chatSlice = createSlice({
      *  doesn't re-fire on subsequent re-renders. */
     clearFocusToolCallId(state) { state.focusToolCallId = null },
     sseSubagentPending(state, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
+      if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const entry: SubagentActivity = {
         id: action.payload.id, task: action.payload.task, agent: '',
         status: 'pending', streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
         approval_id: action.payload.approval_id,
       }
       if (action.payload.slot !== state.activeSlot) {
-        const c = state.slotActivity[action.payload.slot] ??= { toolLog: [], subagents: {} }
-        c.subagents[action.payload.id] = entry
+        const c = state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }
+        c.subagents[safeKey(action.payload.id)] = entry
         return
       }
-      state.subagents[action.payload.id] = entry
+      state.subagents[safeKey(action.payload.id)] = entry
     },
     markSubagentApproving(state, action: PayloadAction<{ id: string; approving: boolean }>) {
+      if (isUnsafeKey(action.payload.id)) return
       const a = state.subagents[action.payload.id]
       if (a) { a.approving = action.payload.approving; return }
       for (const sa of Object.values(state.slotActivity)) {
@@ -852,8 +883,9 @@ const chatSlice = createSlice({
       }
     },
     sseSubagentSpawn(state, action: PayloadAction<{ slot: string; id: string; task: string; agent: string }>) {
+      if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const subs = action.payload.slot !== state.activeSlot
-        ? (state.slotActivity[action.payload.slot] ??= { toolLog: [], subagents: {} }).subagents
+        ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
         : state.subagents
       const existing = subs[action.payload.id]
       if (existing?.status === 'pending') {
@@ -865,7 +897,7 @@ const chatSlice = createSlice({
         if (action.payload.task) existing.task = action.payload.task
         return
       }
-      subs[action.payload.id] = {
+      subs[safeKey(action.payload.id)] = {
         id: action.payload.id, task: action.payload.task, agent: action.payload.agent || 'kirocrew',
         status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
       }
@@ -884,8 +916,9 @@ const chatSlice = createSlice({
       if (a) { a.lastTool = action.payload.tool; a.status = 'tool' }
     },
     sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; task?: string; agent?: string; result?: string }>) {
+      if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const subs = action.payload.slot !== state.activeSlot
-        ? (state.slotActivity[action.payload.slot] ??= { toolLog: [], subagents: {} }).subagents
+        ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
         : state.subagents
       let a = subs[action.payload.id]
       if (!a) {
@@ -907,10 +940,11 @@ const chatSlice = createSlice({
         a.streaming = ''
         if (action.payload.task && !a.task) a.task = action.payload.task
       }
-      else { subs[action.payload.id] = { id: action.payload.id, task: action.payload.task || '', agent: action.payload.agent || 'kirocrew', status: action.payload.error ? 'error' : 'done', streaming: '', lastTool: '', startedAt: Date.now() - action.payload.elapsed * 1000, elapsed: action.payload.elapsed, error: action.payload.error } }
+      else { subs[safeKey(action.payload.id)] = { id: action.payload.id, task: action.payload.task || '', agent: action.payload.agent || 'kirocrew', status: action.payload.error ? 'error' : 'done', streaming: '', lastTool: '', startedAt: Date.now() - action.payload.elapsed * 1000, elapsed: action.payload.elapsed, error: action.payload.error } }
     },
     sseSideResult(state, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean }>) {
       const { slot, run_id, role, content, ts, is_error, final } = action.payload
+      if (isUnsafeKey(slot)) return
       const tsIso = typeof ts === 'number' ? new Date(ts * 1000).toISOString() : new Date().toISOString()
       // Intentional re-open (new user frame) clears the closed sentinel
       if (role === 'user' && state.slotSideClosed[slot]) {
@@ -922,7 +956,7 @@ const chatSlice = createSlice({
         const parentTurnCount = slot === state.activeSlot
           ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
           : 0
-        state.slotSide[slot] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: tsIso }
+        state.slotSide[safeKey(slot)] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: tsIso }
       }
       const side: SideState = state.slotSide[slot]
       if (role === 'user') {
@@ -958,16 +992,18 @@ const chatSlice = createSlice({
     },
     sideClose(state, action: PayloadAction<string>) {
       delete state.slotSide[action.payload]
-      state.slotSideClosed[action.payload] = true
+      if (isUnsafeKey(action.payload)) return
+      state.slotSideClosed[safeKey(action.payload)] = true
     },
     sideOptimisticAppend(state, action: PayloadAction<{ slot: string; message: SideMessage }>) {
       const { slot, message } = action.payload
+      if (isUnsafeKey(slot)) return
       if (state.slotSideClosed[slot]) delete state.slotSideClosed[slot]
       if (!state.slotSide[slot]) {
         const parentTurnCount = slot === state.activeSlot
           ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
           : 0
-        state.slotSide[slot] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: message.ts }
+        state.slotSide[safeKey(slot)] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: message.ts }
       }
       const side = state.slotSide[slot]
       side.messages.push(message)
@@ -982,11 +1018,12 @@ const chatSlice = createSlice({
     },
     sseSubagentSnapshot(state, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number }>) {
       const d = action.payload
+      if (isUnsafeKey(d.slot) || isUnsafeKey(d.id)) return
       const subs = d.slot && d.slot !== state.activeSlot
-        ? (state.slotActivity[d.slot] ??= { toolLog: [], subagents: {} }).subagents
+        ? (state.slotActivity[safeKey(d.slot)] ??= { toolLog: [], subagents: {} }).subagents
         : state.subagents
       const existing = subs[d.id]
-      subs[d.id] = {
+      subs[safeKey(d.id)] = {
         id: d.id, task: d.task, agent: d.agent || 'kirocrew',
         status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
         startedAt: d.started * 1000, elapsed: 0,
@@ -996,6 +1033,7 @@ const chatSlice = createSlice({
     /** Fold a single dynamic-workflow run event into workflowRuns. */
     sseWorkflowEvent(state, action: PayloadAction<{ run_id: string; session_key?: string; seq?: number; ts?: number; type: string; data?: Record<string, unknown> }>) {
       const { run_id, type, data, session_key } = action.payload
+      if (isUnsafeKey(run_id)) return
       if (!run_id) return
       const d = (data || {}) as Record<string, unknown>
       const cur = state.workflowRuns[run_id] ?? {
@@ -1028,7 +1066,7 @@ const chatSlice = createSlice({
         default:
           break
       }
-      state.workflowRuns[run_id] = cur
+      state.workflowRuns[safeKey(run_id)] = cur
     },
     clearWorkflowRun(state, action: PayloadAction<string>) {
       delete state.workflowRuns[action.payload]
@@ -1066,8 +1104,9 @@ const chatSlice = createSlice({
       }
     },
     sseToolActivity(state, action: PayloadAction<{ slot: string; tool: string; kind: string; purpose: string; input_preview: string; auto?: boolean; tool_call_id?: string; is_update?: boolean }>) {
+      if (isUnsafeKey(action.payload.slot)) return
       const log = action.payload.slot !== state.activeSlot
-        ? (state.slotActivity[action.payload.slot] ??= { toolLog: [], subagents: {} }).toolLog
+        ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).toolLog
         : state.toolLog
       // claude-agent-acp emits an initial tool_call with empty rawInput followed
       // by tool_call_update notifications carrying the populated payload. The
@@ -1090,8 +1129,9 @@ const chatSlice = createSlice({
       if (log.length > 100) log.splice(0, log.length - 100)
     },
     sseActivityEvent(state, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string }>) {
+      if (isUnsafeKey(action.payload.slot)) return
       const log = action.payload.slot !== state.activeSlot
-        ? (state.slotActivity[action.payload.slot] ??= { toolLog: [], subagents: {} }).toolLog
+        ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).toolLog
         : state.toolLog
       if (action.payload.kind === 'approval_resolved') {
         const id = action.payload.approval_id
@@ -1334,6 +1374,7 @@ const chatSlice = createSlice({
     /** Edit a queued message in place (from backend queue_edit WS event or optimistic local update). */
     editQueuedMessage(state, action: PayloadAction<{ slot: string; queue_id: string; content: string }>) {
       const { slot, queue_id, content } = action.payload
+      if (isUnsafeKey(slot)) return
       const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
       if (!msgs) return
       const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
@@ -1343,7 +1384,7 @@ const chatSlice = createSlice({
     appendQueuedMessage: {
       reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string }>) {
         const { slot, content, ts, queueId } = action.payload
-        const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[slot] ??= [])
+        const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
         msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
       },
       prepare(payload: { slot: string; content: string; ts: string; queue_id?: string }) {
@@ -1357,7 +1398,7 @@ const chatSlice = createSlice({
        *  Sessions that close/archive/delete vanish from the SSE `slots` REPLACE,
        *  but their transcripts previously stayed resident for the tab's lifetime
        *  (only `deleteSlot.fulfilled` evicted) — the dominant retention class
-       *  behind multi-GB heaps on long-lived dashboard tabs (Mesh-2835).
+       *  behind multi-GB heaps on long-lived dashboard tabs.
        *  Guards: an empty payload is a no-op (SSE reconnect can deliver an
        *  empty frame before the first real snapshot), and the active slot is
        *  never pruned (its live `messages`/optimistic state must not be
@@ -1424,6 +1465,7 @@ const chatSlice = createSlice({
       })
       .addCase(switchSlot.fulfilled, (state, action) => {
         const { key, messages, running, hasMore, total, queue } = action.payload
+        if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
         state.slotState = running ? 'streaming' : 'idle'
         // Mark stale permissions as resolved so ApprovalBar ignores them
@@ -1484,7 +1526,7 @@ const chatSlice = createSlice({
           state.messages.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
         }
         // Update cache and clear loading state
-        state.slotMessages[key] = state.messages
+        state.slotMessages[safeKey(key)] = state.messages
         state.slotLoading = false
       })
       .addCase(switchSlot.rejected, (state, action) => {
@@ -1499,6 +1541,7 @@ const chatSlice = createSlice({
       .addCase(refreshSlot.fulfilled, (state, action) => {
         if (!action.payload) return
         const { key, messages, running, hasMore, total } = action.payload
+        if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
         // Merge permission messages: prefer state perms (have frontend resolved flags)
         // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -1538,6 +1581,7 @@ const chatSlice = createSlice({
       .addCase(warmSlotCache.fulfilled, (state, action) => {
         if (!action.payload) return
         const { key, messages } = action.payload
+        if (isUnsafeKey(key)) return
         // Slot became active between dispatch and fulfilment — switchSlot now
         // owns its messages, so leave the cache for it to manage.
         if (state.activeSlot === key) return
@@ -1552,7 +1596,7 @@ const chatSlice = createSlice({
             localResolved.set(m.meta.approval_id as string, m.meta.resolved)
           }
         }
-        state.slotMessages[key] = messages.map(m => {
+        state.slotMessages[safeKey(key)] = messages.map(m => {
           const aid = m.role === 'permission' ? (m.meta?.approval_id as string | undefined) : undefined
           return aid && localResolved.has(aid)
             ? { ...m, meta: { ...m.meta, resolved: localResolved.get(aid) } }
@@ -1560,7 +1604,7 @@ const chatSlice = createSlice({
         })
         // Clear the per-slot run indicator (the _done frame already idles it;
         // this is belt-and-braces for the fetch-completes-after-_done ordering).
-        const run = (state.slotRun[key] ??= { state: 'idle' })
+        const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
         run.state = 'idle'
         run.lastChunkSeq = undefined
       })
@@ -1571,7 +1615,7 @@ const chatSlice = createSlice({
         // whether we activate below. Otherwise the switched-away early-return
         // would strand the "Creating…" spinner on forever.
         state.creatingSlot = false
-        // Switched-away guard (Mesh-2908): if the user moved to a different
+        // Switched-away guard: if the user moved to a different
         // session while this create was pending (a slow "Creating…" under memory
         // pressure), do NOT hijack the view. The new slot is already registered
         // via addSlotOptimistic; just leave the user where they are. Mirrors the

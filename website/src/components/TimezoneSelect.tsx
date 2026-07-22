@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { formatTzOffset } from '../utils/tz'
 
-/** A curated short list of timezones commonly used at Amazon, used as
+/** A curated short list of commonly used timezones, used as
  *  a fast-pick set. Full IANA list loaded on demand from the browser. */
 const COMMON_TZS = [
   'America/Los_Angeles',

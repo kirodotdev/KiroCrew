@@ -1,8 +1,8 @@
 /**
- * Regression test for Mesh-2055: the Globe / Browse toggle must be per-session
+ * Regression test: the Globe / Browse toggle must be per-session
  * (keyed by slot), not page-global.
  *
- * Before Mesh-2055, browse mode was a single `useState(false)` in ChatPage.
+ * Previously, browse mode was a single `useState(false)` in ChatPage.
  * ChatPage never remounts on slot switch (only `activeSlot` changes), so the
  * one boolean bled across every session: enabling Browse in session A left it
  * on when switching to session B. The fix keys browse mode by slot, so each
@@ -120,7 +120,7 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-describe('ChatPage — per-session Browse toggle (Mesh-2055)', { timeout: 15_000 }, () => {
+describe('ChatPage — per-session Browse toggle', { timeout: 15_000 }, () => {
   it('defaults to off and toggles on for the active session', async () => {
     await renderChat('slot-a')
     await act(async () => { openMenu() })

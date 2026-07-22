@@ -42,7 +42,7 @@ interface FolderMoveSubmenuProps {
 /**
  * The picker's item list, shared between the nested submenu below and
  * root-level menu surfaces (e.g. the artifact detail page's folder chip,
- * Mesh-2720). `Item` is the Radix menu-item primitive of the hosting menu
+ *). `Item` is the Radix menu-item primitive of the hosting menu
  * family — items must match their parent menu's family.
  */
 export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel = 'No folder (root)', Item }: {

@@ -145,7 +145,7 @@ class TestSteerConsumedClears:
         assert slot._pending_steers == []
 
     def test_substring_steer_not_falsely_settled(self, tmp_path, monkeypatch):
-        # AutoSDE regression: "fix" is a SUBSTRING of the consumed block
+        # review-bot regression: "fix" is a SUBSTRING of the consumed block
         # "fix the bug" but was never itself consumed — equality matching on
         # parsed blocks must keep it pending (substring matching would settle
         # it and silently lose it when the turn dies).
@@ -176,7 +176,7 @@ class TestSteerConsumedClears:
         assert slot._pending_steers == []
 
     def test_duplicate_steers_only_settle_consumed_count(self, tmp_path, monkeypatch):
-        # AutoSDE regression: two identical pending steers, snapshot consumed
+        # review-bot regression: two identical pending steers, snapshot consumed
         # only ONE of them (the duplicate was registered after kiro-cli
         # snapshotted). Set-membership settling would sweep both and silently
         # lose the second — settling must be count-aware.
@@ -209,7 +209,7 @@ class TestSteerConsumedClears:
 class TestSteerRegisteredBeforeAwait:
     """The pending registration must happen BEFORE the steer RPC's await, so a
     turn dying during the stdin.drain() suspension still sees (and requeues)
-    the steer — zedmor's append-after-await race."""
+    the steer — the append-after-await race."""
 
     @pytest.mark.asyncio
     async def test_pending_visible_during_steer_await(self, tmp_path, monkeypatch, _patch_sel):

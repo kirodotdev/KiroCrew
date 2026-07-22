@@ -6,7 +6,7 @@ All notable changes to KiroCrew are documented in this file.
 
 ### Changes
 
-- **Slack challenge-and-redirect REMOVED** — Inbound Slack messages are now processed inline and reach the agent directly (gated by the user allowlist and Enterprise Grid origin check), instead of being intercepted and turned into a presigned dashboard-session link for every message. The challenge-and-redirect flow was an Amazon-internal-only security posture and is not needed for external/open-source usage. The `send_channel_challenge()` helper and the `_CHALLENGE_REDIRECT_ENABLED` gate were removed; the explicit `/kirocrew dashboard` link command is unchanged.
+- **Slack challenge-and-redirect REMOVED** — Inbound Slack messages are now processed inline and reach the agent directly (gated by the user allowlist and Enterprise Grid origin check), instead of being intercepted and turned into a presigned dashboard-session link for every message. The challenge-and-redirect flow was an internal-only security posture and is not needed for external/open-source usage. The `send_channel_challenge()` helper and the `_CHALLENGE_REDIRECT_ENABLED` gate were removed; the explicit `/kirocrew dashboard` link command is unchanged.
 - **Default dashboard port is now 5476** (was 8765) — `5476` spells "KIRO" on a phone keypad (K=5, I=4, R=7, O=6) and is far less commonly grabbed than the `8765` descending-sequence port. The gateway, CLI, dashboard, Electron app, and frontend dev proxy now default to `5476`. If you relied on the old port, set `KIROCREW_PORT=8765` (or pass `--port 8765`) to keep it, and update any bookmarks, SSH tunnels (`ssh -NL 5476:localhost:5476 <host>`), and `dashboard.url` config entries. The auth cookie name follows the port (`mc_token_5476`), so existing sessions on the old port are re-issued automatically on first load.
 - **Default dashboard port is now 8765** (was 7777) — The gateway, CLI, dashboard, and frontend dev proxy now default to port `8765`, avoiding clashes with other tools that commonly grab 7777. If you relied on the old port, set `KIROCREW_PORT=7777` (or pass `--port 7777`) to keep it, and update any bookmarks, SSH tunnels (`ssh -NL 8765:localhost:8765 <host>`), and `dashboard.url` config entries. The auth cookie name follows the port, so existing sessions on the old port are re-issued automatically on first load.
 
@@ -16,21 +16,21 @@ All notable changes to KiroCrew are documented in this file.
 
 ### Features
 
-- **Claude Code Provider — Full Parity + Interactive Permissions** — KiroCrew now runs Claude Code as a first-class provider through a unified ACP (Agent Client Protocol) adapter built on `claude-agent-acp`, replacing the old subprocess provider. Every tool decision routes through the same four-tier interactive permission protocol kiro-cli uses (approve / trust-reads / trust / yolo), and you get reasoning-effort control, a curated model picker defaulting to Opus 4.8, the 1M-context unlock, cross-provider session continuity, live context-usage tracking, and tooling to mirror your kiro agents/skills/MCP config into Claude Code. The dashboard ships a kiro→Claude-Code migration panel and a master-detail skill browser. (Bolin Chen)
+- **Standalone Provider — Full Parity + Interactive Permissions** — KiroCrew now runs the standalone provider as a first-class backend through a unified ACP (Agent Client Protocol) adapter built on `claude-agent-acp`, replacing the old subprocess provider. Every tool decision routes through the same four-tier interactive permission protocol kiro-cli uses (approve / trust-reads / trust / yolo), and you get reasoning-effort control, a curated model picker defaulting to Opus 4.8, the 1M-context unlock, cross-provider session continuity, live context-usage tracking, and tooling to mirror your kiro agents/skills/MCP config into the standalone provider. The dashboard ships a kiro→provider migration panel and a master-detail skill browser. (Bolin Chen)
 - **Artifact Library + Unified File Viewer** — LLM-generated widgets (charts, dashboards, HTML tools) now persist as named, versioned artifacts with a browsable library instead of vanishing with chat scrollback. Bookmark any inline widget, reopen any past version full-screen, and ask the agent to iterate on it by name in a later session. The file side panel and the Artifacts library share one live-pointer model so file-backed artifacts read and write the same on-disk path, with deliberate versioning via an explicit Snapshot button, selection-to-comment popovers, and an activity timeline that deep-links to chat sessions. (Nick Bowers)
 - **Side Chat (`/side`)** — A non-blocking `/side` slash command opens a multi-turn side conversation against a frozen snapshot of the parent chat's context, surfaced as a tab in the Activity panel. The sidecar is fully isolated — its messages never enter the main conversation log, vector memory, or learn store, and tools are hard-rejected — so you can ask clarifying questions without polluting the primary agent's state. (Stan Tian)
-- **Native Browsing — Playwright MCP with Amazon Auth** — The custom browser module is replaced by Playwright MCP tools plus an auth shim that auto-injects Midway cookies, giving the agent full interactive browsing of Amazon internal sites. Toggle between Chrome Extension mode (attach to your real browser) and headless mode, with a token-saving proxy. (Bolin Chen)
+- **Native Browsing — Playwright MCP with Enterprise Auth** — The custom browser module is replaced by Playwright MCP tools plus an auth shim that auto-injects enterprise SSO cookies, giving the agent full interactive browsing of internal sites. Toggle between Chrome Extension mode (attach to your real browser) and headless mode, with a token-saving proxy. (Bolin Chen)
 - **Code Reviewer — Now a Built-In App** — The Code Reviewer graduates from external app to a first-class built-in with a Python backend, SQLite store, async git operations, AI-review SSE streaming, and a directory picker. Ships a unified diff viewer, inline multi-line comments, nine syntax themes, live streaming as fixes are requested, and an IntelliJ-style Git panel (commit graph, squash, push). Just enable it from the app list — no separate install. (Robert Zhang)
 - **Cron Execution History + Zero-Token Cron** — Scheduled jobs now record a persistent execution history surfaced in a dedicated Executions view and a per-job Logs tab, capturing status, timing, and live elapsed time. Two new LLM-free execution modes — a Python script mode with MCP tool access and Skip/Done/Report control flow, and a shell command mode — run deterministically in the sandbox at zero token cost. (Adam Doussan, Luke Ely)
-- **Time-Limited Safety Override** — Replaces the permanent "disable all safety controls" (YOLO) mode with a time-limited override that auto-expires (24h max at startup, 6h from the dashboard, 30min from Slack) and requires re-authorization, with a 5-minute renewal grace window. Every activate/renew/expire event is audit-logged, fleet status exposes whether an override is active and when it expires, and users get expiry warnings via dashboard and Slack DM. Closes a major safety gap where controls could be turned off indefinitely (Mesh-1648). (Bolin Chen)
+- **Time-Limited Safety Override** — Replaces the permanent "disable all safety controls" (YOLO) mode with a time-limited override that auto-expires (24h max at startup, 6h from the dashboard, 30min from Slack) and requires re-authorization, with a 5-minute renewal grace window. Every activate/renew/expire event is audit-logged, fleet status exposes whether an override is active and when it expires, and users get expiry warnings via dashboard and Slack DM. Closes a major safety gap where controls could be turned off indefinitely. (Bolin Chen)
 - **Knowledge Library — Local Folder Sources + Built-In Surface** — Add any local folder as a knowledge source: recursively scanned, auto-ingested, and re-scanned on a ~5-minute interval with per-file progress, pause/resume, and crash recovery. Each ingested file gets an AI-generated topic and theme tags. The Knowledge Library moves from an optional App Store item to an always-on built-in navigation surface, and local knowledge search gains embedding-backed semantic endpoints, a search-for-context capability, and persistent metadata. (Joe Guo)
 - **Edit and Rewind Past Messages** — Hover any past user message in a dashboard chat, edit it inline, and press Enter to rewind the conversation to that point and re-run the agent. The fork-and-swap keeps the slot's identity (title, folder, color, position) unchanged so the rewind is invisible. (Nick Bowers)
 - **File-Change Chips and Monaco Diff Viewer** — Chips below each assistant message show the files modified during that turn, opening a side-by-side Monaco diff viewer on click. The activity Files tab is redesigned with file-type-colored tiles, an inline file browser, and clear separation of agent-touched files from user-opened history. (Krish Dhasmana)
 - **3-Tier Trust Escalation on Approval Cards** — The binary approve/deny tool prompt becomes a Kiro-CLI-style trust granularity picker: approve once, trust the exact command, trust the base command, or trust all tools for the session. Trust is session-scoped; hook deny-lists and sensitive-path checks still take precedence, and choices are captured in audit logs. (Nikhil Menon)
 - **Real-Time Tool Status, Results & Inline Detail Panels** — Tool execution status and output stream into the chat UI as soon as each tool completes instead of waiting for the next JSONL flush, and tool calls expand inline to show purpose, input, and output, persisted on the message so they survive reloads. (Krish Dhasmana)
 - **Redesigned Approval Workflow** — A pending approval stays visible while scrolling: when the inline approval pill scrolls off screen, a mirrored pill keeps it actionable. (Krish Dhasmana)
-- **Interactive Question Cards** — Intercepts the Claude Code `AskUserQuestion` tool and renders an interactive card with clickable options in the dashboard. (Vishal Sreekrishnan)
-- **Mobile Dashboard Access via AEA Tunnels** — Automatic Amazon Tunnels management lets the dashboard be reached from postured mobile devices through AEA, spinning up on demand. (Gabe Sanchez)
+- **Interactive Question Cards** — Intercepts the provider's `AskUserQuestion` tool and renders an interactive card with clickable options in the dashboard. (Vishal Sreekrishnan)
+- **Mobile Dashboard Access via Enterprise Tunnels** — Automatic tunnel management lets the dashboard be reached from postured mobile devices through an enterprise tunnel service, spinning up on demand. (Gabe Sanchez)
 - **Slack Challenge-and-Redirect Enforcement** — Every Slack message that would reach the agent must first be verified against a dashboard session, denying requests by default if verification fails. (Gabe Sanchez)
 - **`config.local.json` Overlay** — A local config overlay so user-customized settings survive upgrades instead of being overwritten by shipped defaults. (Shreyas Bhise)
 - **Binary File Uploads** — `file_send` and the Slack upload path accept binary files (PDFs, images, audio, video) via MIME allowlist, with an optional channel parameter to upload directly to a tracked Slack channel. (Luca Chang)
@@ -40,13 +40,13 @@ All notable changes to KiroCrew are documented in this file.
 - **Cron Dashboard Chat Threading** — A scheduled job can thread its results into a persistent, bidirectional dashboard chat slot linked to the cron's session. (James Joseph)
 - **On-Demand Cron Triggering** — Fire a scheduled job immediately via `kirocrew cron trigger` (CLI) and the `cron_trigger` MCP tool. (Imran Baig)
 - **Schedule Timezone Picker** — The Calendar view respects each job's stored timezone instead of misinterpreting cron times as UTC, with a timezone picker. (Ethan Levine)
-- **Jira Integration in Mimir** — Jira joins Asana, Taskei, and SIM as a task source, with onboarding cards, site-ID/project-key config, and status/assignee/tag filtering. (Reece Bailey, Chetan Chaku, Emmanuella Dasilva-Domingos)
+- **Jira Integration in the Task Aggregator** — Jira joins Asana and internal issue trackers as a task source, with onboarding cards, site-ID/project-key config, and status/assignee/tag filtering. (Reece Bailey, Chetan Chaku, Emmanuella Dasilva-Domingos)
 - **Secretary Keyword Hooks + Auto-Reply** — Keyword-triggered workflow hooks dispatch actions (notify, spawn-session, auto-reply, emoji reactions) when configured keywords appear in watched Slack messages, with a settings-panel editor and an enable/disable toggle. (Thomas Lane, Chetan Chaku, Uday Prakash, Vishal Sreekrishnan)
 - **Slack Home Tab Sessions View + Plan Usage** — A Sessions section lists recent dashboard chats and runs with one-click Resume, plus a plan-usage status line showing credits, spend, and reset date. (David Hickox, Ethan Levine)
 - **Inline MCP OAuth Banner + Multi-Provider MCP Dashboard** — MCP server auth surfaces inline in chat with an Authorize link, and the MCP Integrations page shows per-scope presence (KiroCrew, Kiro global, Claude global) for every server. (Zezhen Xu, Nick Bowers)
 - **Skill Directory Browser** — A three-pane master-detail layout (skill list, file tree, content viewer) with path-traversal and symlink-escape defenses, reporting which installed agents load each skill. (Zezhen Xu)
-- **Federated External App Registries** — Point KiroCrew at org-owned GitFarm repositories of app definitions, managed from a Registry Manager card in the App Store. App-declared cron jobs auto-register into the scheduler on install. (Tyger Hugh, Ray Xu, Rohit Jose)
-- **Start Chat from TaskKeeper / Mimir Tasks** — A Chat/Work button on task rows opens a new session pre-filled with the task's context (title, details, due date, links). (Takahiro Ishii, Vasanth Subramanian)
+- **Federated External App Registries** — Point KiroCrew at org-owned git repositories of app definitions, managed from a Registry Manager card in the App Store. App-declared cron jobs auto-register into the scheduler on install. (Tyger Hugh, Ray Xu, Rohit Jose)
+- **Start Chat from TaskKeeper / Task Aggregator Tasks** — A Chat/Work button on task rows opens a new session pre-filled with the task's context (title, details, due date, links). (Takahiro Ishii, Vasanth Subramanian)
 - **TaskKeeper Duplicate Grouping & Merging** — TaskKeeper visually groups similar inbox mentions and lets you merge duplicates with an LLM-drafted merged title. (Joe Pontone)
 - **Quick Send** — A setting to send a suggested-reply option with a single click; Shift+Click switches to multi-select. (Maninder Singh)
 - **Keyboard Shortcuts to Cycle Agent & Approval Mode** — Alt+Shift+A/Z cycle through installed agents; Alt+Shift+D/C cycle approval mode. (Wilson Wu)
@@ -61,27 +61,27 @@ All notable changes to KiroCrew are documented in this file.
 - **Per-Subagent Attribution in Tool Hooks** — `PreToolUse`/`PostToolUse` hooks optionally carry `subagent_id`, `parent_session_key`, and `agent_role`. (Arpit Vyas)
 - **External IAM-Authenticated Embeddings (SigV4)** — The embedding endpoint can point at an IAM-authenticated API Gateway in front of Ollama, removing the SSH reverse-tunnel dependency. (Toby Wong)
 - **More Skill Auto-Extraction Triggers** — Auto-skill extraction fires on session idle expiry, explicit Slack session end, and via a new `consolidate` CLI for manual backfill. (Shayan Yaseen)
-- **Native arm64 Python for Apple Silicon** — The `osx_arm64` toolbox bundle uses system arm64 Python instead of the x86_64 Brazil overlay, running natively without Rosetta. (Apoorv Srivastava)
-- **Remote Desktop Sync Script** — A standalone `sync-to-remote.sh` copies a KiroCrew install to a remote/cloud desktop with custom SSH port and `--dry-run`. (Huan He)
+- **Native arm64 Python for Apple Silicon** — The `osx_arm64` bundle uses system arm64 Python instead of the x86_64 build overlay, running natively without Rosetta. (Apoorv Srivastava)
+- **Remote Desktop Sync Script** — A standalone `sync-to-remote.sh` copies a KiroCrew install to a remote desktop with custom SSH port and `--dry-run`. (Huan He)
 - **Service-Aware `kirocrew restart`** — Restarts the installed systemd/launchd service when present, otherwise cleanly bounces the foreground gateway. (Nick Bowers)
 - **LLM-Powered Link Summaries** — Bare URLs in navigation are summarized by the model in a single batched request, removing an N+1 bottleneck. (Nansong Yi)
 - **Seeded Home Fixtures & Test Harness** — Two ready-to-use populated KiroCrew home fixtures (minimal + rich) plus a `spawn_feature_gateway` helper for integration tests and evals. (Simon Meyffret)
 
 ### Security
 
-- **Time-Limited Safety Override (Mesh-1648)** — replaces permanent YOLO with an expiring, audit-logged safety override so auto-approve can never be left on indefinitely. (Bolin Chen)
-- **Isolated Config Directory for Spawned Claude Code** — points the spawned `claude-agent-acp` subprocess at a KiroCrew-owned `CLAUDE_CONFIG_DIR` (settings file written `0600`), strips inherited `permissions.allow/ask` so every tool routes through the host deny gate, and guards against overwriting the operator's real `~/.claude`. (Bolin Chen)
+- **Time-Limited Safety Override** — replaces permanent YOLO with an expiring, audit-logged safety override so auto-approve can never be left on indefinitely. (Bolin Chen)
+- **Isolated Config Directory for the Spawned Standalone Provider** — points the spawned `claude-agent-acp` subprocess at a KiroCrew-owned `CLAUDE_CONFIG_DIR` (settings file written `0600`), strips inherited `permissions.allow/ask` so every tool routes through the host deny gate, and guards against overwriting the operator's real `~/.claude`. (Bolin Chen)
 - **Per-Segment Shell Deny Evaluation** — deny patterns are evaluated per shell segment, closing a command-chaining/substitution bypass. (Chetan Chaku)
 - **Slack Challenge-and-Redirect** — direct Slack requests must be verified against a dashboard session, denying by default on failure. (Gabe Sanchez)
 - **Token-Free Slack Pins/Reactions Proxy** — gateway routes let local callers pin and react without ever holding the Slack bot token. (Akim Akimov)
 - **Block Prompt Injection via Comment Newlines** — the comment-formatting escaper neutralizes raw newlines that could inject a fake system prompt. (Arpit Vyas)
 - **Enterprise Grid Workspace Allowlisting** — per-message origin checks use an audited in-memory allowlist of validated child-workspace IDs; the config loader retains both `E`- and `T`-prefix IDs. (Ken Harrison)
-- **Scoped CSP for AWS Tunnels** — `wss://*.tunnels.lab.aws.dev` and app WebSocket connections are allowlisted in CSP `connect-src` without broadening the policy. (Justin Bess)
+- **Scoped CSP for Enterprise Tunnels** — enterprise tunnel and app WebSocket connections are allowlisted in CSP `connect-src` without broadening the policy. (Justin Bess)
 - **Internal-Secret Path for `/api/chat`** — local integrations (Zoom watcher, cron scripts) calling from localhost with an internal secret no longer get 403. (Luca Bruera)
 
 ### Fixes
 
-- claude-agent-acp hardening: unblock `/compact`, honor `autocompact_pct`, resolve node binary explicitly, meaningful tool-pill labels, fix Claude Code slots failing to start (Hugo Costa, Patrick Gao)
+- claude-agent-acp hardening: unblock `/compact`, honor `autocompact_pct`, resolve node binary explicitly, meaningful tool-pill labels, fix standalone-provider slots failing to start (Hugo Costa, Patrick Gao)
 - Stop duplicate user message re-injected into fresh-slot history (Raymond Chen)
 - Recover memory embeddings when Ollama starts late; embedding-dimension passthrough for custom models (Arpit Vyas)
 - Reset session on mid-session project change; fork/rewind validate chained history; sync dashboard metadata to remote (Simon Meyffret)
@@ -96,7 +96,7 @@ All notable changes to KiroCrew are documented in this file.
 - Repair invalid hook keys in kiro-cli agent config (Bolin Chen)
 - Restore Code Review tools in builder-mcp config (Kevin Goldberg)
 - Cron editor parses named day-of-week values; transient parse error on Schedule page over a tunnel (Dinesh Mathan, Sam Oldak)
-- Prune uninstalled AIM agents during sync (Yehui Zhang)
+- Prune uninstalled managed agents during sync (Yehui Zhang)
 - Mobile dropdown stays open while scrolling (Helena Stafford)
 - Markdown widget rendering inside inline code (Nick Bowers)
 - Session cleanup loop survives unexpected exceptions (Chris Paton)
@@ -129,7 +129,7 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - **Chat Embedding for Apps** — `useChatSession` hook, `ChatPanel`, `ChatEmbed`, `ChatMessageList`. Apps embed KiroCrew chat in their UI. 63 tests. (Anirudh Narayanan)
 - **Knowledge Library DOCX** — ingest Word documents with heading-aware chunking. Hybrid BM25+vector search via `/kb` endpoints. Frontend KnowledgePicker. (Joe Guo)
 - **Export/Import Config** — one-click zip export/import for settings and memory. Security exclusions for secrets/keys. 37 tests. (Bolin Chen)
-- **Reasoning Effort Selector** — per-slot dropdown (Default/Low/Medium/High/Max) plumbed to Claude Code `--effort` flag. (Hoang Phan)
+- **Reasoning Effort Selector** — per-slot dropdown (Default/Low/Medium/High/Max) plumbed to the standalone provider's `--effort` flag. (Hoang Phan)
 - **Fix with AI** — button on failed app installs opens pre-filled AI chat with error log and setup instructions. (Ray Xu)
 - **Builtin App Auto-Discovery** — frontend auto-discovers builtin app routes. `dependencies.aim` resolved on enable. (Ray Xu)
 - **Navigation Panel** — context-aware link labels for quick access to referenced resources. (Nansong Yi)
@@ -147,11 +147,11 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - **Electron Remote Tunnel** — auto-discover kirocrew binary over SSH. (Leo Zhadanovsky)
 - **Mobile Swipe Gesture** — swipe to open/close mobile chat sidebar. (Vishal Sreekrishnan)
 - **Token Auth Bypass for Apps** — `/apps/{name}/ui/*` GET/HEAD bypass auth. (Shubhranshu Kumar)
-- **Agent SOP Discovery** — `rglob` for nested `agent-sops/<agent>/*.sop.md` in AIM packages. (August Vilakia)
+- **Agent SOP Discovery** — `rglob` for nested `agent-sops/<agent>/*.sop.md` in managed agent packages. (August Vilakia)
 
 ### Security
 
-- **XSS Sanitization + CSP** — `rehypeSanitize` strips dangerous elements. Content-Security-Policy middleware. Fixes SEV-2 V2212623751. (Bolin Chen)
+- **XSS Sanitization + CSP** — `rehypeSanitize` strips dangerous elements. Content-Security-Policy middleware. Fixes a high-severity XSS finding. (Bolin Chen)
 - **CC Sandbox Mode** — 108 deny patterns for credential exfiltration, destructive ops, reverse shells. (Joe Guo)
 - **Git Push Deny Unification** — scoped exception for stash, anchored regex. (Kan Zhu)
 - **Process Leak Fix** — reduce per-session MCP footprint, silence 404 retry storm, kill escaped child processes. (Akim Akimov, Bharath Janyavula)
@@ -166,8 +166,8 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - prevent duplicate kirocrew-lite config (Raghu Burukunte)
 - secretary bot_id derivation from user.isBot (Ethan Levine)
 - dismissed messages resurfacing in dormant channels (Eric Muessel)
-- CC provider eager reconnect on process death (Patrick Gao)
-- CC provider augmented_path for claude CLI (Vitor Durante)
+- standalone provider eager reconnect on process death (Patrick Gao)
+- standalone provider augmented_path for the agent CLI (Vitor Durante)
 - MCP toggle 404 for servers in other scopes (Helena Stafford)
 - MCP sync tools/allowedTools after install/uninstall (August Vilakia)
 - pysqlite3 import for AL2 FTS5 compatibility (Rony Jacob John)
@@ -179,10 +179,10 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - null team field in Enterprise Grid payloads (Rohit Ingle)
 - streaming-diff React removeChild crash (Jeff Neuberger)
 - widget utf-8 charset + openInNewTab hardening (Shuolei Jin)
-- Toolbox bin path in Electron find-bin (Vitor Durante)
+- Packaged-install bin path in Electron find-bin (Vitor Durante)
 - file attachment leak across chat sessions (Tony Hardie)
 - install.sh builds KiroCrewWebsite (Warren Bui)
-- aim CLI PATH augmentation (Filip Godina)
+- managed-agent CLI PATH augmentation (Filip Godina)
 - STT missing deps + pin openssl (Helena Stafford)
 - validate tracking_channels config format (Rohan Kumar)
 - setup timezone retry loop (Chad Bailey)
@@ -213,7 +213,7 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 - AGENTS.md updated for both packages (Bolin Chen)
 - Deprecate !dashboard in favor of /kirocrew dashboard (Sam Oldak)
 - Persistent SSH tunnel setup for macOS LaunchAgent (Sai Chaitanya Manchikatla)
-- opus-amazon-prod collaborator reminder in setup wizard (Yohanes Setiawan)
+- model collaborator reminder in setup wizard (Yohanes Setiawan)
 
 ### Contributors (57)
 
@@ -225,23 +225,23 @@ Hotfix release.
 
 ### Features
 
-- **Knowledge Library Lazy Pool** — knowledge LLM pool starts on first use instead of gateway boot. Grill skill adds confirmation gate before executing. (zejiangg)
-- **Knowledge Agent Config** — auto-generates kirocrew-knowledge agent config for Knowledge Library queries. (zejiangg)
-- **Chat Input During Compaction** — input stays enabled during context compaction so messages queue instead of being lost. (meyffret)
+- **Knowledge Library Lazy Pool** — knowledge LLM pool starts on first use instead of gateway boot. Grill skill adds confirmation gate before executing. (Joe Guo)
+- **Knowledge Agent Config** — auto-generates kirocrew-knowledge agent config for Knowledge Library queries. (Joe Guo)
+- **Chat Input During Compaction** — input stays enabled during context compaction so messages queue instead of being lost. (Simon Meyffret)
 
 ### Bug Fixes
 
-- fix: remove high-risk scopes from default Slack manifest (erichays)
-- fix(session): exempt channel-agent sessions from idle expiry (banarpan)
-- fix(dashboard): correct kwargs in api_reveal_path log_tool_invocation (bharagha)
-- fix: suppress repeated sandbox warning on macOS 26+ (zejiangg)
-- fix: mock platform.mac_ver in sandbox probe tests for macOS 26+ compat (bolichen)
-- Revert parseBlocks inline-code fix (caused widget rendering regression) (bolichen)
-- fix(shortcuts): skip Alt+Arrow chat swap when focus is in text input — preserves macOS Option+Arrow word-jump and Option+Shift+Arrow word-select (bolichen)
+- fix: remove high-risk scopes from default Slack manifest (Eric Hays)
+- fix(session): exempt channel-agent sessions from idle expiry (Arpan Banerjee)
+- fix(dashboard): correct kwargs in api_reveal_path log_tool_invocation (a KiroCrew contributor)
+- fix: suppress repeated sandbox warning on macOS 26+ (Joe Guo)
+- fix: mock platform.mac_ver in sandbox probe tests for macOS 26+ compat (Bolin Chen)
+- Revert parseBlocks inline-code fix (caused widget rendering regression) (Bolin Chen)
+- fix(shortcuts): skip Alt+Arrow chat swap when focus is in text input — preserves macOS Option+Arrow word-jump and Option+Shift+Arrow word-select (Bolin Chen)
 
 ### Refactoring
 
-- refactor: remove code_package, sharepoint, and url connectors from Knowledge Library (zejiangg)
+- refactor: remove code_package, sharepoint, and url connectors from Knowledge Library (Joe Guo)
 
 ## [2.4.0] — 2026-05-12
 
@@ -249,311 +249,311 @@ Hotfix release.
 
 ### Features
 
-- **Knowledge Library** — full-stack knowledge management with ingestion, graph retrieval, and auto-watch. Backend: SQLite store with FTS5 full-text search, chunker, extractor, LLMPool for summarization, graph-based retrieval with Reciprocal Rank Fusion. Connectors for local files, code packages (git), Quip, SharePoint, and URLs. Frontend: grouped-by-source list, D3 force-directed graph, sources tab, optimistic mutations. 120 tests. (zejiangg)
+- **Knowledge Library** — full-stack knowledge management with ingestion, graph retrieval, and auto-watch. Backend: SQLite store with FTS5 full-text search, chunker, extractor, LLMPool for summarization, graph-based retrieval with Reciprocal Rank Fusion. Connectors for local files, code packages (git), wiki/doc sources, and URLs. Frontend: grouped-by-source list, D3 force-directed graph, sources tab, optimistic mutations. 120 tests. (Joe Guo)
 
-- **Mimir** — autonomous task management app aggregating Taskei, SIM, and Asana into a unified dashboard. 4-step onboarding wizard, stat cards (Executing/Blocked/Waiting/Completed), agent assignment for autonomous processing, MCP server exposing 7 tools, GraphQL Taskei client with Midway auth, sequential multi-agent cron execution. (bhachin)
+- **Task Aggregator** — autonomous task management app aggregating internal issue trackers and Asana into a unified dashboard. 4-step onboarding wizard, stat cards (Executing/Blocked/Waiting/Completed), agent assignment for autonomous processing, MCP server exposing 7 tools, GraphQL task-tracker client with enterprise SSO auth, sequential multi-agent cron execution. (Bhavana Chinthalapally)
 
-- **Grill Skill** — built-in structured pre-task questioning protocol. Decision-tree interview walks each branch one question at a time, checks memory before asking (skips already-decided questions), saves every answer via `learn_add(scope="workspace")`, provides recommended answers, auto-stops when plan is clear. Triggers on "think this through", "poke holes", "grill me", etc. (zejiangg)
+- **Grill Skill** — built-in structured pre-task questioning protocol. Decision-tree interview walks each branch one question at a time, checks memory before asking (skips already-decided questions), saves every answer via `learn_add(scope="workspace")`, provides recommended answers, auto-stops when plan is clear. Triggers on "think this through", "poke holes", "grill me", etc. (Joe Guo)
 
-- **Multi-Provider MCP Management** — unified MCP server management across kiro-cli, Claude Code, and KiroCrew. Per-scope dashboard badges showing provider membership, batched `POST /api/mcp/apply` endpoint with preservation rule, always-render CC agent artifacts, `_is_valid_mcp_name` security hardening (charset allowlist, 128-char cap, path traversal rejection). (nrb)
+- **Multi-Provider MCP Management** — unified MCP server management across kiro-cli, the standalone provider, and KiroCrew. Per-scope dashboard badges showing provider membership, batched `POST /api/mcp/apply` endpoint with preservation rule, always-render standalone-provider agent artifacts, `_is_valid_mcp_name` security hardening (charset allowlist, 128-char cap, path traversal rejection). (Nick Bowers)
 
-- **Python-Controlled Autopilot Stage Loop** — replaces LLM-controlled stage advancement with deterministic `_stage_loop()`. Fixes 5 recurring regressions (stages in single turn, Go All stalling, non-deterministic boundaries). Per-stage result capture to disk, subagent wait polling (2s interval, 5min max), compacted prior results (30% head / 70% tail). (zejiangg)
+- **Python-Controlled Autopilot Stage Loop** — replaces LLM-controlled stage advancement with deterministic `_stage_loop()`. Fixes 5 recurring regressions (stages in single turn, Go All stalling, non-deterministic boundaries). Per-stage result capture to disk, subagent wait polling (2s interval, 5min max), compacted prior results (30% head / 70% tail). (Joe Guo)
 
-- **Warm Pool Health-Check Loop** — proactive 30s sweep of pooled kiro-cli processes, discards dead/expired providers, triggers replenishment. Fixes orphan sweep killing healthy pool processes by including pool PIDs in active set. (hoangvp)
+- **Warm Pool Health-Check Loop** — proactive 30s sweep of pooled kiro-cli processes, discards dead/expired providers, triggers replenishment. Fixes orphan sweep killing healthy pool processes by including pool PIDs in active set. (Hoang Phan)
 
-- **Prompt Optimizer** — native pre-send prompt rewriting via Cmd+Shift+Enter or sparkle button. Dedicated session (no semaphore contention), 30s timeout, context-aware (last ~10 messages), security redaction. User reviews before sending. (yohaseti)
+- **Prompt Optimizer** — native pre-send prompt rewriting via Cmd+Shift+Enter or sparkle button. Dedicated session (no semaphore contention), 30s timeout, context-aware (last ~10 messages), security redaction. User reviews before sending. (Yohanes Setiawan)
 
-- **Notification Sounds** — Web Audio API notification system with 4 preset tones (chime, ding, blip, pop). Master toggle + volume slider, per-category overrides (cron, approval, hook, heartbeat, subagent, taskrunner), SSE `mc-notification` CustomEvent dispatcher, 300ms debounce. Settings in Dashboard → Notifications. (toprescu)
+- **Notification Sounds** — Web Audio API notification system with 4 preset tones (chime, ding, blip, pop). Master toggle + volume slider, per-category overrides (cron, approval, hook, heartbeat, subagent, taskrunner), SSE `mc-notification` CustomEvent dispatcher, 300ms debounce. Settings in Dashboard → Notifications. (Teodor-Gabriel Oprescu)
 
-- **Quote-Reply** — select text in assistant messages → floating toolbar with Quote and Copy. Clicking Quote inserts blockquote into input with Safari-download-style spring animation (FlyingQuote). Supports multiple stacked quotes. (zezhexu)
+- **Quote-Reply** — select text in assistant messages → floating toolbar with Quote and Copy. Clicking Quote inserts blockquote into input with Safari-download-style spring animation (FlyingQuote). Supports multiple stacked quotes. (Zezhen Xu)
 
-- **In-Session Message Search** — VS Code-style Cmd+F / Ctrl+F search bar. Per-occurrence matching across all messages (including virtualized), DOM TreeWalker highlighting, case-sensitive toggle, Enter/Shift+Enter navigation, MutationObserver for async code blocks. (nikhim)
+- **In-Session Message Search** — VS Code-style Cmd+F / Ctrl+F search bar. Per-occurrence matching across all messages (including virtualized), DOM TreeWalker highlighting, case-sensitive toggle, Enter/Shift+Enter navigation, MutationObserver for async code blocks. (Nikhil Menon)
 
-- **Table of Contents Drawer** — right-side drawer for markdown file viewer. Extracts ATX/setext headings (skipping fenced code), slugified id attributes on h1-h3, index-based scroll navigation. (lizhuoy)
+- **Table of Contents Drawer** — right-side drawer for markdown file viewer. Extracts ATX/setext headings (skipping fenced code), slugified id attributes on h1-h3, index-based scroll navigation. (Zhuoyu Li)
 
-- **Collapse Large Pastes** — pastes ≥3 lines or ≥200 chars collapse to `[ Paste #N · M lines ]` tokens. Atomic keyboard handling, click-to-expand, framer-motion spring animation on chips in sent messages, content-addressed localStorage persistence (200-entry cap), Edit & Resend expansion. (dhasman)
+- **Collapse Large Pastes** — pastes ≥3 lines or ≥200 chars collapse to `[ Paste #N · M lines ]` tokens. Atomic keyboard handling, click-to-expand, framer-motion spring animation on chips in sent messages, content-addressed localStorage persistence (200-entry cap), Edit & Resend expansion. (Krish Dhasmana)
 
-- **Sidebar Context Menu** — right-click dropdown replacing direct rename-on-right-click. Menu items: Rename and Mark as Unread. Viewport edge clamping, Escape-to-close, ARIA roles. (eqqupty)
+- **Sidebar Context Menu** — right-click dropdown replacing direct rename-on-right-click. Menu items: Rename and Mark as Unread. Viewport edge clamping, Escape-to-close, ARIA roles. (Ezzat Qupty)
 
-- **Unread-Only Filter** — sidebar toggle filtering to unread sessions only. Live count badge (capped 99+), auto-drain when inbox reaches zero, localStorage persistence, dynamic aria-label with count. (toprescu)
+- **Unread-Only Filter** — sidebar toggle filtering to unread sessions only. Live count badge (capped 99+), auto-drain when inbox reaches zero, localStorage persistence, dynamic aria-label with count. (Teodor-Gabriel Oprescu)
 
-- **Bulk Session Cleanup** — `POST /api/chat/slots/cleanup` endpoint archives stale sessions by configurable inactivity threshold. Skips active slot and pinned sessions. Frontend "Clean Up" button with dry-run preview. (nikhim)
+- **Bulk Session Cleanup** — `POST /api/chat/slots/cleanup` endpoint archives stale sessions by configurable inactivity threshold. Skips active slot and pinned sessions. Frontend "Clean Up" button with dry-run preview. (Nikhil Menon)
 
-- **CodeReview Read/Write Actions** — exposes `CodeReviewReadActions` and `CodeReviewWriteActions` via `--include-tool-tags default,code-review`. Prompt-per-call (not auto-approved). Also fixes `_inject_skill_paths` corrupting flag-with-value args. (kgold)
+- **CodeReview Read/Write Actions** — exposes `CodeReviewReadActions` and `CodeReviewWriteActions` via `--include-tool-tags default,code-review`. Prompt-per-call (not auto-approved). Also fixes `_inject_skill_paths` corrupting flag-with-value args. (Kevin Goldberg)
 
-- **Node.js Backend Support** — adds Node.js as app backend type with nvm/system node resolution. Adopts healthy existing instances on port conflict, preserves app_secret during updates. (rayrayxu)
+- **Node.js Backend Support** — adds Node.js as app backend type with nvm/system node resolution. Adopts healthy existing instances on port conflict, preserves app_secret during updates. (Ray Xu)
 
-- **Jump to Previous User Message** — ArrowUp button at top-centre of chat scrolls to nearest user message above viewport with 72px offset. Repeated clicks chain through history. (meyffret)
+- **Jump to Previous User Message** — ArrowUp button at top-centre of chat scrolls to nearest user message above viewport with 72px offset. Repeated clicks chain through history. (Simon Meyffret)
 
-- **--no-open Flag** — `kirocrew gateway --no-open` and `dashboard.auto_open_browser` config suppress automatic browser open. Used by Electron app to avoid redundant tab. (bobbyea)
+- **--no-open Flag** — `kirocrew gateway --no-open` and `dashboard.auto_open_browser` config suppress automatic browser open. Used by Electron app to avoid redundant tab. (Bobby Earl)
 
-- **Subagent CWD** — `cwd` parameter on `spawn_run` launches subagents in a caller-specified directory. Gated by `subagent_cwd_allowed_roots` config. (meyffret)
+- **Subagent CWD** — `cwd` parameter on `spawn_run` launches subagents in a caller-specified directory. Gated by `subagent_cwd_allowed_roots` config. (Simon Meyffret)
 
-- **Subagent Orphan Recovery** — folder-per-agent persistence at `~/.kirocrew/subagents/{id}/` with state.json, result.txt, tombstone.json. On gateway restart: reconciles orphaned processes, delivers results, tombstones failures. Reaper prunes stale tombstones after 7 days. (hugocost)
+- **Subagent Orphan Recovery** — folder-per-agent persistence at `~/.kirocrew/subagents/{id}/` with state.json, result.txt, tombstone.json. On gateway restart: reconciles orphaned processes, delivers results, tombstones failures. Reaper prunes stale tombstones after 7 days. (Hugo Costa)
 
-- **Task Runner Pause/Resume** — pause and resume running tasks without losing progress. Crash recovery transitions running→paused on restart. `force_approval` gates block even in YOLO mode. (pierrim)
+- **Task Runner Pause/Resume** — pause and resume running tasks without losing progress. Crash recovery transitions running→paused on restart. `force_approval` gates block even in YOLO mode. (Matt Pierringer)
 
-- **CodeApprovers Tier Routing** — tier-based CR reviewer routing via `CODE_APPROVERS.yaml`. T1 (1 core), T2 (2 core for security/harness), T3 (both owners for frozen modules). Drift validator test fails build on pattern mismatch. (meyffret)
+- **Code-Approvers Tier Routing** — tier-based reviewer routing via a code-approvers config. T1 (1 core), T2 (2 core for security/harness), T3 (both owners for frozen modules). Drift validator test fails build on pattern mismatch. (Simon Meyffret)
 
-- **Managed Tool Policy** — `managedToolPolicy` config for per-agent MCP tool filtering. Allows restricting which tools an agent can access. (rayrayxu)
+- **Managed Tool Policy** — `managedToolPolicy` config for per-agent MCP tool filtering. Allows restricting which tools an agent can access. (Ray Xu)
 
-- **Heartbeat Dashboard Delivery** — `prompt:dashboard:<slot>` delivery mode injects heartbeat results into specific dashboard chat slots. Slack suppressed for incomplete tasks (HEARTBEAT_KEEP). (meyffret)
+- **Heartbeat Dashboard Delivery** — `prompt:dashboard:<slot>` delivery mode injects heartbeat results into specific dashboard chat slots. Slack suppressed for incomplete tasks (HEARTBEAT_KEEP). (Simon Meyffret)
 
-- **AutoNudge Stop Sentinel** — per-slot `{{STOP_FILE}}` template in nudge messages. Auto-defaults stop sentinel path per slot. (zedmor)
+- **AutoNudge Stop Sentinel** — per-slot `{{STOP_FILE}}` template in nudge messages. Auto-defaults stop sentinel path per slot. (Akim Akimov)
 
-- **AIM Bidirectional Sync** — agent-granular sync across kiro and CC. Uninstalls skills alongside agents/plugins to prevent reinstall on rebuild. (nrb)
+- **Managed Agent Bidirectional Sync** — agent-granular sync across kiro and CC. Uninstalls skills alongside agents/plugins to prevent reinstall on rebuild. (Nick Bowers)
 
-- **Auto-Discover Hooks** — `~/.kiro/hooks/*.sh` auto-imported at agent boot. Parses `# event:` / `# matcher:` headers, enforces caps (10 per-event, 20 total), security validation. (meyffret)
+- **Auto-Discover Hooks** — `~/.kiro/hooks/*.sh` auto-imported at agent boot. Parses `# event:` / `# matcher:` headers, enforces caps (10 per-event, 20 total), security validation. (Simon Meyffret)
 
-- **Script Hooks for All Code Paths** — hooks now fire for chat, cron, subagent, and task runner execution paths (not just chat). (jbandon)
+- **Script Hooks for All Code Paths** — hooks now fire for chat, cron, subagent, and task runner execution paths (not just chat). (Jack Bandon)
 
-- **Contextual Prompt Suggestions** — background LLM generates contextual follow-up suggestions after each response. (zezhexu)
+- **Contextual Prompt Suggestions** — background LLM generates contextual follow-up suggestions after each response. (Zezhen Xu)
 
-- **Per-phase reaction suppression** — set any value in `slack.reactions` to `null` to suppress just that phase. (etlev)
+- **Per-phase reaction suppression** — set any value in `slack.reactions` to `null` to suppress just that phase. (Ethan Levine)
 
-- **TaskKeeper /tk Command** — `/tk` slash command for quick-notes, writes to `~/.taskkeeper/quick-notes.json`. (jpontone)
+- **TaskKeeper /tk Command** — `/tk` slash command for quick-notes, writes to `~/.taskkeeper/quick-notes.json`. (Joe Pontone)
 
-- **Seed Fixtures** — `kirocrew gateway --seed <fixture> [--seed-replace]` for reproducible testing environments. (meyffret)
+- **Seed Fixtures** — `kirocrew gateway --seed <fixture> [--seed-replace]` for reproducible testing environments. (Simon Meyffret)
 
-- **File Search API** — per-project in-memory file index with fuzzy scoring for `@`-file references. (hoangvp)
+- **File Search API** — per-project in-memory file index with fuzzy scoring for `@`-file references. (Hoang Phan)
 
-- **Widget Prompt Template** — configurable `{{WIDGET_BLOCK}}` density for dashboard-only widget instructions. (zejiangg)
+- **Widget Prompt Template** — configurable `{{WIDGET_BLOCK}}` density for dashboard-only widget instructions. (Joe Guo)
 
-- **Document Parser** — stdlib-only .docx/.pdf/.pptx extraction for Slack file attachments. (bolichen)
+- **Document Parser** — stdlib-only .docx/.pdf/.pptx extraction for Slack file attachments. (Bolin Chen)
 
-- **Auto Skill Creation (Hermes loop)** — KiroCrew can now synthesize reusable skills from your conversations. After a multi-step session (≥5 tool calls by default), the existing idle consolidator asks the background LLM whether the procedure was worth saving, and if so writes a `~/.kirocrew/skills/auto/<slug>/SKILL.md` with triggers, step-by-step procedure, and provenance. On reuse, if the agent finds a better procedure, the skill updates itself. **Disabled by default** — opt in via `kirocrew config set skills.auto_create_from_sessions true`. Auto-generated skills live under the `auto/` namespace so they never collide with hand-authored ones. All writes are gated by sensitive-session detection, output redaction (credentials + exfiltration URLs), similarity-based dedup, and SEL audit logging. (shayanys, Mesh-677)
+- **Auto Skill Creation (Hermes loop)** — KiroCrew can now synthesize reusable skills from your conversations. After a multi-step session (≥5 tool calls by default), the existing idle consolidator asks the background LLM whether the procedure was worth saving, and if so writes a `~/.kirocrew/skills/auto/<slug>/SKILL.md` with triggers, step-by-step procedure, and provenance. On reuse, if the agent finds a better procedure, the skill updates itself. **Disabled by default** — opt in via `kirocrew config set skills.auto_create_from_sessions true`. Auto-generated skills live under the `auto/` namespace so they never collide with hand-authored ones. All writes are gated by sensitive-session detection, output redaction (credentials + exfiltration URLs), similarity-based dedup, and SEL audit logging. (Shayan Yaseen)
 
-- **Inline Interactive Widgets** — `<mcwidget>` tags in assistant responses render as sandboxed iframes with Tailwind CSS, auto-resize (100-800px), expand/minimize, open-in-new-tab. Ocean-of-dots loading animation during streaming. Theme-aware via CSS variables. (zezhexu, meyffret)
+- **Inline Interactive Widgets** — `<mcwidget>` tags in assistant responses render as sandboxed iframes with Tailwind CSS, auto-resize (100-800px), expand/minimize, open-in-new-tab. Ocean-of-dots loading animation during streaming. Theme-aware via CSS variables. (Zezhen Xu, Simon Meyffret)
 
-- **Render User Messages with Markdown** — user messages now render with full markdown formatting (bold, links, code, lists) instead of plain text. (msq)
+- **Render User Messages with Markdown** — user messages now render with full markdown formatting (bold, links, code, lists) instead of plain text. (Maninder Singh)
 
-- **Stage Progress Indicator** — `chat_status` WebSocket event drives a visual stage progress bar during autopilot execution. (zejiangg)
+- **Stage Progress Indicator** — `chat_status` WebSocket event drives a visual stage progress bar during autopilot execution. (Joe Guo)
 
-- **Unread Chat Count Badge** — Chat nav tab shows live unread count badge. (nickpap)
+- **Unread Chat Count Badge** — Chat nav tab shows live unread count badge. (Nick Papadopoulos)
 
-- **Edit Button for Options** — prefill selected `[OPTIONS]` choices back into chat input for modification before sending. (toprescu)
+- **Edit Button for Options** — prefill selected `[OPTIONS]` choices back into chat input for modification before sending. (Teodor-Gabriel Oprescu)
 
-- **Reveal in Sidebar** — header button scrolls sidebar to highlight the active session. (romaniff)
+- **Reveal in Sidebar** — header button scrolls sidebar to highlight the active session. (Roman Ivanov)
 
-- **Prettier Code Blocks** — improved code block styling with replaced inline followUp options and general cleanup. (dhasman)
+- **Prettier Code Blocks** — improved code block styling with replaced inline followUp options and general cleanup. (Krish Dhasmana)
 
 ### Bug Fixes
 
-- 🔒 fix: block chmod/chown on system paths (/usr/, /etc/, /sbin/, /boot/, /lib/, /lib64/) in deny patterns — prevents cloud desktop bricking (zejiangg)
-- fix: use bracket access on sqlite3.Row in sync_source handler (zejiangg)
-- fix(dashboard): persist cron agent on PATCH — UI sends agent field (spiamart)
-- fix(mimir): register mimir routes at startup to avoid frozen router error (bhachin)
-- fix(acp): add streaming staleness timeout + remove mode identity announcements (zejiangg)
-- fix: deduplicate agent config — make src/kiro_crew/config/ single source of truth (zejiangg)
-- fix(aim): uninstall skills too so sync does not reinstall package (nrb)
-- fix: stop syncing kirocrew MCP servers to global mcp.json (zejiangg)
-- fix(pool): reset pool state on provider switch so warm pool refills (hoangvp)
-- fix(pool): persist CWD in session_map for accurate resume (hoangvp)
-- fix(mcp): support Content-Length framing in MCP stdio transport (micvisc)
-- fix(mcp): walk ancestor PIDs to resolve session key in warm pool (hoangvp)
-- fix(dashboard): route subagent injection through _run_chat for full streaming (elyluk)
-- fix(dashboard): auto-revive slot for session=origin cron injection (gavintse)
-- fix(dashboard): trust loopback origins regardless of port (samoldak)
-- fix(dashboard): pass timezone from cron create/update API to job storage (dallinko)
-- fix(dashboard): fork inherits folder_id so new slot lands in parent's folder (meyffret)
-- fix(dashboard): resolve symlinked _DIST_DIR in pwa_file guard (meyffret)
-- fix(dashboard): stop currency symbols from triggering KaTeX math parsing (frontend, dhasman)
-- fix(heartbeat): suppress Slack delivery for incomplete tasks (HEARTBEAT_KEEP) (cttong)
-- fix(orchestrator): raise plan threshold to 4+ stages (zejiangg)
-- fix(taskkeeper): persist CandidateStore so pending survive restart (zhna)
-- fix(autonudge): auto-default per-slot stop sentinel + {{STOP_FILE}} template (banarpan)
-- fix(chat): drain stale _pending chunks when SSE reader disconnects (lucbruer)
-- fix(secretary): reply in-thread for channel/group messages (geetsawh)
-- fix: single authoritative config writer (rebuild_agent_config) (nrb)
-- fix: catch ConnectionResetError/BrokenPipeError in ACP client with retry logic (wangsel)
-- fix: use config_dir() for all config paths in CLI (tustia)
-- fix: stabilize flaky tests in CI (zejiangg)
-- fix: sandbox probe false-positive on macOS 26+ — early-exit on darwin ≥ 26 where sandbox-exec is broken for third-party binaries (zejiangg)
+- 🔒 fix: block chmod/chown on system paths (/usr/, /etc/, /sbin/, /boot/, /lib/, /lib64/) in deny patterns — prevents remote-desktop bricking (Joe Guo)
+- fix: use bracket access on sqlite3.Row in sync_source handler (Joe Guo)
+- fix(dashboard): persist cron agent on PATCH — UI sends agent field (Sean Iamartino)
+- fix(mimir): register mimir routes at startup to avoid frozen router error (Bhavana Chinthalapally)
+- fix(acp): add streaming staleness timeout + remove mode identity announcements (Joe Guo)
+- fix: deduplicate agent config — make src/kiro_crew/config/ single source of truth (Joe Guo)
+- fix(agent-sync): uninstall skills too so sync does not reinstall package (Nick Bowers)
+- fix: stop syncing kirocrew MCP servers to global mcp.json (Joe Guo)
+- fix(pool): reset pool state on provider switch so warm pool refills (Hoang Phan)
+- fix(pool): persist CWD in session_map for accurate resume (Hoang Phan)
+- fix(mcp): support Content-Length framing in MCP stdio transport (Michael Viscardi)
+- fix(mcp): walk ancestor PIDs to resolve session key in warm pool (Hoang Phan)
+- fix(dashboard): route subagent injection through _run_chat for full streaming (Luke Ely)
+- fix(dashboard): auto-revive slot for session=origin cron injection (Gavin Tse)
+- fix(dashboard): trust loopback origins regardless of port (Sam Oldak)
+- fix(dashboard): pass timezone from cron create/update API to job storage (Dallin Kooyman)
+- fix(dashboard): fork inherits folder_id so new slot lands in parent's folder (Simon Meyffret)
+- fix(dashboard): resolve symlinked _DIST_DIR in pwa_file guard (Simon Meyffret)
+- fix(dashboard): stop currency symbols from triggering KaTeX math parsing (frontend, Krish Dhasmana)
+- fix(heartbeat): suppress Slack delivery for incomplete tasks (HEARTBEAT_KEEP) (Chen Tong)
+- fix(orchestrator): raise plan threshold to 4+ stages (Joe Guo)
+- fix(taskkeeper): persist CandidateStore so pending survive restart (Eric Zhang)
+- fix(autonudge): auto-default per-slot stop sentinel + {{STOP_FILE}} template (Arpan Banerjee)
+- fix(chat): drain stale _pending chunks when SSE reader disconnects (Luca Bruera)
+- fix(secretary): reply in-thread for channel/group messages (Geet Sawhney)
+- fix: single authoritative config writer (rebuild_agent_config) (Nick Bowers)
+- fix: catch ConnectionResetError/BrokenPipeError in ACP client with retry logic (Selena Wang)
+- fix: use config_dir() for all config paths in CLI (Addison Tustin)
+- fix: stabilize flaky tests in CI (Joe Guo)
+- fix: sandbox probe false-positive on macOS 26+ — early-exit on darwin ≥ 26 where sandbox-exec is broken for third-party binaries (Joe Guo)
 
 ### Refactoring
 
-- refactor: split chat.py (5,405 lines) into 12 focused modules (zejiangg)
-- refactor: split cli.py and chat.py into focused modules (zejiangg)
-- refactor: split session.py into session_pid.py and session_map.py (zejiangg)
+- refactor: split chat.py (5,405 lines) into 12 focused modules (Joe Guo)
+- refactor: split cli.py and chat.py into focused modules (Joe Guo)
+- refactor: split session.py into session_pid.py and session_map.py (Joe Guo)
 
 ### Contributors (59)
 
-Alec Douglas (agdoug), Albert Huang (wenhuan), Akim Akimov (zedmor), Ariana Morgan (ammaws), Arpan Banerjee (banarpan), Ben Grubin (bgrubin), Bhavana Chinthalapally (bhachin), Bobby Earl (bobbyea), Bolin Chen (bolichen), Chen Tong (cttong), Chenying Han (cyhan), Dallin Kooyman (dallinko), David Fayerman (dfayx), Dinesh Mathan (mathad), Eric Zhang (zhna), Ethan Levine (etlev), Ezzat Qupty (eqqupty), Gavin Tse (gavintse), Geet Sawhney (geetsawh), Andrew Golightly (goligand), Hoang Phan (hoangvp), Hugo Costa (hugocost), Jack Bandon (jbandon), Jimmy Kilpatrick (jamekilp), Joe Guo (zejiangg), Joe Pontone (jpontone), Kevin Goldberg (kgold), Kotaro Inoue (musaprg), Krish Dhasmana (dhasman), Krunal Patel (krunalpa), Luca Bruera (lucbruer), Luke Ely (elyluk), Maninder Singh (msq), Manuel Chavez (molinman), Mark Lord (lormark), Matt Pierringer (pierrim), Michael Viscardi (micvisc), Milos Chaloupka (cmilos), Nick Bowers (nrb), Nick Papadopoulos (nickpap), Nikhil Menon (nikhim), Patrick Gao (patrigao), Ray Xu (rayrayxu), Roman Ivanov (romaniff), Sam Oldak (samoldak), Sean Iamartino (spiamart), Selena Wang (wangsel), Shayan Yaseen (shayanys), Shihao Wang (shihaow), Simon Meyffret (meyffret), Sivan Cooperman (sivancc), Teodor-Gabriel Oprescu (toprescu), Tony Hardie (thhardie), Addison Tustin (tustia), Tyger Hugh (tygerz), Vasanth Subramanian (vasasub), Vitor Durante (vcd), Yohanes Setiawan (yohaseti), Zezhen Xu (zezhexu), Zhuoyu Li (lizhuoy)
+Alec Douglas (Alec Douglas), Albert Huang (Albert Huang), Akim Akimov (Akim Akimov), Ariana Morgan (Ariana Morgan), Arpan Banerjee (Arpan Banerjee), Ben Grubin (Ben Grubin), Bhavana Chinthalapally (Bhavana Chinthalapally), Bobby Earl (Bobby Earl), Bolin Chen (Bolin Chen), Chen Tong (Chen Tong), Chenying Han (Chenying Han), Dallin Kooyman (Dallin Kooyman), David Fayerman (David Fayerman), Dinesh Mathan (Dinesh Mathan), Eric Zhang (Eric Zhang), Ethan Levine (Ethan Levine), Ezzat Qupty (Ezzat Qupty), Gavin Tse (Gavin Tse), Geet Sawhney (Geet Sawhney), Andrew Golightly (Andrew Golightly), Hoang Phan (Hoang Phan), Hugo Costa (Hugo Costa), Jack Bandon (Jack Bandon), Jimmy Kilpatrick (Jimmy Kilpatrick), Joe Guo (Joe Guo), Joe Pontone (Joe Pontone), Kevin Goldberg (Kevin Goldberg), Kotaro Inoue (Kotaro Inoue), Krish Dhasmana (Krish Dhasmana), Krunal Patel (Krunal Patel), Luca Bruera (Luca Bruera), Luke Ely (Luke Ely), Maninder Singh (Maninder Singh), Manuel Chavez (Manuel Chavez), Mark Lord (Mark Lord), Matt Pierringer (Matt Pierringer), Michael Viscardi (Michael Viscardi), Milos Chaloupka (Milos Chaloupka), Nick Bowers (Nick Bowers), Nick Papadopoulos (Nick Papadopoulos), Nikhil Menon (Nikhil Menon), Patrick Gao (Patrick Gao), Ray Xu (Ray Xu), Roman Ivanov (Roman Ivanov), Sam Oldak (Sam Oldak), Sean Iamartino (Sean Iamartino), Selena Wang (Selena Wang), Shayan Yaseen (Shayan Yaseen), Shihao Wang (Shihao Wang), Simon Meyffret (Simon Meyffret), Sivan Cooperman (Sivan Cooperman), Teodor-Gabriel Oprescu (Teodor-Gabriel Oprescu), Tony Hardie (Tony Hardie), Addison Tustin (Addison Tustin), Tyger Hugh (Tyger Hugh), Vasanth Subramanian (Vasanth Subramanian), Vitor Durante (Vitor Durante), Yohanes Setiawan (Yohanes Setiawan), Zezhen Xu (Zezhen Xu), Zhuoyu Li (Zhuoyu Li)
 
 ## [2.3.0] — 2026-05-02
 
 324 commits across 2 packages, 91 contributors since v2.2.0.
-Frontend split into dedicated KiroCrewWebsite package (NpmPrettyMuch).
+Frontend split into dedicated KiroCrewWebsite package.
 
 ### Features
 
-- **Toolbox Install** — one-command install with native platform-specific bundles for AL2, AL2023, and macOS (x86_64 + aarch64). No repo clone needed: `toolbox install kirocrew && ~/.toolbox/bin/kirocrew setup`. Includes auto-prerequisite installation (kiro-cli, AIM, brazilcli), `kirocrew doctor` stale-path checks, and migration from one-line install. (zejiangg, bolichen)
+- **Packaged Install** — one-command install with native platform-specific bundles for common Linux distros and macOS (x86_64 + aarch64). No repo clone needed. Includes auto-prerequisite installation (kiro-cli and the managed agent package manager), `kirocrew doctor` stale-path checks, and migration from one-line install. (Joe Guo, Bolin Chen)
 
-- **TaskKeeper** — personal task management app in the dashboard. Scan Slack mentions and Outlook emails for actionable items, triage with LLM-powered confidence scoring, accept/skip/merge candidates, and sync bidirectionally with Microsoft To-Do. Includes auto-scan polling, duplicate detection, and bulk operations. (jpontone)
+- **TaskKeeper** — personal task management app in the dashboard. Scan Slack mentions and Outlook emails for actionable items, triage with LLM-powered confidence scoring, accept/skip/merge candidates, and sync bidirectionally with Microsoft To-Do. Includes auto-scan polling, duplicate detection, and bulk operations. (Joe Pontone)
 
-- **Cooperative Stop** — Stop button sends ACP `session/cancel` first and falls back to hard kill only after a configurable budget (default 10s). Preserves kiro-cli session state in the common case — stop latency drops from ~11s to <1s. Pulsing Stop button, inline StopEventCard in transcript, Slack ephemeral with Kill Now button. Double-tap forces immediate kill. Cancelled turn context re-injected on next prompt. (bgrubin)
+- **Cooperative Stop** — Stop button sends ACP `session/cancel` first and falls back to hard kill only after a configurable budget (default 10s). Preserves kiro-cli session state in the common case — stop latency drops from ~11s to <1s. Pulsing Stop button, inline StopEventCard in transcript, Slack ephemeral with Kill Now button. Double-tap forces immediate kill. Cancelled turn context re-injected on next prompt. (Ben Grubin)
 
-- **AutoNudge** — reactive same-session self-nudge service. A dashboard chat slot keeps working toward a goal by re-injecting a configured nudge message whenever it goes idle. Unlike cron, runs in the same slot with warm memory and tools. Survives browser disconnect and gateway restart. Composer toolbar icon with popover for start/save/stop. (zedmor)
+- **AutoNudge** — reactive same-session self-nudge service. A dashboard chat slot keeps working toward a goal by re-injecting a configured nudge message whenever it goes idle. Unlike cron, runs in the same slot with warm memory and tools. Survives browser disconnect and gateway restart. Composer toolbar icon with popover for start/save/stop. (Akim Akimov)
 
-- **Streaming STT** — live speech-to-text via AWS Transcribe Streaming. Words appear in the chat input as you speak instead of waiting for recording to finish. First-word latency reduced from 7560ms to 761ms. Concurrency cap (3) and duration cap (300s) prevent cost runaway. (meyffret)
+- **Streaming STT** — live speech-to-text via AWS Transcribe Streaming. Words appear in the chat input as you speak instead of waiting for recording to finish. First-word latency reduced from 7560ms to 761ms. Concurrency cap (3) and duration cap (300s) prevent cost runaway. (Simon Meyffret)
 
-- **Tool Tracking v2** — inline tool pills show live execution state (spinner/shield/checkmark/rejected). Approval banner renders inside the chat input bar with hover-to-preview and click-to-pin. Simplified tool names show agent's purpose instead of raw commands. Batch rejection auto-rejects remaining tools when one is denied. (dhasman)
+- **Tool Tracking v2** — inline tool pills show live execution state (spinner/shield/checkmark/rejected). Approval banner renders inside the chat input bar with hover-to-preview and click-to-pin. Simplified tool names show agent's purpose instead of raw commands. Batch rejection auto-rejects remaining tools when one is denied. (Krish Dhasmana)
 
-- **Board / Kanban** — 4-lane session status view (Needs Approval / Your Turn / Working / Idle) with inline option buttons, approval actions, stall detection, and close-session. See all active sessions at a glance without clicking into each chat. (tygerz)
+- **Board / Kanban** — 4-lane session status view (Needs Approval / Your Turn / Working / Idle) with inline option buttons, approval actions, stall detection, and close-session. See all active sessions at a glance without clicking into each chat. (Tyger Hugh)
 
-- **Fork Session** — fork a conversation into a new tab pre-loaded with full history. Supports forking at a specific message index and passing an initial prompt. GitFork button in assistant message actions. App-isolation enforced. (meyffret)
+- **Fork Session** — fork a conversation into a new tab pre-loaded with full history. Supports forking at a specific message index and passing an initial prompt. GitFork button in assistant message actions. App-isolation enforced. (Simon Meyffret)
 
-- **Edit & Resend** — edit the last user message in-place and get a fresh response. Pencil button below last user message, inline textarea with Enter to send. Truncates history to the edited message. (jhguo)
+- **Edit & Resend** — edit the last user message in-place and get a fresh response. Pencil button below last user message, inline textarea with Enter to send. Truncates history to the edited message. (Jiahao Guo)
 
-- **Regenerate Replies** — click ↻ to regenerate any assistant reply, browse between all versions with ◀ ▶ arrows. Up to 20 variants per message with dedup. Variant history persists across page reloads and gateway restarts. (jhguo)
+- **Regenerate Replies** — click ↻ to regenerate any assistant reply, browse between all versions with ◀ ▶ arrows. Up to 20 variants per message with dedup. Variant history persists across page reloads and gateway restarts. (Jiahao Guo)
 
-- **App SDK Ecosystem** — three-axis app classification (origin/resources/lifecycle), import map system for shared React modules, HMAC-SHA256 signed gateway reverse proxy for app backends, dependency ledger with reference-counted uninstall preview. (rayrayxu)
+- **App SDK Ecosystem** — three-axis app classification (origin/resources/lifecycle), import map system for shared React modules, HMAC-SHA256 signed gateway reverse proxy for app backends, dependency ledger with reference-counted uninstall preview. (Ray Xu)
 
-- **Warm Session Pool** — pre-spawn kiro-cli processes at gateway startup so new sessions claim an already-initialized process. Eliminates 3-10s cold-start latency on first message. Configurable pool_size, pool_agent, pool_ttl. Liveness drain loop discards dead providers. (hoangvp)
+- **Warm Session Pool** — pre-spawn kiro-cli processes at gateway startup so new sessions claim an already-initialized process. Eliminates 3-10s cold-start latency on first message. Configurable pool_size, pool_agent, pool_ttl. Liveness drain loop discards dead providers. (Hoang Phan)
 
-- **Portable Snapshot & Restore** — `kirocrew snapshot` creates .tar.gz archives of all state (memory, crons, config, skills). `kirocrew restore` with auto-detect replace vs merge mode, selective component restore, and dry-run preview. Symlink/path traversal rejection. (patrigao)
+- **Portable Snapshot & Restore** — `kirocrew snapshot` creates .tar.gz archives of all state (memory, crons, config, skills). `kirocrew restore` with auto-detect replace vs merge mode, selective component restore, and dry-run preview. Symlink/path traversal rejection. (Patrick Gao)
 
-- **Multi-Session Eval Harness** — `kirocrew eval` benchmarks cross-session memory with full memory loop (ConversationLog → Consolidator → MemoryStore → ContextBuilder). 5 built-in scenarios including a 54-turn Amazon SDE workflow. LLM judge scoring. (xizifeng)
+- **Multi-Session Eval Harness** — `kirocrew eval` benchmarks cross-session memory with full memory loop (ConversationLog → Consolidator → MemoryStore → ContextBuilder). 5 built-in scenarios including a 54-turn software-engineering workflow. LLM judge scoring. (Zifeng Xia)
 
-- **Stateless Cron Sessions** — `persistent_session: false` flag on `cron_add` opens a fresh session per run instead of accumulating context indefinitely. Prevents polling crons from OOM-killing the gateway after days of use. Reaper correctly targets ephemeral session keys. (mingweic)
+- **Stateless Cron Sessions** — `persistent_session: false` flag on `cron_add` opens a fresh session per run instead of accumulating context indefinitely. Prevents polling crons from OOM-killing the gateway after days of use. Reaper correctly targets ephemeral session keys. (Raymond Chen)
 
-- **Session Deep-Link URLs** — permanent bookmarkable URLs with human-readable slugs (`/chat/my-session?sid=key`). Survives page refresh, works across browser tabs independently. Legacy `?slot=` still supported. (thiagsou)
+- **Session Deep-Link URLs** — permanent bookmarkable URLs with human-readable slugs (`/chat/my-session?sid=key`). Survives page refresh, works across browser tabs independently. Legacy `?slot=` still supported. (Thiago Andrade)
 
-- **Mobile Responsive Layout** — collapsible hamburger nav drawer, touch-friendly dropdowns, session toggle button, responsive chat/notifications/secretary pages. Usable on phones via AEA + AWS Tunnels. sendOnEnter wired for desktop/mobile. (pebarrio)
+- **Mobile Responsive Layout** — collapsible hamburger nav drawer, touch-friendly dropdowns, session toggle button, responsive chat/notifications/secretary pages. Usable on phones via enterprise tunnels. sendOnEnter wired for desktop/mobile. (Pedro Barrios)
 
-- **MCP Integrations Redesign** — card grid with iOS App Store-style expand-to-modal animation, tools accordion with animated expand/collapse, Update All MCPs button, skeleton loading. Backend switched from text parsing to JSON output. (zezhexu)
+- **MCP Integrations Redesign** — card grid with iOS App Store-style expand-to-modal animation, tools accordion with animated expand/collapse, Update All MCPs button, skeleton loading. Backend switched from text parsing to JSON output. (Zezhen Xu)
 
-- **Inline Comment Line Numbers** — comments in the file viewer now carry source-file coordinates (line, column) plus ~20-char context snippets. Eliminates ambiguity for short or repeated anchors. Custom rehype sourcepos plugin. (meyffret)
+- **Inline Comment Line Numbers** — comments in the file viewer now carry source-file coordinates (line, column) plus ~20-char context snippets. Eliminates ambiguity for short or repeated anchors. Custom rehype sourcepos plugin. (Simon Meyffret)
 
-- **Kiro Usage Tab** — Overview > Kiro Usage shows billing card (plan, credits, cost), period summaries (today/week/month), 30-day averages, and scrollable daily history table. Parses ~/.kiro/sessions/cli/*.jsonl. (erikschw)
+- **Kiro Usage Tab** — Overview > Kiro Usage shows billing card (plan, credits, cost), period summaries (today/week/month), 30-day averages, and scrollable daily history table. Parses ~/.kiro/sessions/cli/*.jsonl. (Erik Schweiss)
 
-- **Data Classification Warning** — deployed across 13 user touchpoints (README, docs, terminal, Toolbox, Slack) per AppSec leadership request. New Security panel in Settings with live security posture (6 status rows) and 12 defense-in-depth features. (bolichen)
+- **Data Classification Warning** — deployed across 13 user touchpoints (README, docs, terminal, installer, Slack) per security leadership request. New Security panel in Settings with live security posture (6 status rows) and 12 defense-in-depth features. (Bolin Chen)
 
-- **iOS-Style Queue Stack** — queued messages display as stacked cards above the chat input instead of inline banners. Framer Motion spring animations, expand/collapse, dedicated queue_push/queue_pop WebSocket events. (zezhexu)
+- **iOS-Style Queue Stack** — queued messages display as stacked cards above the chat input instead of inline banners. Framer Motion spring animations, expand/collapse, dedicated queue_push/queue_pop WebSocket events. (Zezhen Xu)
 
-- **Memory Context Budget 3x** — hard cap increased from 18k to 55k tokens. Lessons cap 3.3k→12k (highest-signal data), semantic memory 0.5k→4k, disk retention 90→365 days. Fixes silent truncation for power users with 70+ corrections. (bolichen)
+- **Memory Context Budget 3x** — hard cap increased from 18k to 55k tokens. Lessons cap 3.3k→12k (highest-signal data), semantic memory 0.5k→4k, disk retention 90→365 days. Fixes silent truncation for power users with 70+ corrections. (Bolin Chen)
 
-- **User-Defined kiro_hooks** — `agent.kiro_hooks` in config.json lets users define kiro-cli hooks (preToolUse, postToolUse) that persist across `kirocrew update`. Bundled hooks always run first. Validated with allowlist regex, path checks, and limits. (mikuzne)
+- **User-Defined kiro_hooks** — `agent.kiro_hooks` in config.json lets users define kiro-cli hooks (preToolUse, postToolUse) that persist across `kirocrew update`. Bundled hooks always run first. Validated with allowlist regex, path checks, and limits. (Mikhail Kuznetsov)
 
-- **Sortable Column Headers** — all dashboard data tables now have clickable column headers for sorting. (nishrs)
+- **Sortable Column Headers** — all dashboard data tables now have clickable column headers for sorting. (Nishant Srivastava)
 
-- **Built-in CLI Terminal** — terminal panel in the dashboard for running commands without leaving the browser. Go All auto-run retrigger fix included. (zejiangg)
+- **Built-in CLI Terminal** — terminal panel in the dashboard for running commands without leaving the browser. Go All auto-run retrigger fix included. (Joe Guo)
 
-- **Electron Spellcheck** — native context menu with spelling suggestions, Cut/Copy/Paste, Look Up on macOS. (cmillon)
+- **Electron Spellcheck** — native context menu with spelling suggestions, Cut/Copy/Paste, Look Up on macOS. (Chris McMillon)
 
-- **Math Rendering** — LaTeX/KaTeX support in markdown chat messages. (filgalli)
+- **Math Rendering** — LaTeX/KaTeX support in markdown chat messages. (Filippo Galli)
 
-- **Lumon Industries Theme** — dark/light variants with theme-conditional branding. (matbarnu)
+- **Lumon Industries Theme** — dark/light variants with theme-conditional branding. (Matthew Barnum)
 
-- **Secretary Emoji Reactions** — react to Slack messages with emoji from Secretary inbox. Quick-access row and searchable grid. (udapraka)
+- **Secretary Emoji Reactions** — react to Slack messages with emoji from Secretary inbox. Quick-access row and searchable grid. (Uday Prakash)
 
-- **send_message Thread Replies** — `thread_ts` and `reply_broadcast` parameters on the send_message MCP tool. Enables posting as threaded replies for CR monitors, oncall acks, and cron pollers. (caillinb)
+- **send_message Thread Replies** — `thread_ts` and `reply_broadcast` parameters on the send_message MCP tool. Enables posting as threaded replies for CR monitors, oncall acks, and cron pollers. (Caillin Bathern)
 
-- **Fullscreen File Preview** — maximize button in file viewer opens a full-viewport portal overlay with all renderers preserved. (lizhuoy)
+- **Fullscreen File Preview** — maximize button in file viewer opens a full-viewport portal overlay with all renderers preserved. (Zhuoyu Li)
 
-- **Copy User Messages** — copy button on user message bubbles. (ykorla)
+- **Copy User Messages** — copy button on user message bubbles. (Yashwanth Korla)
 
-- **Memory Usage Indicator** — pill in the header bar showing current memory consumption. (ykorla)
+- **Memory Usage Indicator** — pill in the header bar showing current memory consumption. (Yashwanth Korla)
 
-- **Mwinit Hours Display** — traffic light colors (green/yellow/red) with floored hours instead of static text. (romaniff)
+- **SSO Hours Display** — traffic light colors (green/yellow/red) with floored hours instead of static text. (Roman Ivanov)
 
-- **Warm Pool Config UI** — Pool Size, Pool Agent, Pool TTL fields in Settings with agent dropdown. (hoangvp, bolichen)
+- **Warm Pool Config UI** — Pool Size, Pool Agent, Pool TTL fields in Settings with agent dropdown. (Hoang Phan, Bolin Chen)
 
-- **Cancel Queued Messages** — X button on queued message cards with backend queue IDs. (erikschw)
+- **Cancel Queued Messages** — X button on queued message cards with backend queue IDs. (Erik Schweiss)
 
-- **Persist Chat Drafts** — drafts survive tab close, refresh, and browser crashes via localStorage with 300ms debounce. (meyffret)
+- **Persist Chat Drafts** — drafts survive tab close, refresh, and browser crashes via localStorage with 300ms debounce. (Simon Meyffret)
 
-- **Persist Draft Comments** — inline comments in the file viewer survive panel close via localStorage with 20-file LRU cap. (meyffret)
+- **Persist Draft Comments** — inline comments in the file viewer survive panel close via localStorage with 20-file LRU cap. (Simon Meyffret)
 
-- **Session Content Search Ranking** — weighted scoring with title boost and length normalization instead of recency-only ordering. (meyffret)
+- **Session Content Search Ranking** — weighted scoring with title boost and length normalization instead of recency-only ordering. (Simon Meyffret)
 
-- **Sidebar Redesign** — history row parity with session rows, session color side bars, folder indent borders, animated folder collapse, drag-drop improvements. (zezhexu, dhasman)
+- **Sidebar Redesign** — history row parity with session rows, session color side bars, folder indent borders, animated folder collapse, drag-drop improvements. (Zezhen Xu, Krish Dhasmana)
 
-- **Plan Node Editing** — persistent unsaved edits with visual indicators in orchestrator plans. (dfayx)
+- **Plan Node Editing** — persistent unsaved edits with visual indicators in orchestrator plans. (David Fayerman)
 
-- **Configurable Session Close** — toggle to skip confirmation dialog when closing sessions. (swapnil)
+- **Configurable Session Close** — toggle to skip confirmation dialog when closing sessions. (Swapnil Dixit)
 
-- **Kiro-CLI Hooks Display** — read-only view of kiro-cli agent hooks in dashboard Hooks page with source badges. (mikuzne)
+- **Kiro-CLI Hooks Display** — read-only view of kiro-cli agent hooks in dashboard Hooks page with source badges. (Mikhail Kuznetsov)
 
 - **Home Tab Capabilities** — Slack Home Tab now shows uptime, MCP integrations count, and installed skills. (siddartb)
 
 ### Improvements
 
-- **Frontend Package Split** — React/TypeScript SPA extracted to dedicated KiroCrewWebsite package (NpmPrettyMuch). KiroCrew resolves dist/ at build time. (zejiangg)
-- **handlers.py Split** — 7,646-line monolith split into 14 focused modules. Surfaced 12 pre-existing deadlock bugs. 50+ AutoSDE fixes across subprocess safety, encoding, concurrency locks, and security validation. (zejiangg)
-- **Session Rebuild Fidelity** — role filtering excludes tool display titles (57% of budget), compression cap raised to 100 messages, per-message cap 1.5K→8K on fallback path. (nrb)
-- **Subagent Timeouts** — task 20→30min, delivery 5→20min, injection 2→5min. Turn limit 30→100 default, 200 max. (bolichen)
-- **Config Persistence** — `to_dict()` now includes all dataclass fields (secretary, taskrunner, orchestrator, skills, timezone were silently dropped). (bolichen)
-- **Cron Retry** — Slack notification delivery retries up to 3 times with linear backoff on transient API errors. (swga)
-- **MCP Priority** — `~/.kirocrew/mcp.json` takes priority over `~/.kiro/settings/mcp.json`, fixing restrictive --include-tools leaking from kiro mcp.json. (bolichen)
-- **AIM Skill Dedup** — `_sync_aim_skill_paths_to_global()` replaces instead of union-merging, reducing --skill-paths from 50 to 8. MCP servers synced on Apply & Restart. (bolichen)
-- **Systemd Restart Limits** — `StartLimitBurst=5` + `StartLimitIntervalSec=300` prevents infinite crash loops (42,617 restarts in 5 days observed). (bolichen)
+- **Frontend Package Split** — React/TypeScript SPA extracted to dedicated KiroCrewWebsite package. KiroCrew resolves dist/ at build time. (Joe Guo)
+- **handlers.py Split** — 7,646-line monolith split into 14 focused modules. Surfaced 12 pre-existing deadlock bugs. 50+ automated code-review fixes across subprocess safety, encoding, concurrency locks, and security validation. (Joe Guo)
+- **Session Rebuild Fidelity** — role filtering excludes tool display titles (57% of budget), compression cap raised to 100 messages, per-message cap 1.5K→8K on fallback path. (Nick Bowers)
+- **Subagent Timeouts** — task 20→30min, delivery 5→20min, injection 2→5min. Turn limit 30→100 default, 200 max. (Bolin Chen)
+- **Config Persistence** — `to_dict()` now includes all dataclass fields (secretary, taskrunner, orchestrator, skills, timezone were silently dropped). (Bolin Chen)
+- **Cron Retry** — Slack notification delivery retries up to 3 times with linear backoff on transient API errors. (Swapnil Gaikwad)
+- **MCP Priority** — `~/.kirocrew/mcp.json` takes priority over `~/.kiro/settings/mcp.json`, fixing restrictive --include-tools leaking from kiro mcp.json. (Bolin Chen)
+- **Managed Skill Dedup** — `_sync_aim_skill_paths_to_global()` replaces instead of union-merging, reducing --skill-paths from 50 to 8. MCP servers synced on Apply & Restart. (Bolin Chen)
+- **Systemd Restart Limits** — `StartLimitBurst=5` + `StartLimitIntervalSec=300` prevents infinite crash loops (42,617 restarts in 5 days observed). (Bolin Chen)
 
 ### Security
 
-- **Multi-User Slack Access Disabled** — identity assumption vulnerability where allowed users acted under the owner's system identity. `is_allowed_user()` now delegates to `is_owner()`. (zejiangg)
-- **Data Classification Warning** — 13 touchpoints warn users not to enter Critical/Restricted data on cloud desktops/laptops per Data Handling Standard. (bolichen)
-- **Subagent Memory Guard** — refuses spawns below 4GB available memory, preventing EC2 health check kills from `spawn_run` bursts (~1.1GB per agent). Three cloud desktop crashes in 6 days were traced to this — memory dropped to 11.9% available, then the hypervisor terminated the instance 19 minutes later (before kernel OOM could intervene). Configurable via `spawn_min_memory_gb` (default 4.0, 0 disables). Fails open on macOS/containers. (abmitra)
-- **Subagent Task Redaction** — dual redaction (credentials + exfiltration URLs) applied once at top of spawn(), before truncation in SEL metadata, and on all SubagentInfo paths. (abmitra)
-- **PID Recycling Guard** — validates process start time before killpg in both subagent and cron reapers to prevent killing recycled PIDs. (patrigao)
+- **Multi-User Slack Access Disabled** — identity assumption vulnerability where allowed users acted under the owner's system identity. `is_allowed_user()` now delegates to `is_owner()`. (Joe Guo)
+- **Data Classification Warning** — 13 touchpoints warn users not to enter Critical/Restricted data on remote desktops/laptops per an internal data-handling standard. (Bolin Chen)
+- **Subagent Memory Guard** — refuses spawns below 4GB available memory, preventing health-check kills from `spawn_run` bursts (~1.1GB per agent). Three remote-desktop crashes in 6 days were traced to this — memory dropped to 11.9% available, then the hypervisor terminated the instance 19 minutes later (before kernel OOM could intervene). Configurable via `spawn_min_memory_gb` (default 4.0, 0 disables). Fails open on macOS/containers. (Abhishek Mitra)
+- **Subagent Task Redaction** — dual redaction (credentials + exfiltration URLs) applied once at top of spawn(), before truncation in SEL metadata, and on all SubagentInfo paths. (Abhishek Mitra)
+- **PID Recycling Guard** — validates process start time before killpg in both subagent and cron reapers to prevent killing recycled PIDs. (Patrick Gao)
 
 ### Bug Fixes
 
-- Fix warm pool sending wrong session key (`_warm_pool`) for ALL MCP tool API calls — broke trust, memory scoping, cron association, and audit logs for every warm pool user (zejiangg)
-- Fix `learn_add` returning "unknown session" in long-lived Slack threads — JSONL fallback recovers evicted slots with path-traversal defense (yuwesu)
-- Fix full chat history lost across gateway restarts — tab_id chaining, read_messages_chained(), removed broken frontend pagination (bolichen)
-- Fix kiro-cli tool-interrupt marker causing 2h agent hang — detect exact marker in 3 read paths, synthesize EVENT_COMPLETE (meyffret)
-- Fix polling crons OOM-killing gateway after days — stateless sessions prevent unbounded context accumulation (mingweic)
-- **Lossless Session Resume** — process death (crash, idle kill, OOM) no longer deletes the session_map entry that holds the resume_sid. Split `remove()` (soft — preserves map for `session/load` resume) from `destroy()` (hard — permanent deletion). kiro-cli session files persist on disk indefinitely, so the resume_sid is valid and usable. Previously every process death forced lossy JSONL reconstruction even for short conversations. (nrb)
-- Fix orphaned kiro-cli processes accumulating indefinitely — periodic 5-min PID sweep with tagged format for multi-instance safety (patrigao)
-- Fix secretary slack-mcp orphan leak on 30-min recycle — 30 orphans in 15h (~3.4GB). Process-group teardown with SIGKILL escalation (sawawa)
-- Fix multi-byte UTF-8 chars (em dashes, smart quotes) causing kiro-cli Rust panic at byte boundary — replace with ASCII equivalents (wangsel)
-- Fix `is_alive()` 600s stale-activity threshold falsely declaring healthy processes dead — use `is_process_alive()` for session liveness (bolichen)
-- Fix consolidation offset advancing on LLM failure — permanently skipped 30 messages with no retry (bolichen)
-- Fix subagent injection recovery guard never resetting after success — blocked all future recovery attempts (bolichen)
-- Fix auto-run (Go All) pausing after every stage — `_stage_instruction()` now checks `_auto_run` flag (bolichen)
-- Fix approval dialog reappearing after tab switch — `_mark_permission_resolved()` persists resolved state (bolichen)
-- Fix `config-permanent` YOLO overwritten by interactive TTL — `_yolo_from_config` flag prevents downgrade (bolichen)
-- Fix trust button click having no effect when pending approval already resolved — derive session_key from thread_ts (bolichen)
-- Fix cron timezone display showing UTC instead of job timezone in Slack Home tab (bolichen)
-- Fix channel agent dropdown storing filename stem instead of JSON name field — custom agents silently fell back to default (bolichen)
-- Fix `kirocrew token/status/logout/stop` hitting wrong port when `dashboard.url` configured — resolve from config/env/flag (bolichen)
-- Fix S3 presigned URLs blocked by exfiltration URL filtering (bolichen)
-- Fix non-image file uploads silently dropped after KiroCrewWebsite package split — restored xddeng's fix from 224e5f2 (bolichen)
-- Fix `sendOnEnter` setting not wired to ChatInput keydown handler (zezhexu)
-- Fix native notifications showing "N new notification(s)" instead of real content (vcd)
-- Fix `KiroCrewConfig.to_dict()` silently dropping secretary, taskrunner, orchestrator, skills, and timezone sections on save (bolichen)
-- Fix `kirocrew` launcher resolving to stale workspace binary after Toolbox migration (zejiangg)
-- Fix MCP probe failure on dev-dsk from Apollo envroot binaries — check .envroot before accepting (zejiangg)
-- Fix `is_process_alive()` stale-activity threshold causing conversation continuity loss (bolichen)
-- Fix bare number-dot responses rendered as "1." by markdown ordered list parser (bolichen)
-- Fix targeted `pip install <missing>` instead of full `pip install -e .` for missing deps — seconds vs minutes (bolichen)
-- Fix Docker Ollama container detection on AL2 to avoid native binary GLIBC crash (bolichen)
-- Fix AL2 installer conda missing channel + corrupt directory check (bolichen)
-- Fix pysqlite3-binary restricted to x86_64 Linux only — no aarch64 wheels exist (bolichen)
-- Fix schedule page day-of-week off-by-one display bug (bolichen)
-- Fix cron DOW range parsing in fmtCron and parseJobDefaults — expand ranges, wrap-around, normalize (zezhexu)
-- Fix list bullet/number marker color — add muted marker styling (rohankap)
-- Fix list padding preventing marker clipping in message bubbles (rohankap)
+- Fix warm pool sending wrong session key (`_warm_pool`) for ALL MCP tool API calls — broke trust, memory scoping, cron association, and audit logs for every warm pool user (Joe Guo)
+- Fix `learn_add` returning "unknown session" in long-lived Slack threads — JSONL fallback recovers evicted slots with path-traversal defense (Sypher Su)
+- Fix full chat history lost across gateway restarts — tab_id chaining, read_messages_chained(), removed broken frontend pagination (Bolin Chen)
+- Fix kiro-cli tool-interrupt marker causing 2h agent hang — detect exact marker in 3 read paths, synthesize EVENT_COMPLETE (Simon Meyffret)
+- Fix polling crons OOM-killing gateway after days — stateless sessions prevent unbounded context accumulation (Raymond Chen)
+- **Lossless Session Resume** — process death (crash, idle kill, OOM) no longer deletes the session_map entry that holds the resume_sid. Split `remove()` (soft — preserves map for `session/load` resume) from `destroy()` (hard — permanent deletion). kiro-cli session files persist on disk indefinitely, so the resume_sid is valid and usable. Previously every process death forced lossy JSONL reconstruction even for short conversations. (Nick Bowers)
+- Fix orphaned kiro-cli processes accumulating indefinitely — periodic 5-min PID sweep with tagged format for multi-instance safety (Patrick Gao)
+- Fix secretary slack-mcp orphan leak on 30-min recycle — 30 orphans in 15h (~3.4GB). Process-group teardown with SIGKILL escalation (Shuya Sawa)
+- Fix multi-byte UTF-8 chars (em dashes, smart quotes) causing kiro-cli Rust panic at byte boundary — replace with ASCII equivalents (Selena Wang)
+- Fix `is_alive()` 600s stale-activity threshold falsely declaring healthy processes dead — use `is_process_alive()` for session liveness (Bolin Chen)
+- Fix consolidation offset advancing on LLM failure — permanently skipped 30 messages with no retry (Bolin Chen)
+- Fix subagent injection recovery guard never resetting after success — blocked all future recovery attempts (Bolin Chen)
+- Fix auto-run (Go All) pausing after every stage — `_stage_instruction()` now checks `_auto_run` flag (Bolin Chen)
+- Fix approval dialog reappearing after tab switch — `_mark_permission_resolved()` persists resolved state (Bolin Chen)
+- Fix `config-permanent` YOLO overwritten by interactive TTL — `_yolo_from_config` flag prevents downgrade (Bolin Chen)
+- Fix trust button click having no effect when pending approval already resolved — derive session_key from thread_ts (Bolin Chen)
+- Fix cron timezone display showing UTC instead of job timezone in Slack Home tab (Bolin Chen)
+- Fix channel agent dropdown storing filename stem instead of JSON name field — custom agents silently fell back to default (Bolin Chen)
+- Fix `kirocrew token/status/logout/stop` hitting wrong port when `dashboard.url` configured — resolve from config/env/flag (Bolin Chen)
+- Fix S3 presigned URLs blocked by exfiltration URL filtering (Bolin Chen)
+- Fix non-image file uploads silently dropped after KiroCrewWebsite package split — restored a contributor's fix from 224e5f2 (Bolin Chen)
+- Fix `sendOnEnter` setting not wired to ChatInput keydown handler (Zezhen Xu)
+- Fix native notifications showing "N new notification(s)" instead of real content (Vitor Durante)
+- Fix `KiroCrewConfig.to_dict()` silently dropping secretary, taskrunner, orchestrator, skills, and timezone sections on save (Bolin Chen)
+- Fix `kirocrew` launcher resolving to stale workspace binary after packaged-install migration (Joe Guo)
+- Fix MCP probe failure on remote desktops from deploy-tool envroot binaries — check .envroot before accepting (Joe Guo)
+- Fix `is_process_alive()` stale-activity threshold causing conversation continuity loss (Bolin Chen)
+- Fix bare number-dot responses rendered as "1." by markdown ordered list parser (Bolin Chen)
+- Fix targeted `pip install <missing>` instead of full `pip install -e .` for missing deps — seconds vs minutes (Bolin Chen)
+- Fix Docker Ollama container detection on AL2 to avoid native binary GLIBC crash (Bolin Chen)
+- Fix AL2 installer conda missing channel + corrupt directory check (Bolin Chen)
+- Fix pysqlite3-binary restricted to x86_64 Linux only — no aarch64 wheels exist (Bolin Chen)
+- Fix schedule page day-of-week off-by-one display bug (Bolin Chen)
+- Fix cron DOW range parsing in fmtCron and parseJobDefaults — expand ranges, wrap-around, normalize (Zezhen Xu)
+- Fix list bullet/number marker color — add muted marker styling (Rohan Kapadia)
+- Fix list padding preventing marker clipping in message bubbles (Rohan Kapadia)
 
 ### Refactors
 
-- Split `dashboard/handlers.py` (7,646 lines) into 14 focused modules with backward-compatible re-exports (zejiangg)
-- Extract KiroCrewWebsite as dedicated NpmPrettyMuch package for frontend (zejiangg)
-- Delete ~2.9MB tracked dead files (orphaned tests, screenshots, irrelevant skills) (bolichen)
+- Split `dashboard/handlers.py` (7,646 lines) into 14 focused modules with backward-compatible re-exports (Joe Guo)
+- Extract KiroCrewWebsite as a dedicated package for frontend (Joe Guo)
+- Delete ~2.9MB tracked dead files (orphaned tests, screenshots, irrelevant skills) (Bolin Chen)
 
 ### Docs
 
-- Comprehensive runtime docs update for 227 commits — 18 stale files deleted, 8 docs updated (bolichen)
-- Toolbox publishing guide with cross-platform architecture and manual osx workflow (zejiangg)
-- Mobile dashboard access setup guide (AEA + Tunnels) (pebarrio)
-- Snapshot and restore user documentation (patrigao)
-- REMOTE_DESKTOP_SETUP expanded with kinit/mwinit/toolbox bootstrap from scratch (bolichen)
-- TOOLBOX_INSTALL updated for cross-platform bundles and migration PATH cleanup (bolichen)
+- Comprehensive runtime docs update for 227 commits — 18 stale files deleted, 8 docs updated (Bolin Chen)
+- Packaging publishing guide with cross-platform architecture and manual osx workflow (Joe Guo)
+- Mobile dashboard access setup guide (enterprise tunnels) (Pedro Barrios)
+- Snapshot and restore user documentation (Patrick Gao)
+- REMOTE_DESKTOP_SETUP expanded with enterprise SSO and packaging bootstrap from scratch (Bolin Chen)
+- Install docs updated for cross-platform bundles and migration PATH cleanup (Bolin Chen)
 
 ### Contributors (91)
 
-Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chowdhary (amichow), Artem Pliasunov (artemp), Arvind Srinath Kumar (arvsri), Ayan Das (ayanxdas), Aziz Saifuddin (azizsf), Ben Grubin (bgrubin), Bolin Chen (bolichen), Caillin Bathern (caillinb), Casey Huggins (chuggins), Chanon Sinitskul (sinitsku), Chen Tong (cttong), Chen Yang Lho (clho), Chris McMillon (cmillon), Chris Raley (crraley), Connor Marr (cjmarr), Daisy Dazhen (ddazhen), David Fayerman (dfayx), David Ney Abarca (davneyab), Edward Riede (eriede), Emmanuel Okonkwo (emmaok), Eric Hays (erichays), Erik Schweiss (erikschw), Fei Ma (feima), Filippo Galli (filgalli), Grant Gollier (granthag), Hoang Phan (hoangvp), Hugo Costa (hugocost), James Joseph (josejam), Jaya Prakash Reddy Gade (gjpreddy), Jiahao Guo (jhguo), Jin Cheng (jncheng), Jingjin Wei (jingjwei), Joe Guo (zejiangg), Joe Pontone (jpontone), John Law (jclaw), Juan Segura (juaneseg), Kishore Baskar (baskarki), Kotaro Inoue (musaprg), Krish Dhasmana (dhasman), Lanxiao Bai (lanxib), Lester Lee (lestelee), Luke Jung (lukejung), Maninder Singh (msq), Matthew Barnum (matbarnu), Mike Mayer (mikemaye), Mikhail Kuznetsov (mikuzne), Minglong Pan (pminglon), Mustafa Onur Aydin (aydinmo), Naoya Ishikawa (inaoy), Nick Bowers (nrb), Nick Papadopoulos (nickpap), Nishant Srivastava (nishrs), Patrick Gao (patrigao), Paul McKissock (pmckisso), Pedro Barrios (pebarrio), Ray Xu (rayrayxu), Raymond Chen (mingweic), Rittik Gautam (rittikg), Rohan Kapadia (rohankap), Roman Ivanov (romaniff), Satheesh Prabhakaran (psathees), Selena Wang (wangsel), Shameem PK (mspk), Shihao Wang (shihaow), Shuya Sawa (sawawa), Siddartha B V (siddartb), Simon Meyffret (meyffret), Stan Tian (txd), Sudhamsu Manne (aquaman), Sujoy Datta (sujoydc), Swapnil Dixit (swapnil), Swapnil Gaikwad (swga), Sypher Su (yuwesu), Teodor-Gabriel Oprescu (toprescu), Thiago Andrade (thiagsou), Tianxiang Xu (xutianxi), Tyger Hugh (tygerz), Uday Prakash (udapraka), Vamil Gandhi (vamgan), Vitor Durante (vcd), William Randall (wrrndal), Xu Deng (xddeng), Yashwanth Korla (ykorla), Yu Cheng (ychengm), Zezhen Xu (zezhexu), Zhaolong Zhang (zhaolozh), Zhengfei Ji (zhengfj), Zhuoyu Li (lizhuoy), Zifeng Xia (xizifeng)
+Abhishek Mitra (Abhishek Mitra), Akim Akimov (Akim Akimov), Alec Douglas (Alec Douglas), Amit Chowdhary (Amit Chowdhary), Artem Pliasunov (Artem Pliasunov), Arvind Srinath Kumar (Arvind Srinath Kumar), Ayan Das (Ayan Das), Aziz Saifuddin (Aziz Saifuddin), Ben Grubin (Ben Grubin), Bolin Chen (Bolin Chen), Caillin Bathern (Caillin Bathern), Casey Huggins (Casey Huggins), Chanon Sinitskul (Chanon Sinitskul), Chen Tong (Chen Tong), Chen Yang Lho (Chen Yang Lho), Chris McMillon (Chris McMillon), Chris Raley (Chris Raley), Connor Marr (Connor Marr), Daisy Dazhen (Daisy Dazhen), David Fayerman (David Fayerman), David Ney Abarca (David Ney Abarca), Edward Riede (Edward Riede), Emmanuel Okonkwo (Emmanuel Okonkwo), Eric Hays (Eric Hays), Erik Schweiss (Erik Schweiss), Fei Ma (Fei Ma), Filippo Galli (Filippo Galli), Grant Gollier (Grant Gollier), Hoang Phan (Hoang Phan), Hugo Costa (Hugo Costa), James Joseph (James Joseph), Jaya Prakash Reddy Gade (Jaya Prakash Reddy Gade), Jiahao Guo (Jiahao Guo), Jin Cheng (Jin Cheng), Jingjin Wei (Jingjin Wei), Joe Guo (Joe Guo), Joe Pontone (Joe Pontone), John Law (John Law), Juan Segura (Juan Segura), Kishore Baskar (Kishore Baskar), Kotaro Inoue (Kotaro Inoue), Krish Dhasmana (Krish Dhasmana), Lanxiao Bai (Lanxiao Bai), Lester Lee (Lester Lee), Luke Jung (Luke Jung), Maninder Singh (Maninder Singh), Matthew Barnum (Matthew Barnum), Mike Mayer (Mike Mayer), Mikhail Kuznetsov (Mikhail Kuznetsov), Minglong Pan (Minglong Pan), Mustafa Onur Aydin (Mustafa Onur Aydin), Naoya Ishikawa (Naoya Ishikawa), Nick Bowers (Nick Bowers), Nick Papadopoulos (Nick Papadopoulos), Nishant Srivastava (Nishant Srivastava), Patrick Gao (Patrick Gao), Paul McKissock (Paul McKissock), Pedro Barrios (Pedro Barrios), Ray Xu (Ray Xu), Raymond Chen (Raymond Chen), Rittik Gautam (Rittik Gautam), Rohan Kapadia (Rohan Kapadia), Roman Ivanov (Roman Ivanov), Satheesh Prabhakaran (Satheesh Prabhakaran), Selena Wang (Selena Wang), Shameem PK (Shameem PK), Shihao Wang (Shihao Wang), Shuya Sawa (Shuya Sawa), Siddartha B V (siddartb), Simon Meyffret (Simon Meyffret), Stan Tian (Stan Tian), Sudhamsu Manne (Sudhamsu Manne), Sujoy Datta (Sujoy Datta), Swapnil Dixit (Swapnil Dixit), Swapnil Gaikwad (Swapnil Gaikwad), Sypher Su (Sypher Su), Teodor-Gabriel Oprescu (Teodor-Gabriel Oprescu), Thiago Andrade (Thiago Andrade), Tianxiang Xu (Tianxiang Xu), Tyger Hugh (Tyger Hugh), Uday Prakash (Uday Prakash), Vamil Gandhi (Vamil Gandhi), Vitor Durante (Vitor Durante), William Randall (William Randall), Xu Deng (Xu Deng), Yashwanth Korla (Yashwanth Korla), Yu Cheng (Yu Cheng), Zezhen Xu (Zezhen Xu), Zhaolong Zhang (Zhaolong Zhang), Zhengfei Ji (Zhengfei Ji), Zhuoyu Li (Zhuoyu Li), Zifeng Xia (Zifeng Xia)
 
 ## [2.2.0] — 2026-04-21
 
@@ -561,117 +561,117 @@ Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chow
 
 ### Features
 
-- **Secretary Service** — background Slack inbox manager that classifies messages as needs-reply, FYI, or noise. On-demand draft generation, keyword and name-mention alerts, edit-diff style learning, and self-healing reconnection. Full dashboard page with investigate and dismiss-all. (lanxib)
-- **Message Queue** — messages arriving while a session is busy are queued (shown with ⏳) and processed in order when the agent is free. Cancel queued messages or clear the queue with `!stop`. No more lost messages during long tool calls. (samcuthb)
-- **Linked Thread Sync** — bidirectional dashboard↔Slack message mirroring. Link a Slack thread to a dashboard slot; messages and agent responses stream to both surfaces in real-time. Includes link persistence across restarts. (rkondis)
-- **Mwinit WebSocket Terminal** — PTY-based terminal for mwinit authentication with RSA-OAEP encrypted input. Private key never leaves server, heartbeat and idle timeout for secure session management. (erikschw)
-- **Project Folder Grouping** — organize chat sessions into folders with drag-drop, LLM-generated emoji icons, and server-persisted pinning. (rkondis)
-- **File Picker & Workspace Picker** — `@filename` in chat input triggers fuzzy file search scoped to active project. Directory browser and workspace picker for switching context. (hoangvp)
-- **Session Archive Viewer** — rotated/compacted session lines archived to `sessions/archive/` with 7-day retention. Dashboard viewer under Developer page. Atomic exclusive-create writes. (jhguo)
-- **HEARTBEAT_KEEP Sentinel** — agent can include `HEARTBEAT_KEEP` in response to retain incomplete heartbeat tasks for the next cycle. Previously all tasks were removed after processing. (cddemera)
-- **Subagent Timeout Redesign** — two-level timeout architecture prevents subagents from hanging indefinitely. Automatic prompt-busy recovery with retry and backoff. On exhaustion, results are saved to disk so no work is lost. (zejiangg)
-- **ARCC Governance Integration** — `arcc-governance` MCP server registered as managed server with `search_arcc` auto-approved. New `security-assistance` skill requires ARCC search before responding to security-sensitive requests. (zachhe)
-- **Incognito Mode** — ephemeral sessions that block `learn_add` and memory consolidation. No persistent traces. (xutianxi)
-- **Session Content Search** — search history by content (CR IDs, error messages, file paths) rather than title alone. Exposed via `/api/sessions/search`. (meyffret)
-- **`kirocrew stop` Command** — stop a running gateway via SIGTERM with port-based PID lookup and process verification. (patrigao)
-- **`!compact` Slack Command** — trigger in-place context compaction from Slack. Shows ♻️ reaction, streams `/compact`, reports result with timing. (nhsng)
-- **OPTIONS Multi-Select** — upgraded from single-choice buttons to checkboxes with Send button. Supports up to 10 options. (rkondis)
-- **Configurable Autocompact** — `session.autocompact_pct` (default 90%, valid 5–90) replaces hardcoded threshold. (hugocost)
-- **DAU Metrics** — CloudWatch RUM `session_start` event with hashed user identity (SHA-256 + per-install salt), system info fields, and 8-panel dashboard. (bolichen)
-- **Collapsible Tool Calls** — completed agent turns collapse tool calls by default. Configurable via settings. (bolichen, zezhexu)
-- **Subagent Progress Bar** — compact expandable indicator showing running agents and current tools. (agrawas)
-- **Session Colors** — per-session color coding with 4 palette generators and accessibility-aware contrast. (jamekilp)
-- **Font Size Setting** — independent 100–250% font size control in Display settings. (zejiangg)
-- **High Contrast Theme** — dark + light variants, bringing total to 14 themes. (maxwelcs)
-- **Context Window Utilization** — timing footer in Slack shows current context usage percentage. (nhsng)
-- **Cron Thread Replies** — `thread_ts` parameter in `cron_add`/`cron_update` lets cron jobs reply in-thread instead of top-level. (samcuthb)
+- **Secretary Service** — background Slack inbox manager that classifies messages as needs-reply, FYI, or noise. On-demand draft generation, keyword and name-mention alerts, edit-diff style learning, and self-healing reconnection. Full dashboard page with investigate and dismiss-all. (Lanxiao Bai)
+- **Message Queue** — messages arriving while a session is busy are queued (shown with ⏳) and processed in order when the agent is free. Cancel queued messages or clear the queue with `!stop`. No more lost messages during long tool calls. (Sam Cuthbertson)
+- **Linked Thread Sync** — bidirectional dashboard↔Slack message mirroring. Link a Slack thread to a dashboard slot; messages and agent responses stream to both surfaces in real-time. Includes link persistence across restarts. (Ravi Teja Kondisetty)
+- **SSO WebSocket Terminal** — PTY-based terminal for enterprise SSO authentication with RSA-OAEP encrypted input. Private key never leaves server, heartbeat and idle timeout for secure session management. (Erik Schweiss)
+- **Project Folder Grouping** — organize chat sessions into folders with drag-drop, LLM-generated emoji icons, and server-persisted pinning. (Ravi Teja Kondisetty)
+- **File Picker & Workspace Picker** — `@filename` in chat input triggers fuzzy file search scoped to active project. Directory browser and workspace picker for switching context. (Hoang Phan)
+- **Session Archive Viewer** — rotated/compacted session lines archived to `sessions/archive/` with 7-day retention. Dashboard viewer under Developer page. Atomic exclusive-create writes. (Jiahao Guo)
+- **HEARTBEAT_KEEP Sentinel** — agent can include `HEARTBEAT_KEEP` in response to retain incomplete heartbeat tasks for the next cycle. Previously all tasks were removed after processing. (Curtis Demerah)
+- **Subagent Timeout Redesign** — two-level timeout architecture prevents subagents from hanging indefinitely. Automatic prompt-busy recovery with retry and backoff. On exhaustion, results are saved to disk so no work is lost. (Joe Guo)
+- **Security Governance Integration** — a governance MCP server registered as a managed server with its search tool auto-approved. New `security-assistance` skill requires a governance search before responding to security-sensitive requests. (Zach He)
+- **Incognito Mode** — ephemeral sessions that block `learn_add` and memory consolidation. No persistent traces. (Tianxiang Xu)
+- **Session Content Search** — search history by content (CR IDs, error messages, file paths) rather than title alone. Exposed via `/api/sessions/search`. (Simon Meyffret)
+- **`kirocrew stop` Command** — stop a running gateway via SIGTERM with port-based PID lookup and process verification. (Patrick Gao)
+- **`!compact` Slack Command** — trigger in-place context compaction from Slack. Shows ♻️ reaction, streams `/compact`, reports result with timing. (Nihal Singh)
+- **OPTIONS Multi-Select** — upgraded from single-choice buttons to checkboxes with Send button. Supports up to 10 options. (Ravi Teja Kondisetty)
+- **Configurable Autocompact** — `session.autocompact_pct` (default 90%, valid 5–90) replaces hardcoded threshold. (Hugo Costa)
+- **DAU Metrics** — CloudWatch RUM `session_start` event with hashed user identity (SHA-256 + per-install salt), system info fields, and 8-panel dashboard. (Bolin Chen)
+- **Collapsible Tool Calls** — completed agent turns collapse tool calls by default. Configurable via settings. (Bolin Chen, Zezhen Xu)
+- **Subagent Progress Bar** — compact expandable indicator showing running agents and current tools. (Shailesh Agrawal)
+- **Session Colors** — per-session color coding with 4 palette generators and accessibility-aware contrast. (Jimmy Kilpatrick)
+- **Font Size Setting** — independent 100–250% font size control in Display settings. (Joe Guo)
+- **High Contrast Theme** — dark + light variants, bringing total to 14 themes. (Maxwell Schroder)
+- **Context Window Utilization** — timing footer in Slack shows current context usage percentage. (Nihal Singh)
+- **Cron Thread Replies** — `thread_ts` parameter in `cron_add`/`cron_update` lets cron jobs reply in-thread instead of top-level. (Sam Cuthbertson)
 - **`next_run_ts` in Cron** — `cron_list` and `/api/crons` now include next scheduled run time. (siddartb)
-- **Thread/DM Resume Choice** — session resume shows buttons to choose between thread reply and DM. (shashwsr)
-- **Claude Opus 4.7** — added to `model_tokens` with 1M context window. (patrigao)
-- **Inline Tool Call Lines** — tool calls render inline with collapsible turns. StrictMode WebSocket fix. (zezhexu)
-- **AIM Invocation Tracking** — `userPromptSubmit` hook reports per-message invocation counts to AIM AI Capabilities Dashboard. (bolichen)
-- **Electron Remote Tunnel** — Electron app fetches auth tokens automatically via SSH for headless CDE setups. Configurable remote host settings. (cmillon)
-- **LLM Retitle Button** — sparkles icon replaces pencil for LLM-generated session titles. (jadeny)
-- **Remember Selected Session** — switching between Chat and Autopilot preserves your active session. (msq)
-- **Copy Feedback Animation** — CodeBlock component shows visual confirmation on copy. (hukc)
-- **Minimal Installer** — `minimal_install.sh` for environments with existing tooling (Python, Node, git already available). Skips platform tool installation. (adoussan)
-- **Agent Selector in Channels** — dropdown to pick which kiro agent to use when adding an agent to a channel. Reuses existing AgentSelector component. (nitans)
+- **Thread/DM Resume Choice** — session resume shows buttons to choose between thread reply and DM. (Shashwat Srivastava)
+- **Claude Opus 4.7** — added to `model_tokens` with 1M context window. (Patrick Gao)
+- **Inline Tool Call Lines** — tool calls render inline with collapsible turns. StrictMode WebSocket fix. (Zezhen Xu)
+- **Invocation Tracking** — `userPromptSubmit` hook reports per-message invocation counts to an AI capabilities dashboard. (Bolin Chen)
+- **Electron Remote Tunnel** — Electron app fetches auth tokens automatically via SSH for headless CDE setups. Configurable remote host settings. (Chris McMillon)
+- **LLM Retitle Button** — sparkles icon replaces pencil for LLM-generated session titles. (Jaden Yuros)
+- **Remember Selected Session** — switching between Chat and Autopilot preserves your active session. (Maninder Singh)
+- **Copy Feedback Animation** — CodeBlock component shows visual confirmation on copy. (Christopher Huk)
+- **Minimal Installer** — `minimal_install.sh` for environments with existing tooling (Python, Node, git already available). Skips platform tool installation. (Adam Doussan)
+- **Agent Selector in Channels** — dropdown to pick which kiro agent to use when adding an agent to a channel. Reuses existing AgentSelector component. (Nitan Singh)
 - **Home Tab Version Badge** — Slack App Home Tab shows running KiroCrew version and update-available notice for Slack-primary users. (siddartb)
-- **Session-Targeted Cron** — `send_message` with `session="origin"` injects cron results directly into the dashboard session that created the job. (elyluk)
-- **Kiro & IntelliJ Themes** — two new built-in themes added to the color system. (dhasman)
+- **Session-Targeted Cron** — `send_message` with `session="origin"` injects cron results directly into the dashboard session that created the job. (Luke Ely)
+- **Kiro & IntelliJ Themes** — two new built-in themes added to the color system. (Krish Dhasmana)
 
 ### Improvements
 
-- **Orphaned Session Fix** — `set_active_dashboard_slots()` immediately reaps dashboard sessions whose slot no longer exists. Fixes zombie sessions consuming ~400MB each. (barkar)
-- **Stale PID/Dir Cleanup** — clean orphaned `session_pid_*.txt` files and empty session workspace dirs at startup. Fixes draft loss on tab switch. (zejiangg)
-- **Credential Deny Pattern Removal** — narrowed then removed broad `*credential*` patterns from `BUILTIN_DENY_PATTERNS`. OS sandbox handles credential file access. Fixes false positives on package names. (ptomooka, bolichen)
-- **Auto-Approve Subagent Tools** — new `auto_approve_subagent_tools` config flag (deny-by-default). `spawn_run` auto-approved at handler level when `auto_approve_subagent_spawn` is true. (emmaok)
-- **Cron Timezone Evaluation** — `cron_expr` now evaluated in job timezone instead of always UTC. (pwssingh)
-- **URL Redaction Skip** — internal Amazon domains (`.amazon.com`, `.a2z.com`, `.amazon.work`, `.aws.dev`, `.amazon.dev`) skip URL length redaction. Extracted `_is_safe_domain()` helper. (nansong, bolichen)
-- **ACP Auto-Retry** — automatic retry on cron process death with lazy MCP binary resolution. Bounded `agent.py` parent walk at `pyvenv.cfg`. (khimanis)
-- **Snowball Stemming** — FTS5 keyword scoring uses Snowball stemmer for better recall. `pysqlite3-binary` on Linux for FTS5/UPSERT compat. (madniv)
-- **Parallel Test Suite** — pytest-xdist with `-n auto` (48 workers). ~29% speedup with fake clock and Hypothesis profiles. (agdoug, patrigao)
-- **Bounded Restart Shutdown** — 5s `asyncio.wait_for` on `provider.shutdown()` during Apply & Restart prevents leaks. (lormark)
-- **Project Scope Refactor** — replaced per-session workspace binding with project-scoped directory. (hoangvp)
-- **MCP Server Sync** — merge env/command/args for existing local MCP servers in `sync_to_agent_config`. (nrb)
-- **spawn_status Disk Read** — reads full result from disk instead of truncated memory copy. (bgrubin)
-- **Frontend Rebuild on Update** — `kirocrew update` and auto-update now rebuild frontend. Propagate build failures in setup.py. (lachlal, agdoug)
-- **set_mode for All Agents** — `session/set_mode` called for all agents, not just default. (zejiangg)
-- **Auto-Approve Subagent Spawn** — trusted dashboard sessions auto-approve `spawn_run` without interactive dialog. (jhguo, emmaok)
-- **Subagent Activity Panel** — `subagent_done` event includes result payload so Activity panel shows final output even if streaming chunks were missed. (agrawas, bolichen)
-- **Approval Card Scrollable** — command preview in approval cards scrollable instead of clipped. (yohaseti)
-- **Overflow Menu Actions** — handle Slack overflow menu `selected_option` nesting correctly. (bgrubin)
-- **macOS Orphan Cleanup** — replaced `ps` with `libproc` for Python 3.10+ on macOS 26. (tobywo)
-- **Lucide Icons** — replaced UI emojis with lucide-react icons throughout dashboard. (agdoug)
-- **Modern Chat UI** — Claude-style title row, input bar redesign, overlay session drawer, unified topbar, pinned-only sidebar with smooth animations. (dhasman, zezhexu, lanxib)
+- **Orphaned Session Fix** — `set_active_dashboard_slots()` immediately reaps dashboard sessions whose slot no longer exists. Fixes zombie sessions consuming ~400MB each. (Barrett Karson)
+- **Stale PID/Dir Cleanup** — clean orphaned `session_pid_*.txt` files and empty session workspace dirs at startup. Fixes draft loss on tab switch. (Joe Guo)
+- **Credential Deny Pattern Removal** — narrowed then removed broad `*credential*` patterns from `BUILTIN_DENY_PATTERNS`. OS sandbox handles credential file access. Fixes false positives on package names. (Paxton Tomooka, Bolin Chen)
+- **Auto-Approve Subagent Tools** — new `auto_approve_subagent_tools` config flag (deny-by-default). `spawn_run` auto-approved at handler level when `auto_approve_subagent_spawn` is true. (Emmanuel Okonkwo)
+- **Cron Timezone Evaluation** — `cron_expr` now evaluated in job timezone instead of always UTC. (Parwinder Singh)
+- **URL Redaction Skip** — internal corporate domains skip URL length redaction. Extracted `_is_safe_domain()` helper. (Nansong Yi, Bolin Chen)
+- **ACP Auto-Retry** — automatic retry on cron process death with lazy MCP binary resolution. Bounded `agent.py` parent walk at `pyvenv.cfg`. (Himanish Kaul)
+- **Snowball Stemming** — FTS5 keyword scoring uses Snowball stemmer for better recall. `pysqlite3-binary` on Linux for FTS5/UPSERT compat. (Mohammed Madni Vaid)
+- **Parallel Test Suite** — pytest-xdist with `-n auto` (48 workers). ~29% speedup with fake clock and Hypothesis profiles. (Alec Douglas, Patrick Gao)
+- **Bounded Restart Shutdown** — 5s `asyncio.wait_for` on `provider.shutdown()` during Apply & Restart prevents leaks. (Mark Lord)
+- **Project Scope Refactor** — replaced per-session workspace binding with project-scoped directory. (Hoang Phan)
+- **MCP Server Sync** — merge env/command/args for existing local MCP servers in `sync_to_agent_config`. (Nick Bowers)
+- **spawn_status Disk Read** — reads full result from disk instead of truncated memory copy. (Ben Grubin)
+- **Frontend Rebuild on Update** — `kirocrew update` and auto-update now rebuild frontend. Propagate build failures in setup.py. (Lachlan Lindsay, Alec Douglas)
+- **set_mode for All Agents** — `session/set_mode` called for all agents, not just default. (Joe Guo)
+- **Auto-Approve Subagent Spawn** — trusted dashboard sessions auto-approve `spawn_run` without interactive dialog. (Jiahao Guo, Emmanuel Okonkwo)
+- **Subagent Activity Panel** — `subagent_done` event includes result payload so Activity panel shows final output even if streaming chunks were missed. (Shailesh Agrawal, Bolin Chen)
+- **Approval Card Scrollable** — command preview in approval cards scrollable instead of clipped. (Yohanes Setiawan)
+- **Overflow Menu Actions** — handle Slack overflow menu `selected_option` nesting correctly. (Ben Grubin)
+- **macOS Orphan Cleanup** — replaced `ps` with `libproc` for Python 3.10+ on macOS 26. (Toby Wong)
+- **Lucide Icons** — replaced UI emojis with lucide-react icons throughout dashboard. (Alec Douglas)
+- **Modern Chat UI** — Claude-style title row, input bar redesign, overlay session drawer, unified topbar, pinned-only sidebar with smooth animations. (Krish Dhasmana, Zezhen Xu, Lanxiao Bai)
 
 ### Security
 
-- **Mwinit Terminal** — RSA-OAEP encryption, deny-by-default auth middleware, input size validation, and decrypt error feedback. (erikschw)
-- **Scoped Channel Trust** — SEL audit on trust changes, approval button UX improvements. (psathees)
-- **Mixed Internal Paths** — non-loopback MCP/browser paths validate `X-Internal-Secret` header before cookie auth. (bolichen)
-- **ARCC Governance** — mandatory governance doc search before security-sensitive responses. (zachhe)
-- **Brazil Snapshot Push Block** — `brazil ws/workspace/bws snapshot push` added to deny lists. (yellea)
-- **Electron Hardening** — path traversal fix, hostname validation, race condition fix, Referer stripping via webRequest API. (cmillon)
+- **SSO Terminal** — RSA-OAEP encryption, deny-by-default auth middleware, input size validation, and decrypt error feedback. (Erik Schweiss)
+- **Scoped Channel Trust** — SEL audit on trust changes, approval button UX improvements. (Satheesh Prabhakaran)
+- **Mixed Internal Paths** — non-loopback MCP/browser paths validate `X-Internal-Secret` header before cookie auth. (Bolin Chen)
+- **Security Governance** — mandatory governance doc search before security-sensitive responses. (Zach He)
+- **Build-Tool Snapshot Push Block** — build-tool workspace snapshot-push commands added to deny lists. (Alex Yelle)
+- **Electron Hardening** — path traversal fix, hostname validation, race condition fix, Referer stripping via webRequest API. (Chris McMillon)
 
 ### Bug Fixes
 
-- Fix session-expired banner persisting on Cloud Desktop (6be6c09) (xued)
-- Fix framer-motion layout animations on chat sidebar session rows (2f79d0d) (zezhexu)
-- Suppress error replies to trusted bot messages preventing echo loops (53e28fc) (pminglon)
-- Fix variable shadowing bug in `api_agent_config` (4e131a2) (zuern)
-- Fix Ollama resource leak — assign `_ollama_manager` before `ensure_running` (41009e7) (bolichen)
-- Fix `send_message` 502 on Slack failure + eid hint in action context (c44f927) (bgrubin)
-- Fix voice input UX — show recording/transcribing status (9712d31) (shashwsr)
-- Fix deferred `scrollBottom` after `appendMessage` preventing invisible user messages (2e9c566) (shashwsr)
-- Fix npm E401 auth errors in Electron and TUI installs (81d361c) (zejiangg)
-- Fix SQLite connection leak in MemoryStore FTS methods (5948e22) (jhguo)
-- Fix table formatting preservation in Slack streaming mode (174e781) (werain)
-- Fix graceful `pysqlite3` fallback to stdlib `sqlite3` (fe03a4d) (msq)
-- Fix cancel parent prompt before releasing semaphore in subagent injection (e0fc51b) (patrigao)
-- Remove Docker dependency from Whisper STT and Ollama embeddings (d993f86) (hugocost)
-- Fix `embedding_model` not loaded from config.json in KiroCrewConfig (19c201a) (patrigao)
-- Fix thread parent context — block extraction, ch_ctx gate, compressed guard (943e68d) (josejam)
-- Fix auth token not included in gateway browser auto-open URL (943ae1c) (meyffret)
-- Fix session history sort by modified time (d4f86f3) (zejiangg)
-- Fix YOLO mode mutating per-slot trust state (2205b55) (meyffret)
-- Fix `_ensure_ssl_certs()` not running from cli.py entry-point (971debe) (vishsre)
-- Fix dashboard URL printed on same line as other output (c0941e8) (rohankap)
-- Fix honour `agent.yolo` config on dashboard startup (98e2e17) (meyffret)
-- Fix approval screen persisting after approving (45ee69c) (madniv)
-- Fix custom agent prompts not loaded in Slack — pass agent to `build_message` (7c47d1e) (clho)
-- Fix input draft loss on tab switch — reorder sessionStorage rehydration (40c9c7b) (zejiangg)
-- Fix `arcc` and `uv` orphan processes escaping cleanup — add to kill allowlist (5aa9a2a) (psathees)
-- Fix `.venv/` blocking auto-update — add to gitignore (c38f415) (rohankap)
-- Fix `~/.kirocrew/` not existing before log handler init (85ebec7) (zyh)
-- Fix Slack Home Tab hardcoded `/kirocrew` — use configured command name (d85b047) (saheban)
-- Fix lazy `_config_lock` init for Python 3.10 compat (c30b8e5) (zejiangg)
+- Fix session-expired banner persisting on remote desktops (6be6c09) (Johnny Xue)
+- Fix framer-motion layout animations on chat sidebar session rows (2f79d0d) (Zezhen Xu)
+- Suppress error replies to trusted bot messages preventing echo loops (53e28fc) (Minglong Pan)
+- Fix variable shadowing bug in `api_agent_config` (4e131a2) (Kevin Zuern)
+- Fix Ollama resource leak — assign `_ollama_manager` before `ensure_running` (41009e7) (Bolin Chen)
+- Fix `send_message` 502 on Slack failure + eid hint in action context (c44f927) (Ben Grubin)
+- Fix voice input UX — show recording/transcribing status (9712d31) (Shashwat Srivastava)
+- Fix deferred `scrollBottom` after `appendMessage` preventing invisible user messages (2e9c566) (Shashwat Srivastava)
+- Fix npm E401 auth errors in Electron and TUI installs (81d361c) (Joe Guo)
+- Fix SQLite connection leak in MemoryStore FTS methods (5948e22) (Jiahao Guo)
+- Fix table formatting preservation in Slack streaming mode (174e781) (Viren Khatri)
+- Fix graceful `pysqlite3` fallback to stdlib `sqlite3` (fe03a4d) (Maninder Singh)
+- Fix cancel parent prompt before releasing semaphore in subagent injection (e0fc51b) (Patrick Gao)
+- Remove Docker dependency from Whisper STT and Ollama embeddings (d993f86) (Hugo Costa)
+- Fix `embedding_model` not loaded from config.json in KiroCrewConfig (19c201a) (Patrick Gao)
+- Fix thread parent context — block extraction, ch_ctx gate, compressed guard (943e68d) (James Joseph)
+- Fix auth token not included in gateway browser auto-open URL (943ae1c) (Simon Meyffret)
+- Fix session history sort by modified time (d4f86f3) (Joe Guo)
+- Fix YOLO mode mutating per-slot trust state (2205b55) (Simon Meyffret)
+- Fix `_ensure_ssl_certs()` not running from cli.py entry-point (971debe) (Vishal Sreekrishnan)
+- Fix dashboard URL printed on same line as other output (c0941e8) (Rohan Kapadia)
+- Fix honour `agent.yolo` config on dashboard startup (98e2e17) (Simon Meyffret)
+- Fix approval screen persisting after approving (45ee69c) (Mohammed Madni Vaid)
+- Fix custom agent prompts not loaded in Slack — pass agent to `build_message` (7c47d1e) (Chen Yang Lho)
+- Fix input draft loss on tab switch — reorder sessionStorage rehydration (40c9c7b) (Joe Guo)
+- Fix `arcc` and `uv` orphan processes escaping cleanup — add to kill allowlist (5aa9a2a) (Satheesh Prabhakaran)
+- Fix `.venv/` blocking auto-update — add to gitignore (c38f415) (Rohan Kapadia)
+- Fix `~/.kirocrew/` not existing before log handler init (85ebec7) (Yehui Zhang)
+- Fix Slack Home Tab hardcoded `/kirocrew` — use configured command name (d85b047) (Namra Saheba)
+- Fix lazy `_config_lock` init for Python 3.10 compat (c30b8e5) (Joe Guo)
 
 ### Documentation
 
-- Comprehensive spec update for all beta-braveheart features (bolichen)
-- Updated remote desktop setup: recommend m7a.4xlarge, AL2023 over AL2 (zejiangg)
-- Added SLACK_SETUP.md references to README (wenhug)
+- Comprehensive spec update for all beta-braveheart features (Bolin Chen)
+- Updated remote desktop setup: recommend m7a.4xlarge, AL2023 over AL2 (Joe Guo)
+- Added SLACK_SETUP.md references to README (Hugo Wen)
 
 ### ⚠️ Breaking Changes
 
@@ -679,7 +679,7 @@ Abhishek Mitra (abmitra), Akim Akimov (zedmor), Alec Douglas (agdoug), Amit Chow
 
 ### Contributors (63)
 
-Adam Doussan (adoussan), Alec Douglas (agdoug), Alex Yelle (yellea), Artem Krivonos (artemkr), Barrett Karson (barkar), Ben Grubin (bgrubin), Bolin Chen (bolichen), Chen Yang Lho (clho), Chris McMillon (cmillon), Christopher Huk (hukc), Curtis Demerah (cddemera), David Fayerman (dfayx), Doruk (bdoruk), Emma Zhou (emmazhou), Emmanuel Okonkwo (emmaok), Erik Schweiss (erikschw), Himanish Kaul (khimanis), Hoang Phan (hoangvp), Hugo Costa (hugocost), Hugo Wen (wenhug), Jacob Morgan (jaaaacob), Jaden Yuros (jadeny), James Joseph (josejam), Jiahao Guo (jhguo), Jimmy Kilpatrick (jamekilp), Joe Guo (zejiangg), Johnny Xue (xued), Kevin Zuern (zuern), Krish Dhasmana (dhasman), Lachlan Lindsay (lachlal), Lanxiao Bai (lanxib), Luke Ely (elyluk), Maninder Singh (msq), Mark Lord (lormark), Matt Cohen (mattcohe), Maxwell Schroder (maxwelcs), Minglong Pan (pminglon), Mohammed Madni Vaid (madniv), Namra Saheba (saheban), Nansong Yi (nansong), Nick Bowers (nrb), Nihal Singh (nhsng), Nitan Singh (nitans), Parwinder Singh (pwssingh), Patrick Gao (patrigao), Paxton Tomooka (ptomooka), Ravi Teja Kondisetty (rkondis), Rohan Kapadia (rohankap), Sam Cuthbertson (samcuthb), Satheesh Prabhakaran (psathees), Shailesh Agrawal (agrawas), Shashwat Srivastava (shashwsr), Siddartha B V (siddartb), Simon Meyffret (meyffret), Tianxiang Xu (xutianxi), Toby Wong (tobywo), Tony Hardie (thhardie), Viren Khatri (werain), Vishal Sreekrishnan (vishsre), Yehui Zhang (zyh), Yohanes Setiawan (yohaseti), Zach He (zachhe), Zezhen Xu (zezhexu)
+Adam Doussan (Adam Doussan), Alec Douglas (Alec Douglas), Alex Yelle (Alex Yelle), Artem Krivonos (Artem Krivonos), Barrett Karson (Barrett Karson), Ben Grubin (Ben Grubin), Bolin Chen (Bolin Chen), Chen Yang Lho (Chen Yang Lho), Chris McMillon (Chris McMillon), Christopher Huk (Christopher Huk), Curtis Demerah (Curtis Demerah), David Fayerman (David Fayerman), Doruk (Doruk), Emma Zhou (Emma Zhou), Emmanuel Okonkwo (Emmanuel Okonkwo), Erik Schweiss (Erik Schweiss), Himanish Kaul (Himanish Kaul), Hoang Phan (Hoang Phan), Hugo Costa (Hugo Costa), Hugo Wen (Hugo Wen), Jacob Morgan (Jacob Morgan), Jaden Yuros (Jaden Yuros), James Joseph (James Joseph), Jiahao Guo (Jiahao Guo), Jimmy Kilpatrick (Jimmy Kilpatrick), Joe Guo (Joe Guo), Johnny Xue (Johnny Xue), Kevin Zuern (Kevin Zuern), Krish Dhasmana (Krish Dhasmana), Lachlan Lindsay (Lachlan Lindsay), Lanxiao Bai (Lanxiao Bai), Luke Ely (Luke Ely), Maninder Singh (Maninder Singh), Mark Lord (Mark Lord), Matt Cohen (Matt Cohen), Maxwell Schroder (Maxwell Schroder), Minglong Pan (Minglong Pan), Mohammed Madni Vaid (Mohammed Madni Vaid), Namra Saheba (Namra Saheba), Nansong Yi (Nansong Yi), Nick Bowers (Nick Bowers), Nihal Singh (Nihal Singh), Nitan Singh (Nitan Singh), Parwinder Singh (Parwinder Singh), Patrick Gao (Patrick Gao), Paxton Tomooka (Paxton Tomooka), Ravi Teja Kondisetty (Ravi Teja Kondisetty), Rohan Kapadia (Rohan Kapadia), Sam Cuthbertson (Sam Cuthbertson), Satheesh Prabhakaran (Satheesh Prabhakaran), Shailesh Agrawal (Shailesh Agrawal), Shashwat Srivastava (Shashwat Srivastava), Siddartha B V (siddartb), Simon Meyffret (Simon Meyffret), Tianxiang Xu (Tianxiang Xu), Toby Wong (Toby Wong), Tony Hardie (Tony Hardie), Viren Khatri (Viren Khatri), Vishal Sreekrishnan (Vishal Sreekrishnan), Yehui Zhang (Yehui Zhang), Yohanes Setiawan (Yohanes Setiawan), Zach He (Zach He), Zezhen Xu (Zezhen Xu)
 
 ## [2.1.0] — 2026-04-13
 
@@ -687,73 +687,73 @@ Adam Doussan (adoussan), Alec Douglas (agdoug), Alex Yelle (yellea), Artem Krivo
 
 ### Features
 
-- **Multi-Agent Orchestration** — conductor delegates tasks across named agents with isolated context and plan memory. Useful for complex workflows where a code agent and a review agent collaborate on the same task. (zejiangg)
-- **Persistent Agent Channels** — dedicated multi-agent collaboration spaces with their own history. Spin up a channel with 3 agents working on a design doc while you chat separately. (lanxib)
-- **Dashboard ↔ Slack Handoff** — link a dashboard session to a Slack thread for bidirectional sync. Start debugging in the dashboard, then hand off to Slack so your phone gets updates. `sessions` command lists recent sessions with resume buttons. (neklund)
-- **Slash Command System** — `/kirocrew dashboard`, `/kirocrew sessions`, `/kirocrew channels`, `/kirocrew users`. Manage allowlists, channels, and agents without memorizing bang commands. Old `!` commands still work with deprecation warnings. (eqqupty)
-- **Dashboard UI Overhaul** — 6 new pages: Settings (General/Chat/Display), Developer (log viewer), Capabilities (MCP tools), Schedule (week grid), OrchestratedChat, Channels. Configure everything from the browser instead of editing JSON. (zezhexu, dagadans)
-- **Monaco Editor** — code blocks in chat render with Monaco syntax highlighting. Diff blocks show colored +/- lines. Review code changes without leaving the chat. (aydinmo, finnhad)
-- **AMOLED Theme** — pure-black theme for OLED screens. Saves battery on mobile and reduces eye strain in dark rooms. JSON syntax tokens added across all 11 themes. (iamishan)
-- **Prompts & Agent-SOP** — browse and manage prompt templates from Overview > Prompts tab. Reuse proven prompts across sessions instead of retyping them. (majshel)
-- **AWS Transcribe Streaming** — alternative STT provider for voice input. Use when whisper is too slow or unavailable. Configure `stt.provider: "transcribe"` with region and language. (meyffret)
-- **Targeted send_message** — MCP tool can DM a specific user or post to a specific channel. Useful for cron jobs that alert different people based on what they find. (vamgan)
-- **Inline Action Buttons** — Block Kit buttons and selects in Slack route back to the LLM session. Agent can present choices and act on your click without another message. (bgrubin)
-- **Configurable Reactions** — customize phase emojis (`slack.reactions`) or disable them entirely (`reactions_enabled: false`). Reduce noise in busy channels. (aquaman)
-- **Open Channels** — `slack.open_channels` bypasses allowlist for specified channels. Add your team channel so everyone can use the bot without individual approval. (aditsrid)
-- **Bot Identity** — `agent.bot_name` lets the bot introduce itself by a custom name. Useful when running multiple KiroCrew instances with different personas. (jtedward)
-- **Cron Enhancements** — `skip_dates` excludes holidays, `timezone` evaluates dates locally, `--no-crons` flag for multi-instance setups. Schedule page shows a week grid of upcoming jobs. (hugocost, zezhexu, meyffret)
-- **Inline Image Preview** — drag-drop images show a preview strip before sending. Verify you're sharing the right screenshot before the agent sees it. (elyluk)
-- **Fish Shell Support** — `install.sh` auto-detects fish and configures PATH. No more manual `set -gx` after install. (ramdavid)
-- **mise Runtime Management** — `install.sh --mise` uses mise for Python 3.12 and Node 16 instead of system package managers. Keeps your global environment clean. (kylehel)
-- **Builder Toolbox Bundling** — `toolbox install kirocrew` distribution path. One command install for teammates who don't want to clone the repo. (zejiangg)
-- **CloudWatch RUM** — browser analytics for dashboard usage patterns. See which pages people actually use. 100% session sampling. (zezhexu)
-- **Agent Identity Injection** — `[CURRENT AGENT]` and `[RUNTIME]` tags in LLM context. Agent knows whether it's running in Slack, dashboard, or cron and adapts behavior. (cheqiu)
-- **Thread Parent Context** — cron reply sessions auto-inject parent thread context. Cron jobs that reply to existing threads understand what was discussed before. (josejam)
-- **Subagent Improvements** — agent name inheritance from parent, enriched timeout errors with turn/tool context, approval cascade fix. Easier debugging when subagents fail. (nitans, patrigao, aryamanp)
-- **Session Status Indicator** — per-slot status (idle/streaming/tool_running) with independent ApprovalBar. See at a glance whether the agent is thinking, running a tool, or waiting. (zejiangg, himkire)
-- **CSRF Protection** — allowed origin derived from `dashboard.url`. Port-specific cookies prevent auth collision when running multiple instances. (whtleyc, txd)
-- **Skill Matching** — negative triggers via `!` prefix (e.g. `!test` excludes when "test" appears). Prevents wrong skills from loading. (xyongbo)
+- **Multi-Agent Orchestration** — conductor delegates tasks across named agents with isolated context and plan memory. Useful for complex workflows where a code agent and a review agent collaborate on the same task. (Joe Guo)
+- **Persistent Agent Channels** — dedicated multi-agent collaboration spaces with their own history. Spin up a channel with 3 agents working on a design doc while you chat separately. (Lanxiao Bai)
+- **Dashboard ↔ Slack Handoff** — link a dashboard session to a Slack thread for bidirectional sync. Start debugging in the dashboard, then hand off to Slack so your phone gets updates. `sessions` command lists recent sessions with resume buttons. (Nate Eklund)
+- **Slash Command System** — `/kirocrew dashboard`, `/kirocrew sessions`, `/kirocrew channels`, `/kirocrew users`. Manage allowlists, channels, and agents without memorizing bang commands. Old `!` commands still work with deprecation warnings. (Ezzat Qupty)
+- **Dashboard UI Overhaul** — 6 new pages: Settings (General/Chat/Display), Developer (log viewer), Capabilities (MCP tools), Schedule (week grid), OrchestratedChat, Channels. Configure everything from the browser instead of editing JSON. (Zezhen Xu, Dan Dagayev)
+- **Monaco Editor** — code blocks in chat render with Monaco syntax highlighting. Diff blocks show colored +/- lines. Review code changes without leaving the chat. (Mustafa Onur Aydin, Finn Haddon)
+- **AMOLED Theme** — pure-black theme for OLED screens. Saves battery on mobile and reduces eye strain in dark rooms. JSON syntax tokens added across all 11 themes. (Ishan Mishra)
+- **Prompts & Agent-SOP** — browse and manage prompt templates from Overview > Prompts tab. Reuse proven prompts across sessions instead of retyping them. (Marc Shelton)
+- **AWS Transcribe Streaming** — alternative STT provider for voice input. Use when whisper is too slow or unavailable. Configure `stt.provider: "transcribe"` with region and language. (Simon Meyffret)
+- **Targeted send_message** — MCP tool can DM a specific user or post to a specific channel. Useful for cron jobs that alert different people based on what they find. (Vamil Gandhi)
+- **Inline Action Buttons** — Block Kit buttons and selects in Slack route back to the LLM session. Agent can present choices and act on your click without another message. (Ben Grubin)
+- **Configurable Reactions** — customize phase emojis (`slack.reactions`) or disable them entirely (`reactions_enabled: false`). Reduce noise in busy channels. (Sudhamsu Manne)
+- **Open Channels** — `slack.open_channels` bypasses allowlist for specified channels. Add your team channel so everyone can use the bot without individual approval. (Adi Sridharan)
+- **Bot Identity** — `agent.bot_name` lets the bot introduce itself by a custom name. Useful when running multiple KiroCrew instances with different personas. (Tao Jiang)
+- **Cron Enhancements** — `skip_dates` excludes holidays, `timezone` evaluates dates locally, `--no-crons` flag for multi-instance setups. Schedule page shows a week grid of upcoming jobs. (Hugo Costa, Zezhen Xu, Simon Meyffret)
+- **Inline Image Preview** — drag-drop images show a preview strip before sending. Verify you're sharing the right screenshot before the agent sees it. (Luke Ely)
+- **Fish Shell Support** — `install.sh` auto-detects fish and configures PATH. No more manual `set -gx` after install. (David Ramos)
+- **mise Runtime Management** — `install.sh --mise` uses mise for Python 3.12 and Node 16 instead of system package managers. Keeps your global environment clean. (Kyle Helmick)
+- **Packaged Bundle Distribution** — one-command bundled install path. For teammates who don't want to clone the repo. (Joe Guo)
+- **CloudWatch RUM** — browser analytics for dashboard usage patterns. See which pages people actually use. 100% session sampling. (Zezhen Xu)
+- **Agent Identity Injection** — `[CURRENT AGENT]` and `[RUNTIME]` tags in LLM context. Agent knows whether it's running in Slack, dashboard, or cron and adapts behavior. (Chen Qiu)
+- **Thread Parent Context** — cron reply sessions auto-inject parent thread context. Cron jobs that reply to existing threads understand what was discussed before. (James Joseph)
+- **Subagent Improvements** — agent name inheritance from parent, enriched timeout errors with turn/tool context, approval cascade fix. Easier debugging when subagents fail. (Nitan Singh, Patrick Gao, Aryaman Pathania)
+- **Session Status Indicator** — per-slot status (idle/streaming/tool_running) with independent ApprovalBar. See at a glance whether the agent is thinking, running a tool, or waiting. (Joe Guo, Himakireeti Konda)
+- **CSRF Protection** — allowed origin derived from `dashboard.url`. Port-specific cookies prevent auth collision when running multiple instances. (Cole Whitley, Stan Tian)
+- **Skill Matching** — negative triggers via `!` prefix (e.g. `!test` excludes when "test" appears). Prevents wrong skills from loading. (Yongbo Xiao)
 
 ### Fixes
 
-- WS dead client cleanup — check `ws.closed` before broadcast, remove dead clients via `_remove_ws()` (bolichen)
-- Plan memory rotation — cap at 500 lines, plan_lessons 30s TTL cache (bolichen)
-- Process tree kill on session reset and subagent reap (zedmor)
-- Textarea layout preserved when files change (elyluk)
-- Helpful error for CodeArtifact 401 during pip install (wenliyan)
-- Electron token prompt for remote gateway connections (luislim)
-- Confirm dialog restored for destructive history session delete (marvade)
-- Internal path auth fall-through for browser-facing routes (zhna)
-- History ranked by `updated_at` instead of creation time (zejiangg)
-- Lesson injection uses recency ordering instead of random hash (txd)
-- MCP probe timeouts reduced to prevent gateway startup hangs (nlakshu)
-- Merge all `mcp.json` files instead of returning on first hit (nrb)
-- Cron dedup fix for repeated Slack alerts (meyffret)
-- Firefox compatibility — replace `crypto.randomUUID()` (rkrohan)
-- Slot.task None guard before cancel() (vencedua)
-- Subagent approval bypass via Slack callback (aryamanp)
-- MagicMock leaking into session_pid filenames (zejiangg)
-- Autopilot recursive auto-run stack and stage timeout (zejiangg)
+- WS dead client cleanup — check `ws.closed` before broadcast, remove dead clients via `_remove_ws()` (Bolin Chen)
+- Plan memory rotation — cap at 500 lines, plan_lessons 30s TTL cache (Bolin Chen)
+- Process tree kill on session reset and subagent reap (Akim Akimov)
+- Textarea layout preserved when files change (Luke Ely)
+- Helpful error for private package registry 401 during pip install (Wenli Yan)
+- Electron token prompt for remote gateway connections (Luis Gabriel Lima)
+- Confirm dialog restored for destructive history session delete (Marvellous Adedapo)
+- Internal path auth fall-through for browser-facing routes (Eric Zhang)
+- History ranked by `updated_at` instead of creation time (Joe Guo)
+- Lesson injection uses recency ordering instead of random hash (Stan Tian)
+- MCP probe timeouts reduced to prevent gateway startup hangs (Nagarajesh Lakshmanan)
+- Merge all `mcp.json` files instead of returning on first hit (Nick Bowers)
+- Cron dedup fix for repeated Slack alerts (Simon Meyffret)
+- Firefox compatibility — replace `crypto.randomUUID()` (Rohan Khanderia)
+- Slot.task None guard before cancel() (Eduardo Vencovsky)
+- Subagent approval bypass via Slack callback (Aryaman Pathania)
+- MagicMock leaking into session_pid filenames (Joe Guo)
+- Autopilot recursive auto-run stack and stage timeout (Joe Guo)
 
 ### Refactors
 
-- Remove Dream memory consolidation system — caused memory regressions (bolichen)
-- Eliminate code duplication, onboard jscpd (aryamanp)
-- Replace embedding-based skill matching with negative keywords (xyongbo)
-- Restructure orchestrator docs — rename to Autopilot (zejiangg)
-- Makefile for single-command build cycle (bolichen)
+- Remove Dream memory consolidation system — caused memory regressions (Bolin Chen)
+- Eliminate code duplication, onboard jscpd (Aryaman Pathania)
+- Replace embedding-based skill matching with negative keywords (Yongbo Xiao)
+- Restructure orchestrator docs — rename to Autopilot (Joe Guo)
+- Makefile for single-command build cycle (Bolin Chen)
 
 ### Docs
 
-- Comprehensive documentation update for all post-v2.0.0 features (bolichen)
-- Memory architecture, security deep dive, team communication guides (zezhexu)
-- Voice input/output setup, session-Slack linking design (zezhexu, zejiangg)
-- Autopilot design and lifecycle (dagadans)
+- Comprehensive documentation update for all post-v2.0.0 features (Bolin Chen)
+- Memory architecture, security deep dive, team communication guides (Zezhen Xu)
+- Voice input/output setup, session-Slack linking design (Zezhen Xu, Joe Guo)
+- Autopilot design and lifecycle (Dan Dagayev)
 - Delete stale docs: DEVELOPMENT.md, TASK_PLAN_MODE.md, verification-2026-03-03.md
 
 ### Contributors
 
-Joe Guo (zejiangg), Dan Dagayev (dagadans), Bolin Chen (bolichen), Ben Grubin (bgrubin), Patrick Gao (patrigao), Zezhen Xu (zezhexu), Nick Papadopoulos (nickpap), Simon Meyffret (meyffret), Yongbo Xiao (xyongbo), Toby Wong (tobywo), Luke Ely (elyluk), Eric Zhang (zhna), Vamil Gandhi (vamgan), James Joseph (josejam), Yuliang Qiao (yuliang), Stan Tian (txd), Rohan Khanderia (rkrohan), Hugo Costa (hugocost), Himakireeti Konda (himkire), Finn Haddon (finnhad), Chen Qiu (cheqiu), Aryaman Pathania (aryamanp), Sudhamsu Manne (aquaman), Lanxiao Bai (lanxib), Eduardo Vencovsky (vencedua), David Ramos (ramdavid), Marc Shelton (majshel), Matthew Barnum (matbarnu), Mariam Alaidi (malaidi), Adi Sridharan (aditsrid), Siming Deng (densimin), Ezzat Qupty (eqqupty), Graham Roberts (grahamar), Ishan Mishra (iamishan), Kellen Jia (kellenji), Kyle Helmick (kylehel), Luis Gabriel Lima (luislim), Lipeng Yang (yanglp), Mustafa Onur Aydin (aydinmo), Nagarajesh Lakshmanan (nlakshu), Nate Eklund (neklund), Nathan Burns (nlb), Nick Bowers (nrb), Anthony Dominianni (nthodo), Phillip Gong (qfgong), Nitan Singh (nitans), Bhargav Mistry (misbharg), Aswin Damodar (aswind), Beau Bright (beabrigh), Cole Whitley (whtleyc), David Fayerman (dfayx), David Qian (dqian), Akim Akimov (zedmor), Yuta Tsuji (yutatj), Tianxiang Xu (xutianxi), Wei Wei (weiweiv), Wenli Yan (wenliyan), Tao Jiang (jtedward), Marvellous Adedapo (marvade)
+Joe Guo (Joe Guo), Dan Dagayev (Dan Dagayev), Bolin Chen (Bolin Chen), Ben Grubin (Ben Grubin), Patrick Gao (Patrick Gao), Zezhen Xu (Zezhen Xu), Nick Papadopoulos (Nick Papadopoulos), Simon Meyffret (Simon Meyffret), Yongbo Xiao (Yongbo Xiao), Toby Wong (Toby Wong), Luke Ely (Luke Ely), Eric Zhang (Eric Zhang), Vamil Gandhi (Vamil Gandhi), James Joseph (James Joseph), Yuliang Qiao (Yuliang Qiao), Stan Tian (Stan Tian), Rohan Khanderia (Rohan Khanderia), Hugo Costa (Hugo Costa), Himakireeti Konda (Himakireeti Konda), Finn Haddon (Finn Haddon), Chen Qiu (Chen Qiu), Aryaman Pathania (Aryaman Pathania), Sudhamsu Manne (Sudhamsu Manne), Lanxiao Bai (Lanxiao Bai), Eduardo Vencovsky (Eduardo Vencovsky), David Ramos (David Ramos), Marc Shelton (Marc Shelton), Matthew Barnum (Matthew Barnum), Mariam Alaidi (Mariam Alaidi), Adi Sridharan (Adi Sridharan), Siming Deng (Siming Deng), Ezzat Qupty (Ezzat Qupty), Graham Roberts (Graham Roberts), Ishan Mishra (Ishan Mishra), Kellen Jia (Kellen Jia), Kyle Helmick (Kyle Helmick), Luis Gabriel Lima (Luis Gabriel Lima), Lipeng Yang (Lipeng Yang), Mustafa Onur Aydin (Mustafa Onur Aydin), Nagarajesh Lakshmanan (Nagarajesh Lakshmanan), Nate Eklund (Nate Eklund), Nathan Burns (Nathan Burns), Nick Bowers (Nick Bowers), Anthony Dominianni (Anthony Dominianni), Phillip Gong (Phillip Gong), Nitan Singh (Nitan Singh), Bhargav Mistry (Bhargav Mistry), Aswin Damodar (Aswin Damodar), Beau Bright (Beau Bright), Cole Whitley (Cole Whitley), David Fayerman (David Fayerman), David Qian (David Qian), Akim Akimov (Akim Akimov), Yuta Tsuji (Yuta Tsuji), Tianxiang Xu (Tianxiang Xu), Wei Wei (Wei Wei), Wenli Yan (Wenli Yan), Tao Jiang (Tao Jiang), Marvellous Adedapo (Marvellous Adedapo)
 
 ## [2.0.0] — 2026-04-06
 
@@ -761,76 +761,76 @@ Joe Guo (zejiangg), Dan Dagayev (dagadans), Bolin Chen (bolichen), Ben Grubin (b
 
 ### Features
 
-- **Activity Viewer** — real-time tool call cards, subagent progress bars, collapsible tool groups with inline approval UI (matbarnu, himkire)
-- **Trust Reads mode** — 📖 auto-approve read-only bash commands while prompting for writes (johxli)
-- **Voice streaming** — real-time TTS via AWS Polly with sentence-boundary streaming, auto-speak, interrupt (eqqupty)
-- **Terminal UI (TUI)** — full-featured terminal interface built with Ink + React + TypeScript (bianyb)
-- **File send MCP tool** — agent outbox with Slack upload + dashboard download, 50MB cap, content scanning (wpb)
-- **Cross-platform file upload** — drag-drop, clipboard paste, file picker in dashboard chat (grahamar)
-- **Custom themes** — create/edit/delete color themes with visual picker and paste-JSON mode (beautay)
-- **Model selector** — switch LLM models mid-session from session bar, welcome screen, or agent config (matbarnu)
-- **Cron inline editing** — PATCH endpoint, Run Now, Open in Chat, human-readable schedules with timezone (huanhe, kejiawan)
-- **LLM-compressed thread history** — resumed sessions get head/tail sandwich compression of prior conversation (aswind)
-- **Concurrent dashboard tokens** — up to 5 valid tokens with `kirocrew logout` for revocation (rakinaml)
-- **Pin/favorite sessions** — pin sessions to top of sidebar with localStorage persistence (eqqupty)
-- **Subagent turn limit** — configurable `subagent_max_turns` with per-spawn override (txd)
-- **spawn_status MCP tool** — retrieve full untruncated subagent output (bgrubin)
-- **Block Kit support** — `send_message` accepts `blocks` for rich Slack messages with deep-walk sanitization (bgrubin)
-- **!stop command** — force-halt agent mid-stream in Slack, bypasses per-session semaphore (rkrohan)
-- **Approval routing** — route approval cards to correct chat slot with concurrent support (himkire)
-- **Trust/YOLO propagation** — subagent sessions inherit parent's approval policy (merth)
-- **DevSpaces auto-detection** — auto-configure CORS and proxy URL (tsukky)
-- **Workspace CRUD** — create/update/delete workspaces via HTTP API, CLI, and frontend (zezhexu)
-- **Enforce denied commands scope** — `"all"` or `"kirocrew"` to skip non-kirocrew agents (bolichen)
-- **Editable Config Summary** — dashboard settings directly editable with inline feedback (bolichen)
-- **ARCC governance integration** — setup/update/auto-update flows for ARCC tools (bolichen)
-- **Log filter & tail** — dashboard Logs page with real-time filter and tail toggle (bhatiava)
-- **Live markdown preview** — file watching with inline comments and batch submit (rkrohan)
-- **Diff "View full file"** — click 📄 on diff blocks to open full file in side panel (mxn)
-- **Phase-aware Slack reactions** — granular emoji status with debounce and stall watchdog (vamgan)
-- **Slack thread metadata injection** — mid-thread @mentions get full thread context (jiayizha)
-- **API server in --slack-only** — minimal API server for MCP tools when dashboard disabled (dparimal)
-- **Slack manifest auto-populate** — `kirocrew manifest` CLI command (yueyanm)
-- **CLI usage examples** — practical examples in `--help` output (snitinka)
-- **Midway auth status** — certificate validity in Slack status and Home tab (pebarrio)
+- **Activity Viewer** — real-time tool call cards, subagent progress bars, collapsible tool groups with inline approval UI (Matthew Barnum, Himakireeti Konda)
+- **Trust Reads mode** — 📖 auto-approve read-only bash commands while prompting for writes (a KiroCrew contributor)
+- **Voice streaming** — real-time TTS via AWS Polly with sentence-boundary streaming, auto-speak, interrupt (Ezzat Qupty)
+- **Terminal UI (TUI)** — full-featured terminal interface built with Ink + React + TypeScript (Yao Bian)
+- **File send MCP tool** — agent outbox with Slack upload + dashboard download, 50MB cap, content scanning (a KiroCrew contributor)
+- **Cross-platform file upload** — drag-drop, clipboard paste, file picker in dashboard chat (Graham Roberts)
+- **Custom themes** — create/edit/delete color themes with visual picker and paste-JSON mode (a KiroCrew contributor)
+- **Model selector** — switch LLM models mid-session from session bar, welcome screen, or agent config (Matthew Barnum)
+- **Cron inline editing** — PATCH endpoint, Run Now, Open in Chat, human-readable schedules with timezone (a KiroCrew contributor, a KiroCrew contributor)
+- **LLM-compressed thread history** — resumed sessions get head/tail sandwich compression of prior conversation (Aswin Damodar)
+- **Concurrent dashboard tokens** — up to 5 valid tokens with `kirocrew logout` for revocation (a KiroCrew contributor)
+- **Pin/favorite sessions** — pin sessions to top of sidebar with localStorage persistence (Ezzat Qupty)
+- **Subagent turn limit** — configurable `subagent_max_turns` with per-spawn override (Stan Tian)
+- **spawn_status MCP tool** — retrieve full untruncated subagent output (Ben Grubin)
+- **Block Kit support** — `send_message` accepts `blocks` for rich Slack messages with deep-walk sanitization (Ben Grubin)
+- **!stop command** — force-halt agent mid-stream in Slack, bypasses per-session semaphore (Rohan Khanderia)
+- **Approval routing** — route approval cards to correct chat slot with concurrent support (Himakireeti Konda)
+- **Trust/YOLO propagation** — subagent sessions inherit parent's approval policy (a KiroCrew contributor)
+- **DevSpaces auto-detection** — auto-configure CORS and proxy URL (Rikiya Tsukidate)
+- **Workspace CRUD** — create/update/delete workspaces via HTTP API, CLI, and frontend (Zezhen Xu)
+- **Enforce denied commands scope** — `"all"` or `"kirocrew"` to skip non-kirocrew agents (Bolin Chen)
+- **Editable Config Summary** — dashboard settings directly editable with inline feedback (Bolin Chen)
+- **Security governance integration** — setup/update/auto-update flows for governance tools (Bolin Chen)
+- **Log filter & tail** — dashboard Logs page with real-time filter and tail toggle (Vaibhav Bhatia)
+- **Live markdown preview** — file watching with inline comments and batch submit (Rohan Khanderia)
+- **Diff "View full file"** — click 📄 on diff blocks to open full file in side panel (a KiroCrew contributor)
+- **Phase-aware Slack reactions** — granular emoji status with debounce and stall watchdog (Vamil Gandhi)
+- **Slack thread metadata injection** — mid-thread @mentions get full thread context (a KiroCrew contributor)
+- **API server in --slack-only** — minimal API server for MCP tools when dashboard disabled (Parimal Deshmukh)
+- **Slack manifest auto-populate** — `kirocrew manifest` CLI command (a KiroCrew contributor)
+- **CLI usage examples** — practical examples in `--help` output (a KiroCrew contributor)
+- **SSO auth status** — certificate validity in Slack status and Home tab (Pedro Barrios)
 - **~~Auto-dream all sessions~~** — removed in dream system cleanup
-- **Restore window infinite** — `restore_window_minutes=0` restores all sessions (acuaviva)
+- **Restore window infinite** — `restore_window_minutes=0` restores all sessions (Arturo Acuaviva)
 
 ### Security
 
-- **Loopback auth bypass removed** — closes port-forward bypass (CorpSec finding). File-based IPC secret, X-Internal-Secret header, nonce-based tokens, SEL audit (bolichen)
-- **11 ASR findings addressed** — Mermaid strict sandbox, 42 suspicious bash patterns, tiered YOLO auto-expiry (Slack 30min/dashboard 6h/config permanent), SEL forward callback redaction, chmod 600, observe-mode gating (bolichen)
-- **Credential redaction on assembled output** — runs on final head+compressed+tail string (aswind)
-- **Custom theme injection hardening** — CSS injection prevention with security tests (beautay)
-- **LessonStore path hardening** — validate against is_sensitive_path(), SEL audit (cuihuaer)
-- **Atomic file writes** — tempfile.mkstemp across 9 call sites (wgjiachg)
-- **Subagent result redaction** — redact task text before truncation (bolichen)
+- **Loopback auth bypass removed** — closes port-forward bypass (security-review finding). File-based IPC secret, X-Internal-Secret header, nonce-based tokens, SEL audit (Bolin Chen)
+- **11 security-review findings addressed** — Mermaid strict sandbox, 42 suspicious bash patterns, tiered YOLO auto-expiry (Slack 30min/dashboard 6h/config permanent), SEL forward callback redaction, chmod 600, observe-mode gating (Bolin Chen)
+- **Credential redaction on assembled output** — runs on final head+compressed+tail string (Aswin Damodar)
+- **Custom theme injection hardening** — CSS injection prevention with security tests (a KiroCrew contributor)
+- **LessonStore path hardening** — validate against is_sensitive_path(), SEL audit (a KiroCrew contributor)
+- **Atomic file writes** — tempfile.mkstemp across 9 call sites (a KiroCrew contributor)
+- **Subagent result redaction** — redact task text before truncation (Bolin Chen)
 
 ### Bug Fixes
 
-- **Cron stall** — non-blocking execution, semaphore _acquired flag in 5 components, timer always re-arms, ACP zombie detection, 13 new tests (bolichen)
-- **Cron timer restore** — re-arm after gateway restart (lnandez)
-- **Cron timer cap** — 30s poll interval for externally-added jobs (josejam)
-- **Cron+subagent race** — _cron_injecting counter prevents premature session reset (adamd)
-- **Cron subagent routing** — route replies to correct Slack thread (josejam)
+- **Cron stall** — non-blocking execution, semaphore _acquired flag in 5 components, timer always re-arms, ACP zombie detection, 13 new tests (Bolin Chen)
+- **Cron timer restore** — re-arm after gateway restart (a KiroCrew contributor)
+- **Cron timer cap** — 30s poll interval for externally-added jobs (James Joseph)
+- **Cron+subagent race** — _cron_injecting counter prevents premature session reset (a KiroCrew contributor)
+- **Cron subagent routing** — route replies to correct Slack thread (James Joseph)
 - **~~Dream agent stability~~** — removed in dream system cleanup
-- **Auto-title deadlock** — try/finally on semaphore release (joelstu)
-- **Subagent Activity Viewer** — status bug, approval state in Redux, reconnect recovery (matbarnu)
-- **Subagent reaper** — force-kill zombies past 20min timeout (jingjwei)
-- **TaskRunner heartbeat** — detect dead processes every 30s, reset sessions between retries (zejiangg)
-- **TaskRunner context compaction** — mid-stream compaction at 90%, project re-execution (zejiangg)
-- **MCP server graceful stop** — close stdin for wrapper processes (tomsanch)
-- **learn_add timeout** — store embeddings instead of O(N) recompute, 38s→0.12s (tianzt)
-- **Null prompt handling** — coerce null/missing to empty string (lnandez, patrigao)
-- **Closing code fence split** — fix unclosed blocks when LLM streams fence+text (narsaj)
-- **Kiro agent name resolution** — resolve before ACP session creation (bgrubin)
-- **IME composition Enter** — prevent CJK candidate from triggering rename (shihaow)
-- **Ollama model name** — correct to qwen3-embedding:0.6b (antdoc)
-- **Chat input at high zoom** — zoom-aware viewport units (zejiangg)
-- **Dashboard 5 UI bugs** — Config PATCH 401, model dropdown TUI regression, layout fixes (bolichen)
-- **Whitespace in Slack streaming** — move .strip() to final message only (kejiawan)
-- **Memory blob serialization** — strip BLOB fields from API JSON (bolichen)
-- **Slot key normalization** — fix subagent routing on session resume (antdoc)
+- **Auto-title deadlock** — try/finally on semaphore release (a KiroCrew contributor)
+- **Subagent Activity Viewer** — status bug, approval state in Redux, reconnect recovery (Matthew Barnum)
+- **Subagent reaper** — force-kill zombies past 20min timeout (Jingjin Wei)
+- **TaskRunner heartbeat** — detect dead processes every 30s, reset sessions between retries (Joe Guo)
+- **TaskRunner context compaction** — mid-stream compaction at 90%, project re-execution (Joe Guo)
+- **MCP server graceful stop** — close stdin for wrapper processes (a KiroCrew contributor)
+- **learn_add timeout** — store embeddings instead of O(N) recompute, 38s→0.12s (a KiroCrew contributor)
+- **Null prompt handling** — coerce null/missing to empty string (a KiroCrew contributor, Patrick Gao)
+- **Closing code fence split** — fix unclosed blocks when LLM streams fence+text (a KiroCrew contributor)
+- **Kiro agent name resolution** — resolve before ACP session creation (Ben Grubin)
+- **IME composition Enter** — prevent CJK candidate from triggering rename (Shihao Wang)
+- **Ollama model name** — correct to qwen3-embedding:0.6b (a KiroCrew contributor)
+- **Chat input at high zoom** — zoom-aware viewport units (Joe Guo)
+- **Dashboard 5 UI bugs** — Config PATCH 401, model dropdown TUI regression, layout fixes (Bolin Chen)
+- **Whitespace in Slack streaming** — move .strip() to final message only (a KiroCrew contributor)
+- **Memory blob serialization** — strip BLOB fields from API JSON (Bolin Chen)
+- **Slot key normalization** — fix subagent routing on session resume (a KiroCrew contributor)
 
 ### Contributors (37)
 
@@ -852,7 +852,7 @@ Adam Duncan, Anthony Orozco, Arturo Acuaviva, Aswin Damodar, Beau Taylor-Ladd, B
 
 ### Security
 
-- Removed blanket loopback bypass in `token_auth_middleware` — closes port-forward auth bypass (CorpSec finding: 14 exposed dashboards, 5 from this exemption)
+- Removed blanket loopback bypass in `token_auth_middleware` — closes port-forward auth bypass (security-review finding: 14 exposed dashboards, 5 from this exemption)
 - File-based per-session IPC secret (`~/.kirocrew/.local_secret`, `chmod 600`, atomic `os.open` + `fchmod`)
 - `X-Internal-Secret` header required for internal API paths (`/api/spawn`, `/api/lessons`, `/api/taskrunner`, `/api/send-message`, `/api/hooks/agent`)
 - `/api/token/local` endpoint for Electron/local apps (loopback + file-based secret + `hmac.compare_digest`)
@@ -882,7 +882,7 @@ Adam Duncan, Anthony Orozco, Arturo Acuaviva, Aswin Damodar, Beau Taylor-Ladd, B
 
 ### Contributors
 
-Bolin Chen (bolichen)
+Bolin Chen (Bolin Chen)
 
 ## [1.2.2] — 2026-03-31
 
@@ -890,15 +890,15 @@ Bolin Chen (bolichen)
 
 - **Multi-agent orchestration** — Configure multiple named agents with independent kiro-cli backends, workspaces, and memory stores. Switch agents per chat slot from the dashboard or Slack. CLI: `kirocrew agent list|create|update|delete`. HTTP CRUD at `/api/agents`.
 - **Inline tool cards** — Tool call results now render inline between text segments, matching the agent's actual execution order. Previously all text merged into one block with tools appended below.
-- **AIM agent auto-sync** — AIM-installed agents are automatically discovered and persisted into `config.json` as first-class entries with customizable workspace, memory store, and description. Color-coded source badges (aim/kirocrew/builtin) in the frontend.
+- **Managed agent auto-sync** — managed-agent-installed agents are automatically discovered and persisted into `config.json` as first-class entries with customizable workspace, memory store, and description. Color-coded source badges (managed/kirocrew/builtin) in the frontend.
 
 ### Fixes
 
-- Slack Enterprise Grid workspace validation — gateway verifies workspace belongs to Amazon Enterprise Grid at startup, blocking connections to personal or external workspaces
+- Slack Enterprise Grid workspace validation — gateway verifies workspace belongs to the configured Enterprise Grid at startup, blocking connections to personal or external workspaces
 - Enterprise Grid DM team_id: copy outer payload `team_id` into event when inner event lacks it
 - Missing whitespace between text segments across tool call boundaries
 - Slack delivery errors no longer mark cron jobs as failed — delivery failures are logged separately
-- Augment PATH for kiro-cli subprocess with MCP binary directories so AIM-installed servers work under systemd
+- Augment PATH for kiro-cli subprocess with MCP binary directories so managed-agent-installed servers work under systemd
 - Agent switch handler resolves by config key or kiro_agent name
 - Empty agent_name guard prevents silent binding to unintended agent
 - `useAgents` hook race condition: skip initial fetch when syncing, add cancelled flag
@@ -912,7 +912,7 @@ Bolin Chen (bolichen)
 
 ### Contributors
 
-Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuta Tsuji (yutatj), Piyush Galphat (galphat), Eduardo Vencovsky (vencedua), David Qian (dqian)
+Bolin Chen (Bolin Chen), Joe Guo (Joe Guo), Zezhen Xu (Zezhen Xu), Yuta Tsuji (Yuta Tsuji), Piyush Galphat (Piyush Galphat), Eduardo Vencovsky (Eduardo Vencovsky), David Qian (David Qian)
 
 ## [1.2.1] — 2026-03-31
 
@@ -943,7 +943,7 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuta Tsuji (yuta
 
 ### Contributors
 
-Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
+Bolin Chen (Bolin Chen), Joe Guo (Joe Guo), Yuta Tsuji (Yuta Tsuji)
 
 ## [1.2.0] — 2026-03-30
 
@@ -957,13 +957,13 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
 
 - **🏠 Slack Home Tab** — Open KiroCrew's profile in Slack to see a live Block Kit dashboard: gateway status, active cron jobs, running sessions, recent lessons, and a quick link to the web dashboard.
 
-- **🤖 Multi-node mesh communication** — Configure `slack.trusted_bot_ids` to let two KiroCrew instances (e.g. Mac laptop + Cloud Desktop) talk to each other via a shared Slack channel. Self-echo guard prevents loops; cross-bot loop prevention delegated to agent-layer envelope protocol.
+- **🤖 Multi-node mesh communication** — Configure `slack.trusted_bot_ids` to let two KiroCrew instances (e.g. Mac laptop + remote desktop) talk to each other via a shared Slack channel. Self-echo guard prevents loops; cross-bot loop prevention delegated to agent-layer envelope protocol.
 
 - **📢 Per-channel activation & `!ta` command** — KiroCrew can now observe group channels. Use `!ta` in any thread to summon the agent for that thread only. Observe mode persists per-channel so the bot stays quiet unless explicitly invoked.
 
 - **🔇 Silent cron mode & `send_message` MCP tool** — Cron jobs can run silently (`silent: true`) — the agent executes but doesn't auto-post results. Instead, it decides when to notify you via the new `send_message` MCP tool. Perfect for monitoring jobs that only alert on anomalies.
 
-- **⏳ Proactive push: webhooks + wait tool** — Two mechanisms for autonomous workflows. `wait` pauses 60–1800s within a live session (submit CR → wait → check AutoSDE → fix → repeat). `POST /api/hooks/agent` accepts external triggers (CI alerts, email) with Bearer auth, ephemeral sessions, and context from `hooks.json`.
+- **⏳ Proactive push: webhooks + wait tool** — Two mechanisms for autonomous workflows. `wait` pauses 60–1800s within a live session (submit change → wait → check automated review → fix → repeat). `POST /api/hooks/agent` accepts external triggers (CI alerts, email) with Bearer auth, ephemeral sessions, and context from `hooks.json`.
 
 - **🔔 Dedicated notifications page** — Full-page notification center at `/notifications` with category tabs (Cron/Hooks/Heartbeat/Agent/Approval/Subagent/Tasks), search filter, date grouping (Today/Yesterday/This Week/Older), and jump-to-source buttons that navigate to the originating chat or Slack thread.
 
@@ -979,7 +979,7 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
 
 - **🔄 Context usage ring** — Real-time token usage indicator in the chat header shows how much of the context window is consumed. Helps you know when compaction is coming.
 
-- **📦 One-line installer** — `mwinit -o && curl ... | bash` installs everything (kiro-cli, AIM, MCP servers, Node.js, KiroCrew) without a Brazil workspace. For non-contributors who just want to use KiroCrew.
+- **📦 One-line installer** — a single `curl ... | bash` command installs everything (kiro-cli, the managed agent package manager, MCP servers, Node.js, KiroCrew) without a build workspace. For non-contributors who just want to use KiroCrew.
 
 - **⚙️ `kirocrew config` CLI** — `kirocrew config get [key]`, `kirocrew config set <key> <val>`, `kirocrew config edit` for managing `~/.kirocrew/config.json` without hand-editing JSON.
 
@@ -999,14 +999,14 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
 - Fix process leak on cancel: sync kill provider, shield reset from CancelledError
 - Fix orphaned MCP process leaks: full tree tracking, cycle-safe kill, drain, session cleanup
 - Fix macOS process counting: `ps` fallback for `/proc`-dependent code paths
-- Deduplicate AIM agents install to prevent inflated metrics (160K+ → ~500 real installs)
+- Deduplicate managed agent installs to prevent inflated metrics (160K+ → ~500 real installs)
 - Use Slack display names instead of raw user IDs in LLM context
 - Route subagent completions via `KIROCREW_SESSION_KEY` env var
 - Deny-by-default agent validation for `_SYSTEM_PREFIX` bypass
 - Replace `mesh.claw` with `kirocrew.localhost` (RFC 6761 reserved)
 - Gate subagent spawns behind approval when YOLO mode is off
 - Throttle parallel step execution to prevent resource exhaustion
-- Support SSH agent-forwarded certs in Midway status check
+- Support SSH agent-forwarded certs in the SSO status check
 - Handle ACP slash command notifications (`/compact`, `/clear`, `/agent`) with user-visible feedback
 - Persistent `log_level` in config survives gateway restart
 - Auto-rotate Slack stream on `appendStream` failures
@@ -1033,7 +1033,7 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Yuta Tsuji (yutatj)
 
 ### Contributors
 
-Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuliang Qiao (yuliang), Yao Bian (bianyb), Wenyu Yang (wenyuy), Alex Truong (alextrng), Alex Avance (aavance), Carter Trpik (carttrp), Cole Whitley (whtleyc), Eduardo Vencovsky (vencedua), Hoang Phan (hoangvp), Hugo Costa (hugocost), Ian Auger-Juul (ianauger), James Joseph (josejam), Jingchao Cao (cjingcha), Krish Dhasmana (dhasman), Lanxiao Bai (lanxib), Mark Asp (aspmar), Minglong Pan (pminglon), Mohammed Elansary (moansary), Nagabharan Nagendran (nagabhan), Oscar Smith-Sieger (osmithsi), Parikshit Desai (dpariksh), Parimal Deshmukh (dparimal), Rohan Khanderia (rkrohan), Shawn Li (amzxao), Srihari Attuluri (attuls), Stephane Robin (srobin), Sugan Kumar (sugkum), Swapnil Dixit (swapnil), Toby Wong (tobywo), Vaibhav Bhatia (bhatiava), Vamil Gandhi (vamgan), Vasudeva H (hvasd), Abe Diaz (diazabe)
+Bolin Chen (Bolin Chen), Joe Guo (Joe Guo), Zezhen Xu (Zezhen Xu), Yuliang Qiao (Yuliang Qiao), Yao Bian (Yao Bian), Wenyu Yang (Wenyu Yang), Alex Truong (Alex Truong), Alex Avance (Alex Avance), Carter Trpik (Carter Trpik), Cole Whitley (Cole Whitley), Eduardo Vencovsky (Eduardo Vencovsky), Hoang Phan (Hoang Phan), Hugo Costa (Hugo Costa), Ian Auger-Juul (Ian Auger-Juul), James Joseph (James Joseph), Jingchao Cao (Jingchao Cao), Krish Dhasmana (Krish Dhasmana), Lanxiao Bai (Lanxiao Bai), Mark Asp (Mark Asp), Minglong Pan (Minglong Pan), Mohammed Elansary (Mohammed Elansary), Nagabharan Nagendran (Nagabharan Nagendran), Oscar Smith-Sieger (Oscar Smith-Sieger), Parikshit Desai (Parikshit Desai), Parimal Deshmukh (Parimal Deshmukh), Rohan Khanderia (Rohan Khanderia), Shawn Li (Shawn Li), Srihari Attuluri (Srihari Attuluri), Stephane Robin (Stephane Robin), Sugan Kumar (Sugan Kumar), Swapnil Dixit (Swapnil Dixit), Toby Wong (Toby Wong), Vaibhav Bhatia (Vaibhav Bhatia), Vamil Gandhi (Vamil Gandhi), Vasudeva H (a KiroCrew contributor), Abe Diaz (Abe Diaz)
 
 ## [1.1.0] — 2026-03-22
 
@@ -1048,7 +1048,7 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuliang Qiao (yu
 - **Session title inline rename** — Double-click session titles in the sidebar or header to rename them inline.
 - **Multi-select OPTIONS buttons** — LLM responses with `[OPTIONS: ...]` tags now render as interactive multi-select Block Kit buttons in Slack and the dashboard.
 - **Unread indicator and typing dots** — Chat sidebar shows unread badges per slot and animated typing dots during LLM streaming. Slack-style grouped message layout.
-- **KiroCrewAICapabilities via AIM** — `kirocrew-lite` agent and skills now distributed as an AIM package, auto-installed during setup and updates.
+- **KiroCrewAICapabilities package** — `kirocrew-lite` agent and skills now distributed as a managed agent package, auto-installed during setup and updates.
 - **Task naming for task runner** — Tasks get auto-generated names from spec content, resolvable by name or ID.
 - **Remote Streamable HTTP MCP servers** — MCP discovery now supports remote servers via Streamable HTTP transport in addition to local stdio servers.
 - **Configurable ChatPage settings** — Per-user chat preferences (history expansion, notification limit, timestamps, send-on-enter) with localStorage persistence.
@@ -1061,8 +1061,8 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuliang Qiao (yu
 - Propagate default agent setting to new chat slots
 - Preserve user customizations in `kirocrew.json` across gateway restarts
 - Handle WebSocket not ready on early Slack events
-- Nested variant scan for AIM skill path discovery
-- Only load AIM skills from current event snapshot
+- Nested variant scan for managed-agent skill path discovery
+- Only load managed-agent skills from current event snapshot
 - Slash command menu with context bypass for `stream()`
 - Resolve tool permission bugs blocking all dashboard tool calls
 - Restore interactive approval in normal mode (hooks commit broke it)
@@ -1086,12 +1086,12 @@ Bolin Chen (bolichen), Joe Guo (zejiangg), Zezhen Xu (zezhexu), Yuliang Qiao (yu
 
 - Add branching model and changelog writing rules to CONTRIBUTING.md
 - Add macOS desktop app install and launch agent setup guide
-- Remove broken midway auth, update remote desktop docs
+- Remove broken SSO auth, update remote desktop docs
 - Fix escape setting location in SLACK_SETUP.md and events.py
 
 ### Contributors
 
-Arturo Acuaviva (acuaviva), Bocheng Wu (bochengw), Bolin Chen (bolichen), Chaoneng Quan (chaoneng), Giovanni Viviani (gnvivi), Hao Xu (xhaoxu), Hoang Phan (hoangvp), Hugo Costa (hugocost), Joe Guo (zejiangg), John Law (jclaw), Lanxiao Bai (lanxib), Luu Tran (luut), Oscar Smith-Sieger (osmithsi), Parimal Deshmukh (dparimal), Petter Nilsson (pettni), Rikiya Tsukidate (tsukky), Rohan Khanderia (rkrohan), Rohit Mehra (merohi), Shao-Cheng Wang (wangsc), Toby Wong (tobywo), Udit Tumuluri (tumu), Vamil Gandhi (vamgan), Zezhen Xu (zezhexu)
+Arturo Acuaviva (Arturo Acuaviva), Bocheng Wu (Bocheng Wu), Bolin Chen (Bolin Chen), Chaoneng Quan (Chaoneng Quan), Giovanni Viviani (Giovanni Viviani), Hao Xu (Hao Xu), Hoang Phan (Hoang Phan), Hugo Costa (Hugo Costa), Joe Guo (Joe Guo), John Law (John Law), Lanxiao Bai (Lanxiao Bai), Luu Tran (Luu Tran), Oscar Smith-Sieger (Oscar Smith-Sieger), Parimal Deshmukh (Parimal Deshmukh), Petter Nilsson (Petter Nilsson), Rikiya Tsukidate (Rikiya Tsukidate), Rohan Khanderia (Rohan Khanderia), Rohit Mehra (Rohit Mehra), Shao-Cheng Wang (Shao-Cheng Wang), Toby Wong (Toby Wong), Udit Tumuluri (Udit Tumuluri), Vamil Gandhi (Vamil Gandhi), Zezhen Xu (Zezhen Xu)
 
 ## [1.0.2] — 2026-03-20
 
@@ -1111,8 +1111,8 @@ Arturo Acuaviva (acuaviva), Bocheng Wu (bochengw), Bolin Chen (bolichen), Chaone
 - Subagent spawn now threads the agent name through the full pipeline
 - IME composition: CJK Enter no longer triggers message send
 - Sandbox exposes `~/.ssh/known_hosts` while hiding private keys
-- Skip browser auto-open on remote/Cloud Desktop sessions
-- `kirocrew update` no longer times out on `brazil-build clean`
+- Skip browser auto-open on remote-desktop sessions
+- `kirocrew update` no longer times out on build-tool clean steps
 - Preserve user-modified `kirocrew.json` fields across gateway restarts
 - macOS `/usr/bin/stat` full path for gnubin users
 - SEL audit events for subagent spawn and spawn field validation
@@ -1124,19 +1124,19 @@ Arturo Acuaviva (acuaviva), Bocheng Wu (bochengw), Bolin Chen (bolichen), Chaone
 
 ### Docs
 
-- Remote desktop setup guide rewritten for fresh Cloud Desktops
+- Remote desktop setup guide rewritten for fresh remote desktops
 - SSH tunnel instructions for remote dashboard access
 - DCV setup fixes and YOLO mode hint in task runner UI
 
 ### Contributors
 
-Alex Avance (aavance), Bocheng Wu (bochengw), Bolin Chen (bolichen), George Coll (collgc), Graham Roberts (grahamar), Hao Xu (xhaoxu), Joe Guo (zejiangg), John Law (jclaw), Mark Asp (aspmar), Sean Whipple (sewhippl), Setul Patel (setul), Swapnil Dixit (swapnil), Rikiya Tsukidate (tsukky), Xuecong Zang (zangxc), Zhe Lv (zhlv)
+Alex Avance (Alex Avance), Bocheng Wu (Bocheng Wu), Bolin Chen (Bolin Chen), George Coll (George Coll), Graham Roberts (Graham Roberts), Hao Xu (Hao Xu), Joe Guo (Joe Guo), John Law (John Law), Mark Asp (Mark Asp), Sean Whipple (Sean Whipple), Setul Patel (Setul Patel), Swapnil Dixit (Swapnil Dixit), Rikiya Tsukidate (Rikiya Tsukidate), Xuecong Zang (Xuecong Zang), Zhe Lv (Zhe Lv)
 
 ## [1.0.1] — 2026-03-19
 
 ### Features
 
-- **Midway credential TTL status card** — Overview page shows SSH cert expiry with color-coded status (green >4h, yellow <1h, red expired), polling every 30s (by Sungjin Yoo)
+- **SSO credential TTL status card** — Overview page shows SSH cert expiry with color-coded status (green >4h, yellow <1h, red expired), polling every 30s (by Sungjin Yoo)
 - **Visible acceptance step in task runner** — acceptance check now appears as a visible step in plan mode, plus dev workflow overhaul and doc cleanup (by Joe Guo)
 - **Vercel React best-practices kiro skill** — comprehensive React performance rules covering rendering, rerenders, async patterns, and bundle optimization (by Zezhen Xu)
 - **KiroCrew dashboard design file** — Pencil design file covering all 5 pages with dark/light theme axis mapped 1:1 from CSS design tokens (by Zezhen Xu)
@@ -1147,15 +1147,15 @@ Alex Avance (aavance), Bocheng Wu (bochengw), Bolin Chen (bolichen), George Coll
 
 ### Fixes
 
-- **Linux sandbox rewrite with identity UID mapping** — replaced the two-stage `unshare -rm` → `unshare -U` approach (UID 0 / 65534 broke JVM ByteBuddy, brazil-build, Gradle) with the correct namespace pattern: fork → child `unshare(CLONE_NEWUSER)` → parent writes identity UID/GID map → child `unshare(CLONE_NEWNS)` → bind-mount → exec. Child retains real UID so all toolchains work without workarounds. Env var scrubbing (`AWS_SECRET*`, `SSH_AUTH_SOCK`, etc.) added. Tested on AL2 (kernel 5.10) and AL2023 (by bolichen)
-- **Restored v1.0.0 artifacts** — CR-261269645 inadvertently reverted v1.0 changes; restored version, changelog, security spec, AUTOSDE.yaml, CONTRIBUTING.md, and system specs (by bolichen)
+- **Linux sandbox rewrite with identity UID mapping** — replaced the two-stage `unshare -rm` → `unshare -U` approach (UID 0 / 65534 broke JVM ByteBuddy, the build tool, Gradle) with the correct namespace pattern: fork → child `unshare(CLONE_NEWUSER)` → parent writes identity UID/GID map → child `unshare(CLONE_NEWNS)` → bind-mount → exec. Child retains real UID so all toolchains work without workarounds. Env var scrubbing (`AWS_SECRET*`, `SSH_AUTH_SOCK`, etc.) added. Tested on AL2 (kernel 5.10) and AL2023 (by Bolin Chen)
+- **Restored v1.0.0 artifacts** — an inadvertent revert removed v1.0 changes; restored version, changelog, security spec, code-review config, CONTRIBUTING.md, and system specs (by Bolin Chen)
 - **@builder-mcp missing from agent tools** — builder-mcp was configured in mcpServers but not in tools/allowedTools arrays, so its 35 tools were invisible to the LLM (by Tim Lee)
-- **@kirocrew-core missing from agent tools** — agents/defaults.json was missing @kirocrew-core in tools/allowedTools, blocking spawn_run, learn_add, task_run and other MCP tools (by bolichen)
-- **Merge conflict resolution** — resolved OverviewPage.tsx and handlers.py conflicts for midway TTL feature branch (by bolichen)
+- **@kirocrew-core missing from agent tools** — agents/defaults.json was missing @kirocrew-core in tools/allowedTools, blocking spawn_run, learn_add, task_run and other MCP tools (by Bolin Chen)
+- **Merge conflict resolution** — resolved OverviewPage.tsx and handlers.py conflicts for the SSO TTL feature branch (by Bolin Chen)
 
 ### Contributors
 
-bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
+Bolin Chen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 
 ## [1.0.0] — 2026-03-18
 
@@ -1180,11 +1180,11 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Cross-group dependency normalization** — partial deps expanded to full group. 6 API endpoints, 26 sync tests.
 - **Git-aware task execution** — branch coordination, per-step isolated kiro-cli sessions, cycle detection in dependency graphs, multi-turn task refinement UI/API. ~5,900 lines with extensive tests.
 
-#### Multi-Agent & AIM Integration
-- **Multi-agent switching** — select different agents per chat slot, each with its own personality, tools, and model. AIM package manager for installing, updating, and managing agents and skills.
+#### Multi-Agent & Managed Agent Integration
+- **Multi-agent switching** — select different agents per chat slot, each with its own personality, tools, and model. A managed agent package manager for installing, updating, and managing agents and skills.
 - **Per-agent MCP scoping** — slot creation accepts an `agent` field; each agent only sees its configured MCP servers, reducing noise and improving accuracy.
 - **Default agent** — star/favorite toggle on Agents page to mark a default agent, auto-selected for new chat slots. Persisted via new `GET/PUT /api/config/default-agent` endpoint.
-- **Skills migrated to AIM packages** — 18 bundled skills (~5,900 lines) removed from repo; now installed via `aim mcp install` for independent versioning.
+- **Skills migrated to managed packages** — 18 bundled skills (~5,900 lines) removed from repo; now installed via the managed package manager for independent versioning.
 
 #### Isolated Dev Environment
 - **Dev mode support** — `KIROCREW_HOME` env var overrides config directory (default `~/.kirocrew`), `KIROCREW_PORT` overrides dashboard port (default 7777). `.kirocrew-dev/` gitignored for local dev data, `dev-seed.sh` copies real data into dev directory for migration testing, Vite proxy reads `KIROCREW_PORT` for frontend dev server.
@@ -1212,7 +1212,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Isolated thread context** — channel history now only shows current thread messages, reducing noise.
 
 #### Gateway & Backend
-- **Dashboard backend expansion** — kiro usage API, vector memory endpoints, Ollama monitoring, agent/AIM/MCP registry endpoints, notification read state.
+- **Dashboard backend expansion** — kiro usage API, vector memory endpoints, Ollama monitoring, agent/managed-agent/MCP registry endpoints, notification read state.
 - **Ollama lifecycle management** — moved to GatewayOrchestrator with improved signal handling, graceful shutdown, and orphaned process cleanup.
 - **Performance caching** — mtime-based caching for ConversationLog, SkillsLoader, LessonStore, and system metrics.
 - **Doctor diagnostics** — Ollama health check (required for vector memory), auto-fix for common issues, expanded diagnostic output.
@@ -1220,32 +1220,32 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 #### Platform & Compatibility
 - **AL2 / AL2023 support** — Node 16 via nvm for GLIBC 2.26 compatibility, Docker-based Ollama embeddings fallback, Peru/dnf setup support.
 - **kiro-cli 1.27 compatibility** — notification handling, MCP server init skip, session timeout fixes. Re-enabled kiro-cli auto-update (SQLite locking issue resolved).
-- **Robust launcher** — `bin/kirocrew` with Brazil → pip → PYTHONPATH fallback chain.
+- **Robust launcher** — `bin/kirocrew` with build-tool → pip → PYTHONPATH fallback chain.
 - **macOS Gatekeeper quarantine** fix for zip distribution.
 
 ### Security
 
-- **OS-level sandbox** — new `sandbox.py` hides credential paths (~/.aws, ~/.ssh, etc.) from kiro-cli subprocesses using Linux unshare bind-mounts or macOS Seatbelt profiles. Zero new dependencies. Includes fix for AL2 aim-sandbox shim where `unshare -rm` caused UID 0 resolution failures.
-- **XPIA hardening** — hook-layer blocking of file reads to sensitive credential directories + output scanning for credential-like query params before posting to Slack/dashboard.
+- **OS-level sandbox** — new `sandbox.py` hides credential paths (~/.aws, ~/.ssh, etc.) from kiro-cli subprocesses using Linux unshare bind-mounts or macOS Seatbelt profiles. Zero new dependencies. Includes fix for the AL2 sandbox shim where `unshare -rm` caused UID 0 resolution failures.
+- **Prompt-injection hardening** — hook-layer blocking of file reads to sensitive credential directories + output scanning for credential-like query params before posting to Slack/dashboard.
 - **Interactive owner check deny-by-default** — rewrote `_handle_interactive()` owner check to reject unless positively confirmed as owner (was fail-open when any value was falsy). Ephemeral message feedback for non-owners clicking buttons. Added `post_ephemeral()` to SlackClientOps ABC.
 - **WebSocket origin validation** — validates Origin header on `/api/ws` upgrades, only allowing localhost/kirocrew.localhost origins.
-- **Midway authentication & CSRF protection** — dashboard requires valid Midway cookies and blocks cross-origin mutations.
+- **SSO authentication & CSRF protection** — dashboard requires valid enterprise SSO cookies and blocks cross-origin mutations.
 - **Loopback-only binding** — dashboard bound to `127.0.0.1` instead of `0.0.0.0`, preventing unauthenticated remote access.
 - **Deny-by-default owner lock** — Slack gateway now denies all messages when `KIROCREW_OWNER_ID` is unset (was fail-open). Two defense layers: refuse connect + reject messages.
-- **Slack interactive button verification** — 5 defense-in-depth layers prevent non-owners from clicking YOLO/approve buttons (HIGH severity Shepherd fix).
+- **Slack interactive button verification** — 5 defense-in-depth layers prevent non-owners from clicking YOLO/approve buttons (HIGH severity code-review-bot fix).
 - **SEL audit logging** — integrated across all 8 tool invocation surfaces (Slack, dashboard, taskrunner, subagent, MCP, cron, API middleware) with CLI commands and dashboard endpoints.
-- **MCP tool input/output validation** (SDO-183) — centralized type-safe schemas, Unicode normalization, hidden character stripping, enum allow-lists, range checks, length limits, response truncation (DoS prevention) across all 12 MCP tool handlers.
+- **MCP tool input/output validation** — centralized type-safe schemas, Unicode normalization, hidden character stripping, enum allow-lists, range checks, length limits, response truncation (DoS prevention) across all 12 MCP tool handlers.
 - **54 deniedCommands patterns** — new `security.py` module with dynamic reload blocking destructive operations at the kiro-cli level.
-- **Frontend ACAT fixes** — replaced unsafe innerHTML, switched to ref callbacks, refactored to React text children instead of HTML strings.
+- **Frontend accessibility fixes** — replaced unsafe innerHTML, switched to ref callbacks, refactored to React text children instead of HTML strings.
 
 ### Fixes
 
-- **Java auto-detection** — setup.sh and `kirocrew doctor` detect missing Java 8 (required by brazil-path) and auto-install Corretto 8 on macOS. Includes README troubleshooting section and updated doctor checks.
-- **brazil-runtime-exec bypass** — fixed macOS/AL2023 hang where it spawned runaway Ruby processes; launcher and setup now prefer runtime Python directly.
+- **Java auto-detection** — setup.sh and `kirocrew doctor` detect missing Java 8 (required by the build toolchain) and auto-install Corretto 8 on macOS. Includes README troubleshooting section and updated doctor checks.
+- **build-runtime-exec bypass** — fixed macOS/AL2023 hang where it spawned runaway Ruby processes; launcher and setup now prefer runtime Python directly.
 - **MCP server sync** — direct JSON write instead of `kiro-cli mcp add` which corrupted comma-separated args and broke builder-mcp.
 - **Tool hook matching** — strip display prefixes ("Running: ", "Reading ") from tool titles before matching auto_approve/auto_deny patterns.
-- **Dependency resolution** — use brazil-runtime-exec for reliable module resolution; clean stale runtime symlinks on fresh installs.
-- **Case-sensitive APFS** — fixed brazil-runtime-exec hang on case-sensitive filesystems.
+- **Dependency resolution** — use the build runtime exec for reliable module resolution; clean stale runtime symlinks on fresh installs.
+- **Case-sensitive APFS** — fixed build-runtime-exec hang on case-sensitive filesystems.
 - **Electron DMG build** — fixed APFS compatibility issue in DMG packaging.
 - **Git integration tests** — skip marker for tests needing git binary (unavailable in build fleet sandbox).
 - **Resource leaks** — fixed orphaned processes and pipe leaks in gateway orchestrator.
@@ -1279,7 +1279,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 ## [0.2.2] — 2026-02-24
 
 ### Added
-- **Auto-update kiro-cli** — `kirocrew update` and gateway auto-update now run `toolbox install kiro-cli` alongside KiroCrew updates
+- **Auto-update kiro-cli** — `kirocrew update` and gateway auto-update now reinstall kiro-cli alongside KiroCrew updates
 - **Startup version check** — gateway warns if kiro-cli is older than 1.26 (required for `--agent` flag)
 
 ## [0.2.1] — 2026-02-24
@@ -1294,13 +1294,13 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 ## [0.2.0] — 2026-02-23
 
 ### Added
-- **PWA support** — dashboard is installable as a standalone app via Chrome/Safari; includes web manifest, service worker with network-first caching, and app icons (by aidanjm)
+- **PWA support** — dashboard is installable as a standalone app via Chrome/Safari; includes web manifest, service worker with network-first caching, and app icons (by a KiroCrew contributor)
 - **PWA auto-open on macOS** — gateway startup opens the installed KiroCrew PWA app directly instead of a browser tab; falls back to `webbrowser.open()` if not installed
 
 ## [0.1.9.5] — 2026-02-23
 
 ### Fixed
-- **SSL errors on dev-desktops** — auto-detect system CA bundle at startup when BrazilPython's default `/etc/ssl/cert.pem` is missing; sets `SSL_CERT_FILE` to `/etc/pki/tls/cert.pem` (AL2) or `/etc/ssl/certs/ca-certificates.crt` (Debian)
+- **SSL errors on remote desktops** — auto-detect system CA bundle at startup when the bundled Python's default `/etc/ssl/cert.pem` is missing; sets `SSL_CERT_FILE` to `/etc/pki/tls/cert.pem` (AL2) or `/etc/ssl/certs/ca-certificates.crt` (Debian)
 
 ### Added
 - **Cron job prior-run context** — each cron job now stores its last result and injects it into the next run's prompt, so the LLM reports only changes instead of repeating identical output; persisted to `crons.json` across restarts
@@ -1311,7 +1311,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **MCP servers not loading in agent session** — pass `--agent` flag to kiro-cli so it loads MCP servers from the agent config at startup; resolve MCP commands to absolute paths so kiro-cli finds binaries regardless of PATH
 - **Silent prompt timeout** — `stream_events()` now raises `AcpTimeoutError` when the prompt deadline expires without a completion event, instead of silently returning with no response
 - **Dashboard swallows ACP errors** — `_run_chat()` now shows a visible error message to the user on timeout/ACP errors, matching the Slack handler behavior
-- **Gateway freezes on cloud desktops** — `_auto_apply_update()` converted from blocking `subprocess.run()` to async subprocess, so the dashboard stays responsive during auto-update
+- **Gateway freezes on remote desktops** — `_auto_apply_update()` converted from blocking `subprocess.run()` to async subprocess, so the dashboard stays responsive during auto-update
 - **Missing chat messages after tab switch** — when a browser tab is backgrounded the WebSocket can miss `chat_chunk` events; now re-fetches authoritative messages from the server on `chat_done` and on WS reconnect
 
 ### Added
@@ -1337,7 +1337,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 ## [0.1.9.1] — 2026-02-23
 
 ### Fixed
-- **macOS setup reliability** — `setup.sh` now shows `brazil setup platform-support` output, adds `--force` flag, and retries once on failure
+- **macOS setup reliability** — `setup.sh` now shows build-tool platform-support output, adds `--force` flag, and retries once on failure
 - **ACP init timeout** — increased from 30s to 120s with one automatic retry for slow kiro-cli first launches
 - **Stale MCP servers** — `install_agent()` validates MCP server commands exist in PATH before writing config
 - **kiro-cli auto-update** — `setup.sh` runs `kiro-cli update` during setup if kiro-cli is detected
@@ -1384,13 +1384,13 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 
 ### Added
 - **kiro-cli login in setup** — guided SSO login step with instructions (Start URL, Region, browser confirmation)
-- **curl fallback for kiro-cli** — if `toolbox install kiro-cli` fails, falls back to `curl -fsSL https://cli.kiro.dev/install | bash`
+- **curl fallback for kiro-cli** — if the packaged install of kiro-cli fails, falls back to `curl -fsSL https://cli.kiro.dev/install | bash`
 - **Responsive restart button** — gradient glow button with shimmer animation, adapts text on resize (full → short → icon only)
 - **History clear all** — "Clear all" button in Chat history section, deletes all JSONL files on disk with confirmation
 - **Subagent delete/clear** — ✕ button per subagent, "Clear completed" button in Agents page
 
 ### Fixed
-- **kiro-cli package name** — `toolbox install kiro` → `toolbox install kiro-cli` in setup.sh and setup.ps1
+- **kiro-cli package name** — corrected the kiro-cli install package name from `kiro` to `kiro-cli` in setup.sh and setup.ps1
 - **Auto-update startup order** — update check now runs before printing Dashboard/Remote URLs, no more duplicate URL output on restart
 - **Auto-update version display** — shows "New version X available — auto-updating…" with actual version number
 - **Changelog popup in incognito** — first visit silently records version instead of showing all entries
@@ -1447,7 +1447,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Optimistic slot mutations** — `addSlotOptimistic`/`removeSlotOptimistic` for instant sidebar updates without HTTP round-trip
 - **WS-based chat streaming** — `?ws=1` mode: POST returns JSON immediately, chunks arrive via WebSocket
 - **`_prepare_messages()`** — collapses `chunk` entries into `streaming` role so refresh during active streaming shows partial response
-- **20 new skills** — aim-agent-benchmark, amazon-writing, aspect-review, code-simplifier, builder-toolbox, code-task-generation, agent-builder, mossy, npm-brazil-integration, pipeline-workspace, code-search-cli, pe-finder, cloudwatch-isengard-url, code-doc-analyzer, estimate-tokens, mcp-configure-tools, mcp-debug, multi-badger, retrospective-thematic-analyzer, tiny-url
+- **20 new skills** — agent-benchmark, writing, aspect-review, code-simplifier, build-tools, code-task-generation, agent-builder, mossy, npm-build-integration, pipeline-workspace, code-search-cli, pe-finder, cloudwatch-url, code-doc-analyzer, estimate-tokens, mcp-configure-tools, mcp-debug, multi-badger, retrospective-thematic-analyzer, tiny-url
 
 ### Fixed
 - **`ws.send_str()` unawaited coroutine** — aiohttp 3.13's `send_str()` is a coroutine; was silently dropped as garbage-collected coroutine objects. Fixed with `asyncio.ensure_future()`.
@@ -1492,7 +1492,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Changelog rendering** — version popup uses full Markdown (headers, lists, bold)
 - **SSE auto-reconnect** — page auto-reloads when gateway restarts (no more stuck "Updating…" overlay)
 - **Post-update changelog** — automatically shows what's new on first visit after an update
-- **Watermark** — nav sidebar footer with links to Slack, Wiki, and phonetool
+- **Watermark** — nav sidebar footer with links to Slack, the wiki, and the team directory
 
 ## [0.1.4] — 2026-02-21
 
@@ -1533,7 +1533,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **`kirocrew status`** — new CLI command queries the running gateway for runtime stats
 - **Enhanced `kirocrew doctor`** — checks git, node, project dir, credentials, kiro-cli version, and gateway connectivity
 - **Remote dashboard access** — gateway startup prints hostname URL for remote desktop users
-- **Run from anywhere** — `bin/kirocrew` now works outside the Brazil workspace
+- **Run from anywhere** — `bin/kirocrew` now works outside the build workspace
 
 ### Improvements
 
@@ -1550,8 +1550,8 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 - **Config separation** — Dashboard MCP toggle/sync operations now write to `~/.kiro/agents/kirocrew.json` (installed config) instead of `agents/defaults.json` (project source of truth in git)
 - **kiro-cli MCP registration** — `sync_to_agent_config()` uses `kiro-cli mcp add --agent kirocrew --force` for proper server registration; falls back to direct JSON edit if kiro-cli is unavailable
 - **Probe result caching** — MCP probe results are cached for 30 minutes with TTL-based expiry; stale results show "Outdated" status badge
-- **Zero-to-running setup scripts** — Rewrote `setup.sh` to auto-install ALL dependencies from scratch (Midway → Builder Toolbox → brazilcli/kiro/aim/node → builder-mcp → build → agent config). No manual prerequisite steps required
-- **Windows setup script** — New `setup.ps1` (PowerShell) for Windows with the same zero-to-running flow using `pip install -e .` instead of brazil-build
+- **Zero-to-running setup scripts** — Rewrote `setup.sh` to auto-install ALL dependencies from scratch (enterprise SSO → build tooling → kiro/managed-agent/node → build → agent config). No manual prerequisite steps required
+- **Windows setup script** — New `setup.ps1` (PowerShell) for Windows with the same zero-to-running flow using `pip install -e .` instead of the build tool
 - **Windows launcher scripts** — New `bin/kirocrew.bat` (CMD) and `bin/kirocrew.ps1` (PowerShell) wrappers that set `KIROCREW_PROJECT_DIR` and invoke `python -m kiro_crew`
 - **DEPENDENCIES.md** — New document listing all dependencies with install order and platform-specific bootstrap commands
 
@@ -1597,7 +1597,7 @@ bolichen, Joe Guo, Sungjin Yoo, Tim Lee, Zezhen Xu
 
 ## [0.1.0] — 2026-02-20
 
-First release. KiroCrew is a personal AI agent for Amazon engineers — a thin orchestrator between user interfaces (CLI, Slack, Web Dashboard) and kiro-cli ACP (LLM calls, tool execution, MCP servers).
+First release. KiroCrew is a personal AI agent — a thin orchestrator between user interfaces (CLI, Slack, Web Dashboard) and kiro-cli ACP (LLM calls, tool execution, MCP servers).
 
 ### Core Architecture
 
@@ -1714,7 +1714,7 @@ First release. KiroCrew is a personal AI agent for Amazon engineers — a thin o
 ### Developer Experience
 
 - **Frontend HMR** — `./dev-frontend.sh` runs Vite dev server on port 3000 with API proxy
-- **Brazil Build** — `brazil-build` compiles Python + builds React frontend
+- **Build System** — the build tool compiles Python + builds React frontend
 - **Verbose Logging** — `-v` for INFO, `-vv` for DEBUG; runtime level control via dashboard
 - **Startup Banner** — Shows `kirocrew.localhost:7777` URL after session pool is warmed (~30s)
 

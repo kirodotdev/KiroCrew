@@ -1,6 +1,6 @@
 """Regression: the background MCP probe must use the bounded probe_all() path.
 
-Ported focused test for Mesh-2661 (upstream appended it to the poolable-API
+Ported focused test (upstream appended it to the poolable-API
 suite, which is not present in this fork).
 """
 
@@ -12,18 +12,18 @@ import pytest
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
-# ── Mesh-2661: background probe must use the bounded probe_all() path ──
+# ── background probe must use the bounded probe_all() path ──
 
 
 class TestBgMcpProbeBoundedFanout:
-    """Regression for Mesh-2661.
+    """Regression guard.
 
     ``_bg_mcp_probe`` previously ran its own unbounded ``asyncio.gather`` over
     every configured server, bypassing the ``_PROBE_MAX_CONCURRENCY`` semaphore
-    that ``probe_all`` carries (the Mesh-1968 fix). Under a network blip that
+    that ``probe_all()`` carries (the fix). Under a network blip that
     floods the loop's default executor and can starve the heartbeat into a
     watchdog ``_exit`` (full gateway restart). It MUST route through the bounded
-    ``probe_all`` path.
+    ``probe_all()`` path.
     """
 
     @pytest.mark.asyncio

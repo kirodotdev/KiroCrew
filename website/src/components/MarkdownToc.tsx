@@ -61,7 +61,7 @@ const TICK_WIDTH = [16, 11, 8, 6, 5]
 const tickWidth = (depth: number) => TICK_WIDTH[Math.min(depth, TICK_WIDTH.length - 1)]
 
 /**
- * Quip-style outline rail. A minimal column of tick marks is always pinned to
+ * Document-style outline rail. A minimal column of tick marks is always pinned to
  * the right edge of the scroll container and floats *over* the content (never
  * reflows it). Hover or focus expands it into a labeled flyout. The currently
  * scrolled section is tracked with an IntersectionObserver; click a tick or row

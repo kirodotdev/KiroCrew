@@ -1,11 +1,11 @@
-"""Amazon-overlay checks for the CPP consumption-site wiring.
+"""Enterprise-overlay checks for the CPP consumption-site wiring.
 
-These compose an ``amazon`` PlatformContext (via the companion if importable,
+These compose an ``enterprise`` PlatformContext (via the companion if importable,
 otherwise an inline overlay) and assert the wired consumption sites now reflect
-the EXTENDED values: sandbox dirs include ``.midway``; the effective deny set is
+the EXTENDED values: sandbox dirs include ``.sso``; the effective deny set is
 a superset of baseline + overlay and an overlay pattern is blocked through the
-hooks caller; the Slack gate is fail-closed; identity returns the amazon status;
-extra MCP servers land in the built agent config.
+hooks caller; the Slack gate is fail-closed; identity returns the enterprise
+status; extra MCP servers land in the built agent config.
 
 The standalone edition is verified separately in ``test_cpp_wiring_standalone``.
 The core never imports a companion package — the test does (it lives outside the
@@ -25,7 +25,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
 from kiro_crew.platform import (
     BASELINE_DENY,
-    PROFILE_AMAZON,
+    PROFILE_ENTERPRISE,
     PlatformCompositionError,
     PolicyAuthority,
     build_default_context,
@@ -34,33 +34,33 @@ from kiro_crew.platform import (
 )
 
 # Sentinel overlay values the test asserts on.
-_AMZN_SANDBOX_EXTRA = [".midway", ".ada"]
-_AMZN_DENY_EXTRA: Tuple[str, ...] = (
-    "*get_midway_cookie*",
-    "*mwinit*",
-    "*odin*",
+_ENT_SANDBOX_EXTRA = [".sso", ".enterprise-creds"]
+_ENT_DENY_EXTRA: Tuple[str, ...] = (
+    "*get_sso_cookie*",
+    "*sso_login*",
+    "*fetch_enterprise_token*",
     "*kerberos_ticket*",
-    "*isengard*",
-    "*conduit_credential*",
+    "*enterprise_secret*",
+    "*vault_credential*",
 )
-_AMZN_MCP_NAME = "builder-mcp"
-_AMZN_MCP_SPEC = {"command": "/usr/bin/true", "args": ["builder-mcp"]}
+_ENT_MCP_NAME = "enterprise-mcp"
+_ENT_MCP_SPEC = {"command": "/usr/bin/true", "args": ["enterprise-mcp"]}
 
 
-# ── Inline Amazon overlay adapters (used when the companion isn't installed) ──
+# ── Inline enterprise overlay adapters (used when the companion isn't installed) ──
 
 
-class _AmazonSandboxPolicy:
+class _EnterpriseSandboxPolicy:
     def strict_dirs(self) -> List[str]:
-        return list(sandbox._STRICT_DIRS) + list(_AMZN_SANDBOX_EXTRA)
+        return list(sandbox._STRICT_DIRS) + list(_ENT_SANDBOX_EXTRA)
 
     def cc_dirs(self) -> List[str]:
-        return list(sandbox._CC_DIRS) + list(_AMZN_SANDBOX_EXTRA)
+        return list(sandbox._CC_DIRS) + list(_ENT_SANDBOX_EXTRA)
 
 
-class _AmazonOverlay:
+class _EnterpriseOverlay:
     def extra_deny_patterns(self) -> Tuple[str, ...]:
-        return _AMZN_DENY_EXTRA
+        return _ENT_DENY_EXTRA
 
 
 class _FailClosedSlackGate:
@@ -71,103 +71,103 @@ class _FailClosedSlackGate:
         return False
 
 
-class _AmazonIdentity:
+class _EnterpriseIdentity:
     def status(self) -> Dict[str, object]:
-        return {"available": True, "issuer": "midway", "user": "test-user"}
+        return {"available": True, "issuer": "sso", "user": "test-user"}
 
-    async def status_line(self, prefix: str = "*Midway:*") -> str:
+    async def status_line(self, prefix: str = "*SSO:*") -> str:
         return f"{prefix} valid (12h)"
 
     def whoami(self) -> Optional[str]:
         return "test-user"
 
     def issuer(self) -> Optional[str]:
-        return "midway"
+        return "sso"
 
 
-class _AmazonMcpTooling:
+class _EnterpriseMcpTooling:
     def extra_mcp_servers(self) -> Dict[str, dict]:
-        return {_AMZN_MCP_NAME: dict(_AMZN_MCP_SPEC)}
+        return {_ENT_MCP_NAME: dict(_ENT_MCP_SPEC)}
 
     def extra_skills(self):
         return []
 
 
 @pytest.fixture
-def amazon_ctx(monkeypatch):
-    """Install an amazon PlatformContext and return it (companion or inline)."""
+def enterprise_ctx(monkeypatch):
+    """Install an enterprise PlatformContext and return it (companion or inline)."""
     cfg = KiroCrewConfig()
-    ctx = _compose_amazon_context(cfg, monkeypatch)
+    ctx = _compose_enterprise_context(cfg, monkeypatch)
     set_context(ctx)
     return ctx
 
 
-def _compose_amazon_context(cfg: KiroCrewConfig, monkeypatch):
+def _compose_enterprise_context(cfg: KiroCrewConfig, monkeypatch):
     """Compose via the companion if importable, else build the overlay inline."""
     try:
         from kiro_crew.platform.discovery import discover_companion_context
 
-        companion = discover_companion_context(PROFILE_AMAZON, cfg)
-        if companion is not None and companion.profile == PROFILE_AMAZON:
+        companion = discover_companion_context(PROFILE_ENTERPRISE, cfg)
+        if companion is not None and companion.profile == PROFILE_ENTERPRISE:
             return companion
     except Exception:
         pass  # companion absent or incompatible — fall back to inline overlay.
 
-    base = build_default_context(cfg, profile=PROFILE_AMAZON)
+    base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     return dataclasses.replace(
         base,
-        sandbox=_AmazonSandboxPolicy(),
-        security=PolicyAuthority(overlay=_AmazonOverlay()),
+        sandbox=_EnterpriseSandboxPolicy(),
+        security=PolicyAuthority(overlay=_EnterpriseOverlay()),
         slack_gate=_FailClosedSlackGate(),
-        identity=_AmazonIdentity(),
-        mcp_tooling=_AmazonMcpTooling(),
+        identity=_EnterpriseIdentity(),
+        mcp_tooling=_EnterpriseMcpTooling(),
     )
 
 
 # ── Task 2: sandbox dirs extended ──
 
 
-def test_sandbox_strict_dirs_include_midway(amazon_ctx) -> None:
-    strict = amazon_ctx.sandbox.strict_dirs()
-    assert ".midway" in strict
+def test_sandbox_strict_dirs_include_sso(enterprise_ctx) -> None:
+    strict = enterprise_ctx.sandbox.strict_dirs()
+    assert ".sso" in strict
     # Baseline dirs still present (ADD-only extension).
     assert set(sandbox._STRICT_DIRS) <= set(strict)
 
 
-def test_seatbelt_profile_hides_midway(amazon_ctx) -> None:
-    """The wired ``_build_seatbelt_profile`` now denies reads of ``.midway``."""
+def test_seatbelt_profile_hides_sso(enterprise_ctx) -> None:
+    """The wired ``_build_seatbelt_profile`` now denies reads of ``.sso``."""
     profile = sandbox._build_seatbelt_profile("strict")
-    assert ".midway" in profile
+    assert ".sso" in profile
     # And the cc branch keeps the .aws exclusion while adding overlay dirs.
     cc_profile = sandbox._build_seatbelt_profile("cc")
-    assert ".midway" in cc_profile
+    assert ".sso" in cc_profile
 
 
-def test_launcher_script_hides_midway(amazon_ctx) -> None:
-    """The wired ``_build_launcher_script`` embeds ``.midway`` in SENSITIVE_DIRS."""
+def test_launcher_script_hides_sso(enterprise_ctx) -> None:
+    """The wired ``_build_launcher_script`` embeds ``.sso`` in SENSITIVE_DIRS."""
     script = sandbox._build_launcher_script("strict")
-    assert ".midway" in script
+    assert ".sso" in script
 
 
 # ── Task 3: security deny floor extended (via the hooks caller) ──
 
 
-def test_effective_patterns_superset_of_baseline_and_overlay(amazon_ctx) -> None:
-    eff = set(amazon_ctx.security.effective_patterns())
+def test_effective_patterns_superset_of_baseline_and_overlay(enterprise_ctx) -> None:
+    eff = set(enterprise_ctx.security.effective_patterns())
     # Baseline is fully preserved (ADD-only floor) …
     assert set(BASELINE_DENY) <= eff
-    # … and the amazon overlay strictly extends it.  Both the real companion and
-    # the inline fallback contribute the midway-cookie deny.
+    # … and the enterprise overlay strictly extends it.  Both the real companion
+    # and the inline fallback contribute the sso-cookie deny.
     assert eff > set(BASELINE_DENY)
-    assert "*get_midway_cookie*" in eff
+    assert "*get_sso_cookie*" in eff
 
 
-def test_hooks_caller_blocks_overlay_pattern(amazon_ctx) -> None:
+def test_hooks_caller_blocks_overlay_pattern(enterprise_ctx) -> None:
     """The hooks.py deny check routes through the context authority overlay."""
     mgr = HookManager(HooksConfig())
     # An overlay-only pattern (not in baseline) is now blocked — proving the
     # hooks caller consults current_context().security, not bare security.
-    result = mgr.on_tool_call("please get_midway_cookie now")
+    result = mgr.on_tool_call("please get_sso_cookie now")
     assert result.action == TOOL_DENY
     # A baseline pattern is still blocked.
     assert mgr.on_tool_call("get_secret_foo").action == TOOL_DENY
@@ -178,21 +178,21 @@ def test_hooks_caller_blocks_overlay_pattern(amazon_ctx) -> None:
 # ── Task 4: Slack enterprise gate fail-closed ──
 
 
-def test_slack_gate_is_fail_closed(amazon_ctx) -> None:
+def test_slack_gate_is_fail_closed(enterprise_ctx) -> None:
     gate = current_context().slack_gate
     assert gate.validate_enterprise("xoxb-fake") is False
     assert gate.check_message_origin("TANY") is False
 
 
-# ── Task 5: Midway identity is the amazon one ──
+# ── Task 5: SSO identity is the enterprise one ──
 
 
-def test_identity_is_amazon(amazon_ctx) -> None:
+def test_identity_is_enterprise(enterprise_ctx) -> None:
     ident = current_context().identity
     status = ident.status()
-    # The amazon identity reports a positive/available state — the OSS stub
+    # The enterprise identity reports a positive/available state — the OSS stub
     # returns {"valid": False}, so any truthy availability/validity signal
-    # proves we're on the amazon adapter (companion: {"valid": True, ...};
+    # proves we're on the enterprise adapter (companion: {"valid": True, ...};
     # inline fallback: {"available": True, ...}).
     assert status.get("available") is True or status.get("valid") is True
     # And an SSO issuer is resolved (None on the OSS stub).
@@ -200,29 +200,29 @@ def test_identity_is_amazon(amazon_ctx) -> None:
 
 
 @pytest.mark.asyncio
-async def test_identity_status_line_nonempty(amazon_ctx) -> None:
-    line = await current_context().identity.status_line(prefix=" · midway")
+async def test_identity_status_line_nonempty(enterprise_ctx) -> None:
+    line = await current_context().identity.status_line(prefix=" · sso")
     assert line.strip() != ""
 
 
 # ── Task 6: extra MCP servers land in the built agent config ──
 
 
-def test_extra_mcp_server_in_agent_config(amazon_ctx) -> None:
+def test_extra_mcp_server_in_agent_config(enterprise_ctx) -> None:
     """``build_agent_config`` merges the edition-contributed MCP server."""
     cfg = agent.build_agent_config()
     servers = cfg.get("mcpServers", {})
-    assert _AMZN_MCP_NAME in servers
+    assert _ENT_MCP_NAME in servers
     # Managed servers are still present (ADD-only merge).
     assert "kirocrew-core" in servers
     assert "kirocrew-cron" in servers
 
 
-def test_extra_mcp_server_on_refresh(amazon_ctx) -> None:
+def test_extra_mcp_server_on_refresh(enterprise_ctx) -> None:
     """``_refresh_dynamic_fields`` also seeds the edition-contributed server."""
     existing: dict = {"name": "kirocrew", "mcpServers": {}}
     agent._refresh_dynamic_fields(existing)
-    assert _AMZN_MCP_NAME in existing["mcpServers"]
+    assert _ENT_MCP_NAME in existing["mcpServers"]
 
 
 def test_extra_mcp_servers_fails_closed_on_composition_error(monkeypatch) -> None:

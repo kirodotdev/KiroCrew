@@ -451,7 +451,7 @@ class TestDataclass:
         assert d["content"] == "secret"
 
 
-# ── Lifecycle events (Mesh-1654 Phase 5) ──────────────────────────────────
+# ── Lifecycle events (Phase 5) ──────────────────────────────────
 
 
 class TestLifecycleEvents:
@@ -588,7 +588,7 @@ class TestLifecycleEvents:
         assert after.events == events_before
 
 
-# ── source_path metadata (Mesh-1654 Phase 6) ───────────────────────────────
+# ── source_path metadata (Phase 6) ───────────────────────────────
 
 
 class TestSourcePath:
@@ -628,7 +628,7 @@ class TestSourcePath:
         assert results[0].name == "a"
 
 
-# ── Live-pointer behavior for file-backed artifacts (Mesh-1654 round 3) ──
+# ── Live-pointer behavior for file-backed artifacts (round 3) ──
 
 
 class TestLivePointer:
@@ -717,7 +717,7 @@ class TestLivePointer:
 
 
 class TestExplicitSnapshotModel:
-    """Mesh-1654 round 5: saves don't bump version unless snapshot=True.
+    """round 5: saves don't bump version unless snapshot=True.
 
     Versioning is now deliberate — like git commits. Saves silently update
     the live state. Snapshots create new numbered versions. This makes
@@ -788,7 +788,7 @@ class TestExplicitSnapshotModel:
 
 
 class TestLiveDirtyAndSnapshotAnytime:
-    """Mesh-1654 round 6: snapshot button works whenever live differs
+    """round 6: snapshot button works whenever live differs
     from the latest version, not just when there are unsaved edits."""
 
     def test_live_dirty_false_immediately_after_create(self, store: ArtifactStore) -> None:
@@ -874,7 +874,7 @@ class TestLiveDirtyAndSnapshotAnytime:
 
 
 class TestSourcePathSecurityHardening:
-    """AutoSDE round 12 fixes: path traversal + symlink bypass + UTF-8
+    """review-bot round 12 fixes: path traversal + symlink bypass + UTF-8
     truncation arithmetic."""
 
     def test_traversal_path_resolves_before_sensitive_check(
@@ -955,7 +955,7 @@ class TestSourcePathSecurityHardening:
 
 
 class TestRoundThirteenFixes:
-    """AutoSDE round 13 fixes: bounded read, event_type pre-validation,
+    """review-bot round 13 fixes: bounded read, event_type pre-validation,
     live_dirty not persisted."""
 
     def test_oversized_file_does_not_load_full_content_into_memory(
@@ -1095,7 +1095,7 @@ class TestRecordImpression:
         # session, even if the widget is emitted in several messages of
         # that session (different message_ts / widget_index) or the tab is
         # reloaded. A different session is a distinct breadcrumb. This is
-        # the Mesh-1715 fix — the same session was piling up duplicates.
+        # the fix — the same session was piling up duplicates.
         store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         _, a1 = store.record_impression(
             "x", by="user", session_id="s", message_ts="m1", widget_index=0
@@ -1119,7 +1119,7 @@ class TestRecordImpression:
         # subsequent `referenced` impression from that SAME session is
         # redundant — the session is already on the timeline. It must be
         # suppressed (no event appended). A different session with no CUD
-        # still records normally. Regression guard for the Mesh-1715
+        # still records normally. Regression guard for the
         # duplicate-`referenced`-on-widget-update bug.
         store.create(name="X", content="<div>x</div>", slug="x", kind="widget")
         store.update("x", content="<div>v2</div>", session_id="s1", actor="agent", snapshot=True)

@@ -1,5 +1,5 @@
 // Share panel for publishing a KiroCrew artifact to a sharing provider
-// (Mesh-1880). Rendered in the artifact detail page and (via the same
+//. Rendered in the artifact detail page and (via the same
 // component) the file side-panel after an auto-save. Handles both the
 // unpublished state (visibility + alias picker → Publish) and the published
 // state (stable link + copy, sharing management, version-sync status,
@@ -80,7 +80,7 @@ export function ArtifactSharePanel({
 
   // Providers that can host THIS artifact's kind, with their sharing/sync
   // descriptors. Drives the picker (shown only when >1 capable provider) and
-  // the per-provider sharing controls (Mesh-2445).
+  // the per-provider sharing controls.
   const { data: providersData } = useQuery({
     queryKey: ['publish-providers', artifact.kind],
     queryFn: () => api.getArtifactPublishProviders(artifact.kind),
@@ -434,7 +434,7 @@ export function ArtifactSharePanel({
                 disabled={busy}
                 onClick={() => {
                   // Confirm BEFORE mutating local state so cancelling PUBLIC leaves
-                  // the selection in sync with the server (AutoSDE).
+                  // the selection in sync with the server (per code review).
                   if (value === 'PUBLIC' && !window.confirm('Make this visible to everyone in your organization?')) {
                     return
                   }

@@ -356,7 +356,7 @@ async def _ensure_pip_available() -> tuple[bool, str]:
         [sys.executable, "-m", "ensurepip", "--upgrade"],
         mode="standard",
     )
-    sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
+    sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
     try:
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_argv,
@@ -479,7 +479,7 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
             )
             sandboxed_argv = cgroup_scope_argv(
                 sandboxed_argv
-            )  # cgroup DoS ceiling (Talos bdf0d7e5)
+            )  # cgroup DoS ceiling
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *sandboxed_argv,

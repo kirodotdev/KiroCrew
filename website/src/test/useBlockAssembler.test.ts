@@ -229,7 +229,7 @@ describe('parseBlocks', () => {
       expect(widget?.content).toBe('<div>body</div>')
     })
 
-    // Streaming regressions — addresses CR-273864809 revert reason
+    // Streaming regressions — addresses revert reason
     // ("The fix broke the streaming that contain `"). On the trailing line
     // of a streaming buffer, an unmatched opening backtick must be treated
     // as inline-code-still-arriving so a tag inside it doesn't transition

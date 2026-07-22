@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Config-driven via ``mcp_gateway.read_buffer_limit_bytes`` / env var
 # ``KIROCREW_MCP_READ_LIMIT``. Asyncio's stdlib default is 64 KiB which is
 # too small; the previous 1 MiB hard-coded value caused silent drops for
-# legitimate large responses (Mesh-2861).
+# legitimate large responses.
 _DEFAULT_READ_BUFFER_LIMIT = 64 * 1024 * 1024  # 64 MiB
 
 
@@ -54,7 +54,7 @@ def _resolve_read_buffer_limit() -> int:
     ``mcp_gateway.read_buffer_limit_bytes`` → hard-coded default. Previously only
     the env var was consulted, so the documented config key was a silent no-op —
     a user raising the limit to stop legitimate large responses being fast-failed
-    (Mesh-2861) saw no effect. Config read is function-level to avoid an import
+    saw no effect. Config read is function-level to avoid an import
     cycle and is best-effort (config unavailable at import → default).
     """
     raw = os.environ.get("KIROCREW_MCP_READ_LIMIT")

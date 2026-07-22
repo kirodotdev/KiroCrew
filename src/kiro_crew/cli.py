@@ -1792,7 +1792,7 @@ Examples:
         # main() detects the project dir (lru_cache then pins the empty result).
         set_build_info(git_build_info())
         _install_child_watcher()
-        # Single-writer guard (Mesh-2386): refuse a second gateway bound to this
+        # Single-writer guard: refuse a second gateway bound to this
         # KIROCREW_HOME so two ConversationLog writers can never clobber the same
         # session file. Held for the process lifetime; auto-released on death.
         try:

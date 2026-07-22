@@ -300,7 +300,7 @@ class TestMessagingGate:
         assert mcp_core._vet_messaging_governance("cli_chat") is None
 
     def test_per_app_profile_messaging_disable_is_consulted(self, monkeypatch):
-        # AutoSDE/CR-284272012: _vet_messaging_governance must pass
+        # review-bot: _vet_messaging_governance must pass
         # app=_governance_app() so a per-app profile that disables messaging is
         # consulted (per-app blast-radius containment), matching the channel /
         # memory_writes vetters. Policy enables messaging at the surface; an
@@ -391,7 +391,7 @@ class TestAppsGate:
         assert manager._app_activation_denied("anything") is None
 
     def test_host_bound_profile_governs_app_activation(self):
-        # CR-284272012 H-p4: app activation runs through the _host session key
+        # H-p4: app activation runs through the _host session key
         # (surface "host"), so a profile bound to surface:host narrows it on top
         # of the policy ceiling — an honest, stable bind target. Policy allows the
         # app; a host-bound profile denies it → activation blocked.
@@ -422,7 +422,7 @@ class TestAppsGate:
         assert manager._app_activation_denied("deploy-web") is not None
 
     def test_slack_bound_profile_does_not_leak_to_app_activation(self):
-        # CR-284272012 H-p4: a profile bound to surface:slack must NOT govern
+        # H-p4: a profile bound to surface:slack must NOT govern
         # host-side app activation (it did, accidentally, when an empty key
         # mis-classified to "slack"). The host caller uses surface "host", so a
         # slack-bound apps-deny does not apply.
@@ -502,7 +502,7 @@ class TestFilesystemEgressAtGate:
         # DENIED: without path normalization, fnmatch's ``*`` spans the ``..`` so
         # ``/home/u/workspace/../.bashrc`` matches ``/home/u/workspace/**`` and the
         # write is wrongly permitted (it resolves to ~/.bashrc, outside the
-        # allow-list) — a containment bypass. (CR-284272012 path-traversal finding.)
+        # allow-list) — a containment bypass. (path-traversal finding.)
         _install(
             {
                 "version": 1,
@@ -532,8 +532,8 @@ class TestFilesystemEgressAtGate:
     def test_filesystem_relative_path_cannot_dodge_absolute_deny(self, monkeypatch, tmp_path):
         # An agent-supplied RELATIVE path must not bypass an absolute DENY glob by
         # failing to match: ``_norm_item`` absolutizes it against the CWD first, so
-        # a relative path inside a denied tree is still blocked. (CR-284272012:
-        # before the fix the relative item stayed relative and never matched
+        # a relative path inside a denied tree is still blocked.
+        # (before the fix the relative item stayed relative and never matched
         # ``/<cwd>/secret/**``, so the deny silently failed open.)
         monkeypatch.chdir(tmp_path)
         cwd = str(tmp_path)
@@ -618,7 +618,7 @@ class TestFilesystemEgressAtGate:
         # mailto:/javascript:/data:/tel: use ':' without '://'. The scheme-less
         # retry must NOT mis-parse their payload as an authority — otherwise the
         # egress gate grounds its decision on a host the URL never contacts
-        # (e.g. mailto:user@evil.com → phantom "evil.com"). (CR-284272012.)
+        # (e.g. mailto:user@evil.com → phantom "evil.com").
         from kiro_crew.platform.governance import _url_host, classify_tool_args
 
         for u in (
@@ -815,7 +815,7 @@ def tmp_profile_dir(monkeypatch):
 
 
 class TestGovernanceDegradedIsObservable:
-    """A chokepoint that FAILS OPEN must not be silent (CR-284272012)."""
+    """A chokepoint that FAILS OPEN must not be silent."""
 
     def test_governance_permits_degrade_emits_warning_and_sel(self, monkeypatch, caplog):
         # Force an unexpected error inside resolve_active_scope so governance_permits
@@ -870,7 +870,7 @@ class TestGovernanceDegradedIsObservable:
     def test_sel_emit_failure_escalates_to_warning_even_when_silent(self, monkeypatch, caplog):
         # If the SEL write ITSELF fails AND log_warning=False (stdio path), the
         # fail-open would otherwise be completely invisible at prod log level.
-        # The SEL-emit failure must escalate to WARNING regardless. (CR-284272012.)
+        # The SEL-emit failure must escalate to WARNING regardless.
         import kiro_crew.sel as sel_mod
 
         def _boom(**kw):
@@ -918,7 +918,7 @@ class TestGovernanceDegradedIsObservable:
         # A stdio MCP caller passes log_warning=False INTO governance_permits.  The
         # common degrade (a resolution error) is caught INSIDE governance_permits
         # and never re-raises, so the caller's own outer except cannot suppress it
-        # — the flag must be honored at the inner emit point (CR-284272012 follow-up).
+        # — the flag must be honored at the inner emit point (follow-up).
         _install({"version": 1, "boot": {"fail_closed": True}})
 
         def _boom(*a, **k):
@@ -977,7 +977,7 @@ class TestGovernanceDegradedIsObservable:
         # The per-app fail-open must be attributable: the persisted SEL record
         # carries the ``app`` slug (so an investigator knows WHICH app's narrowing
         # was bypassed), and an empty session_key classifies source="unknown"
-        # rather than being mis-tagged "slack". (CR-284272012 follow-up #6/#8.)
+        # rather than being mis-tagged "slack". (follow-up #6/#8.)
         import json
 
         from kiro_crew.sel import SecurityEventLog
@@ -1014,7 +1014,7 @@ class TestMatchPathNormalization:
 
     Normalizing the pattern with ``os.path.normpath`` corrupts globs whose ``..``
     sits next to a wildcard (``/a/**/../b`` → ``/a/b``, dropping the ``**``),
-    widening an allow / shrinking a deny. (CR-284272012 follow-up.)
+    widening an allow / shrinking a deny. (follow-up.)
     """
 
     def test_traversal_item_does_not_satisfy_allow_prefix(self):
@@ -1039,7 +1039,7 @@ class TestMatchPathNormalization:
         assert _match_path(item, pat) == fnmatch.fnmatchcase(item, pat)
 
 
-# ── AVP-23427: chokepoints fail CLOSED on governance error ──
+# ── chokepoints fail CLOSED on governance error ──
 class TestChokepointsFailClosed:
     def test_vet_spawn_governance_denies_on_error(self, monkeypatch):
         """A governance evaluation error must DENY the spawn (return a reason)."""

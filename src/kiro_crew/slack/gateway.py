@@ -341,7 +341,7 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
     1. Strip leading status prefix (e.g. ``Running: ``).
     2. Strip ACP ``mcp__<server>__<Tool>`` prefix.
     3. Strip runtime ``@<server>/<Tool>`` prefix — kiro-cli titles arrive as
-       ``Running: @builder-mcp/ReadInternalWebsites`` at the gateway.
+       ``Running: @example-mcp/SomeTool`` at the gateway.
 
     Only the **bare tool name** is tested against the frozenset.
 
@@ -352,7 +352,7 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
     name = event_title.strip()
     if not name:
         return False
-    # Strip leading status prefix: "Running: @builder-mcp/Tool" → "@builder-mcp/Tool"
+    # Strip leading status prefix: "Running: @example-mcp/Tool" → "@example-mcp/Tool"
     for prefix in _HEARTBEAT_STATUS_PREFIXES:
         if name.startswith(prefix):
             name = name[len(prefix):]
@@ -368,12 +368,12 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
             qualified = f"@{parts[1]}/{parts[2]}"
     elif name.startswith("@") and "/" in name:
         qualified = name
-    # Strip MCP server prefix: "mcp__builder-mcp__ToolName" → "ToolName"
+    # Strip MCP server prefix: "mcp__example-mcp__ToolName" → "ToolName"
     if name.startswith("mcp__"):
         parts = name.split("__", 2)
         if len(parts) == 3:
             name = parts[2]
-    # Strip @server/Tool prefix: "@builder-mcp/ReadInternalWebsites" → "ReadInternalWebsites"
+    # Strip @server/Tool prefix: "@example-mcp/SomeTool" → "SomeTool"
     if name.startswith("@") and "/" in name:
         name = name.rsplit("/", 1)[-1]
     if name in HEARTBEAT_SAFE_TOOLS:
@@ -406,8 +406,7 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
 # Prepended to every heartbeat task_text before ``ctx_builder.build_message``.
 # Inline injection survives context compaction and webhook-restored sessions
 # where skill / system-prompt copies of the same instruction can drift out of
-# effective context.  See CR-268592581 for the original gateway-injection
-# rationale.
+# effective context.
 _HEARTBEAT_KEEP_INJECTION = (
     "[HEARTBEAT TASK — you MUST include the keyword HEARTBEAT_KEEP "
     "in your response if this task is NOT complete. Omit the "
@@ -422,7 +421,7 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
     must NEVER widen the heartbeat allowlist — ``llm_helpers._resolve_permission``
     consults ``hooks.on_tool_call()`` BEFORE the ``on_tool_approval`` callback,
     so a user-config auto-approve would bypass ``_heartbeat_approval``
-    entirely (bolichen review on CR-277980962/r5).
+    entirely (per code review).
 
     The heartbeat-scoped hooks keep:
       - sensitive-path deny (always-on, structural — not from user config)
@@ -900,7 +899,7 @@ class GatewayOrchestrator:
         else with a SEL audit event.
 
         This is the "Option A" mitigation for the heartbeat security review
-        on CR-268592581: blanket ``AUTO_APPROVE`` was rejected because polled
+        on blanket ``AUTO_APPROVE`` was rejected because polled
         external content (CR comments, ticket bodies) is untrusted; a strict
         name-based allowlist gives heartbeat the tool access it needs while
         keeping the write surface closed to deny-by-default.
@@ -1191,7 +1190,7 @@ class GatewayOrchestrator:
     async def _deliver_cron_response(
         self, parent_key: str, text: str, *, silent: bool = False
     ) -> bool:
-        """Deliver a cron session's post-subagent response to Slack (Mesh-1892).
+        """Deliver a cron session's post-subagent response to Slack.
 
         When a cron session spawns subagents via ``spawn_run``, the agent's
         synthesized response was only appended to the dashboard notification
@@ -1216,7 +1215,7 @@ class GatewayOrchestrator:
         # even if a future caller forgets to pre-redact (security-controls).
         text, _ = redact_exfiltration_urls(text)
         text, _ = redact_credentials(text)
-        # Mesh-2603: render [OPTIONS: ...] tags as interactive buttons, matching
+        # render [OPTIONS: ...] tags as interactive buttons, matching
         # the interactive-handler / subagent-completion / dashboard-mirror paths.
         text, options = extract_options(text)
         for part in split_message(to_slack_mrkdwn(text), limit=_CRON_MSG_LIMIT):
@@ -1235,7 +1234,7 @@ class GatewayOrchestrator:
     def _cron_job_is_silent(self, parent_key: str) -> bool:
         """Return True if *parent_key* maps to a cron job marked silent.
 
-        Mesh-2451: ``_deliver_cron_response`` (Mesh-1892) routes a cron
+        ``_deliver_cron_response`` routes a cron
         session's post-subagent-completion turn to Slack, gated on
         ``info.silent`` — the *sub-agent's* flag. That flag is never set from
         the parent cron's ``silent`` setting (``spawn`` defaults it False and
@@ -1297,7 +1296,7 @@ class GatewayOrchestrator:
                 self.cron_svc.remove_job(job.id)
 
         async def _cron_callback(job: CronJob) -> str | None:
-            # Mesh-1026: helper picks stable vs ephemeral session key and
+            # helper picks stable vs ephemeral session key and
             # decides whether to prepend last_result, based on job.persistent_session.
             session_key, msg = build_cron_session_context(job)
 
@@ -1557,7 +1556,7 @@ class GatewayOrchestrator:
                 safe_model = redact_credentials(redact_exfiltration_urls(job.model)[0])[0]
                 return f"⚠️ Model '{safe_model}' unavailable; ran with default.\n\n" + text
 
-            # ── Sequential agent execution (Mimir integration) ──
+            # ── Sequential agent execution ──
             # When agent_sequence has multiple agents, run them sequentially
             # with per-agent session keys and per-job env vars.
             agents = job.agent_sequence if job.agent_sequence else []
@@ -2000,12 +1999,12 @@ class GatewayOrchestrator:
                     has_injecting = self._cron_injecting.get(session_key, 0) > 0
                     if has_pending or has_injecting:
                         logger.info("Cron '%s': deferring reset, subagents pending", job.name)
-                        # Mesh-1026: leave the active-session registration in place so
+                        # leave the active-session registration in place so
                         # the reaper can still target the ephemeral key if the deferred
                         # reset hangs. _subagent_done will clear it after the real reset.
                     else:
                         await self.sessions.reset(session_key)
-                        # Mesh-1026: reset done → reaper no longer needs this key.
+                        # reset done → reaper no longer needs this key.
                         if self.cron_svc is not None:
                             self.cron_svc.clear_active_session_key(job.id)
                 # Restore per-job env vars (single-agent path) — now handled via extra_env passthrough
@@ -2053,7 +2052,7 @@ class GatewayOrchestrator:
                 # text before message build.  This survives context
                 # compaction and webhook-restored sessions where skill /
                 # system-prompt copies of the same instruction can drift out
-                # of effective context (CR-268592581 rationale).
+                # of effective context.
                 injected = _HEARTBEAT_KEEP_INJECTION + task_text
                 # Off-loop: build_message embeds the episodic query.
                 full_message, _ = await run_in_embed_pool(
@@ -2142,7 +2141,7 @@ class GatewayOrchestrator:
             Multi-task heartbeat cycles run concurrently via
             ``asyncio.gather`` and share ``HEARTBEAT_KEY``.  A per-task
             ``reset()`` would tear down the session under sibling tasks
-            still in flight (bolichen review on CR-277980962/r5).
+            still in flight (per code review).
             ``recycle_heartbeat`` is conditional (only kills when context
             crosses the 70% threshold) so warm cycles reuse the same MCP
             toolbelt and avoid per-cycle cold-start cost.
@@ -3122,9 +3121,9 @@ class GatewayOrchestrator:
                     cron_response, _ = redact_credentials(cron_response)
                     body = f"{body}\n\n{cron_response}"
                     logger.info("Subagent %s → cron session %s", info.id, parent_key)
-                    # Mesh-1892: also deliver the synthesized response to Slack.
+                    # also deliver the synthesized response to Slack.
                     # Previously it only reached the dashboard notification body.
-                    # Mesh-2451: honor the parent cron job's silent flag too —
+                    # honor the parent cron job's silent flag too —
                     # info.silent is never set from the cron's silent setting for
                     # spawn_run sub-agents, so a silent cron would otherwise still
                     # post every subagent-completion turn to Slack.
@@ -3151,7 +3150,7 @@ class GatewayOrchestrator:
                         logger.info(
                             "Cron session %s: last subagent done, session reset", parent_key
                         )
-                        # Mesh-1026: reset succeeded → reaper no longer needs the
+                        # reset succeeded → reaper no longer needs the
                         # registered ephemeral key. Clear inside try so a failed
                         # reset leaves the key registered (ephemeral session may
                         # still be alive — reaper must be able to target it).
@@ -4013,7 +4012,7 @@ class GatewayOrchestrator:
             logger.warning("Auto-update failed", exc_info=True)
             if self.dashboard_state:
                 # Surface the platform-correct manual restart command so a failed
-                # auto-restart doesn't leave the user guessing (Mesh-2583).
+                # auto-restart doesn't leave the user guessing.
                 self.dashboard_state.push_update_progress(
                     "failed", f"Restart failed — run: {restart_command_hint()}"
                 )
@@ -4288,7 +4287,7 @@ class GatewayOrchestrator:
         # install's static assets and triggers graceful shutdown so the
         # supervisor can restart a fresh process. It first drains in-flight
         # backend turns (count_in_flight) so active work isn't killed
-        # mid-prompt by the restart. (Mesh-2690)
+        # mid-prompt by the restart.
         _watchdog = asyncio.create_task(
             run_stale_asset_watchdog(
                 shutdown_event, count_in_flight=self._count_in_flight_work

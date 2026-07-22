@@ -899,7 +899,7 @@ class TestMacOSControlPaths:
 
         loaded = MagicMock(
             returncode=0,
-            stdout='{\n\t"PID" = 1234;\n\t"Label" = "com.amazon.kirocrew.gateway";\n}\n',
+            stdout='{\n\t"PID" = 1234;\n\t"Label" = "dev.kirocrew.gateway";\n}\n',
             stderr="",
         )
         with patch("kiro_crew.service.macos.subprocess.run", return_value=loaded):
@@ -913,7 +913,7 @@ class TestMacOSControlPaths:
 
         loaded_no_pid = MagicMock(
             returncode=0,
-            stdout='{\n\t"Label" = "com.amazon.kirocrew.gateway";\n}\n',
+            stdout='{\n\t"Label" = "dev.kirocrew.gateway";\n}\n',
             stderr="",
         )
         with patch(
@@ -1025,7 +1025,7 @@ class TestMacOSControlPaths:
 
 class TestRestartCommandHint:
     """`restart_command_hint` returns a command that matches how the
-    service is actually installed (Mesh-2583).
+    service is actually installed.
 
     The bug was the update path and the Slack restart-failure hint both
     hardcoding ``systemctl --user restart kirocrew``, which fails on the
@@ -1059,7 +1059,7 @@ class TestRestartCommandHint:
 
     def test_never_returns_broken_user_scope_command(self, monkeypatch):
         """Regression: no platform may emit the broken `systemctl --user`
-        string that Mesh-2583 was filed against."""
+        string that was filed against."""
         from kiro_crew.service import common as svc_common
 
         for platform in Platform:

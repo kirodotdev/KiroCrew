@@ -16,7 +16,7 @@ export interface StatusData {
   no_crons?: boolean
   /** True when the gateway has a live Slack (Socket Mode) connection. */
   slack_connected?: boolean
-  /** Governance enforcement health (AVP-23427). */
+  /** Governance enforcement health. */
   governance?: 'active' | 'degraded' | 'disabled' | 'unknown'
 }
 
@@ -327,7 +327,7 @@ export interface ArtifactPublication {
 }
 
 /** A publishing provider's self-described capabilities for a given artifact kind,
- *  returned by GET /api/artifacts/publish-providers?kind=<kind> (Mesh-2445). */
+ *  returned by GET /api/artifacts/publish-providers?kind=<kind>. */
 export interface PublishProviderDescriptor {
   name: string
   display_name: string
@@ -428,19 +428,19 @@ export interface Artifact {
   /** True when the live state differs from the latest numbered snapshot.
    * Computed at GET time — accounts for both silent saves and external
    * file edits to source_path. Drives the "Snapshot Live" button
-   * (Mesh-1654 round 6). */
+   * (round 6). */
   live_dirty?: boolean
-  /** Publication state (Mesh-1880). Absent/null until the artifact has been
+  /** Publication state. Absent/null until the artifact has been
    * published to a sharing provider. */
   publication?: ArtifactPublication | null
-  /** Fork provenance (Mesh-1880 P1). Absent/null if not a fork. */
+  /** Fork provenance (P1). Absent/null if not a fork. */
   fork_metadata?: ForkMetadata | null
   /** Short, markdown-stripped, redacted content preview — only present when the
    * list was requested with ?snippet=1 (used by the command palette's
    * Artifacts provider). For a ?content=1 query it is match-centered. */
   snippet?: string
   /** Library folder this artifact is filed in ("" / absent = unfiled/root).
-   * Opaque folder id — resolve names via the artifact-folders list (Mesh-2720). */
+   * Opaque folder id — resolve names via the artifact-folders list. */
   folder_id?: string
   /** User pin/favorite mark. Metadata-only (no version bump). Drives the
    * All | Pinned filter on the Artifacts page. */
@@ -467,7 +467,7 @@ export interface SessionDoc {
 }
 
 /**
- * A folder in the local artifact library (Mesh-2720). Nested via `parent_id`
+ * A folder in the local artifact library. Nested via `parent_id`
  * (`""`/absent = root). Structurally compatible with `ChatFolder` so the
  * shared folder utilities (`orderFoldersWithPaths`, `computeReorderedFolders`,
  * `FolderMoveSubmenu`) work on both without adaptation.

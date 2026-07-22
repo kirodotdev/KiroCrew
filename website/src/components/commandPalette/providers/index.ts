@@ -1,7 +1,7 @@
 import type { ResourceProvider } from '../types'
 
 /**
- * Command palette provider registry (Mesh-2151 Search Everywhere).
+ * Command palette provider registry (Search Everywhere).
  *
  * Provider implementations register themselves here (via side-effect import or
  * an explicit {@link registerProvider} call). The `All` aggregator and the

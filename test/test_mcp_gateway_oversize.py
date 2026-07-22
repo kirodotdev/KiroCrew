@@ -1,4 +1,4 @@
-"""Tests for oversized MCP response handling (Mesh-2861).
+"""Tests for oversized MCP response handling.
 
 Covers:
 (a) Response under limit passes untouched
@@ -261,7 +261,7 @@ class TestConfigOverrides:
     # documented as settable in config.json, but the runtime globals in
     # mcp_gateway/pool.py were resolved ONLY from env vars — so the config keys
     # were dead (a user raising the 64 MiB limit per the docs got a silent
-    # no-op; oversize responses kept being fast-failed, Mesh-2861). The
+    # no-op; oversize responses kept being fast-failed). The
     # resolvers now consult the config value when the env var is unset.
     def test_read_buffer_limit_reads_config_when_env_unset(self, monkeypatch):
         import kiro_crew.mcp_gateway.pool as pool

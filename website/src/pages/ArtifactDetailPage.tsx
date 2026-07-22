@@ -33,8 +33,8 @@ import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCom
 import { PublishHub } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor } from '../types'
 
-// Artifact "Iterate" affordances are hidden pending an artifact redesign
-// (task P472753393). This gates every user-facing entry point into the
+// Artifact "Iterate" affordances are hidden pending an artifact redesign.
+// This gates every user-facing entry point into the
 // iterate flow — the header Sparkles button, the anchored-comment creation
 // path (`commentable`), the CommentsSidebar "Ask agent" action, and the
 // "click Iterate" tips — while leaving iterateWithAgent / buildPromptForChat
@@ -43,9 +43,8 @@ import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor } from '..
 // available; only the iterate round-trip and the anchored-selection creation
 // (which existed only to feed iterate in the fork) are hidden. Flip to `true`
 // (or delete the gate) when the redesign lands.
-// NOTE (MeshClaw sync): the upstream keeps these visible — do NOT let a sync
-// re-show them; see skills/meshclaw-sync/SKILL.md → "Fork-initiated UX
-// divergences" (verdict SKIP_FORKUX).
+// NOTE: the upstream project keeps these visible — this is a deliberate
+// fork-initiated UX divergence, so do NOT let an upstream sync re-show them.
 const SHOW_ARTIFACT_ITERATE = false
 
 function readThemeVars(): Record<string, string> {
@@ -62,7 +61,7 @@ function readThemeVars(): Record<string, string> {
 export { isEditableKind }
 
 /**
- * Header folder chip (Mesh-2720): shows where the artifact is filed and opens
+ * Header folder chip: shows where the artifact is filed and opens
  * a picker to move it (metadata-only — no version bump). Mirrors the tag-chip
  * row's inline-mutation pattern.
  */
@@ -279,14 +278,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [showPublish, setShowPublish] = useState(false)
-  // Tag editing (Mesh-1654 round 4): tags shown in the header are editable
+  // Tag editing (round 4): tags shown in the header are editable
   // inline. Adding a tag posts metadata-only (no version bump). Removing a
   // tag works the same way.
   const [addingTag, setAddingTag] = useState(false)
   const [searchParams] = useSearchParams()
   const [showShare, setShowShare] = useState(() => searchParams.get('share') === '1')
   // Tracks the publication error the user explicitly dismissed, so the
-  // auto-opened error panel can be closed (AutoSDE) yet re-opens when a *new*
+  // auto-opened error panel can be closed (per code review) yet re-opens when a *new*
   // (different) error appears. Comparing the value — not a bool — gives the
   // reset-on-new-error behaviour without a TDZ-prone effect over `artifact`.
   const [dismissedError, setDismissedError] = useState<string | null>(null)
@@ -379,7 +378,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // === detailQuery.data?.version as "current" — that conflates the
   // selected snapshot with Live and shows live content under a "vN" label,
   // which makes silent saves between snapshots look like they're mutating
-  // historical versions (Mesh-1654 round 11 bug fix, found by nrb).
+  // historical versions (round 11 bug fix).
   const isCurrent = !selectedVersion
 
   const versionQuery = useQuery<Artifact>({
@@ -409,7 +408,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     triggerRefresh()
   }, [artifact?.publication?.artifact_id, slug, triggerRefresh])
 
-  // ── Tag editing handlers (Mesh-1654 round 4) ────────────────────────────
+  // ── Tag editing handlers (round 4) ────────────────────────────
   const updateTagsMut = useCallback(async (newTags: string[]) => {
     if (!artifact) return
     setSaveError(null)
@@ -464,7 +463,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     try {
       // snapshot=true → bumps version (creates a new numbered snapshot).
       // snapshot=false → silently updates the live state without versioning,
-      // matching the explicit-snapshot model from Mesh-1654 round 5.
+      // matching the explicit-snapshot model from round 5.
       await api.updateArtifact(artifact.slug, { content: editedContent, snapshot })
       await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
       if (snapshot) {
@@ -472,7 +471,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         await queryClient.invalidateQueries({ queryKey: ['artifact-events', slug] })
         // Snapshot is a deliberate checkpoint — drop out of edit mode
         // so the user sees the result. Plain Save (silent) keeps the
-        // user in the editor (AutoSDE round 13 UX fix): after the query
+        // user in the editor (review round 13 UX fix): after the query
         // refetches, artifact.content matches editedContent, dirty
         // becomes false, and the user can keep iterating.
         setEditing(false)
@@ -510,7 +509,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
   // Snapshot the current live state without an edit. Used by the Snapshot
   // button when not editing — captures whatever is on disk / current.html
-  // as a new numbered version. Mesh-1654 round 6: snapshot anytime live
+  // as a new numbered version. round 6: snapshot anytime live
   // differs from the latest numbered version (e.g. after silent saves or
   // external file edits to source_path).
   const handleSnapshotLive = useCallback(async () => {
@@ -1321,7 +1320,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           />
         )}
 
-        {/* Phase 5 (Mesh-1654): lifecycle event log + activity timeline. */}
+        {/* Phase 5: lifecycle event log + activity timeline. */}
         <div className="mt-6">
           <h3 className="text-[13px] font-semibold text-text-strong mb-2">Activity</h3>
           <ActivityTimeline

@@ -535,9 +535,9 @@ class TestSearchSessions:
 
     def test_matches_content(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        log.append("alpha", "user", "discussed CR-268092218 today")
+        log.append("alpha", "user", "discussed CR-1234567 today")
         log.append("beta", "user", "unrelated chat")
-        results = log.search_sessions("CR-268092218")
+        results = log.search_sessions("CR-1234567")
         keys = [s["key"] for s in results]
         assert keys == ["alpha"]
 
@@ -1252,7 +1252,7 @@ class TestArchiveOnlyDropped:
 
 
 # ---------------------------------------------------------------------------
-# Tests for Mesh-611: consolidation offset only advances on success
+# Tests for consolidation offset only advances on success
 # ---------------------------------------------------------------------------
 
 
@@ -1296,7 +1296,7 @@ class TestConsolidationToolPolicy:
 
 
 class TestConsolidationOffset:
-    """Verify _prefs_offset only advances when _consolidate succeeds (Mesh-611)."""
+    """Verify _prefs_offset only advances when _consolidate succeeds."""
 
     def _make_consolidator(self, msg_count=_CONSOLIDATION_THRESHOLD):
         log = MagicMock()
@@ -1535,7 +1535,7 @@ class TestStopEventContextInjection:
 
 
 class TestAutoSkillHelpers:
-    """Module-level helpers for auto-skill eligibility (Mesh-677)."""
+    """Module-level helpers for auto-skill eligibility."""
 
     def test_count_tool_call_messages(self):
         from kiro_crew.history import _count_tool_call_messages
@@ -1587,7 +1587,7 @@ class TestAutoSkillHelpers:
 
 
 class TestDashboardSchemaToolCallCounting:
-    """Regression tests for dashboard-format tool messages (Mesh-677 schema fix)."""
+    """Regression tests for dashboard-format tool messages (schema fix)."""
 
     def test_count_dashboard_role_tool_messages(self):
         """Dashboard pipeline records tool calls as role='tool' messages."""
@@ -1925,7 +1925,7 @@ class TestProcessAutoSkillsIntegration:
 
 
 class TestAutoSkillSELAudit:
-    """Regression test for AutoSDE findings #1-4: SEL audit must fire on rejection paths."""
+    """Regression test for review-bot findings #1-4: SEL audit must fire on rejection paths."""
 
     @pytest.mark.asyncio
     async def test_refine_namespace_lock_rejection_emits_sel(self, tmp_path):
@@ -2052,7 +2052,7 @@ class TestAutoSkillSELAudit:
 class TestAutoSkillSELAuditCompleteness:
     """Every no-write decision must emit a SEL audit event.
 
-    Regression tests for AutoSDE round 2 findings — each distinct rejection
+    Regression tests for review-bot round 2 findings — each distinct rejection
     branch in _process_auto_skills must surface via sel().log_tool_invocation.
     """
 
@@ -2244,7 +2244,7 @@ class TestAutoSkillSELAuditCompleteness:
 
 
 class TestConsolidationPromptJsonShape:
-    """Regression test for AutoSDE round 2 finding #6: the new_skill prompt
+    """Regression test for review-bot round 2 finding #6: the new_skill prompt
     JSON shape example must itself be a valid JSON fragment so the LLM
     doesn't see an unclosed string and emit malformed output.
 
@@ -2267,7 +2267,7 @@ class TestConsolidationPromptJsonShape:
         # boundaries).
         assert '"description": "<=150 chars, starts with verb>",' in src, (
             "The description value in the new_skill prompt must end with "
-            "a closing quote before the comma.  AutoSDE round 2 finding #6 "
+            "a closing quote before the comma.  review-bot round 2 finding #6 "
             "caught this when it was missing; do not reintroduce."
         )
         # Same sanity check for procedure_md

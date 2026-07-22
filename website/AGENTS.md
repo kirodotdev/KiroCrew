@@ -193,9 +193,9 @@ import { ChatEmbed } from '@kirocrew/sdk'
 
 ### Testing
 
-- **jscpd duplication gate** — `brazil-build` fails if copy-paste duplication is detected. Extract shared logic into utilities.
-- **Vitest cobertura** — coverage emitted as cobertura XML for Coverlay CI integration.
-- **Coverlay integration** — coverage reports visible on CRs via Coverlay badges.
+- **jscpd duplication gate** — the build fails if copy-paste duplication is detected. Extract shared logic into utilities.
+- **Vitest cobertura** — coverage emitted as cobertura XML for CI coverage integration.
+- **Coverage integration** — coverage reports visible on pull requests via CI badges.
 
 ### URL Sanitization
 

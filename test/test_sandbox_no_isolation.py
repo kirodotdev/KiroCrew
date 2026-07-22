@@ -104,7 +104,7 @@ def test_scrub_env_extra_prefixes_strips_python_env():
 def test_strip_python_env_holds_on_fail_open_path(monkeypatch):
     """On the opted-in no-backend path wrap_argv returns argv unmodified (no
     launcher strips PYTHONPATH), so sandboxed_spawn_argv MUST strip the Python
-    env vars from the returned env itself (AutoSDE finding on Talos 92e24570)."""
+    env vars from the returned env itself (review-bot finding on security-review 92e24570)."""
     _reset_warned()
     monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "none")
     monkeypatch.setattr(sb, "_allow_no_isolation", lambda: True)

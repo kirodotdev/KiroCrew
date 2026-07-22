@@ -5,7 +5,7 @@ import type { ArtifactComment } from '../types'
 
 function mk(over: Partial<ArtifactComment> = {}): ArtifactComment {
   return {
-    id: 'c1', origin: 'local', scope: 'private', author: 'nrb', is_agent: false,
+    id: 'c1', origin: 'local', scope: 'private', author: 'alex', is_agent: false,
     body: 'a comment', thread_id: 'c1', status: 'open', sync_state: 'local_only',
     created_at: '2026-06-10T00:00:00Z', updated_at: '2026-06-10T00:00:00Z',
     ...over,
@@ -19,7 +19,7 @@ function base() {
   }
 }
 
-describe('CommentsSidebar orphaned anchors (Mesh-2752)', () => {
+describe('CommentsSidebar orphaned anchors', () => {
   it('shows the orphan warning and dims a thread whose anchor text is gone', () => {
     const root = mk({
       id: 'r', thread_id: 'r', body: 'orphaned thread',

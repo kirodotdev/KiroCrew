@@ -168,7 +168,7 @@ async def test_description_with_brackets():
 
 
 # ── 503 "aim CLI not found" guards on sibling handlers ─────────────────
-# Covers the new `_aim_path()` early-returns added in CR-272306350 r4
+# Covers the new `_aim_path()` early-returns added in review r4
 # at agents.py:510 (mcp list), 563 (skills list), 743 (agents list).
 
 @pytest.mark.asyncio

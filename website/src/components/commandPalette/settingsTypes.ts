@@ -1,5 +1,5 @@
 /**
- * Settings registry types (Mesh-2151 Search Everywhere — Settings provider).
+ * Settings registry types (Search Everywhere — Settings provider).
  *
  * Shared between:
  *  - The codegen script (`scripts/settingsExtract.ts`)

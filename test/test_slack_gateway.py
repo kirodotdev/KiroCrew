@@ -3751,7 +3751,7 @@ class TestCronSlackDeliveryFailure:
 
 
 class TestDeliverCronResponse:
-    """_deliver_cron_response — Slack delivery of post-subagent cron output (Mesh-1892)."""
+    """_deliver_cron_response — Slack delivery of post-subagent cron output."""
 
     def _orch_with_slack(self):
         orch = _make_orchestrator(owner_id="U_OWNER")
@@ -3812,7 +3812,7 @@ class TestDeliverCronResponse:
 
     @pytest.mark.asyncio
     async def test_renders_options_action_block(self):
-        # Mesh-2603: an [OPTIONS: ...] tag in cron output renders as an
+        # an [OPTIONS: ...] tag in cron output renders as an
         # actions block posted after the message.
         orch, slack = self._orch_with_slack()
         slack.post_blocks = AsyncMock()

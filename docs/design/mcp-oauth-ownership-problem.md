@@ -31,7 +31,7 @@ So in practice we live on Path A. The cost: **kiro-cli owns the entire OAuth cha
 - We can't proactively refresh tokens or check expiry.
 - We can't sign out of one MCP server without nuking kiro-cli's whole identity.
 - We can't have two KiroCrew users (or two agents in the same workspace) authenticated to the same MCP server with different accounts — kiro-cli's store is one-per-machine.
-- We can't show "GitHub: connected as zezhexu" in the dashboard, because that data lives in kiro-cli's store and we can't read it.
+- We can't show "GitHub: connected as octocat" in the dashboard, because that data lives in kiro-cli's store and we can't read it.
 
 The ACP-level workarounds we've built (the OAuth banner, dedup, completion patching, role-aware redaction, `chat_message_update`) are all symptoms of the same thing: **we're rendering UI for a flow we don't own.**
 
@@ -54,12 +54,12 @@ The SDK doesn't run OAuth, doesn't handle callbacks, doesn't store anything. Wha
 That inverts the ownership model: **KiroCrew owns the OAuth chain end-to-end.**
 
 - The dashboard runs the consent flow (open browser, receive callback, exchange code for token).
-- KiroCrew stores tokens in its own credential store — keychain on macOS, sealed SQLite on Linux, whatever fits Amazon's security posture.
+- KiroCrew stores tokens in its own credential store — keychain on macOS, sealed SQLite on Linux, whatever fits the deployment's security posture.
 - Token scoping is up to us: per-user × per-agent × per-server. Two agents in one workspace can hold tokens for two different GitHub accounts.
 - Refresh is a KiroCrew concern: a background task watches expiry, refreshes, hands the new bearer to the next `query()`.
 - Sign-out is a single dashboard click — delete the row from our store and revoke upstream.
 - Tokens never sit in `agent.json`. The file holds only the **shape** of the MCP server (URL, server-id, scope hints); the bearer is injected at runtime.
-- The dashboard can show "GitHub: connected as zezhexu, expires in 47 min" because the data lives in KiroCrew.
+- The dashboard can show "GitHub: connected as octocat, expires in 47 min" because the data lives in KiroCrew.
 
 ## The core problem in one sentence
 

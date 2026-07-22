@@ -2,8 +2,8 @@
 
 A non-standalone edition is supplied by a companion package that registers a
 ``kirocrew.plugins`` entry point pointing at its composition root
-(``build_amazon_context``).  Discovery is **fail-closed**: when the profile says
-amazon but no compatible companion is found, boot aborts rather than silently
+(``build_enterprise_context``).  Discovery is **fail-closed**: when the profile is
+non-standalone but no compatible companion is found, boot aborts rather than silently
 running with the open-source defaults (which could drop a security overlay).
 """
 
@@ -87,7 +87,7 @@ def discover_companion_context(
             f"profile={profile!r} but no {PLUGIN_GROUP!r} entry point is installed; "
             "refusing to boot with open-source defaults (fail-closed). Install the "
             "companion package, or set KIROCREW_PROFILE=standalone to run the "
-            "open-source edition (e.g. on a host with a stale ~/.midway)."
+            "open-source edition (e.g. on a host with a stale SSO marker)."
         )
     if len(eps) > 1:
         names = [e.name for e in eps]
@@ -106,7 +106,7 @@ def discover_companion_context(
         # gateway's ``run_first_run_setup`` seed, so without this a companion
         # would be rejected by the fail-closed default and boot would abort.
         # Marker-guarded + idempotent: a later DELETION is NOT re-seeded, so
-        # tampering still fails closed (AVP-23427).
+        # tampering still fails closed.
         seed_default_policy()
         policy = load_admission_policy()
     decision = evaluate_admission(ep, policy)

@@ -1,5 +1,5 @@
 /**
- * Chat sidebar "needs you" surfacing (Mesh-2398, converged design CR-284529836):
+ * Chat sidebar "needs you" surfacing (converged design):
  * the per-row blue dot is redefined to mean "the agent finished its turn and you
  * haven't opened the session" (finished + unread), not "any unseen output" — it
  * no longer lights mid-stream; a pending tool approval shows a yellow "Needs

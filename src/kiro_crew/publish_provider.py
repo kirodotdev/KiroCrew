@@ -1,5 +1,5 @@
 """Publish-provider interface for sharing KiroCrew artifacts to external
-destinations (Mesh-1880).
+destinations.
 
 A ``PublishProvider`` abstracts "publish this artifact's bytes to a destination
 and give me back a stable id + URL, then keep versions/sharing in sync." The

@@ -1,5 +1,5 @@
 /**
- * WorkflowRunTree — Claude-Code-style progress tree for a dynamic-workflow run.
+ * WorkflowRunTree — hierarchical progress tree for a dynamic-workflow run.
  *
  * Presentational component shared by:
  *   - the chat WorkflowProgressBar (expanded view above the chat input), and

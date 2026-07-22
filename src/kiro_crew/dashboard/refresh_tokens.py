@@ -218,8 +218,8 @@ class RefreshStateManager:
         if self._state_path is None:
             return
         # Hold the lock across the FULL serialize+write+rename so concurrent
-        # writers cannot clobber each other's atomic-rename. Per AutoSDE
-        # finding (CR-281631553 post 61): without this, thread A can snapshot
+        # writers cannot clobber each other's atomic-rename. Per a security
+        # review finding: without this, thread A can snapshot
         # state S1, thread B can mutate + persist S2, and A's later os.replace
         # overwrites S2 with stale S1 -- losing B's consumed-jti record. After
         # a restart, reuse detection would silently fail to fire for that jti.

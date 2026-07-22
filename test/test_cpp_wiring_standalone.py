@@ -29,10 +29,10 @@ def test_boot_standalone_no_signals(cfg: KiroCrewConfig, monkeypatch) -> None:
     """No env + no companion → standalone context installed."""
     monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
     monkeypatch.setattr("kiro_crew.platform.bootstrap.plugin_entry_points", lambda: [])
-    # Avoid a real ~/.midway on the dev box flipping the profile.
+    # Avoid a real SSO marker on the dev box flipping the profile.
     monkeypatch.setattr(
         "kiro_crew.platform.profile.Path.home",
-        lambda: _NoMidwayHome(),
+        lambda: _NoMarkerHome(),
     )
     ctx = boot_platform(cfg)
     assert ctx.profile == PROFILE_STANDALONE
@@ -93,7 +93,7 @@ def test_extra_mcp_servers_empty_standalone() -> None:
     assert ctx.mcp_tooling.extra_mcp_servers() == {}
 
 
-class _NoMidwayHome:
+class _NoMarkerHome:
     """A fake home dir whose ``/ ".midway"`` never exists."""
 
     def __truediv__(self, _other):

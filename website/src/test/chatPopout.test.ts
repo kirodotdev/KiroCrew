@@ -8,7 +8,7 @@ import {
 } from '../utils/chatPopout'
 
 /**
- * Pure-logic tests for the chat-popout coordination helpers (Mesh-1380). The
+ * Pure-logic tests for the chat-popout coordination helpers. The
  * BroadcastChannel/heartbeat wiring is intentionally not exercised here — these
  * pin the state math the main window relies on to track live popouts.
  */

@@ -240,7 +240,7 @@ class TestListAllAgentNames:
     def test_kirocrew_lite_excluded_from_kiro_agents(self, tmp_path: Path) -> None:
         """A ~/.kiro/agents/kirocrew-lite.json must ALSO be hidden.
 
-        Regression guard for the AutoSDE finding: the kirocrew-lite filter was
+        Regression guard for the review-bot finding: the kirocrew-lite filter was
         only applied to cc-plugins agents, so a kiro-side kirocrew-lite.json
         leaked into the listing despite the docstring claiming it is hidden.
         """

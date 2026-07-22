@@ -230,7 +230,7 @@ def test_terminate_handles_already_exited_proc() -> None:
     )
     # 30s: generous for `python -c pass`, but the package-builder fleet can
     # stall a fresh child process >5s under load (two consecutive Dry Run
-    # failures on CR-289659586 with TimeoutExpired at timeout=5).
+    # failures on with TimeoutExpired at timeout=5).
     proc.wait(timeout=30)
     assert proc.poll() is not None  # already exited
 
@@ -293,7 +293,7 @@ def test_terminate_pgid_noop_when_pid_gone() -> None:
     )
     # 30s: generous for `python -c pass`, but the package-builder fleet can
     # stall a fresh child process >5s under load (two consecutive Dry Run
-    # failures on CR-289659586 with TimeoutExpired at timeout=5).
+    # failures on with TimeoutExpired at timeout=5).
     proc.wait(timeout=30)
     # Reaped — getpgid raises ProcessLookupError, terminate_pgid swallows it.
     terminate_pgid(proc.pid)
@@ -538,7 +538,7 @@ def test_spawn_feature_gateway_happy_path() -> None:
 def test_spawn_feature_gateway_crons_opt_in() -> None:
     """``crons=True`` drops ``--no-crons`` so the scheduler thread runs.
 
-    Pins the API contract for cron-exercising tests (Mesh-1479 follow-up):
+    Pins the API contract for cron-exercising tests (follow-up):
     setting ``crons=True`` MUST allow the gateway to start its scheduler;
     the harness has no other lever for tests that need ``cron_add`` /
     ``cron_remove`` to actually fire.

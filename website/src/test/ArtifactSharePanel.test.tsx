@@ -65,7 +65,7 @@ const CHORUS_DESC: PublishProviderDescriptor = {
     supports_roles: false,
     supports_expiration: false,
     programmable: false,
-    out_of_band_url: 'https://chorus.aws.dev/doc/{external_id}',
+    out_of_band_url: 'https://docs.example.com/doc/{external_id}',
   },
   sync_model: { authority: 'remote', concurrency: 'crdt', collab_mode: 'live' },
   discovery_model: {
@@ -229,7 +229,7 @@ describe('ArtifactSharePanel — published (Artifactory / mirror)', () => {
   const published = makeArtifact({
     publication: {
       artifact_id: 'uuid-1',
-      view_url: 'https://artifactory.beta.harmony.a2z.com/artifact/uuid-1',
+      view_url: 'https://artifacts.example.com/artifact/uuid-1',
       provider: 'artifactory',
       collab_mode: 'mirror',
       visibility: 'PRIVATE',
@@ -238,7 +238,7 @@ describe('ArtifactSharePanel — published (Artifactory / mirror)', () => {
       last_synced_kirocrew_version: 3,
       version_map: { '3': 2 },
       published_at: '',
-      published_by: 'nrb',
+      published_by: 'alex',
       last_error: '',
     },
   })
@@ -246,11 +246,11 @@ describe('ArtifactSharePanel — published (Artifactory / mirror)', () => {
   it('shows the stable link and copies it', async () => {
     render(<ArtifactSharePanel artifact={published} />, { wrapper })
     const link = screen.getByLabelText('Share link') as HTMLInputElement
-    expect(link.value).toBe('https://artifactory.beta.harmony.a2z.com/artifact/uuid-1')
+    expect(link.value).toBe('https://artifacts.example.com/artifact/uuid-1')
     fireEvent.click(screen.getByLabelText('Copy link'))
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(
-        'https://artifactory.beta.harmony.a2z.com/artifact/uuid-1',
+        'https://artifacts.example.com/artifact/uuid-1',
       ),
     )
   })
@@ -265,7 +265,7 @@ describe('ArtifactSharePanel — published (Artifactory / mirror)', () => {
     render(<ArtifactSharePanel artifact={published} />, { wrapper })
     const open = screen.getByLabelText('Open in Artifactory') as HTMLAnchorElement
     expect(open.getAttribute('href')).toBe(
-      'https://artifactory.beta.harmony.a2z.com/artifact/uuid-1',
+      'https://artifacts.example.com/artifact/uuid-1',
     )
   })
 
@@ -307,7 +307,7 @@ describe('ArtifactSharePanel — published (Chorus / live)', () => {
   const live = makeArtifact({
     publication: {
       artifact_id: 'docABC',
-      view_url: 'https://chorus.aws.dev/doc/docABC',
+      view_url: 'https://docs.example.com/doc/docABC',
       provider: 'chorus',
       collab_mode: 'live',
       visibility: 'PRIVATE',
@@ -316,7 +316,7 @@ describe('ArtifactSharePanel — published (Chorus / live)', () => {
       last_synced_kirocrew_version: 3,
       version_map: { '3': 2 },
       published_at: '',
-      published_by: 'nrb',
+      published_by: 'alex',
       last_error: 'sync failed: boom',
     },
   })
