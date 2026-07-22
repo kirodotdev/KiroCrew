@@ -9019,9 +9019,9 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 1
         # The message must be re-queued at the front of the queue.
         assert (0, "test message") in calls
-        # No error shown on first attempt
-        error_msgs = [m for m in slot.messages if m.get("role") == "error"]
-        assert not any("Empty response" in m.get("content", "") for m in error_msgs)
+        # No notice card shown on first attempt — the empty is silently re-queued
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
         # Re-queue path must NOT persist/consolidate the spurious empty turn or
         # record success (item 3 of the CR).
         mock_save.assert_not_called()
@@ -9036,7 +9036,7 @@ class TestEmptyResponseRetry:
     @pytest.mark.asyncio
     async def test_empty_response_at_depth_gt0_shows_error_immediately(self, tmp_path: Path) -> None:
         """At _prompt_depth>0 an empty response is NOT silently retried — it shows the
-        terminal '⟳ Empty response — please retry.' card on the FIRST empty. The silent
+        terminal empty-response notice card on the FIRST empty. The silent
         re-queue is intentionally depth-0 only (nested tool-use turns must not silently
         re-queue and risk a runaway loop)."""
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
@@ -9046,8 +9046,8 @@ class TestEmptyResponseRetry:
 
         # depth>0: the `if _prompt_depth == 0 ...` guard is false, so the else fires —
         # terminal card immediately, no silent retry, no increment of the counter.
-        error_msgs = [m for m in slot.messages if m.get("role") == "error"]
-        assert any("Empty response" in m.get("content", "") for m in error_msgs)
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
@@ -9059,8 +9059,8 @@ class TestEmptyResponseRetry:
 
         await _run_chat(state, slot, "test message")
 
-        error_msgs = [m for m in slot.messages if m.get("role") == "error"]
-        assert any("Empty response" in m.get("content", "") for m in error_msgs)
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
         # After the terminal second-empty error, the counter resets so the NEXT
         # independent user turn gets a fresh one-retry budget (not sticky at 1).
         assert slot._empty_response_retries == 0
@@ -9086,7 +9086,7 @@ class TestEmptyResponseRetry:
 
     @pytest.mark.asyncio
     async def test_compaction_turn_no_empty_response_error(self, tmp_path: Path) -> None:
-        """Compaction turns set assistant_text='' but should NOT trigger empty response error."""
+        """Compaction turns set assistant_text='' but should NOT trigger the empty-response notice."""
         from kiro_crew.providers.base import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, LLMEvent
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
@@ -9100,12 +9100,12 @@ class TestEmptyResponseRetry:
 
         await _run_chat(state, slot, "/compact")
 
-        error_msgs = [m for m in slot.messages if m.get("role") == "error"]
-        assert not any("Empty response" in m.get("content", "") for m in error_msgs)
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
 
     @pytest.mark.asyncio
     async def test_clear_turn_no_empty_response_error(self, tmp_path: Path) -> None:
-        """Clear turns set assistant_text='' but should NOT trigger empty response error."""
+        """Clear turns set assistant_text='' but should NOT trigger the empty-response notice."""
         from kiro_crew.providers.base import EVENT_CLEAR_STATUS, EVENT_COMPLETE, LLMEvent
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
@@ -9119,12 +9119,12 @@ class TestEmptyResponseRetry:
 
         await _run_chat(state, slot, "/clear")
 
-        error_msgs = [m for m in slot.messages if m.get("role") == "error"]
-        assert not any("Empty response" in m.get("content", "") for m in error_msgs)
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
 
     @pytest.mark.asyncio
     async def test_agent_switch_turn_no_empty_response_error(self, tmp_path: Path) -> None:
-        """Agent switch turns set assistant_text='' but should NOT trigger empty response error."""
+        """Agent switch turns set assistant_text='' but should NOT trigger the empty-response notice."""
         from kiro_crew.providers.base import EVENT_AGENT_SWITCHED, EVENT_COMPLETE, LLMEvent
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
@@ -9138,8 +9138,8 @@ class TestEmptyResponseRetry:
 
         await _run_chat(state, slot, "test message")
 
-        error_msgs = [m for m in slot.messages if m.get("role") == "error"]
-        assert not any("Empty response" in m.get("content", "") for m in error_msgs)
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
 
 
 class TestExpandDollarSkills:

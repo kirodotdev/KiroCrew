@@ -276,6 +276,16 @@ const ChatMessageList = memo(function ChatMessageList({
       )
     }
 
+    if (m.role === 'notice') {
+      return (
+        <div key={key} className="px-5 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+          <div className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">
+            {m.content}
+          </div>
+        </div>
+      )
+    }
+
     if (m.role === 'thinking' || m.role === 'system' || m.role === 'done' || m.role === 'queued') return null
     if (m.role === 'file') return null // TODO: file download links
 

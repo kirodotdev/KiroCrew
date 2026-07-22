@@ -3772,15 +3772,23 @@ async def _run_chat(
                 # response. An ephemeral status indicator is not used here — it
                 # is emitted at turn-teardown and the frontend drops it once the
                 # streaming turn ends (so it never surfaces). Only the second
-                # consecutive empty surfaces a persisted error card below.
+                # consecutive empty surfaces a persisted notice card below.
                 slot._empty_response_retries += 1
                 slot.queue_insert(0, message)
                 _retrying_empty = True
             else:
-                # Single emit (see AcpProcessDied note): slot.append persists +
-                # broadcasts one chat_message via _on_message; no explicit broadcast_ws.
-                _empty_msg = "⟳ Empty response — please retry."
-                slot.append("error", _empty_msg, "msg msg-err")
+                # Recoverable, usually-transient: the runner already silently
+                # self-retried once (first empty = silent re-queue). Surface a
+                # soft "notice" card (not a red "error" card) so a self-healing
+                # event doesn't read like a crash — and phrase it to reflect
+                # that the retry already happened. Single emit (see AcpProcessDied
+                # note): slot.append persists + broadcasts one chat_message via
+                # _on_message; no explicit broadcast_ws.
+                _empty_msg = (
+                    "ℹ️ The model returned nothing this turn (it was retried "
+                    "automatically). Just send your message again to continue."
+                )
+                slot.append("notice", _empty_msg, "msg msg-info")
         # On an empty-response re-queue the turn produced nothing and will
         # immediately re-run; skip persistence / consolidation / success-recording
         # so we don't save a spurious empty turn or skew reliability metrics.
