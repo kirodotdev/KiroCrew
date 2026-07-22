@@ -294,8 +294,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # main turn immediately and interleave with the [Subagent completion event]
     # injections. Queue it instead (reusing the slot queue) — the queue drain
     # releases it after the last sub-agent finishes (see chat_runner _hold_users).
-    # Always on: steering is the effective opt-out.
-    if state.subagents is not None and state.subagents.running_agents_for(f"dashboard:{slot.key}"):
+    # Opt-out: if the user explicitly chose steer mode, honour it — start a new
+    # turn immediately so the message is processed without waiting for children.
+    if (
+        not body.get("steer")
+        and state.subagents is not None
+        and state.subagents.running_agents_for(f"dashboard:{slot.key}")
+    ):
         qid = slot.queue_append(message)
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
