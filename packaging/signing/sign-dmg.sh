@@ -26,7 +26,11 @@ set -euo pipefail
 DMG_PATH="${1:-}"
 CHANNEL="${2:-}"
 VERSION="${3:-}"
-DMG_IDENTIFIER="${DMG_IDENTIFIER:-com.amazon.kiro.crew.dmg}"
+# Default to the ONBOARDED app identifier: CDSigner authz is per-identifier
+# (Bindle-backed) -- an unfamiliar identifier (e.g. com.amazon.kiro.crew.dmg)
+# is rejected with a Bindle ownership-transfer demand. Proven by live probe:
+# com.amazon.kiro.crew signs successfully (task eb171910, 2026-07-21).
+DMG_IDENTIFIER="${DMG_IDENTIFIER:-com.amazon.kiro.crew}"
 
 if [ -z "$DMG_PATH" ] || [ -z "$CHANNEL" ] || [ -z "$VERSION" ]; then
   echo "Usage: $0 <dmg-path> <channel> <version>" >&2
@@ -73,16 +77,22 @@ aws s3 cp "$TAR_PATH" "s3://${AWS_SIGNING_BUCKET}/${INPUT_KEY}" --quiet || {
 # ── 3. Submit signing request ───────────────────────────────────────────────
 log "Submitting CDSigner DMG sign task..."
 
+# Manifest shape per the OFFICIAL CDSigner API guide ("macOS application
+# (.app, .pkg and .dmg) signing"): DMGs sign as type "app" with the DMG as
+# the output path -- the live API enumerates valid types and "dmg" is NOT
+# one (a "type: dmg" submission is rejected with a 400; proven by nightly
+# run 29884088951). The DMG must already be read-only UDZO, which the
+# build step guarantees (hdiutil create -format UDZO).
 REQUEST=$(python3 - "$DMG_NAME" "$DMG_IDENTIFIER" "$AWS_SIGNER_ROLE_ARN" "$AWS_SIGNING_BUCKET" "$INPUT_KEY" "$OUTPUT_KEY" <<'PYEOF'
 import json, sys
 name, identifier, role, bucket, in_key, out_key = sys.argv[1:7]
 print(json.dumps({
     "manifest": {
-        "type": "dmg",
+        "type": "app",
         "os": "osx",
         "name": name,
-        "outputs": [{"label": "macos-dmg", "path": name}],
-        "dmg": {
+        "outputs": [{"label": "macos", "path": name}],
+        "app": {
             "identifier": identifier,
             "signing_requirements": {
                 "certificate_type": "developerIDAppDistribution",
