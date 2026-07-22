@@ -9,7 +9,6 @@ import logging
 import math
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -265,12 +264,27 @@ _migrate_lock: asyncio.Lock | None = None
 
 
 async def _set_migrated(value: bool) -> None:
-    """Set memory.migrated in config.json."""
+    """Set memory.migrated in config.json.
+
+    If an existing config.json can't be parsed, do NOT write — overwriting it
+    with only the migration flag would destroy every other recoverable setting
+    (provider, Slack, dashboard, ...). Boot-time auto-migration calls this on
+    every startup while migrated is false, so a malformed config must fail
+    closed (skip the flag, keep the file) and let a later boot retry once the
+    user has repaired it, rather than silently clobbering their config.
+    """
     async with _get_config_lock():
         path = config_path()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        except Exception:
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning(
+                    "config.json is unparseable; skipping memory.migrated write to "
+                    "avoid clobbering other settings — will retry next boot"
+                )
+                return
+        else:
             data = {}
         data.setdefault("memory", {})["migrated"] = value
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -624,25 +638,10 @@ async def api_memory_stats(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     stats["embedding_provider"] = cfg.memory.embedding_provider
     stats["migrated"] = cfg.memory.migrated
-    # Check if legacy markdown memory has real content (for showing Migrate button)
-    from kiro_crew.memory import memory_dir  # noqa: F811
+    # Legacy markdown presence (diagnostics; migration is automatic at boot).
+    from kiro_crew.memory import legacy_memory_present  # noqa: F811
 
-    md = memory_dir()
-    has_legacy = False
-    for f in [md / "preferences.md", md / "projects.md"]:
-        if f.is_file():
-            has_legacy = any(
-                line.strip().startswith("- ") for line in f.read_text(encoding="utf-8", errors="replace").splitlines()
-            )
-            if has_legacy:
-                break
-    if not has_legacy and (md / "history").is_dir():
-        has_legacy = any((md / "history").glob("*.md"))
-    # Also check lessons.jsonl
-    lessons_path = Path.home() / ".kirocrew" / "lessons.jsonl"
-    if not has_legacy and lessons_path.is_file() and lessons_path.stat().st_size > 5:
-        has_legacy = True
-    stats["has_legacy_memory"] = has_legacy
+    stats["has_legacy_memory"] = legacy_memory_present()
     return web.json_response(stats)
 
 

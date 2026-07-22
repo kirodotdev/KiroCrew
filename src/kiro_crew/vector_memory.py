@@ -1663,13 +1663,78 @@ class VectorMemoryStore:
                 return None
         return None
 
+    def backfill_missing_embeddings(self) -> int:
+        """Compute embeddings for episodic rows that have none, then rebuild FAISS.
+
+        Entries written while the embedding model was still downloading (first
+        boot, or a migration that ran before the model landed) are stored with a
+        NULL ``embedding`` and are keyword-searchable only. Once the model is
+        present and ``embed_fn`` is bound, this sweep embeds those rows and
+        rebuilds the vector index so they become semantically searchable.
+
+        Idempotent and cheap in steady state: a no-op (returns 0) when there is
+        no ``embed_fn``, faiss/numpy are missing, or no NULL-embedding rows
+        remain. Synchronous + blocking (runs model inference) — call from a
+        worker thread / executor, never directly on the event loop.
+        """
+        if self.embed_fn is None or not _HAS_FAISS or not _HAS_NUMPY:
+            return 0
+        with self._db_lock:
+            rows = self.db.execute(
+                "SELECT id, text FROM episodic_memories "
+                "WHERE is_deleted = 0 AND embedding IS NULL"
+            ).fetchall()
+        if not rows:
+            return 0
+        embedded = 0
+        for row in rows:
+            vec = self._try_embed(row["text"])
+            if not vec:
+                continue
+            arr = np.asarray(vec, dtype=np.float32)
+            # Validate dimension before storing: a wrong-dim vector is skipped by
+            # build_faiss_index() but would be written non-NULL, so a later sweep
+            # would never retry it. Leave it NULL instead so it stays a candidate.
+            if arr.shape != (self._embedding_dim,):
+                logger.warning(
+                    "Backfill embed dim mismatch for %s (got %s, expected %d) — leaving NULL",
+                    row["id"],
+                    arr.shape,
+                    self._embedding_dim,
+                )
+                continue
+            # L2-normalize to match write_episodic(): the FAISS IndexFlatIP scores
+            # inner product, which only equals cosine similarity on unit vectors.
+            norm = float(np.linalg.norm(arr))
+            if norm > 0:
+                arr = arr / norm
+            blob = arr.tobytes()
+            with self._db_lock:
+                self.db.execute(
+                    "UPDATE episodic_memories SET embedding = ? WHERE id = ?",
+                    (blob, row["id"]),
+                )
+                self.db.commit()
+            embedded += 1
+        if embedded:
+            with self._db_lock:
+                self.build_faiss_index()
+                self.save_faiss_index()
+            logger.info("Backfilled embeddings for %d episodic entries", embedded)
+        return embedded
+
     def migrate_from_markdown(self) -> dict[str, int]:
         """Migrate legacy markdown memory files and lessons.jsonl into vector memory."""
-        base = Path.home() / ".kirocrew" / "workspace" / "memory"
+        # Honor KIROCREW_HOME via config_dir() so the source directory matches
+        # what legacy_memory_present() detects — hardcoding Path.home() would
+        # migrate a different dir than was detected under a custom home, then
+        # flip migrated=True having imported nothing (silent data loss).
+        home = config_dir()
+        base = home / "workspace" / "memory"
         counts = {"semantic": 0, "episodic": 0, "skipped": 0}
 
         # ── Lessons ──
-        lessons_path = Path.home() / ".kirocrew" / "lessons.jsonl"
+        lessons_path = home / "lessons.jsonl"
         if lessons_path.is_file():
             for line in lessons_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()

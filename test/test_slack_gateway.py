@@ -2639,6 +2639,158 @@ class TestStartEmbeddings:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Tests: _auto_migrate_memory (boot-time auto-migration + re-embed sweep)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAutoMigrateMemory:
+    """Background auto-migration of legacy markdown + re-embed sweep at boot."""
+
+    def _orch_with_store(self, *, migrated: bool):
+        orch = _make_orchestrator()
+        orch._cfg.memory.migrated = migrated
+        store = MagicMock()
+        store.embed_fn = None
+        store.migrate_from_markdown = MagicMock(
+            return_value={"semantic": 3, "episodic": 5, "skipped": 1}
+        )
+        store.backfill_missing_embeddings = MagicMock(return_value=0)
+        store._log_event = MagicMock()
+        orch.vector_memory = store
+        orch.consolidator = MagicMock(_migrated=False)
+        return orch, store
+
+    @staticmethod
+    def _ready_embedder():
+        """A shared embedder whose model is loaded (wait_ready -> True)."""
+        return MagicMock(wait_ready=MagicMock(return_value=True), is_ready=MagicMock(return_value=True))
+
+    @pytest.mark.asyncio
+    async def test_migrates_when_not_migrated_and_legacy_present(self):
+        orch, store = self._orch_with_store(migrated=False)
+        set_migrated = AsyncMock()
+        with patch("kiro_crew.slack.gateway.model_file_present", return_value=True), patch(
+            "kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])
+        ), patch(
+            "kiro_crew.slack.gateway.get_shared_embedder", return_value=self._ready_embedder()
+        ), patch(
+            "kiro_crew.memory.legacy_memory_present", return_value=True
+        ), patch.object(
+            orch, "_set_memory_migrated", set_migrated
+        ):
+            await orch._auto_migrate_memory()
+        store.migrate_from_markdown.assert_called_once()
+        set_migrated.assert_awaited_once_with(True)
+        assert orch._cfg.memory.migrated is True
+        assert orch.consolidator._migrated is True
+        # Ack: audit event with counts summary.
+        store._log_event.assert_called_once()
+        assert store._log_event.call_args[0][0] == "migration"
+        # Model present + loaded → re-embed sweep runs.
+        store.backfill_missing_embeddings.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_migrate_when_already_migrated(self):
+        orch, store = self._orch_with_store(migrated=True)
+        set_migrated = AsyncMock()
+        with patch("kiro_crew.slack.gateway.model_file_present", return_value=True), patch(
+            "kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])
+        ), patch(
+            "kiro_crew.slack.gateway.get_shared_embedder", return_value=self._ready_embedder()
+        ), patch(
+            "kiro_crew.memory.legacy_memory_present", return_value=True
+        ), patch.object(
+            orch, "_set_memory_migrated", set_migrated
+        ):
+            await orch._auto_migrate_memory()
+        store.migrate_from_markdown.assert_not_called()
+        set_migrated.assert_not_awaited()
+        # Phase 2 sweep still runs (independent of the migrated flag).
+        store.backfill_missing_embeddings.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sweep_deferred_when_model_not_ready(self):
+        # GGUF present on disk but the in-memory load hasn't finished:
+        # wait_ready() -> False, so the sweep is deferred (not run with a cold
+        # model that would embed zero rows).
+        orch, store = self._orch_with_store(migrated=True)
+        not_ready = MagicMock(
+            wait_ready=MagicMock(return_value=False), is_ready=MagicMock(return_value=False)
+        )
+        with patch("kiro_crew.slack.gateway.model_file_present", return_value=True), patch(
+            "kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])
+        ), patch(
+            "kiro_crew.slack.gateway.get_shared_embedder", return_value=not_ready
+        ), patch(
+            "kiro_crew.memory.legacy_memory_present", return_value=True
+        ), patch.object(
+            orch, "_set_memory_migrated", AsyncMock()
+        ):
+            await orch._auto_migrate_memory()
+        not_ready.wait_ready.assert_called_once()
+        store.backfill_missing_embeddings.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fresh_install_no_legacy_still_flips_migrated(self):
+        orch, store = self._orch_with_store(migrated=False)
+        set_migrated = AsyncMock()
+        with patch("kiro_crew.slack.gateway.model_file_present", return_value=True), patch(
+            "kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])
+        ), patch(
+            "kiro_crew.memory.legacy_memory_present", return_value=False
+        ), patch.object(
+            orch, "_set_memory_migrated", set_migrated
+        ):
+            await orch._auto_migrate_memory()
+        # No legacy → don't parse markdown, but still flip the flag + ack (0 counts).
+        store.migrate_from_markdown.assert_not_called()
+        set_migrated.assert_awaited_once_with(True)
+        assert orch._cfg.memory.migrated is True
+        store._log_event.assert_called_once()
+        assert "semantic=0 episodic=0 skipped=0" in store._log_event.call_args[0][4]
+
+    @pytest.mark.asyncio
+    async def test_model_absent_awaits_download_then_sweeps(self):
+        orch, store = self._orch_with_store(migrated=False)
+        # Model absent at migrate time, present after the download task resolves.
+        presence = iter([False, False, True, True])
+        orch._model_download_task = asyncio.ensure_future(asyncio.sleep(0))
+        with patch(
+            "kiro_crew.slack.gateway.model_file_present",
+            side_effect=lambda: next(presence, True),
+        ), patch(
+            "kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])
+        ), patch(
+            "kiro_crew.slack.gateway.get_shared_embedder", return_value=self._ready_embedder()
+        ), patch(
+            "kiro_crew.memory.legacy_memory_present", return_value=True
+        ), patch.object(
+            orch, "_set_memory_migrated", AsyncMock()
+        ):
+            await orch._auto_migrate_memory()
+        # Migrated even though the model was absent; sweep ran after the wait.
+        store.migrate_from_markdown.assert_called_once()
+        store.backfill_missing_embeddings.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_migrate_error_leaves_flag_false_and_survives(self):
+        orch, store = self._orch_with_store(migrated=False)
+        store.migrate_from_markdown.side_effect = RuntimeError("boom")
+        set_migrated = AsyncMock()
+        with patch("kiro_crew.slack.gateway.model_file_present", return_value=True), patch(
+            "kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])
+        ), patch(
+            "kiro_crew.memory.legacy_memory_present", return_value=True
+        ), patch.object(
+            orch, "_set_memory_migrated", set_migrated
+        ):
+            # Must not raise — boot survives.
+            await orch._auto_migrate_memory()
+        set_migrated.assert_not_awaited()
+        assert orch._cfg.memory.migrated is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Tests: _auto_apply_update discards local edits before staging frontend
 # ═══════════════════════════════════════════════════════════════════════════
 

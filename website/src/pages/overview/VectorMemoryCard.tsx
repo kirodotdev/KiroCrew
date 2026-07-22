@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Brain, Zap, Hourglass, Package, CheckCircle, XCircle, RefreshCw, Search, AlertTriangle, Check, X } from 'lucide-react'
+import { Brain, Hourglass, CheckCircle, XCircle, RefreshCw, Search, AlertTriangle, Check, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
@@ -64,13 +64,6 @@ interface AuditEvent {
   created_at?: string
 }
 
-interface MigrateResult {
-  error?: string
-  semantic?: number
-  episodic?: number
-  skipped?: number
-}
-
 interface ContextPreview {
   semantic_context?: string
   episodic_context?: string
@@ -120,7 +113,6 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
   const [eventFilter, setEventFilter] = useState<string>('all')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [evHasMore, setEvHasMore] = useState(false)
-  const [migrating, setMigrating] = useState(false); const [migrateResult, setMigrateResult] = useState<MigrateResult | null>(null)
   const [inspectorQuery, setInspectorQuery] = useState(''); const [preview, setPreview] = useState<ContextPreview | null>(null)
   const [writeError, setWriteError] = useState('')
   const [semFilter, setSemFilter] = useState('')
@@ -172,7 +164,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
       setEmbStatus(s)
       if (s.setup_step === 'done' || s.setup_step === 'error' || (s.setup_step === 'idle' && s.setup_error)) {
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-        if (s.setup_error) setMigrateResult({ error: s.setup_error })
+        // setup_error surfaces directly from embStatus in the error state.
         load().then(() => setEnabling(false))
       }
     }, 2000)
@@ -228,7 +220,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
   if (stats === null) return <Card><CardTitle><Brain className="lucide-inline" /> Vector Memory</CardTitle><p className="text-muted text-sm">Loading…</p></Card>
 
   const startEmbeddings = async () => {
-    setEnabling(true); setMigrateResult(null)
+    setEnabling(true)
     api.vectorEnableEmbeddings().catch(() => {})
     pollEmbeddingStatus()
   }
@@ -268,27 +260,17 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
       <CardTitle><Brain className="lucide-inline" /> Vector Memory <InfoTip text="Structured semantic (key-value) + episodic (conversation fragments) memory with vector search. Embeddings are always-on — the model downloads automatically in the background." /></CardTitle>
       {!active && !enabling && (
         <div className="flex flex-col gap-3 items-start">
-          {embStatus?.model_available
-            ? <p className="text-sm text-muted">Model loaded. Embedding engine is starting up.</p>
-            : <p className="text-sm text-muted">Vector memory is initializing. The embedding model (~610MB) downloads automatically in the background.</p>
+          {embStatus?.setup_error
+            ? (
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-danger"><XCircle className="lucide-inline" /> {embStatus.setup_error}</p>
+                <Btn onClick={startEmbeddings}><RefreshCw className="lucide-inline" /> Retry</Btn>
+              </div>
+            )
+            : embStatus?.model_available
+              ? <p className="text-sm text-muted">Model loaded. Embedding engine is starting up.</p>
+              : <p className="text-sm text-muted">Vector memory is initializing. The embedding model (~610MB) downloads automatically in the background, and legacy memory migrates on its own — no action needed.</p>
           }
-          <div className="flex gap-2 flex-wrap">
-            <SendBtn onClick={startEmbeddings}>{ embStatus?.model_available ? <><Zap className="lucide-inline" /> Start Embedding Engine</> : <><Brain className="lucide-inline" /> Retry Download</>}</SendBtn>
-            {!stats?.migrated && stats?.has_legacy_memory && !migrateResult?.semantic && (
-              <Btn disabled={migrating} onClick={async () => { setMigrating(true); setMigrateResult(null); const r = await api.vectorMigrate().catch(() => ({ error: 'Migration failed' })); setMigrateResult(r); setMigrating(false); await load() }}>
-                {migrating ? <><Hourglass className="lucide-inline" /> Migrating…</> : <><Package className="lucide-inline" /> Migrate from Markdown</>}
-              </Btn>
-            )}
-          </div>
-          {migrateResult && !migrateResult.error && (
-            <p className="text-sm text-ok"><CheckCircle className="lucide-inline" /> Migrated {migrateResult.semantic} semantic + {migrateResult.episodic} episodic entries ({migrateResult.skipped} skipped)</p>
-          )}
-          {migrateResult?.error && (
-            <div className="flex items-center gap-2">
-              <p className="text-sm text-danger"><XCircle className="lucide-inline" /> {migrateResult.error}</p>
-              <Btn onClick={startEmbeddings}><RefreshCw className="lucide-inline" /> Retry</Btn>
-            </div>
-          )}
         </div>
       )}
       {enabling && (() => {
@@ -360,17 +342,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
                 }</button>
             ))}
             </div>
-            <div className="flex gap-2 ml-auto">
-              {!stats?.migrated && stats?.has_legacy_memory && !migrateResult?.semantic && (
-                <Btn disabled={migrating} onClick={async () => { setMigrating(true); setMigrateResult(null); const r = await api.vectorMigrate().catch(() => ({ error: 'Migration failed' })); setMigrateResult(r); setMigrating(false); await load() }}>
-                  {migrating ? <><Hourglass className="lucide-inline" />…</> : <><Package className="lucide-inline" /> Migrate</>}
-                </Btn>
-              )}
-            </div>
           </div>
-          {migrateResult && !migrateResult.error && (
-            <p className="text-sm text-ok"><CheckCircle className="lucide-inline" /> Migrated {migrateResult.semantic} semantic + {migrateResult.episodic} episodic ({migrateResult.skipped} skipped)</p>
-          )}
         </div>
       )}
     </Card>

@@ -85,6 +85,7 @@ from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.embeddings import (
+    get_shared_embedder,
     make_sync_embed_fn,
     model_file_present,
     start_background_model_download,
@@ -532,6 +533,7 @@ class GatewayOrchestrator:
         self._socket_client: WSSocketModeClient | None = None
         self._wecom_client: "WeComClient | None" = None  # set by maybe_start_wecom
         self._model_download_task: "asyncio.Task[bool] | None" = None
+        self._auto_migrate_task: "asyncio.Task[None] | None" = None
         self._mcp_gateway_manager: GatewayManager | None = None
 
     def _count_in_flight_work(self) -> int:
@@ -3394,6 +3396,112 @@ class GatewayOrchestrator:
             )
         self._model_download_task = start_background_model_download()
 
+    async def _auto_migrate_memory(self) -> None:
+        """Migrate legacy markdown memory into the vector store, then backfill.
+
+        Runs once at boot as a fire-and-forget background task. Two idempotent
+        phases, all blocking work offloaded to the maintenance executor so the
+        event loop is never stalled:
+
+          1. Migrate (gated on ``memory.migrated`` being False): parse legacy
+             markdown/lessons via ``migrate_from_markdown``, flip
+             ``memory.migrated`` to True (even for a fresh install with zero
+             legacy entries, so everyone lands in vector-only mode), sync the
+             live consolidator, and acknowledge via an audit event + log line.
+          2. Re-embed sweep (gated on model readiness, independent of phase 1):
+             once the model file is present, embed any episodic rows written
+             without a vector (migrated before the model landed) and rebuild the
+             FAISS index. Self-healing across boots.
+
+        Never raises: any failure is logged and leaves ``migrated`` unchanged so
+        the next boot retries. Boot survives regardless.
+        """
+        from kiro_crew.memory import legacy_memory_present
+
+        store = self.vector_memory
+        loop = asyncio.get_running_loop()
+        try:
+            # ── Phase 1: migrate ──
+            if not self._cfg.memory.migrated:
+                # Bind embed_fn so migration writes real vectors when the model
+                # is already present; otherwise rows are written NULL and the
+                # sweep below (or a later boot) backfills them.
+                if store.embed_fn is None and model_file_present():
+                    store.embed_fn = make_sync_embed_fn()
+
+                had_legacy = await loop.run_in_executor(
+                    maintenance_executor(), legacy_memory_present
+                )
+                counts = {"semantic": 0, "episodic": 0, "skipped": 0}
+                if had_legacy:
+                    counts = await loop.run_in_executor(
+                        maintenance_executor(), store.migrate_from_markdown
+                    )
+                # Flip the flag for everyone (fresh installs included) so the
+                # app enters vector-only mode and stops writing markdown.
+                await self._set_memory_migrated(True)
+                self._cfg.memory.migrated = True
+                if self.consolidator is not None:
+                    self.consolidator._migrated = True
+                summary = (
+                    f"semantic={counts['semantic']} episodic={counts['episodic']} "
+                    f"skipped={counts['skipped']}"
+                )
+                try:
+                    store._log_event(
+                        "migration", "system", "auto_migrate", None, summary, "auto"
+                    )
+                except Exception:
+                    logger.debug("auto-migrate audit log failed", exc_info=True)
+                logger.info("Auto-migrated legacy memory: %s", summary)
+
+            # ── Phase 2: re-embed sweep ──
+            # Wait (non-blocking to boot — we are our own task) for the model, so
+            # rows written NULL during phase 1 get vectors.
+            if not model_file_present() and self._model_download_task is not None:
+                try:
+                    await self._model_download_task
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.debug("model download task errored", exc_info=True)
+            if model_file_present():
+                if store.embed_fn is None:
+                    store.embed_fn = make_sync_embed_fn()
+
+                # model_file_present() only means the GGUF is on disk — the
+                # in-memory load is async and the first embed returns None while
+                # it warms up. Block (in the worker thread) until the model is
+                # actually loaded, else backfill_missing_embeddings would embed
+                # zero rows and no later sweep is scheduled. On timeout, skip and
+                # let a later boot's sweep backfill.
+                def _wait_then_backfill() -> int:
+                    embedder = get_shared_embedder()
+                    # wait_ready() is on the llama.cpp backend but not the
+                    # EmbeddingBackend ABC (a swapped-in backend may not support
+                    # blocking-wait); fall back to is_ready() when absent.
+                    wait_ready = getattr(embedder, "wait_ready", None)
+                    ready = wait_ready(timeout=120) if callable(wait_ready) else embedder.is_ready()
+                    if not ready:
+                        logger.info(
+                            "Embedding model not ready within timeout; deferring "
+                            "re-embed sweep to a later boot"
+                        )
+                        return 0
+                    return store.backfill_missing_embeddings()
+
+                await loop.run_in_executor(maintenance_executor(), _wait_then_backfill)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Auto-migration failed; will retry next boot", exc_info=True)
+
+    async def _set_memory_migrated(self, value: bool) -> None:
+        """Persist ``memory.migrated`` to config.json (config-lock guarded)."""
+        from kiro_crew.dashboard.handlers.memory import _set_migrated
+
+        await _set_migrated(value)
+
     # ------------------------------------------------------------------
     # MCP Gateway
     # ------------------------------------------------------------------
@@ -3588,6 +3696,9 @@ class GatewayOrchestrator:
         # Cancel background model download if still in flight
         if self._model_download_task is not None and not self._model_download_task.done():
             self._model_download_task.cancel()
+        # Cancel background auto-migration if still in flight
+        if self._auto_migrate_task is not None and not self._auto_migrate_task.done():
+            self._auto_migrate_task.cancel()
 
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
@@ -3917,6 +4028,14 @@ class GatewayOrchestrator:
 
         # Wire in-process embeddings (always-on) and kick background model download
         await self._start_embeddings()
+
+        # Auto-migrate legacy markdown memory to the vector store in the
+        # background (fire-and-forget) — never blocks boot. Idempotent: gated on
+        # memory.migrated for the migrate phase; the re-embed sweep is cheap when
+        # nothing is pending.
+        self._auto_migrate_task = asyncio.create_task(self._auto_migrate_memory())
+        self._background_tasks.add(self._auto_migrate_task)
+        self._auto_migrate_task.add_done_callback(self._background_tasks.discard)
 
         # Start MCP gateway sidecar before any ACP session can spawn.  The
         # rewriter writes the agent-JSON overlay first so kiro-cli picks up

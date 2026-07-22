@@ -124,7 +124,7 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 - `status` dict (`step`: `idle`/`downloading`/`verifying`/`waiting_retry`/`ready`/`failed`, plus `error` and `attempt`) is readable at any time by the dashboard status endpoint
 
 **Dashboard Enable Flow** (non-blocking, retryable):
-- `POST /api/memory/enable-embeddings` — never blocks on the download: if the model is absent it kicks (or adopts an already-in-flight) background download with `DOWNLOAD_ATTEMPTS_INTERACTIVE` (3) attempts and returns immediately (`{"ok": true, "status": "downloading"}`); the frontend polls `embedding-status` for progress. When the model is present it installs faiss-cpu if missing, wires the embed function, and persists config
+- `POST /api/memory/enable-embeddings` — never blocks on the download: if the model is absent it kicks (or adopts an already-in-flight) background download with `DOWNLOAD_ATTEMPTS_INTERACTIVE` (3) attempts and returns immediately (`{"ok": true, "status": "downloading"}`); the frontend polls `embedding-status` for progress. When the model is present it installs faiss-cpu if missing, wires the embed function, and persists config. The dashboard no longer surfaces a proactive "Start Embedding Engine" button (embeddings auto-start at boot) — this endpoint now backs only the error-state **Retry** affordance
 - On failure: status resets to `idle` with error message, frontend shows error + Retry button
 - Prevents concurrent setup attempts (409 if already in progress)
 - `can_retry` flag in status response for frontend retry button
@@ -204,9 +204,14 @@ Parses legacy markdown files into structured memory:
 - `preferences.md`: bullet points with `key: value` → semantic entries (confidence 0.85, source "migration"). Bare prefix keys get `.default` suffix.
 - `projects.md`: project names → `project.name` semantic entries, details → episodic
 - `history/*.md`: daily summaries → episodic entries (importance 0.4)
-- **Embedding during migration**: when the model file is present, the dashboard handler sets `store.embed_fn` before calling migration. Each episodic entry is embedded in-process and stored with its FAISS vector, enabling vector search immediately after migration.
+- **Embedding during migration**: when the model file is present, the caller sets `store.embed_fn` before calling migration. Each episodic entry is embedded in-process and stored with its FAISS vector, enabling vector search immediately after migration.
 - Idempotent: re-running skips existing semantic entries (conflict resolution), episodic dedup via FAISS when available
-- Dashboard: "📦 Migrate from Markdown" button shown when `migrated=false` and legacy files exist
+
+**Automatic migration (boot-time, `GatewayOrchestrator._auto_migrate_memory`)**: migration is fully automatic — there is **no dashboard "Migrate" button**. Right after `_start_embeddings()`, the gateway schedules a fire-and-forget background task (retained in `_background_tasks`, cancelled on shutdown) that runs two idempotent phases, all blocking work offloaded to the maintenance executor so boot is never blocked:
+1. **Migrate** (gated on `memory.migrated == False`): detects legacy content via the shared `memory.legacy_memory_present()` helper (also used by `/api/memory/stats`), runs `migrate_from_markdown()`, then flips `memory.migrated=True` for **everyone** — fresh installs with zero legacy entries included, so all users land in vector-only mode. Syncs the live `consolidator._migrated`, and **acknowledges** with a `migration` audit event (`memory_events`, visible in the dashboard Audit tab, `source="auto"`, counts in `new_value`) plus a `logger.info` line. On error: logs and leaves `migrated=False` so the next boot retries.
+2. **Re-embed sweep** (gated on model readiness, independent of the migrated flag): once the model file is present (awaits the background download task if still in flight — safe, we are our own task), `VectorMemory.backfill_missing_embeddings()` embeds any episodic rows written with a NULL vector (migrated before the model landed) and rebuilds the FAISS index. Self-healing across boots and across a download that failed then later succeeded.
+
+The backend `POST /api/memory/migrate` endpoint and the `kirocrew memory migrate` CLI remain as a manual escape hatch, but the dashboard no longer calls them.
 
 ### Cross-Platform
 

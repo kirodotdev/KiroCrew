@@ -1526,3 +1526,73 @@ class TestEpisodicGhostVectorDedup:
             if e["event_type"] == "conflict_skip" and e.get("memory_key") == ghost_id
         ]
         assert conflicts == []
+
+
+@pytest.mark.skipif(
+    not (_HAS_FAISS and _HAS_NUMPY), reason="faiss/numpy not available"
+)
+class TestBackfillMissingEmbeddings:
+    """Re-embed sweep: embed episodic rows written without a vector."""
+
+    def test_backfills_null_rows_and_rebuilds_index(self, tmp_path: Path) -> None:
+        # Write episodic entries with NO embed_fn → embedding stored as NULL.
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.write_episodic("User standardized on Postgres for storage")
+        assert store.write_episodic("User prefers pytest over unittest for tests")
+        null_before = store.db.execute(
+            "SELECT COUNT(*) FROM episodic_memories WHERE embedding IS NULL"
+        ).fetchone()[0]
+        assert null_before == 2
+
+        # Bind an embed_fn returning a NON-unit vector and sweep.
+        store.embed_fn = lambda text: [0.1] * store._embedding_dim
+        embedded = store.backfill_missing_embeddings()
+        assert embedded == 2
+        null_after = store.db.execute(
+            "SELECT COUNT(*) FROM episodic_memories WHERE embedding IS NULL"
+        ).fetchone()[0]
+        assert null_after == 0
+        # Index rebuilt to include the freshly-embedded rows.
+        assert store._faiss_index is not None
+        assert store._faiss_index.ntotal == 2  # type: ignore[attr-defined]
+        # Stored vectors must be L2-normalized (IndexFlatIP scores IP == cosine
+        # only on unit vectors) — matching write_episodic().
+        import numpy as _np
+
+        blob = store.db.execute(
+            "SELECT embedding FROM episodic_memories WHERE is_deleted=0 LIMIT 1"
+        ).fetchone()[0]
+        stored = _np.frombuffer(blob, dtype=_np.float32)
+        assert abs(float(_np.linalg.norm(stored)) - 1.0) < 1e-5
+
+    def test_dim_mismatch_left_null_for_retry(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.write_episodic("A memory that will get a bad-dim embedding")
+        # embed_fn returns the WRONG dimension → row must stay NULL (not stored
+        # non-NULL, which would block every future backfill retry).
+        store.embed_fn = lambda text: [0.1] * (store._embedding_dim + 3)
+        assert store.backfill_missing_embeddings() == 0
+        null_count = store.db.execute(
+            "SELECT COUNT(*) FROM episodic_memories WHERE embedding IS NULL"
+        ).fetchone()[0]
+        assert null_count == 1
+
+    def test_noop_without_embed_fn(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.write_episodic("Some memory without any embedding attached")
+        # No embed_fn bound → sweep is a no-op, rows stay NULL.
+        assert store.backfill_missing_embeddings() == 0
+        null_count = store.db.execute(
+            "SELECT COUNT(*) FROM episodic_memories WHERE embedding IS NULL"
+        ).fetchone()[0]
+        assert null_count == 1
+
+    def test_noop_when_nothing_pending(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda text: [0.1] * store._embedding_dim
+        # No episodic rows at all → returns 0.
+        assert store.backfill_missing_embeddings() == 0

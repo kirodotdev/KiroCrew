@@ -442,7 +442,6 @@ export const api = {
   vectorEmbeddingStatus: () => fetch('/api/memory/embedding-status').then(j),
   vectorEnableEmbeddings: () => post('/api/memory/enable-embeddings').then(j),
   vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
-  vectorMigrate: () => post('/api/memory/migrate').then(j),
   vectorImport: (data: object) => post('/api/memory/import', data).then(j),
   vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
   memoryGraph: () => fetch('/api/memory/graph').then(j),

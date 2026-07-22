@@ -60,6 +60,31 @@ def memory_file() -> Path:
     return memory_dir() / PREFERENCES_FILE
 
 
+def legacy_memory_present() -> bool:
+    """True when legacy markdown memory has real content worth migrating.
+
+    Shared by the /api/memory/stats handler and the gateway's boot-time
+    auto-migration so both agree on what "there is something to migrate" means:
+    any ``- `` bullet in preferences.md/projects.md, any ``history/*.md`` file,
+    or a non-trivial ``lessons.jsonl``.
+    """
+    md = memory_dir()
+    for name in (PREFERENCES_FILE, PROJECTS_FILE):
+        f = md / name
+        if f.is_file() and any(
+            line.strip().startswith("- ")
+            for line in f.read_text(encoding="utf-8", errors="replace").splitlines()
+        ):
+            return True
+    history = md / HISTORY_DIR_NAME
+    if history.is_dir() and any(history.glob("*.md")):
+        return True
+    lessons_path = config_dir() / "lessons.jsonl"
+    if lessons_path.is_file() and lessons_path.stat().st_size > 5:
+        return True
+    return False
+
+
 # ── MemoryStore ──
 
 

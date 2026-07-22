@@ -428,3 +428,44 @@ class TestEnsurePipBootstrap:
 
         assert mem_mod._embedding_setup_status["step"] == "idle"
         assert "pip bootstrap" in str(mem_mod._embedding_setup_status["error"])
+
+
+class TestSetMigratedFailClosed:
+    """_set_migrated must not clobber an unparseable config.json.
+
+    Boot-time auto-migration calls _set_migrated(True) on every startup while
+    memory.migrated is false, so a malformed config must fail closed (skip the
+    write, preserve the file) rather than overwrite it with only the flag.
+    """
+
+    @pytest.mark.asyncio
+    async def test_malformed_config_is_not_overwritten(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{ this is not valid json ", encoding="utf-8")
+        with patch(f"{_MOD}.config_path", return_value=cfg_path):
+            await mem_mod._set_migrated(True)
+        # File is left byte-for-byte intact (no destructive rewrite).
+        assert cfg_path.read_text(encoding="utf-8") == "{ this is not valid json "
+
+    @pytest.mark.asyncio
+    async def test_valid_config_preserves_other_sections(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps({"agent": {"provider": "acp"}, "slack": {"command": "/kc"}}),
+            encoding="utf-8",
+        )
+        with patch(f"{_MOD}.config_path", return_value=cfg_path):
+            await mem_mod._set_migrated(True)
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert data["memory"]["migrated"] is True
+        # Other sections survive the write.
+        assert data["agent"]["provider"] == "acp"
+        assert data["slack"]["command"] == "/kc"
+
+    @pytest.mark.asyncio
+    async def test_missing_config_writes_fresh(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "config.json"  # does not exist
+        with patch(f"{_MOD}.config_path", return_value=cfg_path):
+            await mem_mod._set_migrated(True)
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert data["memory"]["migrated"] is True
