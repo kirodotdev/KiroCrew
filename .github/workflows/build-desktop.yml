@@ -33,9 +33,14 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            artifact-name: desktop-darwin-arm64
+            # 'unsigned-' prefix: this artifact is an inter-job handoff to the
+            # sign job, NOT an installable deliverable. Humans should download
+            # only the KiroCrew-notarized-* artifact. GitHub shows all uploaded
+            # artifacts on the run page with equal prominence, so the name is
+            # the only place to signal that.
+            artifact-name: unsigned-build-darwin-arm64
           - os: ubuntu-22.04
-            artifact-name: desktop-linux-x64
+            artifact-name: build-linux-x64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 

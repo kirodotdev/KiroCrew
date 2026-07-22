@@ -132,8 +132,10 @@ jobs:
 
       # Assemble release assets: everything built, with the macOS zip and DMG
       # replaced by the notarized ones from the notarize job. The unsigned
-      # electron-builder DMG (built before signing) must never ship -- it
-      # wraps an unsigned app and hits the Gatekeeper scare dialog.
+      # electron-builder DMG (built before signing) must never ship; the
+      # shipping DMG is Developer ID signed + notarized + stapled inside
+      # sign-and-notarize.yml (see its header note for the adhoc-DMG
+      # incident that made the signature mandatory).
       - name: Flatten artifacts (notarized macOS assets win)
         run: |
           mkdir -p release
