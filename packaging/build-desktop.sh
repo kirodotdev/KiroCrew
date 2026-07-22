@@ -289,7 +289,35 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
     EB_ARGS+=( --linux )
   fi
 
-  CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "${EB_ARGS[@]}"
+  # Start from a pristine output dir. A prior interrupted universal build can
+  # leave dist/mac-universal-<arch>-temp dirs behind (with a .DS_Store inside);
+  # those linger and re-trip the ENOTEMPTY cleanup below on every later run.
+  rm -rf dist
+
+  # macOS universal .DS_Store/ENOTEMPTY race:
+  # electron-builder's universal step stages each arch into
+  # dist/mac-universal-<arch>-temp, lipo-merges them, then removes the temp
+  # dirs with a recursive fs.rm. If macOS Desktop Services (Finder/Spotlight)
+  # drops a .DS_Store into a temp dir *during* that removal, Node's fs.rm --
+  # which performs no retries -- fails the final rmdir with ENOTEMPTY and the
+  # whole build aborts (electron-userland/electron-builder#6890). It is a
+  # transient race, so retry from a swept, clean dir a bounded number of times.
+  attempt=1; max_attempts=3
+  while : ; do
+    eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
+    if CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "${EB_ARGS[@]}" 2>&1 | tee "$eb_log"; then
+      rm -f "$eb_log"; break
+    fi
+    if grep -q "ENOTEMPTY" "$eb_log" && [ "$attempt" -lt "$max_attempts" ]; then
+      echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
+      find dist -name .DS_Store -delete 2>/dev/null || true
+      rm -rf dist/*-temp 2>/dev/null || true
+      rm -f "$eb_log"; attempt=$((attempt + 1)); sleep 2; continue
+    fi
+    rm -f "$eb_log"
+    echo "❌ electron-builder failed (not the .DS_Store race, or retries exhausted)." >&2
+    exit 1
+  done
 )
 
 # Universal post-gate: the staged shell binary must carry BOTH arch slices.
