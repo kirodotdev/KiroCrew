@@ -70,6 +70,7 @@ export default function SideChat({ slot }: { slot: string }) {
   const [draft, setDraft] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isNearBottomRef = useRef(true)
 
   const messages = reduxSide?.messages ?? []
@@ -113,6 +114,32 @@ export default function SideChat({ slot }: { slot: string }) {
       requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
     }
   }, [messages.length, lastMessageContent])
+
+  // Select-to-Ask seed: when the user clicks "Ask" in the selection toolbar,
+  // ChatPage opens this panel and fires a `side-seed` CustomEvent carrying the
+  // selected text. Prefill the draft with the selection as a grounding
+  // blockquote and focus the input so the user types their actual question
+  // (which then fires sideOpen → sideTurn as usual). Isolated from main context.
+  useEffect(() => {
+    const onSeed = (e: Event) => {
+      const detail = (e as CustomEvent<{ text?: string }>).detail
+      const sel = detail?.text?.trim()
+      if (!sel) return
+      const quoted = sel.split('\n').map(line => `> ${line}`).join('\n')
+      setDraft(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${quoted}\n\n` : `${quoted}\n\n`))
+      // Focus + place caret at the end so the user immediately types the question.
+      requestAnimationFrame(() => {
+        const el = textareaRef.current
+        if (el) {
+          el.focus()
+          const len = el.value.length
+          el.setSelectionRange(len, len)
+        }
+      })
+    }
+    window.addEventListener('side-seed', onSeed)
+    return () => window.removeEventListener('side-seed', onSeed)
+  }, [])
 
   const send = useCallback(() => {
     const q = draft.trim()
@@ -198,6 +225,7 @@ export default function SideChat({ slot }: { slot: string }) {
       )}
       <div className="border-t border-border p-2 flex items-end gap-2 shrink-0">
         <textarea
+          ref={textareaRef}
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
