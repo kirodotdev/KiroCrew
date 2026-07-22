@@ -395,6 +395,7 @@ async def test_cookie_server_port_name_denied_when_host_differs() -> None:
         "/assets/style.css",
         "/static/app.js",
         "/fonts/AWSDiatype-Regular.woff2",
+        "/vendor/tailwindcss-browser.js",
         "/logo.png",
         "/manifest.json",
         "/sw.js",

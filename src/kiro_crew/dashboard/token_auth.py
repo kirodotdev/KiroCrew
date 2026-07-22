@@ -346,7 +346,14 @@ _state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRE
 # HMAC path token minted by the authed /api/artifacts/{slug}/app-preview
 # endpoint (sandboxed preview iframes carry no cookies). See
 # dashboard/handlers/webapp_preview.py for the full security model.
-_BYPASS_PREFIXES = ("/assets/", "/static/", "/fonts/", "/artifact-app/")
+# /vendor/ holds same-origin vendored JS (the Tailwind v4 browser runtime at
+# /vendor/tailwindcss-browser.js plus app import-map shims) that sandboxed
+# widget/artifact iframes load via <script src>. Those iframes are null-origin
+# srcdoc sandboxes (widgetSrcdoc.ts), so the request carries no auth cookie;
+# without the exemption the middleware 403s the runtime and every <mcwidget>
+# renders unstyled (Tailwind classes silently ignored, inline styles only).
+# Same exposure class as /assets/: static non-secret files.
+_BYPASS_PREFIXES = ("/assets/", "/static/", "/fonts/", "/vendor/", "/artifact-app/")
 _BYPASS_EXACT = {
     "/logo.png",
     "/manifest.json",
