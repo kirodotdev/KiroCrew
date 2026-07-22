@@ -13,7 +13,7 @@ import { addNotification } from '../store/notificationsSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
   LoaderCircle, Check,
-  Ellipsis, RotateCw, FileText, GitCommit,
+  Ellipsis, RotateCw, FileText, GitCommit, Rocket,
 } from 'lucide-react'
 import * as api from './devFleetApi'
 
@@ -155,6 +155,7 @@ interface Worktree {
   last_updated_at?: number
   pr?: PrInfo | null; shipped?: boolean
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; legacy?: boolean
+  path?: string
 }
 interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string }
@@ -546,6 +547,33 @@ export default function DevFleetPage() {
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false) }
   }
 
+  async function makeLive(w: Worktree) {
+    // Only the already-live row is blocked. Main is a valid target when it is
+    // NOT live (after a cutover to a feature worktree, this is the way back).
+    if (w.is_live) return
+    if (!w.path) { notify('Cannot resolve worktree path for ' + w.name, { type: 'error' }); return }
+    const ok = await askConfirm('Make "' + w.name + '" live?',
+      'Swaps the code behind the live dashboard to this worktree (same port, same data). The gateway restarts and this page reconnects automatically. Refused unless the worktree is provisioned and built.',
+      { confirmLabel: 'Make live' })
+    if (!ok) return
+    setFlag(w.name + ':makelive', true)
+    try {
+      const r = await api.post<{ ok?: boolean; error?: string }>('/make-live', { path: w.path })
+      if (!r?.ok) { notify(r?.error || 'Make live failed', { type: 'error' }); setFlag(w.name + ':makelive', false); return }
+      // Gateway is restarting into the new worktree — reuse the restart overlay,
+      // poll until it answers again, then reload into the freshly-live code.
+      setRestarting(true)
+      await sleep(3000)
+      const deadline = Date.now() + 60000
+      while (Date.now() < deadline) {
+        try { await fetch('/', { signal: AbortSignal.timeout(3000) }); window.location.reload(); return } catch { /* still restarting */ }
+        await sleep(2000)
+      }
+      setRestarting(false); setFlag(w.name + ':makelive', false)
+      notify('Gateway still restarting after 60s \u2014 reload manually', { type: 'error' })
+    } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false); setFlag(w.name + ':makelive', false) }
+  }
+
   async function loadPodLogs(name: string) {
     setPodLogsLoading((l) => ({ ...l, [name]: true }))
     try {
@@ -616,6 +644,16 @@ export default function DevFleetPage() {
             {iconLabel(<RotateCw size={13} className="lucide-inline" />, 'Restart')}
           </Btn>
         )
+        // After a cutover to a feature worktree, main is dormant (is_live=false)
+        // and this inline control is the only way back to running main live.
+        // Consistent with makeLive()'s guard: shown iff the row is NOT live.
+        if (!w.is_live) {
+          out.push(
+            <Btn key="makelive" onClick={() => makeLive(w)} disabled={!!busy[w.name + ':makelive']} title="Repoint the live gateway back at main (restarts the gateway)">
+              {iconLabel(<Rocket size={13} className="lucide-inline" />, 'Make live')}
+            </Btn>
+          )
+        }
       }
       if (fleet?.build_pending) {
         out.push(<Badge key="bp" variant="warn">build pending \u2014 restart gateway to apply (kirocrew restart)</Badge>)
@@ -637,6 +675,7 @@ export default function DevFleetPage() {
       w.has_dist && !w.running ? { label: 'Spin up pod', icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
       w.running ? { label: 'Restart pod', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
       { label: 'Rebase onto main', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
+      !w.is_live ? { label: 'Make live', icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: !!busy[w.name + ':makelive'], title: 'Repoint the live gateway at this worktree (restarts the gateway)' } : null,
       w.running ? { label: 'Stop pod', icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
     ]} />)
     const rr = rebaseResult[w.name]

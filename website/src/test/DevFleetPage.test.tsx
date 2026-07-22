@@ -297,4 +297,96 @@ describe('DevFleetPage', () => {
     // Remove button
     expect(screen.getByText('Remove selected')).toBeInTheDocument()
   })
+
+  it('shows "Make live" in the row menu for a non-live worktree and opens a confirm dialog', async () => {
+    const FLEET_ONE = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, path: '/wt/feature-x' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_ONE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // Only the non-main row has a "More actions" menu.
+    fireEvent.click(screen.getByLabelText('More actions'))
+    const item = await screen.findByText('Make live')
+    fireEvent.click(item)
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    expect(screen.getByText('Make "feature-x" live?')).toBeInTheDocument()
+  })
+
+  it('hides "Make live" for the worktree that is already live', async () => {
+    const FLEET_LIVE = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'live-wt', is_main: false, running: false, has_dist: true, behind: 0, is_live: true, path: '/wt/live' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_LIVE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('live-wt')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    // Menu is open (Rebase is always present) but Make live is omitted on the live row.
+    expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
+    expect(screen.queryByText('Make live')).toBeNull()
+  })
+
+  it('shows an inline "Make live" on the MAIN row when main is NOT live (switch back after cutover)', async () => {
+    // A feature worktree is live; main is dormant (is_live:false). The main
+    // row must offer Make live so the operator can cut back to main.
+    const FLEET_MAIN_DORMANT = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: false, path: '/wt/main' },
+        { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, is_live: true, path: '/wt/feature-x' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_MAIN_DORMANT), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+    // The dormant main row exposes an inline Make live control (feature-x is
+    // live, so its own menu — unopened here — has no Make live to collide).
+    const btn = await screen.findByTitle('Repoint the live gateway back at main (restarts the gateway)')
+    expect(btn).toBeInTheDocument()
+    fireEvent.click(btn)
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    expect(screen.getByText('Make "main" live?')).toBeInTheDocument()
+  })
+
+  it('hides "Make live" on the MAIN row when main IS live', async () => {
+    const FLEET_MAIN_LIVE = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: true, path: '/wt/main' },
+        { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, is_live: false, path: '/wt/feature-x' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_MAIN_LIVE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // Main is live -> no inline Make live control on the main row (feature-x's
+    // menu is closed, so its Make live is not rendered either).
+    expect(screen.queryByTitle('Repoint the live gateway back at main (restarts the gateway)')).toBeNull()
+  })
 })

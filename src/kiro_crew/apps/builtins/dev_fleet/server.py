@@ -23,6 +23,7 @@ Routes (as seen by the backend after prefix stripping by gateway):
   POST /api/pod/token {name}
   POST /api/pod/provision {name}  -> start async build, returns {run_id}
   POST /api/rebase  {name}
+  POST /api/make-live {path, dry_run?}  -> repoint the live gateway at a worktree
   GET  /health                -> {"status": "ok"}
 """
 
@@ -303,18 +304,36 @@ async def _live_worktree_path() -> str | None:
     if sys.platform != "linux" or not shutil.which("systemctl"):
         _LIVE_WORKTREE = None
         return None
+    # Prefer WorkingDirectory: make-live always writes it alongside ExecStart,
+    # and the baseline unit sets it too. ``--value`` prints the bare path with
+    # no ``WorkingDirectory=`` prefix and, crucially, NO truncation at spaces —
+    # so a checkout path containing a space resolves correctly. The old
+    # ExecStart ``path=([^ ;]+)`` regex truncates at the first space, which
+    # (now that make-live escapes space paths into the drop-in) would leave
+    # is_live / already_live perpetually unmatched for such a worktree and
+    # drive pointless repeat restarts.
+    path = None
     rc, out, _err = await _run_cmd(
-        ["systemctl", "--user", "show", _LIVE_GATEWAY_UNIT, "-p", "ExecStart"],
+        ["systemctl", "--user", "show", _LIVE_GATEWAY_UNIT,
+         "--property=WorkingDirectory", "--value"],
         timeout=5,
     )
-    path = None
-    if rc == 0 and out:
-        m = re.search(r"path=([^ ;]+)", out)
-        if m:
-            exe = Path(m.group(1))
-            # <checkout>/.venv/bin/kirocrew -> <checkout>
-            if ".venv" in exe.parts:
-                path = str(exe.parents[2])
+    if rc == 0 and out.strip():
+        path = out.strip()
+    else:
+        # Fallback: parse ExecStart's ``path=`` when WorkingDirectory is empty
+        # (an older unit that predates the WorkingDirectory= directive).
+        rc, out, _err = await _run_cmd(
+            ["systemctl", "--user", "show", _LIVE_GATEWAY_UNIT, "-p", "ExecStart"],
+            timeout=5,
+        )
+        if rc == 0 and out:
+            m = re.search(r"path=([^ ;]+)", out)
+            if m:
+                exe = Path(m.group(1))
+                # <checkout>/.venv/bin/kirocrew -> <checkout>
+                if ".venv" in exe.parts:
+                    path = str(exe.parents[2])
     try:
         _LIVE_WORKTREE = str(Path(path).resolve()) if path else None
     except OSError:
@@ -1973,7 +1992,7 @@ def _audited(tool_name: str):
                     try:
                         parsed = json.loads(raw)
                         if isinstance(parsed, dict):
-                            t = parsed.get("name") or parsed.get("names")
+                            t = parsed.get("name") or parsed.get("names") or parsed.get("path")
                             if isinstance(t, str):
                                 target = t
                             elif isinstance(t, list):
@@ -2254,6 +2273,29 @@ _GATEWAY_SERVICE_CHECK_AT: float = 0.0
 _GATEWAY_SERVICE_TTL = 30.0
 _LIVE_GATEWAY_UNIT = "kirocrew-gateway.service"
 
+# Single-flights the make-live cutover. Two concurrent cutovers would race on
+# the shared drop-in (snapshot -> atomic-write -> daemon-reload -> systemd-run
+# -> rollback): one request's failure rollback could restore/delete the OTHER
+# request's successful override, restarting the gateway into the wrong
+# worktree. The mutation sequence in ``_make_live`` runs under this lock; a
+# second concurrent request fails fast with ``busy`` rather than queueing (a
+# queued cutover could apply a stale target after the winner already restarted
+# the gateway out from under us).
+_MAKE_LIVE_LOCK = asyncio.Lock()
+
+# Process-local "cutover committed" latch. ``systemd-run --collect ... restart``
+# only SCHEDULES the restart and returns immediately, so ``_MAKE_LIVE_LOCK`` is
+# released while the restart is still pending. Without this latch a second
+# cutover could then acquire the lock and mutate the drop-in for target B while
+# target A's already-scheduled restart tears this backend down mid-write —
+# leaving the loaded unit and the persisted drop-in disagreeing. Once a cutover
+# is successfully scheduled we set this True (BEFORE returning) and refuse every
+# further request for the rest of THIS process's life with ``restart_pending``.
+# It is deliberately process-local and never persisted: the fresh gateway the
+# restart spawns starts with it clear. Failure paths BEFORE successful
+# scheduling never set it, and ``dry_run`` never sets it.
+_MAKE_LIVE_COMMITTED = False
+
 
 def _gateway_unit_name() -> str:
     """Resolve the systemd unit of the gateway THIS backend belongs to.
@@ -2326,6 +2368,397 @@ async def api_dev_fleet_restart_gateway(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+# --- make-live: switch the live gateway to another worktree ---
+#
+# `_restart_gateway` only bounces the live unit in place — the shipped unit
+# file hardcodes WorkingDirectory/ExecStart/PATH, so there is no way to point
+# the live gateway at a DIFFERENT worktree. Make-live closes that gap with a
+# systemd drop-in that OVERRIDES those three fields (the main unit file is
+# never edited), then a detached restart applies it.
+
+
+def _in_pod() -> bool | None:
+    """Whether THIS backend runs inside a pod (config home under
+    ``.kirocrew-pods/<name>``) — same detection as _gateway_unit_name.
+
+    Returns ``True`` (definitely a pod), ``False`` (definitely not), or
+    ``None`` when pod status cannot be resolved (config home unresolvable).
+
+    Cutting the real live gateway from a pod plane is refused: a pod is a
+    throwaway test instance and must never repoint the operator's live
+    gateway. The ambiguous ``None`` case is fail-CLOSED by the caller
+    (``_make_live`` refuses with ``pod_indeterminate``) — an unresolvable
+    home must NEVER be treated as "not a pod", which would let a pod cut the
+    operator's live gateway (the previous fail-OPEN ``False`` did exactly
+    that)."""
+    try:
+        from kiro_crew.config.loader import config_dir
+
+        return config_dir().parent.name == ".kirocrew-pods"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dropin_path() -> Path:
+    """Absolute path of the make-live systemd drop-in for the live unit.
+
+    Honours ``$XDG_CONFIG_HOME`` (systemd --user reads units there when set)
+    and falls back to ``~/.config`` — a literal ``~/.config`` would be the
+    WRONG directory on a host that sets XDG_CONFIG_HOME, and the override
+    would silently never take effect."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else (Path.home() / ".config")
+    return base / "systemd" / "user" / f"{_LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
+
+
+class _UnsafeUnitValue(ValueError):
+    """A path/value cannot be safely serialised into a systemd unit directive.
+
+    Raised for a value containing a newline, NUL, or any other control
+    character. Such a value would split or truncate the drop-in, and because
+    the broken override is PERSISTED, the failed cutover would then poison
+    every subsequent restart of the live unit (the restart stops the gateway
+    but the malformed unit refuses to start, and recovery restarts hit the
+    same wall)."""
+
+
+# Control chars (C0 range + DEL) are unrepresentable in a single directive
+# value: NUL/newline split or truncate the unit; a tab is ambiguous whitespace.
+_SD_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# A value needs double-quoting only when it carries whitespace or a systemd
+# command-line / assignment metacharacter. A plain path is emitted verbatim so
+# ordinary worktrees render byte-for-byte identically to before this guard.
+_SD_NEEDS_QUOTE_RE = re.compile(r"""[\s"'\\$;`]""")
+
+
+def _sd_value(raw: str) -> str:
+    """Serialise *raw* for a systemd unit directive value.
+
+    All three directives make-live emits — ``WorkingDirectory``, ``ExecStart``
+    and ``Environment`` — undergo specifier expansion, so a literal ``%`` is
+    doubled to ``%%``. Control characters are rejected outright
+    (``_UnsafeUnitValue`` → ``unsafe_path``). Only when *raw* contains
+    whitespace or a systemd metacharacter is it wrapped in double quotes (with
+    ``\\`` and ``"`` backslash-escaped, per systemd's command-line C-style
+    quoting); a clean path is returned unquoted so existing units are
+    unchanged."""
+    if _SD_CTRL_RE.search(raw):
+        raise _UnsafeUnitValue(repr(raw))
+    escaped = raw.replace("%", "%%")
+    if _SD_NEEDS_QUOTE_RE.search(raw):
+        inner = escaped.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{inner}"'
+    return escaped
+
+
+def _dropin_content(worktree: Path, kcbin: Path) -> str:
+    """Render the drop-in that repoints the live unit at *worktree*.
+
+    The lone empty ``ExecStart=`` line RESETS the unit's ExecStart before the
+    replacement — systemd otherwise APPENDS, and a Type=simple service with
+    two ExecStart values is a fatal unit error. ``~`` is NOT expanded inside
+    ``Environment=``, so the operator bin dir is materialised to an absolute
+    path here (a literal ``~/.local/bin`` would corrupt PATH).
+
+    Every interpolated value passes through ``_sd_value`` so a worktree path
+    with spaces, ``%`` specifiers, or quotes is escaped (and a control-char
+    path rejected) rather than silently splitting/expanding the directive."""
+    venv_bin = worktree / ".venv" / "bin"
+    local_bin = Path.home() / ".local" / "bin"
+    path_env = ":".join(
+        [str(venv_bin), str(local_bin), "/usr/local/bin", "/usr/bin", "/bin"]
+    )
+    return (
+        "[Service]\n"
+        f"WorkingDirectory={_sd_value(str(worktree))}\n"
+        "ExecStart=\n"
+        f"ExecStart={_sd_value(str(kcbin))} gateway --no-open\n"
+        f"Environment={_sd_value('PATH=' + path_env)}\n"
+    )
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write *content* to *path* atomically: a temp file in the same directory
+    then ``os.replace`` (an atomic same-filesystem rename), so a crash or
+    partial write never leaves a half-written unit drop-in that systemd would
+    fail to parse."""
+    tmp = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex}"
+    try:
+        tmp.write_text(content)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _restore_dropin(dropin: Path, prior: str | None) -> bool:
+    """Restore the drop-in to its pre-cutover state after a failed cutover:
+    rewrite *prior* content, or delete the file when there was none. Returns
+    ``True`` when the on-disk state was restored; best-effort, returning
+    ``False`` on any OSError so the caller can report ``rolled_back: false``."""
+    try:
+        if prior is None:
+            dropin.unlink(missing_ok=True)
+        else:
+            _atomic_write_text(dropin, prior)
+        return True
+    except OSError:
+        return False
+
+
+async def _find_worktree_by_path(path: str) -> tuple[dict | None, str | None]:
+    """Resolve a discovered worktree by filesystem path.
+
+    Reuses the same ``git worktree list`` enumeration the fleet listing uses,
+    so the caller-supplied path is only ever a SELECTOR validated against the
+    server's authoritative set — an arbitrary path can never be made live."""
+    if not path:
+        return None, "'path' must be a non-empty string"
+    try:
+        want = Path(path).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None, f"invalid path: {path!r}"
+    for w in await _discover_worktrees():
+        try:
+            if Path(w["path"]).resolve() == want:
+                return w, None
+        except OSError:
+            continue
+    return None, f"path is not a known worktree: {path!r}"
+
+
+async def _live_user_unit_status() -> str:
+    """Classify the live gateway unit for make-live eligibility.
+
+    make-live writes a ``systemctl --user`` drop-in and restarts the --user
+    unit. A ``kirocrew service install`` SYSTEM unit
+    (``/etc/systemd/system/kirocrew.service``) is NOT controllable that way:
+    the drop-in would be written and the cutover would "succeed" while the
+    detached ``--user restart`` bounces nothing (a silent false success).
+    Gate on the unit actually being known to the --user manager
+    (``systemctl --user cat`` rc==0, same plane ``_restart_gateway`` acts on).
+
+    Returns:
+      ``"no_systemd"``   — not Linux / systemctl absent (make-live needs --user systemd);
+      ``"no_user_unit"`` — systemctl present but the live unit is not a loaded
+                           --user unit (a system-unit install, or not installed);
+      ``"ok"``           — the live unit is known to the --user manager.
+    """
+    if sys.platform != "linux" or not shutil.which("systemctl"):
+        return "no_systemd"
+    rc, _out, _err = await _run_cmd(
+        ["systemctl", "--user", "cat", _LIVE_GATEWAY_UNIT], timeout=5,
+    )
+    return "ok" if rc == 0 else "no_user_unit"
+
+
+async def _make_live(path: str, dry_run: bool = False) -> dict:
+    """Repoint the live gateway unit at *path* via a systemd drop-in.
+
+    Validation order (all enforced for ``dry_run`` too): the path is a known,
+    existing worktree (``unknown_path`` / ``missing_path``); NOT inside a pod,
+    fail-CLOSED on indeterminate pod status (``pod`` / ``pod_indeterminate``);
+    the live gateway is a loaded systemd ``--user`` unit (``no_systemd`` /
+    ``no_user_unit`` — a ``kirocrew service install`` SYSTEM unit cannot be
+    repointed this way); not already live (``already_live``); the worktree has
+    its own executable ``.venv/bin/kirocrew`` (else Provision -> ``missing_venv``
+    when absent, ``venv_not_executable`` when present but not +x) and a
+    built SPA ``dist/index.html`` (else Pull+Build -> ``missing_dist``). A real
+    cutover writes the drop-in, ``daemon-reload``s, then issues a DETACHED
+    restart (survives our death, mirroring ``_restart_gateway``) and
+    invalidates the live-worktree cache.
+    """
+    global _MAKE_LIVE_COMMITTED
+    # A cutover already scheduled in THIS process. systemd-run has returned but
+    # the restart is still pending, so refuse up-front (before any validation or
+    # dry_run plan) — any further mutation would race the pending restart.
+    if _MAKE_LIVE_COMMITTED:
+        return {"ok": False, "code": "restart_pending", "error": (
+            "a cutover has been scheduled; the gateway is restarting — "
+            "retry after it comes back"
+        )}
+    target, err = await _find_worktree_by_path(path)
+    if target is None:
+        return {"ok": False, "code": "unknown_path", "error": err}
+    real = Path(target["path"])
+    if not real.exists():
+        return {"ok": False, "code": "missing_path",
+                "error": f"worktree path no longer exists: {real}"}
+
+    pod = _in_pod()
+    if pod is None:
+        return {"ok": False, "code": "pod_indeterminate", "error": (
+            "cannot determine whether this backend runs inside a pod (config "
+            "home unresolvable) — refusing make-live to avoid repointing the "
+            "live gateway from an unattributable plane"
+        )}
+    if pod:
+        return {"ok": False, "code": "pod", "error": (
+            "refusing make-live from inside a pod — a pod is a throwaway test "
+            "instance and must never repoint the real live gateway "
+            "(run this from the live dashboard)"
+        )}
+
+    # The live gateway must be a loaded systemd --user unit, else the --user
+    # drop-in + restart is a silent no-op false success (a `kirocrew service
+    # install` SYSTEM unit is not controllable via `systemctl --user`).
+    unit_status = await _live_user_unit_status()
+    if unit_status == "no_systemd":
+        return {"ok": False, "code": "no_systemd", "error": (
+            "make-live requires the gateway to run as a systemd --user service"
+        )}
+    if unit_status != "ok":
+        return {"ok": False, "code": "no_user_unit", "error": (
+            f"the live gateway is not running as the user service "
+            f"{_LIVE_GATEWAY_UNIT} — make-live only supports systemd --user "
+            "installs (a `kirocrew service install` system unit cannot be "
+            "repointed this way)"
+        )}
+
+    live = await _live_worktree_path()
+    if live is not None and _same_path(str(real), live):
+        return {"ok": False, "code": "already_live",
+                "error": f"{real.name} is already the live gateway"}
+
+    kcbin = real / ".venv" / "bin" / "kirocrew"
+    if not kcbin.is_file():
+        return {"ok": False, "code": "missing_venv", "error": (
+            f"{real.name} has no .venv/bin/kirocrew — Provision it first "
+            "(row menu \u2192 Provision) before making it live"
+        )}
+    # A present-but-non-executable binary is worse than a missing one: the
+    # drop-in gets written and the old gateway is stopped, but the replacement
+    # can never start (systemd ExecStart requires +x) — leaving NO gateway
+    # running. Gate on the exec bit with a DISTINCT, actionable code.
+    if not os.access(kcbin, os.X_OK):
+        return {"ok": False, "code": "venv_not_executable", "error": (
+            f"{real.name} has a non-executable .venv/bin/kirocrew — run "
+            "`chmod +x` on it or re-Provision the worktree before making it "
+            "live (a non-executable binary stops the live gateway but cannot "
+            "start the replacement, leaving no gateway running)"
+        )}
+    dist_index = real / "src" / "kiro_crew" / "static" / "dist" / "index.html"
+    if not dist_index.is_file():
+        return {"ok": False, "code": "missing_dist", "error": (
+            f"{real.name} has no built dashboard "
+            "(src/kiro_crew/static/dist/index.html) — run Pull+Build first; "
+            "cutover without a built dist serves a broken dashboard"
+        )}
+
+    unit = _LIVE_GATEWAY_UNIT
+    dropin = _dropin_path()
+    try:
+        content = _dropin_content(real, kcbin)
+    except _UnsafeUnitValue as exc:
+        return {"ok": False, "code": "unsafe_path", "error": (
+            "refusing make-live: the worktree path is not safely representable "
+            "in a systemd unit directive (contains control characters): "
+            f"{_redact(str(exc))}"
+        )}
+    plan = {
+        "unit": unit,
+        "dropin_path": str(dropin),
+        "dropin_content": content,
+        "target": str(real),
+    }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    # Serialize the mutation sequence: two concurrent cutovers racing on the
+    # shared drop-in (snapshot -> write -> reload -> restart -> rollback) could
+    # have one request's rollback restore/delete the OTHER's successful
+    # override, restarting into the wrong worktree. Fail fast with ``busy`` on
+    # contention rather than queueing — a queued cutover would apply a stale
+    # target after the winner already restarted the gateway. The check and the
+    # acquire are atomic here (no ``await`` between them on the single-threaded
+    # event loop), so the busy response cannot itself race the lock.
+    if _MAKE_LIVE_LOCK.locked():
+        return {"ok": False, "code": "busy", "error": (
+            "another make-live cutover is in progress"
+        )}
+    async with _MAKE_LIVE_LOCK:
+        # Re-check the committed latch now that we hold the lock. A request
+        # that passed the entry check just before the WINNING cutover latched
+        # (the entry check and the lock acquire are separated by awaits) would
+        # otherwise fall through here and mutate the drop-in a second time while
+        # the winner's restart is already tearing us down.
+        if _MAKE_LIVE_COMMITTED:
+            return {"ok": False, "code": "restart_pending", "error": (
+                "a cutover has been scheduled; the gateway is restarting — "
+                "retry after it comes back"
+            )}
+        # Snapshot the prior drop-in (content, or None when absent) BEFORE
+        # writing so a failed cutover can be rolled back — a persisted-but-
+        # uninstalled override would otherwise silently activate on the NEXT
+        # unrelated restart. Write atomically (temp file + os.replace) so a
+        # partial write can't leave a truncated, unparseable unit either.
+        try:
+            dropin.parent.mkdir(parents=True, exist_ok=True)
+            prior_content = dropin.read_text() if dropin.exists() else None
+            _atomic_write_text(dropin, content)
+        except OSError as exc:
+            return {"ok": False, "code": "write_failed",
+                    "error": f"failed to write drop-in: {_redact(str(exc))}"}
+
+        rc, _out, stderr = await _run_cmd(
+            ["systemctl", "--user", "daemon-reload"], timeout=10,
+        )
+        if rc != 0:
+            rolled_back = _restore_dropin(dropin, prior_content)
+            # Re-reload (best-effort) so the loaded config matches the restored
+            # disk state rather than the rejected override.
+            await _run_cmd(["systemctl", "--user", "daemon-reload"], timeout=10)
+            return {"ok": False, "code": "reload_failed", "rolled_back": rolled_back,
+                    "error": _redact(stderr.strip()[:200]) or "daemon-reload failed"}
+
+        # The restart tears down THIS backend with the gateway, so schedule it
+        # via `systemd-run --collect` (same pattern as _restart_gateway) so the
+        # restart survives our own death.
+        rc, _out, stderr = await _run_cmd(
+            ["systemd-run", "--user", "--collect",
+             "systemctl", "--user", "restart", unit],
+            timeout=10,
+        )
+        if rc != 0:
+            rolled_back = _restore_dropin(dropin, prior_content)
+            # Nothing has restarted yet (the detached launch failed), so reload
+            # the reverted drop-in to keep the loaded config == disk.
+            await _run_cmd(["systemctl", "--user", "daemon-reload"], timeout=10)
+            return {"ok": False, "code": "restart_failed", "rolled_back": rolled_back,
+                    "error": _redact(stderr.strip()[:200]) or "systemd-run failed"}
+
+        # COMMITTED: systemd-run has scheduled the detached restart (it returns
+        # before the restart lands). Latch process-locally BEFORE returning so
+        # no further cutover can mutate the drop-in while the restart is pending
+        # — the fresh process the restart spawns starts with this clear.
+        _MAKE_LIVE_COMMITTED = True
+
+        # Invalidate the live-worktree cache so the next fleet poll re-resolves
+        # the live checkout (the unit's ExecStart only reflects the new path
+        # once the restart lands).
+        global _LIVE_WORKTREE, _LIVE_CHECK_AT
+        _LIVE_WORKTREE = None
+        _LIVE_CHECK_AT = 0.0
+
+        return {"ok": True, "cutover": True, "target": str(real), "plan": plan}
+
+
+@_audited("dev_fleet_make_live")
+async def api_dev_fleet_make_live(request: web.Request) -> web.Response:
+    body, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert body is not None
+    path = body.get("path")
+    if not isinstance(path, str) or not path:
+        return web.json_response(
+            {"error": "'path' must be a non-empty string"}, status=400
+        )
+    dry_run = body.get("dry_run")
+    if dry_run is not None and not isinstance(dry_run, bool):
+        return web.json_response({"error": "dry_run must be a boolean"}, status=400)
+    return web.json_response(await _make_live(path, dry_run is True))
+
+
 # =============================================================================
 # Application factory and main
 # =============================================================================
@@ -2351,6 +2784,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/pod/provision", api_dev_fleet_pod_provision)
     app.router.add_post("/api/rebase", api_dev_fleet_rebase)
     app.router.add_post("/api/restart-gateway", api_dev_fleet_restart_gateway)
+    app.router.add_post("/api/make-live", api_dev_fleet_make_live)
     app.on_startup.append(dev_fleet_startup)
     app.on_cleanup.append(dev_fleet_cleanup)
     return app
