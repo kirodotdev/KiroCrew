@@ -389,4 +389,70 @@ describe('DevFleetPage', () => {
     // menu is closed, so its Make live is not rendered either).
     expect(screen.queryByTitle('Repoint the live gateway back at main (restarts the gateway)')).toBeNull()
   })
+
+  it('compact row: PR badge is a link with PR title as hover title, and shows the summary one-liner', async () => {
+    const FLEET_CTX = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        {
+          name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0,
+          pr: { number: 42, state: 'OPEN', url: 'https://github.com/org/repo/pull/42', title: 'Add pagination' },
+          summary: 'feat: add pagination to users API',
+        },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_CTX), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // PR badge is wrapped in an <a> whose title attribute is the PR title.
+    const link = screen.getByTitle('Add pagination')
+    expect(link.tagName.toLowerCase()).toBe('a')
+    expect(link).toHaveAttribute('href', 'https://github.com/org/repo/pull/42')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+    // Purpose one-liner shows inline in the compact row.
+    expect(screen.getByText('feat: add pagination to users API')).toBeInTheDocument()
+  })
+
+  it('drill-in shows issue chips, ticket chips, and the purpose summary', async () => {
+    const FLEET_ONE = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0 },
+      ],
+    }
+    const DETAIL = {
+      branch: 'feat/x',
+      pr: { number: 42, state: 'OPEN', url: 'https://github.com/org/repo/pull/42', title: 'Add pagination' },
+      issues: [{ number: 147, url: 'https://github.com/org/repo/issues/147' }],
+      tickets: [{ id: 'TT-5', url: 'https://t.corp/TT-5' }],
+      summary: 'feat: add pagination to users API',
+      commits: [],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/worktree?name=')) return Promise.resolve(new Response(JSON.stringify(DETAIL), { status: 200 }))
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_ONE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // Expand feature-x (the only non-main row -> a single Expand control).
+    fireEvent.click(screen.getByLabelText('Expand'))
+    const issueLink = await screen.findByText('#147')
+    expect(issueLink.tagName.toLowerCase()).toBe('a')
+    expect(issueLink).toHaveAttribute('href', 'https://github.com/org/repo/issues/147')
+    expect(issueLink).toHaveAttribute('rel', 'noopener noreferrer')
+    const ticketLink = screen.getByText('TT-5')
+    expect(ticketLink.tagName.toLowerCase()).toBe('a')
+    expect(ticketLink).toHaveAttribute('href', 'https://t.corp/TT-5')
+    // The purpose one-liner renders in the drill-in.
+    expect(screen.getByText('feat: add pagination to users API')).toBeInTheDocument()
+  })
 })

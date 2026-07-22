@@ -148,12 +148,15 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
 }
 
 /* ─── Types ─── */
-interface PrInfo { number?: number; state?: string; url?: string; isDraft?: boolean }
+interface IssueRef { number: number; url?: string | null }
+interface TicketRef { id: string; url?: string | null }
+interface PrInfo { number?: number; state?: string; url?: string; isDraft?: boolean; title?: string }
 interface Worktree {
   name: string; branch?: string; is_main?: boolean; running?: boolean
   has_dist?: boolean; dirty?: boolean; port?: number; health?: number; behind?: number
   last_updated_at?: number
   pr?: PrInfo | null; shipped?: boolean
+  issues?: IssueRef[]; tickets?: TicketRef[]; summary?: string | null
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; legacy?: boolean
   path?: string
 }
@@ -172,12 +175,35 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
       <div style={mutedSm}>Branch: <span style={{ ...mono, color: 'var(--text)' }}>{d.branch || '?'}</span></div>
       {d.pr ? (
         <div style={mutedSm}>
-          PR: <a href={d.pr.url || '#'} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
-            #{d.pr.number || '?'}
+          PR: <a href={d.pr.url || '#'} target="_blank" rel="noopener noreferrer" title={d.pr.title || undefined} style={{ color: 'var(--accent)' }}>
+            #{d.pr.number || '?'}{d.pr.title ? ' \u2014 ' + d.pr.title : ''}
           </a>{' '}
           <Badge variant={d.pr.state === 'MERGED' ? 'aim' : d.pr.state === 'OPEN' ? 'ok' : 'warn'}>
             {(d.pr.state || '').toLowerCase()}
           </Badge>
+        </div>
+      ) : null}
+      {d.summary ? (
+        <div style={mutedSm}>Purpose: <span style={{ color: 'var(--text)' }}>{d.summary}</span></div>
+      ) : null}
+      {d.issues?.length > 0 ? (
+        <div style={mutedSm}>
+          Issues:{' '}
+          {d.issues.map((it: IssueRef, i: number) => (
+            it.url
+              ? <a key={i} href={it.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', marginRight: 8 }}>#{it.number}</a>
+              : <span key={i} style={{ color: 'var(--text)', marginRight: 8 }}>#{it.number}</span>
+          ))}
+        </div>
+      ) : null}
+      {d.tickets?.length > 0 ? (
+        <div style={mutedSm}>
+          Tickets:{' '}
+          {d.tickets.map((t: TicketRef, i: number) => (
+            t.url
+              ? <a key={i} href={t.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', marginRight: 8 }}>{t.id}</a>
+              : <span key={i} style={{ color: 'var(--text)', marginRight: 8 }}>{t.id}</span>
+          ))}
         </div>
       ) : null}
       {d.design_docs?.length > 0 ? (
@@ -748,10 +774,11 @@ export default function DevFleetPage() {
             {w.dirty ? <span title="uncommitted changes">&bull;</span> : null}
             {w.is_main ? <span style={mut}>&middot; main</span> : null}
             {w.is_live ? <Badge variant="aim" className="text-[10px] px-1.5 py-0" title="The live gateway on this port runs from this checkout">live</Badge> : null}
+            {w.summary ? <span title={w.summary} style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' } as CSSProperties}>{w.summary}</span> : null}
           </div>
           {isMainWithStepper ? renderSyncStepper() : (
             <>
-              {rs && prUrl ? <a href={prUrl} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>&mdash;</span>}
+              {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>&mdash;</span>}
               <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? w.behind + ' commits behind main' : 'up to date with main'}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
               <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 } as CSSProperties}>{rowButtons(w)}</div>

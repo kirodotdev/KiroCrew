@@ -2919,3 +2919,198 @@ async def test_head_contained_equal_oids_no_spawn(monkeypatch):
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
     assert await mod._head_contained_in_pr("/wt", "same", "same") is True
     assert not called
+
+
+# =============================================================================
+# Per-worktree context: issue/ticket links + purpose one-liner (issue #147)
+# =============================================================================
+
+# --- issue-ref extraction ---
+def test_extract_issue_refs_keyworded_and_bare_with_dedup():
+    txt = "Fixes #12, Closes #34 and Resolves #56. See also #12 and bare #78."
+    assert mod._extract_issue_refs(txt) == [12, 34, 56, 78]
+
+
+def test_extract_issue_refs_rejects_hex_and_alnum_and_empty():
+    # #fff / #1a2b (colours) and #12abc must NOT be parsed as issue refs.
+    assert mod._extract_issue_refs("colour #fff border #1a2b tag #12abc") == []
+    assert mod._extract_issue_refs("") == []
+    assert mod._extract_issue_refs(None) == []  # type: ignore[arg-type]
+
+
+def test_extract_issue_refs_boundaries():
+    # Trailing punctuation / parens still yield the number.
+    assert mod._extract_issue_refs("bump (#120) then #7.") == [120, 7]
+
+
+# --- ticket-id extraction ---
+def test_extract_ticket_ids_matches_and_dedups():
+    txt = "TT-123 blocked by JIRA-4567; TT-123 again; PROJECT-9"
+    assert mod._extract_ticket_ids(txt) == ["TT-123", "JIRA-4567", "PROJECT-9"]
+
+
+def test_extract_ticket_ids_none_present():
+    assert mod._extract_ticket_ids("no tickets here, just words") == []
+    assert mod._extract_ticket_ids("") == []
+
+
+# --- ticket-url template rendering ---
+def test_render_ticket_url_with_template():
+    assert mod._render_ticket_url("https://t.corp/{id}", "TT-9") == "https://t.corp/TT-9"
+
+
+def test_render_ticket_url_empty_or_no_placeholder_returns_none():
+    assert mod._render_ticket_url("", "TT-9") is None
+    assert mod._render_ticket_url("https://t.corp/browse", "TT-9") is None
+
+
+# --- version-bump detection + summary pick ---
+def test_is_version_bump():
+    assert mod._is_version_bump("chore: bump version to 1.2.3") is True
+    assert mod._is_version_bump("Bump version") is True
+    assert mod._is_version_bump("1.2.3") is True
+    assert mod._is_version_bump("release 2.0.0") is True
+    assert mod._is_version_bump("feat: add pagination") is False
+
+
+def test_pick_summary_skips_version_bumps():
+    subjects = ["chore: bump version 1.2.3", "feat: add real feature", "wip"]
+    assert mod._pick_summary(subjects) == "feat: add real feature"
+
+
+def test_pick_summary_falls_back_to_latest_when_all_bumps():
+    subjects = ["chore: bump version 1.2.3", "release 1.2.2"]
+    assert mod._pick_summary(subjects) == "chore: bump version 1.2.3"
+    assert mod._pick_summary([]) is None
+
+
+# --- html origin parsing (issue link base) ---
+def test_parse_html_repo_base_variants():
+    p = mod._parse_html_repo_base
+    assert p("git@github.com:kirodotdev/KiroCrew.git") == "https://github.com/kirodotdev/KiroCrew"
+    assert p("https://github.com/kirodotdev/KiroCrew.git") == "https://github.com/kirodotdev/KiroCrew"
+    assert p("https://github.com/kirodotdev/KiroCrew") == "https://github.com/kirodotdev/KiroCrew"
+    assert p("ssh://git@github.com/kirodotdev/KiroCrew.git") == "https://github.com/kirodotdev/KiroCrew"
+    assert p("") is None
+    assert p("not a url") is None
+
+
+# --- _pr_query_one carries title, hides body, and _redact_pr drops internals ---
+@pytest.mark.asyncio
+async def test_pr_query_one_carries_title_and_hides_body():
+    payload = json.dumps([{
+        "number": 42, "state": "OPEN",
+        "url": "https://github.com/o/r/pull/42", "isDraft": False,
+        "title": "My PR title", "body": "Fixes #7",
+    }])
+    with patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, payload, "")):
+        pr = await mod._pr_query_one("o/r", "feat/x")
+    assert pr is not None
+    assert pr["title"] == "My PR title"
+    assert pr["_body"] == "Fixes #7"
+    assert "body" not in pr  # moved to internal _body
+    redacted = mod._redact_pr(pr)
+    assert redacted["title"] == "My PR title"
+    assert redacted["number"] == 42
+    assert "_body" not in redacted  # internal fields dropped from payload
+    assert "_repo" not in redacted
+
+
+# --- _build_context: parses PR body + commits, builds links ---
+@pytest.mark.asyncio
+async def test_build_context_parses_pr_body_and_commits():
+    log = (
+        "feat(dev-fleet): surface context\x1fFixes #147\nrelated #99\x1e"
+        "wip TT-5 progress\x1f\x1e"
+    )
+    with patch.object(mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value=log), \
+         patch.object(mod, "_html_repo_base", new_callable=AsyncMock,
+                      return_value="https://github.com/kirodotdev/KiroCrew"), \
+         patch.object(mod, "_load_dev_fleet_cfg",
+                      return_value={"ticket_url_template": "https://t.corp/{id}"}):
+        ctx = await mod._build_context("feat/thing", "/wt/thing", {"_body": "Closes #147\nsee #12"})
+    # ordered-unique across pr body + commit subjects + commit bodies
+    assert [i["number"] for i in ctx["issues"]] == [147, 12, 99]
+    assert ctx["issues"][0]["url"] == "https://github.com/kirodotdev/KiroCrew/issues/147"
+    assert [t["id"] for t in ctx["tickets"]] == ["TT-5"]
+    assert ctx["tickets"][0]["url"] == "https://t.corp/TT-5"
+    assert ctx["summary"] == "feat(dev-fleet): surface context"
+
+
+@pytest.mark.asyncio
+async def test_build_context_graceful_when_git_fails():
+    # git log fails (returns None) and there is no PR — issues empty, but a
+    # ticket in the BRANCH NAME still resolves; never raises.
+    with patch.object(mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_html_repo_base", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_load_dev_fleet_cfg", return_value={}):
+        ctx = await mod._build_context("TT-42-fix-thing", "/wt/x", None)
+    assert ctx["issues"] == []
+    assert [t["id"] for t in ctx["tickets"]] == ["TT-42"]
+    assert ctx["tickets"][0]["url"] is None  # no template configured
+    assert ctx["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_context_cached_skips_main_and_base():
+    empty = {"issues": [], "tickets": [], "summary": None}
+    assert await mod._context_cached(None, "/wt", None) == empty
+    assert await mod._context_cached(mod.BASE_BRANCH, "/wt", None) == empty
+
+
+@pytest.mark.asyncio
+async def test_context_cached_serves_from_cache(monkeypatch):
+    calls = []
+
+    async def fake_build(branch, path, pr):
+        calls.append(branch)
+        return {"issues": [{"number": 1, "url": None}], "tickets": [], "summary": "s"}
+
+    monkeypatch.setattr(mod, "_build_context", fake_build)
+    mod._CTX_CACHE.pop("feat/cache-me", None)
+    try:
+        a = await mod._context_cached("feat/cache-me", "/wt", None)
+        b = await mod._context_cached("feat/cache-me", "/wt", None)
+        assert a == b
+        assert len(calls) == 1  # second call served from cache
+    finally:
+        mod._CTX_CACHE.pop("feat/cache-me", None)
+
+
+# --- fleet payload carries the new context fields per worktree ---
+@pytest.mark.asyncio
+async def test_build_fleet_payload_has_context_fields():
+    sentinel = {
+        "issues": [{"number": 147, "url": "https://github.com/o/r/issues/147"}],
+        "tickets": [{"id": "TT-5", "url": None}],
+        "summary": "feat: do the thing",
+    }
+    worktrees = [
+        {"path": "/repo", "branch": "main", "is_main": True},
+        {"path": "/repo-wt-x", "branch": "feat/x", "is_main": False},
+    ]
+    ginfo = {
+        "branch": "feat/x", "head": "abc1234", "dirty": False,
+        "ahead": 0, "behind": 0, "last_updated_at": 111,
+    }
+    pr = {"number": 9, "state": "OPEN", "url": "u", "title": "T"}
+    with patch.object(mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_discover_worktrees", new_callable=AsyncMock, return_value=worktrees), \
+         patch.object(mod, "_load_cfg", return_value=None), \
+         patch.object(mod, "_git_info", new_callable=AsyncMock, return_value=ginfo), \
+         patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value=pr), \
+         patch.object(mod, "_git_ahead", new_callable=AsyncMock, return_value=0), \
+         patch.object(mod, "_context_cached", new_callable=AsyncMock, return_value=sentinel), \
+         patch.object(mod, "_gateway_service_active", new_callable=AsyncMock, return_value=False):
+        fleet = await mod._build_fleet()
+    rows = {w["name"]: w for w in fleet["worktrees"]}
+    feat = rows["repo-wt-x"]
+    assert feat["issues"] == sentinel["issues"]
+    assert feat["tickets"] == sentinel["tickets"]
+    assert feat["summary"] == "feat: do the thing"
+    assert feat["pr"]["title"] == "T"  # title carried into the payload
+    # main row still present and carries empty context (no crash)
+    assert rows["main"]["summary"] is None
+    assert rows["main"]["issues"] == []

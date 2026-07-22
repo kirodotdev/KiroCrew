@@ -798,9 +798,13 @@ async def _get_owner_repo() -> str | None:
 
 
 async def _pr_query_one(owner_repo: str, branch: str) -> dict | None:
+    # `title` is a display field carried into the payload; `body` is fetched in
+    # the SAME query (no extra gh call, so no added rate cost per refresh) and
+    # kept INTERNAL (moved to `_body`) — it feeds issue-ref parsing but is
+    # dropped from the payload by _redact_pr (which skips `_`-prefixed keys).
     rc, stdout, _ = await _run_cmd(
         ["gh", "pr", "list", "--repo", owner_repo, "--head", branch,
-         "--json", "number,state,url,isDraft", "--state", "all", "--limit", "1"],
+         "--json", "number,state,url,isDraft,title,body", "--state", "all", "--limit", "1"],
         timeout=15,
     )
     if rc != 0:
@@ -812,6 +816,8 @@ async def _pr_query_one(owner_repo: str, branch: str) -> dict | None:
         return None
     if pr is not None:
         pr["_repo"] = owner_repo
+        if "body" in pr:
+            pr["_body"] = pr.pop("body") or ""
     return pr
 
 
@@ -896,6 +902,219 @@ async def _pr_status_cached(branch: str) -> dict | None:
 
 def _is_pr_merged(pr: dict | None) -> bool:
     return (pr or {}).get("state") == "MERGED"
+
+
+# --- per-worktree context: issue/ticket links + purpose one-liner (issue #147) ---
+#
+# Best-effort and TTL-cached per branch exactly like the PR-state cache. Every
+# field degrades to empty/None on any git/gh failure so context resolution can
+# never break the fleet payload.
+
+# GitHub issue references: keyworded (Fixes/Closes/Resolves #N) OR bare #N. The
+# bare form is a superset, so a single "#<digits>" match — guarded by a
+# trailing non-alphanumeric lookahead that rejects colour hexes (#1a2b, #fff)
+# and version-ish tokens — covers both; dedup collapses the keyworded overlap.
+_ISSUE_REF_RE = re.compile(r"#(\d{1,7})(?![0-9A-Za-z])")
+# Ticket IDs (JIRA / Taskei style): PROJECT-1234. Pattern fixed by issue #147.
+_TICKET_ID_RE = re.compile(r"\b[A-Z][A-Za-z]{1,15}-\d{1,6}\b")
+# Subjects that are pure version bumps — skipped when picking the one-liner.
+_VERSION_BUMP_RE = re.compile(
+    r"^\s*(?:chore(?:\([^)]*\))?:\s*)?"
+    r"(?:bump\b|release\b|bump version\b|version bump\b|v?\d+\.\d+\.\d+\s*$)",
+    re.IGNORECASE,
+)
+# Payload growth caps (keep fleet rows modest).
+_CTX_MAX_ISSUES = 8
+_CTX_MAX_TICKETS = 5
+
+
+def _extract_issue_refs(text: str) -> list[int]:
+    """Ordered-unique GitHub issue numbers referenced in *text*."""
+    seen: list[int] = []
+    for m in _ISSUE_REF_RE.finditer(text or ""):
+        n = int(m.group(1))
+        if n not in seen:
+            seen.append(n)
+    return seen
+
+
+def _extract_ticket_ids(text: str) -> list[str]:
+    """Ordered-unique ticket IDs (PROJECT-1234) referenced in *text*."""
+    seen: list[str] = []
+    for m in _TICKET_ID_RE.finditer(text or ""):
+        t = m.group(0)
+        if t not in seen:
+            seen.append(t)
+    return seen
+
+
+def _render_ticket_url(template: str, tid: str) -> str | None:
+    """Render a ticket URL from *template* ({id} placeholder). Returns None
+    when the template is empty or has no {id} — chips then render unlinked."""
+    if not template or "{id}" not in template:
+        return None
+    return template.replace("{id}", tid)
+
+
+def _is_version_bump(subject: str) -> bool:
+    return bool(_VERSION_BUMP_RE.match(subject or ""))
+
+
+def _pick_summary(subjects: list[str]) -> str | None:
+    """Latest non-merge commit subject, skipping trivial version bumps; falls
+    back to the latest subject when every candidate is a bump."""
+    for s in subjects:
+        if s and not _is_version_bump(s):
+            return s
+    return subjects[0] if subjects else None
+
+
+def _issue_url(base: str | None, n: int) -> str | None:
+    return f"{base}/issues/{n}" if base else None
+
+
+def _parse_html_repo_base(remote_url: str) -> str | None:
+    """Derive the repo's browser (html) base URL from a git remote URL,
+    normalising scp-style and scheme URLs to https. None when unparseable."""
+    url = (remote_url or "").strip()
+    if not url:
+        return None
+    # scp-like: [user@]host:owner/repo(.git)  — (?!/) rejects a scheme "://".
+    m = re.match(r"^(?:[^@/]+@)?([\w.\-]+):(?!/)(.+?)(?:\.git)?/?$", url)
+    if m:
+        return f"https://{m.group(1)}/{m.group(2)}"
+    # scheme://[user@]host[:port]/owner/repo(.git)
+    m = re.match(
+        r"^[A-Za-z][\w+.\-]*://(?:[^@/]+@)?([\w.\-]+)(?::\d+)?/(.+?)(?:\.git)?/?$",
+        url,
+    )
+    if m:
+        return f"https://{m.group(1)}/{m.group(2)}"
+    return None
+
+
+_HTML_BASE: str | None = None
+
+
+async def _html_repo_base() -> str | None:
+    """Cached browser base URL of the upstream repo (for issue links). Derived
+    from the remote URL; falls back to github.com/<owner/repo> (PR resolution
+    is gh/github-only anyway)."""
+    global _HTML_BASE
+    if _HTML_BASE:
+        return _HTML_BASE
+    remote = await _upstream_remote()
+    rc, out, _ = await _run_cmd(
+        ["git", "-C", MAIN_REPO, "remote", "get-url", remote], timeout=5
+    )
+    if rc == 0:
+        base = _parse_html_repo_base(out.strip())
+        if base:
+            _HTML_BASE = base
+            return base
+    owner_repo = await _get_owner_repo()
+    if owner_repo:
+        _HTML_BASE = f"https://github.com/{owner_repo}"
+    return _HTML_BASE
+
+
+def _load_dev_fleet_cfg() -> dict:
+    """Read the ``dev_fleet`` config section (config.json + local overlay),
+    lazily and best-effort. Never raises; a missing file/section -> {}. Read
+    directly rather than through KiroCrewConfig (a separate process owns the
+    validated loader) so a purely cosmetic template needs no schema dependency
+    and can never break the fleet payload."""
+    section: dict = {}
+    try:
+        from kiro_crew.config.loader import config_dir
+        base = config_dir()
+    except Exception:  # noqa: BLE001
+        return section
+    for fname in ("config.json", "config.local.json"):
+        p = base / fname
+        try:
+            if not p.is_file():
+                continue
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(raw, dict) and isinstance(raw.get("dev_fleet"), dict):
+            section.update(raw["dev_fleet"])
+    return section
+
+
+# per-branch context cache (mirrors _PR_CACHE / _PR_TTL)
+_CTX_CACHE: dict[str, dict] = {}
+_CTX_TTL = 55
+
+
+async def _resolve_context(
+    branch: str | None, subjects: list[str], bodies: list[str], pr_body: str | None
+) -> dict:
+    """Assemble {issues, tickets, summary} from pre-extracted text. The html
+    base is resolved ONLY when issue refs exist and the ticket template ONLY
+    when ticket IDs exist — so a refless worktree triggers no extra lookup (and
+    no owner/repo cache write), keeping callers side-effect-free."""
+    issue_nums = _extract_issue_refs("\n".join([pr_body or "", *subjects, *bodies]))
+    ticket_ids = _extract_ticket_ids("\n".join([branch or "", *subjects]))
+    html_base = await _html_repo_base() if issue_nums else None
+    tpl = str(_load_dev_fleet_cfg().get("ticket_url_template") or "") if ticket_ids else ""
+    summary = _pick_summary(subjects)
+    return {
+        "issues": [
+            {"number": n, "url": _issue_url(html_base, n)}
+            for n in issue_nums[:_CTX_MAX_ISSUES]
+        ],
+        "tickets": [
+            {"id": t, "url": _render_ticket_url(tpl, t)}
+            for t in ticket_ids[:_CTX_MAX_TICKETS]
+        ],
+        "summary": _redact(summary) if summary else None,
+    }
+
+
+async def _build_context(branch: str, path: str, pr: dict | None) -> dict:
+    """Resolve {issues, tickets, summary} for a worktree branch. Best-effort:
+    the PR body comes from the already-cached PR dict (no NEW gh call) and the
+    commit subjects/bodies from a local `git log`; any failure yields empties."""
+    remote = await _upstream_remote()
+    subjects: list[str] = []
+    bodies: list[str] = []
+    # Subject + body of the last ~10 non-merge commits, record-separated by
+    # 0x1e (bodies contain newlines, so newline can't delimit records).
+    log = await _git(
+        path, "log", f"{remote}/{BASE_BRANCH}..HEAD", "--no-merges", "-10",
+        "--format=%s%x1f%b%x1e", timeout=12,
+    )
+    if log:
+        for rec in log.split("\x1e"):
+            rec = rec.strip("\n")
+            if not rec.strip():
+                continue
+            subj, _sep, body = rec.partition("\x1f")
+            subj = subj.strip()
+            if subj:
+                subjects.append(subj)
+            if body.strip():
+                bodies.append(body)
+    return await _resolve_context(branch, subjects, bodies, (pr or {}).get("_body"))
+
+
+async def _context_cached(branch: str | None, path: str, pr: dict | None) -> dict:
+    """TTL-cached per-branch context (same approach as _pr_status_cached)."""
+    empty: dict = {"issues": [], "tickets": [], "summary": None}
+    if not branch or branch == BASE_BRANCH:
+        return empty
+    now = time.time()
+    ent = _CTX_CACHE.get(branch)
+    if ent and (now - ent["ts"]) < _CTX_TTL:
+        return ent["data"]
+    try:
+        data = await _build_context(branch, path, pr)
+    except Exception:  # noqa: BLE001 — context is best-effort, never break fleet
+        data = empty
+    _CTX_CACHE[branch] = {"data": data, "ts": time.time()}
+    return data
 
 
 # --- worktree discovery via git worktree list --porcelain ---
@@ -1087,6 +1306,14 @@ async def _build_fleet() -> dict:
             and not is_main
         )
 
+        # Per-worktree context (issue/ticket links + purpose one-liner). Skipped
+        # for the main checkout (no feature context). Best-effort: never raises.
+        ctx = (
+            await _context_cached(branch, path, pr)
+            if branch and not is_main
+            else {"issues": [], "tickets": [], "summary": None}
+        )
+
         wts.append({
             # "name" doubles as the opaque identifier for follow-up actions
             # (validated against the discovered set on every call); display
@@ -1098,6 +1325,8 @@ async def _build_fleet() -> dict:
             "branch": _redact(g["branch"] or branch or ""), "head": g["head"] or wt.get("head", "")[:7],
             "dirty": g["dirty"], "behind": g["behind"],
             "pr": _redact_pr(pr), "shipped": shipped,
+            "issues": ctx["issues"], "tickets": ctx["tickets"],
+            "summary": ctx["summary"],
             "legacy": bool(legacy_prefixes) and not is_main
             and name.lower().startswith(legacy_prefixes),
             "last_updated_at": g["last_updated_at"],
@@ -1209,12 +1438,23 @@ async def _worktree_detail(name: str) -> dict:
         except Exception:
             pass
 
+    # Context (issue/ticket links + purpose one-liner) assembled from the
+    # commits already fetched above (their subjects) + the PR body — no extra
+    # git log, so the detail endpoint keeps to a single own-commits log call.
+    ctx = (
+        await _resolve_context(branch, [c["subject"] for c in commits], [],
+                               (pr or {}).get("_body"))
+        if branch and not is_main
+        else {"issues": [], "tickets": [], "summary": None}
+    )
     return {
         "name": name, "path": _redact(path),
         "branch": _redact(g["branch"] or branch or ""), "head": g["head"],
         "dirty": g["dirty"], "own_commits": own_commits,
         "real_dirty": await _real_dirty(path),
         "pr": _redact_pr(pr), "pr_merged": _is_pr_merged(pr),
+        "issues": ctx["issues"], "tickets": ctx["tickets"],
+        "summary": ctx["summary"],
         "commits": commits, "design_docs": design_docs,
         "disk_mb": disk_mb,
         "behind": g["behind"],
