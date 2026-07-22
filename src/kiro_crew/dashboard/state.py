@@ -60,6 +60,32 @@ logger = logging.getLogger(__name__)
 _build_info: tuple[str, str] = ("", "")
 
 
+# Auto-minted dashboard slot keys share the shape "<prefix>-<N>-<ts>" where
+# <prefix> is chat (the only auto-mint prefix in this fork), <N> is the
+# monotonic _slot_counter, and <ts> is a unix second. Minting and index-parsing
+# both go through these helpers so the format lives in exactly one place — a
+# future change to the key shape can't silently desync the minter from
+# reseed_slot_counter() (which would let the post-restart tab<->session
+# collision quietly return).
+def _mint_slot_key(prefix: str, counter: int, ts: int) -> str:
+    """Build an auto-minted slot key of the canonical ``<prefix>-<N>-<ts>`` shape."""
+    return f"{prefix}-{counter}-{ts}"
+
+
+def _slot_index_from_key(key: str) -> int | None:
+    """Return the ``<N>`` index from a ``<prefix>-<N>-<ts>`` slot key, else None.
+
+    Non-auto-minted keys (Slack sessions, ascii-sanitized display names) don't
+    match the shape and return ``None``. The ``isascii()`` guard keeps a stray
+    unicode-digit char (``str.isdigit()`` is True for e.g. superscripts, but
+    ``int()`` would raise) from aborting boot-time reseeding.
+    """
+    parts = key.rsplit("-", 2)
+    if len(parts) == 3 and parts[1].isascii() and parts[1].isdigit():
+        return int(parts[1])
+    return None
+
+
 def set_build_info(info: tuple[str, str]) -> None:
     """Record the running build's ``(branch, short_commit)`` for status payloads.
 
@@ -1979,7 +2005,7 @@ class DashboardState:
         if not name:
             self._slot_counter += 1
             ts = int(time.time())
-            name = f"chat-{self._slot_counter}-{ts}"
+            name = _mint_slot_key("chat", self._slot_counter, ts)
         slot = _ChatSlot(name, agent=agent, workspace=workspace, model=model, mode=mode, memory_mode=memory_mode or "persistent")
         if requested_name and requested_name != name:
             # The caller asked for a human-readable name (e.g. "Artifact: My
@@ -2013,6 +2039,41 @@ class DashboardState:
         self._slots[name] = slot
         self.push_slots_update()
         return slot
+
+    def reseed_slot_counter(self) -> None:
+        """Advance ``_slot_counter`` past the highest index among live slots.
+
+        ``__init__`` resets ``_slot_counter`` to 0 on every gateway boot, but
+        the startup restore paths (``restore_open_slots`` then
+        ``restore_recent_sessions``) rehydrate the user's tabs under their
+        original ``chat-<N>-<ts>`` keys without touching the counter. The first
+        new slot minted after a restart would then re-use a low index
+        (``chat-1-...``) that collides with an already-restored tab holding that
+        same index, scrambling the frontend's tab -> session binding so a
+        restored tab loads the wrong session.
+
+        Called once after the restore paths run in ``start_dashboard``. Parses
+        the ``<prefix>-<N>-<ts>`` slot keys and seeds the counter to the max
+        observed index so subsequent auto-minted slots always get fresh,
+        collision-proof indices. Monotonic: only ever advances the counter,
+        never lowers it, so it is safe to call regardless of restore order.
+        """
+        max_idx = self._slot_counter
+        for name in self._slots:
+            # Parse via the shared helper so this stays in lock-step with the
+            # key minter (_mint_slot_key). Custom keys return None and skip.
+            idx = _slot_index_from_key(name)
+            if idx is not None and idx > max_idx:
+                max_idx = idx
+        if max_idx != self._slot_counter:
+            # Symmetric with restore_recent_sessions' "Restored %d session(s)"
+            # log so a future recurrence of the collision is observable.
+            logger.info(
+                "Reseeded slot counter %d -> %d past highest restored slot index",
+                self._slot_counter,
+                max_idx,
+            )
+        self._slot_counter = max_idx
 
     def _broadcast_chat_message(self, slot_key: str, msg: dict) -> None:
         """Push a chat message to all SSE clients via the global stream."""

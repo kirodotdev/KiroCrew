@@ -585,3 +585,120 @@ def test_restart_restore_paths_converge_on_one_slot(tmp_path, monkeypatch):
         f"expected exactly one slot for the session, got {matching!r} — "
         "duplicate sidebar sessions regression"
     )
+
+
+# ---------------------------------------------------------------------------
+# _slot_counter reseed after restore (tab-key collision fix)
+# ---------------------------------------------------------------------------
+#
+# Regression: DashboardState.__init__ resets _slot_counter to 0 on every boot.
+# The restore paths rehydrate tabs under their original "chat-<N>-<ts>" keys
+# without advancing the counter, so the first new chat after a restart re-mints
+# a low index that collides with an already-restored tab — clicking the tab
+# then loads the wrong session. reseed_slot_counter() must advance the counter
+# past the highest restored index so new slots get fresh, unique keys.
+
+
+def test_reseed_advances_past_highest_restored_index(tmp_path, monkeypatch):
+    """reseed_slot_counter seeds the counter to the max restored slot index."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    # Counter starts at 0 on a fresh (restarted) gateway.
+    assert state._slot_counter == 0
+    # Simulate restored tabs holding high indices.
+    state.get_or_create_slot("chat-6-1783712190")
+    state.get_or_create_slot("chat-7-1783712220")
+
+    state.reseed_slot_counter()
+
+    assert state._slot_counter == 7
+
+
+def test_reseed_ignores_non_indexed_keys(tmp_path, monkeypatch):
+    """Custom keys (Slack sessions, sanitized names) are skipped, not crashed on."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    state.get_or_create_slot("chat-3-1783712000")
+    # Keys without a digit in the second-to-last segment must be ignored.
+    state.get_or_create_slot("my-custom-session")
+    state.get_or_create_slot("takeover-9-1783712300")
+
+    state.reseed_slot_counter()
+
+    # Highest indexed key wins (takeover-9), custom key ignored. The parser is
+    # prefix-agnostic, so a "takeover-<N>-<ts>" key still contributes its index
+    # even though this fork only auto-mints the "chat" prefix.
+    assert state._slot_counter == 9
+
+
+def test_reseed_is_monotonic(tmp_path, monkeypatch):
+    """reseed never lowers the counter below its current value."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    state._slot_counter = 12
+    state.get_or_create_slot("chat-3-1783712000")
+
+    state.reseed_slot_counter()
+
+    assert state._slot_counter == 12
+
+
+def test_reseed_noop_when_no_slots(tmp_path, monkeypatch):
+    """No slots -> counter unchanged, no exception."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    state.reseed_slot_counter()
+    assert state._slot_counter == 0
+
+
+def test_new_slot_does_not_collide_with_restored_tab(tmp_path, monkeypatch):
+    """End-to-end: restore high-index tabs, reseed, then mint — no key collision.
+
+    This is the exact bug: without reseed, the freshly minted slot would take
+    index 1 and there'd be no way for the frontend to distinguish it from a
+    restored chat-1 tab. After reseed, the new slot must get a strictly higher,
+    unused index.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-6-restored")
+    _seed_session(state, "chat-7-restored")
+    snapshot_path = tmp_path / "open_slots.json"
+    snapshot_path.write_text(
+        json.dumps({"keys": ["chat-6-restored", "chat-7-restored"], "ts": 0.0})
+    )
+
+    # Fresh gateway boot: restore tabs, then reseed the counter.
+    state2 = _make_state(tmp_path / "sessions")
+    assert restore_open_slots(state2) == 2
+    state2.reseed_slot_counter()
+
+    existing_keys = set(state2._slots)
+    # Mint a brand-new chat the way the UI's "new chat" button does.
+    new_slot = state2.get_or_create_slot()
+
+    assert new_slot.key not in existing_keys
+    # The minted index must be exactly one past the highest restored index (7).
+    # Pins the pre-increment mint contract: get_or_create_slot does
+    # `_slot_counter += 1` BEFORE formatting the key. If mint ever regressed to
+    # post-increment, the new key would be chat-7-* and re-collide — this catches it.
+    assert int(new_slot.key.rsplit("-", 2)[1]) == 8
+
+
+def test_reseed_skips_unicode_digit_key_without_crashing(tmp_path, monkeypatch):
+    """A stray unicode-digit segment must not crash boot-time reseeding.
+
+    str.isdigit() is True for chars like superscript '²', but int() raises
+    ValueError on them. The isascii() guard must skip such a key rather than
+    letting the exception abort start_dashboard. (Not reachable for minted keys,
+    which interpolate real ints — this pins the belt-and-suspenders guard.)
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    state.get_or_create_slot("chat-4-1783712000")
+    # Inject a pathological key directly (get_or_create_slot would ascii-sanitize it).
+    state._slots["chat-²-1783712001"] = state._slots["chat-4-1783712000"]
+
+    state.reseed_slot_counter()  # must not raise
+
+    assert state._slot_counter == 4

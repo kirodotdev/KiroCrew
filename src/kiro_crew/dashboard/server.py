@@ -2129,6 +2129,12 @@ async def start_dashboard(
     if restored:
         logger.info("Restored %d session(s)", restored)
 
+    # Both restore paths above rehydrate tabs under their original
+    # "chat-<N>-<ts>" keys but leave _slot_counter at its boot value of 0.
+    # Reseed it past the highest restored index so the next new chat can't
+    # re-mint a colliding low index (which scrambles the tab -> session map).
+    state.reseed_slot_counter()
+
     # Relaunch agents in non-archived channels
     from kiro_crew.channel import ChannelManager, run_channel_agent
     from kiro_crew.dashboard.handlers_channel import _spawn_agent_task
