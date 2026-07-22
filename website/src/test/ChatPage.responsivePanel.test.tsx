@@ -9,7 +9,7 @@
  *   (fixes the mobile->desktop race that stranded the panel inline).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, renderHook, act, waitFor, screen } from '@testing-library/react'
+import { render, renderHook, act, waitFor, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
@@ -246,5 +246,38 @@ describe('ChatPage — activity slot self-healing', () => {
       expect(panel.parentElement).toHaveClass('overflow-visible')
       expect(panel.parentElement).not.toHaveClass('overflow-hidden')
     })
+  })
+})
+
+describe('ChatPage — session-header activity toggle (relocated from the top bar)', () => {
+  beforeEach(() => { setWindowWidth(1400); localStorage.clear() })
+  afterEach(() => { document.getElementById('activity-bar-slot')?.remove() })
+
+  function renderWithSlot() {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('req-toggle', 'slot-toggle'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-toggle',
+        messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        running: false, hasMore: false, total: 1, queue: [],
+      }, 'req-toggle', 'slot-toggle'))
+    })
+    return renderChat(store)
+  }
+
+  it('opens the activity panel from the session-header toggle', async () => {
+    const { store } = renderWithSlot()
+    const btn = await screen.findByLabelText('Open activity panel')
+    expect(store.getState().chat.activityOpen).toBe(false)
+    fireEvent.click(btn)
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('disables the toggle with an explanatory label when the window is too narrow', async () => {
+    renderWithSlot()
+    await screen.findByLabelText('Open activity panel')
+    resizeTo(800) // below the 880 space threshold (320 + 560)
+    expect(await screen.findByLabelText('Window too narrow for the activity panel')).toBeInTheDocument()
   })
 })

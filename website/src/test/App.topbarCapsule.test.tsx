@@ -1,15 +1,15 @@
 /**
  * Tests for the top-bar surfaces added in the electron shell redesign commits:
  * - readout capsule collapse/expand via the connection dot (persisted)
- * - activity panel toggle: present on /chat, disabled when the window is too
- *   narrow to fit the panel beside the chat's reserved minimum
  * - macOS fullscreen: 'mac-fullscreen' class driven by the electron
  *   fullscreen-changed bridge (drops the 84px traffic-light inset via CSS)
+ *
+ * (The activity-panel open toggle moved out of the top bar into the ChatPage
+ * session header — see ChatPage.responsivePanel.test.tsx for its coverage.)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
-import { renderWithProviders, createTestStore } from './helpers'
-import { toggleActivity } from '../store/chatSlice'
+import { renderWithProviders } from './helpers'
 import { safeSetItem } from '../utils/safeStorage'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -99,53 +99,6 @@ describe('App top bar — readout capsule collapse', () => {
     const dot = await screen.findByLabelText('Gateway connected')
     expect(dot.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByLabelText('System metrics')).toBeNull()
-  })
-})
-
-describe('App top bar — activity panel toggle', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    setWindowWidth(1400)
-    // App derives activePath from the GLOBAL location (not useLocation), so
-    // the toggle's /chat gate reads jsdom's URL — align it with the route.
-    window.history.pushState({}, '', '/chat')
-  })
-
-  it('is enabled on /chat when the window has room for the panel', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    const btn = await screen.findByLabelText('Open activity panel')
-    expect((btn as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('disables with an explanatory label when the window is too narrow, re-enables when widened', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByLabelText('Open activity panel')
-
-    // Shrink below SIDE_PANEL_MIN_W (320) + reserve (>=560) = 880.
-    act(() => {
-      setWindowWidth(800)
-      window.dispatchEvent(new Event('resize'))
-    })
-    const disabled = screen.getByLabelText('Window too narrow for the activity panel')
-    expect((disabled as HTMLButtonElement).disabled).toBe(true)
-
-    // Widen back: enabled again.
-    act(() => {
-      setWindowWidth(1400)
-      window.dispatchEvent(new Event('resize'))
-    })
-    const enabled = screen.getByLabelText('Open activity panel')
-    expect((enabled as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('hides while the activity panel is open (panel close button takes over)', async () => {
-    // renderWithProviders ignores a preloadedState option — build the store
-    // explicitly and open the panel through the real reducer.
-    const store = createTestStore()
-    store.dispatch(toggleActivity())
-    renderWithProviders(<App />, { route: '/chat', store })
-    await screen.findByTestId('chat-page')
-    expect(screen.queryByLabelText(/activity panel/i)).toBeNull()
   })
 })
 

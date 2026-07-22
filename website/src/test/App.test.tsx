@@ -328,14 +328,17 @@ describe('App routing', () => {
   })
 
   it('renders Kiro Crew branding', () => {
+    localStorage.removeItem('mc-nav') // expanded sidebar shows the brand text
     renderWithProviders(<App />, { route: '/chat' })
+    // Brand (logo + name) moved from the top bar into the sidebar menu row.
     expect(screen.getAllByText('Kiro Crew').length).toBeGreaterThan(0)
+    localStorage.removeItem('mc-nav')
   })
 
   it('opens Search Everywhere from the theme-aware shadowless header trigger', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
-    expect(trigger).toHaveClass('rounded-lg', 'border-border', 'bg-card', 'shadow-none')
+    expect(trigger).toHaveClass('rounded-md', 'border-border', 'bg-card', 'shadow-none')
     expect(trigger).not.toHaveClass('rounded-full')
     fireEvent.click(trigger)
     expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
@@ -369,19 +372,18 @@ describe('App routing', () => {
     localStorage.removeItem('mc-nav')
     renderWithProviders(<App />, { route: '/chat' })
 
-    const logo = screen.getByAltText('Kiro Crew')
-    expect(logo).toHaveClass('w-9', 'h-9')
-
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    // The sidebar toggle moved from the topbar into the rail's menu row:
-    // a hamburger plus (expanded only) a panel-left-close collapse control.
+    // Brand (logo + name) now lives in the rail's menu row, replacing the old
+    // hamburger; the collapse control is an arrow-left-to-line button.
+    expect(within(nav).getByText('Kiro Crew')).toBeInTheDocument()
     const collapse = within(nav).getByRole('button', { name: 'Collapse sidebar' })
-    expect(within(nav).getByRole('button', { name: 'Toggle sidebar' })).toBeInTheDocument()
+    expect(within(nav).queryByRole('button', { name: 'Toggle sidebar' })).not.toBeInTheDocument()
     expect(within(nav).queryByText('Main')).not.toBeInTheDocument()
 
     fireEvent.click(collapse)
+    // Collapsed: the brand shrinks to a clickable logo that expands the rail;
+    // the collapse control unmounts.
     expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-    // Collapsed: the panel-left-close control unmounts, only the hamburger stays.
     expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('1')
     localStorage.removeItem('mc-nav')
@@ -401,11 +403,13 @@ describe('App routing', () => {
     localStorage.removeItem('mc-nav')
   })
 
-  it('keeps Request a Feature visible beside the collapsed brand icon', () => {
+  it('keeps Request a Feature visible in the header actions cluster in both sidebar states', () => {
     safeSetItem('mc-nav', '1')
     renderWithProviders(<App />, { route: '/chat' })
 
-    // Collapsed: brand shrinks to the icon but Request a Feature stays.
+    // Request a Feature moved out of the brand region into its own pill in the
+    // header's right-side actions cluster; it stays visible regardless of the
+    // sidebar's collapsed/expanded state.
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })

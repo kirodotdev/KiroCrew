@@ -109,7 +109,7 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { ShieldCheck, BookOpen, Handshake, Rocket, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, ArrowUp, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Check, Columns2, ExternalLink } from 'lucide-react'
+import { ShieldCheck, BookOpen, Handshake, Rocket, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, ArrowUp, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Check, Columns2, ExternalLink, PanelRight } from 'lucide-react'
 
 import InfoTip from '../components/InfoTip'
 import { FileCard } from '../components/FileCard'
@@ -2376,6 +2376,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     window.addEventListener('toggle-activity-panel', h)
     return () => window.removeEventListener('toggle-activity-panel', h)
   }, [toggleAct])
+  // Whether the window has room for the activity panel beside the chat's
+  // reserved minimum. When it doesn't (the panel would be force-collapsed
+  // anyway) the session-header activity toggle is disabled. Mirrors the
+  // crossing-based threshold used by the auto-collapse effect above.
+  const [actSpace, setActSpace] = useState(true)
+  useEffect(() => {
+    const check = () => setActSpace(window.innerWidth >= SIDE_PANEL_MIN_W + measureSidePanelReservedW())
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
   // Bridge explicit view requests (e.g. the /side slash command dispatches
   // openActivityToTab('side')) into the tab model.
   const activityTab = useAppSelector(s => s.chat.activityTab)
@@ -2953,7 +2964,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           />
         </div>
       ) : (
-      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} className={isMobile ? 'mobile-sessions-overlay fixed top-[52px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}
@@ -3008,7 +3019,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           </div>
         )}
         {isMobile && !sidebarOpen && !(activeSlot && (messages.length > 0 || slotRunning)) && (
-          <div className="fixed top-[52px] left-2 z-10">
+          <div className="fixed top-[42px] left-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label="Toggle sessions">
               {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
             </button>
@@ -3070,7 +3081,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               {/* Trailing controls grouped under a single ml-auto so multiple
                   right-aligned items don't each absorb free space (two ml-auto
                   siblings split the gap, parking the split icon mid-header). */}
-              <div className="ml-auto flex items-center gap-2 pointer-events-none">
+              <div className="ml-auto flex items-center gap-1.5 pr-1.5 pointer-events-none">
               {/* Pop-out control, promoted to the title bar (menu items remain for
                   sidebar parity). Mirrors the split-view pattern to its left: a
                   dimmed icon to act, an accent chip when the state is active.
@@ -3084,10 +3095,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   <ExternalLink size={13} /> Popped out
                 </Clickable>
               ) : (
-                <Clickable className="flex items-center opacity-40 hover:opacity-100 transition-opacity cursor-pointer pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} title="Pop out to window" aria-label="Pop out session to its own window">
-                  <ExternalLink size={14} />
+                <Clickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} title="Pop out to window" aria-label="Pop out session to its own window">
+                  <ExternalLink size={15} />
                 </Clickable>
               ))}
+              {/* Activity panel open toggle — relocated here from the top bar
+                  (item 2.4) so opening the panel no longer narrows the now
+                  full-width header. Shown only while the panel is closed; the
+                  panel's own header carries the close button. Disabled when the
+                  window is too narrow (the panel would be force-collapsed). */}
+              {!embedMode && !isMobile && !popout && !activityOpen && (
+                <Clickable
+                  className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto ${actSpace ? 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer' : 'text-muted opacity-40 !cursor-not-allowed'}`}
+                  onClick={() => { if (actSpace) toggleAct() }}
+                  title={actSpace ? 'Open activity panel' : 'Window too narrow for the activity panel'}
+                  aria-label={actSpace ? 'Open activity panel' : 'Window too narrow for the activity panel'}
+                >
+                  <PanelRight size={15} />
+                </Clickable>
+              )}
               {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
                 <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => enterSplit(splitAnchorForActive)} title="This session is open in a split — return to it" aria-label="Return to split view">
                 <Columns2 size={13} /> In split

@@ -26,13 +26,12 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelRight, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink } from 'lucide-react'
+import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, ArrowLeftToLine, Globe, LayoutGrid, Lightbulb, ExternalLink } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import OnboardingFlow from './components/OnboardingFlow'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
 import { isMacElectron } from './lib/electron'
-import { SIDE_PANEL_MIN_W, measureSidePanelReservedW } from './pages/chat/SidePanel'
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -1099,16 +1098,6 @@ export default function App() {
     capsulePulseTimer.current = setTimeout(() => setCapsuleLayoutPulse(false), 350)
   }, [])
   useEffect(() => () => clearTimeout(capsulePulseTimer.current), [])
-  // Whether the window currently has room for the activity panel beside the
-  // chat's reserved minimum. When it doesn't (the panel would be
-  // force-collapsed anyway), the toggle button is disabled.
-  const [actSpace, setActSpace] = useState(true)
-  useEffect(() => {
-    const check = () => setActSpace(window.innerWidth >= SIDE_PANEL_MIN_W + measureSidePanelReservedW())
-    check()
-    window.addEventListener('resize', check)
-    return () => window.removeEventListener('resize', check)
-  }, [])
   // macOS fullscreen hides the native traffic lights, so the header's 84px
   // clearance inset drops while fullscreen (mac-fullscreen class on the root).
   const [macFullscreen, setMacFullscreen] = useState(false)
@@ -1117,12 +1106,14 @@ export default function App() {
     const api = (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
     return api?.onFullScreenChanged?.(setMacFullscreen)
   }, [])
-  // True when the instance tab bar is the topmost strip on macOS and the native
-  // traffic lights therefore sit over it (not the header). Drives the
-  // .mac-instancebar-inset root class that relocates the 84px clearance.
+  // True when the standalone instance tab-bar STRIP is the topmost strip on
+  // macOS (only while a remote pane is active — on the local pane the tabs live
+  // inline in the consolidated header, which keeps its own 84px clearance). The
+  // native traffic lights then sit over the strip, so relocate the inset to it.
   const macInstanceBarInset =
     isMacElectron &&
     !macFullscreen &&
+    activeInstanceId !== null &&
     visibleInstanceTabs(instancesData?.instances ?? [], instanceWarm).length > 0
   // Tell the Electron main process which strip is topmost so it can center the
   // native traffic lights against the 32px instance bar (when shown) instead of
@@ -1345,19 +1336,20 @@ export default function App() {
       </div>
     ) : (
     <div className={`h-screen w-screen flex flex-col overflow-hidden bg-bg ${macInstanceBarInset ? 'mac-instancebar-inset' : ''}`}>
-      {/* Thin instance tab bar — renders null unless >=1 remote is connected, so
-          the single-instance experience is unchanged. Everything below it is the
-          switchable window: the Local dashboard, or a remote's embedded one. */}
-      <InstanceTabBar />
+      {/* Standalone instance tab bar — shown ONLY while a remote pane is active
+          (the local pane below is hidden then, so its inline in-header tabs are
+          not visible; this strip is what lets you switch back to Local). On the
+          local pane the tabs render inline inside the consolidated header. */}
+      {activeInstanceId !== null && <InstanceTabBar />}
       <div className="flex-1 min-h-0 relative">
       {/* Local pane: the native dashboard. Hidden (not unmounted) while a remote
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)]' : 'grid-rows-[52px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       style={{
-        gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar actbar" "nav content actbar"',
+        gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
           gridTemplateColumns: `${effectiveCollapsed ? 74 : 236}px minmax(0,1fr) auto`,
           transition: navLayoutPulse && !activityOpen
@@ -1377,51 +1369,34 @@ export default function App() {
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">Skip to content</a>
 
       {/* Topbar */}
-      <header className="topbar-glass relative flex items-center pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
-        {/* Brand + collapse, aligned to the nav card's outer width. */}
+      <header className="topbar-glass relative flex items-center pl-3 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
+        {/* Left: mobile menu toggle + inline instance selector. The brand now
+            lives in the sidebar (item 1.1). The selector reuses InstanceTabBar's
+            visibility rule — it renders nothing unless >=1 remote instance
+            exists, so the common single-instance header-left is empty (only the
+            macOS traffic-light clearance remains). */}
         <div
           ref={topbarBrandRef}
-          className={`relative flex items-center h-full shrink-0 ${isMobile ? 'px-2 gap-3' : `${effectiveCollapsed ? 'justify-start px-0 gap-2' : 'px-5 gap-2'}`}`}
-          style={isMobile ? undefined : effectiveCollapsed ? { minWidth: 74 } : { minWidth: 236 }}
+          className={`relative flex items-center h-full shrink-0 gap-2 ${isMobile ? 'px-2' : ''}`}
         >
           {isMobile && (
             <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label="Open menu">
               <Menu size={20} />
             </button>
           )}
-          {!isMobile && effectiveCollapsed ? (
-            <div className="flex items-center justify-center w-[74px] h-full shrink-0">
-              <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
-              <span className="sr-only">{botName}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2.5 min-w-0 opacity-100">
-              <img src={avatar} alt={botName} className={`${isLumon ? 'w-auto h-7' : 'w-9 h-9'} rounded-sm shrink-0 hover:rotate-[-8deg] hover:scale-110 transition-transform duration-300 object-contain`} style={{ filter: 'drop-shadow(0 2px 8px var(--accent-glow))' }} />
-              <span className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap">{botName}</span>
-            </div>
-          )}
-          {/* Keep Request a Feature visible beside the brand in both desktop sidebar states. */}
-          {!isMobile && <>
-            <span className="w-px h-4 bg-border shrink-0" aria-hidden="true" />
-            <button
-              className="flex items-center gap-1.5 px-2 -ml-2 py-1 rounded-md bg-transparent border-none cursor-pointer text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors whitespace-nowrap"
-              onClick={requestFeature}
-            >
-              <Lightbulb size={13} /> Request a Feature
-            </button>
-          </>}
+          {!isMobile && <InstanceTabBar variant="inline" />}
         </div>
         {!isMobile && topbarSearchLayout.visible && (
           <button
             type="button"
             data-topbar-overlay
             onClick={commandPalette.openPalette}
-            className="absolute w-auto max-w-[34rem] h-9 px-4 rounded-lg border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
-            style={{ left: topbarSearchLayout.gutter, right: topbarSearchLayout.gutter, marginInline: 'auto' }}
+            className="absolute h-7 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
+            style={{ left: '50vw', transform: 'translateX(-50%)', width: 'calc(33.3333vw - 40px)', minWidth: TOPBAR_SEARCH_MIN_WIDTH }}
             aria-label="Search sessions, files, and commands"
             title="Search everywhere (⌘K)"
           >
-            <span className="text-[13px]">⌘K — Search for anything…</span>
+            <span className="text-[13px] truncate">⌘K — Search for anything…</span>
           </button>
         )}
         <div ref={topbarActionsRef} className="flex items-center gap-1.5 relative ml-auto">
@@ -1506,34 +1481,28 @@ export default function App() {
               <motion.div
                 layout
                 transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
-                className={`flex items-center gap-2 h-7 px-2.5 rounded-full border transition-colors duration-300 ${offline ? 'border-danger bg-danger-subtle' : 'border-border bg-card'}`}
+                className={`flex items-center gap-2 h-7 px-2.5 rounded-xl transition-colors duration-300 ${offline ? 'bg-danger-subtle' : 'bg-card'}`}
               >
                 {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
               </motion.div>
             )
           })()}
-          {/* Notifications bell — rightmost regular button (borderless icon,
-              matching the activity toggle's style). The activity toggle stays
-              at the absolute edge: its -mr-1.5 window-edge overlap with the
-              panel's close button is positional, and it hides when the panel
-              opens — leaving the bell as the visible far-right icon. */}
+          {/* Request a Feature — its own bordered pill (28px tall, 12px radius),
+              separated from the readout capsule (item 2.3). */}
+          {!isMobile && (
+            <button
+              className="flex items-center gap-1.5 h-7 px-2.5 rounded-xl bg-card text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap shrink-0"
+              onClick={requestFeature}
+              title="Request a feature"
+            >
+              <Lightbulb size={13} /> Request a Feature
+            </button>
+          )}
+          {/* Notifications bell — borderless icon button, rightmost control.
+              (The activity-panel open toggle now lives in the session header,
+              beside the pop-out control — see ChatPage — so opening the panel
+              no longer narrows this full-width header.) */}
           <NotificationsBellButton />
-          {/* Activity panel toggle — rightmost icon, adjacent to
-              the panel it opens. Hidden while the panel is open: the panel's
-              own header close button takes over (no duplicate affordance).
-              Styled + positioned to mirror that close button exactly (w-7
-              borderless icon; -mr-1.5 pulls it from the header's pr-3 to 6px
-              off the window edge, matching the strip's pr-1.5) so open/close
-              icons overlap and the toggle feels like one button flipping. */}
-          {!isMobile && activePath.startsWith('/chat') && !activityOpen && <button
-            className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 -mr-1.5 ${actSpace ? 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer' : 'text-muted opacity-40 cursor-not-allowed'}`}
-            onClick={() => window.dispatchEvent(new CustomEvent('toggle-activity-panel'))}
-            disabled={!actSpace}
-            title={actSpace ? 'Open activity panel' : 'Window too narrow for the activity panel'}
-            aria-label={actSpace ? 'Open activity panel' : 'Window too narrow for the activity panel'}
-          >
-            <PanelRight size={15} />
-          </button>}
         </div>
       </header>
 
@@ -1644,26 +1613,62 @@ export default function App() {
         {/* Top-fixed: menu row + primary destinations + Apps section header.
             The sidebar toggle lives HERE (menu row), not in the topbar. */}
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
-          <div className={`flex items-center py-2 pl-3 pr-3 ${effectiveCollapsed ? '' : 'justify-between'}`}>
+          <div className={`flex items-center p-1 ${effectiveCollapsed ? 'justify-start' : ''}`}>
+            {/* One persistent click target that toggles the rail. The logo
+                never unmounts, so it stays perfectly still across collapse/
+                expand (no swap, no shift). Only the brand text + collapse arrow
+                animate — fading in on expand and out on collapse via
+                AnimatePresence. No hover tint on the row; on hover only the
+                logo rotates (group-hover). */}
             <button
-              className="flex items-center justify-center p-1.5 -m-1.5 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"
+              type="button"
+              className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left overflow-hidden"
               onClick={toggleNav}
               title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-label={effectiveCollapsed ? 'Expand sidebar' : 'Toggle sidebar'}
+              aria-label={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-expanded={!effectiveCollapsed}
             >
-              <Menu size={16} />
+              <span className="flex items-center gap-2.5 min-w-0">
+                {/* Glow via box-shadow, NOT filter: drop-shadow. A drop-shadow
+                    filter re-rasterizes for a frame when the sidebar width
+                    transition starts on expand (a visible "blink"); box-shadow
+                    composites without that re-raster. The logo is a rounded-md
+                    square, so the rounded-rect box-shadow reads the same. */}
+                <img src={avatar} alt="" aria-hidden="true" className={`${isLumon ? 'w-auto h-8' : 'w-8 h-8'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} style={{ boxShadow: '0 2px 8px var(--accent-glow)' }} />
+                <AnimatePresence initial={false}>
+                  {!effectiveCollapsed && (
+                    <motion.span
+                      key="brand-text"
+                      initial={{ opacity: 0, x: -6 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -6, transition: { duration: 0.12, ease: 'easeIn' } }}
+                      transition={{ duration: 0.2, ease: 'easeOut' }}
+                      className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap truncate"
+                    >{botName}</motion.span>
+                  )}
+                </AnimatePresence>
+              </span>
+              {/* Arrow is ABSOLUTE (out of flex flow), pinned to the right.
+                  If it were a flex child it would reserve ~16px on the right
+                  from frame 1 of expand — but the rail is still at collapsed
+                  width (74px) for that frame, so logo + gap + arrow overflowed
+                  and the logo got crammed/clipped against the arrow (the
+                  "blink"). Absolute-positioning removes that reserved space, so
+                  the logo stays put and the arrow just fades in at the edge. */}
+              <AnimatePresence initial={false}>
+                {!effectiveCollapsed && (
+                  <motion.span
+                    key="collapse-arrow"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1, transition: { duration: 0.18, ease: 'easeOut', delay: 0.12 } }}
+                    exit={{ opacity: 0, transition: { duration: 0.12, ease: 'easeIn' } }}
+                    className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center text-muted pointer-events-none"
+                  >
+                    <ArrowLeftToLine size={16} />
+                  </motion.span>
+                )}
+              </AnimatePresence>
             </button>
-            {!effectiveCollapsed && (
-              <button
-                className="flex items-center justify-center p-1.5 -m-1.5 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"
-                onClick={toggleNav}
-                title="Collapse sidebar"
-                aria-label="Collapse sidebar"
-              >
-                <PanelLeftClose size={16} />
-              </button>
-            )}
           </div>
           {NAV_ITEMS.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
           {/* Apps section header. "Explore" (the App Store) rides the header
@@ -1686,6 +1691,7 @@ export default function App() {
             </div>
           ) : (
             <motion.div
+              className="mt-4"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2, ease: 'easeOut' }}

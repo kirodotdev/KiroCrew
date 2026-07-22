@@ -16,8 +16,13 @@ function BrandGlyph({ url, size }: { url: string; size: number }) {
         width: size,
         height: size,
         backgroundColor: 'currentColor',
-        WebkitMaskImage: `url(${url})`,
-        maskImage: `url(${url})`,
+        // Quote the URL: in the production build these small SVGs are inlined
+        // by Vite as `data:` URIs, whose commas/`#`/parens break an UNQUOTED
+        // `url(...)` token (the mask silently fails and the span renders as a
+        // solid currentColor box). Dev serves them as clean file paths, so the
+        // bug only shows in the packaged app. Matches GithubLogo/GitlabLogo.
+        WebkitMaskImage: `url("${url}")`,
+        maskImage: `url("${url}")`,
         WebkitMaskRepeat: 'no-repeat',
         maskRepeat: 'no-repeat',
         WebkitMaskSize: 'contain',

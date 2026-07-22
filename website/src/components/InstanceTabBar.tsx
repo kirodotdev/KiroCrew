@@ -61,7 +61,7 @@ function fmtDuration(secs: number): string {
   return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`
 }
 
-export default function InstanceTabBar() {
+export default function InstanceTabBar({ variant = 'strip' }: { variant?: 'strip' | 'inline' } = {}) {
   const dispatch = useAppDispatch()
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
@@ -120,10 +120,10 @@ export default function InstanceTabBar() {
   if (embedded || disabled || tabInstances.length === 0) return null
 
   const tabCls = (active: boolean) =>
-    'flex items-center gap-1.5 h-6 px-2.5 rounded-md text-[12px] font-medium whitespace-nowrap transition-colors border shrink-0 ' +
+    'flex items-center gap-1.5 h-6 px-2.5 rounded-md text-[12px] whitespace-nowrap transition-colors border shrink-0 ' +
     (active
-      ? 'bg-accent-subtle text-accent border-accent/40'
-      : 'bg-transparent text-muted border-transparent hover:text-text hover:bg-bg-hover')
+      ? 'bg-accent-subtle text-accent border-accent/40 font-bold'
+      : 'bg-transparent text-muted border-transparent font-medium hover:text-text hover:bg-bg-hover')
 
   // Right-aligned tunnel-status cluster: the ACTIVE remote pane's connection
   // state + countdown to the next token auto-refresh. On the Local tab there is
@@ -159,11 +159,15 @@ export default function InstanceTabBar() {
 
   return (
     <div
-      className="topbar-glass instance-tab-bar flex items-center gap-2 h-8 px-2 border-b border-border shrink-0 z-[46]"
+      className={
+        variant === 'inline'
+          ? 'instance-tab-bar-inline flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar'
+          : 'topbar-glass instance-tab-bar flex items-center gap-2 h-8 px-2 border-b border-border shrink-0 z-[46]'
+      }
       role="tablist"
       aria-label="Instances"
     >
-      <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto no-scrollbar">
+      <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
         <button
           type="button"
           role="tab"
@@ -225,7 +229,7 @@ export default function InstanceTabBar() {
           )
         })}
       </div>
-      {activeInst && (
+      {variant === 'strip' && activeInst && (
         <div className="flex items-center gap-1.5 shrink-0 pl-2 pr-1" title={tunnelTitle}>
           <span className={`w-2 h-2 rounded-full ${tunnelDotCls}`} aria-hidden />
           <span className="text-[11px] text-[var(--muted)] hidden sm:inline">{tunnelLabel}</span>

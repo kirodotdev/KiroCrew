@@ -226,12 +226,12 @@ export default function SidePanel({
         <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
       </div>
       {/* Tab strip — drag chips horizontally to reorder (framer Reorder).
-          h-[52px] matches the app header row so the two bars align.
+          h-[42px] matches the app header row so the two bars align.
           side-panel-strip punches the strip out of the Electron window-drag
           region (see index.css) so chips receive pointer events. */}
       {/* border-b gives the strip a tab-bar baseline; chips stay centered
           pills (bordered when active) floating above it. */}
-      <div className="side-panel-strip flex items-center gap-1.5 h-[52px] shrink-0 pl-2 pr-1.5 border-b border-border">
+      <div className="side-panel-strip flex items-center gap-1.5 h-[42px] shrink-0 pl-2 pr-1.5 border-b border-border">
         <Reorder.Group
           axis="x"
           values={tabs}
