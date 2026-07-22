@@ -1,312 +1,296 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>KiroCrew</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    :root { --kiro: #9046FF; }
+    :root {
+      --accent: #8E48FF;                 /* Kiro brand purple; overridden per-user at boot */
+      --backdrop: #0f1117;               /* neutral shown during the final hand-off fade */
+      /* the app's "system" typeface option — no webfont, paints instantly offline */
+      --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
     html, body { height: 100%; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f1117;          /* neutral backdrop revealed during the final fade */
+      font-family: var(--font-body);
+      background: var(--backdrop);
       overflow: hidden;
-      -webkit-app-region: drag;
+      -webkit-app-region: drag;          /* frameless window: let the splash be dragged */
       user-select: none;
     }
-    /* The whole reveal lives in #root; it fades out as one layer when ready. */
-    #root {
+
+    /* The whole reveal lives in #stage; overflow clips ghosts at the edges,
+       and it fades out as one layer when the gateway is ready. */
+    #stage {
       position: fixed; inset: 0; overflow: hidden;
-      background: var(--kiro);
-      opacity: 1;
-      transition: opacity 0.42s ease;
+      background:
+        radial-gradient(circle at 50% 42%,
+          color-mix(in srgb, var(--accent) 80%, #ffffff 20%),
+          var(--accent) 74%);
+      opacity: 1; transition: opacity 0.5s ease;
       will-change: opacity;
     }
-    /* White sweep panel — grows from the left with a lightly feathered right edge. */
-    #white {
-      position: absolute; top: 0; left: 0; height: 100%;
-      width: 0; background: #ffffff; z-index: 10;
-      filter: blur(1.5px);
-      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 70px), transparent 100%);
-      mask-image: linear-gradient(to right, #000 calc(100% - 70px), transparent 100%);
-      will-change: width;
+    #stage.gone { opacity: 0; }
+
+    /* ---- Ghosts ----
+       nesting: .ghost(pos,opacity) > .float(screen-vertical bob) > .tilt(rotate) > .pop(scale) > svg */
+    .ghost { position: absolute; left: 0; top: 0; opacity: 0; will-change: opacity; }
+    .float { width: 100%; height: 100%; animation: bob 3s ease-in-out infinite; }
+    @keyframes bob { 0%,100% { transform: translateY(-4px); } 50% { transform: translateY(4px); } }
+    .tilt  { width: 100%; height: 100%; }
+    .pop   { width: 100%; height: 100%; }
+
+    /* bubble "pop" entrance — bouncy overshoot */
+    @keyframes popIn {
+      0%   { transform: scale(0); }
+      55%  { transform: scale(1.14); }
+      78%  { transform: scale(0.95); }
+      100% { transform: scale(1); }
     }
-    #wordWrap {
-      position: absolute; inset: 0; z-index: 20;
-      display: flex; align-items: center; justify-content: center;
+    .pop.popIn { animation: popIn 0.46s cubic-bezier(.34,1.4,.5,1) both; }
+    /* bubble "pop" exit — swells then vanishes in place (no sliding) */
+    @keyframes popOut {
+      0%   { transform: scale(1); }
+      28%  { transform: scale(1.16); }
+      100% { transform: scale(0); }
     }
-    .boot-word { max-width: 92vw; height: auto; }
-    /* Status line — absolutely positioned below the wordmark so it never shifts
-       the centered KIROCREW. Hidden until the reveal completes. */
+    .pop.popOut { animation: popOut 0.3s cubic-bezier(.5,0,.8,.2) forwards; }
+
+    .g-svg { width: 100%; height: 100%; display: block; }
+    .g-eyes { transform-box: fill-box; transform-origin: center; transition: transform 0.09s ease; }
+    .g-eyes.blink { transform: scaleY(0.08); }   /* one whole ghost blinks (both eyes) */
+
+    /* ---- "Kiro Crew" wordmark — appears briefly in the centre on ready ---- */
+    #title {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%) translateY(10px) scale(0.96);
+      opacity: 0; z-index: 60;
+      font-family: var(--font-body);
+      font-size: 66px; font-weight: 600; letter-spacing: -0.01em;
+      color: #fff; text-shadow: 0 6px 34px rgba(0,0,0,0.30);
+      transition: opacity 0.5s ease, transform 0.55s cubic-bezier(.2,1,.3,1);
+      white-space: nowrap;
+    }
+    #title.show { opacity: 1; transform: translate(-50%, -50%) translateY(0) scale(1); }
+
+    /* ---- status pill (bottom-centre) ---- */
     #status {
-      position: absolute; left: 50%; top: calc(50% + 92px);
-      transform: translate(-50%, 6px); opacity: 0;
-      transition: opacity 0.45s ease, transform 0.45s ease;
-      z-index: 21;
-      display: flex; align-items: center; gap: 9px;
-      font-size: 15px; font-weight: 600; letter-spacing: 0.01em;
-      color: var(--kiro);
+      position: absolute; left: 50%; bottom: 6%; transform: translateX(-50%);
+      display: inline-flex; align-items: center; gap: 9px; z-index: 50;
+      font-family: var(--font-body);
+      font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92);
     }
-    #status.show { opacity: 1; transform: translate(-50%, 0); }
-    .dot {
-      width: 7px; height: 7px; border-radius: 50%;
-      background: var(--kiro);
-      animation: pulse 1s ease-in-out infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 0.35; transform: scale(0.8); }
-      50%      { opacity: 1;    transform: scale(1); }
-    }
-    /* Kiro ghost. Off-screen left before JS runs (matches HIDDEN_X) so it never
-       flashes at the edge on first paint — request: render it first, animate later. */
-    #ghost {
-      position: absolute; top: 50%; left: 0; z-index: 30;
-      transform: translate(-260px, -50%);
-      will-change: transform;
-      filter: drop-shadow(0 10px 26px rgba(40, 20, 90, 0.35));
-    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: .4; transform: scale(.8);} 50% { opacity: 1; transform: scale(1);} }
+
+    /* Accessibility: honour reduced-motion — no bob/pop/pulse, just a calm reveal. */
     @media (prefers-reduced-motion: reduce) {
-      .dot { animation: none; }
+      .float, .dot { animation: none; }
+      .pop.popIn, .pop.popOut { animation-duration: .01s; }
+      #stage, #title { transition-duration: .01s; }
     }
   </style>
 </head>
 <body>
-  <div id="root">
-    <div id="white"></div>
-
-    <div id="wordWrap">
-      <!-- KIROCREW characters are injected + laid out by JS (one <text> each;
-           outline strokes on, then fills, as the ghost sweeps past). -->
-      <svg class="boot-word" width="900" height="160" viewBox="0 0 900 160" aria-hidden="true"></svg>
-    </div>
-
-    <!-- Appears below KIROCREW only after the reveal finishes; shows live gateway
-         status and stays until the gateway is ready, then the whole screen fades. -->
+  <div id="stage">
+    <div id="ghosts"></div>
+    <div id="title">Kiro Crew</div>
     <div id="status"><span class="dot"></span><span id="statusText">Starting gateway&hellip;</span></div>
-
-    <!-- Inline ghost (white body, black eyes) — inlined, not an <img>, so it paints
-         instantly with no first-load delay. -->
-    <div id="ghost">
-      <svg width="200" height="263" viewBox="255 110 745 980" fill="none" aria-hidden="true">
-        <path d="M398.554 818.914C316.315 1001.03 491.477 1046.74 620.672 940.156C658.687 1059.66 801.052 970.473 852.234 877.795C964.787 673.567 919.318 465.357 907.64 422.374C827.637 129.443 427.623 128.946 358.8 423.865C342.651 475.544 342.402 534.18 333.458 595.051C328.986 625.86 325.507 645.488 313.83 677.785C306.873 696.424 297.68 712.819 282.773 740.645C259.915 783.881 269.604 867.113 387.87 823.883L399.051 818.914H398.554Z" fill="#ffffff" />
-        <path d="M636.123 549.353C603.328 549.353 598.359 510.097 598.359 486.742C598.359 465.623 602.086 448.977 609.293 438.293C615.504 428.852 624.697 424.131 636.123 424.131C647.555 424.131 657.492 428.852 664.447 438.541C672.398 449.474 676.623 466.12 676.623 486.742C676.623 525.998 661.471 549.353 636.375 549.353H636.123Z" fill="#000000" />
-        <path d="M771.24 549.353C738.445 549.353 733.477 510.097 733.477 486.742C733.477 465.623 737.203 448.977 744.41 438.293C750.621 428.852 759.814 424.131 771.24 424.131C782.672 424.131 792.609 428.852 799.564 438.541C807.516 449.474 811.74 466.12 811.74 486.742C811.74 525.998 796.588 549.353 771.492 549.353H771.24Z" fill="#000000" />
-      </svg>
-    </div>
   </div>
 
-  <!-- Same anime.js engine the dashboard's BootReveal.tsx uses (vendored from
-       src/lib/anime.es.js). Loaded as a classic script because file:// pages
-       cannot import ES modules. Exposes window.anime. -->
-  <script src="./anime.global.js"></script>
   <script>
-    (function () {
-      "use strict";
+  (function () {
+    "use strict";
 
-      var anime = window.anime;
+    // ── Per-user accent, injected by the Electron main process as a query param
+    //    (see showLoadingThenConnect in main.js). Falls back to the brand purple. ──
+    var accent = "#8E48FF";
+    try {
+      var q = new URLSearchParams(location.search).get("accent");
+      if (q && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(q)) accent = q;
+    } catch (e) {}
+    document.documentElement.style.setProperty("--accent", accent);
 
-      // ── Constants (mirrors src/components/BootReveal.tsx) ──
-      var KIRO_PURPLE = "#9046FF";
-      var KIRO_RGB = "144,70,255";
-      var WORD = "KIROCREW";
-      var GHOST_W = 200, FADE = 70, VB_W = 900, CHAR_SPACING = 8, OUTLINE_MULT = 7;
-      var FLOAT_MS = 2400, DRAW_MS = 320, FILL_MS = 260;
-      var DRAW_FRAC = DRAW_MS / FLOAT_MS, FILL_FRAC = FILL_MS / FLOAT_MS;
-      var HIDDEN_X = -GHOST_W - 30, PEEK_TILT = 16, PEEK_X = -GHOST_W + 130;
-      var GHOST_LOAD_DELAY = 500;   // request: let the ghost paint/settle before animating
-      var MIN_STATUS_HOLD = 500;    // keep the status text on screen briefly before fading
+    var GHOST_SVG =
+      '<div class="float"><div class="tilt"><div class="pop"><svg class="g-svg" viewBox="255 110 745 980" fill="none" aria-hidden="true">' +
+        '<path d="M398.554 818.914C316.315 1001.03 491.477 1046.74 620.672 940.156C658.687 1059.66 801.052 970.473 852.234 877.795C964.787 673.567 919.318 465.357 907.64 422.374C827.637 129.443 427.623 128.946 358.8 423.865C342.651 475.544 342.402 534.18 333.458 595.051C328.986 625.86 325.507 645.488 313.83 677.785C306.873 696.424 297.68 712.819 282.773 740.645C259.915 783.881 269.604 867.113 387.87 823.883L399.051 818.914H398.554Z" fill="#ffffff"/>' +
+        '<g class="g-eyes">' +
+          '<path d="M636.123 549.353C603.328 549.353 598.359 510.097 598.359 486.742C598.359 465.623 602.086 448.977 609.293 438.293C615.504 428.852 624.697 424.131 636.123 424.131C647.555 424.131 657.492 428.852 664.447 438.541C672.398 449.474 676.623 466.12 676.623 486.742C676.623 525.998 661.471 549.353 636.375 549.353H636.123Z" fill="#000000"/>' +
+          '<path d="M771.24 549.353C738.445 549.353 733.477 510.097 733.477 486.742C733.477 465.623 737.203 448.977 744.41 438.293C750.621 428.852 759.814 424.131 771.24 424.131C782.672 424.131 792.609 428.852 799.564 438.541C807.516 449.474 811.74 466.12 811.74 486.742C811.74 525.998 796.588 549.353 771.492 549.353H771.24Z" fill="#000000"/>' +
+        '</g>' +
+      '</svg></div></div></div>';
 
-      var root = document.getElementById("root");
-      var white = document.getElementById("white");
-      var ghost = document.getElementById("ghost");
-      var statusEl = document.getElementById("status");
-      var statusText = document.getElementById("statusText");
-      var svg = document.querySelector(".boot-word");
-      var SVG_NS = "http://www.w3.org/2000/svg";
+    // edge drives base rotation so heads face INTO the frame:
+    //   top → 180°, left → 90°, right → -90°, bottom → 0°, free → gentle tilt.
+    // ax/ay = ghost CENTRE as fraction of viewport (near 0/1 = clipped off-frame).
+    var GH = [
+      { ax: .22, ay: .015, size: 152, edge: "top",    depth: 1,   flip: true  },
+      { ax: .70, ay: .02,  size: 206, edge: "top",    depth: 1                },
+      { ax: .012,ay: .40,  size: 178, edge: "left",   depth: .96              },
+      { ax: .988,ay: .58,  size: 194, edge: "right",  depth: 1                },
+      { ax: .30, ay: .99,  size: 322, edge: "bottom", depth: 1                }, // foreground, off-centre (clears status)
+      { ax: .85, ay: .19,  size: 100, edge: "free",   depth: .76, flip: true  },
+      { ax: .13, ay: .74,  size: 122, edge: "free",   depth: .9               },
+      { ax: .66, ay: .78,  size: 112, edge: "free",   depth: .82, flip: true  }
+    ];
+    var BASE_ROT = { top: 180, left: 90, right: -90, bottom: 0, free: 0 };
 
-      var chars = [];
-      var revealDone = false, revealDoneAt = 0;
-      var gatewayReady = false, finished = false;
-      var latestStatus = "Starting gateway…";
+    var MIN_FLOOR_MS = 1600;   // never hand off before this (no sub-second flash)
+    var MIN_GHOSTS   = 5;
+    var STAGGER_MS   = 210;
+    var CHURN_START  = 5000;   // only churn (leave + return) once boot exceeds this
+    var CHURN_TICK   = [750, 950];
+    var CHURN_GONE   = [1450, 1750];
 
-      function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
-      function setGhost(gx, bob, rot) {
-        ghost.style.transform =
-          "translate(" + gx + "px, -50%) translateY(" + (bob || 0) + "px) rotate(" + (rot || 0) + "deg)";
+    var stage = document.getElementById("stage");
+    var host  = document.getElementById("ghosts");
+    var title = document.getElementById("title");
+    var statusText = document.getElementById("statusText");
+
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var W = window.innerWidth, H = window.innerHeight;
+    var ghosts = [], nextIdx = 0, shownCount = 0;
+    var ready = false, resolved = false, finished = false, startedAt = performance.now();
+    var churnOrder = [], churnPtr = 0, latestStatus = "Starting gateway\u2026";
+
+    function rnd(a, b) { return a + Math.random() * (b - a); }
+
+    function makeGhost(cfg) {
+      var el = document.createElement("div");
+      el.className = "ghost";
+      el.style.width = cfg.size + "px";
+      el.style.height = (cfg.size * 1.31) + "px";
+      el.style.left = (cfg.ax * W - cfg.size / 2) + "px";
+      el.style.top  = (cfg.ay * H - cfg.size * 1.31 / 2) + "px";
+      el.style.filter = cfg.depth >= .9
+        ? "drop-shadow(0 7px 14px rgba(20,8,50,0.32))"
+        : "drop-shadow(0 5px 10px rgba(20,8,50,0.26)) blur(" + (1 - cfg.depth) * 2.6 + "px)";
+      el.innerHTML = GHOST_SVG;
+      host.appendChild(el);
+      var g = {
+        el: el, cfg: cfg,
+        floatEl: el.querySelector(".float"),
+        pop: el.querySelector(".pop"),
+        tilt: el.querySelector(".tilt"),
+        eyes: el.querySelector(".g-eyes"),
+        visible: false
+      };
+      var rot = BASE_ROT[cfg.edge] + rnd(-9, 9);
+      g.tilt.style.transform = "rotate(" + rot + "deg)" + (cfg.flip ? " scaleX(-1)" : "");
+      g.floatEl.style.animationDuration = rnd(2.4, 4.3).toFixed(2) + "s";
+      g.floatEl.style.animationDelay = (-rnd(0, 3)).toFixed(2) + "s";
+      return g;
+    }
+
+    function popIn(g) { g.pop.classList.remove("popIn", "popOut"); void g.pop.offsetWidth; g.pop.classList.add("popIn"); }
+    function showGhost(g) { g.el.style.opacity = String(g.cfg.depth); g.visible = true; popIn(g); }
+    function blink(g) { g.eyes.classList.add("blink"); setTimeout(function () { g.eyes.classList.remove("blink"); }, 130); }
+
+    function churnGhost(g) {
+      if (resolved) return;
+      g.visible = false;
+      g.pop.classList.remove("popIn"); void g.pop.offsetWidth; g.pop.classList.add("popOut");
+      setTimeout(function () { if (!resolved) showGhost(g); }, rnd(CHURN_GONE[0], CHURN_GONE[1]));
+    }
+
+    // one ghost at a time blinks
+    function blinkLoop() {
+      if (resolved) return;
+      var vis = ghosts.filter(function (g) { return g.visible; });
+      if (vis.length) blink(vis[Math.floor(Math.random() * vis.length)]);
+      setTimeout(blinkLoop, rnd(900, 2400));
+    }
+
+    // rotation so DIFFERENT ghosts leave each time (no immediate repeats)
+    function shuffle(a) { for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
+    function nextChurnGhost() {
+      for (var tries = 0; tries < churnOrder.length; tries++) {
+        var g = churnOrder[churnPtr];
+        churnPtr = (churnPtr + 1) % churnOrder.length;
+        if (g.visible) return g;
       }
+      return null;
+    }
 
-      // Create the 8 character elements and measure/lay them out (centered).
-      function buildChars() {
-        var els = WORD.split("").map(function (ch) {
-          var t = document.createElementNS(SVG_NS, "text");
-          t.setAttribute("class", "boot-char");
-          t.setAttribute("x", "0");
-          t.setAttribute("y", "80");
-          t.setAttribute("text-anchor", "start");
-          t.setAttribute("dominant-baseline", "central");
-          t.setAttribute("font-size", "84");
-          t.setAttribute("font-weight", "800");
-          t.setAttribute("fill", "none");
-          t.setAttribute("stroke", KIRO_PURPLE);
-          t.setAttribute("stroke-width", "3");
-          t.setAttribute("stroke-linejoin", "round");
-          t.setAttribute("stroke-linecap", "round");
-          t.textContent = ch;
-          svg.appendChild(t);
-          return t;
-        });
-        var widths = els.map(function (c) { return c.getComputedTextLength() || 50; });
-        var total = widths.reduce(function (a, b) { return a + b; }, 0) + CHAR_SPACING * (els.length - 1);
-        var cur = (VB_W - total) / 2;
-        chars = els.map(function (c, i) {
-          c.setAttribute("x", String(cur));
-          var vbLeft = cur;
-          cur += widths[i] + CHAR_SPACING;
-          var len = widths[i] * OUTLINE_MULT;
-          c.style.strokeDasharray = String(len);
-          c.style.strokeDashoffset = String(len);
-          return { el: c, len: len, vbLeft: vbLeft, screenLeft: 0, triggerMp: -1 };
-        });
+    function peekNext() {
+      if (resolved) return;
+      if (nextIdx < ghosts.length) {
+        showGhost(ghosts[nextIdx++]); shownCount++;
+        maybeResolve();
+        setTimeout(peekNext, STAGGER_MS);
+      } else if (!reduce) {
+        churnLoop();
       }
+    }
+    function churnLoop() {
+      if (resolved) return;
+      maybeResolve();
+      if (resolved) return;
+      var elapsed = performance.now() - startedAt;
+      if (elapsed < CHURN_START) { setTimeout(churnLoop, CHURN_START - elapsed + 50); return; }
+      var g = nextChurnGhost();      // one at a time; a second leaves before the first returns
+      if (g) churnGhost(g);
+      setTimeout(churnLoop, rnd(CHURN_TICK[0], CHURN_TICK[1]));
+    }
 
-      // Force the finished frame: full white sweep, all glyphs filled, ghost gone.
-      function settleFinalFrame() {
-        white.style.width = (window.innerWidth + GHOST_W + FADE + 60) + "px";
-        chars.forEach(function (c) {
-          c.el.style.strokeDashoffset = "0";
-          c.el.style.fill = KIRO_PURPLE;
-          c.el.style.stroke = "transparent";
-        });
-        setGhost(window.innerWidth + GHOST_W + 80, 0, 0);
+    // ── gateway signalled ready ──
+    function markReady() { ready = true; latestStatus = "Connected \u2713"; statusText.textContent = latestStatus; maybeResolve(); }
+
+    function maybeResolve() {
+      if (resolved || !ready || shownCount < MIN_GHOSTS) return;
+      var elapsed = performance.now() - startedAt;
+      if (elapsed < MIN_FLOOR_MS) { setTimeout(maybeResolve, MIN_FLOOR_MS - elapsed + 20); return; }
+      resolve();
+    }
+
+    // Hold the composition; "Kiro Crew" appears briefly; then hand off (fade → bootComplete).
+    function resolve() {
+      resolved = true;
+      ghosts.forEach(function (g) { if (!g.visible && Math.random() < 0.5) showGhost(g); });
+      setTimeout(function () { title.classList.add("show"); }, 220);
+      setTimeout(fadeOut, 1350);
+    }
+    function fadeOut() {
+      if (finished) return; finished = true;
+      var done = false;
+      function notifyMain() {
+        if (done) return; done = true;
+        try { if (window.electronAPI && window.electronAPI.bootComplete) window.electronAPI.bootComplete(); } catch (e) {}
       }
+      stage.addEventListener("transitionend", function (e) { if (e.propertyName === "opacity") notifyMain(); }, { once: true });
+      stage.classList.add("gone");
+      setTimeout(notifyMain, 700);   // fallback if transitionend doesn't fire
+    }
 
-      function onRevealDone() {
-        if (revealDone) return;
-        revealDone = true;
-        revealDoneAt = performance.now();
-        settleFinalFrame();
-        statusText.textContent = latestStatus;
-        statusEl.classList.add("show");
-        maybeFinish();
-      }
+    // ── wire up gateway status / ready signals from the Electron main process ──
+    if (window.electronAPI && window.electronAPI.onStatus) {
+      window.electronAPI.onStatus(function (msg) {
+        if (msg) latestStatus = msg;
+        if (!ready) statusText.textContent = latestStatus;
+      });
+    }
+    if (window.electronAPI && window.electronAPI.onBootReady) {
+      window.electronAPI.onBootReady(markReady);
+    } else {
+      // Browser preview (no Electron): auto-signal ready so the whole reveal plays.
+      // ?ready=<ms> overrides the default. Never runs inside the real app.
+      var d = 2500;
+      try { var r = new URLSearchParams(location.search).get("ready"); if (r != null) d = Math.max(0, parseInt(r, 10) || 0); } catch (e) {}
+      setTimeout(markReady, d);
+    }
 
-      function maybeFinish() {
-        if (!revealDone || !gatewayReady || finished) return;
-        var wait = Math.max(0, revealDoneAt + MIN_STATUS_HOLD - performance.now());
-        setTimeout(fadeOut, wait);
-      }
-
-      function fadeOut() {
-        if (finished) return;
-        finished = true;
-        var done = false;
-        function notifyMain() {
-          if (done) return;
-          done = true;
-          try { if (window.electronAPI && window.electronAPI.bootComplete) window.electronAPI.bootComplete(); } catch (e) {}
-        }
-        root.addEventListener("transitionend", function (e) {
-          if (e.propertyName === "opacity") notifyMain();
-        }, { once: true });
-        root.style.opacity = "0";
-        setTimeout(notifyMain, 700); // fallback if transitionend doesn't fire
-      }
-
-      // ── The reveal timeline — same anime.js engine + phases as BootReveal.tsx ──
-      function startReveal() {
-        var prog = { p: 0 };
-        var writeMp = { p: 0 };
-        var startX = 0, endX = 0;
-
-        setGhost(HIDDEN_X, 0, 0);
-
-        var tl = anime.timeline({ autoplay: false, complete: onRevealDone });
-
-        // 1. Peek in, head tilting to look around the edge.
-        tl.add({
-          targets: prog, p: [0, 1], duration: 560, easing: "easeOutBack",
-          update: function () { setGhost(HIDDEN_X + (PEEK_X - HIDDEN_X) * prog.p, Math.sin(prog.p * Math.PI) * -6, PEEK_TILT * prog.p); }
-        });
-        // 2. Curious look-around while peeking.
-        tl.add({
-          targets: prog, p: [0, 1], duration: 460, easing: "easeInOutSine",
-          update: function () { setGhost(PEEK_X, Math.sin(prog.p * Math.PI * 2) * 7, PEEK_TILT + Math.sin(prog.p * Math.PI * 2) * 3); }
-        });
-        // 3. Withdraw, straightening up.
-        tl.add({
-          targets: prog, p: [0, 1], duration: 380, easing: "easeInBack",
-          update: function () { setGhost(PEEK_X + (HIDDEN_X - PEEK_X) * prog.p, 0, PEEK_TILT * (1 - prog.p)); }
-        });
-        // 4. Constant-speed float; each glyph strokes its outline as the ghost
-        //    passes, then fills in just behind the sweep edge.
-        tl.add({
-          targets: writeMp, p: [0, 1], duration: FLOAT_MS, easing: "linear",
-          begin: function () {
-            var r = svg.getBoundingClientRect();
-            var rl = r && r.width ? r.left : 0;
-            var rw = r && r.width ? r.width : 1;
-            chars.forEach(function (c) { c.screenLeft = rl + (c.vbLeft / VB_W) * rw; });
-            startX = -GHOST_W - FADE - 20;
-            endX = window.innerWidth + GHOST_W + FADE + 40;
-          },
-          update: function () {
-            var mp = writeMp.p;
-            var gx = startX + (endX - startX) * mp;
-            setGhost(gx, Math.sin(mp * Math.PI * 3) * 14, 0);
-            var front = gx + 30;
-            white.style.width = clamp(front, 0, endX + FADE + 60) + "px";
-            var solidEdge = front - FADE;
-            for (var i = 0; i < chars.length; i++) {
-              var c = chars[i];
-              if (c.triggerMp < 0 && solidEdge >= c.screenLeft) c.triggerMp = mp;
-              if (c.triggerMp >= 0) {
-                var dp = clamp((mp - c.triggerMp) / DRAW_FRAC, 0, 1);
-                c.el.style.strokeDashoffset = String(c.len * (1 - dp));
-                var fp = clamp((mp - c.triggerMp - DRAW_FRAC) / FILL_FRAC, 0, 1);
-                c.el.style.fill = "rgba(" + KIRO_RGB + "," + fp + ")";
-                c.el.style.stroke = "rgba(" + KIRO_RGB + "," + (1 - fp) + ")";
-              }
-            }
-          }
-        }, "+=120");
-
-        // Request: ghost is rendered first (off-screen); animate only after 0.5s.
-        setTimeout(function () { tl.play(); }, GHOST_LOAD_DELAY);
-      }
-
-      // ── Gateway status / ready signals from the Electron main process ──
-      if (window.electronAPI && window.electronAPI.onStatus) {
-        window.electronAPI.onStatus(function (msg) {
-          if (msg) latestStatus = msg;
-          if (revealDone) statusText.textContent = latestStatus;
-        });
-      }
-      if (window.electronAPI && window.electronAPI.onBootReady) {
-        window.electronAPI.onBootReady(function () { gatewayReady = true; maybeFinish(); });
-      }
-
-      // ── Kick off ──
-      function start() {
-        buildChars();
-        var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        if (reduce || !anime) {
-          white.style.maskImage = "none";
-          white.style.webkitMaskImage = "none";
-          white.style.filter = "none";
-          ghost.style.display = "none";
-          settleFinalFrame();
-          onRevealDone();
-          return;
-        }
-        startReveal();
-      }
-
-      if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", start);
-      } else {
-        start();
-      }
-    })();
+    // ── kick off ──
+    ghosts = GH.map(makeGhost);
+    churnOrder = shuffle(ghosts.slice()); churnPtr = 0;
+    if (reduce) {
+      ghosts.forEach(showGhost); shownCount = ghosts.length;   // calm, instant reveal
+      maybeResolve();
+    } else {
+      setTimeout(peekNext, 200);
+      setTimeout(blinkLoop, 1200);
+    }
+  })();
   </script>
 </body>
 </html>

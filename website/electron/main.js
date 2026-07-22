@@ -34,6 +34,7 @@ const store = new Store({
     remoteHosts: {},                       // { [port]: { host, binPath, remotePort?, remotePath? } }
     sshTimeoutMs: 20000,
     windowState: null,                     // persisted main-window geometry (see window-state.js)
+    themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
   },
 });
 
@@ -1188,7 +1189,12 @@ async function showUnrecoverableGatewayError(win, port) {
 async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
   const healthUrl = `${backendUrl}/api/status`;
   const wc = win.webContents;
-  wc.loadFile(path.join(__dirname, "loading.html"));
+  // Paint the splash in the user's chosen accent (persisted from a prior session
+  // via the "theme-accent-changed" IPC). Defaults to the Kiro brand purple.
+  const accent = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(store.get("themeAccent") || "")
+    ? store.get("themeAccent")
+    : "#8E48FF";
+  wc.loadFile(path.join(__dirname, "loading.html"), { query: { accent } });
   win.show();
 
   try {
@@ -1540,6 +1546,15 @@ app.whenReady().then(async () => {
     const menu = Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById("devtools-toggle");
     if (item) item.visible = !!enabled;
+  });
+
+  // The renderer reports the user's resolved theme accent whenever it changes
+  // (see useTheme.tsx). Persist a validated hex so the NEXT launch's boot splash
+  // can paint in the user's colour. Anything not a plain hex is ignored.
+  ipcMain.on("theme-accent-changed", (_event, hex) => {
+    if (typeof hex === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) {
+      store.set("themeAccent", hex);
+    }
   });
 
   // The renderer reports whether the 32px instance tab strip is the topmost row

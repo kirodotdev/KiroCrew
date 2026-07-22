@@ -19,6 +19,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("boot-ready", handler);
   },
   bootComplete: () => ipcRenderer.send("boot-complete"),
+  // Persist the user's resolved theme accent (a hex string) so the next launch's
+  // boot splash (loading.html) can paint in the user's chosen colour. Read back
+  // by main.js and injected as a query param — see showLoadingThenConnect.
+  setThemeAccent: (hex) => ipcRenderer.send("theme-accent-changed", String(hex || "")),
   // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
   onFullScreenChanged: (callback) => {

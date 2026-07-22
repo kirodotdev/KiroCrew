@@ -291,6 +291,21 @@ function useThemeState(): ThemeContextValue {
     bumpThemeVersion()
   }, [resolved, colorTheme, bumpThemeVersion])
 
+  // Report the resolved accent to the Electron shell (if present) so the NEXT
+  // launch's boot splash (loading.html) paints in the user's chosen colour.
+  // Reads the computed --accent after paint; a no-op in a plain browser.
+  useEffect(() => {
+    const bridge = (window as unknown as {
+      electronAPI?: { setThemeAccent?: (hex: string) => void }
+    }).electronAPI
+    if (!bridge?.setThemeAccent) return
+    const id = requestAnimationFrame(() => {
+      const hex = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
+      if (hex) bridge.setThemeAccent!(hex)
+    })
+    return () => cancelAnimationFrame(id)
+  }, [resolved, colorTheme, themeVersion])
+
   useEffect(() => {
     const handler = (e: Event) => {
       const { mode: m, colorTheme: ct } = (e as CustomEvent).detail
