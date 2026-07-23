@@ -68,6 +68,30 @@ const PERSIST_DEBOUNCE_MS = 300
 let store: BySlot = loadPersisted()
 const listeners = new Set<() => void>()
 
+/* ── Inline file-preview drafts (keyed by absolute path) ───────────────────
+ * The Files-tab inline editor's working copy lives HERE, at module scope, not
+ * in a component's useState — so an in-progress edit survives everything that
+ * unmounts the SidePanel subtree: the close control, an activity-tab switch,
+ * a chat-slot switch, and the AUTOMATIC force-collapse when the window crosses
+ * the width threshold. This mirrors how document-tab content persists above the
+ * panel (in the buckets above). In-memory only (not localStorage): parity with
+ * document tabs, whose heavy content is likewise stripped on persist and
+ * re-fetched from disk on reload. Keyed by `slot::path` (an inline editor is
+ * per chat slot, like the per-slot document tabs), so the SAME on-disk file
+ * edited in two slots keeps independent drafts. A draft is cleared whenever
+ * that slot's path is saved through ANY editor (see ChatPage.handleFileSave)
+ * and on explicit discard, so a later inline reopen can't resurrect stale
+ * content over a newer save. */
+const inlineDrafts = new Map<string, string>()
+// The store OWNS the draft key format (slot + path). Callers pass slot and path
+// separately and never build the key themselves — a single owner prevents the
+// four coordination sites (open / open-inline / save / slot-reset) from drifting
+// on the key shape and silently reopening the data-loss bugs this closes.
+const inlineDraftKey = (slot: string, path: string): string => `${slot}::${path}`
+export function getInlineDraft(slot: string, path: string): string | undefined { return inlineDrafts.get(inlineDraftKey(slot, path)) }
+export function setInlineDraft(slot: string, path: string, content: string): void { inlineDrafts.set(inlineDraftKey(slot, path), content) }
+export function clearInlineDraft(slot: string, path: string): void { inlineDrafts.delete(inlineDraftKey(slot, path)) }
+
 function subscribe(cb: () => void): () => void {
   listeners.add(cb)
   return () => { listeners.delete(cb) }
@@ -156,6 +180,7 @@ function flushPersist(): void {
  *  renderHook calls in a suite. */
 export function __resetPanelTabs(): void {
   store = {}
+  inlineDrafts.clear()
   clearTimeout(persistTimer)
   dirtySlots.clear()
   if (typeof localStorage !== 'undefined') {

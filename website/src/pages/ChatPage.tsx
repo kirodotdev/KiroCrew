@@ -57,7 +57,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import WelcomeView from '../components/WelcomeView'
-import { usePanelTabs } from '../hooks/usePanelTabs'
+import { usePanelTabs, clearInlineDraft, getInlineDraft } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
@@ -1124,6 +1124,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // batch value on the same render that `streamEnabled` goes false.)
 
   const tabsCtl = usePanelTabs(activeSlot)
+  // Which file (if any) the Files tab is showing inline — kept PER SLOT (above
+  // the SidePanel subtree so it survives panel collapse). Per-slot (not a single
+  // value reset on switch) so it stays consistent with the per-slot tab buckets
+  // AND the per-(slot,path) draft store: switching A→B→A restores A's inline
+  // editor rather than resetting it, so handleFileOpen's one-editor-per-path
+  // guard still recognizes the file as open inline after a round-trip (no
+  // competing document tab, no stale-draft overwrite).
+  const [inlinePreviewBySlot, setInlinePreviewBySlot] = useState<Record<string, string | null>>({})
+  const inlinePreviewPath = inlinePreviewBySlot[activeSlot ?? ''] ?? null
+  const inlinePreviewPathRef = useRef(inlinePreviewPath); inlinePreviewPathRef.current = inlinePreviewPath
+  const setInlinePreviewPath = useCallback((p: string | null) => {
+    setInlinePreviewBySlot(m => ({ ...m, [activeSlotRef.current ?? '']: p }))
+  }, [])
   // Find/search pane state. Declared above handleFileOpen / handleOpenDiff so
   // those handlers can call search.close() directly when opening a dock panel
   // (the right-hand dock is a single slot and the file/diff panes are
@@ -1223,6 +1236,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // other HTTP failures show a placeholder in the panel but should NOT
   // pollute the history list with files that don't exist on disk.
   const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string }) => {
+    // One editor per path: if this file is already open INLINE in the Files tab,
+    // route back to that inline editor (focus the Files view) instead of
+    // spawning a competing document tab — two live editors for one on-disk file
+    // would have independent dirty buffers and could silently overwrite each
+    // other. (Uses a ref so this callback stays identity-stable.)
+    if (filePath === inlinePreviewPathRef.current) {
+      dispatch(openActivityPanel())
+      tabsCtl.setActive('files')
+      search.close()
+      return
+    }
     // Plugin host integration: notify the IntelliJ plugin (if active) so
     // it can open the file natively in the IDE editor. If the plugin
     // handles file opens, skip the dashboard's DiffPanel — the user wanted
@@ -1356,12 +1380,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   }, [activeSlot, dispatch, mode, navigate])
 
   const handleFileSave = useCallback(async (filePath: string, content: string) => {
+    // Capture the slot BEFORE awaiting: if the user switches chats mid-save, the
+    // draft we reconcile must be the one that owned this save, not whatever slot
+    // is active when the write resolves.
+    const requestSlot = activeSlotRef.current ?? ''
     const res = await fetch('/api/file-write', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: filePath, content }),
     })
     if (!res.ok) throw new Error(`Save failed: ${res.status}`)
+    // Reconcile the inline-preview draft for the SAVING slot (drafts are
+    // slot+path keyed). Clear it ONLY if it still equals what we just saved —
+    // if the user typed more while the write was in flight, the draft now holds
+    // newer content and must be preserved, not dropped.
+    if (getInlineDraft(requestSlot, filePath) === content) clearInlineDraft(requestSlot, filePath)
   }, [])
 
   const takeScreenshot = useCallback(async () => {
@@ -3707,6 +3740,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
               sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
+              inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
             />
           </motion.div>
         )}
@@ -3736,6 +3770,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
                 sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
+                inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
               />
             </motion.div>
           )}

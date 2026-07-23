@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest } from 'lucide-react'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, ArrowLeft } from 'lucide-react'
 import { api } from '../../api/client'
+import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
+import { fileReadUrl } from '../../utils/fileReadUrl'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
 import Clickable from '../../components/Clickable'
 import type { SubagentActivity, ToolActivity, SessionDoc } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
+import { getInlineDraft, setInlineDraft, clearInlineDraft } from '../../hooks/usePanelTabs'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import PullRequestPanel from '../../components/PullRequestPanel'
@@ -248,6 +251,158 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
   )
 }
 
+/* ── Files-tab inline file preview ──────────────────────────────────────────
+ * Opening a file from the Files tab keeps it IN the Files tab (no new document
+ * tab in the strip): the list is replaced by the file's content plus a "Back to
+ * files" bar. Content is fetched here (same file-read query key as ChatPage's
+ * tab opener, so re-opening is cache-instant) and rendered through the shared
+ * embedded MarkdownPanel — identical viewer to the document-tab path, just
+ * hosted inline. Back returns to the list. */
+
+function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
+  path: string
+  slot: string
+  onBack: () => void
+  onFileSave: (filePath: string, content: string) => Promise<void>
+  onSubmitComments?: (message: string) => void
+}) {
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['file-read', path],
+    // Same query key + result shape ({ text, ok }) as ChatPage's document-tab
+    // reader, so the inline view SHARES that cache instead of colliding with it.
+    queryFn: async () => {
+      try {
+        const res = await fetch(fileReadUrl(path))
+        const text = res.ok
+          ? await res.text()
+          : res.status === 404 ? '_File not found on disk. It may have been moved or deleted._'
+            : '_Unable to read file._'
+        return { text, ok: res.ok }
+      } catch {
+        // Network-level failure (fetch rejected) — return a NOT-ok result rather
+        // than throwing, so `data` is always defined and the editor is never
+        // mounted over an empty buffer that a save could write to the file.
+        return { text: '_Unable to read file._', ok: false }
+      }
+    },
+    staleTime: 10_000,
+  })
+  // Working copy is backed by the module-level inline-draft store (keyed by
+  // path), NOT component state, so an in-progress edit survives everything that
+  // unmounts this subtree — the close control, an activity-tab switch, a chat-
+  // slot switch, and the automatic force-collapse on window resize — matching
+  // how document-tab content persists above the panel. On (re)open we restore a
+  // preserved draft if present, else seed once from a successful disk read
+  // (never the failure placeholder). One draft per path = one editor per path.
+  const [content, setContentState] = useState<string>(() => getInlineDraft(slot, path) ?? '')
+  // Keep the working copy synced to the freshest SUCCESSFUL disk read UNTIL the
+  // user starts editing (a draft exists for this path). This avoids locking the
+  // editor onto a stale (≤10s) cached read when the file changed on disk since;
+  // once the user has a draft we stop syncing so their edits aren't clobbered.
+  useEffect(() => {
+    if (data?.ok && getInlineDraft(slot, path) === undefined) {
+      setContentState(prev => (prev === data.text ? prev : data.text))
+    }
+  }, [data, path, slot])
+  const setContent = useCallback((c: string) => {
+    setContentState(c)
+    setInlineDraft(slot, path, c)
+  }, [slot, path])
+  // Only mount the editable panel once the working copy is RECONCILED with the
+  // source of truth: either the user has a draft (their edits), or the content
+  // equals the successful disk read. This defers the editor past the brief
+  // window where `content` is still the initial '' (or a not-yet-synced value)
+  // while `data.ok` is already true from cache — mounting then would show an
+  // empty/dirty buffer whose save could truncate the file.
+  const inlineReady = getInlineDraft(slot, path) !== undefined || (!!data?.ok && content === data.text)
+  const name = path.split('/').pop() || path
+  // Keep the shared ['file-read', path] cache coherent after a save (otherwise a
+  // reopen within the 10s stale window seeds pre-save content and a subsequent
+  // edit could clobber the newer file), and drop the now-committed draft. Wraps
+  // — never replaces — the caller's save.
+  const qc = useQueryClient()
+  const handleSave = useCallback(async (p: string, c: string) => {
+    await onFileSave(p, c)
+    qc.setQueryData(['file-read', p], { text: c, ok: true })
+    // Draft reconciliation (clearing) is owned by ChatPage.handleFileSave, which
+    // clears only if the draft still equals what was saved — so edits typed
+    // during a pending save aren't dropped. We don't clear here.
+  }, [onFileSave, qc])
+  // "Back to files" reuses MarkdownPanel's existing close guard (via the
+  // imperative handle) so leaving with unsaved edits shows its normal discard
+  // prompt. guardedClose only calls this after the guard accepts (not dirty, or
+  // the user confirmed discard), so it is safe to drop the draft here — a
+  // confirmed discard should not survive to the next open. (An involuntary
+  // unmount never reaches this path, so the draft is preserved there.)
+  const handleClose = useCallback(() => { clearInlineDraft(slot, path); onBack() }, [slot, path, onBack])
+  const panelRef = useRef<MarkdownPanelHandle>(null)
+  const back = useCallback(() => {
+    if (panelRef.current) { panelRef.current.requestClose(); return }
+    // No editor mounted (e.g. the read failed, so the retry state is showing
+    // instead of MarkdownPanel) — its close guard can't fire. If an unsaved
+    // draft exists, confirm before discarding it ourselves; otherwise just go
+    // back. (The guarded path above already prompts, so this never double-asks.)
+    if (getInlineDraft(slot, path) !== undefined && !window.confirm('Discard unsaved changes?')) return
+    handleClose()
+  }, [slot, path, handleClose])
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Back-to-list bar — mirrors the file's tab-chip identity so the Files
+          tab reads as one place that swaps between list and file. */}
+      <div className="flex items-center gap-2 h-[38px] px-2 shrink-0 border-b border-border">
+        <button
+          onClick={back}
+          className="flex items-center gap-1.5 h-7 px-2 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+          title="Back to files"
+          aria-label="Back to files"
+        >
+          <ArrowLeft size={14} />
+          <span>Files</span>
+        </button>
+        <span aria-hidden="true" className="w-px h-4 bg-border shrink-0" />
+        <span className="flex items-center gap-1.5 min-w-0 text-[12px] text-text-strong">
+          <FileText size={13} className="text-muted shrink-0" />
+          <span className="truncate" title={path}>{name}</span>
+        </span>
+      </div>
+      <div className="flex-1 min-h-0 relative">
+        {isLoading || (data?.ok && !inlineReady) ? (
+          <div className="flex items-center justify-center h-full text-muted text-[13px]">Loading…</div>
+        ) : data?.ok ? (
+          <MarkdownPanel
+            ref={panelRef}
+            embedded
+            filePath={path}
+            content={content}
+            onContentChange={setContent}
+            onSave={handleSave}
+            onClose={handleClose}
+            savedBaseline={data?.ok ? data.text : undefined}
+            onSubmitComments={onSubmitComments}
+          />
+        ) : (
+          // Loading finished but the read did NOT succeed (404, HTTP error, or a
+          // network-level rejection → `data` may be undefined). Never mount an
+          // editable panel here: a save would write empty/placeholder content
+          // over the real (or temporarily-unreadable) file. Offer a retry.
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
+            <span className="text-[13px] text-muted">
+              {data?.text ? data.text.replace(/^_|_$/g, '') : 'Unable to read this file.'}
+            </span>
+            <button
+              onClick={() => refetch()}
+              className="h-7 px-3 rounded-md text-[12px] text-text border border-border hover:bg-bg-hover transition-colors bg-transparent cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /* ── Main component ── */
 
 
@@ -364,18 +519,49 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onAddToChat }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onAddToChat?: (text: string) => void
+  /** Save handler for the Files-tab inline file preview (opening a file keeps
+   *  it in the Files tab instead of spawning a document tab). */
+  onFileSave?: (filePath: string, content: string) => Promise<void>
+  onSubmitComments?: (message: string) => void
+  /** Absolute paths already open as `file:` document tabs. Enforces one editor
+   *  per path: opening such a path from the Files list routes to its existing
+   *  document tab instead of spawning a second (inline) editor for it. */
+  openDocPaths?: Set<string>
+  /** Files-tab inline preview path — lifted to ChatPage (survives panel
+   *  collapse and lets chat-link opens route to this editor). `onPreviewPathChange`
+   *  is the setter. */
+  previewPath?: string | null
+  onPreviewPathChange?: (path: string | null) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
   view?: 'changes' | 'subagents' | 'logs' | 'files' | 'artifacts' | 'side' | 'workflows'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
+  // Files-tab inline preview path. Controlled when ChatPage lifts it (via
+  // `previewPath`/`onPreviewPathChange`) — that keeps it alive across panel
+  // collapse and lets a chat-link open of the same file route back to THIS
+  // editor instead of a competing document tab (one editor per path). Falls
+  // back to internal state when unmanaged. `null` = show the file list.
+  const [localPreview, setLocalPreview] = useState<string | null>(null)
+  const controlledPreview = onPreviewPathChange !== undefined
+  const previewPathValue = controlledPreview ? (previewPath ?? null) : localPreview
+  const setPreviewPath = useCallback((p: string | null) => {
+    if (controlledPreview) onPreviewPathChange?.(p); else setLocalPreview(p)
+  }, [controlledPreview, onPreviewPathChange])
+  // The panel-level Escape-to-collapse handler (below) must defer to the inline
+  // editor when a file is open: Escape then returns to the list via
+  // MarkdownPanel's own guarded close (which prompts on unsaved edits) instead
+  // of collapsing the whole panel out from under the editor. A ref avoids
+  // re-registering the listener on every open/close.
+  const previewOpenRef = useRef(false)
+  previewOpenRef.current = previewPathValue != null
   const reduxTab = useAppSelector(s => s.chat.activityTab)
   const [tab, setTab] = useState<'changes' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
   const hasSources = (sources?.length || 0) > 0
@@ -405,7 +591,14 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
   useEffect(() => {
     if (!open) return
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onToggle() } }
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      // When an inline file is open, let MarkdownPanel's own Escape/close guard
+      // handle it (return to the list, prompting on unsaved edits) rather than
+      // collapsing the panel and unmounting the editor mid-edit.
+      if (previewOpenRef.current) return
+      e.preventDefault(); onToggle()
+    }
     const el = containerRef.current
     el?.addEventListener('keydown', handler)
     return () => el?.removeEventListener('keydown', handler)
@@ -513,6 +706,28 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
       {/* Files tab */}
       {effectiveTab === 'files' && (() => {
+        // Inline file preview: opening a file from this tab keeps it HERE
+        // (no new document tab) — the list is swapped for the file's content
+        // with a "Back to files" bar. A thin host of the shared MarkdownPanel
+        // editor (keyed by path); falls back to the tab opener only if no save
+        // handler was wired (host without editing).
+        if (previewPathValue && onFileSave) {
+          return (
+            <FilePreview
+              key={previewPathValue}
+              path={previewPathValue}
+              slot={slot}
+              onBack={() => setPreviewPath(null)}
+              onFileSave={onFileSave}
+              onSubmitComments={onSubmitComments}
+            />
+          )
+        }
+        // One editor per path: if this file is already open as a document tab,
+        // focus that tab instead of spawning a second (inline) editor for it.
+        const openInline = onFileSave
+          ? (p: string) => { if (openDocPaths?.has(p)) onFileOpen?.(p); else setPreviewPath(p) }
+          : onFileOpen
         const changed = (files || []).filter(f => f.source === 'tool')
         // Hide links that are already surfaced in the Changes tab (its `sources`);
         // keep every other link — including cr-classified hosts (Bitbucket,
@@ -534,7 +749,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                         <span className="flex-1 h-px bg-border" />
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {changed.map(f => <FileTile key={f.path} f={f} onFileOpen={onFileOpen} onFileRemove={onFileRemove} />)}
+                        {changed.map(f => <FileTile key={f.path} f={f} onFileOpen={openInline} onFileRemove={onFileRemove} />)}
                       </div>
                     </div>
                   )}

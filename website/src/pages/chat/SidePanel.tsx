@@ -61,6 +61,10 @@ interface SidePanelProps {
   onFileSave: (filePath: string, content: string) => Promise<void>
   /** Close the whole panel (hides the side column). */
   onClose: () => void
+  /** Lifted Files-tab inline preview state (owned by ChatPage so it survives
+   *  panel collapse and coordinates with document-tab opens). */
+  inlinePreviewPath?: string | null
+  onInlinePreviewChange?: (path: string | null) => void
 }
 
 /**
@@ -108,6 +112,7 @@ export default function SidePanel({
   tabsCtl, subagents, toolLog, slot, files, onFileOpen, onFileRemove, onFilesClear,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
+  inlinePreviewPath, onInlinePreviewChange,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   const terminalEnabled = useTerminalEnabled()
@@ -126,6 +131,9 @@ export default function SidePanel({
   // Split the strip: pinned (fixed, non-closable) vs. dynamic (draggable).
   const pinnedTabs = useMemo(() => tabs.filter(t => (PINNED_VIEWS as string[]).includes(t.id)), [tabs])
   const dynamicTabs = useMemo(() => tabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id)), [tabs])
+  // Paths already open as `file:` document tabs — passed to the Files view so
+  // opening such a path inline routes to its existing tab (one editor per path).
+  const openDocPaths = useMemo(() => new Set(tabs.filter(t => t.kind === 'file' && t.path).map(t => t.path as string)), [tabs])
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
   // working dir; every other menu item is a singleton view.
   const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
@@ -386,9 +394,18 @@ export default function SidePanel({
         )}
         {tabs.map(t => {
           const isActive = t.id === activeId
-          // Category views: mount only the active one.
+          // Category views: mount only the active one. The Files tab hosts an
+          // inline file editor, but it does NOT need to stay mounted while
+          // inactive — an in-progress edit survives a tab switch via the
+          // module-level draft store, and which file is open inline is owned by
+          // ChatPage (both above the SidePanel subtree). Keeping it mounted-but-
+          // hidden would leave its global Escape handler live, letting an
+          // invisible editor swallow Escape and drop the draft; so unmount it.
+          // Cross-slot safety: the inline-preview path is reset by ChatPage when
+          // the active chat slot changes.
           if (VIEW_KINDS.has(t.kind)) {
-            return isActive ? (
+            if (!isActive) return null
+            return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
                   view={t.kind as 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
@@ -399,15 +416,19 @@ export default function SidePanel({
                   selectedSourceUrl={selectedSourceUrl}
                   onSelectSource={onSelectSource}
                   onAddToChat={onAddSourceToChat}
-                  // The Files/Artifacts/Changes tabs are permanent (pinned),
-                  // so opening a file just opens its own document tab — the
-                  // pinned Files tab stays put as the list to return to.
+                  // The Files/Artifacts/Changes tabs are permanent (pinned).
+                  // Files opens its file inline (kept in the Files tab, with a
+                  // back button); the Artifacts tab still opens document tabs
+                  // via onFileOpen.
                   onFileOpen={onFileOpen}
                   onFileRemove={onFileRemove} onFilesClear={onFilesClear}
+                  onFileSave={onFileSave} onSubmitComments={onSubmitComments}
+                  openDocPaths={openDocPaths}
+                  previewPath={inlinePreviewPath ?? null} onPreviewPathChange={onInlinePreviewChange}
                   projectDir={projectDir} navLinks={navLinks} navResolving={navResolving}
                 />
               </div>
-            ) : null
+            )
           }
           // Terminal + documents: keep mounted, toggle visibility.
           return (

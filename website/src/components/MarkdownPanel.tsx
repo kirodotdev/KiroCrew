@@ -1,5 +1,5 @@
 import { safeSetItem } from '../utils/safeStorage'
-import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
+import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw, ExternalLink, Ellipsis, ChevronRight, Columns2, Hash, WrapText, Zap, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Star, FileDiff, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
@@ -162,6 +162,12 @@ interface Props {
   onDiffModeChange?: (diffMode: boolean) => void
   /** Render as a SidePanel tab body (fills parent, no resize handle/border). */
   embedded?: boolean
+  /** The on-disk (last-saved) content. When provided, "dirty" is computed as
+   *  content !== savedBaseline instead of only being set by local edits — so an
+   *  editor RESTORED with a pre-edited buffer (e.g. the Files-tab inline draft
+   *  after a remount) is correctly dirty, and its close guard won't silently
+   *  discard the restored edits. Omitted by document tabs (unchanged behavior). */
+  savedBaseline?: string
 }
 
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
@@ -616,7 +622,12 @@ const CommentOverlayBlock = memo(function CommentOverlayBlock({ popover, addComm
   )
 })
 
-export default memo(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded }: Props) {
+/** Imperative handle: lets a host trigger the SAME dirty-state close guard the
+ *  panel uses internally (Escape / close button), so an external "back"/close
+ *  control can't bypass the "Discard unsaved changes?" confirmation. */
+export interface MarkdownPanelHandle { requestClose: () => void }
+
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline }: Props, ref) {
   const qc = useQueryClient()
   // Code files (non-rich, non-markdown) have no meaningful preview — their
   // "preview" was just a read-only render of the same text. They open
@@ -640,7 +651,14 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
   const diffInitFileRef = useRef<string | null>(null)
   const dark = useIsDark()
   const [saving, setSaving] = useState(false)
-  const [dirty, setDirty] = useState(false)
+  const [dirty, setDirty] = useState(() => savedBaseline != null && content !== savedBaseline)
+  // When a saved baseline is provided (inline preview), keep `dirty` derived
+  // from content-vs-disk so a RESTORED draft is dirty and the close guard fires.
+  // No-op for document tabs (savedBaseline undefined) — they keep the manual
+  // edit-driven dirty model below.
+  useEffect(() => {
+    if (savedBaseline != null) setDirty(content !== savedBaseline)
+  }, [content, savedBaseline])
   const [saveError, setSaveError] = useState<string | null>(null)
   // Editor view preferences — persisted so they survive tab switches/reloads.
   const [lineNums, setLineNums] = usePersistedBool('mc-file-linenums', true)
@@ -1249,6 +1267,11 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
     onClose()
   }, [dirty, onClose])
 
+  // Expose the guarded close so an external control (e.g. the Files-tab inline
+  // preview's "Back to files" bar) routes through the same dirty confirmation
+  // instead of unmounting the editor and silently dropping unsaved edits.
+  useImperativeHandle(ref, () => ({ requestClose: guardedClose }), [guardedClose])
+
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { if (popover) { setPopover(null); clearHighlightMarks() } else if (fullscreen) setFullscreen(false); else guardedClose() }
@@ -1460,4 +1483,4 @@ export default memo(function MarkdownPanel({ filePath, content, onContentChange,
     )}
     </>
   )
-})
+}))
