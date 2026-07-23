@@ -1485,6 +1485,31 @@ def token_auth_middleware(
             # not the consumed URL token.
             bind_token_ip(session_token, client_ip, session_exp)
 
+            # Token-consumption anchor seam (Default: no-op, OSS-identical). A
+            # Slack challenge-redirect link, once opened on a verified device,
+            # consumes its token here — the edition opens the bounded per-(user,
+            # channel) auth window that lets follow-up Slack traffic flow inline.
+            # channel/thread_ts ride the token's signed ``extra`` payload (``data``);
+            # absent for non-challenge tokens, so the window is only opened for a
+            # real challenge exchange. Fail-safe: ``safe_context_call`` swallows an
+            # observer error (fallback=None) so it never blocks token consumption /
+            # login, while still re-raising ``PlatformCompositionError`` — the boot
+            # invariant that a mis-composed edition MUST abort rather than silently
+            # degrade. Do NOT wrap this in a bare ``except Exception``: that is
+            # exactly the swallow ``safe_context_call`` centralizes to prevent.
+            _chan = str(data.get("channel", "")) if isinstance(data, dict) else ""
+            _thread = (data.get("thread_ts") if isinstance(data, dict) else None) or None
+            if _chan:
+                from kiro_crew.platform import current_context, safe_context_call
+
+                safe_context_call(
+                    lambda: current_context().dashboard.on_token_consumed(
+                        user_id, _chan, session_exp, _thread
+                    ),
+                    fallback=None,
+                    log_message="dashboard.on_token_consumed observer failed",
+                )
+
         # Expose authenticated identity to handlers (deny-by-default)
         request["user"] = user_id
         request["app"] = app_name

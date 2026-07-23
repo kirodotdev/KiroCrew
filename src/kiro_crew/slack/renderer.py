@@ -220,11 +220,18 @@ class SlackRenderer(Renderer):
         capabilities: TransportCapabilities | None = None,
         decider: SlackApprovalDecider | None = None,
         now: Callable[[], float] | None = None,
+        user_id: str = "",
     ) -> None:
         super().__init__(capabilities or SLACK_CAPABILITIES)
         self.slack = slack
         self.channel = channel
         self.thread_ts = thread_ts
+        # The sending user — passed to DashboardContributor.decorate_reply on the
+        # final outbound text so a composed edition can refresh its auth window /
+        # append an expiry footer on the transport reply path too (native
+        # handle_message already wires decorate_reply; this closes the gap so the
+        # DEFAULT non-review Slack traffic gets the same treatment). "" in OSS.
+        self._user_id = user_id
         # Message ts to react to (the user's triggering message). Falls back
         # to thread_ts so reactions still attach when not supplied separately.
         self._react_ts = react_ts or thread_ts or ""
@@ -559,6 +566,30 @@ class SlackRenderer(Renderer):
         if clean_text:
             clean_text, _ = redact_exfiltration_urls(clean_text)
             clean_text, _ = redact_credentials(clean_text)
+            # Outbound-reply decorator seam (Default: identity, OSS-identical) —
+            # the transport-path twin of the native handle_message wiring, so the
+            # DEFAULT non-review Slack path also refreshes a composed edition's auth
+            # window / appends its expiry footer. Runs AFTER redaction; any text the
+            # decorator INTRODUCES is re-scanned so a decorator cannot smuggle a URL
+            # or credential past the redaction above. Fail-safe: a raising decorator
+            # falls back to the undecorated text.
+            from kiro_crew.platform import current_context, safe_context_call
+
+            _pre_decorate = clean_text
+            clean_text = safe_context_call(
+                lambda: current_context().dashboard.decorate_reply(
+                    _pre_decorate, channel=self.channel, user_id=self._user_id
+                ),
+                fallback=_pre_decorate,
+                log_message="dashboard.decorate_reply failed; sending undecorated reply",
+            )
+            if clean_text != _pre_decorate:
+                # Re-scan decorator-introduced text (the redaction above ran before
+                # decoration). No module logger here — the redaction itself is the
+                # security property; the native path logs counts, this path stays
+                # silent to avoid adding a logger to the renderer.
+                clean_text, _ = redact_exfiltration_urls(clean_text)
+                clean_text, _ = redact_credentials(clean_text)
         if self._stream_ts is not None:
             if self._use_slack_stream:
                 await self.slack.stop_stream(self.channel, self._stream_ts, clean_text or None)

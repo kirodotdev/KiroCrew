@@ -443,6 +443,8 @@ class TestRouteMessageFallbackRecovery:
         mock_orch = AsyncMock()
         mock_seen = AsyncMock()
         mock_seen.check_and_add = lambda x: False
+        mock_seen.check = lambda x: False  # SeenCache.check: unseen
+        mock_seen.add = lambda x: None  # SeenCache.add: no-op in test
 
         with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
              patch("kiro_crew.slack.events.sel") as mock_sel, \
@@ -493,6 +495,8 @@ class TestRouteMessageFallbackRecovery:
         mock_orch._session_tasks = {}
         mock_seen = MagicMock()
         mock_seen.check_and_add = lambda x: False
+        mock_seen.check = lambda x: False  # SeenCache.check: unseen
+        mock_seen.add = lambda x: None  # SeenCache.add: no-op in test
 
         with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
              patch("kiro_crew.slack.events.sel") as mock_sel, \
@@ -509,6 +513,80 @@ class TestRouteMessageFallbackRecovery:
             all_args_str = str(call_args)
             assert "Real user content" in all_args_str
             assert "This message contains interactive elements." not in all_args_str
+
+    @pytest.mark.asyncio
+    async def test_interceptor_redirect_audits_dedups_and_short_circuits(self):
+        """A REDIRECTED gate decision must: short-circuit before handle_message,
+        emit a SEL audit for the intercept decision, and dedup event retries so a
+        redirecting adapter mints only ONE challenge per event."""
+        import dataclasses
+        from unittest.mock import MagicMock
+
+        from kiro_crew.platform import build_default_context
+        from kiro_crew.platform.context import set_context
+        from kiro_crew.platform.interfaces import InterceptDecision
+        from kiro_crew.slack.events import SeenCache, _route_message
+
+        calls = {"intercept": 0}
+
+        class _RedirectGate:
+            # Minimal SlackEnterpriseGate: always REDIRECTED (a challenge issued).
+            def validate_enterprise(self, *a, **k):
+                return True
+
+            def check_message_origin(self, *a, **k):
+                return True
+
+            def heartbeat_safe_tools(self):
+                return frozenset()
+
+            def intercept_message(self, orch, **kw):
+                calls["intercept"] += 1
+                return InterceptDecision.REDIRECTED
+
+        ctx = dataclasses.replace(build_default_context(None), slack_gate=_RedirectGate())
+        set_context(ctx)
+        try:
+            event = {
+                "user": "U123",
+                "channel": "C456",
+                "text": "hello",
+                "ts": "9999.0001",
+                "team": "T789",
+            }
+            mock_orch = AsyncMock()
+            ch_cfg = MagicMock()
+            ch_cfg.activation = "mention"
+            mock_cfg = MagicMock()
+            mock_cfg.channel_config.return_value = ch_cfg
+            mock_orch._cfg = mock_cfg
+            mock_orch.channel_history = None
+            mock_orch.sessions = None
+            mock_orch.conv_log = None
+            mock_orch.slack = None
+
+            seen = SeenCache()  # REAL cache so the dedup path is exercised
+            with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+                 patch("kiro_crew.slack.events.sel") as mock_sel, \
+                 patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+                 patch("kiro_crew.slack.events.is_owner", return_value=True), \
+                 patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+                audits = []
+                mock_sel.return_value.log_api_access = lambda **kw: audits.append(kw)
+
+                await _route_message(mock_orch, event, seen, is_mention=True)
+                # Short-circuited: the inline handler never ran.
+                mock_handle.assert_not_called()
+                # The intercept decision was audited (distinct from the allowlist audit).
+                assert any(a.get("operation") == "slack.message.intercept" for a in audits)
+
+                # Retry of the SAME event: the adapter must NOT be invoked again
+                # (dedup), and still no inline handling.
+                await _route_message(mock_orch, event, seen, is_mention=True)
+                assert calls["intercept"] == 1, "redirect adapter re-invoked on retry (no dedup)"
+                mock_handle.assert_not_called()
+        finally:
+            set_context(None)
 
     def test_blocks_extraction_recovers_all_element_types(self):
         """Verify _extract_blocks_text handles mixed element types correctly."""

@@ -510,6 +510,50 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   PRIMARY spawn path; `AcpClient`/`AcpProvider` take a `permission_mode` kwarg
   (Default `None`); `acp/types.py` adds `CC_PERMISSION_MODE_DEFAULT` /
   `CC_PERMISSION_MODE_AUTO`.
+- Slack message-gate seams (let an edition compose a fail-closed
+  challenge-and-redirect posture without editing the core; `InterceptDecision`
+  enum = `PROCESS | REDIRECTED | DROPPED`):
+  - `SlackEnterpriseGate.intercept_message(orch, *, channel, sender_id,
+    clean_text, thread_ts, msg_ts) -> InterceptDecision` — wired in
+    `slack/events.py::_route_message`. Default `PROCESS` (inline, OSS-identical).
+    **Ordering is security-critical:** the call site is placed immediately after
+    the user-allowlist check and BEFORE any content is recorded or processed
+    (observe-mode `channel_history.push`, audio transcription, image/file
+    download, and the non-observe history push all follow it), so an unverified
+    sender's content can never be persisted to channel history where a later
+    verified turn could pull it into agent context and bypass the gate. Gated on
+    `_user_authorized` (an unauthorized sender is not a challenge candidate and
+    keeps its ephemeral-rejection UX). Invoked through
+    `safe_context_call(..., fallback=DROPPED)`: a raised adapter error degrades
+    deny-by-default, a `PlatformCompositionError` is re-raised. The public
+    Default cannot raise, so standalone never reaches the fallback.
+  - `DashboardContributor.on_token_consumed(user_id, channel, session_exp,
+    thread_ts)` — fired in `dashboard/token_auth.py` after `bind_token_ip` on the
+    first (non-cookie) exchange, with `channel`/`thread_ts` read from the token's
+    signed `extra` payload. OBSERVER only; the anchor a challenge auth-window
+    opens on. Default no-op. `safe_context_call(fallback=None)` re-raises
+    `PlatformCompositionError` — no outer `except` wraps it (that would swallow
+    the invariant).
+  - `DashboardContributor.decorate_reply(text, *, channel, user_id) -> str` —
+    outbound-reply transform, AFTER the redaction passes. Default identity. Wired
+    on BOTH Slack reply paths: native `slack/handler.py::handle_message` AND the
+    default `slack/renderer.py::SlackRenderer.on_done` (the `handle_message_transport`
+    path that normal non-review traffic uses — `SlackRenderer` takes a `user_id`
+    kwarg for it). Decorator-introduced text is re-scanned (`redact_exfiltration_urls`
+    + `redact_credentials`) on both paths so a decorator cannot smuggle a URL/
+    credential past redaction; the native path logs only the redaction COUNT
+    (never the warning strings, which embed a truncated credential prefix).
+
+  Interceptor ordering + dedup + audit (security-critical, all in `_route_message`):
+  the `intercept_message` call runs after the user-allowlist check and after the
+  interceptor-specific retry-dedup guard, but BEFORE any content recording/
+  processing. A non-`PROCESS` decision (1) records an `intercept:<msg_ts>` key in
+  the `SeenCache` so a Slack ack-timeout re-delivery does not re-mint the challenge
+  (PROCESS never records, preserving the paired `app_mention`/`message` dual-event
+  and the standalone inline path), and (2) emits a
+  `sel().log_api_access(operation="slack.message.intercept")` audit event — the
+  interceptor is a permission decision distinct from the allowlist check, so its
+  verdict reaches the SEL trail.
 
 ### Deferred / non-mapping sites
 

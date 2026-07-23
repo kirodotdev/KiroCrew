@@ -3502,6 +3502,43 @@ async def handle_message(
 
     clean_text, options = extract_options(final_text)
 
+    # Outbound-reply decorator seam (Default: identity, OSS-identical). The model
+    # has finished speaking, so this is the outbound half of an active
+    # conversation — an edition may refresh its Slack auth window's activity clock
+    # and append a "<5 min left" expiry footer here. The public DefaultDashboard-
+    # Contributor returns the text unchanged. Fail-safe: a raising decorator falls
+    # back to the undecorated text so it can never break the reply.
+    from kiro_crew.platform import current_context, safe_context_call
+
+    _pre_decorate = clean_text
+    clean_text = safe_context_call(
+        lambda: current_context().dashboard.decorate_reply(
+            clean_text, channel=channel, user_id=user_id
+        ),
+        fallback=clean_text,
+        log_message="dashboard.decorate_reply failed; sending undecorated reply",
+    )
+    # Re-run the redaction passes on any text the decorator INTRODUCED. Redaction
+    # above (3493-3498) ran before decoration, so a decorator that appends a URL or
+    # a credential-shaped token would otherwise reach Slack unscanned (link-preview
+    # exfiltration / credential disclosure). Only re-scan when the decorator changed
+    # the text (the common Default path is a no-op identity, so this is skipped).
+    if clean_text != _pre_decorate:
+        clean_text, _exfil_after = redact_exfiltration_urls(clean_text)
+        if _exfil_after:
+            logger.warning(
+                "Redacted %d exfiltration URL(s) introduced by reply decorator", len(_exfil_after)
+            )
+        clean_text, _cred_after = redact_credentials(clean_text)
+        if _cred_after:
+            # Log only the COUNT — the per-warning strings embed a truncated
+            # prefix of the matched credential (redact_credentials returns
+            # "Redacted credential pattern: <first 20 chars>..."), so logging
+            # them verbatim would defeat the redaction we just performed.
+            logger.warning(
+                "Redacted %d credential pattern(s) introduced by reply decorator", len(_cred_after)
+            )
+
     # ── Review mode: ephemeral draft instead of public post ──
     if channel_activation == ACTIVATION_REVIEW:
         from kiro_crew.slack.blocks import review_draft_blocks

@@ -45,7 +45,8 @@ from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SEC
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
-from kiro_crew.platform import current_context
+from kiro_crew.platform import current_context, safe_context_call
+from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     redact_credentials,
@@ -178,6 +179,23 @@ class SeenCache:
         if len(self._d) > self._maxlen:
             self._d.popitem(last=False)
         return False
+
+    def check(self, key: str) -> bool:
+        """Return ``True`` if *key* was already marked, WITHOUT marking it.
+
+        Split from ``check_and_add`` for the message-interceptor dedup, which must
+        record a key ONLY on a non-PROCESS (challenge/deny) decision — marking a
+        PROCESS message would wrongly drop the paired ``app_mention`` event (same
+        ``msg_ts``) or a standalone inline message. See ``_route_message``.
+        """
+        return key in self._d
+
+    def add(self, key: str) -> None:
+        """Mark *key* seen (idempotent, bounded)."""
+        if key not in self._d:
+            self._d[key] = None
+            if len(self._d) > self._maxlen:
+                self._d.popitem(last=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1882,6 +1900,94 @@ async def _route_message(
             error="unauthorized sender",
         )
 
+    # ── Message-interceptor seam (Default: PROCESS = inline, OSS-identical) ──
+    # An edition may intercept the message here and turn it into an out-of-band
+    # challenge-redirect (e.g. a presigned dashboard-session link) instead of
+    # processing it inline. The public DefaultSlackEnterpriseGate ALWAYS returns
+    # PROCESS and cannot raise, so the standalone build falls straight through
+    # exactly as before — the fallback below is never reached in standalone.
+    #
+    # ORDERING (security-critical): this runs BEFORE any content is recorded or
+    # processed — the observe-mode channel_history.push below, audio transcription,
+    # image/file download, and the non-observe history push all follow. An
+    # unverified sender's message content (prompt-injection text, attachments) must
+    # NOT be persisted to channel history before the gate decides: otherwise a
+    # later VERIFIED turn in the same channel could pull that stored content into
+    # agent context, bypassing the very challenge gate the edition relies on. So
+    # the interceptor is the first thing after the user-allowlist check, before
+    # the message leaves a trace. It keys on (sender_id, channel) identity, so it
+    # does not need the post-transcription/mention-stripped text; it gets the raw
+    # text for challenge context/logging only.
+    #
+    # The fallback is DROPPED (deny-by-default), NOT PROCESS: this branch is only
+    # reached when a COMPOSED gate raised a transient error (a
+    # PlatformCompositionError is re-raised by safe_context_call, never degraded).
+    # A composed edition installs its interceptor precisely to keep unverified
+    # traffic away from the agent, so an erroring interceptor must fail CLOSED —
+    # degrading to PROCESS would let a message bypass the gate (deny-by-default).
+    #
+    # Gated on _user_authorized: an UNauthorized sender is not a challenge
+    # candidate (they are rejected with an ephemeral below) and the observe-mode
+    # history push is itself _user_authorized-gated, so only an authorized sender's
+    # content can be recorded pre-gate — that is exactly the leak this ordering
+    # closes. Skipping the interceptor for unauthorized senders also preserves
+    # their existing ephemeral-rejection UX unchanged.
+    if _user_authorized:
+        _intercept_clean = text
+        if is_mention and text.startswith("<@"):
+            _end = text.find(">")
+            if _end != -1:
+                _intercept_clean = text[_end + 1 :].lstrip()
+        # Interceptor-specific dedup: Slack re-delivers the same event on ack
+        # timeout, and this seam runs BEFORE the main _route_message dedup (which
+        # must stay after the activation check). Without a guard here a redirecting
+        # adapter would re-mint + re-post a challenge link on every retry. Key it in
+        # a separate "intercept:" namespace and RECORD it only on a non-PROCESS
+        # decision (below) — never for PROCESS, so a passed message still reaches
+        # the main dedup and the paired app_mention/message dual-event is preserved.
+        _intercept_seen_key = f"intercept:{msg_ts}"
+        if seen.check(_intercept_seen_key):
+            # A prior delivery of this event already got a challenge/deny verdict;
+            # drop the retry silently (the original already replied / was audited).
+            return
+        _decision = safe_context_call(
+            lambda: current_context().slack_gate.intercept_message(
+                orch,
+                channel=channel,
+                sender_id=sender_id,
+                clean_text=_intercept_clean,
+                thread_ts=thread_ts,
+                msg_ts=msg_ts,
+            ),
+            fallback=InterceptDecision.DROPPED,
+            log_message="slack_gate.intercept_message failed; failing closed (DROPPED)",
+        )
+        if _decision is not InterceptDecision.PROCESS:
+            # REDIRECTED (a challenge was issued) or DROPPED (denied / gate error):
+            # the gate owns any user-facing reply; short-circuit before ANY content
+            # is recorded/processed. No image temps have been downloaded yet at this
+            # point (that happens further below), so nothing to clean up here.
+            seen.add(_intercept_seen_key)  # dedup subsequent retries of this event
+            # SEL audit: the interceptor is a permission decision distinct from the
+            # earlier allowlist check, so its verdict MUST reach the audit trail
+            # (backend-security-controls). REDIRECTED = a challenge was issued;
+            # DROPPED = denied or a fail-closed gate error.
+            sel().log_api_access(
+                caller=sender_id,
+                operation="slack.message.intercept",
+                outcome="denied",
+                source="slack",
+                resources=channel,
+                error=f"intercept={getattr(_decision, 'value', _decision)}",
+            )
+            logger.info(
+                "Message from %s in %s intercepted (%s)",
+                sender_id,
+                channel,
+                getattr(_decision, "value", _decision),
+            )
+            return
+
     # ── Channel activation mode (checked BEFORE ephemeral & dedup) ──
     # When activation=mention, Slack sends both a `message` and an
     # `app_mention` event for the same msg_ts.  We must skip the plain
@@ -2179,19 +2285,6 @@ async def _route_message(
     # Per-channel agent override
     agent_override = ch_cfg.agent or None
 
-    # ── NOTE: NO challenge-and-redirect here (intentional) ──────────────────
-    # Slack messages are processed INLINE — they fall straight through to the
-    # queue/handle_message path below and reach the agent directly. They are
-    # gated only by the user allowlist (is_allowed_user, checked earlier).
-    #
-    # The "challenge-and-redirect" flow (every message intercepted and turned
-    # into a presigned dashboard-session link via send_channel_challenge) was
-    # an enterprise-only security posture and has been DELIBERATELY REMOVED
-    # for external/open-source usage.
-    #
-    # DO NOT re-introduce it during an upstream sync. If a sync
-    # surfaces a `_CHALLENGE_REDIRECT_ENABLED` gate or a `send_channel_challenge`
-    # call here, DROP that hunk.
     logger.info(
         "Message from %s in %s (activation=%s): %s",
         sender_id,

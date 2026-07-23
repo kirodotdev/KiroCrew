@@ -13,6 +13,7 @@ deny decision must be ``@final`` to enforce the ADD-only floor.
 
 from __future__ import annotations
 
+import enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
@@ -20,6 +21,32 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from kiro_crew.config.loader import KiroCrewConfig
+
+
+class InterceptDecision(enum.Enum):
+    """Verdict an edition returns for an inbound Slack message at the route gate.
+
+    Returned by ``SlackEnterpriseGate.intercept_message`` (called at the top of
+    ``slack/events.py::_route_message``). The public default is always
+    ``PROCESS`` — the OSS build processes every allowed message inline, so this
+    seam changes nothing until a companion overrides the gate.
+
+    - ``PROCESS`` — handle the message inline as usual (the OSS behavior).
+    - ``REDIRECTED`` — the gate has handled the message out-of-band (e.g. posted a
+      presigned dashboard-session challenge link) and inline processing MUST be
+      short-circuited. The gate owns any user-facing reply.
+    - ``DROPPED`` — the message is denied and must not be processed. Used as the
+      fail-closed outcome: a companion whose challenge mint/post fails returns
+      ``DROPPED`` rather than falling through to inline processing.
+
+    ``REDIRECTED`` and ``DROPPED`` both short-circuit ``_route_message``; they
+    differ only in intent (redirected = a challenge was issued; dropped = denied),
+    which the gate records in its own audit trail.
+    """
+
+    PROCESS = "process"
+    REDIRECTED = "redirected"
+    DROPPED = "dropped"
 
 
 # ── boot-layer extension points ──
@@ -199,6 +226,54 @@ class SlackEnterpriseGate(Protocol):
         """
         ...
 
+    def intercept_message(
+        self,
+        orch: Any,
+        *,
+        channel: str,
+        sender_id: str,
+        clean_text: str,
+        thread_ts: "str | None",
+        msg_ts: str,
+    ) -> "InterceptDecision":
+        """Decide the fate of an inbound Slack message before inline processing.
+
+        WIRED: called at the TOP of ``slack/events.py::_route_message`` (after the
+        user-allowlist check, before the busy/queue path). The public default
+        returns ``InterceptDecision.PROCESS`` for every message, so the OSS build
+        is byte-identical — every allowed message is handled inline as today.
+
+        A companion may return ``REDIRECTED`` (it handled the message out-of-band,
+        e.g. minted + posted a presigned dashboard-session challenge link) or
+        ``DROPPED`` (denied) to short-circuit inline processing. This is the seam an
+        enterprise edition's "challenge-and-redirect" security posture composes
+        against: the first message from an unverified (user, channel) is turned into
+        a one-time dashboard link instead of reaching the agent, and follow-up
+        traffic flows inline only while a bounded auth window (opened at token
+        consumption via ``DashboardContributor.on_token_consumed``) is live. The
+        core ships no such posture; any organization can supply one through this
+        seam (device-verification gate, SSO step-up, custom allow policy, …).
+
+        **Fail-closed contract.** A gate that cannot complete its decision (e.g.
+        the challenge mint/post raised) MUST return ``DROPPED``, never ``PROCESS``
+        — a mis-composed or erroring gate must never silently degrade to inline
+        processing. ``_route_message`` enforces this at the call site too: the seam
+        is invoked through ``safe_context_call(..., fallback=DROPPED)``, so a raised
+        adapter error (any non-``PlatformCompositionError``) degrades to ``DROPPED``,
+        not ``PROCESS`` — deny-by-default. A ``PlatformCompositionError`` is re-raised
+        (boot invariant, never degraded). The public ``Default`` returns ``PROCESS``
+        and cannot raise, so a standalone build is byte-identical (its contract IS
+        "process inline") and never reaches the fallback; only a composed edition
+        that has declared a stricter posture can trip it.
+
+        Receives the orchestrator plus the resolved message fields so a companion
+        can key its auth window on ``(sender_id, channel)`` and thread the
+        challenge back to the right ``thread_ts``. Returns quickly and does not
+        block the event loop on network I/O beyond the challenge post. v1 method
+        addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
 
 class IdentityProvider(Protocol):
     """SSO/identity resolution.
@@ -239,8 +314,7 @@ class IdentityProvider(Protocol):
         """
         ...
 
-    def credential_watch_paths(self) -> List[Path]:
-        ...
+    def credential_watch_paths(self) -> List[Path]: ...
 
 
 class EmbeddingSource(Protocol):
@@ -486,6 +560,47 @@ class DashboardContributor(Protocol):
         auto-ingest document links pasted into chat.  It is an
         OBSERVER — its return value is ignored and it MUST NOT mutate the message
         or the turn.
+        """
+        ...
+
+    def on_token_consumed(
+        self,
+        user_id: str,
+        channel: str,
+        session_exp: float,
+        thread_ts: "str | None",
+    ) -> None:
+        """Observe a dashboard-session token being consumed on a verified device.
+
+        WIRED: ``dashboard/token_auth.py::bind_token_ip`` calls this once, right
+        after it binds the token to the consuming IP, inside a fail-safe guard so
+        an observer error never blocks token consumption. Fire-and-forget: the
+        observer must not block.
+
+        This is the anchor the Slack challenge-and-redirect posture needs: when a
+        user opens a presigned challenge link on a real device, the token is
+        consumed here, and the companion opens the bounded per-``(user, channel)``
+        auth window that lets subsequent Slack traffic flow inline (see
+        ``SlackEnterpriseGate.intercept_message``). ``session_exp`` is the token's
+        session expiry (the window's hard ceiling); ``thread_ts`` threads the
+        window to the originating Slack thread. The public Default is a no-op — no
+        window is opened, matching today's OSS behavior. v1 method addition (no
+        ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+    def decorate_reply(self, text: str, *, channel: str, user_id: str) -> str:
+        """Transform an outbound Slack reply just before it is sent (Default: identity).
+
+        WIRED: ``slack/handler.py`` calls this on the finalized reply text on the
+        outbound path, inside a fail-safe guard (a raising decorator falls back to
+        the undecorated text). The public Default returns ``text`` unchanged.
+
+        The challenge posture uses it to append a "<5 min left" expiry footer when
+        the auth window for ``(user_id, channel)`` is close to lapsing, and to
+        refresh the window's activity clock on each reply. It is a PURE
+        transform — it returns the (possibly-decorated) text and must not block on
+        network I/O. v1 method addition (no ``CONTRACT_VERSION`` bump).
         """
         ...
 

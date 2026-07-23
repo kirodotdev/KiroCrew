@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from kiro_crew import security, sso_status
+from kiro_crew.platform.interfaces import InterceptDecision
 
 # ``agent``, ``sandbox``, ``embeddings``, ``apps.registry`` and ``slack.enterprise``
 # import ``kiro_crew.platform`` at module-load time, so importing them at the top
@@ -136,6 +137,21 @@ class DefaultSlackEnterpriseGate:
         # stays exactly the core HEARTBEAT_SAFE_TOOLS. The companion returns its
         # internal read-only tool names.
         return frozenset()
+
+    def intercept_message(
+        self,
+        orch: Any,
+        *,
+        channel: str,
+        sender_id: str,
+        clean_text: str,
+        thread_ts: "str | None",
+        msg_ts: str,
+    ) -> "InterceptDecision":
+        # The public edition processes every allowed message inline — no
+        # challenge-and-redirect. Returning PROCESS keeps _route_message
+        # byte-identical to the pre-seam OSS behavior.
+        return InterceptDecision.PROCESS
 
 
 class DefaultIdentityProvider:
@@ -320,6 +336,21 @@ class DefaultDashboardContributor:
         # The public edition observes no chat messages. A companion uses this to
         # e.g. auto-ingest doc links pasted into chat.
         return None
+
+    def on_token_consumed(
+        self,
+        user_id: str,
+        channel: str,
+        session_exp: float,
+        thread_ts: "str | None",
+    ) -> None:
+        # The public edition opens no Slack auth window on token consumption.
+        return None
+
+    def decorate_reply(self, text: str, *, channel: str, user_id: str) -> str:
+        # The public edition sends replies unchanged (no expiry footer / window
+        # refresh — there is no challenge window in OSS).
+        return text
 
 
 class DefaultJailProvider:

@@ -222,6 +222,7 @@ async def handle_message_transport(
             reactions_enabled=reactions_enabled,
             show_thinking=show_thinking,
             decider=decider,
+            user_id=user_id,
         )
         await renderer.on_turn_start()
 
