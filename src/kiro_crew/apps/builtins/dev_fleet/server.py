@@ -296,6 +296,27 @@ _LIVE_CHECK_AT: float = 0.0
 _LIVE_TTL = 30.0
 
 
+def _own_checkout_path() -> str | None:
+    """Checkout root the RUNNING process's kiro_crew package resolves into.
+
+    The systemd probe only sees service-managed gateways; a gateway launched
+    directly from a feature worktree (and this backend, its subprocess) is
+    invisible to it. Our own module path is ground truth for which checkout
+    is live code right now -- editable installs resolve
+    ``<checkout>/src/kiro_crew/__init__.py``.
+    """
+    try:
+        import kiro_crew as _pkg
+
+        p = Path(_pkg.__file__).resolve()
+        for parent in p.parents:
+            if (parent / ".git").exists() or (parent / "pyproject.toml").is_file():
+                return str(parent)
+    except Exception:  # noqa: BLE001 -- identity probe must never crash callers
+        return None
+    return None
+
+
 def _same_path(a: str, b: str) -> bool:
     try:
         return Path(a).resolve() == Path(b).resolve()
@@ -303,11 +324,16 @@ def _same_path(a: str, b: str) -> bool:
         return False
 
 
-async def _live_worktree_path() -> str | None:
-    """Resolve the checkout the live gateway unit runs from (or None)."""
+async def _live_worktree_path(*, fresh: bool = False) -> str | None:
+    """Resolve the checkout the live gateway unit runs from (or None).
+
+    ``fresh=True`` bypasses the 30s display cache -- destructive callers
+    (worktree removal) must never authorize against a stale answer: the
+    gateway can switch checkouts within the TTL window.
+    """
     global _LIVE_WORKTREE, _LIVE_CHECK_AT
     now = time.monotonic()
-    if _LIVE_CHECK_AT and (now - _LIVE_CHECK_AT) < _LIVE_TTL:
+    if not fresh and _LIVE_CHECK_AT and (now - _LIVE_CHECK_AT) < _LIVE_TTL:
         return _LIVE_WORKTREE
     _LIVE_CHECK_AT = now
     if sys.platform != "linux" or not shutil.which("systemctl"):
@@ -1816,6 +1842,23 @@ async def _worktree_remove(name: str, force: bool = False) -> dict:
         return {"ok": False, "error": "refusing: cannot remove the main checkout"}
     path = target["path"]
     branch = target.get("branch")
+
+    live_path = await _live_worktree_path(fresh=True)
+    if live_path is not None and _same_path(path, live_path):
+        return {"ok": False, "error": (
+            "refusing: this worktree is running the live gateway -- "
+            "switch the gateway to another checkout first"
+        )}
+    # The systemd unit only covers service-managed gateways. A gateway (and
+    # this backend, its subprocess) launched directly from a feature worktree
+    # is invisible to it -- so also refuse when the target IS the checkout our
+    # own running code was imported from.
+    own_checkout = _own_checkout_path()
+    if own_checkout is not None and _same_path(path, own_checkout):
+        return {"ok": False, "error": (
+            "refusing: this worktree is the checkout the current gateway "
+            "process is running from -- switch checkouts first"
+        )}
 
     if not force:
         dirty = await _real_dirty(path)

@@ -115,6 +115,16 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         rt.write_env_file(cfg, name, {"SEED": args.seed})
 
     if not rt.is_active(cfg, name):
+        # Self-heal a dangling ExecStart binary: the unit bakes an absolute
+        # kirocrew path at install time; if the worktree it resolved into was
+        # pruned since, every start fails EXEC (203). Re-render with a
+        # currently-valid binary and reload before starting.
+        if not unit_mod.unit_exec_ok(cfg):
+            unit_mod.install_unit(cfg)
+            rel = rt.systemctl("daemon-reload")
+            if rel.returncode != 0:
+                _die(f"unit self-heal daemon-reload failed: {(rel.stderr or '').strip()}")
+            _audit("pod.up", "allowed", f"name={name}", error="unit ExecStart healed")
         cp = rt.systemctl("start", rt.pod_unit(cfg, name))
         if cp.returncode != 0:
             _audit("pod.up", "failure", f"name={name} port={port}", error="systemctl start failed")

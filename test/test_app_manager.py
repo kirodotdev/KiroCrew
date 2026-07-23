@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 
 import pytest
@@ -1121,3 +1122,119 @@ class TestCopyAppTree:
         assert not result.ok
         assert "failed to copy app files" in (result.error or "")
         assert _read_installed("test-app") is None
+
+
+class TestBootSkillReconcile:
+    """Tests for reconcile_app_skills — startup creates missing skill symlinks."""
+
+    def test_reconcile_creates_missing_skill_symlinks(self, tmp_path, monkeypatch):
+        """An enabled app with manifest skills but missing symlinks gets them on reconcile."""
+        from kiro_crew.apps import bridges, manager
+        from kiro_crew.apps.bridges import reconcile_app_skills
+
+        # Set up fake app dir with a skill directory
+        apps_root = tmp_path / "apps"
+        app_root = apps_root / "test-app"
+        app_root.mkdir(parents=True)
+        skill_dir = app_root / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# My Skill\n")
+
+        # Set up fake skills dir (where symlinks go)
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir(parents=True)
+
+        # Write installed.json (enabled, gateway-managed)
+        installed = {
+            "name": "test-app",
+            "version": "1.0.0",
+            "displayName": "Test App",
+            "enabled": True,
+            "origin": "builtin",
+            "resources": "gateway",
+            "lifecycle": "locked",
+            "schemaVersion": 2,
+        }
+        (app_root / "installed.json").write_text(json.dumps(installed))
+
+        # Write app.json manifest with skills
+        manifest_data = {
+            "name": "test-app",
+            "version": "1.0.0",
+            "displayName": "Test App",
+            "description": "A test app",
+            "author": "test",
+            "skills": ["skills/my-skill"],
+        }
+        (app_root / "app.json").write_text(json.dumps(manifest_data))
+
+        # Monkeypatch paths
+        monkeypatch.setattr(manager, "apps_dir", lambda: apps_root)
+        monkeypatch.setattr(manager, "app_dir", lambda name: apps_root / name)
+        monkeypatch.setattr(bridges, "_skills_dir", lambda: skills_root)
+        monkeypatch.setattr(bridges, "app_dir", lambda name: apps_root / name)
+
+        # Verify NO symlinks exist yet
+        assert not (skills_root / "test-app").exists()
+        assert not (skills_root / "my-skill").exists()
+
+        # Run reconcile
+        registered = reconcile_app_skills("test-app")
+
+        # Verify symlinks were created
+        assert len(registered) == 1
+        assert "test-app/my-skill" in registered
+        assert (skills_root / "test-app" / "my-skill").is_symlink()
+        assert (skills_root / "my-skill").is_symlink()
+        # Symlink target resolves to the actual skill dir
+        assert (skills_root / "test-app" / "my-skill").resolve() == skill_dir.resolve()
+
+    def test_reconcile_removes_stale_skill_symlinks(self, tmp_path, monkeypatch):
+        """Skills removed from manifest get their stale symlinks cleaned up."""
+        from kiro_crew.apps import bridges, manager
+        from kiro_crew.apps.bridges import reconcile_app_skills
+
+        # Set up fake app dir with one skill (kept)
+        apps_root = tmp_path / "apps"
+        app_root = apps_root / "test-app"
+        app_root.mkdir(parents=True)
+        kept_skill = app_root / "skills" / "kept-skill"
+        kept_skill.mkdir(parents=True)
+        (kept_skill / "SKILL.md").write_text("# Kept\n")
+
+        # Set up skills dir with a STALE symlink (removed from manifest)
+        skills_root = tmp_path / "skills"
+        app_skills_dir = skills_root / "test-app"
+        app_skills_dir.mkdir(parents=True)
+        stale_target = tmp_path / "old-skill"
+        stale_target.mkdir()
+        os.symlink(str(stale_target), str(app_skills_dir / "old-skill"))
+        os.symlink(str(stale_target), str(skills_root / "old-skill"))
+
+        # Write metadata
+        installed = {
+            "name": "test-app", "version": "1.0.0", "displayName": "Test",
+            "enabled": True, "origin": "builtin", "resources": "gateway",
+            "lifecycle": "locked", "schemaVersion": 2,
+        }
+        (app_root / "installed.json").write_text(json.dumps(installed))
+        manifest_data = {
+            "name": "test-app", "version": "1.0.0", "displayName": "Test",
+            "description": "t", "author": "t",
+            "skills": ["skills/kept-skill"],  # old-skill NOT listed
+        }
+        (app_root / "app.json").write_text(json.dumps(manifest_data))
+
+        monkeypatch.setattr(manager, "apps_dir", lambda: apps_root)
+        monkeypatch.setattr(manager, "app_dir", lambda name: apps_root / name)
+        monkeypatch.setattr(bridges, "_skills_dir", lambda: skills_root)
+        monkeypatch.setattr(bridges, "app_dir", lambda name: apps_root / name)
+
+        registered = reconcile_app_skills("test-app")
+
+        # Kept skill is registered
+        assert "test-app/kept-skill" in registered
+        assert (skills_root / "test-app" / "kept-skill").is_symlink()
+        # Stale skill symlinks removed
+        assert not (app_skills_dir / "old-skill").exists()
+        assert not (skills_root / "old-skill").exists()

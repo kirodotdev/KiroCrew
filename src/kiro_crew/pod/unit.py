@@ -133,3 +133,25 @@ def install_unit(cfg: PodConfig) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(render_unit(cfg))
     return dst
+
+
+def unit_exec_ok(cfg: PodConfig) -> bool:
+    """True when the installed unit's baked ExecStart binary still exists.
+
+    The unit bakes an absolute kirocrew path at install time (often a
+    ``~/.local/bin`` symlink into some worktree's venv). Worktrees are
+    ephemeral -- pruning the one the symlink resolves into leaves the unit
+    permanently failing EXEC (status=203) until reinstall. Callers use this
+    to self-heal by re-rendering the unit with a currently-valid binary
+    before starting a pod.
+    """
+    dst = unit_path(cfg)
+    try:
+        text = dst.read_text()
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            exe = line[len("ExecStart="):].split()[0]
+            return os.access(exe, os.X_OK) if os.path.isabs(exe) else True
+    return False

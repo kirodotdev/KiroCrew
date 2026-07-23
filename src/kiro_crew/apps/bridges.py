@@ -235,6 +235,69 @@ def _deregister_skills(app_name: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Skill reconcile (startup — ensures manifest-declared skills are linked)
+# ---------------------------------------------------------------------------
+
+
+def reconcile_app_skills(app_name: str) -> list[str]:
+    """Reconcile skill symlinks for an enabled app at gateway startup.
+
+    Ensures manifest-declared skills are registered (idempotent: existing
+    correct symlinks are overwritten by _register_skills, missing ones are
+    created).  Also removes stale symlinks for skills that were removed from
+    the manifest since the last registration.
+
+    Called from start_enabled_app_backends() so that an app upgraded in-place
+    (new manifest declaring new skills) gets its symlinks without needing a
+    disable/enable cycle.
+
+    Returns list of currently-registered namespaced skill names.
+    """
+    info = get_app(app_name)
+    if info and info.get("resources") == "app":
+        # Self-managed apps own their registration lifecycle -- never touch
+        # their symlinks here, even when the manifest declares no skills
+        # (dynamically managed skills are not manifest-declared).
+        return []
+
+    manifest = get_app_manifest(app_name)
+    if not manifest or not manifest.skills:
+        # No skills declared — remove any stale symlinks left from a prior version
+        _deregister_skills(app_name)
+        return []
+
+    app_root = app_dir(app_name)
+
+    # _register_skills is already idempotent (overwrites existing symlinks)
+    registered = _register_skills(app_name, manifest, app_root)
+
+    # Clean stale links: skills present as symlinks but no longer in manifest
+    skills_root = _skills_dir()
+    app_skills_dir = skills_root / app_name
+    if app_skills_dir.is_dir():
+        manifest_skill_names = {Path(s).name for s in manifest.skills}
+        for entry in list(app_skills_dir.iterdir()):
+            if entry.is_symlink() and entry.name not in manifest_skill_names:
+                # Stale link — skill was removed from manifest
+                target = entry.resolve()
+                entry.unlink()
+                # Also remove the flat link if it points to the same target
+                flat_link = skills_root / entry.name
+                if flat_link.is_symlink():
+                    try:
+                        if flat_link.resolve() == target:
+                            flat_link.unlink()
+                    except OSError:
+                        pass
+                logger.info(
+                    "Reconcile: removed stale skill link %s/%s for app %s",
+                    app_name, entry.name, app_name,
+                )
+
+    return registered
+
+
+# ---------------------------------------------------------------------------
 # Cron registration (deferred — writes a manifest for the CronService)
 # ---------------------------------------------------------------------------
 

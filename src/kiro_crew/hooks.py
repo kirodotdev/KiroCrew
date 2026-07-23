@@ -773,6 +773,79 @@ def safe_read_file_bytes_nolink(raw: str, within_root: str | None = None) -> byt
                 pass
 
 
+def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
+    """Copy a file into *dest_dir* with the full descriptor-pinned validation
+    chain; return the private copy's path, or None if the source is rejected.
+
+    For large binaries (media files) that libraries must consume BY PATH from
+    a subprocess: the bytes are streamed from the vetted descriptor into a
+    freshly created 0600 temp file inside *dest_dir*, so downstream readers
+    never touch the caller-influenced original path again.
+
+    Validation mirrors :func:`safe_read_file_bytes_nolink`: open first
+    (``O_NOFOLLOW``), then ``fstat()`` on the descriptor (regular file,
+    ``st_nlink == 1``), then the OPENED descriptor's real path (via
+    ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS) must not be
+    sensitive. ``O_NOFOLLOW`` only guards the FINAL path component — an
+    ancestor directory swapped for a symlink between validation and open
+    would otherwise reach a sensitive file. The fd-path check is pinned to
+    the inode actually opened and copied, so no check-to-use window remains.
+    If the fd's real path cannot be determined, fail closed.
+    """
+    import os
+    import stat as _stat
+    import tempfile
+
+    path = validate_file_path(raw)
+    if path is None:
+        return None
+
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    tmp_fd = -1
+    tmp_path: str | None = None
+    try:
+        st = os.fstat(fd)
+        if st.st_nlink > 1 or not _stat.S_ISREG(st.st_mode):
+            return None
+        fd_real = _fd_real_path(fd)
+        if fd_real is None:
+            return None  # cannot verify what was opened -> fail closed
+        if is_sensitive_path(fd_real):
+            return None
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            prefix=".safe-copy-", suffix=os.path.splitext(fd_real)[1], dir=dest_dir
+        )
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(tmp_fd, view)
+                view = view[written:]
+        return tmp_path
+    except OSError:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if tmp_fd >= 0:
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+
+
 def safe_read_prefix(raw: str, n: int) -> bytes | None:
     """Read the first *n* bytes of a file through is_sensitive_path enforcement.
 

@@ -108,6 +108,21 @@ re-check `runtime.active_names` after the CLI returns and fail closed
 (`pod not active after start` / `pod still active after shutdown`) — a CLI exit 0
 is never taken as proof of the state change, in either direction.
 
+### Pod Unit ExecStart Self-Heal
+
+On `pod up`, if the installed systemd unit template's `ExecStart` binary no longer exists
+(typically because the worktree it resolved into was pruned), the pod CLI:
+
+1. Detects the dangling binary via `unit.unit_exec_ok(cfg)` (reads the unit file, checks
+   `os.access(exe, os.X_OK)` on the baked path)
+2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
+3. Runs `daemon-reload`
+4. Audits the self-heal event
+5. Proceeds to start the pod normally
+
+This prevents the permanent EXEC 203 failure loop that occurs when worktrees are pruned
+after the unit was installed.
+
 ## Background Tasks
 
 - **Status refresher** (`_status_refresher`) — runs every 60s, fetches origin + refreshes
@@ -293,3 +308,45 @@ All user-visible output passes through `redact_credentials()` and
   (`no_systemd`) and on SYSTEM-unit installs (`no_user_unit`)
 - **git** and **gh** CLI required for full functionality; missing binaries produce
   graceful degradation via OSError catch in `_run_cmd`
+
+## Bundled Skills
+
+The app bundles three skills declared in `app.json`:
+
+- `skills/pod-e2e` — end-to-end test harness for isolated pod instances
+- `skills/kirocrew-worktree-dev` — developer workflow guide for brazil-worktrees
+- `skills/feature-demo-recording` — headless Playwright video recording
+
+Skills are registered as symlinks into `~/.kirocrew/skills/` via the app bridge at
+two lifecycle points:
+
+1. **On enable** — `register_app()` in `bridges.py` creates namespaced + flat symlinks
+2. **On gateway startup** — `reconcile_app_skills()` in `bridges.py` (called from
+   `start_enabled_app_backends()`) ensures manifest-declared skills are linked for
+   already-enabled apps, creating missing symlinks and removing stale ones for skills
+   dropped from the manifest since the last registration
+
+This reconcile step addresses the upgrade gap: an in-place version upgrade that adds
+new skills would otherwise never get symlinks without a disable/enable cycle.
+
+## QA + Video Row Action
+
+Each worktree row in the frontend exposes a "QA + video" action (Video icon) that:
+
+1. Composes a seeded prompt (pod-e2e suite + feature-demo-recording)
+2. Dispatches `setPendingInput(prompt)` to the chat store
+3. Navigates to `/chat?autoSend=1&newSession=1`
+
+This launches an agent session that runs the full QA cycle (pod up, API + Playwright
+tests, demo video recording, summary) without any backend route — it is entirely a
+frontend-only seeded session pattern.
+
+## Live Worktree Removal Guard
+
+The `POST /apps/dev-fleet/api/worktree/remove` endpoint (and its `force` variant)
+performs a fresh uncached resolution of the live gateway's worktree path before any
+removal. If the target worktree is the one currently running the live gateway process,
+the request is refused with a descriptive error — regardless of the `force` flag.
+
+The check uses `_live_worktree_path()` which performs a fresh filesystem resolution
+(no caching) to avoid TOCTOU issues where a previously-cached path is stale.

@@ -9,11 +9,13 @@ import { Card, CardTitle, Btn, Checkbox, StatCard, EmptyState, ContentSkeleton, 
 import InfoTip from '../components/InfoTip'
 import Modal from '../components/Modal'
 import Clickable from '../components/Clickable'
+import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../store'
 import { addNotification } from '../store/notificationsSlice'
+import { setPendingInput } from '../store/chatSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
-  LoaderCircle, Check,
+  LoaderCircle, Check, Video,
   Ellipsis, RotateCw, FileText, GitCommit, Rocket,
 } from 'lucide-react'
 import * as api from './devFleetApi'
@@ -345,6 +347,7 @@ function ToastHost() {
 export default function DevFleetPage() {
   const dispatch = useAppDispatch()
   _dispatch = dispatch
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
 
   /* ─── react-query: fleet data ─── */
@@ -512,6 +515,18 @@ export default function DevFleetPage() {
       else if (kind === 'restart') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/restart', { name }); notify(r?.ok ? 'Restarted ' + name : (r?.error || 'Failed'), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(flag, false) }
+  }
+
+  function launchQa(name: string) {
+    const prompt =
+      `Dev Fleet QA for worktree '${name}'. ` +
+      'Steps: (1) load the pod-e2e skill (it manages pod lifecycle); ' +
+      '(2) ensure the pod is up for this worktree; ' +
+      '(3) run the pod-e2e QA suite (backend API + Playwright frontend) against that pod; ' +
+      '(4) record a short demo video of the pod dashboard with the feature-demo-recording skill; ' +
+      '(5) deliver the video and a concise pass/fail summary. English only.'
+    dispatch(setPendingInput(prompt))
+    navigate('/chat?autoSend=1&newSession=1')
   }
 
   async function provision(name: string) {
@@ -771,6 +786,7 @@ export default function DevFleetPage() {
       w.running ? { label: 'Restart pod', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
       { label: 'Rebase onto main', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
       !w.is_live ? { label: 'Make live', icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: !!busy[w.name + ':makelive'], title: 'Repoint the live gateway at this worktree (restarts the gateway)' } : null,
+      { label: 'QA + video', icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) },
       w.running ? { label: 'Stop pod', icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
     ]} />)
     const rr = rebaseResult[w.name]

@@ -795,3 +795,58 @@ class TestReviewRound2Fix:
         # a normal single-line value still round-trips
         rt.write_env_file(c, "y", {"CHECKOUT": "/a/b"})
         assert rt.read_env_file(c, "y")["CHECKOUT"] == "/a/b"
+
+
+class TestUnitExecSelfHeal:
+    """The unit bakes an absolute kirocrew path; a pruned worktree leaves it
+    dangling and every start fails EXEC. unit_exec_ok detects that."""
+
+    def _cfg_with_unit(self, tmp_path, monkeypatch, exec_line):
+        from kiro_crew.pod import unit as unit_mod
+        from kiro_crew.pod.config import PodConfig
+
+        monkeypatch.setattr(
+            unit_mod, "unit_path", lambda cfg: tmp_path / "pod@.service"
+        )
+        (tmp_path / "pod@.service").write_text(
+            f"[Service]\n{exec_line}\nExecStopPost=/bin/true pod _cleanup %i\n"
+        )
+        return PodConfig.load()
+
+    def test_dangling_binary_detected(self, tmp_path, monkeypatch):
+        from kiro_crew.pod import unit as unit_mod
+
+        cfg = self._cfg_with_unit(
+            tmp_path, monkeypatch,
+            f"ExecStart={tmp_path}/gone/.venv/bin/kirocrew pod _run %i",
+        )
+        assert unit_mod.unit_exec_ok(cfg) is False
+
+    def test_valid_binary_passes(self, tmp_path, monkeypatch):
+        from kiro_crew.pod import unit as unit_mod
+
+        exe = tmp_path / "kirocrew"
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        cfg = self._cfg_with_unit(
+            tmp_path, monkeypatch, f"ExecStart={exe} pod _run %i"
+        )
+        assert unit_mod.unit_exec_ok(cfg) is True
+
+    def test_missing_unit_file_detected(self, tmp_path, monkeypatch):
+        from kiro_crew.pod import unit as unit_mod
+        from kiro_crew.pod.config import PodConfig
+
+        monkeypatch.setattr(
+            unit_mod, "unit_path", lambda cfg: tmp_path / "absent@.service"
+        )
+        assert unit_mod.unit_exec_ok(PodConfig.load()) is False
+
+    def test_module_invocation_form_passes(self, tmp_path, monkeypatch):
+        from kiro_crew.pod import unit as unit_mod
+
+        cfg = self._cfg_with_unit(
+            tmp_path, monkeypatch,
+            "ExecStart=python3 -m kiro_crew pod _run %i",
+        )
+        assert unit_mod.unit_exec_ok(cfg) is True

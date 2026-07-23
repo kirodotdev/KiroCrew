@@ -2564,6 +2564,14 @@ def test_find_cli_is_module_invocation_only():
 
     assert mod._find_cli() == [_sys.executable, "-m", "kiro_crew"]
 
+    import subprocess as _sp
+
+    cp = _sp.run(
+        mod._find_cli() + ["pod"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert "Usage" in (cp.stdout + cp.stderr) or cp.returncode == 2
+
 
 def test_sanitize_helper_rejects_shell_and_persistent(monkeypatch):
     """The configured value is never executed as-is: trusted argv[0] with
@@ -3320,3 +3328,128 @@ async def test_auto_prune_reaper_audits_scan_failure():
     assert events[0]["tool_name"] == "dev_fleet_auto_prune"
     assert events[0]["outcome"] == "failure"
     assert "gh down" in events[0]["error"]
+
+
+# --- skill registration (bundled skills inside builtin app) ---
+
+
+def test_register_skills_creates_symlinks_for_bundled_skills(tmp_path, monkeypatch):
+    """Enabling the dev-fleet app registers pod-e2e and kirocrew-worktree-dev skills."""
+    from kiro_crew.apps.bridges import _register_skills
+    from kiro_crew.apps.manifest import AppManifest
+
+    fake_config = tmp_path / "config"
+    fake_config.mkdir()
+    monkeypatch.setattr(
+        "kiro_crew.apps.bridges.config_dir", lambda: fake_config
+    )
+
+    app_root = Path(__file__).resolve().parent.parent / (
+        "src/kiro_crew/apps/builtins/dev_fleet"
+    )
+
+    manifest = AppManifest(
+        name="dev-fleet",
+        version="1.0.0",
+        skills=["skills/pod-e2e", "skills/kirocrew-worktree-dev"],
+    )
+
+    registered = _register_skills("dev-fleet", manifest, app_root)
+
+    skills_dir = fake_config / "skills"
+    namespaced_dir = skills_dir / "dev-fleet"
+
+    expected_skills = {"pod-e2e", "kirocrew-worktree-dev"}
+    registered_names = {r.split("/")[-1] for r in registered}
+    assert expected_skills <= registered_names
+
+    for skill_name in expected_skills:
+        link = namespaced_dir / skill_name
+        assert link.is_symlink(), f"Namespaced link missing: {link}"
+        assert link.resolve().is_dir()
+        flat = skills_dir / skill_name
+        assert flat.is_symlink(), f"Flat link missing: {flat}"
+        assert flat.resolve().is_dir()
+
+
+def test_register_skills_tolerates_missing_feature_demo_recording(tmp_path, monkeypatch):
+    """feature-demo-recording absence must not crash skill registration."""
+    from kiro_crew.apps.bridges import _register_skills
+    from kiro_crew.apps.manifest import AppManifest
+
+    fake_config = tmp_path / "config"
+    fake_config.mkdir()
+    monkeypatch.setattr(
+        "kiro_crew.apps.bridges.config_dir", lambda: fake_config
+    )
+
+    app_root = Path(__file__).resolve().parent.parent / (
+        "src/kiro_crew/apps/builtins/dev_fleet"
+    )
+
+    manifest = AppManifest(
+        name="dev-fleet",
+        version="1.0.0",
+        skills=[
+            "skills/pod-e2e",
+            "skills/kirocrew-worktree-dev",
+            "skills/feature-demo-recording",
+        ],
+    )
+
+    registered = _register_skills("dev-fleet", manifest, app_root)
+
+    registered_names = {r.split("/")[-1] for r in registered}
+    assert "pod-e2e" in registered_names
+    assert "kirocrew-worktree-dev" in registered_names
+
+
+@pytest.mark.asyncio
+async def test_remove_refuses_live_worktree(monkeypatch):
+    """Removing the checkout the live gateway runs from would kill the
+    gateway mid-flight -- refused even with force."""
+    async def fake_find(name):
+        return {"path": "/wt/feature-x", "is_main": False, "branch": "feature-x"}, None
+
+    seen_fresh: list = []
+
+    async def fake_live(*, fresh: bool = False):
+        seen_fresh.append(fresh)
+        return "/wt/feature-x"
+
+    monkeypatch.setattr(mod, "_find_worktree", fake_find)
+    monkeypatch.setattr(mod, "_live_worktree_path", fake_live)
+    for force in (False, True):
+        r = await mod._worktree_remove("feature-x", force=force)
+        assert r["ok"] is False
+        assert "live gateway" in r["error"]
+    # Destructive callers must bypass the 30s cache -- a stale answer could
+    # authorize deleting the checkout the gateway switched onto mid-TTL.
+    assert seen_fresh == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_remove_refuses_own_process_checkout(monkeypatch):
+    """A gateway launched outside systemd is invisible to the unit probe --
+    the target must also be checked against the checkout our own running
+    code was imported from."""
+    async def fake_find(name):
+        return {"path": "/wt/self", "is_main": False, "branch": "self"}, None
+
+    async def fake_live(*, fresh: bool = False):
+        return None
+
+    monkeypatch.setattr(mod, "_find_worktree", fake_find)
+    monkeypatch.setattr(mod, "_live_worktree_path", fake_live)
+    monkeypatch.setattr(mod, "_own_checkout_path", lambda: "/wt/self")
+    for force in (False, True):
+        r = await mod._worktree_remove("self", force=force)
+        assert r["ok"] is False
+        assert "current gateway process" in r["error"]
+
+
+def test_own_checkout_path_resolves_this_worktree():
+    own = mod._own_checkout_path()
+    assert own is not None
+    from pathlib import Path
+    assert (Path(own) / "src" / "kiro_crew").is_dir()

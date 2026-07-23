@@ -1292,6 +1292,62 @@ def start_enabled_app_backends() -> list[str]:
         except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
             logger.warning("Boot MCP reconcile failed for disabled app %s: %s", name, exc)
 
+    # Skill reconcile: ensure manifest-declared skills for enabled apps have
+    # their symlinks in place. An in-place upgrade (new app version adding skills)
+    # would otherwise never get symlinks until a disable/enable cycle. Runs for
+    # EVERY enabled gateway-managed app -- an upgrade that removes the last
+    # declared skill still needs the cleanup branch to scrub stale symlinks.
+    # Governance/admission are re-vetted FIRST: a now-banned or now-unsigned
+    # app must have its skills DEREGISTERED, never freshly installed.
+    for app_info in apps:
+        if not app_info.get("enabled"):
+            continue
+        name = app_info.get("name", "")
+        try:
+            from kiro_crew.apps.bridges import (
+                _deregister_skills,
+                reconcile_app_skills,
+            )
+        except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
+            logger.warning("Boot skill reconcile unavailable: %s", exc)
+            break
+        # Governance/admission vetting is deny-by-default: an app that cannot
+        # be POSITIVELY admitted (including when the vetting itself raises,
+        # e.g. a malformed admission policy) must have its skills
+        # deregistered, never left active or freshly installed.
+        try:
+            gov_denied = _app_activation_denied(name)
+            # Builtins are exempt from admission (signature/allowlist) checks,
+            # mirroring the backend-start loop and enable_app -- otherwise a
+            # require_signature policy would strip every core app's skills
+            # while the backend itself still boots under the exemption.
+            adm_denied = None
+            if not gov_denied and app_info.get("origin") != "builtin":
+                adm_denied = app_admission_denied(
+                    name, manifest=get_app_manifest(name), action="boot"
+                )
+        except Exception as exc:  # noqa: BLE001 — vetting error == denial
+            gov_denied = f"governance/admission vetting raised: {exc}"
+            adm_denied = None
+        if gov_denied or adm_denied:
+            try:
+                _deregister_skills(name)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Boot skill reconcile: FAILED to deregister skills for "
+                    "denied app %s: %s", name, exc,
+                )
+            else:
+                logger.warning(
+                    "Boot skill reconcile: deregistered skills for denied app %s: %s",
+                    name, gov_denied or adm_denied,
+                )
+            continue
+        try:
+            reconcile_app_skills(name)
+        except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
+            logger.warning("Boot skill reconcile failed for app %s: %s", name, exc)
+
     started: list[str] = []
     for app_info in apps:
         if not app_info.get("enabled"):
