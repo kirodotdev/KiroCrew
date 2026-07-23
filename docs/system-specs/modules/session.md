@@ -267,6 +267,33 @@ parent snapshot + accumulated side history.
 - `close_all()`: saves all active mappings before killing processes.
 - `start_pool()`: prunes stale entries (files deleted by kiro-cli GC).
 
+### Load Recovery (stale native session lock — F2)
+
+On restart / Make-Live cutover the previous gateway's kiro-cli is killed. If it
+died uncleanly (SIGKILL, crash, OOM, or a drain timeout), its per-session lock
+can stay held briefly, so the new gateway's `session/load` is rejected with an
+**"active in another process"** error. Recovery happens at the resume
+chokepoint (`AcpProvider._load_session_with_retry`, `providers/acp.py`) and
+self-heals regardless of *why* the resume failed — it never depends on the dead
+holder cooperating (unlike cooperative drain), so it covers every kill mode:
+
+1. **Phase 1 — bounded retry (lossless).** Re-issue `session/load` up to
+   `_RESUME_MAX_ATTEMPTS` (4) times with exponential backoff
+   (`_RESUME_BACKOFF_BASE_S` → 1s, 2s, 4s). If the stale lock releases, the
+   session resumes with full native history. A genuine (non-lock) load error is
+   **not** retried, and a dead runtime aborts the loop immediately (the caller's
+   respawn path takes over).
+2. **Phase 2 — fresh session + history replay (backstop).** If the lock never
+   clears, `_start_kiro_runtime_impl` falls through to a fresh `session/new` and
+   sets `AcpProvider._history_replay_needed`. `get_or_create` reads that flag and
+   sets `_Session.provider_switch_replay = True`, so `build_session_replay`
+   injects KiroCrew's `conversation_log` into the new native session on the first
+   prompt (the same replay path used for cross-provider switches). The slot
+   resumes seamlessly instead of returning empty completions.
+
+Observability: a successful Phase-1 recovery logs at INFO; exhausting all
+attempts logs a single grep-able WARNING before migrating to Phase 2.
+
 ### Cross-Provider Continuity
 
 kiro session IDs and the removed provider's session IDs are NOT interchangeable:

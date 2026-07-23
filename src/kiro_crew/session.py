@@ -2120,7 +2120,13 @@ class SessionManager:
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
-                    if _provider_switched:
+                    if _provider_switched or (
+                        getattr(provider, "_history_replay_needed", False) is True
+                    ):
+                        # provider_switch_replay OR F2 load-recovery fell back to
+                        # a fresh native session (stale lock never cleared):
+                        # replay KiroCrew's conversation_log into the new session
+                        # on the first prompt so the slot isn't context-free.
                         sess.provider_switch_replay = True
                     self._sessions[key] = sess
                     logger.info(

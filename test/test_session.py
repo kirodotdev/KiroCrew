@@ -3512,3 +3512,39 @@ class TestOpenTaskSession:
         mgr.release(key)
         await mgr.release_subagent_runtime(parent)
         await mgr.close_all()
+
+
+class TestLoadRecoveryHistoryReplay:
+    """F2 load-recovery Phase 2: when a provider signals it fell back to a FRESH
+    native session (the prior session's lock never cleared), get_or_create flags
+    the new slot for KiroCrew conversation_log replay on the first prompt so the
+    slot is not context-free."""
+
+    @staticmethod
+    def _factory(history_replay_needed: bool):
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.shutdown = AsyncMock()
+            m.context_usage_pct = lambda: 0.0
+            m._history_replay_needed = history_replay_needed
+            return m
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_fresh_fallback_triggers_history_replay(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=self._factory(True))
+        _provider, is_new, _resumed = await mgr.get_or_create("thread1")
+        assert is_new is True
+        sess = next(iter(mgr._sessions.values()))
+        assert sess.provider_switch_replay is True
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_native_resume_does_not_trigger_replay(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=self._factory(False))
+        await mgr.get_or_create("thread1")
+        sess = next(iter(mgr._sessions.values()))
+        assert sess.provider_switch_replay is False
+        await mgr.close_all()

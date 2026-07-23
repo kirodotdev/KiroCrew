@@ -18,6 +18,7 @@ from kiro_crew.acp.client import (
     AcpError,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
+from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -208,6 +209,16 @@ def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
     return out
 
 
+# ── F2 load-recovery: session/load retry past a stale native session lock ──
+# A kiro-cli holder killed uncleanly (SIGKILL, crash, OOM, or a gateway-restart
+# drain timeout) can leave its per-session lock held briefly. Re-issuing
+# session/load a few times with exponential backoff lets the stale lock release
+# so the new gateway resumes LOSSLESSLY. If the lock never clears we fall back
+# to a fresh session + KiroCrew history replay (see _start_kiro_runtime_impl).
+_RESUME_MAX_ATTEMPTS = 4  # total session/load attempts before fresh fallback
+_RESUME_BACKOFF_BASE_S = 1.0  # backoff = base * 2**attempt → 1s, 2s, 4s between attempts
+
+
 class AcpProvider(LLMProvider):
     """LLMProvider backed by ACP JSON-RPC over stdio (kiro-cli or claude-agent-acp)."""
 
@@ -248,6 +259,12 @@ class AcpProvider(LLMProvider):
         if agent:
             kwargs["agent"] = agent
         self._client = AcpClient(**kwargs)
+        # F2 load-recovery: set True by _start_kiro_runtime_impl when a resume
+        # falls back to a FRESH native session (the prior session's lock never
+        # cleared). Signals SessionManager.get_or_create to replay KiroCrew's
+        # conversation_log into the fresh session on the first prompt so the slot
+        # is not context-free.
+        self._history_replay_needed: bool = False
         # Terminal compaction status captured by compact() while draining its
         # prompt turn; consumed by wait_for_compaction() (see compact()).
         self._compact_result: dict | None = None
@@ -356,6 +373,85 @@ class AcpProvider(LLMProvider):
         except Exception:  # never let telemetry break session startup
             logger.debug("kiro startup metric emit failed", exc_info=True)
 
+    async def _load_session_with_retry(
+        self,
+        runtime: AcpRuntime,
+        session_file: str,
+        resume_sid: str,
+        work_dir: str | Path | None,
+        agent: str | None,
+    ) -> AcpSessionHandle | None:
+        """Resume via session/load, retrying past a stale native session lock.
+
+        F2 load-recovery (Phase 1). A kiro-cli holder killed uncleanly can leave
+        its per-session lock held for a short window; re-issuing session/load a
+        few times with exponential backoff lets the stale lock release so we
+        resume LOSSLESSLY (full native history). Outcomes:
+
+        * load succeeds            → return the handle (fast path: no sleep).
+        * "active in another        → retry up to ``_RESUME_MAX_ATTEMPTS`` with
+          process" lock held         backoff; return the handle if it clears.
+        * lock never clears        → return ``None`` (caller falls back to a
+                                       fresh session + history replay — Phase 2).
+        * any OTHER load error     → return ``None`` immediately (retrying a
+                                       genuine failure only wastes time).
+        * runtime dies mid-retry   → return ``None`` (caller's respawn handles it).
+        """
+        for attempt in range(_RESUME_MAX_ATTEMPTS):
+            try:
+                handle = await runtime.load_session(
+                    session_file,
+                    resume_sid,
+                    cwd=work_dir,
+                    agent=agent or None,
+                )
+                if attempt:
+                    logger.info(
+                        "Resume of kiro session %s recovered on attempt %d/%d "
+                        "(stale lock released)",
+                        resume_sid,
+                        attempt + 1,
+                        _RESUME_MAX_ATTEMPTS,
+                    )
+                return handle
+            except Exception as exc:
+                if "active in another process" not in str(exc).lower():
+                    # Genuine load failure — will not clear with time.
+                    logger.warning(
+                        "Failed to resume session %s, starting fresh",
+                        resume_sid,
+                        exc_info=True,
+                    )
+                    return None
+                if not runtime.is_alive():
+                    logger.warning(
+                        "Runtime died while retrying resume of session %s; starting fresh",
+                        resume_sid,
+                    )
+                    return None
+                if attempt + 1 < _RESUME_MAX_ATTEMPTS:
+                    backoff = _RESUME_BACKOFF_BASE_S * (2**attempt)
+                    logger.info(
+                        "Resume of kiro session %s refused (lock active in "
+                        "another process); retry %d/%d in %.1fs",
+                        resume_sid,
+                        attempt + 1,
+                        _RESUME_MAX_ATTEMPTS,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+        # Exhausted every attempt on a persistent lock. Loud, grep-able marker;
+        # the caller migrates to a fresh session with KiroCrew history replay.
+        logger.warning(
+            "Resume of kiro session %s failed after %d attempts (lock still "
+            "active in another process — a stale lock from an uncleanly-killed "
+            "holder, or a rare same-gateway session-key alias miss); migrating "
+            "to a fresh session with KiroCrew history replay",
+            resume_sid,
+            _RESUME_MAX_ATTEMPTS,
+        )
+        return None
+
     async def _start_kiro_runtime_impl(self, phases: dict[str, float]) -> None:
         """Spawn an AcpRuntime and replace self._client with AcpSessionProvider.
 
@@ -429,38 +525,23 @@ class AcpProvider(LLMProvider):
             if resume_sid:
                 session_file = Path.home() / ".kiro" / "sessions" / "cli" / f"{resume_sid}.json"
                 if session_file.exists():
-                    try:
-                        handle = await runtime.load_session(
-                            str(session_file),
-                            resume_sid,
-                            cwd=work_dir,
-                            agent=agent or None,
-                        )
-                        resumed = True
-                    except Exception as exc:
-                        if "active in another process" in str(exc).lower():
-                            # A live provider for this kiro session exists in
-                            # THIS gateway, addressed under a different session
-                            # key (bare vs canonical ``slack:<ts>`` alias).
-                            # Starting fresh silently splits the thread into a
-                            # context-free duplicate. The alias fold in
-                            # SessionManager.get_or_create should make this
-                            # unreachable — loud, grep-able marker so any
-                            # recurrence is visible.
-                            logger.error(
-                                "Resume refused: kiro session %s is active in "
-                                "another process — likely a session-key alias "
-                                "miss (bare vs slack:<ts>); starting fresh "
-                                "orphans the live session's native history",
-                                resume_sid,
-                            )
-                        else:
-                            logger.warning(
-                                "Failed to resume session %s, starting fresh",
-                                resume_sid,
-                                exc_info=True,
-                            )
-                        handle = None
+                    # F2 load-recovery: retry past a stale "active in another
+                    # process" lock (Phase 1); on persistent failure fall through
+                    # to a fresh session/new below WITH KiroCrew history replay
+                    # (Phase 2, self._history_replay_needed). This self-heals
+                    # regardless of WHY the resume failed (SIGKILL'd holder,
+                    # crash, OOM, drain timeout) — it never depends on the dead
+                    # holder cooperating.
+                    handle = await self._load_session_with_retry(
+                        runtime,
+                        str(session_file),
+                        resume_sid,
+                        work_dir,
+                        agent,
+                    )
+                    resumed = handle is not None
+                    if handle is None:
+                        self._history_replay_needed = True
                 else:
                     logger.info("Session file missing for %s, skipping load", resume_sid)
 

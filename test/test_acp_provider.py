@@ -759,3 +759,84 @@ class TestFixBDeadRuntimeRespawn:
         # create_session called on the NEW runtime (not the dead one)
         new_runtime.create_session.assert_awaited_once()
         dead_runtime.create_session.assert_not_called()
+
+
+class TestLoadSessionWithRetry:
+    """F2 load-recovery Phase 1: ``_load_session_with_retry`` retries past a
+    stale 'active in another process' lock, and returns None (caller falls back
+    to a fresh session + history replay) on a persistent lock, a non-lock load
+    error, or a dead runtime."""
+
+    @staticmethod
+    def _runtime(load_session, *, alive: bool = True) -> MagicMock:
+        rt = MagicMock()
+        rt.is_alive.return_value = alive
+        rt.load_session = load_session
+        return rt
+
+    @pytest.mark.asyncio
+    async def test_fast_path_success_no_retry(self):
+        provider = _build_provider(backend="")
+        handle = object()
+        rt = self._runtime(AsyncMock(return_value=handle))
+        with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
+        assert got is handle
+        assert rt.load_session.await_count == 1
+        assert sleep_mock.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_recovers_after_stale_lock_releases(self):
+        provider = _build_provider(backend="")
+        handle = object()
+        rt = self._runtime(
+            AsyncMock(
+                side_effect=[
+                    RuntimeError("kiro session sid is active in another process"),
+                    RuntimeError("kiro session sid is active in another process"),
+                    handle,
+                ]
+            )
+        )
+        with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
+        assert got is handle
+        assert rt.load_session.await_count == 3
+        assert sleep_mock.await_count == 2  # backoff before attempts 2 and 3
+
+    @pytest.mark.asyncio
+    async def test_persistent_lock_exhausts_and_falls_back(self):
+        from kiro_crew.providers.acp import _RESUME_MAX_ATTEMPTS
+
+        provider = _build_provider(backend="")
+        rt = self._runtime(
+            AsyncMock(side_effect=RuntimeError("session is active in another process"))
+        )
+        with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
+        assert got is None
+        assert rt.load_session.await_count == _RESUME_MAX_ATTEMPTS
+        assert sleep_mock.await_count == _RESUME_MAX_ATTEMPTS - 1
+
+    @pytest.mark.asyncio
+    async def test_non_lock_error_does_not_retry(self):
+        provider = _build_provider(backend="")
+        rt = self._runtime(AsyncMock(side_effect=RuntimeError("session/load parse error")))
+        with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
+        assert got is None
+        assert rt.load_session.await_count == 1  # a genuine failure is not retried
+        assert sleep_mock.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_dead_runtime_stops_retry(self):
+        provider = _build_provider(backend="")
+        rt = self._runtime(
+            AsyncMock(side_effect=RuntimeError("active in another process")),
+            alive=False,
+        )
+        with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
+        assert got is None
+        assert rt.load_session.await_count == 1  # bail as soon as the runtime is dead
+        assert sleep_mock.await_count == 0
