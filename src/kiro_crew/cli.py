@@ -654,6 +654,17 @@ def main() -> None:
     # non-ASCII glyphs.
     platform_compat.ensure_utf8_console()
 
+    # Clear any INHERITED sandbox-active marker before any argv-wrapping path
+    # can run. KIROCREW_SANDBOX_ACTIVE tells the sandbox layer that OS isolation
+    # is already active, so it skips re-wrapping (nested-sandbox passthrough).
+    # Its ONLY legitimate setter is the namespace launcher's in-sandbox main()
+    # — a separate process. A real sandboxed child never runs this CLI
+    # entrypoint, so a value present here can only be forged/inherited from the
+    # gateway's own environment; trusting it would let an operator env-inject a
+    # full sandbox bypass for every agent/tool spawn. Drop it so only the
+    # launcher's in-namespace set is ever honored.
+    os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
+
     # Validate KIROCREW_PORT early — fail fast before anything else loads.
     _raw_port = os.environ.get("KIROCREW_PORT")
     if _raw_port is not None:

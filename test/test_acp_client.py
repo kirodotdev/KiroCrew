@@ -6817,6 +6817,40 @@ class TestTrackMetadataWindowResolution:
         client._track_metadata(self._metadata_msg(5.0))
         assert client.last_prompt_stats.context_window_tokens == 0
 
+    def test_non_registry_uncached_model_leaves_window_zero_not_200k(self):
+        # REGRESSION (gpt-5.6-terra showed 200K): a model that is NEITHER in the
+        # registry NOR the kiro-list cache must NOT be backfilled to a guessed
+        # 200k — that would override the frontend's authoritative per-model
+        # window. Leave it 0 so the frontend cache drives the meter; kiro's real
+        # usage_update.size still sets the correct window when it comes. Use a
+        # clearly-synthetic id so a real kiro-list cache (which legitimately
+        # carries GPT/DeepSeek windows) can't make this model "known".
+        client = AcpClient()
+        client._resolved_model_id = "totally-unknown-model-xyz"
+        client._track_metadata(self._metadata_msg(10.0))
+        assert client.last_prompt_stats.context_window_tokens == 0
+        # pct is still recorded so the frontend can derive used from its window.
+        assert client.last_prompt_stats.context_pct == pytest.approx(10.0)
+
+    def test_kiro_cached_non_registry_model_backfills_real_window(self):
+        # The flip side of the centralization: once the kiro-list cache is seeded
+        # with a non-Anthropic model's real window, the backfill SHOULD report it
+        # (it is now a "known" window), instead of the old no-op. This is what
+        # lets GPT/DeepSeek sessions show their real window before a usage_update.
+        import kiro_crew.model_registry as mr
+
+        saved = dict(mr._KIRO_WINDOWS)
+        try:
+            mr._KIRO_WINDOWS["deepseek-3.2"] = 164000
+            client = AcpClient()
+            client._resolved_model_id = "deepseek-3.2"
+            client._track_metadata(self._metadata_msg(50.0))
+            assert client.last_prompt_stats.context_window_tokens == 164000
+            assert client.last_prompt_stats.context_used_tokens == 82000
+        finally:
+            mr._KIRO_WINDOWS.clear()
+            mr._KIRO_WINDOWS.update(saved)
+
     def test_malformed_pct_does_not_raise_or_update_stats(self):
         from kiro_crew.acp.types import JsonRpcMessage
 

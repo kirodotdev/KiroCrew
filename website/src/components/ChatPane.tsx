@@ -308,7 +308,7 @@ export default function ChatPane({
           modelName={paneSlot?.model || 'auto'}
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
-          contextWindowTokens={contextTokens?.window}
+          contextWindowTokens={contextTokens?.window || provider.getContextWindow(paneSlot?.model || 'auto')}
           onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect) => { setModelBtnRect(rect); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}

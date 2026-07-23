@@ -117,7 +117,7 @@ Both entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.
 
 ### Sandbox parity
 
-`_get_sandbox_mode()` reads `agent.sandbox` (default `"auto"` → standard confinement); an out-of-set value falls back to `"auto"` rather than reaching `wrap_argv` as an unknown mode. Knowledge workers are wrapped by the same OS-level sandbox as chat/Slack providers — the earlier hardcoded `"off"` (initial Knowledge Library commit) was the only KiroCrew code path bypassing that setting, and reading config here restores least-privilege parity.
+`_get_sandbox_mode()` reads `agent.sandbox` (default `"off"` → defers isolation to kiro-cli's internal agent sandbox; set `"auto"` for standard OS-level confinement). It distinguishes two fallback cases so a config error can never silently disable sandboxing: an **absent** value defaults to `"off"` (the intended default), while a **present but unrecognised** value falls back to `"auto"` (fail-secure) rather than reaching `wrap_argv` as an unknown mode. Knowledge workers honour the same `agent.sandbox` setting as chat/Slack providers (parity), so the default flows through here too.
 
 ### Pool mechanics
 

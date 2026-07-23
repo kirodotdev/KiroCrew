@@ -110,8 +110,8 @@ class WatchdogSettings:
 
     check_after_secs: float = 60.0
     stale_window_secs: float = 300.0
-    tool_stall_suspect_secs: float = 600.0
-    tool_stall_hard_cap_secs: float = 2700.0
+    tool_stall_suspect_secs: float = 10800.0
+    tool_stall_hard_cap_secs: float = 10800.0
     model_silent_probe_secs: float = 900.0
     wellness_sample_secs: float = 3.0
 
@@ -1297,17 +1297,22 @@ class AcpSessionHandle:
         usage_update has set the window. Keys on ``_resolved_model_id`` (kiro's
         ``currentModelId`` from the session/new|load response, also synced by
         set_model) first, then falls back to ``_model`` (the user-picked alias).
+        Resolves through the central ``model_registry.model_window`` authority
+        (kiro-list cache > registry > heuristic); only backfills a KNOWN window,
+        leaving 0 for a genuinely-unknown model so the frontend's own
+        authoritative window drives the meter. kiro's real usage_update.size
+        always wins when present.
         """
         if self.last_prompt_stats.context_window_tokens > 0:
             return  # a real usage_update already set it
         model_id = self._resolved_model_id or self._model
-        if not model_id:
+        if not model_id or not model_registry.has_known_window(model_id):
             return
-        window = model_registry.window(model_id)
-        if window <= 0:
+        win = model_registry.model_window(model_id)
+        if not win or win <= 0:
             return
-        self.last_prompt_stats.context_window_tokens = window
-        self.last_prompt_stats.context_used_tokens = round(window * pct / 100.0)
+        self.last_prompt_stats.context_window_tokens = win
+        self.last_prompt_stats.context_used_tokens = round(win * pct / 100.0)
 
     def _emit_tool_interrupted_sel(self, site: str) -> None:
         """Emit a SEL audit + WARNING when kiro-cli's security filter cancels tools.

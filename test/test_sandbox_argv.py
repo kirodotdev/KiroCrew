@@ -106,6 +106,64 @@ class TestWrapArgv:
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         mock_sb_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
 
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_inside_sandbox_passes_through(self, mock_detect, monkeypatch):
+        # Inside an existing KiroCrew sandbox, nested unshare is seccomp-denied,
+        # so wrap_argv must pass the argv through unchanged without consulting a
+        # backend (rather than fail closed and brick script-cron MCP spawns).
+        # Deny-by-default: the passthrough is gated SOLELY on the explicit
+        # KIROCREW_SANDBOX_ACTIVE marker (not the dual-purpose KIROCREW_HOST_PID).
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        argv = ["kiro-cli", "acp"]
+        with patch("kiro_crew.sel.sel") as mock_sel:
+            result, cleanup = wrap_argv(argv, mode="strict")
+        assert result == argv
+        assert cleanup is None
+        mock_detect.assert_not_called()
+        # A security-relevant passthrough must be SEL-audited (outcome allowed),
+        # mirroring the denied event on the fail-closed path. critical=True so
+        # the event is written synchronously (no silent async-transport drop).
+        mock_sel.return_value.log_tool_invocation.assert_called_once()
+        kwargs = mock_sel.return_value.log_tool_invocation.call_args.kwargs
+        assert kwargs["outcome"] == "allowed"
+        assert kwargs["critical"] is True
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_inside_sandbox_passthrough_survives_sel_failure(self, mock_detect, monkeypatch):
+        # A SEL write failure must NOT brick the passthrough: seccomp denies the
+        # re-wrap by design, so denying here reintroduces a prior in-sandbox
+        # spawn outage (every in-sandbox MCP spawn bricked). The spawn is
+        # confined by the outer namespace regardless, so we log and proceed.
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        argv = ["kiro-cli", "acp"]
+        with patch("kiro_crew.sel.sel", side_effect=OSError("SEL transport down")):
+            result, cleanup = wrap_argv(argv, mode="strict")
+        assert result == argv
+        assert cleanup is None
+        mock_detect.assert_not_called()
+
+    @patch("kiro_crew.sandbox.detect_backend", return_value="none")
+    def test_host_pid_alone_does_not_pass_through(self, mock_detect, monkeypatch):
+        # Deny-by-default: KIROCREW_HOST_PID is dual-purpose session-identity
+        # plumbing, so it must NOT by itself open the nested-sandbox passthrough.
+        # Only the explicit KIROCREW_SANDBOX_ACTIVE marker does.
+        monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "12345")
+        with patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True):
+            result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
+        # Falls through to normal backend detection rather than passing through.
+        mock_detect.assert_called_once()
+
+    @patch("kiro_crew.sandbox.detect_backend", return_value="none")
+    def test_outside_sandbox_does_not_pass_through(self, mock_detect, monkeypatch):
+        # No marker set → normal wrap path (here: no backend), proving the
+        # passthrough is gated strictly on the in-sandbox marker.
+        monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+        monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
+        with patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True):
+            result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
+        mock_detect.assert_called_once()
+
 
 class TestBuildSeatbeltProfile:
     def test_strict_denies_all_dirs(self):

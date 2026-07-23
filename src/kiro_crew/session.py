@@ -1846,20 +1846,29 @@ class SessionManager:
                             else None
                         )
                         # The requested `model` is a canonical/wire value while
-                        # `_pool_model` is the pool agent's raw kiro model slot —
-                        # two namespaces. For the claude backend, normalize BOTH
-                        # to provider ids before the equality check so an
-                        # already-equivalent pooled process is not needlessly
-                        # re-switched, and the value sent to set_model is a
-                        # provider id (kiro/acp ids pass through unchanged).
-                        _switch_model = model
-                        _cmp_pool = _pool_model
+                        # `_pool_model` is the pool agent's raw model slot — two
+                        # namespaces. Normalize BOTH to the backend's provider ids
+                        # before the equality check so an already-equivalent pooled
+                        # process is not needlessly re-switched, and the value sent
+                        # to set_model is a provider id the backend accepts. kiro
+                        # (the "acp" provider) needs its bare dotted id (e.g.
+                        # "claude-opus-4.8") via to_acp_id, which translates ONLY
+                        # canonical keys and passes kiro's native ids/aliases
+                        # (claude-haiku-4.5, …) through unchanged — DISTINCT real
+                        # kiro models that must not be folded to Sonnet the way the
+                        # claude backend's to_provider_id downgrades them. The
+                        # claude backend needs the global.anthropic.* id.
                         if _is_claude_backend(provider):
                             _switch_model = model_registry.to_provider_id(model, "claude_code")
                             _cmp_pool = (
                                 model_registry.to_provider_id(_pool_model, "claude_code")
                                 if _pool_model
                                 else _pool_model
+                            )
+                        else:
+                            _switch_model = model_registry.to_acp_id(model)
+                            _cmp_pool = (
+                                model_registry.to_acp_id(_pool_model) if _pool_model else _pool_model
                             )
                         if _pool_model and _switch_model != _cmp_pool:
                             await provider.client.set_model(_switch_model)

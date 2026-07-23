@@ -58,7 +58,6 @@ def _add_tree(rel_src: str, rel_dst: str) -> None:
 for rel in [
     "py.typed",
     "slack-manifest.yaml",
-    "model_tokens.json",
     "model_registry.json",
     "config/defaults.json",
     "config/prompt.md",

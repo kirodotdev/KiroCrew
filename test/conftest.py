@@ -164,6 +164,27 @@ def _isolate_kirocrew_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_kiro_window_cache():
+    """Snapshot/restore ``model_registry._KIRO_WINDOWS`` around every test.
+
+    The kiro-list window cache is process-global module state. Any test that
+    exercises ``/api/models`` (which calls ``refresh_kiro_windows``) or seeds the
+    cache directly would otherwise leak model->window entries into later tests —
+    e.g. a GPT window seeded here makes a "non-registry model is unknown" test in
+    another module wrongly see GPT as known. Restore the exact dict contents
+    after each test so ordering can't couple tests through this cache.
+    """
+    import kiro_crew.model_registry as _mr
+
+    saved = dict(_mr._KIRO_WINDOWS)
+    try:
+        yield
+    finally:
+        _mr._KIRO_WINDOWS.clear()
+        _mr._KIRO_WINDOWS.update(saved)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_subagents_dir(tmp_path_factory, monkeypatch):
     """Pin the subagent registry dir to a tmp dir for the whole suite.
 

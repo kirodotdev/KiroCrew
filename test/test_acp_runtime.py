@@ -2500,7 +2500,10 @@ def test_backfill_context_window_from_pct(monkeypatch):
     model registry; no-op once a real usage_update set the window."""
     import kiro_crew.acp.session_handle as sh
 
-    monkeypatch.setattr(sh.model_registry, "window", lambda mid: 200000)
+    # The backfill only fires for a KNOWN window (has_known_window) and resolves
+    # via the central model_window authority, so mock both for the fake model.
+    monkeypatch.setattr(sh.model_registry, "has_known_window", lambda mid: True)
+    monkeypatch.setattr(sh.model_registry, "model_window", lambda mid, **kw: 200000)
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
@@ -2543,7 +2546,8 @@ def test_backfill_uses_resolved_model_id_from_session_config(monkeypatch):
     never called set_model — and _model stays empty (no pinning)."""
     import kiro_crew.acp.session_handle as sh
 
-    monkeypatch.setattr(sh.model_registry, "window", lambda mid: 300000)
+    monkeypatch.setattr(sh.model_registry, "has_known_window", lambda mid: True)
+    monkeypatch.setattr(sh.model_registry, "model_window", lambda mid, **kw: 300000)
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)

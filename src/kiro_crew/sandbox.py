@@ -745,6 +745,11 @@ def main():
                     del os.environ[key]
                     break
 
+        # Mark the sandboxed tree so in-sandbox wrap_argv calls know OS
+        # isolation is already active (nested unshare is seccomp-denied).
+        # Set AFTER the scrub loop so a scrubbed prefix cannot delete it.
+        os.environ["KIROCREW_SANDBOX_ACTIVE"] = "1"
+
         # Fix /etc/ssh/ssh_config.d/ ownership issue: root-owned files
         # appear as nobody:nobody inside the user namespace because UID 0
         # is unmapped. SSH refuses to load them. Bypass with -F /dev/null.
@@ -1402,6 +1407,35 @@ def _allow_unsandboxed_exec() -> bool:
         return False
 
 
+# The single environment marker that proves this process is already INSIDE a
+# KiroCrew namespace sandbox. Deny-by-default: the gate keys ONLY on the
+# explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at
+# exactly one site — the namespace launcher main() (see the export beside
+# ``KIROCREW_HOST_PID``). We deliberately do NOT key on ``KIROCREW_HOST_PID``:
+# it is dual-purpose session-identity plumbing, and gating a security-relevant
+# passthrough on a variable set for other reasons is a latent bypass. Since the
+# launcher sets ``KIROCREW_SANDBOX_ACTIVE`` at the same site, no fallback marker
+# is needed. No unsandboxed code path sets this marker.
+_IN_SANDBOX_MARKER = "KIROCREW_SANDBOX_ACTIVE"
+
+
+def _inside_kirocrew_sandbox() -> bool:
+    """True when this process already runs inside a KiroCrew OS sandbox.
+
+    Nested sandboxing is impossible by design: the launcher's seccomp filter
+    denies ``unshare``/``setns`` precisely so the sandboxed tree cannot
+    manipulate namespaces. An in-sandbox wrap_argv call must therefore pass
+    through rather than fail closed — the outer namespace still confines every
+    descendant, so this is NOT the fail-open path. Failing closed here bricked
+    every in-sandbox MCP spawn with unshare EPERM: the probe error was raised on
+    every ctx.call_tool and silently swallowed by the caller.
+
+    Detection is deny-by-default: gated solely on the explicit, launcher-only
+    ``KIROCREW_SANDBOX_ACTIVE`` marker (see ``_IN_SANDBOX_MARKER``).
+    """
+    return bool(os.environ.get(_IN_SANDBOX_MARKER))
+
+
 def _warn_no_isolation(mode: str) -> None:
     """Loudly surface that the agent subprocess is running WITHOUT OS-level
     isolation, so the fallback is never silent (CSE SEC-009).
@@ -1567,6 +1601,63 @@ def wrap_argv(
     mode = _clamp_sandbox_mode(mode)
 
     if mode == "off":
+        return argv, None
+
+    # Already inside a KiroCrew sandbox (script cron, sandboxed agent child):
+    # the outer namespace + seccomp confine every descendant, and that seccomp
+    # filter denies the unshare a nested backend would need. Pass through
+    # within the existing isolation boundary.
+    if _inside_kirocrew_sandbox():
+        if not getattr(wrap_argv, "_nested_passthrough_logged", False):
+            wrap_argv._nested_passthrough_logged = True  # type: ignore[attr-defined]
+            logger.info(
+                "wrap_argv: already inside a KiroCrew sandbox — nested OS "
+                "sandboxing is unavailable by design (seccomp denies unshare); "
+                "spawning within the existing isolation boundary"
+            )
+        # Emit an SEL audit event for this security-relevant passthrough so the
+        # decision to spawn without a *fresh* wrap is tamper-evidently recorded,
+        # mirroring the ``denied`` event on the fail-closed path. Outcome is
+        # ``allowed`` (a permission grant, not a denial). Fires on EVERY
+        # passthrough so the audit trail is complete.
+        #
+        # critical=True gives this the same write reliability as the fail-closed
+        # ``denied`` audit and the ``delegated`` audit: the event is written
+        # SYNCHRONOUSLY after draining the async backlog (sel.log), so a
+        # slow/wedged background writer can NOT silently drop passthrough
+        # records. What it does NOT do is re-raise into a *deny*: unlike
+        # _delegate_to_kiro_internal_sandbox — which on audit failure falls back
+        # to KiroCrew's own seatbelt, an equally-safe audited layer — a nested
+        # passthrough has no safe alternative (seccomp denies the re-wrap by
+        # design). Failing the spawn on a SEL filesystem error would couple every
+        # in-sandbox MCP call to SEL health and reintroduce a prior in-sandbox
+        # spawn outage. The child is confined by the outer namespace + seccomp
+        # whether or not the record lands, so on a hard write failure we log
+        # loudly and proceed: availability of the confinement over a best-effort
+        # audit gap during an already-degraded FS.
+        try:
+            # circular import (see the fail-closed branch below for the full
+            # rationale): sandbox.py is a low-level leaf; defer the sel import.
+            from kiro_crew.sel import sel
+
+            sel().log_tool_invocation(
+                session_key="sandbox",
+                agent="system",
+                source="sandbox.wrap_argv",
+                tool_name=argv[0] if argv else "unknown",
+                tool_kind="subprocess",
+                outcome="allowed",
+                metadata={"reason": "nested_sandbox_passthrough", "mode": mode},
+                critical=True,
+            )
+        except Exception:
+            logger.warning(
+                "SEL audit failed for nested-sandbox passthrough — proceeding "
+                "unaudited: the outer namespace + seccomp still confine this "
+                "spawn, and denying it would brick in-sandbox MCP calls whenever "
+                "SEL is down",
+                exc_info=True,
+            )
         return argv, None
 
     # "auto"/"standard" allows git-over-SSH, AWS CLI, kubectl.

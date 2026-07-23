@@ -16,16 +16,24 @@ linear-scan.
 
 Unknown-handling contract: translation is identity-preserving for values the
 registry does not list — ``to_provider_id`` and ``from_provider_id`` return an
-unrecognized input UNCHANGED (we never rewrite an operator's explicit id). The
-ONE exception is ``window()``, which degrades an unlisted ``[1m]``/``-1m`` id to
-the 1M window via heuristic, for forward-compat parity with the frontend
-``contextWindow``.
+unrecognized input UNCHANGED (we never rewrite an operator's explicit id).
+
+Context windows: :func:`model_window` is the SINGLE authority every consumer
+(frontend via ``/api/models``, the context/memory budget scaler, the ACP
+backfill, the live meter) resolves through. Its fallback order is live
+``usage_update.size`` > kiro ``--list-models`` cache (:func:`refresh_kiro_windows`,
+persisted) > static registry ``window`` literal > ``[1m]`` heuristic > ``None``.
+There is no silent 200k default: a genuinely-unknown window returns ``None`` and
+callers substitute :data:`REFERENCE_WINDOW_TOKENS` (1M), so an unknown model is
+never wrongly shrunk. Auto-compaction is percentage-driven and does NOT read
+this — it must stay that way.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -81,6 +89,152 @@ try:
         _REGISTRY = {k: v for k, v in json.load(_f).items() if not k.startswith("_")}
 except (OSError, ValueError):  # pragma: no cover - corrupt registry
     logger.warning("Could not load model_registry.json; using fallback default", exc_info=True)
+
+
+# ── Kiro-list window cache (the authoritative per-model window source) ────────
+# The committed registry (``model_registry.json``) is a hand-maintained fallback
+# that only covers Anthropic models and drifts from what kiro-cli actually
+# serves (e.g. the sonnet/haiku aliases fold onto a 1M canonical though kiro
+# serves them at 200K; GPT/DeepSeek/Qwen are absent entirely). kiro-cli's
+# ``chat --list-models --format json`` reports a STRUCTURED ``context_window_tokens``
+# per model — the ground truth. ``refresh_kiro_windows`` ingests those rows into
+# this cache (keyed by kiro model id / model_name), and ``model_window`` consults
+# it BEFORE the static registry. The cache is persisted to disk so a cold start
+# (before any ``--list-models`` call) still has last-known real windows.
+#
+# This is runtime state (like session_map), NOT committed data: the registry
+# JSON stays read-only. A corrupt/missing cache degrades silently to the
+# registry + heuristic — it can never brick import or override a live
+# ``usage_update.size``.
+_KIRO_WINDOWS: dict[str, int] = {}
+
+# Supplementary static windows for models the canonical registry does not carry
+# and kiro-cli does not advertise — chiefly fully-qualified provider model ids
+# and legacy Claude snapshots. These formerly lived in a SEPARATE
+# ``model_tokens.json`` file (a second, drifting source of truth this
+# centralization retires). Folded here so ``model_window`` is the ONE
+# authority. Consulted AFTER the canonical registry (so a canonical/alias hit
+# wins) but BEFORE the ``[1m]`` heuristic. Keys are matched exactly first, then
+# by longest-substring (these ids embed the dotted model name).
+_SUPPLEMENTARY_WINDOWS: dict[str, int] = {
+    # Fully-qualified inference-profile + on-demand model ids.
+    "anthropic.claude-sonnet-4-20250514-v1:0": 200_000,
+    "anthropic.claude-sonnet-4-20250514": 200_000,
+    "anthropic.claude-3-7-sonnet-20250219-v1:0": 200_000,
+    "anthropic.claude-3-5-sonnet-20241022-v2:0": 200_000,
+    "us.anthropic.claude-sonnet-4-20250514-v1:0": 200_000,
+    "us.anthropic.claude-3-7-sonnet-20250219-v1:0": 200_000,
+    "claude-sonnet-4-20250514": 200_000,
+    "claude-3-7-sonnet-20250219": 200_000,
+    "claude-3-5-sonnet-20241022": 200_000,
+    "amazon.nova-pro-v1:0": 300_000,
+    "amazon.nova-lite-v1:0": 300_000,
+    # Non-Anthropic models kiro-cli may serve that are neither in the canonical
+    # registry nor advertise a [1m] marker. The kiro --list-models cache
+    # (refresh_kiro_windows) is authoritative and overrides these when present,
+    # but it is only seeded once /api/models runs — so a headless start (Slack,
+    # cron) that never hits that endpoint would otherwise resolve these to None
+    # ⇒ the 1M reference and over-assemble context. Keeping the static window as
+    # a floor prevents that over-large-prompt regression on first/headless runs.
+    "deepseek-3.2": 128_000,
+    "kimi-k2.5": 256_000,
+    "minimax-m2.1": 200_000,
+    "glm-4.7": 200_000,
+    "glm-4.7-flash": 128_000,
+    "qwen3-coder-next": 256_000,
+    "qwen3-coder-480b": 256_000,
+}
+
+
+def _kiro_windows_cache_path() -> Path:
+    """Path to the persisted kiro-window sidecar under KIROCREW_HOME.
+
+    Resolved lazily (not at import) so tests / KIROCREW_HOME overrides are
+    honoured, and so a home-resolution failure never breaks module import.
+    """
+    home = os.environ.get("KIROCREW_HOME")
+    base = Path(home) if home else Path.home() / ".kirocrew"
+    return base / "model_windows.json"
+
+
+def _load_kiro_windows() -> None:
+    """Load the persisted kiro-window cache into ``_KIRO_WINDOWS`` (best-effort).
+
+    Called once at import. A missing file is normal (first run); a corrupt file
+    is logged and ignored (degrade to registry + heuristic), never raised.
+    """
+    try:
+        path = _kiro_windows_cache_path()
+        if not path.is_file():
+            return
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for mid, win in data.items():
+                if isinstance(mid, str) and isinstance(win, int) and win > 0:
+                    _KIRO_WINDOWS[mid] = win
+    except (OSError, ValueError, TypeError):  # pragma: no cover - corrupt/absent cache
+        logger.debug("kiro window cache unreadable; using registry fallback", exc_info=True)
+
+
+_load_kiro_windows()
+
+
+def refresh_kiro_windows(rows: list[dict[str, Any]]) -> bool:
+    """Ingest ``kiro-cli chat --list-models --format json`` rows into the cache.
+
+    Each row carries a structured ``context_window_tokens`` (the authoritative
+    per-model window) keyed by ``model_id`` / ``model_name``. We index BOTH so a
+    lookup by either spelling hits. A single malformed row is skipped, never
+    fatal.
+
+    This does ONLY the in-memory dict update — cheap and non-blocking, so it is
+    safe to call directly from an async handler and the cache is immediately
+    consistent for callers on the same tick. It does NOT touch disk. Returns
+    ``True`` when the cache changed (a persist is warranted): the async caller
+    should then offload :func:`persist_kiro_windows` to an executor rather than
+    block the event loop on filesystem I/O (no blocking call on the event loop).
+    Synchronous callers can call ``persist_kiro_windows()`` directly.
+    """
+    updated = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        win = row.get("context_window_tokens")
+        if not isinstance(win, int) or isinstance(win, bool) or win <= 0:
+            continue
+        for key in (row.get("model_id"), row.get("model_name")):
+            if isinstance(key, str) and key:
+                if _KIRO_WINDOWS.get(key) != win:
+                    _KIRO_WINDOWS[key] = win
+                    updated = True
+    return updated
+
+
+def persist_kiro_windows() -> None:
+    """Write the in-memory kiro-window cache to disk (best-effort, blocking I/O).
+
+    Separated from :func:`refresh_kiro_windows` so an async caller can offload
+    ONLY this filesystem step to an executor while keeping the in-memory update
+    synchronous. Atomic (tmp + ``os.replace``); a persist failure is logged, not
+    raised — the in-memory cache is authoritative for this process either way.
+
+    Thread-safety: this runs on an executor thread while ``refresh_kiro_windows``
+    mutates ``_KIRO_WINDOWS`` on the event-loop thread. Snapshot with ``dict(...)``
+    (a C-level copy that does not release the GIL) BEFORE serializing, so
+    ``json.dump`` cannot hit ``RuntimeError: dictionary changed size during
+    iteration`` from a concurrent add/remove.
+    """
+    try:
+        snapshot = dict(_KIRO_WINDOWS)  # atomic under the GIL; safe vs. concurrent mutation
+        path = _kiro_windows_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f)
+        tmp.replace(path)
+    except OSError:  # pragma: no cover - disk full / perms
+        logger.debug("Could not persist kiro window cache", exc_info=True)
 
 
 # ── Precomputed indices (built once; the registry is immutable after import) ──
@@ -169,26 +323,32 @@ def from_provider_id(provider_id: str, provider: str) -> str:
     return key if key is not None else provider_id
 
 
-def window(canonical_or_id: str) -> int:
-    """Context window tokens for a canonical key, alias, or provider id.
+def to_acp_id(canonical_or_id: str) -> str:
+    """Translate a value to a kiro-cli (``acp`` provider) model id.
 
-    Falls back to the ``[1m]``/``-1m`` heuristic for an unlisted id (parity with
-    the frontend ``contextWindow``), then 200k.
+    UNLIKE :func:`to_provider_id`, this resolves ONLY canonical registry keys
+    (e.g. ``opus-4.8-1m`` -> ``claude-opus-4.8``, ``auto`` -> ``""``). Everything
+    else — kiro-cli's own bare dotted ids AND the registry aliases that spell
+    them (``claude-haiku-4.5``, ``claude-sonnet-4.5``, ``claude-sonnet-4``,
+    ``claude-opus-4.6``, …) — is passed through UNCHANGED.
+
+    This matters because those aliases exist only to fold *claude-agent-acp*'s
+    advertised ids onto a canonical key for dropdown dedup, and on the claude_code
+    path ``to_provider_id`` deliberately downgrades them (the claude backend has
+    no Haiku, so ``claude-haiku-4.5`` -> Sonnet). But kiro-cli serves every one of
+    those as a DISTINCT real model (verified via ``kiro-cli chat --list-models``),
+    so resolving the alias here would silently run e.g. the Haiku-pinned
+    ``kirocrew-knowledge`` agent on Sonnet. Only the canonical keys (which kiro
+    cannot parse) need translating; kiro's native ids are already valid.
     """
-    key = _resolve_canonical(canonical_or_id, _WINDOW_INDEX)
-    if key is not None:
-        return int(_REGISTRY[key].get("window", 200_000))
-    # Forward-compat: an unlisted [1m]/-1m id still resolves to the 1M window
-    # (mirrors KiroCrewWebsite/src/providers/modelRegistry.ts contextWindow).
-    lowered = canonical_or_id.lower()
-    if "[1m]" in lowered or _has_1m_token(lowered):
-        return 1_000_000
-    return 200_000
-
-
-def _has_1m_token(lowered: str) -> bool:
-    """True if ``lowered`` contains a standalone ``1m`` token (not ``10m`` etc.)."""
-    return re.search(r"(^|[^a-z0-9])1m([^a-z0-9]|$)", lowered) is not None
+    if canonical_or_id == "":
+        return ""
+    # Only a top-level canonical key gets translated; an alias/native id/unknown
+    # value is left as-is (kiro accepts its own ids verbatim).
+    entry = _REGISTRY.get(canonical_or_id)
+    if entry is not None:
+        return entry.get("providers", {}).get("acp", "")
+    return canonical_or_id
 
 
 # The index that carries per-model window sizes. A context window is a property
@@ -196,23 +356,154 @@ def _has_1m_token(lowered: str) -> bool:
 # via kiro-cli/``acp`` or ``claude_code``), and only this one index is populated
 # in model_registry.json — its ``aliases`` already include every kiro/acp-
 # advertised id (dotted ``claude-opus-4.8``, bare ``claude-opus-4-8[1m]``, …).
-# ``window()`` resolves against it too, so window membership must use the same
-# index. Named for the registry key, NOT because windows are claude_code-only.
+# Named for the registry key, NOT because windows are claude_code-only.
 _WINDOW_INDEX = "claude_code"
+
+# The reference/full window a caller should assume when the true window is
+# genuinely unknown. Deliberately 1M (not 200k): the default deployment runs
+# ``acp`` + ``auto`` on a 1M model, and treating unknown as the reference means
+# the context-budget scaler never silently SHRINKS an unresolved model's budget.
+REFERENCE_WINDOW_TOKENS = 1_000_000
+
+
+def _has_1m_token(lowered: str) -> bool:
+    """True if ``lowered`` contains a standalone ``1m`` token (not ``10m`` etc.)."""
+    return re.search(r"(^|[^a-z0-9])1m([^a-z0-9]|$)", lowered) is not None
+
+
+def _registry_window(canonical_or_id: str) -> int | None:
+    """The static-registry window for an id, or None if the registry omits it.
+
+    Resolves against the **acp** index FIRST, then claude_code. This matters for
+    the ids that are DISTINCT kiro models but claude_code aliases: kiro serves
+    ``claude-haiku-4.5`` / ``claude-sonnet-4.5`` / ``claude-sonnet-4`` at 200K
+    (their own acp-index canonical entries), while the claude_code index folds
+    them onto ``sonnet-4.6-1m`` (1M) for claude-agent-acp dropdown dedup. The
+    window is a property of the model AS SERVED, and the default provider is acp,
+    so the acp view is authoritative; claude_code is the fallback for ids only it
+    lists. A canonical key/alias unique to one index resolves in that index.
+    """
+    for provider in ("acp", _WINDOW_INDEX):
+        key = _resolve_canonical(canonical_or_id, provider)
+        if key is not None:
+            win = _REGISTRY[key].get("window")
+            if isinstance(win, int) and win > 0:
+                return int(win)
+    return None
+
+
+def _supplementary_window(model: str) -> int | None:
+    """Window from the supplementary Bedrock/legacy map (exact, then longest
+    substring — Bedrock ids embed the dotted model name), or None if absent."""
+    if model in _SUPPLEMENTARY_WINDOWS:
+        return _SUPPLEMENTARY_WINDOWS[model]
+    # Longest-key-first so a specific id wins over a shorter embedded match
+    # (parity with the old claude_code._resolve_context_window substring scan).
+    for key in sorted(_SUPPLEMENTARY_WINDOWS, key=len, reverse=True):
+        if key in model:
+            return _SUPPLEMENTARY_WINDOWS[key]
+    return None
+
+
+def model_window(canonical_or_id: str, *, live_tokens: int | None = None) -> int | None:
+    """THE central model -> context-window resolver. Single source of truth.
+
+    Fallback order (first hit wins), most-authoritative first:
+
+    1. ``live_tokens`` — the served window from kiro's per-turn
+       ``usage_update.size`` (or any live signal the caller already has). Wins
+       over everything: it is what the backend is ACTUALLY billing against.
+    2. Kiro-list cache — the structured ``context_window_tokens`` from
+       ``kiro-cli chat --list-models`` (see :func:`refresh_kiro_windows`),
+       keyed by the kiro model id/name. Correct for EVERY model kiro serves,
+       including non-Anthropic (GPT 272k, DeepSeek 164k, Qwen 256k) and the
+       sonnet/haiku ids the static registry folds onto a 1M canonical.
+    3. Static registry — the hand-maintained ``window`` literal (Anthropic ids).
+    4. Supplementary map — Bedrock/legacy ids (:data:`_SUPPLEMENTARY_WINDOWS`,
+       formerly the separate ``model_tokens.json``), exact then longest-substring.
+    5. ``[1m]``/``-1m`` heuristic -> 1M (forward-compat for an unlisted 1M id).
+    6. ``None`` — genuinely unknown. Callers treat None as
+       :data:`REFERENCE_WINDOW_TOKENS` (never a silent 200k), so an unknown
+       model keeps the full budget rather than being wrongly shrunk.
+
+    NOTE: there is intentionally no silent 200k default — that literal, which
+    caused GPT/DeepSeek/etc. to under-report and the alias fold to over-report,
+    is gone. A concrete 200k only ever comes from a source that really says 200k
+    (kiro list, registry entry, or a live usage_update).
+    """
+    if isinstance(live_tokens, int) and not isinstance(live_tokens, bool) and live_tokens > 0:
+        return live_tokens
+    cached = _KIRO_WINDOWS.get(canonical_or_id)
+    if cached:
+        return cached
+    reg = _registry_window(canonical_or_id)
+    if reg is not None:
+        return reg
+    supp = _supplementary_window(canonical_or_id)
+    if supp is not None:
+        return supp
+    lowered = canonical_or_id.lower()
+    if "[1m]" in lowered or _has_1m_token(lowered):
+        return 1_000_000
+    return None
+
+
+def window_source(canonical_or_id: str) -> str:
+    """Diagnostic: which tier :func:`model_window` resolves ``id`` from.
+
+    One of ``"kiro-list"``, ``"registry"``, ``"supplementary"``, ``"heuristic"``,
+    ``"unknown"``. (The ``"live"`` tier is per-call via ``live_tokens`` and not
+    reflected here.)
+    """
+    if _KIRO_WINDOWS.get(canonical_or_id):
+        return "kiro-list"
+    if _registry_window(canonical_or_id) is not None:
+        return "registry"
+    if _supplementary_window(canonical_or_id) is not None:
+        return "supplementary"
+    lowered = canonical_or_id.lower()
+    if "[1m]" in lowered or _has_1m_token(lowered):
+        return "heuristic"
+    return "unknown"
+
+
+def window(canonical_or_id: str) -> int:
+    """Back-compat shim: :func:`model_window` with the unknown case resolved to
+    the 1M reference.
+
+    Prefer :func:`model_window` in new code — it returns ``None`` for a genuinely
+    unknown model so the caller can decide the fail-safe. This shim exists for
+    callers that need a concrete int and are content with the reference default.
+    It no longer returns a silent 200k for unknown ids (the old behaviour that
+    shrank unknown models' budgets).
+    """
+    return model_window(canonical_or_id) or REFERENCE_WINDOW_TOKENS
 
 
 def has_known_window(canonical_or_id: str) -> bool:
-    """True if ``canonical_or_id`` is a model the registry has a window for.
+    """True if the window for ``id`` comes from a real source (kiro list or the
+    static registry) — NOT the ``[1m]`` heuristic or the unknown fallback.
 
-    Pairs with :func:`window`: it lets a caller tell a genuinely-known model
-    apart from an unlisted id that ``window()`` would silently default to 200k —
-    the distinction the context-budget scaler needs so it never shrinks an
-    unknown model's budget on a 200k assumption. Provider-independent by design
-    (see ``_WINDOW_INDEX``); resolves against the same index ``window()`` reads,
-    so the membership check and the window value can never disagree. Works for
-    kiro/acp model ids (the default provider) — they are registry aliases.
+    Lets the context-budget scaler tell a genuinely-known window apart from a
+    guessed/unknown one so it never shrinks an unknown model's budget. Now also
+    True for kiro-list-cached non-Anthropic models (GPT/DeepSeek/Qwen) and the
+    supplementary fully-qualified/legacy id map, which is what lets the ACP
+    backfill report the model's real window.
     """
-    return _resolve_canonical(canonical_or_id, _WINDOW_INDEX) is not None
+    return (
+        bool(_KIRO_WINDOWS.get(canonical_or_id))
+        or _registry_window(canonical_or_id) is not None
+        or _supplementary_window(canonical_or_id) is not None
+    )
+
+
+def get_entry(canonical_key: str) -> dict[str, Any] | None:
+    """Return the registry entry for a canonical key, or None if unknown.
+
+    Public accessor for registry metadata (display name, description, window,
+    aliases, provider ids). Prefer this over reaching into ``_REGISTRY`` directly.
+    """
+    return _REGISTRY.get(canonical_key)
 
 
 def available_models(provider: str) -> list[str]:

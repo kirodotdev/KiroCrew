@@ -327,13 +327,14 @@ class TestProviderDetection:
 
 
 class TestSandboxMode:
-    """Knowledge workers run under the same OS-level sandbox as chat, honouring
-    ``agent.sandbox`` (default ``"auto"``). The earlier hardcoded ``"off"``
-    bypassed least-privilege; these lock in the restored behaviour."""
+    """Knowledge workers (kiro + claude) run under the same OS-level sandbox as
+    chat, honouring ``agent.sandbox`` (default ``"off"`` — defers to kiro-cli's
+    internal agent sandbox). The earlier hardcoded ``"off"`` bypassed
+    least-privilege; these lock in the restored behaviour."""
 
-    def test_default_is_auto(self, tmp_path):
+    def test_default_is_off(self, tmp_path):
         with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
-            assert _get_sandbox_mode() == "auto"
+            assert _get_sandbox_mode() == "off"
 
     def test_reads_sandbox_from_config(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
@@ -342,15 +343,19 @@ class TestSandboxMode:
         with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "off"
 
-    def test_malformed_config_defaults_auto(self, tmp_path):
+    def test_unparseable_config_defaults_off(self, tmp_path):
+        # A file that isn't valid JSON parses to {} → sandbox UNSET → the
+        # intended default "off" (not a present-but-malformed value).
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("not json")
         with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
-            assert _get_sandbox_mode() == "auto"
+            assert _get_sandbox_mode() == "off"
 
-    def test_unknown_mode_falls_back_to_auto(self, tmp_path):
-        """A value outside wrap_argv's accepted set must not reach the wrapper."""
+    def test_unknown_mode_falls_back_to_auto_fail_secure(self, tmp_path):
+        """A PRESENT but unrecognised value is a config error → fail SECURE to
+        'auto' (never silently unsandboxed). Distinct from an absent value, which
+        takes the intended 'off' default."""
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "bogus"}}')
@@ -366,10 +371,11 @@ class TestSandboxMode:
             assert _get_sandbox_mode() == mode
 
     def test_accepts_prereadm_config_dict(self):
-        """Pure-parser path: a passed dict is used without touching disk."""
+        """Pure-parser path: a passed dict is used without touching disk.
+        Present-but-invalid fails secure to 'auto'; absent takes 'off'."""
         assert _get_sandbox_mode({"agent": {"sandbox": "strict"}}) == "strict"
-        assert _get_sandbox_mode({"agent": {"sandbox": "nope"}}) == "auto"
-        assert _get_sandbox_mode({}) == "auto"
+        assert _get_sandbox_mode({"agent": {"sandbox": "nope"}}) == "auto"  # malformed → fail secure
+        assert _get_sandbox_mode({}) == "off"  # unset → intended default
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +433,7 @@ class TestReadConfig:
         must not crash the pure parsers — they fall back to defaults, matching
         the no-op-on-malformed-config contract of ``_read_config``."""
         assert _get_provider_type(bad) == "acp"
-        assert _get_sandbox_mode(bad) == "auto"
+        assert _get_sandbox_mode(bad) == "off"
 
     def test_read_config_coerces_non_dict_sections(self, tmp_path):
         """``_read_config`` normalises non-dict ``agent``/``knowledge`` to ``{}``
@@ -455,14 +461,16 @@ class TestReadConfig:
         assert mk.call_args.kwargs["sandbox_mode"] == "off"
 
     @pytest.mark.asyncio
-    async def test_start_defaults_sandbox_to_auto(self, tmp_path):
+    async def test_start_defaults_sandbox_to_off(self, tmp_path):
+        # With no config, the sandbox mode defaults to "off" — deferring
+        # isolation to kiro-cli's internal agent sandbox (kiro-cli >= 2.13).
         mock_client = AsyncMock()
         mock_client.is_ready = True
         with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk:
             worker = AcpWorker()
             await worker.start()
-        assert mk.call_args.kwargs["sandbox_mode"] == "auto"
+        assert mk.call_args.kwargs["sandbox_mode"] == "off"
 
 
 # ---------------------------------------------------------------------------

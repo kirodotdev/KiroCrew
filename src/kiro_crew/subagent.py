@@ -205,7 +205,41 @@ _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
-INJECTION_TIMEOUT = 300.0  # inner cap: max seconds for a single stream_and_collect call
+
+# Inner cap: max seconds for a single injected continuation turn
+# (stream_and_collect). When the last spawn_run subagent completes, the gateway
+# (slack/gateway.py `_subagent_done`) injects a continuation turn wrapped in
+# ``asyncio.wait_for(..., timeout=INJECTION_TIMEOUT)``. spawn_run-heavy crons
+# doing their final synthesis / multi-file apply on that turn were cancelled at
+# the old hard 300s cap and the finally block reset the session mid-action.
+# Default raised to 900s and made tunable via ``KIROCREW_INJECTION_TIMEOUT``
+# (float seconds). It never makes sense for the inner turn cap to exceed the
+# outer semaphore-wait+injection cap, so the resolved value is clamped to
+# ``_ON_DONE_TIMEOUT``; invalid / non-positive env values fall back to the
+# default.
+_DEFAULT_INJECTION_TIMEOUT = 900.0
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a positive float env override, falling back to ``default``.
+
+    Non-positive or unparseable values return ``default`` (mirrors the
+    ``_env_int`` convention in mcp_playwright_proxy.py / pod/config.py).
+    """
+    try:
+        val = float(os.environ.get(name, "") or default)
+    except (ValueError, TypeError):
+        return default
+    return val if val > 0 else default
+
+
+def _resolve_injection_timeout() -> float:
+    """Resolve INJECTION_TIMEOUT from the env, clamped to ``_ON_DONE_TIMEOUT``."""
+    val = _env_float("KIROCREW_INJECTION_TIMEOUT", _DEFAULT_INJECTION_TIMEOUT)
+    return min(val, _ON_DONE_TIMEOUT)
+
+
+INJECTION_TIMEOUT = _resolve_injection_timeout()
 _STALL_IDLE_SECS = 120  # seconds with no stream activity before a running subagent is surfaced as "stalled"
 
 

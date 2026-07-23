@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from kiro_crew import __version__
+from kiro_crew import __version__, model_registry
 
 # Pure path primitives live in the leaf module ``config.paths`` (stdlib-only,
 # no ``kiro_crew`` imports) so the modules that only need ``config_dir()`` can
@@ -489,8 +489,16 @@ class AgentConfig:
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
     )
     sandbox: str = field(
-        default="auto",
-        metadata=_meta("Sandbox", "Sandbox mode for ACP provider.", enum=["auto", "off"]),
+        default="off",
+        metadata=_meta(
+            "Sandbox",
+            "Sandbox mode for ACP provider. Default 'off' defers isolation to "
+            "kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' "
+            "to re-enable KiroCrew's OS-level sandbox (namespace on Linux, "
+            "sandbox-exec on macOS). The two layers are mutually exclusive on "
+            "macOS (nested seatbelt causes EPERM).",
+            enum=["auto", "off"],
+        ),
     )
     sandbox_allow_no_isolation: bool = field(
         default=False,
@@ -2341,22 +2349,24 @@ class WatchdogConfig:
         ),
     )
     tool_stall_suspect_secs: float = field(
-        default=600.0,
+        default=10800.0,
         metadata=_meta(
             "Tool stall suspect (s)",
             "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and "
             "the turn routed to tool-stall recovery (continue-nudge, no re-run of "
             "the original message). WORKING tools (e.g. a matched live build child) "
-            "are never cancelled regardless of duration.",
+            "are never cancelled regardless of duration. Default 3h to accommodate "
+            "long-running builds and MCP tools on macOS where the liveness oracle "
+            "degrades (no /proc) and cannot distinguish live builds from stalls.",
         ),
     )
     tool_stall_hard_cap_secs: float = field(
-        default=2700.0,
+        default=10800.0,
         metadata=_meta(
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
             "probably-thinking window). Applies ONLY to UNKNOWN verdicts — never "
-            "to a WORKING session.",
+            "to a WORKING session. Default 3h.",
         ),
     )
     model_silent_probe_secs: float = field(
@@ -3092,7 +3102,7 @@ class KiroCrewConfig:
                 model=agent_data.get("model", DEFAULT_MODEL),
                 provider=agent_data.get("provider", "acp"),
                 default_agent=agent_data.get("default_agent", ""),
-                sandbox=agent_data.get("sandbox", "auto"),
+                sandbox=agent_data.get("sandbox", "off"),
                 sandbox_allow_no_isolation=bool(
                     agent_data.get("sandbox_allow_no_isolation", False)
                 ),
@@ -3182,10 +3192,10 @@ class KiroCrewConfig:
                 check_after_secs=_safe_float(watchdog_data.get("check_after_secs", 60.0), 60.0),
                 stale_window_secs=_safe_float(watchdog_data.get("stale_window_secs", 300.0), 300.0),
                 tool_stall_suspect_secs=_safe_float(
-                    watchdog_data.get("tool_stall_suspect_secs", 600.0), 600.0
+                    watchdog_data.get("tool_stall_suspect_secs", 10800.0), 10800.0
                 ),
                 tool_stall_hard_cap_secs=_safe_float(
-                    watchdog_data.get("tool_stall_hard_cap_secs", 2700.0), 2700.0
+                    watchdog_data.get("tool_stall_hard_cap_secs", 10800.0), 10800.0
                 ),
                 model_silent_probe_secs=_safe_float(
                     watchdog_data.get("model_silent_probe_secs", 900.0), 900.0
@@ -3762,6 +3772,19 @@ class KiroCrewConfig:
                 m = model
             else:
                 m = self._resolve_named_agent_model(agent)
+            # Translation boundary (mirrors the _claude_code factory): the model
+            # may be a canonical registry key (e.g. "opus-4.8-1m" — the wire /
+            # dropdown value after /api/models canonicalization) OR an already-
+            # resolved kiro id. kiro-cli's session/set_model only accepts its own
+            # advertised ids (bare dotted, e.g. "claude-opus-4.8"), so translate
+            # the canonical key to the "acp" id — otherwise it reaches set_model
+            # and kiro rejects it ("The model 'opus-4.8-1m' is not available").
+            # to_acp_id (NOT to_provider_id) resolves ONLY canonical keys: kiro's
+            # native ids and their aliases (claude-haiku-4.5, claude-sonnet-4.5,
+            # …) are DISTINCT real kiro models and must pass through unchanged,
+            # not get folded to Sonnet the way the claude_code path downgrades
+            # them (the claude backend has no Haiku).
+            m = model_registry.to_acp_id(m) if m else m
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only

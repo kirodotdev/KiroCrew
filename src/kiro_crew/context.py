@@ -341,17 +341,15 @@ def resolve_model_window(model: str | None) -> int | None:
     provider, which silently no-op'd the whole feature on the acp default.)
     """
     # Guard non-str (a mock/mis-shaped value from a caller) so the downstream
-    # ``.lower()`` / registry lookups can't raise on the context-build hot path.
+    # registry lookups can't raise on the context-build hot path.
     if not isinstance(model, str) or not model or model == "auto":
         return None
-    if model_registry.has_known_window(model):
-        return model_registry.window(model)
-    # Unlisted id: ``window()`` returns 1M only for an id that advertises a
-    # ``[1m]``/``-1m`` token, else its 200k default. Trust the 1M signal
-    # (forward-compat) but treat the 200k default as "unknown" ⇒ reference, so
-    # an unrecognized model never has its budget silently shrunk.
-    win = model_registry.window(model)
-    return _REFERENCE_WINDOW_TOKENS if win >= _REFERENCE_WINDOW_TOKENS else None
+    # Delegate to the central window authority: kiro-list cache > registry >
+    # [1m] heuristic > None. It already returns None (not a silent 200k) for a
+    # genuinely-unknown model, so an unrecognized id keeps the full reference
+    # budget (via _effective_window(None)) rather than being wrongly shrunk —
+    # exactly the guarantee this function existed to provide, now centralized.
+    return model_registry.model_window(model)
 
 
 def window_for_provider_client(client: object) -> int | None:

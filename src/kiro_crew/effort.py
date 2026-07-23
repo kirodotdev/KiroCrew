@@ -73,14 +73,14 @@ def model_supports_effort(model: str | None) -> bool:
         return False
     m = model.lower()
     # Haiku NEVER supports effort — a hard rule that must win even over the
-    # registry. A kiro Haiku id (``claude-haiku-4.5``) is registered as a
-    # claude_code ALIAS of Sonnet (the cheapest VALID Bedrock fold), so a naive
-    # registry consult would let it inherit Sonnet's ``supports_effort`` flag and
-    # wrongly report a kiro Haiku agent as effort-capable. On the claude_code
-    # path the haiku->Sonnet fold already happened at the translation boundary
-    # (config.loader factory), so the value reaching here is the Sonnet provider
-    # id (no "haiku" substring) and stays capable; only the raw kiro spelling —
-    # which the kiro/acp path passes untranslated — is gated here.
+    # registry. On the acp path a kiro Haiku id (``claude-haiku-4.5``) has its
+    # own canonical entry (``haiku-4.5``) with no ``supports_effort`` flag; on
+    # the claude_code path it is an ALIAS of Sonnet-4.6 (the cheapest valid fold,
+    # which IS effort-capable) — but that fold happens at the translation
+    # boundary (config.loader factory), so the value reaching here is the Sonnet
+    # provider id (no "haiku" substring) and stays capable. Only the raw kiro
+    # spelling — which the kiro/acp path passes untranslated — is gated here, so
+    # a kiro Haiku agent can never wrongly report effort-capable.
     if "haiku" in m:
         return False
     try:

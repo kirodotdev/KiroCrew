@@ -35,10 +35,11 @@ from kiro_crew.dashboard.chat_utils import (
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
+    is_deprecated_model,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.env import augmented_path
-from kiro_crew.executors import discovery_executor
+from kiro_crew.executors import discovery_executor, maintenance_executor
 
 _VALID_PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$")
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
@@ -802,6 +803,15 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
                     "description": "Configured default",
                 },
             )
+    # Enrich every row with a context_window via the central authority so the CC
+    # dropdown carries the same field the kiro branch does (the frontend picker
+    # + tooltip read it uniformly). None -> reference (never a silent 200k).
+    for entry in merged:
+        if "context_window" not in entry:
+            name = entry.get("model_name", "")
+            entry["context_window"] = (
+                model_registry.model_window(name) or model_registry.REFERENCE_WINDOW_TOKENS
+            )
     return merged
 
 
@@ -892,14 +902,29 @@ async def api_models(request: web.Request) -> web.Response:
                 {"error": "model list returned an invalid payload"}, status=503
             )
         models = data["models"]
-        try:
-            from kiro_crew.dashboard.chat import is_deprecated_model  # noqa: F811
-
-            models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
-        except ImportError:
-            logger.warning(
-                "Failed to import is_deprecated_model; serving unfiltered model list", exc_info=True
+        # Seed the central window authority from kiro's authoritative structured
+        # 'context_window_tokens' field (keyed by model_id/model_name). This is
+        # the ONE place these rows enter the system; every other consumer (the
+        # ACP backfill, the context-budget scaler, the live meter) then resolves
+        # through model_registry.model_window() rather than re-reading kiro. The
+        # in-memory update is synchronous (cheap dict mutation); only the disk
+        # persist is offloaded to an executor so the event loop never blocks on
+        # filesystem I/O (no blocking call on the event loop).
+        #
+        # NOTE: this fork keeps kiro's bare-dotted ids as the picker WIRE FORMAT
+        # (guarded by _model_rejected_reason / api_chat_slot_model, which rejects
+        # canonical registry keys the ACP CLI can't accept). Upstream instead
+        # canonicalizes the dropdown to registry keys + translates back at the
+        # factory; that is an INCOMPATIBLE alternative to this fork's guard, so
+        # the model_name-canonicalization / dedup half of the upstream change is
+        # deliberately NOT ported here. The window seeding above IS ported — it
+        # is the load-bearing benefit (real GPT/DeepSeek/Qwen windows for the
+        # backfill) and is independent of the wire-format choice.
+        if model_registry.refresh_kiro_windows(models):
+            await asyncio.get_running_loop().run_in_executor(
+                maintenance_executor(), model_registry.persist_kiro_windows
             )
+        models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
         return web.json_response(models)
     except Exception:
         # Spawn failure, JSON parse error, etc. — degraded, not "zero models".

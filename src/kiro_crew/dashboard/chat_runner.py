@@ -2859,6 +2859,13 @@ async def _run_chat(
                                 continue
                             await client.approve_tool(event.request_id)
                             _tool_title = _broadcast_auto_tool(state, slot, event)
+                            # Defense-in-depth: _broadcast_auto_tool already
+                            # returns a redacted title, but re-redact before this
+                            # second external surface (activity feed + sel log) so
+                            # the guarantee is local and idempotent — event.title
+                            # is LLM-controlled display text (see below).
+                            _tool_title, _ = redact_exfiltration_urls(_tool_title)
+                            _tool_title, _ = redact_credentials(_tool_title)
                             state.broadcast_ws(
                                 "activity_event",
                                 {
@@ -2932,6 +2939,55 @@ async def _run_chat(
                         continue
                     _pre_tool_hooks_fired = True
                     # Hooks passed — fall through to patterns/trust-reads/trust/yolo/interactive
+                # Native crew auto-approve: when a native subagent (crew pipeline)
+                # is active and the session is configured to auto-approve subagent
+                # tools, approve immediately to avoid deadlocking the blocked
+                # parent turn.
+                _has_active_crew = _native_tracker and any(
+                    not info.get("done") for info in _native_tracker.values()
+                )
+                if _has_active_crew:
+                    _should_auto = (
+                        (
+                            state.context_builder
+                            and state.context_builder.hooks.auto_approve_subagent_tools
+                        )
+                        or getattr(slot, "_trust", False)
+                        or state.is_yolo_active()
+                    )
+                    if _should_auto:
+                        logger.debug(
+                            "Native crew auto-approve: %s (request_id=%s)",
+                            event.title,
+                            event.request_id,
+                        )
+                        await client.approve_tool(event.request_id)
+                        _tool_title = _broadcast_auto_tool(state, slot, event)
+                        # Defense-in-depth: re-redact before this second external
+                        # surface (activity feed + sel log). event.title is
+                        # LLM-controlled display text; _broadcast_auto_tool already
+                        # redacts, so both passes are idempotent.
+                        _tool_title, _ = redact_exfiltration_urls(_tool_title)
+                        _tool_title, _ = redact_credentials(_tool_title)
+                        state.broadcast_ws(
+                            "activity_event",
+                            {
+                                "slot": slot.key,
+                                "kind": "permission",
+                                "text": f"Auto-approved (crew): {_tool_title}",
+                            },
+                        )
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=slot.agent or "kirocrew",
+                            source="dashboard",
+                            tool_name=_tool_title,
+                            tool_kind=event.tool_kind,
+                            outcome="auto_approved",
+                            request_id=event.request_id,
+                            metadata={"reason": "native_crew"},
+                        )
+                        continue
                 # Session-trusted patterns: auto-approve commands matching user globs.
                 # Security: match against the ACTUAL command from tool_input (not
                 # event.title which is LLM-controlled display text). For shell tools,
@@ -3000,7 +3056,7 @@ async def _run_chat(
                             session_key=session_key,
                             agent=slot.agent or "kirocrew",
                             source="dashboard",
-                            tool_name=event.title,
+                            tool_name=_tool_title,
                             tool_kind=event.tool_kind,
                             outcome="auto_approved",
                             request_id=event.request_id,
@@ -3104,6 +3160,9 @@ async def _run_chat(
                     # is required for PreToolUse hooks to run on every tool invocation.
                     await client.approve_tool(event.request_id)
                     _tool_title = _broadcast_auto_tool(state, slot, event)
+                    # Defense-in-depth: re-redact before the sel log (idempotent).
+                    _tool_title, _ = redact_exfiltration_urls(_tool_title)
+                    _tool_title, _ = redact_credentials(_tool_title)
                     sel().log_tool_invocation(
                         session_key=session_key,
                         agent=slot.agent or "kirocrew",

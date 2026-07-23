@@ -201,3 +201,52 @@ def test_successful_list_returns_200_with_models():
     assert resp.status == 200
     models = _body(resp)
     assert any(m["model_name"] == "claude-opus-4.8" for m in models)
+
+
+def test_structured_context_window_seeds_central_authority():
+    # kiro-cli's --list-models --format json returns a STRUCTURED
+    # context_window_tokens per model. api_models seeds the central window
+    # authority (refresh_kiro_windows) from it, so the ACP backfill / context
+    # budget scaler can resolve a non-registry model's REAL window (GPT 272k)
+    # instead of a guessed default. (This fork keeps kiro's bare-dotted ids as
+    # the picker wire format, so the response rows are NOT canonicalized — only
+    # the window cache is seeded; see api_models.)
+    import kiro_crew.model_registry as mr
+
+    payload = json.dumps(
+        {
+            "models": [
+                {
+                    "model_name": "gpt-5.6-terra",
+                    "model_id": "gpt-5.6-terra",
+                    "description": "Experimental preview of OpenAI GPT 5.6 Terra with 272k context window",
+                    "context_window_tokens": 272000,
+                },
+                {
+                    "model_name": "claude-opus-4.8",
+                    "model_id": "claude-opus-4.8",
+                    "description": "Claude Opus 4.8 model with 1M context window",
+                    "context_window_tokens": 1000000,
+                },
+            ]
+        }
+    ).encode()
+    with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
+        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+    ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
+        "kiro_crew.env.augmented_path", lambda p: p
+    ), patch(
+        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+    ), patch(
+        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+    ), patch(
+        "kiro_crew.sandbox.resource_limit_preexec", lambda: None
+    ), patch.object(
+        agents.asyncio, "create_subprocess_exec", return_value=_FakeProc(payload)
+    ), patch.object(
+        agents.asyncio, "wait_for", return_value=(payload, b"")
+    ):
+        resp = _run(agents.api_models(_kiro_request()))
+    assert resp.status == 200
+    # The non-registry GPT window is now resolvable through the central authority.
+    assert mr.model_window("gpt-5.6-terra") == 272000

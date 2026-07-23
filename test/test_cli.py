@@ -980,6 +980,37 @@ class TestCronCli:
             assert ns.agent is None
 
 
+class TestSandboxActiveMarkerCleared:
+    """cli.main() must drop an INHERITED KIROCREW_SANDBOX_ACTIVE marker.
+
+    The marker is trusted by sandbox.wrap_argv to skip re-wrapping (nested
+    passthrough); its only legitimate setter is the namespace launcher's
+    in-sandbox main() (a separate process). A value present at the CLI
+    entrypoint can only be forged/inherited from the gateway's environment, so
+    honoring it would be a full sandbox bypass for every agent/tool spawn.
+    """
+
+    def test_main_clears_inherited_sandbox_active_marker(self, monkeypatch):
+        import os
+        import sys
+
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # A trivial subcommand so main() dispatches and returns cleanly; assert
+        # the marker was popped before dispatch (patch the target to observe).
+        argv = ["kirocrew", "cron", "list"]
+        seen = {}
+
+        def _capture(_ns):
+            seen["marker"] = os.environ.get("KIROCREW_SANDBOX_ACTIVE")
+
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron", _capture):
+            from kiro_crew.cli import main
+
+            main()
+        assert seen.get("marker") is None
+        assert os.environ.get("KIROCREW_SANDBOX_ACTIVE") is None
+
+
 class TestSetupTimezone:
     def test_auto_detect_from_tz_env(self, monkeypatch):
         """TZ env var is checked before /etc/localtime."""

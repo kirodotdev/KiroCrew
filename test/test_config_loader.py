@@ -2928,7 +2928,7 @@ class TestOrchestratorWatchdogThemeAreParsed:
     def test_absent_sections_use_defaults(self) -> None:
         cfg = _load_from_dict({})
         assert cfg.orchestrator.stage_timeout_seconds == 1800
-        assert cfg.watchdog.tool_stall_hard_cap_secs == 2700.0
+        assert cfg.watchdog.tool_stall_hard_cap_secs == 10800.0
         assert cfg.dashboard.theme_mode == ""
         assert cfg.dashboard.onboarded is False
 

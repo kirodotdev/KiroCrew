@@ -4247,18 +4247,29 @@ class AcpClient:
         )
 
     def _backfill_context_window(self, pct: float) -> None:
-        """Derive window/used tokens from the model registry when kiro-cli
-        2.10+ metadata gives only a percentage (no usage_update {used, size})."""
+        """Derive window/used tokens when kiro-cli 2.10+ metadata gives only a
+        percentage (no usage_update {used, size}).
+
+        Resolves the window through the central ``model_registry.model_window``
+        authority (kiro-list cache > static registry > [1m] heuristic). This now
+        works for non-Anthropic kiro models too (GPT 272k, DeepSeek 164k, …) once
+        the kiro-list cache is seeded, instead of no-op'ing. Only backfills a
+        window from a KNOWN source (``has_known_window``): a genuinely-unknown
+        model returns None and we leave the window 0 so the frontend's own
+        authoritative window (from /api/models) drives the meter rather than a
+        guess. kiro's real ``usage_update.size`` always wins when present (this
+        no-ops once it has set the window).
+        """
         if self.last_prompt_stats.context_window_tokens > 0:
             return  # a real usage_update already set it
         model_id = self._resolved_model_id or self._model
-        if not model_id:
+        if not model_id or not model_registry.has_known_window(model_id):
             return
-        window = model_registry.window(model_id)
-        if window <= 0:
+        win = model_registry.model_window(model_id)
+        if not win or win <= 0:
             return
-        self.last_prompt_stats.context_window_tokens = window
-        self.last_prompt_stats.context_used_tokens = round(window * pct / 100.0)
+        self.last_prompt_stats.context_window_tokens = win
+        self.last_prompt_stats.context_used_tokens = round(win * pct / 100.0)
 
     def _track_metadata(self, msg: JsonRpcMessage) -> None:
         params = msg.params or {}

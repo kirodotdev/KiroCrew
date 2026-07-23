@@ -171,7 +171,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Full chat turn timeout — tool calls, multi-step reasoning, spawning.
-# More generous than INJECTION_TIMEOUT (120s) which only covers stream_and_collect.
+# More generous than INJECTION_TIMEOUT (default 900s, tunable via
+# KIROCREW_INJECTION_TIMEOUT) which only covers a single injected continuation turn.
 
 # Max retries for injecting subagent results into parent sessions.
 _MAX_INJECT_ATTEMPTS = 2
