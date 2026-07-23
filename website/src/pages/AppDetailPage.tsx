@@ -33,6 +33,8 @@ type AppInfo = {
   screenshotsDark?: string[]
   heroImage?: string
   heroImageDark?: string
+  heroImageDetail?: string
+  heroImageDetailDark?: string
   repo?: string
   branch?: string
   // Installed state
@@ -93,6 +95,8 @@ interface AppManifest {
   iconUrl?: string
   heroImage?: string
   heroImageDark?: string
+  heroImageDetail?: string
+  heroImageDetailDark?: string
   ui?: { pages?: { route?: string; label?: string; icon?: string; iconUrl?: string }[] }
   agents?: string[]
   skills?: string[]
@@ -236,6 +240,8 @@ export default function AppDetailPage() {
           screenshotsDark: registryEntry?.screenshotsDark || m.screenshotsDark || [],
           heroImage: registryEntry?.heroImage || m.heroImage || '',
           heroImageDark: registryEntry?.heroImageDark || m.heroImageDark || '',
+          heroImageDetail: registryEntry?.heroImageDetail || m.heroImageDetail || '',
+          heroImageDetailDark: registryEntry?.heroImageDetailDark || m.heroImageDetailDark || '',
           repo: registryEntry?.repo || '',
           installed: true,
           installedVersion: installed.version,
@@ -414,9 +420,19 @@ export default function AppDetailPage() {
   const skillCount = app.manifest?.skills?.length || 0
   const cronCount = app.manifest?.crons?.length || 0
   // Theme-aware hero banner source (mirrors the Browse card resolution).
-  const heroSrc = resolvedMode === 'dark'
+  // Prefer the wide detail-ratio banner (heroImageDetail*); fall back to the
+  // Browse hero, then the opposite theme.
+  const heroDetailSrc = resolvedMode === 'dark'
+    ? (app.heroImageDetailDark || app.heroImageDetail || '')
+    : (app.heroImageDetail || app.heroImageDetailDark || '')
+  const heroBrowseSrc = resolvedMode === 'dark'
     ? (app.heroImageDark || app.heroImage || '')
     : (app.heroImage || app.heroImageDark || '')
+  const heroSrc = heroDetailSrc || heroBrowseSrc
+  // When a dedicated detail banner is shown, size the container to its
+  // 1200x288 (25:6) ratio so object-cover doesn't horizontally crop the art
+  // on viewports narrower than 1200px. Fall back to 16:9 for the Browse hero.
+  const heroIsDetail = Boolean(heroDetailSrc)
 
   return (
     <>
@@ -477,7 +493,7 @@ export default function AppDetailPage() {
 
         {/* Hero banner (only when the app ships one) */}
         {heroSrc && (
-          <div className="w-full aspect-video max-h-72 rounded-2xl border border-border overflow-hidden mb-6 bg-[var(--card)]">
+          <div className={`w-full ${heroIsDetail ? 'aspect-[25/6]' : 'aspect-video'} max-h-72 rounded-2xl border border-border overflow-hidden mb-6 bg-[var(--card)]`}>
             {/* onError is an image-load lifecycle handler (hide broken images). */}
             {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
             <img

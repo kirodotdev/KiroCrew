@@ -33,5 +33,7 @@
   },
   "iconUrl": "/app-assets/file-explorer/icon.svg",
   "heroImage": "/app-assets/file-explorer/hero-light.svg",
-  "heroImageDark": "/app-assets/file-explorer/hero-dark.svg"
+  "heroImageDark": "/app-assets/file-explorer/hero-dark.svg",
+  "heroImageDetail": "/app-assets/file-explorer/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/file-explorer/hero-detail-dark.svg"
 }

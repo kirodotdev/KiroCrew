@@ -568,6 +568,15 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     hero_dark = manifest.get("heroImageDark", "")
     if hero_dark and repo:
         result["heroImageDark"] = f"/api/apps/blob?repo={repo}&path={hero_dark}"
+    # Detail-page hero images (wide banner ratio) — convert repo-relative paths
+    # to blob proxy URLs. The detail page prefers these over the (near-square)
+    # Browse-card hero so the wide banner isn't cropped.
+    hero_detail = manifest.get("heroImageDetail", "")
+    if hero_detail and repo:
+        result["heroImageDetail"] = f"/api/apps/blob?repo={repo}&path={hero_detail}"
+    hero_detail_dark = manifest.get("heroImageDetailDark", "")
+    if hero_detail_dark and repo:
+        result["heroImageDetailDark"] = f"/api/apps/blob?repo={repo}&path={hero_detail_dark}"
 
     return result
 

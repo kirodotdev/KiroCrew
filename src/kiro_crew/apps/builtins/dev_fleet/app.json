@@ -24,5 +24,9 @@
     "entryPoint": "kiro_crew.apps.builtins.dev_fleet.server",
     "port": "auto",
     "healthCheck": "/health"
-  }
+  },
+  "heroImage": "/app-assets/dev-fleet/hero-light.svg",
+  "heroImageDark": "/app-assets/dev-fleet/hero-dark.svg",
+  "heroImageDetail": "/app-assets/dev-fleet/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/dev-fleet/hero-detail-dark.svg"
 }

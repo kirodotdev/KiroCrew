@@ -16,6 +16,20 @@ def test_merge_manifest_converts_hero_image_dark_to_blob_proxy():
     assert result["heroImageDark"] == "/api/apps/blob?repo=TestApp&path=assets/hero-dark.svg"
 
 
+def test_merge_manifest_converts_hero_image_detail_to_blob_proxy():
+    entry = {"name": "test-app", "repo": "TestApp"}
+    manifest = {"heroImageDetail": "assets/hero-detail-light.svg"}
+    result = _merge_manifest(entry, manifest)
+    assert result["heroImageDetail"] == "/api/apps/blob?repo=TestApp&path=assets/hero-detail-light.svg"
+
+
+def test_merge_manifest_converts_hero_image_detail_dark_to_blob_proxy():
+    entry = {"name": "test-app", "repo": "TestApp"}
+    manifest = {"heroImageDetailDark": "assets/hero-detail-dark.svg"}
+    result = _merge_manifest(entry, manifest)
+    assert result["heroImageDetailDark"] == "/api/apps/blob?repo=TestApp&path=assets/hero-detail-dark.svg"
+
+
 def test_merge_manifest_converts_screenshots_dark_to_blob_proxy():
     entry = {"name": "test-app", "repo": "TestApp"}
     manifest = {"screenshotsDark": ["assets/s1-dark.png", "assets/s2-dark.png"]}

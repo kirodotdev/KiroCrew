@@ -16,5 +16,7 @@
   },
   "iconUrl": "/app-assets/auto-research/icon.svg",
   "heroImage": "/app-assets/auto-research/hero-light.svg",
-  "heroImageDark": "/app-assets/auto-research/hero-dark.svg"
+  "heroImageDark": "/app-assets/auto-research/hero-dark.svg",
+  "heroImageDetail": "/app-assets/auto-research/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/auto-research/hero-detail-dark.svg"
 }

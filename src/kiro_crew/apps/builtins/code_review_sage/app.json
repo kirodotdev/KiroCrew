@@ -37,5 +37,7 @@
   },
   "iconUrl": "/app-assets/code-review-sage/icon.svg",
   "heroImage": "/app-assets/code-review-sage/hero-light.svg",
-  "heroImageDark": "/app-assets/code-review-sage/hero-dark.svg"
+  "heroImageDark": "/app-assets/code-review-sage/hero-dark.svg",
+  "heroImageDetail": "/app-assets/code-review-sage/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/code-review-sage/hero-detail-dark.svg"
 }

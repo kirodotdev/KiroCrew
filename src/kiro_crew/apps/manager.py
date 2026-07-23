@@ -1165,6 +1165,8 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "iconUrl": "/app-assets/worlds/icon.svg",
         "heroImage": "/app-assets/worlds/hero-light.svg",
         "heroImageDark": "/app-assets/worlds/hero-dark.svg",
+        "heroImageDetail": "/app-assets/worlds/hero-detail-light.svg",
+        "heroImageDetailDark": "/app-assets/worlds/hero-detail-dark.svg",
         "ui": {
             "pages": [{"route": "/worlds", "label": "Worlds", "icon": "Gamepad2"}],
         },
@@ -1199,6 +1201,8 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "iconUrl": "/app-assets/projects/icon.svg",
         "heroImage": "/app-assets/projects/hero-light.svg",
         "heroImageDark": "/app-assets/projects/hero-dark.svg",
+        "heroImageDetail": "/app-assets/projects/hero-detail-light.svg",
+        "heroImageDetailDark": "/app-assets/projects/hero-detail-dark.svg",
         "ui": {
             "pages": [{"route": "/projects", "label": "Task Runner", "icon": "ClipboardCheck"}],
         },
