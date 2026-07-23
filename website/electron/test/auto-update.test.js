@@ -308,3 +308,93 @@ test("re-check while a download is in flight does NOT re-engage Squirrel (stagin
     handlers["update-downloaded"]({}, "notes", "0.1.0-nightly.20260721182718");
     assert.ok(calls.states.includes("downloaded"));
   }));
+
+// ---------------------------------------------------------------------------
+// Channel switcher (stable ⇄ insider opt-in): resolveChannel decision table
+// and the preference wiring through initAutoUpdate.
+// ---------------------------------------------------------------------------
+
+const { resolveChannel } = require("../auto-update");
+
+test("resolveChannel: nightly stamp is pinned -- preference ignored", () => {
+  assert.strictEqual(resolveChannel("nightly", "stable"), "nightly");
+  assert.strictEqual(resolveChannel("nightly", "insider"), "nightly");
+  assert.strictEqual(resolveChannel("nightly", ""), "nightly");
+});
+
+test("resolveChannel: dev (null stamp) has no lane -- preference cannot conjure one", () => {
+  assert.strictEqual(resolveChannel(null, "insider"), null);
+  assert.strictEqual(resolveChannel(null, ""), null);
+});
+
+test("resolveChannel: production stamps follow the preference when set", () => {
+  assert.strictEqual(resolveChannel("stable", "insider"), "insider");
+  assert.strictEqual(resolveChannel("insider", "stable"), "stable");
+});
+
+test("resolveChannel: no/invalid preference falls back to the stamp", () => {
+  assert.strictEqual(resolveChannel("stable", ""), "stable");
+  assert.strictEqual(resolveChannel("insider", undefined), "insider");
+  assert.strictEqual(resolveChannel("stable", "nightly"), "stable"); // nightly is not a valid opt-in
+  assert.strictEqual(resolveChannel("insider", "bogus"), "insider");
+});
+
+test("preference points the FEED at the opted-in channel", () =>
+  withDarwin(async () => {
+    const { deps, calls } = makeDeps({
+      appVersion: "0.1.0-insider.3",
+      feed: { version: "0.1.0-insider.3", url: "https://cdn.example.dev/x.zip" },
+    });
+    deps.getChannelPreference = () => "stable";
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    assert.ok(calls.setFeedURL.every((u2) => u2.includes("/stable/")),
+      `expected stable feed URLs, got: ${calls.setFeedURL}`);
+    assert.strictEqual(u.getInfo().channel, "stable");
+  }));
+
+test("switch-back downgrade surfaces the consent card (gate engages on difference)", () =>
+  withDarwin(async () => {
+    // Running insider 0.2.0-insider.1, preference=stable, stable feed has the
+    // OLDER 0.1.0: the check must surface "found" (never auto-download).
+    const { deps, calls } = makeDeps({
+      appVersion: "0.2.0-insider.1",
+      feed: { version: "0.1.0", url: "https://cdn.example.dev/desktop/stable/0.1.0/KiroCrew.zip" },
+    });
+    deps.getChannelPreference = () => "stable";
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    assert.ok(calls.states.includes("found"), `states: ${calls.states}`);
+    assert.strictEqual(calls.checkForUpdates, 0); // consent gate: discovery never downloads
+  }));
+
+test("getInfo exposes switcher inputs: stamped lane, switchability, preference", () =>
+  withDarwin(async () => {
+    const { deps } = makeDeps({
+      appVersion: "0.1.0-insider.3",
+      feed: { version: "0.1.0-insider.3", url: "https://cdn.example.dev/x.zip" },
+    });
+    deps.getChannelPreference = () => "stable";
+    const u = initAutoUpdate(deps);
+    const info = u.getInfo();
+    assert.strictEqual(info.stampedChannel, "insider");
+    assert.strictEqual(info.channelSwitchable, true);
+    assert.strictEqual(info.channelPreference, "stable");
+  }));
+
+test("nightly build reports not switchable and stays on nightly", () =>
+  withDarwin(async () => {
+    const { deps, calls } = makeDeps({
+      appVersion: "0.1.0-nightly.20260722233638",
+      feed: { version: "0.1.0-nightly.20260722233638", url: "https://cdn.example.dev/x.zip" },
+    });
+    deps.getChannelPreference = () => "stable"; // must be ignored
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(u.getInfo().channelSwitchable, false);
+    assert.ok(calls.setFeedURL.every((u2) => u2.includes("/nightly/")),
+      `expected nightly feed URLs, got: ${calls.setFeedURL}`);
+  }));

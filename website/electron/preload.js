@@ -49,4 +49,7 @@ contextBridge.exposeInMainWorld("updateAPI", {
   download: () => ipcRenderer.invoke("update:download"),
   install: () => ipcRenderer.invoke("update:install"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
+  // Channel switcher (Settings > About): "" follows the build stamp,
+  // "insider"|"stable" opts the production app onto that lane.
+  setChannel: (channel) => ipcRenderer.invoke("update:set-channel", channel),
 });

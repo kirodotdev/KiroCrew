@@ -6,6 +6,7 @@ import { useBranding } from '../../hooks/useBranding'
 import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import SegmentedControl from '../../components/SegmentedControl'
 import { api, ApiError } from '../../api/client'
 import { sanitize } from '../../api/helpers'
 
@@ -21,6 +22,9 @@ type UpdateState = {
 type UpdateInfo = {
   version?: string
   channel?: string
+  stampedChannel?: string | null
+  channelSwitchable?: boolean
+  channelPreference?: string
   platform?: string
   packaged?: boolean
   disabled?: string
@@ -32,6 +36,7 @@ type UpdateAPI = {
   download: () => Promise<unknown>
   install: () => Promise<unknown>
   getInfo: () => Promise<UpdateInfo>
+  setChannel?: (channel: string) => Promise<{ ok: boolean; error?: string }>
 }
 
 function getUpdateApi(): UpdateAPI | undefined {
@@ -97,6 +102,14 @@ export function AboutPanel() {
   // and installing each happen only when the user clicks.
   const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download() })
   const installMutation = useMutation({ mutationFn: () => desktopApi!.install() })
+  // Channel switcher (stable ⇄ insider opt-in). Switching persists the
+  // preference and triggers a check; the other channel's build then arrives
+  // as the normal consent card above -- never an automatic install. Nightly
+  // builds report channelSwitchable=false (separate pinned install).
+  const channelMutation = useMutation({
+    mutationFn: (next: string) => desktopApi!.setChannel!(next),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
+  })
 
   const version = info?.version || gatewayVersion || '—'
   const channel = info?.channel
@@ -283,7 +296,29 @@ export function AboutPanel() {
           </span>
         </div>
 
-        {isDesktop && channel && <Row label="Update channel">{channel}</Row>}
+        {isDesktop && channel && (
+          info?.channelSwitchable && desktopApi?.setChannel ? (
+            <div className="flex items-center justify-between py-1.5 text-sm gap-3" data-testid="channel-switcher">
+              <div className="flex flex-col min-w-0">
+                <span className="text-muted">Update channel</span>
+                <span className="text-[11.5px] text-muted opacity-80">
+                  Insider gets prerelease builds early. Switching offers the other channel&apos;s current build as a normal update.
+                </span>
+              </div>
+              <div className="shrink-0 flex items-center gap-2">
+                {channelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
+                <SegmentedControl
+                  segments={[{ key: 'stable', label: 'Stable' }, { key: 'insider', label: 'Insider' }]}
+                  value={channel === 'insider' ? 'insider' : 'stable'}
+                  onChange={next => { if (next !== channel && !channelMutation.isPending) channelMutation.mutate(next) }}
+                  layoutId="update-channel"
+                />
+              </div>
+            </div>
+          ) : (
+            <Row label="Update channel">{channel}</Row>
+          )
+        )}
         {isDesktop && info?.platform && <Row label="Platform">{info.platform}</Row>}
       </Card>
 

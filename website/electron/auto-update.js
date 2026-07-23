@@ -61,6 +61,32 @@ function channelForVersion(version) {
 }
 
 /**
+ * Resolve the EFFECTIVE update channel from the build stamp + the user's
+ * channel preference (the Settings > About switcher).
+ *
+ * Rules (stable ⇄ insider opt-in design):
+ * - nightly-stamped builds are PINNED to nightly: the nightly app is a
+ *   separate side-by-side install, and honoring a preference here would
+ *   migrate the dev app onto a production channel.
+ * - unstamped (dev, stamped === null) builds have no update lane; the
+ *   preference cannot conjure one.
+ * - production stamps (insider/stable) follow the preference when set,
+ *   else their own stamp. Switching BACK can be a downgrade mid-cycle
+ *   (insider 0.2.0-insider.1 -> stable 0.1.0); safeCheck's compare gate
+ *   deliberately engages on any version DIFFERENCE, so that works.
+ *
+ * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
+ * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = follow stamp
+ * @returns {"nightly"|"insider"|"stable"|null}
+ */
+function resolveChannel(stamped, preference) {
+  if (stamped === "nightly") return "nightly";
+  if (stamped === null) return null;
+  if (preference === "insider" || preference === "stable") return preference;
+  return stamped;
+}
+
+/**
  * Build the static feed URL for a channel. Pure + testable.
  * @param {{base:string, channel:string}} o
  * @returns {string}
@@ -146,6 +172,7 @@ function initAutoUpdate(deps) {
     dialog,
     Notification,
     getFlavor,
+    getChannelPreference = () => "",
     stopGateway,
     platform = "darwin-arm64",
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
@@ -158,9 +185,12 @@ function initAutoUpdate(deps) {
   // the native dialog stays as the fallback for headless / no-renderer cases.
   const uiDriven = typeof onUpdateState === "function";
   // Single channel resolver used for the feed AND everything reported to
-  // the UI: stamped version wins, flavor is the unstamped-dev fallback.
+  // the UI. Read the preference FRESH on every call: configureFeed() runs
+  // per check, so a Settings channel switch takes effect on the next check
+  // with no re-init. Flavor stays the unstamped-dev display fallback.
   function currentChannel() {
-    return channelForVersion(app.getVersion()) || channelForFlavor(getFlavor());
+    const stamped = channelForVersion(app.getVersion());
+    return resolveChannel(stamped, getChannelPreference()) || channelForFlavor(getFlavor());
   }
   function emit(state, extra = {}) {
     if (!uiDriven) return;
@@ -171,7 +201,18 @@ function initAutoUpdate(deps) {
     }
   }
   function getInfo() {
-    return { version: app.getVersion(), channel: currentChannel(), platform, packaged: !!app.isPackaged };
+    const stamped = channelForVersion(app.getVersion());
+    return {
+      version: app.getVersion(),
+      channel: currentChannel(),
+      // Switcher inputs: the build's own lane, whether this build may switch
+      // (nightly is pinned; dev has no lane), and the stored preference.
+      stampedChannel: stamped,
+      channelSwitchable: stamped === "insider" || stamped === "stable",
+      channelPreference: getChannelPreference() || "",
+      platform,
+      packaged: !!app.isPackaged,
+    };
   }
 
   // Squirrel is unavailable for unsigned / not-installed dev builds.
@@ -391,4 +432,4 @@ function initAutoUpdate(deps) {
   };
 }
 
-module.exports = { initAutoUpdate, channelForFlavor, channelForVersion, buildFeedUrl, fetchFeedHttps };
+module.exports = { initAutoUpdate, channelForFlavor, channelForVersion, resolveChannel, buildFeedUrl, fetchFeedHttps };

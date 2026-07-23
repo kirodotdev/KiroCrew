@@ -35,6 +35,7 @@ const store = new Store({
     sshTimeoutMs: 20000,
     windowState: null,                     // persisted main-window geometry (see window-state.js)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
+    updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
   },
 });
 
@@ -1646,6 +1647,7 @@ app.whenReady().then(async () => {
     dialog,
     Notification,
     getFlavor: () => "stable",
+    getChannelPreference: () => store.get("updateChannel", ""),
     stopGateway: () => stopGatewayGracefully(),
     onUpdateState: broadcastUpdateState,
   });
@@ -1654,6 +1656,20 @@ app.whenReady().then(async () => {
   ipcMain.handle("update:check", () => { updater.check(); return { ok: true }; });
   ipcMain.handle("update:download", () => { updater.download(); return { ok: true }; });
   ipcMain.handle("update:install", async () => { await updater.install(); return { ok: true }; });
+  // Channel switcher (stable ⇄ insider opt-in). Set persists the preference
+  // and immediately re-checks so the other channel's build surfaces as the
+  // normal consent card -- switching never downloads or installs by itself.
+  // Validation is strict: nightly is NOT offered (the nightly app is a
+  // separate pinned install), and unknown strings are rejected.
+  ipcMain.handle("update:set-channel", (_e, channel) => {
+    const c = typeof channel === "string" ? channel : "";
+    if (c !== "" && c !== "insider" && c !== "stable") {
+      return { ok: false, error: `invalid channel: ${c}` };
+    }
+    store.set("updateChannel", c);
+    updater.check();
+    return { ok: true, info: updater.getInfo() };
+  });
 
   app.on("activate", () => {
     if (!mainWindow?.isVisible()) mainWindow?.show();
