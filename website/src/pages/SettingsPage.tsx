@@ -15,6 +15,8 @@ import { SlackPanel } from './settings/SlackPanel'
 import { DiscordPanel } from './settings/DiscordPanel'
 import { DiscordIcon } from '../components/DiscordIcon'
 import { TelegramPanel } from './settings/TelegramPanel'
+import { WebexPanel } from './settings/WebexPanel'
+import { WebexIcon } from '../components/WebexIcon'
 import { TelegramLogo } from '../components/TelegramLogo'
 import { OverviewPanel } from './settings/OverviewPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
@@ -33,6 +35,7 @@ const TABS = [
   { key: 'slack', label: 'Slack', icon: <SlackIcon size={16} />, description: 'Slack channel integration settings' },
   { key: 'discord', label: 'Discord', icon: <DiscordIcon size={16} />, description: 'Discord bot channel integration settings' },
   { key: 'telegram', label: 'Telegram', icon: <TelegramLogo size={16} />, description: 'Telegram bot channel integration settings' },
+  { key: 'webex', label: 'Webex', icon: <WebexIcon size={16} />, description: 'Webex channel integration settings' },
   { key: 'shortcuts', label: 'Shortcuts', icon: <Keyboard size={16} />, description: 'Keyboard shortcuts reference and preferences' },
   { key: 'developer', label: 'Developer', icon: <Code size={16} />, description: 'Developer mode, logs, system metrics, and diagnostics' },
   { key: 'about', label: 'About', icon: <Info size={16} />, description: 'Version, update channel, check for updates, and license' },
@@ -64,10 +67,11 @@ export default function SettingsPage() {
         {tab === 'slack' && <SlackPanel />}
         {tab === 'discord' && <DiscordPanel />}
         {tab === 'telegram' && <TelegramPanel />}
+        {tab === 'webex' && <WebexPanel />}
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'developer' && <GeneralPanel />}
         {tab === 'about' && <AboutPanel />}
-        {tab !== 'overview' && tab !== 'chat' && tab !== 'voice' && tab !== 'display' && tab !== 'browser' && tab !== 'instances' && tab !== 'security' && tab !== 'notifications' && tab !== 'slack' && tab !== 'discord' && tab !== 'telegram' && tab !== 'shortcuts' && tab !== 'developer' && tab !== 'about' && (
+        {tab !== 'overview' && tab !== 'chat' && tab !== 'voice' && tab !== 'display' && tab !== 'browser' && tab !== 'instances' && tab !== 'security' && tab !== 'notifications' && tab !== 'slack' && tab !== 'discord' && tab !== 'telegram' && tab !== 'webex' && tab !== 'shortcuts' && tab !== 'developer' && tab !== 'about' && (
           <div className="text-muted text-sm py-12 text-center">
             {TABS.find(t => t.key === tab)?.label} settings — coming soon
           </div>

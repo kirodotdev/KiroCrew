@@ -2599,7 +2599,9 @@
         "enabled": false,
         "bot_token": "",
         "allowed_user_ids": [],
-        "soft_threshold_pct": 80
+        "soft_threshold_pct": 80,
+        "allow_forum": false,
+        "allowed_forum_chat_ids": []
       }
     },
     {
@@ -2679,6 +2681,52 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 80
+    },
+    {
+      "path": "telegram.allow_forum",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Allow Forum Topics",
+      "help": "Serve Telegram supergroup forum Topics as per-topic sessions (Slack-thread style). Fail-closed: also requires the supergroup's chat_id in allowed_forum_chat_ids.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "telegram.allowed_forum_chat_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Allowed Forum Chat IDs",
+      "help": "Numeric supergroup chat_ids permitted to run forum-topic sessions. Empty = deny all groups (fail closed).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "telegram.allowed_forum_chat_ids.*",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "discord",
@@ -2778,6 +2826,122 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 80
+    },
+    {
+      "path": "webex",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Webex",
+      "help": "Webex Messaging integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "bot_token": "",
+        "allowed_emails": [],
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95
+      }
+    },
+    {
+      "path": "webex.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Webex Messaging channel (device WebSocket, no public URL needed). Requires WEBEX_BOT_TOKEN (env/.env) or webex.bot_token.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "webex.bot_token",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [
+        "webex"
+      ],
+      "label": "Bot Token",
+      "help": "Webex bot access token from developer.webex.com (My Webex Apps). Prefer the WEBEX_BOT_TOKEN credential (env/.env) over storing it here.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "webex.allowed_emails",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Allowed Emails",
+      "help": "Webex account emails permitted to DM the bot. Empty = deny all (fail closed): anyone in the org can message a Webex bot.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "webex.allowed_emails.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "webex.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "When a DM's context passes this, prompt the user to /compact or /new instead of auto-compacting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "webex.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context reaches this, even without a user decision, so the window never overflows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
     },
     {
       "path": "dashboard",

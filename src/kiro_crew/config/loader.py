@@ -102,6 +102,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "publish",
         "telegram",
         "discord",
+        "webex",
         "dashboard",
         "tunnel",
         "hooks",
@@ -138,6 +139,7 @@ CRED_WECOM_BOT_ID = "WECOM_BOT_ID"
 CRED_WECOM_SECRET = "WECOM_SECRET"
 CRED_TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
 CRED_DISCORD_BOT_TOKEN = "DISCORD_BOT_TOKEN"
+CRED_WEBEX_BOT_TOKEN = "WEBEX_BOT_TOKEN"
 _CREDENTIAL_KEYS = (
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
@@ -146,6 +148,7 @@ _CREDENTIAL_KEYS = (
     CRED_WECOM_SECRET,
     CRED_TELEGRAM_BOT_TOKEN,
     CRED_DISCORD_BOT_TOKEN,
+    CRED_WEBEX_BOT_TOKEN,
 )
 
 DEFAULT_MODEL = "auto"
@@ -1768,11 +1771,7 @@ def _clamp_security_bounds(data: dict) -> None:
     agent = data.get("agent")
     if isinstance(agent, dict):
         ms = agent.get("max_subagents")
-        if (
-            isinstance(ms, int)
-            and not isinstance(ms, bool)
-            and 0 < ms < MAX_SUBAGENTS_FIXED_FLOOR
-        ):
+        if isinstance(ms, int) and not isinstance(ms, bool) and 0 < ms < MAX_SUBAGENTS_FIXED_FLOOR:
             agent["max_subagents"] = MAX_SUBAGENTS_FIXED_FLOOR
             logger.warning(
                 "config agent.max_subagents=%d is below the fixed-pin floor of %d "
@@ -2598,6 +2597,65 @@ class DiscordConfig:
 
 
 @dataclass
+class WebexConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the Webex Messaging channel (device WebSocket, no public "
+            "URL needed). Requires WEBEX_BOT_TOKEN (env/.env) or webex.bot_token.",
+            tags=["webex"],
+        ),
+    )
+    bot_token: str = field(
+        default="",
+        metadata=_meta(
+            "Bot Token",
+            "Webex bot access token from developer.webex.com (My Webex Apps). "
+            "Prefer the WEBEX_BOT_TOKEN credential (env/.env) over storing it here.",
+            tags=["webex"],
+            sensitive=True,
+        ),
+    )
+    allowed_emails: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Emails",
+            "Webex account emails permitted to DM the bot. Empty = deny all "
+            "(fail closed): anyone in the org can message a Webex bot.",
+            tags=["webex"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a DM's context passes this, prompt the user to /compact or /new "
+            "instead of auto-compacting.",
+            tags=["webex"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this, even without a user "
+            "decision, so the window never overflows.",
+            tags=["webex"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Clamp thresholds to [0, 100] and guarantee soft <= hard so a misconfig
+        # can't make the soft nudge unreachable -- _maybe_notice checks
+        # ``pct >= hard`` first. Mirrors WeComConfig.
+        self.soft_threshold_pct = max(0, min(100, self.soft_threshold_pct))
+        self.hard_threshold_pct = max(0, min(100, self.hard_threshold_pct))
+        if self.soft_threshold_pct > self.hard_threshold_pct:
+            self.soft_threshold_pct = self.hard_threshold_pct
+
+
+@dataclass
 class KiroCrewConfig:
     agent: AgentConfig = field(
         default_factory=AgentConfig,
@@ -2686,6 +2744,10 @@ class KiroCrewConfig:
     discord: DiscordConfig = field(
         default_factory=DiscordConfig,
         metadata=_meta("Discord", "Discord bot integration settings.", tags=["discord"]),
+    )
+    webex: WebexConfig = field(
+        default_factory=WebexConfig,
+        metadata=_meta("Webex", "Webex Messaging integration settings.", tags=["webex"]),
     )
     dashboard: DashboardConfig = field(
         default_factory=DashboardConfig,
@@ -2909,6 +2971,9 @@ class KiroCrewConfig:
         discord_data = data.get("discord", {})
         if not isinstance(discord_data, dict):
             discord_data = {}
+        webex_data = data.get("webex", {})
+        if not isinstance(webex_data, dict):
+            webex_data = {}
         slack_data = data.get("slack", {})
         if not isinstance(slack_data, dict):
             slack_data = {}
@@ -3197,6 +3262,17 @@ class KiroCrewConfig:
                     1, min(100, _coerce_int(discord_data.get("soft_threshold_pct"), 80))
                 ),
             ),
+            webex=WebexConfig(
+                enabled=bool(webex_data.get("enabled", False)),
+                bot_token=str(webex_data.get("bot_token", "")),
+                allowed_emails=(
+                    [e for e in webex_data.get("allowed_emails", []) if isinstance(e, str) and e]
+                    if isinstance(webex_data.get("allowed_emails", []), list)
+                    else []
+                ),
+                soft_threshold_pct=_coerce_int(webex_data.get("soft_threshold_pct"), 80),
+                hard_threshold_pct=_coerce_int(webex_data.get("hard_threshold_pct"), 95),
+            ),
             slack=SlackConfig(
                 allowed_users=[
                     u
@@ -3449,6 +3525,7 @@ class KiroCrewConfig:
             "publish": asdict(self.publish),
             "telegram": asdict(self.telegram),
             "discord": asdict(self.discord),
+            "webex": asdict(self.webex),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
             "hooks": self.hooks,

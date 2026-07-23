@@ -379,3 +379,82 @@ Slack settings API they are registered in the dashboard route block (NOT
   Every Telegram field is boot-read (consumed in the orchestrator's
   constructor), so `restart_required` is true for any actual change and only
   for actual change.
+
+## Webex channel
+
+**Transport (`kiro_crew/webex/`).** A concrete `MessagingTransport` over a
+pure-aiohttp Webex client (`client.py`): inbound rides a device-registration
+WebSocket — the client registers a device with the Webex Device Management
+service (WDM) to obtain a per-device WebSocket URL, connects, authorizes with
+the bot token, and receives `conversation.activity` events (the same
+mechanism the official `webex-bot` SDK uses; no public webhook endpoint is
+required). **Caveat: WDM is an internal Cisco mechanism, not a documented
+public API.** Cisco can change frame shapes or endpoints without notice, and
+behavior may vary across geo/FedRAMP clusters (the client defaults to the
+`wdm-a` host and the `us` Hydra cluster; both the WDM base and the REST base
+are constructor parameters for containment). The documented alternative
+(webhooks) requires a public inbound URL, which contradicts the local-first
+design — this trade-off is deliberate. If WDM drifts, the failure mode is a
+truthful "Not active" badge with the reconnect reason (the
+`ready`/`on_state_change` machinery), never a silently green channel. A
+manual live smoke test with a real bot token is a launch gate for this
+channel. Activity events are treated purely as signals: the raw UUID is
+Hydra-encoded (`base64("ciscospark://us/MESSAGE/{uuid}")`) and the message is
+hydrated via the documented `GET /v1/messages/{id}` REST call in a background
+task so the receive loop keeps breathing during long turns. Outbound is REST
+(`POST/PUT/DELETE /v1/messages`) with a single 429 `Retry-After` back-off; an
+email-shaped conversation id maps onto `toPersonEmail` (opens/reuses the 1:1
+space server-side). Outbound markdown is bounded in UTF-8 BYTES, not
+characters — Webex's limit is 7439 bytes. Final answers are split losslessly
+into 7000-byte chunks (``chunk_utf8``, never splitting a code point) and
+single sends are tail-guarded by ``truncate_utf8`` as a last resort, so a
+multibyte-heavy reply is never rejected wholesale or silently truncated. The reconnect loop uses exponential backoff with a
+minimum-healthy-connection guard so a bad token can never hot-loop.
+``client.ready`` (asyncio.Event) is set on connect+authorize and cleared on
+disconnect; ``maybe_start_webex`` reports ``connected`` only after
+``wait_ready`` succeeds and keeps the dashboard badge truthful via the
+``on_state_change`` observer (a disconnect flips it back off with the
+reason).
+
+**Security model.** `authorize` is deny-by-default against
+`webex.allowed_emails` (lowercased comparison); every denial is SEL-audited.
+Direct-rooms-only fail-closed: any message from a non-`direct` room is
+rejected even from allow-listed users so tool output can never land in a
+group space. Self-messages are dropped twice (WS actor email + hydrated
+`personId` against the bot identity). `WEBEX_BOT_TOKEN` is on the sandbox
+agent env denylist.
+
+**Dispatch + rendering.** Turns ride the shared `TurnDriver`
+(`transport_dispatch.py` mirrors the WeCom dispatcher: `/new`, `/compact`,
+`/help` command intercept, mid-turn messages fold into the running turn via
+steer gated on `has_active_turn`, `/compact` under atomic `try_acquire`,
+soft/hard context-threshold notices as separate proactive messages). The
+renderer is shaped by Webex's 10-edits-per-message cap: no typewriter
+streaming (`streaming=False`); a "🤔 Thinking…" placeholder is posted at turn
+start, tool-progress status edits are throttled and budgeted to 6 of the 10
+edits (an edit failure burns the remaining budget so the final-answer edit
+can never race the cap), and the final answer lands as one placeholder edit
+with a fresh-message fallback plus chunked follow-ups past the 7000-char cap.
+Trailing `[OPTIONS:]` markup is stripped (`max_buttons=0`); interactive tool
+approvals run decider-less (deny-by-default under INTERACTIVE mode).
+
+## Webex settings API
+
+- `GET /api/webex/config` — masked `bot_token_preview` + `bot_token_set`,
+  `connected` (true only while the device WebSocket is connected + authorized
+  this session), `connect_error`, `configured` (token AND enabled AND non-empty
+  allowlist — the transport fails closed on an empty list), `read_only`
+  (true unless the request is direct-local). Never returns a raw secret.
+- `PUT /api/webex/config` — requires a direct-local request (loopback peer
+  AND no forwarding headers); remote gets 403. Validate-first/commit-last.
+  New tokens (an accidental `WEBEX_BOT_TOKEN=` env line is stripped) are
+  verified against Webex `GET /v1/people/me` before storage; rejection
+  returns 400 and writes nothing, network failure saves with
+  `verify_warning`. `bot_token_clear` must be a strict boolean.
+  `allowed_emails` accepts syntactically valid emails only. Secrets land in
+  `config_dir/.env` (atomic 0600) with `os.environ` synced; non-secrets go
+  to `config.json` under `webex`, and any token set/clear purges the legacy
+  `webex.bot_token` config fallback (config.json commits before .env so a
+  crash between the two cannot resurrect the plaintext copy). Writes are
+  serialized under the repo-wide config lock. All fields are boot-read, so
+  `restart_required` is true on any actual change.

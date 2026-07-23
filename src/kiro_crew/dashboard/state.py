@@ -1348,6 +1348,13 @@ class DashboardState:
         # Short reason when the Telegram channel failed to start, empty when
         # running or never attempted. Read by the settings badge.
         self.telegram_connect_error: str = ""
+        # True only while the Webex device WebSocket is connected + authorized
+        # this session (kept truthful by WebexClient.on_state_change). Read by
+        # the Webex settings status badge.
+        self.webex_connected: bool = False
+        # Short reason from the most recent Webex connection failure, empty
+        # when connected or never attempted. Read by the settings badge.
+        self.webex_connect_error: str = ""
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated

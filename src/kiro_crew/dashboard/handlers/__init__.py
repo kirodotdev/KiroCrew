@@ -244,6 +244,8 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_spawn_status,
     api_telegram_config_get,
     api_telegram_config_save,
+    api_webex_config_get,
+    api_webex_config_save,
 )
 from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     MAX_PROMPT_BYTES,

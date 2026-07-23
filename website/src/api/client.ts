@@ -117,6 +117,26 @@ export interface TelegramConfigSave {
   soft_threshold_pct: number
 }
 
+/** Webex config as returned by GET /api/webex/config (secret masked). */
+export interface WebexConfigData {
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  bot_token_set: boolean
+  bot_token_preview: string
+  enabled: boolean
+  allowed_emails: string[]
+}
+
+/** Writable Webex config fields sent to PUT /api/webex/config. */
+export interface WebexConfigSave {
+  bot_token: string
+  bot_token_clear: boolean
+  enabled: boolean
+  allowed_emails: string[]
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -1043,6 +1063,9 @@ export const api = {
   // Telegram integration config
   getTelegramConfig: () => get('/api/telegram/config').then(j) as Promise<TelegramConfigData>,
   saveTelegramConfig: (body: Partial<TelegramConfigSave>) => put('/api/telegram/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+  // Webex integration config
+  getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,
+  saveWebexConfig: (body: Partial<WebexConfigSave>) => put('/api/webex/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
 
   // Auto-research
   researchValidate: (body: object) => post("/api/apps/auto-research/validate", body).then(j),

@@ -57,6 +57,7 @@ from kiro_crew.config.loader import (
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
     CRED_TELEGRAM_BOT_TOKEN,
+    CRED_WEBEX_BOT_TOKEN,
     CRED_WECOM_BOT_ID,
     CRED_WECOM_SECRET,
     _session_work_dir,
@@ -160,6 +161,7 @@ if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.task_models import Task
     from kiro_crew.telegram.client import TelegramClient
+    from kiro_crew.webex.client import WebexClient
     from kiro_crew.wechat.client import WeComClient
 
 logger = logging.getLogger(__name__)
@@ -546,6 +548,13 @@ class GatewayOrchestrator:
             str(u) for u in cfg.discord.allowed_user_ids
         ]
         self._discord_client: "DiscordClient | None" = None
+        # Webex — the WEBEX_BOT_TOKEN credential (env/.env) overrides
+        # cfg.webex.bot_token; all other settings come from the typed
+        # cfg.webex dataclass (no ad-hoc config.json re-parse).
+        self._webex_bot_token = creds.get(CRED_WEBEX_BOT_TOKEN, "") or cfg.webex.bot_token
+        self._webex_enabled = bool(cfg.webex.enabled and self._webex_bot_token)
+        self._webex_allowed_emails: list[str] = list(cfg.webex.allowed_emails)
+        self._webex_client: "WebexClient | None" = None
         self.slack_command = cfg.slack.command
 
         # Services (initialized in start())
@@ -3768,6 +3777,8 @@ class GatewayOrchestrator:
             cleanup_tasks.append(asyncio.wait_for(self._telegram_client.close(), timeout=2.0))
         if self._discord_client:
             cleanup_tasks.append(asyncio.wait_for(self._discord_client.close(), timeout=2.0))
+        if self._webex_client:
+            cleanup_tasks.append(asyncio.wait_for(self._webex_client.close(), timeout=2.0))
         # Cancel background model download if still in flight
         if self._model_download_task is not None and not self._model_download_task.done():
             self._model_download_task.cancel()
@@ -4170,6 +4181,10 @@ class GatewayOrchestrator:
         from kiro_crew.discord.gateway import maybe_start_discord
 
         self._discord_client = await maybe_start_discord(self)
+        # Webex channel — guarded no-op unless enabled + token present.
+        from kiro_crew.webex.gateway import maybe_start_webex
+
+        self._webex_client = await maybe_start_webex(self)
 
         # Check for updates before printing URLs
         print("👻 Checking for updates…")
