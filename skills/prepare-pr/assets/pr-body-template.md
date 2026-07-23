@@ -16,3 +16,11 @@ should follow *why this change is the right one*, not just what changed.>
 <Manual steps performed or still required where unit tests are not enough
 (integration paths, UI, external services). State "N/A — unit coverage
 sufficient" only when genuinely true, with a one-line why.>
+
+## Screenshots
+<MANDATORY for user-visible UI changes; delete this section otherwise.
+Commit images to the PR branch under docs/screenshots/<feature>/ and embed
+with commit-SHA-pinned URLs so they survive branch deletion on merge:
+![alt](https://github.com/<owner>/<repo>/raw/<sha>/docs/screenshots/<feature>/<name>.png)
+Show each affected surface's meaningful variants; fold full-page context
+into a <details> block.>
