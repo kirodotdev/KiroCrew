@@ -182,6 +182,23 @@ def _redact_warning(msg: str) -> str:
 _BUILTIN_SERVICE_APPS: dict[str, tuple[str, str]] = {}
 
 
+def _unregister_notification_channels(request: web.Request, name: str) -> None:
+    """Drop *name*'s notification channels from the bus registry.
+
+    Called on uninstall/disable so channels don't linger as ghosts. Best
+    effort and side-effect free beyond the in-memory registry: the push
+    path independently re-checks enablement, so this is hygiene, not a
+    security control. Re-enabling re-registers lazily on first push.
+    """
+    state = request.app.get("state")
+    bus = getattr(state, "notification_bus", None) if state is not None else None
+    if bus is None:
+        return
+    removed = bus.unregister_app_channels(name)
+    if removed:
+        logger.info("Unregistered %d notification channel(s) for app %s", removed, name)
+
+
 def _sync_builtin_config(name: str, *, enabled: bool) -> None:
     """Update config.json for a builtin app so gateway reads the right state on restart."""
     cfg_key, _ = _BUILTIN_SERVICE_APPS.get(name, (None, None))
@@ -760,6 +777,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         sel().log_api_access(caller="dashboard", operation="app_uninstall", outcome="failed", resources=name, error=result.error)
         return web.json_response(result.to_dict(), status=400)
     invalidate_app_secret_cache(name)
+    _unregister_notification_channels(request, name)
 
     # Step 5: Clean up workspace (each registry app has its own workspace)
     if is_registry_source(info.get("source", "")):
@@ -968,6 +986,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         if not result.ok:
             sel().log_api_access(caller="dashboard", operation="app_disable", outcome="failed", resources=name, error=result.error)
             return web.json_response(result.to_dict(), status=400)
+        _unregister_notification_channels(request, name)
 
         # Run builtin on_disable hook if available
         if name in BUILTIN_NAMES:

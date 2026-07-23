@@ -680,3 +680,110 @@ class TestSigningPayloadCoversNotifications:
         # the identical payload (no key present when channels are empty).
         m = AppManifest(name="a", version="1.0.0")
         assert b"notifications" not in m.signing_payload()
+
+
+class TestReservedAppName:
+    def test_manifest_rejects_reserved_system_name(self):
+        m = AppManifest(name="system", version="1.0.0")
+        errors = m.validate()
+        assert any("reserved" in e for e in errors)
+
+    def test_manifest_accepts_normal_name(self):
+        m = AppManifest(name="oncall-radar", version="1.0.0")
+        assert not any("reserved" in e for e in m.validate())
+
+    @pytest.mark.asyncio
+    async def test_push_from_reserved_app_name_denied(self):
+        """Defense-in-depth: even if an app named 'system' is installed
+        (pre-rule install or a validation bypass), it cannot push into the
+        system.* channel namespace -- 403, not a shadowed system.approval."""
+        state = _FakeState()
+        with patch(
+            "kiro_crew.dashboard.handlers.notifications_push.is_app_enabled",
+            return_value=True,
+        ), patch(
+            "kiro_crew.dashboard.handlers.notifications_push.get_app_manifest"
+        ) as gm:
+            async with TestClient(TestServer(_make_app(state, {"app": "system"}))) as client:
+                resp = await client.post(
+                    "/api/notifications/push",
+                    json={"channel": "approval", "title": "t", "body": "b"},
+                )
+        assert resp.status == 403
+        gm.assert_not_called()
+        assert state.delivered == []
+
+
+class TestUnregisterAppChannels:
+    @staticmethod
+    def _bus() -> NotificationBus:
+        return NotificationBus(sink=lambda note: None)
+
+    def test_removes_only_that_apps_channels(self):
+        bus = self._bus()
+        bus.register_channel("my-app.alpha", "default")
+        bus.register_channel("my-app.beta", "passive")
+        bus.register_channel("other-app.gamma", "default")
+        removed = bus.unregister_app_channels("my-app")
+        assert removed == 2
+        assert not bus.is_registered("my-app.alpha")
+        assert not bus.is_registered("my-app.beta")
+        assert bus.is_registered("other-app.gamma")
+
+    def test_never_removes_system_channels(self):
+        bus = self._bus()
+        assert bus.unregister_app_channels("system") == 0
+        assert bus.is_registered("system.approval")
+
+    def test_prefix_is_boundary_safe(self):
+        # "my-app" must not remove "my-app2.*" channels ("." terminates it).
+        bus = self._bus()
+        bus.register_channel("my-app2.other", "default")
+        assert bus.unregister_app_channels("my-app") == 0
+        assert bus.is_registered("my-app2.other")
+
+
+class TestDisablePushRace:
+    @pytest.mark.asyncio
+    async def test_push_registration_serialized_with_disable(self):
+        """A disable running concurrently with an in-flight push cannot be
+        interleaved between the push's enablement check and its channel
+        registration: both sides hold app_lifecycle_lock, so disable's
+        unregister runs either before the push's enablement check (push 403s)
+        or after the push completes (channels removed). Simulated by taking
+        the lock as 'disable', starting a push, flipping enablement off and
+        unregistering, then releasing: the push must fail closed with no
+        channel left registered."""
+        import asyncio as _asyncio
+
+        from kiro_crew.apps.manager import app_lifecycle_lock
+
+        state = _FakeState()
+        enabled = {"value": True}
+
+        def resolve(name):
+            # Enablement-aware resolver: mirrors the real one's None-on-disabled
+            return dict(_CHANNELS) if enabled["value"] else None
+
+        with patch(
+            "kiro_crew.dashboard.handlers.notifications_push._resolve_app_channels",
+            side_effect=resolve,
+        ):
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                lock = app_lifecycle_lock("oncall-radar")
+                await lock.acquire()  # act as the disable handler
+                push_task = _asyncio.create_task(
+                    client.post(
+                        "/api/notifications/push",
+                        json={"channel": "ticket-update", "title": "t", "body": "b"},
+                    )
+                )
+                await _asyncio.sleep(0.05)  # push is now blocked on the lock
+                # Disable completes: flip enablement, unregister channels
+                enabled["value"] = False
+                state.notification_bus.unregister_app_channels("oncall-radar")
+                lock.release()
+                resp = await push_task
+        assert resp.status == 403  # fails closed on the re-checked enablement
+        assert not state.notification_bus.is_registered("oncall-radar.ticket-update")
+        assert state.delivered == []

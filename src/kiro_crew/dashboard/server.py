@@ -1608,6 +1608,8 @@ async def start_dashboard(
     app.router.add_post("/api/notifications/ack", handlers.api_notification_ack)
     app.router.add_post("/api/notifications/unack", handlers.api_notification_unack)
     app.router.add_post("/api/notifications/ack-all", handlers.api_notifications_ack_all)
+    app.router.add_get("/api/notifications/channels", handlers.api_notification_channels)
+    app.router.add_put("/api/notifications/channels/settings", handlers.api_notification_channel_settings)
     app.router.add_get("/api/update/check", handlers.api_update_check)
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_post("/api/update", handlers.api_update_apply)

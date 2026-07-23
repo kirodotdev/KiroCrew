@@ -22,7 +22,8 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.apps.manager import app_lifecycle_lock, get_app_manifest, is_app_enabled
+from kiro_crew.apps.manifest import RESERVED_APP_NAMES
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
@@ -43,6 +44,12 @@ def _resolve_app_channels(app_name: str) -> dict[str, str] | None:
     effect that would race loop-side writers of ``installed.json``).
     """
     if not is_app_enabled(app_name):
+        return None
+    if app_name in RESERVED_APP_NAMES:
+        # Defense-in-depth: manifest validation rejects reserved names at
+        # install, but an app installed before that rule existed (or via a
+        # path that skipped validation) must still be unable to push into
+        # the "<reserved>.*" channel namespace (e.g. "system.approval").
         return None
     manifest = get_app_manifest(app_name)
     if manifest is None:
@@ -89,38 +96,54 @@ async def api_push_notification(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "body must be a JSON object"}, status=400)
 
-    # get_app/get_app_manifest read installed.json + app.json from disk (and
-    # may even write a version sync) -- keep that off the event loop. The
-    # await window this opens between the enablement check and bus.push()
-    # means an app disabled mid-request can still land one final
-    # notification; that is accepted (harmless) rather than locked against.
-    channels = await asyncio.to_thread(_resolve_app_channels, app_name)
-    if channels is None:
-        sel().log_api_access(
-            caller=app_name,
-            operation="notification_push",
-            outcome="denied",
-            source="notifications_api",
-            error="app not installed or not enabled",
-        )
-        return web.json_response({"error": "app not installed or not enabled"}, status=403)
-
-    channel_id = str(body.get("channel", ""))
-    if channel_id not in channels:
-        sel().log_api_access(
-            caller=app_name,
-            operation="notification_push",
-            outcome="denied",
-            source="notifications_api",
-            error=f"undeclared channel: {channel_id!r}",
-        )
-        return web.json_response(
-            {"error": f"channel not declared in app manifest: {channel_id!r}"}, status=400
-        )
-
     state = request.app["state"]
     bus = state.notification_bus
+    channel_id = str(body.get("channel", ""))
     full_channel = f"{app_name}.{channel_id}"
+
+    # Serialize enablement-check + channel registration with disable/
+    # uninstall (which unregister this app's channels under the same lock):
+    # without this, a push that passed the enablement check could re-register
+    # a channel AFTER disable's unregister ran, leaving registry residue for
+    # a disabled app. The lock is per-app and uncontended on the hot path;
+    # delivery itself happens after release (a disable landing in that gap
+    # unregisters the channel and the push fails closed with a refunded 400).
+    async with app_lifecycle_lock(app_name):
+        # get_app_manifest reads installed.json + app.json from disk -- keep
+        # that off the event loop.
+        channels = await asyncio.to_thread(_resolve_app_channels, app_name)
+        if channels is None:
+            sel().log_api_access(
+                caller=app_name,
+                operation="notification_push",
+                outcome="denied",
+                source="notifications_api",
+                error="app not installed or not enabled",
+            )
+            return web.json_response({"error": "app not installed or not enabled"}, status=403)
+
+        if channel_id not in channels:
+            sel().log_api_access(
+                caller=app_name,
+                operation="notification_push",
+                outcome="denied",
+                source="notifications_api",
+                error=f"undeclared channel: {channel_id!r}",
+            )
+            return web.json_response(
+                {"error": f"channel not declared in app manifest: {channel_id!r}"}, status=400
+            )
+
+        try:
+            # Register once per channel while still holding the lock. Its only
+            # failure mode (corrupt on-disk manifest defaultPriority) is a 400
+            # that delivers nothing and consumes no token. Re-registering on
+            # every push would stomp any later runtime priority override (RFC
+            # Phase 3); manifest priority changes take effect on restart.
+            if not bus.is_registered(full_channel):
+                bus.register_channel(full_channel, channels[channel_id])
+        except NotificationValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
 
     priority_raw = body.get("priority")
     # ``is not None`` (not truthiness): falsy-but-valid values like
@@ -151,16 +174,9 @@ async def api_push_notification(request: web.Request) -> web.Response:
         # Validate BEFORE consuming a rate-limit token: the limiter's purpose
         # is capping delivered notifications (RFC "Rate limiting"), and
         # invalid payloads deliver nothing -- they must not drain the budget
-        # and then 429-block legitimate retries.
+        # and then 429-block legitimate retries. (Channel registration
+        # already happened above, under the lifecycle lock.)
         payload.validate()
-        # Register once per channel, also before the limiter: registration is
-        # cheap and idempotent, and its only failure mode (corrupt on-disk
-        # manifest defaultPriority) is a 400 that likewise delivers nothing.
-        # Re-registering on every push would stomp any later runtime priority
-        # override (RFC Phase 3 per-channel settings); manifest priority
-        # changes take effect on gateway restart.
-        if not bus.is_registered(full_channel):
-            bus.register_channel(full_channel, channels[channel_id])
     except NotificationValidationError as exc:
         return web.json_response({"error": str(exc)}, status=400)
 

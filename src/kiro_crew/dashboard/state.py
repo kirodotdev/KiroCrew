@@ -31,6 +31,7 @@ from kiro_crew.notifications.bus import (
     payload_from_legacy,
 )
 from kiro_crew.notifications.rate_limit import AppRateLimiter
+from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1400,6 +1401,9 @@ class DashboardState:
         # global) so its lifecycle matches the gateway instance and tests get
         # isolation for free.
         self.notification_rate_limiter = AppRateLimiter()
+        # Per-channel user settings (RFC Phase 3): mute + priority override,
+        # applied at the delivery sink so the bus stays pure.
+        self.notification_channel_settings = ChannelSettings()
         self._slots: dict[str, _ChatSlot] = {}
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         self._slot_counter = 0
@@ -1858,8 +1862,16 @@ class DashboardState:
         for key, value in note.items():
             if key != "ts":
                 note[key] = _redact_note_value(value)
+        # Per-channel user settings (RFC Phase 3): mute stamps silenced=True
+        # + forces passive; priority override replaces the effective priority.
+        # Applied before append/broadcast so SSE clients and disk both see
+        # the user's view.
+        self.notification_channel_settings.apply(note)
         self._notification_log.append(note)
-        self._unread_count += 1
+        # Badge counts attention-worthy rows only (RFC Phase 3: passive rows
+        # -- including muted-channel notes -- are excluded).
+        if note.get("priority") != "passive":
+            self._unread_count += 1
         self._broadcast(note)
         # Persistence does blocking file I/O (append + possible trim). The
         # bus sink is now externally drivable (Phase 2 app producers), so on

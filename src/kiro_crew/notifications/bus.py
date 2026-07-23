@@ -224,8 +224,28 @@ class NotificationBus:
             return
         self._channels.pop(channel, None)
 
+    def unregister_app_channels(self, app_name: str) -> int:
+        """Remove every channel registered under *app_name* (``<app>.<id>``).
+
+        Called on app uninstall/disable so channels don't linger as ghosts in
+        the registry. System channels are never removed (the ``<app>.``
+        prefix cannot collide with them: ``system`` is a reserved app name).
+        Returns the number of channels removed.
+        """
+        prefix = f"{app_name}."
+        doomed = [
+            c for c in self._channels if c.startswith(prefix) and c not in SYSTEM_CHANNELS
+        ]
+        for channel in doomed:
+            self._channels.pop(channel, None)
+        return len(doomed)
+
     def is_registered(self, channel: str) -> bool:
         return channel in self._channels
+
+    def channels(self) -> dict[str, str]:
+        """Snapshot of registered channels: {channel: default_priority}."""
+        return dict(self._channels)
 
     def push(self, payload: NotificationPayload) -> dict[str, Any]:
         """Validate, enrich, and deliver a notification.

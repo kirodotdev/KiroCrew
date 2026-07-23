@@ -66,7 +66,25 @@ Validation (`apps/manifest.py`): max 8 channels per app, kebab-case ids, unique 
 
 `test/test_notifications_push.py` (39 tests): auth bypass attempts, undeclared channels, oversized/chunked bodies, rate limit + refund semantics, falsy-but-valid fields, signing-payload coverage, register-once behavior, sink-failure 500. `test/test_dashboard.py` covers persistence, load-time redaction, and the executor-offloaded persist path.
 
+## Channel lifecycle
+
+Channels register lazily on an app's first push to each declared channel. On app uninstall or disable, `NotificationBus.unregister_app_channels(app_name)` removes every `<app>.*` channel from the registry (wired in `apps/routes.py`); re-enabling re-registers lazily on the next push. System channels are never removable. The app name `system` is rejected at manifest validation (`RESERVED_APP_NAMES`) AND denied defense-in-depth at the push endpoint, so app channels can never shadow the reserved `system.*` namespace.
+
+## Per-channel settings (Phase 3)
+
+User preferences per channel, stored in `~/.kirocrew/notification_settings.json` (`notifications/settings.py`, state-owned `ChannelSettings`, atomic-rename writes, corrupt file falls back to defaults):
+
+- **Mute**: the note still lands in history (mute silences, it does not destroy) but is stamped `silenced: true` with priority forced to `passive`, so every attention surface skips it — the unread badge counts only non-passive rows, and sound/banner/feed styling key off the same fields.
+- **Priority override**: the user's value replaces the producer-requested priority and channel default.
+- **Protected channels** (`system.approval`): cannot be muted and cannot have priority lowered — enforced at the settings API (400) AND at apply time, so even a hand-edited settings file cannot silence approvals (RFC exit criteria: approval still interrupts while heartbeat can be silenced everywhere).
+
+Settings are applied at the delivery sink (`_deliver_note`), before append/broadcast, so SSE clients and disk both see the user's view; the bus stays pure.
+
+API (dashboard-user only; app tokens have no grant here):
+- `GET /api/notifications/channels` — every registered channel plus channels with stored settings (even if currently unregistered, e.g. app disabled), each with `source`, `default_priority`, `protected`, and `settings`.
+- `PUT /api/notifications/channels/settings` — body `{"channel", "muted"?, "priority"?}`; `priority: null` clears the override. Changes broadcast over WS as `notification_channel_settings`.
+
 ## Known follow-ups
 
-- An app named `system` could produce `full_channel == "system.<id>"`, shadowing reserved system channels (cosmetic spoofing only — `source` stays `app:system` and is SEL-audited). Follow-up: reject reserved app names at install or namespace app channels distinctly.
-- Phase 3 (per RFC): per-channel user settings and runtime priority overrides.
+- Phase 3 frontend: settings UI section (channel list grouped by source), priority tiers wired through sound/native banner/feed styling, provisional keep/mute prompt for the first notification from a new app channel.
+- Phase 4 (per RFC): inline actions and grouping.
