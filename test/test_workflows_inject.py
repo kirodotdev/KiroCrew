@@ -97,6 +97,23 @@ def test_summary_reports_failure() -> None:
     assert "failed" in body and "boom" in body
 
 
+def test_summary_header_format_is_pinned_for_frontend() -> None:
+    """The dashboard's WorkflowCompletionCard detects/parses completions by
+    matching this exact header shape (regex in website/.../WorkflowCompletionCard.tsx):
+
+        [Workflow completion event]\\nWorkflow `<name>` (<run_id>) -> **<status>**
+
+    (arrow is the U+2192 rightwards arrow). This cross-layer contract has no
+    shared constant, so pin the format here — if the header wording drifts, this
+    test fails instead of the launch/completion card silently degrading in the
+    UI. See PR #245 design review, finding 2."""
+    snap = {"name": "pizza", "run_id": "wf_1", "status": "finished", "result": {"n": 1}}
+    body = _summarize(snap)
+    lines = body.splitlines()
+    assert lines[0] == "[Workflow completion event]"
+    assert lines[1] == "Workflow `pizza` (wf_1) \u2192 **finished**"
+
+
 # --------------------------------------------------------------------------- #
 # Routing: result lands in the ORIGINATING chat slot (regression — it used to
 # go to a separate workflow-<id> slot the user never saw).

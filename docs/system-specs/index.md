@@ -1,6 +1,6 @@
 # System Specifications
 
-Last Updated: 2026-07-13
+Last Updated: 2026-07-23
 
 ## How to Use
 
@@ -56,3 +56,4 @@ Load relevant module specs before making changes to that component. Read common 
 | [prompt-optimizer](features/prompt-optimizer.md) | Native pre-send prompt optimization (Cmd+Shift+Enter) |
 | [stt-streaming](features/stt-streaming.md) | Live speech-to-text via AWS Transcribe Streaming |
 | [voice-streaming](features/voice-streaming.md) | Real-time Polly TTS with streaming auto-speak and interrupt |
+| [workflow-chat-cards](features/workflow-chat-cards.md) | Inline launch + completion cards for workflows in chat, clickable to the Workflows panel |

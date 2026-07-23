@@ -128,6 +128,8 @@ import DetailPanel from '../components/DetailPanel'
 import type { ChatMessage } from '../types'
 
 import ToolCallLine from './chat/ToolCallLine'
+import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
+import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './chat/WorkflowCompletionCard'
 import { renderMcpOAuthMessage } from './chat/McpOAuthBanner'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
@@ -2742,6 +2744,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     if (m.role === 'tool') {
       // Skip ✅/🚫 completion messages — completion shown via CircleCheckBig icon
       if (!m.content.startsWith('🔧')) return null
+      // A workflow_run launch renders as a persistent, clickable inline card
+      // (live status + open-panel affordance) instead of the generic tool pill.
+      const wfRunId = extractWorkflowRunId(m)
+      if (wfRunId) return <WorkflowRunCard key={key} runId={wfRunId} message={m} />
       // Animate tools in the trailing group (after last assistant/streaming text)
       const isInTrailingGroup = slotState === 'tool_running' && i > lastTextIdx
       return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} />
@@ -2761,6 +2767,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       const banner = renderMcpOAuthMessage(m)
       return banner ? <div key={key}>{banner}</div> : null
     }
+    // An injected workflow completion event renders as a compact status card
+    // (with the full result folded away) instead of a wall of raw JSON.
+    if (isWorkflowCompletionMessage(m)) return <WorkflowCompletionCard key={key} message={m} onFileOpen={handleFileOpen} />
     const isUser = m.role === 'user'
     const isStreaming = m.role === 'streaming'
     const isInject = m.role === 'inject'

@@ -1,0 +1,118 @@
+/**
+ * WorkflowRunCard — a persistent, clickable inline card rendered in the chat
+ * message flow for a `workflow_run` tool call. Unlike the transient
+ * WorkflowProgressBar (which lives above the composer and drops shortly after a
+ * run ends), this card stays in scrollback anchored to the invocation that
+ * launched the run.
+ *
+ * It subscribes to the same Redux slice the progress bar uses
+ * (`chat.workflowRuns[run_id]`, folded from `workflow_run_event` WS frames) for
+ * live status / phase / last-log, and the whole card is a button that opens the
+ * Workflows side panel (`openActivityToTab('workflows')`) so the user can drill
+ * into the phase tree, source, and events. For historical runs that have since
+ * been dropped from the live slice, it renders a neutral clickable state — the
+ * panel still has the full run history from the backend.
+ */
+import { memo } from 'react'
+import { Workflow, Loader2, CheckCircle2, AlertCircle, PanelRight } from 'lucide-react'
+import { useAppSelector, useAppDispatch } from '../../store'
+import { openActivityToTab } from '../../store/chatSlice'
+import { sanitizeLlmOutput } from '../../utils/sanitize'
+import type { ChatMessage } from '../../types'
+
+/** The `workflow_run` tool result reads "Started workflow run `wf_NNNNNN`…"
+ *  (see the workflow_run handler in mcp_core.py). Matching that phrase both
+ *  identifies the call as a launch and captures its run id — and works for
+ *  historical messages too, since the tool output is persisted on meta.output. */
+const WF_RUN_ID_RE = /Started workflow run `(wf_[A-Za-z0-9_]+)`/
+
+/** Extract the wf_ run id from a tool message's persisted output, or null when
+ *  the message is not a completed workflow_run launch. Pure — no hooks — so it
+ *  is safe to call from render dispatch and from TurnBlock's grouping logic. */
+export function extractWorkflowRunId(message: ChatMessage): string | null {
+  const output = (message.meta?.output as string | undefined) || ''
+  const m = WF_RUN_ID_RE.exec(output)
+  return m ? m[1] : null
+}
+
+/** True when a chat message is a workflow_run launch that should render as the
+ *  inline card (and therefore must NOT be folded into TurnBlock's collapsible
+ *  tool-call group). */
+export function isWorkflowRunTool(message: ChatMessage): boolean {
+  return message.role === 'tool' && extractWorkflowRunId(message) !== null
+}
+
+/** Best-effort friendly label from the tool input JSON (name, else intent). */
+function parseLaunchLabel(message: ChatMessage): string {
+  try {
+    const input = (message.meta?.input as string | undefined) || ''
+    if (!input) return ''
+    const obj = JSON.parse(input) as { name?: unknown; intent?: unknown }
+    return String(obj.name || obj.intent || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+const WorkflowRunCard = memo(function WorkflowRunCard({
+  runId,
+  message,
+}: {
+  runId: string
+  message: ChatMessage
+}) {
+  const dispatch = useAppDispatch()
+  const run = useAppSelector(s => s.chat.workflowRuns?.[runId])
+  const status = run?.status
+
+  const name = sanitizeLlmOutput((run?.name || parseLaunchLabel(message) || runId).slice(0, 80))
+  const phase = sanitizeLlmOutput((run?.phase || '').slice(0, 40))
+  const lastLog = sanitizeLlmOutput((run?.lastLog || '').slice(0, 120))
+  const errMsg = sanitizeLlmOutput((run?.error || '').slice(0, 120))
+
+  const open = () => dispatch(openActivityToTab('workflows'))
+
+  return (
+    <div className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      <button
+        type="button"
+        onClick={open}
+        title="Open in the Workflows panel"
+        className="group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
+      >
+        <span className="shrink-0 mt-0.5">
+          {status === 'running' && <Loader2 size={15} className="text-accent animate-spin" />}
+          {status === 'finished' && <CheckCircle2 size={15} className="text-green-500" />}
+          {(status === 'failed' || status === 'cancelled') && <AlertCircle size={15} className="text-danger" />}
+          {!status && <Workflow size={15} className="text-accent/70" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <Workflow size={12} className="text-accent/70 shrink-0" />
+            <span className="truncate text-[13px] font-medium text-text-strong">{name}</span>
+            {status && (
+              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent">
+                {status === 'running' && phase ? phase : status}
+              </span>
+            )}
+          </div>
+          {status === 'running' && lastLog && (
+            <div className="text-[12px] text-muted italic truncate mt-0.5">{lastLog}</div>
+          )}
+          {(status === 'failed' || status === 'cancelled') && errMsg && (
+            <div className="text-[12px] text-danger truncate mt-0.5">{errMsg}</div>
+          )}
+          <div className="text-[10px] text-muted font-mono truncate mt-0.5">
+            {runId} · Open Workflows panel
+          </div>
+        </div>
+        <PanelRight
+          size={14}
+          className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
+        />
+      </button>
+    </div>
+  )
+})
+
+export default WorkflowRunCard
