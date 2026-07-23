@@ -69,12 +69,21 @@ like the product documentation, not like marketing:
   "Spawn parallel background workers for fan-out research and multi-package work"
   "Persistent preferences, project context, and learned corrections across sessions"
 
+ACTION — every tip must be immediately usable. Many KiroCrew features are \
+triggered by a keyboard shortcut or a Settings/config toggle, NOT by chatting; \
+when so, name the EXACT key, Settings path, or config command in the body so the \
+reader can act without opening docs. If the feature is invoked by asking the \
+agent, put a ready-to-send message in cta_prompt.
+
 Each tip must have:
 - id: a short kebab-case identifier (e.g. "cron-scheduling-tip")
 - title: the feature's plain name or its core action, under 60 chars \
 (e.g. "Schedule recurring reports", not "Never miss a beat with cron!")
 - feature: the feature name from the catalog
-- body: 1-2 sentences stating what it does, ideally with one concrete usage example
+- body: 1-2 sentences; state what it does, then END with the exact action to \
+take — a keyboard shortcut (e.g. press Cmd+K), a Settings path (e.g. \
+Settings > Display > Interface), a config command (e.g. \
+`kirocrew config set session.pool_size 2`), or a ready-to-send message
 - why: 1 factual sentence connecting it to THIS user's actual recent workflow \
 (name the specific activity; if the connection is weak, pick a different feature \
 rather than inventing one)
@@ -306,6 +315,10 @@ class TipsCache:
     """In-memory tips cache with background refresh."""
 
     catalog: list[CatalogEntry] = field(default_factory=list)
+    # Hand-authored, action-first tips (see _load_curated_tips) — the primary
+    # user-facing pool. Empty by default so unit tests that build TipsCache()
+    # directly are unaffected; populated only by get_tips_cache in production.
+    curated: list[dict] = field(default_factory=list)  # type: ignore[type-arg]
     state: TipsState = field(default_factory=TipsState)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)  # type: ignore[type-arg]
@@ -356,6 +369,39 @@ def _load_bundled_catalog() -> list[CatalogEntry] | None:
         return None
 
 
+# Path to the hand-authored, action-first tips shipped with the package.
+_CURATED_FILE = Path(__file__).resolve().parent / "data" / "tips_curated.json"
+
+
+def _load_curated_tips() -> list[dict]:  # type: ignore[type-arg]
+    """Load the hand-authored, action-first tips shipped with the package.
+
+    These cover KiroCrew-native features (keyboard shortcuts, Settings toggles,
+    config keys) that have no docs/*.md entry and so can never surface through
+    the doc-scan catalog. Each entry is validated through the SAME field checks
+    as generated tips (all seven fields as strings; id/title/body non-empty).
+    Returns [] if the file is missing or malformed — a bad file must never
+    crash cache init or take down the tips endpoints.
+    """
+    if not _CURATED_FILE.is_file():
+        return []
+    try:
+        data = json.loads(_CURATED_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("tips", [])
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []  # type: ignore[type-arg]
+    for t in raw:
+        sanitized = _sanitize_persisted_tip(t)
+        if sanitized is not None:
+            out.append(sanitized)
+    return out
+
+
 async def get_tips_cache(state: DashboardState) -> TipsCache:
     """Get or create the tips cache on the state object (async: offloads IO)."""
     if not hasattr(state, "_tips_cache"):
@@ -370,8 +416,10 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                     logger.debug("Bundled tips catalog unavailable; falling back to live docs scan")
                     catalog = await loop.run_in_executor(None, _scan_docs_catalog)
                 st = await loop.run_in_executor(None, _load_state)
+                curated = await loop.run_in_executor(None, _load_curated_tips)
                 cache = TipsCache()
                 cache.catalog = catalog
+                cache.curated = curated
                 cache.state = st
                 state._tips_cache = cache  # type: ignore[attr-defined]
     return state._tips_cache  # type: ignore[attr-defined]
@@ -527,7 +575,11 @@ def _sanitize_persisted_tip(t: object) -> dict | None:  # type: ignore[type-arg]
         return None
     if not _validate_tip_fields(t):
         return None
-    return {k: t[k] for k in _TIP_ALLOWED_FIELDS}
+    out = {k: t[k] for k in _TIP_ALLOWED_FIELDS}
+    action = _sanitize_tip_action(t.get("action"))
+    if action is not None:
+        out["action"] = action
+    return out
 
 
 def _validate_tip_fields(t: dict) -> bool:  # type: ignore[type-arg]
@@ -545,6 +597,46 @@ def _validate_tip_fields(t: dict) -> bool:  # type: ignore[type-arg]
         if not t.get(k, "").strip():
             return False
     return True
+
+
+# Optional per-tip action button. A single 'route' kind for now: a button that
+# navigates to an internal dashboard path (the exact settings tab/control, a
+# page, etc.). Validated separately from the seven string fields because it is
+# a nested object. Absent/invalid -> no button rendered. Curated tips carry
+# hand-authored actions; LLM-generated tips never get one, so no invented route
+# can reach the client.
+_TIP_ACTION_KINDS = ("route",)
+_TIP_ACTION_LABEL_MAX = 40
+_TIP_ACTION_ROUTE_MAX = 200
+
+
+def _sanitize_tip_action(obj: object) -> dict | None:  # type: ignore[type-arg]
+    """Validate an optional tip action object; return a clean projected dict or
+    None (no button). Strict: kind must be known, label a short non-empty
+    string, and route an INTERNAL path (leading '/', not '//', no scheme) so a
+    value can never drive an off-origin or open-redirect navigation.
+    """
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("kind") not in _TIP_ACTION_KINDS:
+        return None
+    label = obj.get("label")
+    if (
+        not isinstance(label, str)
+        or not label.strip()
+        or len(label) > _TIP_ACTION_LABEL_MAX
+    ):
+        return None
+    route = obj.get("route")
+    if (
+        not isinstance(route, str)
+        or not route.startswith("/")
+        or route.startswith("//")
+        or "://" in route
+        or len(route) > _TIP_ACTION_ROUTE_MAX
+    ):
+        return None
+    return {"kind": "route", "label": label, "route": route}
 
 
 def _redact_tips(tips: list[dict]) -> list[dict]:  # type: ignore[type-arg]
@@ -762,12 +854,20 @@ async def api_tips_next(request: web.Request) -> web.Response:
         if not cadence_open:
             return web.json_response({"tip": None, "glow": False})
 
-        # Gather eligible candidates
-        candidates = [
-            t for t in st.tips if _is_eligible(t, st, now, snooze_hours)
+        # Gather eligible candidates. Curated actionable tips (hand-authored,
+        # action-first, for features with no docs entry) are the primary pool;
+        # LLM-generated tips augment them. Dedupe by id — curated wins.
+        curated_candidates = [
+            t for t in cache.curated if _is_eligible(t, st, now, snooze_hours)
         ]
+        curated_ids = {t.get("id", "") for t in curated_candidates}
+        generated_candidates = [
+            t for t in st.tips
+            if _is_eligible(t, st, now, snooze_hours) and t.get("id", "") not in curated_ids
+        ]
+        candidates = curated_candidates + generated_candidates
         if not candidates:
-            # Try fallback from catalog
+            # Last resort: doc-scan catalog fallback (descriptive, not action-first)
             candidates = [
                 t for t in _fallback_tips(cache.catalog, st)
                 if _is_eligible(t, st, now, snooze_hours)
@@ -776,24 +876,24 @@ async def api_tips_next(request: web.Request) -> web.Response:
         if not candidates:
             return web.json_response({"tip": None, "glow": False})
 
-        # Exploration blend: with probability explore_ratio, pick uniformly at random
-        # from ALL eligible catalog-derived candidates (general features); otherwise
-        # use the weighted-random newer-biased pick from the generated pool.
+        # Exploration blend: with probability explore_ratio, pick uniformly at
+        # random from the general pool; otherwise use the weighted-random
+        # newer-biased pick. The general pool prefers the curated actionable
+        # tips and falls back to the doc-scan catalog when none are eligible.
         explore_ratio = cfg.dashboard.tips_explore_ratio
         rng = random.Random()
         tip: dict | None = None  # type: ignore[type-arg]
         if rng.random() < explore_ratio:
-            # Explore: pick from catalog-derived fallback tips (general, context-independent)
-            all_catalog_candidates = [
+            explore_pool = curated_candidates or [
                 t for t in _fallback_tips(cache.catalog, st)
                 if _is_eligible(t, st, now, snooze_hours)
             ]
-            if all_catalog_candidates:
-                tip = rng.choice(all_catalog_candidates)
+            if explore_pool:
+                tip = rng.choice(explore_pool)
             else:
                 tip = _select_tip(candidates, cache.catalog, recency_decay=recency_decay)
         else:
-            # Exploit: weighted-random newer-biased from generated tips
+            # Exploit: weighted-random newer-biased across the merged pool
             tip = _select_tip(candidates, cache.catalog, recency_decay=recency_decay)
         if not tip:
             return web.json_response({"tip": None, "glow": False})

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { TipCard, useTipTrigger } from '../components/TipCard'
+import { api } from '../api/client'
 
 const mockTip = {
   id: 'test-tip',
@@ -459,5 +460,63 @@ describe('useTipTrigger', () => {
       vi.advanceTimersByTime(5000)
     })
     expect(screen.getByTestId('tip-out').textContent).toBe('none')
+  })
+})
+
+describe('TipCard action button', () => {
+  const onDismiss = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function LocationProbe() {
+    const loc = useLocation()
+    return <div data-testid="loc">{loc.pathname + loc.search}</div>
+  }
+
+  const actionTip = {
+    ...mockTip,
+    id: 'split-view',
+    action: {
+      kind: 'route' as const,
+      label: 'Open Split View setting',
+      route: '/settings?tab=chat&highlight=chat.split-view-session-grid',
+    },
+  }
+
+  it('renders no action button when tip.action is absent', () => {
+    renderWithQuery(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    expect(
+      screen.queryByRole('button', { name: /Open Split View/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the action button and navigates + acks on click', async () => {
+    renderWithQuery(
+      <>
+        <TipCard tip={actionTip} onDismiss={onDismiss} />
+        <LocationProbe />
+      </>,
+    )
+    const btn = screen.getByRole('button', { name: /Open Split View setting/i })
+    expect(btn).toBeInTheDocument()
+    fireEvent.click(btn)
+    await waitFor(() => {
+      expect(screen.getByTestId('loc').textContent).toBe(
+        '/settings?tab=chat&highlight=chat.split-view-session-grid',
+      )
+    })
+    expect(api.tipsFeedback).toHaveBeenCalledWith('split-view', 'ack')
+    expect(onDismiss).toHaveBeenCalled()
+  })
+
+  it('renders no button when the action route is off-origin (open-redirect guard)', () => {
+    const evil = {
+      ...mockTip,
+      action: { kind: 'route' as const, label: 'Evil', route: 'https://evil.com' },
+    }
+    renderWithQuery(<TipCard tip={evil} onDismiss={onDismiss} />)
+    expect(screen.queryByRole('button', { name: /Evil/i })).not.toBeInTheDocument()
   })
 })

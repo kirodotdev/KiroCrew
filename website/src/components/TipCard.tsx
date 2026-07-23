@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ExternalLink, Lightbulb, Settings, X } from 'lucide-react'
+import { ArrowRight, ExternalLink, Lightbulb, Settings, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -22,6 +22,27 @@ export function tipDocHref(doc: string | undefined): string | null {
   return `${DOCS_BASE}/${doc}`
 }
 
+// Optional one-click action button on a tip. A single 'route' kind for now:
+// navigate to an internal dashboard path (an exact settings tab/control via
+// ?highlight=, a page, etc.).
+export interface TipAction {
+  kind: 'route'
+  label: string
+  route: string
+}
+
+// Tips can be LLM-authored, so validate a nav target the same defensive way the
+// doc link is validated (tipDocHref): only an INTERNAL path (leading '/', not
+// '//', no scheme) is allowed, so an action can never drive an off-origin or
+// open-redirect navigation. Returns the safe route, or null (no button).
+export function tipActionRoute(action: TipAction | null | undefined): string | null {
+  if (!action || action.kind !== 'route') return null
+  const { route, label } = action
+  if (typeof route !== 'string' || typeof label !== 'string' || !label.trim()) return null
+  if (!route.startsWith('/') || route.startsWith('//') || route.includes('://')) return null
+  return route
+}
+
 export interface Tip {
   id: string
   feature: string
@@ -30,6 +51,7 @@ export interface Tip {
   why: string
   doc: string
   cta_prompt: string
+  action?: TipAction | null
 }
 
 interface TipCardProps {
@@ -70,8 +92,21 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
     optOutMutation.mutate()
   }, [optOutMutation])
 
+  const navigate = useNavigate()
   const tooltipText = tip.why ? `${tip.title} — ${tip.why}` : tip.title
   const docHref = tipDocHref(tip.doc)
+  const actionRoute = tipActionRoute(tip.action)
+
+  const handleAction = useCallback(() => {
+    if (!actionRoute) return
+    // Count the click as engagement (distinct from dismiss) so cadence /
+    // analytics can tell "acted" from "closed". Fire-and-forget — navigation
+    // must not depend on the request.
+    api.tipsFeedback(tip.id, 'ack').catch(() => {})
+    queryClient.setQueryData(['tips-next'], null)
+    navigate(actionRoute)
+    onDismiss()
+  }, [actionRoute, tip.id, navigate, onDismiss, queryClient])
 
   return (
     <motion.div
@@ -109,6 +144,20 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
           <MarkdownRenderer content={tip.body} />
         </div>
         <div className="flex items-center gap-3 mt-1">
+          {actionRoute && (
+            <button
+              onClick={handleAction}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium hover:brightness-110 transition"
+              style={{
+                color: 'var(--accent)',
+                background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+              }}
+            >
+              {tip.action?.label}
+              <ArrowRight size={11} aria-hidden="true" />
+            </button>
+          )}
           {docHref && (
             <a
               href={docHref}

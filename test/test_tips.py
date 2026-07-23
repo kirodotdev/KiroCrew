@@ -1366,3 +1366,250 @@ class TestTruncateSummary:
     def test_bang_and_question_boundaries(self) -> None:
         assert truncate_summary("Stop! Then more words follow here.", limit=10) == "Stop!"
         assert truncate_summary("Why? Then more words follow here.", limit=10) == "Why?"
+
+
+class TestCuratedTips:
+    """Curated, action-first tips are the primary user-facing pool."""
+
+    def test_curated_tips_ship_and_validate(self) -> None:
+        from kiro_crew.tips import _TIP_ALLOWED_FIELDS, _load_curated_tips
+        tips = _load_curated_tips()
+        assert len(tips) >= 8
+        ids = [t["id"] for t in tips]
+        assert len(ids) == len(set(ids)), "curated tip ids must be unique"
+        # A few known KiroCrew-native features must be present.
+        for expected in ("split-view", "command-palette", "warm-pool"):
+            assert expected in ids
+        for t in tips:
+            for k in _TIP_ALLOWED_FIELDS:
+                assert isinstance(t.get(k), str), f"{t.get('id')}.{k} must be a string"
+            for k in ("id", "title", "body"):
+                assert t[k].strip(), f"{t.get('id')}.{k} must be non-empty"
+
+    def test_curated_tips_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        from unittest.mock import patch as mpatch
+
+        from kiro_crew import tips as tips_mod
+        missing = tmp_path / "nope.json"
+        with mpatch.object(tips_mod, "_CURATED_FILE", missing):
+            assert tips_mod._load_curated_tips() == []
+
+    def test_curated_tips_malformed_returns_empty(self, tmp_path: Path) -> None:
+        from unittest.mock import patch as mpatch
+
+        from kiro_crew import tips as tips_mod
+        bad = tmp_path / "bad.json"
+        bad.write_text("{ not json", encoding="utf-8")
+        with mpatch.object(tips_mod, "_CURATED_FILE", bad):
+            assert tips_mod._load_curated_tips() == []
+        # A JSON list root (not a dict) also degrades to empty.
+        bad.write_text("[]", encoding="utf-8")
+        with mpatch.object(tips_mod, "_CURATED_FILE", bad):
+            assert tips_mod._load_curated_tips() == []
+
+    def test_curated_tips_skip_invalid_entries(self, tmp_path: Path) -> None:
+        from unittest.mock import patch as mpatch
+
+        from kiro_crew import tips as tips_mod
+        f = tmp_path / "c.json"
+        good = {
+            "id": "ok", "feature": "F", "title": "T", "body": "Do the thing.",
+            "why": "", "doc": "", "cta_prompt": "",
+        }
+        f.write_text(
+            json.dumps({"tips": [good, {"id": "bad"}, "nope", 3]}), encoding="utf-8"
+        )
+        with mpatch.object(tips_mod, "_CURATED_FILE", f):
+            out = tips_mod._load_curated_tips()
+        assert [t["id"] for t in out] == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_curated_tip_served_when_generated_empty(self, tmp_path: Path) -> None:
+        import types
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mpatch
+
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.tips import TipsCache, api_tips_next
+
+        curated = {
+            "id": "split-view", "feature": "Split View",
+            "title": "Work two sessions side by side",
+            "body": "Turn on Settings > Chat > Split View, then press Cmd+D.",
+            "why": "", "doc": "", "cta_prompt": "",
+        }
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            cache = TipsCache()
+            cache.curated = [curated]
+            cache.state = TipsState(tips=[])
+            state = types.SimpleNamespace(_tips_cache=cache)
+            cfg = MagicMock()
+            cfg.dashboard.tips_enabled = True
+            cfg.dashboard.tips_cadence_hours = 0.0
+            cfg.dashboard.tips_snooze_hours = 48.0
+            cfg.dashboard.tips_recency_decay = 0.6
+            cfg.dashboard.tips_explore_ratio = 0.0
+
+            async def noop_refresh(*a: object, **k: object) -> None:
+                return None
+
+            with mpatch("kiro_crew.tips.KiroCrewConfig") as mock_cfg_cls, \
+                    mpatch("kiro_crew.tips.maybe_refresh", noop_refresh):
+                mock_cfg_cls.load.return_value = cfg
+                req = make_mocked_request("GET", "/api/tips/next")
+                req.app["state"] = state
+                resp = await api_tips_next(req)
+                assert resp.status == 200
+                body = json.loads(resp.body)
+                assert body["tip"] is not None
+                assert body["tip"]["id"] == "split-view"
+
+    @pytest.mark.asyncio
+    async def test_empty_curated_preserves_generated(self, tmp_path: Path) -> None:
+        import types
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mpatch
+
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.tips import TipsCache, api_tips_next
+
+        gen = {
+            "id": "gen-1", "feature": "F", "title": "T", "body": "B",
+            "why": "W", "doc": "", "cta_prompt": "",
+        }
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            cache = TipsCache()  # curated defaults to []
+            cache.state = TipsState(tips=[gen])
+            state = types.SimpleNamespace(_tips_cache=cache)
+            cfg = MagicMock()
+            cfg.dashboard.tips_enabled = True
+            cfg.dashboard.tips_cadence_hours = 0.0
+            cfg.dashboard.tips_snooze_hours = 48.0
+            cfg.dashboard.tips_recency_decay = 0.6
+            cfg.dashboard.tips_explore_ratio = 0.0
+
+            async def noop_refresh(*a: object, **k: object) -> None:
+                return None
+
+            with mpatch("kiro_crew.tips.KiroCrewConfig") as mock_cfg_cls, \
+                    mpatch("kiro_crew.tips.maybe_refresh", noop_refresh):
+                mock_cfg_cls.load.return_value = cfg
+                req = make_mocked_request("GET", "/api/tips/next")
+                req.app["state"] = state
+                resp = await api_tips_next(req)
+                assert resp.status == 200
+                body = json.loads(resp.body)
+                assert body["tip"] is not None
+                assert body["tip"]["id"] == "gen-1"
+
+    def test_sanitize_tip_action_valid_and_invalid(self) -> None:
+        from kiro_crew.tips import _sanitize_tip_action
+
+        # Valid internal route (with query + highlight) is projected as-is.
+        ok = _sanitize_tip_action(
+            {"kind": "route", "label": "Open X", "route": "/settings?tab=chat&highlight=x"}
+        )
+        assert ok == {
+            "kind": "route",
+            "label": "Open X",
+            "route": "/settings?tab=chat&highlight=x",
+        }
+        # Rejected: not a dict / unknown kind / empty or oversized label.
+        assert _sanitize_tip_action(None) is None
+        assert _sanitize_tip_action("nope") is None
+        assert _sanitize_tip_action({"kind": "message", "label": "L", "route": "/x"}) is None
+        assert _sanitize_tip_action({"kind": "route", "label": "  ", "route": "/x"}) is None
+        assert _sanitize_tip_action({"kind": "route", "label": "L" * 41, "route": "/x"}) is None
+        # Rejected: off-origin / open-redirect / non-path routes.
+        for bad in ("//evil.com", "https://evil.com", "http://x", "settings", "", "mailto:a@b"):
+            assert (
+                _sanitize_tip_action({"kind": "route", "label": "L", "route": bad}) is None
+            ), bad
+        # Rejected: missing route or non-string route.
+        assert _sanitize_tip_action({"kind": "route", "label": "L"}) is None
+        assert _sanitize_tip_action({"kind": "route", "label": "L", "route": 5}) is None
+
+    def test_persisted_tip_attaches_valid_action_drops_invalid(self) -> None:
+        from kiro_crew.tips import _sanitize_persisted_tip
+        base = {
+            "id": "x", "feature": "F", "title": "T", "body": "B",
+            "why": "", "doc": "", "cta_prompt": "",
+        }
+        # Valid action is attached to the sanitized tip.
+        good = _sanitize_persisted_tip(
+            {**base, "action": {"kind": "route", "label": "Go", "route": "/apps"}}
+        )
+        assert good is not None
+        assert good["action"] == {"kind": "route", "label": "Go", "route": "/apps"}
+        # Invalid action is silently dropped; the tip itself still survives (no button).
+        bad = _sanitize_persisted_tip(
+            {**base, "action": {"kind": "route", "label": "Go", "route": "https://evil"}}
+        )
+        assert bad is not None
+        assert "action" not in bad
+        # No action key at all -> no action attached.
+        none = _sanitize_persisted_tip(base)
+        assert none is not None
+        assert "action" not in none
+
+    def test_shipped_curated_actions_match_capable_features(self) -> None:
+        from kiro_crew.tips import _load_curated_tips, _sanitize_tip_action
+        tips = {t["id"]: t for t in _load_curated_tips()}
+        # Features with a navigable destination carry a valid, internal route action.
+        for tid in (
+            "split-view", "interface-cli-mode", "warm-pool", "mcp-gateway",
+            "subagent-parallelism", "zero-token-cron", "dev-fleet", "app-store",
+        ):
+            action = tips[tid].get("action")
+            assert action is not None, f"{tid} should have an action"
+            assert _sanitize_tip_action(action) == action, f"{tid} action must be valid"
+            assert action["route"].startswith("/")
+        # Features with no in-dashboard destination render body only (no button).
+        for tid in ("command-palette", "steer-or-queue", "local-telemetry"):
+            assert "action" not in tips[tid], f"{tid} must not carry an action"
+
+    @pytest.mark.asyncio
+    async def test_curated_action_survives_serve(self, tmp_path: Path) -> None:
+        import types
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mpatch
+
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.tips import TipsCache, api_tips_next
+
+        curated = {
+            "id": "split-view", "feature": "Split View", "title": "Two sessions",
+            "body": "Turn on split view.", "why": "", "doc": "", "cta_prompt": "",
+            "action": {
+                "kind": "route", "label": "Open Split View setting",
+                "route": "/settings?tab=chat&highlight=chat.split-view-session-grid",
+            },
+        }
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            cache = TipsCache()
+            cache.curated = [curated]
+            cache.state = TipsState(tips=[])
+            state = types.SimpleNamespace(_tips_cache=cache)
+            cfg = MagicMock()
+            cfg.dashboard.tips_enabled = True
+            cfg.dashboard.tips_cadence_hours = 0.0
+            cfg.dashboard.tips_snooze_hours = 48.0
+            cfg.dashboard.tips_recency_decay = 0.6
+            cfg.dashboard.tips_explore_ratio = 0.0
+
+            async def noop_refresh(*a: object, **k: object) -> None:
+                return None
+
+            with mpatch("kiro_crew.tips.KiroCrewConfig") as mock_cfg_cls, \
+                    mpatch("kiro_crew.tips.maybe_refresh", noop_refresh):
+                mock_cfg_cls.load.return_value = cfg
+                req = make_mocked_request("GET", "/api/tips/next")
+                req.app["state"] = state
+                resp = await api_tips_next(req)
+                assert resp.status == 200
+                body = json.loads(resp.body)
+                assert body["tip"]["action"]["kind"] == "route"
+                assert body["tip"]["action"]["route"].startswith("/settings?tab=chat")
