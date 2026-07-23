@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, createContext, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, createContext, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -548,22 +548,6 @@ function NotificationsBellButton() {
     return () => { document.removeEventListener('pointerdown', onPointerDown); document.removeEventListener('keydown', onKey) }
   }, [open, selectedTs])
 
-  // Anchor the popover under the button: measured on open (and window resize)
-  // so it tracks the button's real position \u2014 with the activity panel open the
-  // header is narrower and a viewport-right-anchored popover would appear far
-  // from the bell, over the panel.
-  const [anchorRight, setAnchorRight] = useState(8)
-  useLayoutEffect(() => {
-    if (!open) return
-    const measure = () => {
-      const r = containerRef.current?.getBoundingClientRect()
-      if (r) setAnchorRight(Math.max(8, window.innerWidth - r.right))
-    }
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [open])
-
   // Auto-mark-read when opening a notification's detail
   useEffect(() => {
     if (selected && !selected.acked) dispatch(ackNotification(selected.ts))
@@ -595,7 +579,7 @@ function NotificationsBellButton() {
         <div
           ref={popoverRef}
           className="fixed z-[60] pointer-events-none"
-          style={isMobile ? { top: 60, bottom: 12, left: 8, right: 8 } : { top: 60, bottom: 12, right: anchorRight, left: 12 }}
+          style={isMobile ? { top: 48, bottom: 0, left: 0, right: 0 } : { top: 48, bottom: 0, right: 0, left: 12 }}
         >
           <ErrorBoundary
             scope="notifications-bell"
@@ -607,31 +591,46 @@ function NotificationsBellButton() {
               </div>
             }
           >
-          {/* Feed — anchored right, fixed width on desktop, full-width on mobile */}
+          {/* Sheet — macOS Notification Center style: the panel itself is fully
+              transparent (a tinted/blurred panel paints a hard edge at its left
+              boundary — exactly what NC doesn't have). Every readable element
+              (header, controls, notification rows) is its own floating
+              material card instead. */}
           <div
-            className={`absolute top-0 bottom-0 right-0 pointer-events-auto ${isMobile ? 'left-0' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col overflow-hidden`}
+            className={`absolute top-0 bottom-0 right-0 pointer-events-auto ${isMobile ? 'left-0' : 'w-[400px]'} flex flex-col isolate animate-nc-slide-in`}
           >
-            <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
-              <span className="text-[13px] font-semibold text-text-strong">Activity Feed</span>
-            </div>
+            {/* Column scrim — macOS NC dims/blurs only the strip behind the
+                cards and it travels WITH the sheet. The layer extends 80px
+                past the sheet's left edge and a mask fades both the dim and
+                the blur to nothing there, so there is no hard boundary.
+                -z-10 + isolate on the sheet keeps it behind the cards without
+                forming a backdrop root (isolation is not a root trigger, so
+                the cards' own backdrop-blur still samples the page). */}
+            <div
+              aria-hidden="true"
+              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.03] [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
+            />
             <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
               <NotificationFeed
+                variant="mac"
+                header={
+                  <div className="flex items-center px-1 pb-1.5">
+                    <span className="text-[14px] font-bold text-text-strong">Notifications</span>
+                  </div>
+                }
+                footer={
+                  <div className="flex justify-end px-1 pb-1">
+                    <button
+                      className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer"
+                      onClick={() => { setOpen(false); navigate('/notifications') }}
+                    >
+                      Open inbox
+                    </button>
+                  </div>
+                }
                 selectedTs={selectedTs}
                 onSelect={n => setSelectedTs(n.ts)}
               />
-            </div>
-            {/* Solid, occluding footer bar. The feed list above uses a `scroll-shadow`
-                bottom fade; on the translucent glass surface that fade dissolved the
-                last notification row right into this link, reading as overlap. A solid
-                `bg-bg-elevated` bar (with its own stacking level) gives a crisp boundary
-                so scrolled rows clearly end above "Open inbox". */}
-            <div className="px-3 py-2 border-t border-border shrink-0 relative z-[1] bg-bg-elevated">
-              <button
-                className="w-full text-[13px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer text-center py-1"
-                onClick={() => { setOpen(false); navigate('/notifications') }}
-              >
-                Open inbox
-              </button>
             </div>
           </div>
           {/* Detail panel — overlays feed on mobile, sits beside it on desktop.

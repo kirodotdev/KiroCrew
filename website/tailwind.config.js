@@ -84,6 +84,9 @@ export default {
         'gradient-shift': { '0%': { backgroundPosition: '0% 50%' }, '50%': { backgroundPosition: '100% 50%' }, '100%': { backgroundPosition: '0% 50%' } },
         'msg-highlight': { '0%': { boxShadow: 'inset 0 0 0 2px var(--accent)' }, '100%': { boxShadow: 'inset 0 0 0 0px transparent' } },
         float: { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-6px)' } },
+        /* margin-based (NOT transform): a transformed ancestor becomes a
+           backdrop root and breaks descendants' backdrop-filter blur. */
+        'nc-slide-in': { from: { marginRight: '-420px' }, to: { marginRight: '0px' } },
       },
       animation: {
         rise: 'rise .35s cubic-bezier(.16,1,.3,1) backwards',
@@ -99,6 +102,7 @@ export default {
         'gradient-shift': 'gradient-shift 20s ease infinite',
         'msg-highlight': 'msg-highlight 2s ease-out forwards',
         float: 'float 3s ease-in-out infinite',
+        'nc-slide-in': 'nc-slide-in .32s cubic-bezier(.16,1,.3,1) backwards',
       },
     },
   },
