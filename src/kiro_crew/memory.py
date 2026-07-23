@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew._sqlite_compat import FTS5_UNAVAILABLE_HINT, fts5_available, sqlite3
 from kiro_crew.config.loader import config_dir
+from kiro_crew.platform_compat import file_lock
 
 if TYPE_CHECKING:
     from kiro_crew.vector_memory import VectorMemoryStore
@@ -45,6 +46,39 @@ _DEFAULT_PROJECTS = "# Active Projects\n\n<!-- Current work context -->\n"
 # staying fresh; the cache key includes the day so the decay window shifting at
 # midnight invalidates naturally, and append/prune invalidate explicitly.
 _HISTORY_CACHE_TTL_SECS = 5.0
+
+# How long a sqlite connection waits out 'database is locked' contention before
+# giving up. Applied both as connect(timeout=) and PRAGMA busy_timeout so a
+# transient lock is retried/waited out rather than surfacing as an error the
+# self-heal path would misread as corruption.
+_DB_BUSY_TIMEOUT_SECS = 5.0
+
+# Substrings that mark a *genuinely* corrupt on-disk index (safe to delete +
+# rebuild). Note: 'database is locked'/'is busy' are transient contention, NOT
+# corruption, and must never trigger the delete-and-rebuild self-heal.
+_DB_CORRUPTION_MARKERS = (
+    "database disk image is malformed",
+    "file is not a database",
+    "malformed",
+    "not a database",
+)
+
+
+def _is_corruption_error(exc: BaseException) -> bool:
+    """True only for errors indicating genuine on-disk FTS index corruption.
+
+    Deleting and rebuilding the index is destructive (it drops all indexed
+    data), so it must fire only for real corruption. A 'database is locked' /
+    'database is busy' error is transient contention under concurrent access —
+    treating it as corruption would turn normal lock contention into permanent
+    data loss, so those are explicitly excluded.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    msg = str(exc).lower()
+    if "locked" in msg or "busy" in msg:
+        return False
+    return any(marker in msg for marker in _DB_CORRUPTION_MARKERS)
 
 
 def workspace_dir() -> Path:
@@ -195,20 +229,31 @@ class MemoryStore:
         return self._history_dir / f"{date}.md"
 
     def append_history(self, entry: str) -> None:
-        """Append a timestamped entry to today's daily history file."""
+        """Append a timestamped entry to today's daily history file.
+
+        The whole read-modify-write is serialized behind an exclusive advisory
+        file lock so concurrent appends from other sessions/threads or processes
+        cannot interleave and clobber each other's entries. The lock uses
+        :func:`kiro_crew.platform_compat.file_lock` (real cross-platform locking
+        — ``flock`` on POSIX, ``msvcrt`` on Windows). The lock covers read +
+        rewrite; indexing and cache invalidation run after it is released.
+        """
         self._history_dir.mkdir(parents=True, exist_ok=True)
         path = self._today_history_file()
+        lock_path = self._history_dir / ".append.lock"
         timestamp = datetime.now().astimezone().strftime("%H:%M %Z")
 
-        content = ""
-        if path.exists():
-            content = path.read_text(encoding="utf-8")
-        if not content:
-            date = datetime.now().strftime("%Y-%m-%d")
-            content = f"# {date}\n"
+        with open(lock_path, "w") as fd:
+            with file_lock(fd.fileno(), exclusive=True):
+                content = ""
+                if path.exists():
+                    content = path.read_text(encoding="utf-8")
+                if not content:
+                    date = datetime.now().strftime("%Y-%m-%d")
+                    content = f"# {date}\n"
 
-        content += f"\n#### {timestamp}\n{entry.strip()}\n"
-        path.write_text(content, encoding="utf-8")
+                content += f"\n#### {timestamp}\n{entry.strip()}\n"
+                path.write_text(content, encoding="utf-8")
         self._index_file(path, content)
         self._invalidate_history_cache()  # today's window changed
 
@@ -383,15 +428,25 @@ class MemoryStore:
             # retrying loops on the same failure — fail loudly with a fix hint.
             if not fts5_available():
                 raise RuntimeError(FTS5_UNAVAILABLE_HINT) from e
+            # Only self-heal on GENUINE corruption. A transient 'database is
+            # locked'/'busy' error is contention (waited out by busy_timeout in
+            # _try_create_db), not corruption — deleting the index there would
+            # turn normal lock contention into permanent data loss, so re-raise
+            # anything that isn't unambiguously corrupt untouched.
+            if not _is_corruption_error(e):
+                raise
             # Self-healing: delete corrupted DB and retry
-            logger.warning("FTS index init failed (%s), deleting and retrying", e)
+            logger.warning("FTS index corrupted (%s), deleting and rebuilding", e)
             for suffix in ("", "-wal", "-shm"):
                 p = Path(str(self._index_db) + suffix)
                 p.unlink(missing_ok=True)
             return self._try_create_db()
 
     def _try_create_db(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._index_db))
+        conn = sqlite3.connect(str(self._index_db), timeout=_DB_BUSY_TIMEOUT_SECS)
+        # Wait out transient 'database is locked' contention instead of letting
+        # it surface (where the self-heal used to misread it as corruption).
+        conn.execute(f"PRAGMA busy_timeout={int(_DB_BUSY_TIMEOUT_SECS * 1000)}")
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
             "path, content, tokenize='porter unicode61')"

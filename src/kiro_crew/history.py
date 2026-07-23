@@ -1437,7 +1437,12 @@ class HistoryConsolidator:
                 return
 
             if entry := result.get("history_entry"):
-                memory.append_history(entry)
+                # Offloaded to a worker thread: append_history takes a blocking
+                # advisory file lock (cross-process) and does synchronous file
+                # IO, and _consolidate runs on the event loop thread (fired via
+                # asyncio.create_task). Running it inline would let cross-process
+                # lock contention stall the whole gateway loop.
+                await run_in_embed_pool(memory.append_history, entry)
                 logger.info("Consolidated %d messages for %s", len(unconsolidated), key)
 
             # Structured memory writes (Phase 2/3). Offloaded to a worker thread:
