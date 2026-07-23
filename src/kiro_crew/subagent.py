@@ -71,6 +71,7 @@ from kiro_crew.subagent_persistence import (
     list_orphans,
     mark_delivered,
     prune_stale_tombstones,
+    record_slow_command,
     update_state,
     write_result_chunk,
     write_tombstone,
@@ -205,6 +206,7 @@ _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 INJECTION_TIMEOUT = 300.0  # inner cap: max seconds for a single stream_and_collect call
+_STALL_IDLE_SECS = 120  # seconds with no stream activity before a running subagent is surfaced as "stalled"
 
 
 def _timeout_context(info: "SubagentInfo", *, include_elapsed: bool = True) -> str:
@@ -713,6 +715,10 @@ class SubagentInfo:
     silent: bool = False  # suppress completion notification (dashboard + Slack)
     turns: int = 0
     last_tool: str = ""
+    tool_count: int = 0  # count of observed tool calls (incl. auto-approved); drives running-card progress
+    last_activity: float = field(default_factory=time.time)  # time.time() of last stream event; drives idle-stall detection
+    stalled: bool = False  # True while the reaper has flagged this subagent as idle/stalled (UI signal)
+    _awaiting_approval: bool = False  # True while blocked on a human tool-approval prompt; exempt from idle-stall
     max_turns: int = 0
     reaped: bool = False
     streaming_text: str = ""
@@ -780,6 +786,7 @@ class SubagentManager:
         default_turn_limit: int = _TURN_LIMIT,
         default_timeout: int = _TIMEOUT_SECS,
         startup_timeout: int = _STARTUP_TIMEOUT_SECS,
+        stall_idle_secs: int = _STALL_IDLE_SECS,
         on_tool_approval: ToolApprovalCallback | None = None,
         on_tool_approval_factory: (
             Callable[["SubagentInfo"], Callable[[LLMEvent], Awaitable[bool]]] | None
@@ -797,6 +804,7 @@ class SubagentManager:
         self._default_turn_limit = default_turn_limit
         self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
         self._startup_deadline = startup_timeout if startup_timeout > 0 else _STARTUP_TIMEOUT_SECS
+        self._stall_idle_secs = stall_idle_secs if stall_idle_secs > 0 else _STALL_IDLE_SECS
         self._on_tool_approval = on_tool_approval  # fallback for non-auto sessions
         self._on_tool_approval_factory = on_tool_approval_factory
         self._on_spawn_approval = on_spawn_approval
@@ -1238,6 +1246,13 @@ class SubagentManager:
                     except Exception:
                         logger.exception("Reaper: failed to reap %s", agent_id)
                     continue
+                # Idle-stall detection (see _maybe_flag_stall). The main-agent
+                # watchdog stack does not govern subagents; this is their
+                # equivalent — surface a "stalled" UI signal well before the
+                # 30-min ceiling. Surface-only: it never terminates the agent
+                # (users close it from the UX), so we always fall through to
+                # the wall-clock check below.
+                await self._maybe_flag_stall(agent_id, info, now)
                 if elapsed <= self._default_timeout:
                     continue
                 logger.warning(
@@ -1280,6 +1295,73 @@ class SubagentManager:
         return (
             info.turns == 0 and info._pid is None and (now - exec_started) > self._startup_deadline
         )
+
+    async def _maybe_flag_stall(self, agent_id: str, info: SubagentInfo, now: float) -> None:
+        """Idle-stall detection for a running subagent (surface-only).
+
+        A subagent that has actually started (>=1 turn or a live runtime PID)
+        but has emitted no stream activity for ``_stall_idle_secs`` is likely
+        wedged in a single hung tool call — or simply running one slow, silent
+        command. Unlike the main agent, subagents get no liveness oracle /
+        tool-stall watchdog, and (because session-sharing subagents share the
+        parent's runtime PID) a per-PID oracle could not tell the two apart.
+
+        So this is deliberately *surface-only*: it emits a ``subagent_stalled``
+        UI signal (so the user understands why a "simple" task is taking so
+        long) and records the slow command for later analysis, but it NEVER
+        terminates the agent — the user closes a genuinely-hung subagent from
+        the UX (per-row stop / Stop-all). This means a slow-but-healthy command
+        can only ever produce a self-clearing badge, never a kill.
+        """
+        if not (info.turns > 0 or info._pid is not None):
+            return
+        # A subagent blocked on a human tool-approval prompt is healthy, not
+        # stalled — the permission request bumps `turns` before the approval
+        # wait, so without this a slow approval would be mislabelled idle.
+        if info._awaiting_approval:
+            return
+        idle = now - info.last_activity
+        if not info.stalled and idle > self._stall_idle_secs:
+            info.stalled = True
+            logger.warning(
+                "Reaper: subagent %s idle %.0fs (no stream activity) — marking stalled",
+                agent_id, idle,
+            )
+            # Persist the slow command for future analysis. Best-effort; must
+            # not disturb the still-running agent (NOT a tombstone — the agent
+            # is alive, not dead).
+            self._record_slow_command(info, idle)
+            try:
+                await self._fire_event(
+                    "subagent_stalled", info, {"stalled": True, "idle_secs": int(idle)}
+                )
+            except Exception:
+                logger.debug(
+                    "Reaper: failed to emit subagent_stalled for %s", agent_id, exc_info=True
+                )
+
+    @staticmethod
+    def _record_slow_command(info: SubagentInfo, idle: float) -> None:
+        """Best-effort append of a stalled subagent's slow command for analysis.
+
+        Writes to ``~/.kirocrew/subagents/slow_commands.jsonl`` (append-only,
+        survives per-agent folder cleanup). Deliberately separate from the
+        tombstone path, which marks an agent dead — a stalled agent is still
+        running.
+        """
+        try:
+            record_slow_command(
+                info.id,
+                last_tool=_redact(info.last_tool or ""),
+                tool_count=info.tool_count,
+                turns=info.turns,
+                idle_secs=int(idle),
+                elapsed_secs=int(time.time() - info.started),
+                parent_session=info.parent_session_key or "",
+                session_sharing=info._session_sharing,
+            )
+        except Exception:
+            logger.debug("Failed to record slow command for %s", info.id, exc_info=True)
 
     async def _force_reap(
         self, agent_id: str, info: SubagentInfo, elapsed: float, *, reason: str = ""
@@ -1594,6 +1676,8 @@ class SubagentManager:
                 "agent": _r(a.agent),
                 "turns": a.turns,
                 "last_tool": _r(a.last_tool),
+                "tool_count": a.tool_count,
+                "stalled": a.stalled,
                 "startedAt": a.started,
             }
             for a in self._agents.values()
@@ -2196,6 +2280,18 @@ class SubagentManager:
             except Exception:
                 logger.exception("Subagent announce failed for %s", info.id)
 
+    async def _touch_activity(self, info: SubagentInfo) -> None:
+        """Record stream activity for idle-stall detection.
+
+        Updates ``last_activity`` and, if the subagent was previously flagged
+        stalled by the reaper, clears the flag and notifies the UI so the
+        running-card drops the "stalled" warning the moment work resumes.
+        """
+        info.last_activity = time.time()
+        if info.stalled:
+            info.stalled = False
+            await self._fire_event("subagent_stalled", info, {"stalled": False})
+
     async def _fire_event(self, etype: str, info: SubagentInfo, extra: dict | None = None) -> None:
         if self._on_event:
             try:
@@ -2225,6 +2321,12 @@ class SubagentManager:
         # watchdog measures from here, not from registration (which may include
         # an arbitrary spawn-approval wait). Must be the first statement.
         info._exec_started = time.time()
+        # Reset the activity clock to execution start too: last_activity is set
+        # at registration (like ``started``), which can include a long spawn-
+        # approval / queue wait. Without this, _maybe_flag_stall would treat
+        # that pre-execution delay as idle time and prematurely surface a
+        # healthy, just-started subagent as "stalled".
+        info.last_activity = info._exec_started
         # Inherit approval policy from parent session; yolo/trust overrides
         parent_policy = self._sessions.get_approval_policy(info.parent_session_key)
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
@@ -2411,6 +2513,12 @@ class SubagentManager:
         # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
         _pending_tools: dict[str, str] = {}
         async for event in client.stream(full_message):
+            # Refresh the activity clock for EVERY event kind (thinking chunks,
+            # tool-call updates, etc.) before dispatch, so idle-stall detection
+            # only trips on a genuine no-event hang — not on an event kind this
+            # switch does not special-case. Approval waits stay exempt via
+            # _awaiting_approval.
+            await self._touch_activity(info)
             if event.kind == EVENT_TEXT_CHUNK:
                 result_text += event.text
                 write_result_chunk(info.id, event.text)
@@ -2435,7 +2543,12 @@ class SubagentManager:
                 await self._fire_event(
                     "subagent_tool",
                     info,
-                    {"tool": _redact(event.title or ""), "tool_kind": event.tool_kind},
+                    {
+                        "tool": _redact(event.title or ""),
+                        "tool_kind": event.tool_kind,
+                        "turns": info.turns,
+                        "tool_count": info.tool_count,
+                    },
                 )
                 if turns > turn_limit:
                     info.result = result_text or "_Partial output._"
@@ -2479,7 +2592,12 @@ class SubagentManager:
                     continue
                 if self._on_tool_approval_factory:
                     approve_cb = self._on_tool_approval_factory(info)
-                    approved = await approve_cb(event)
+                    info._awaiting_approval = True
+                    try:
+                        approved = await approve_cb(event)
+                    finally:
+                        info._awaiting_approval = False
+                        info.last_activity = time.time()
                     if not approved:
                         await self._reject_and_log(
                             client,
@@ -2497,7 +2615,12 @@ class SubagentManager:
                         metadata={"subagent_id": info.id},
                     )
                 elif self._on_tool_approval:
-                    approved = await self._on_tool_approval(event, info.parent_session_key)
+                    info._awaiting_approval = True
+                    try:
+                        approved = await self._on_tool_approval(event, info.parent_session_key)
+                    finally:
+                        info._awaiting_approval = False
+                        info.last_activity = time.time()
                     if not approved:
                         await self._reject_and_log(client, event.request_id, session_key, event)
                         continue
@@ -2519,6 +2642,23 @@ class SubagentManager:
                     )
                     continue
             elif event.kind == EVENT_TOOL_CALL:
+                # Auto-allowed (kiro-internal) tools surface here as informational
+                # tool_call updates and NEVER as EVENT_PERMISSION_REQUEST, so this
+                # is the only progress signal a simple/read-only subagent task emits.
+                # Count it, record it, and broadcast the same subagent_tool event
+                # the permission path uses so the running-card shows live activity.
+                info.tool_count += 1
+                info.last_tool = event.title or info.last_tool
+                await self._fire_event(
+                    "subagent_tool",
+                    info,
+                    {
+                        "tool": _redact(event.title or ""),
+                        "tool_kind": event.tool_kind,
+                        "turns": info.turns,
+                        "tool_count": info.tool_count,
+                    },
+                )
                 # Fire PreToolUse hooks for auto-approved tools (informational only)
                 sel().log_tool_invocation(
                     session_key=session_key,

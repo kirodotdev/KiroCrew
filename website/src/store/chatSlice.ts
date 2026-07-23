@@ -900,6 +900,7 @@ const chatSlice = createSlice({
       subs[safeKey(action.payload.id)] = {
         id: action.payload.id, task: action.payload.task, agent: action.payload.agent || 'kirocrew',
         status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
+        toolCount: 0, stalled: false,
       }
     },
     sseSubagentChunk(state, action: PayloadAction<{ slot: string; id: string; text: string }>) {
@@ -911,9 +912,23 @@ const chatSlice = createSlice({
         }
       }
     },
-    sseSubagentTool(state, action: PayloadAction<{ slot: string; id: string; tool: string }>) {
-      const a = getSlotSubs(state, action.payload.slot)?.[action.payload.id]
-      if (a) { a.lastTool = action.payload.tool; a.status = 'tool' }
+    sseSubagentTool(state, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number }>) {
+      const { slot, id } = action.payload
+      // Guard the user-controlled id against prototype-pollution keys before
+      // indexing (id === '__proto__' would resolve to Object.prototype).
+      if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
+      const a = getSlotSubs(state, slot)?.[id]
+      if (a) {
+        a.lastTool = action.payload.tool; a.status = 'tool'
+        if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
+        a.stalled = false
+      }
+    },
+    sseSubagentStalled(state, action: PayloadAction<{ slot: string; id: string; stalled: boolean; idle_secs?: number }>) {
+      const { slot, id } = action.payload
+      if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
+      const a = getSlotSubs(state, slot)?.[id]
+      if (a) a.stalled = action.payload.stalled
     },
     sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; task?: string; agent?: string; result?: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
@@ -1016,7 +1031,7 @@ const chatSlice = createSlice({
       if (last?.role === 'user') side.messages.pop()
       side.pending = false
     },
-    sseSubagentSnapshot(state, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number }>) {
+    sseSubagentSnapshot(state, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }>) {
       const d = action.payload
       if (isUnsafeKey(d.slot) || isUnsafeKey(d.id)) return
       const subs = d.slot && d.slot !== state.activeSlot
@@ -1027,6 +1042,7 @@ const chatSlice = createSlice({
         id: d.id, task: d.task, agent: d.agent || 'kirocrew',
         status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
         startedAt: d.started * 1000, elapsed: 0,
+        toolCount: d.tool_count ?? 0, stalled: d.stalled ?? false,
         approval_id: existing?.approval_id, approving: existing?.approving,
       }
     },
@@ -1712,7 +1728,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentDone,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentDone,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseWorkflowEvent, clearWorkflowRun,
   sseSideResult, sideClose, sideOptimisticAppend, sideOptimisticRollback,

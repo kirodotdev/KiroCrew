@@ -642,6 +642,14 @@ class AgentConfig:
             "Wall-clock timeout per subagent execution. 0 uses hardcoded default (1800s).",
         ),
     )
+    subagent_stall_idle_secs: int = field(
+        default=120,
+        metadata=_meta(
+            "SubAgent Stall Idle (seconds)",
+            "Seconds with no stream activity before a running subagent is surfaced "
+            "as 'stalled' in the running-card. 0 uses hardcoded default (120s).",
+        ),
+    )
     completion_keep: str = field(
         default="head",
         metadata=_meta(
@@ -3019,6 +3027,7 @@ class KiroCrewConfig:
                 ),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
+                subagent_stall_idle_secs=_safe_int(agent_data.get("subagent_stall_idle_secs", 120), 120),
                 completion_keep=_validated_completion_keep(
                     agent_data.get("completion_keep", "head")
                 ),

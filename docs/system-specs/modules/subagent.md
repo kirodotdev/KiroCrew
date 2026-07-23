@@ -18,6 +18,7 @@ Supports `on_tool_approval` callback for interactive tool approval (routed throu
 | `INJECTION_TIMEOUT` | 300 | Inner cap: max seconds for a single `stream_and_collect` call (5 minutes) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
 | `_TURN_LIMIT` | 100 | Default tool-call budget per subagent (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
+| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). Surface-only — a stalled subagent is never auto-terminated; the user closes it from the UX (per-row stop / Stop-all) and the 30-min `_TIMEOUT_SECS` ceiling still applies. |
 | `_SYSTEM_PREFIX` | (string) | Injected before task text to prevent spawn recursion |
 | `COMPLETION_KEEP_DEFAULT_CHARS` | 3000 | Default character cap for the completion event injected into the parent session (configurable via `agent.completion_keep_chars`). Lives in `context_management.py` alongside the helper. |
 
@@ -119,6 +120,10 @@ class SubagentInfo:
     result_truncated: bool  # completion copy dropped content → event carries summary+path
     error: str            # error message if failed
     elapsed: float        # seconds from start to completion (set in _run finally)
+    tool_count: int       # observed tool calls (incl. auto-approved); drives running-card progress
+    last_activity: float  # time.time() of last stream event; reset to _exec_started; drives idle-stall
+    stalled: bool         # reaper flagged this subagent as idle/stalled (UI signal)
+    _awaiting_approval: bool  # blocked on a human tool-approval prompt → exempt from idle-stall
 ```
 
 ## Session Lifecycle
@@ -144,6 +149,22 @@ class SubagentInfo:
 - `_sigkill_session`: best-effort SIGKILL when graceful reset hangs
 - After decrementing `_running_count`, `_force_reap` calls `_drain_queue()` so the freed slot immediately starts a queued spawn. Normal completion pumps the queue via its `finally` block, but that block is gated on `not info.reaped`; a reap sets `reaped=True` and decrements the count itself, so without this explicit drain a queued spawn would sit stranded until an unrelated agent finished or a new spawn arrived.
 - Wired up in `gateway.py` after `SubagentManager` init
+
+### Idle-Stall Detection
+
+The main-agent watchdog stack (liveness oracle, `tool_stall_suspect`) does **not** govern subagents; `_maybe_flag_stall(agent_id, info, now)` (called from the reaper sweep) is their equivalent. Each stream event calls `_touch_activity(info)`, which updates `info.last_activity` and clears a prior `stalled` flag (re-emitting `subagent_stalled {stalled: false}` when work resumes). `info.last_activity` is (re)initialised to `_exec_started` at the top of `_run_inner` so a queue / spawn-approval wait is never counted as idle.
+
+Per sweep, for an agent that has actually started (`turns > 0` or a live `_pid`) and is **not** blocked on a human approval prompt (`_awaiting_approval`):
+- `idle > _stall_idle_secs` and not already flagged → set `info.stalled = True`, emit `subagent_stalled {stalled: true, idle_secs}` (surface-only; the card shows a "no activity" warning), and append a record of the slow command to `~/.kirocrew/subagents/slow_commands.jsonl` for later analysis.
+- Detection is **surface-only**: `_maybe_flag_stall` never terminates the agent. A genuinely-hung subagent is closed by the user from the UX (per-row stop → `spawnDelete` → `SubagentManager.cancel(agent_id)`, or header Stop-all). This is a deliberate choice — because session-sharing subagents share the parent's runtime PID, no per-PID liveness oracle can distinguish a wedged tool from a slow-but-healthy one, so the system surfaces + records rather than guessing and killing.
+
+The slow-command record (`record_slow_command`, `subagent_persistence.py`) is append-only and deliberately NOT a tombstone: a tombstone marks an agent dead and is consumed by orphan-reconciliation / TTL cleanup, whereas a stalled subagent is still running. Fields: `id`, `flagged` (ts), `last_tool` (redacted), `tool_count`, `turns`, `idle_secs`, `elapsed_secs`, `parent_session`, `session_sharing`.
+
+`_awaiting_approval` is set around the human tool-approval await in the `EVENT_PERMISSION_REQUEST` branch (reset in `finally`, which also refreshes `last_activity`), so a slow approval never looks stalled.
+
+### Running-card progress events
+
+`subagent_tool` is fired on **`EVENT_TOOL_CALL`** (not only `EVENT_PERMISSION_REQUEST`) — kiro-auto-allowed tools surface only as informational `tool_call` updates, so this is the sole progress signal a simple/read-only task emits. Payload carries `{tool, tool_kind, turns, tool_count}`; `info.tool_count` increments per observed tool call. The `subagent_snapshot` reconnect payload (`dashboard/ws.py`) also carries `tool_count` and `stalled` so a reloading client recovers progress/stall state (a transition-only WS signal always needs a matching snapshot field).
 
 ## Completion Injection
 

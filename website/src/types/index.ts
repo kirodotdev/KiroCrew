@@ -219,6 +219,8 @@ export interface SubagentActivity {
   status: 'pending' | 'running' | 'tool' | 'done' | 'error'
   streaming: string; lastTool: string
   startedAt: number; elapsed: number; error?: string
+  toolCount?: number      // observed tool calls (incl. auto-approved) — running-card progress
+  stalled?: boolean       // reaper flagged this subagent as idle/stalled
   approval_id?: string
   approving?: boolean
 }

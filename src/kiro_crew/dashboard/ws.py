@@ -182,6 +182,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                                 "agent": _r(a.agent),
                                                 "streaming": _r(a.streaming_text),
                                                 "last_tool": _r(a.last_tool),
+                                                "tool_count": a.tool_count,
+                                                "stalled": a.stalled,
                                                 "started": a.started,
                                             },
                                         }

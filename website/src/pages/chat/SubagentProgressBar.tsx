@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
-import { Bot, ChevronDown, X } from 'lucide-react'
+import { Bot, ChevronDown, X, AlertTriangle } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sseSubagentDone } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -26,6 +26,8 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const subagents = useAppSelector(s => slot === s.chat.activeSlot ? s.chat.subagents : s.chat.slotActivity[slot ?? '']?.subagents ?? EMPTY_SUBAGENTS)
   const activeList = useMemo(() => Object.values(subagents).filter(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending'), [subagents])
   const running = activeList.length
+  const lead = activeList[activeList.length - 1]
+  const anyStalled = useMemo(() => activeList.some(a => a.stalled), [activeList])
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
   const hasActive = running > 0
@@ -74,8 +76,16 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           aria-label={`${running} subagent${running > 1 ? 's' : ''} running`}
         >
           <Bot size={14} className="text-accent shrink-0" />
-          <span className="text-text-strong font-medium">{running} agent{running > 1 ? 's' : ''} running</span>
-          <ChevronDown size={14} className={`text-muted ml-auto shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          <span className="text-text-strong font-medium shrink-0">{running} agent{running > 1 ? 's' : ''} running</span>
+          <span className="flex-1 min-w-0 truncate text-left">
+            {!expanded && lead?.lastTool ? <span className="text-accent/70">→ {sanitizeLlmOutput(lead.lastTool)}</span> : null}
+          </span>
+          {anyStalled && (
+            <span className="shrink-0 inline-flex items-center gap-1 text-warn" title="No activity — possibly stalled">
+              <AlertTriangle size={12} /> stalled
+            </span>
+          )}
+          <ChevronDown size={14} className={`text-muted shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
         </button>
         {stoppableCount > 0 && (
           <button
@@ -99,9 +109,14 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-text">{taskPreview || sanitizeLlmOutput(a.agent || 'agent')}</span>
-                    <span className="shrink-0 tabular-nums text-muted/50">{elapsed}s</span>
+                    <span className="shrink-0 tabular-nums text-muted/50">{elapsed}s{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${a.toolCount} tool${a.toolCount > 1 ? 's' : ''}` : ''}</span>
                   </div>
-                  {a.lastTool && <div className="text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</div>}
+                  {a.stalled ? (
+                    <div className="text-warn flex items-center gap-1">
+                      <AlertTriangle size={11} className="shrink-0" />
+                      <span className="truncate">stalled{a.lastTool ? ` at ${sanitizeLlmOutput(a.lastTool)}` : ''} — no activity</span>
+                    </div>
+                  ) : (a.lastTool && <div className="text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</div>)}
                 </div>
                 {(a.status === 'running' || a.status === 'tool') && (
                   <button

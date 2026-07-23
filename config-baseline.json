@@ -39,6 +39,7 @@
         "subagent_spawn_stagger_secs": 2.0,
         "subagent_max_turns": 100,
         "subagent_timeout_secs": 1800,
+        "subagent_stall_idle_secs": 120,
         "completion_keep": "head",
         "completion_keep_chars": 3000,
         "subagent_result_ttl_secs": 3600,
@@ -414,6 +415,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1800
+    },
+    {
+      "path": "agent.subagent_stall_idle_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SubAgent Stall Idle (seconds)",
+      "help": "Seconds with no stream activity before a running subagent is surfaced as 'stalled' in the running-card. 0 uses hardcoded default (120s).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 120
     },
     {
       "path": "agent.completion_keep",

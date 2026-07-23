@@ -14,6 +14,7 @@ from kiro_crew.subagent_persistence import (
     mark_delivered,
     prune_stale_tombstones,
     read_state,
+    record_slow_command,
     update_state,
     write_result_chunk,
     write_tombstone,
@@ -1213,3 +1214,26 @@ class TestPathTraversal:
 
         with pytest.raises(ValueError, match="Invalid agent_id"):
             _agent_dir("../etc")
+
+
+# ── record_slow_command ──────────────────────────────────────────────
+
+
+class TestRecordSlowCommand:
+    def test_appends_jsonl_entry(self, agent_root):
+        record_slow_command("ag1", last_tool="fs_read", idle_secs=200, turns=2)
+        log = agent_root / "slow_commands.jsonl"
+        assert log.exists()  # NOT a tombstone — a separate analysis log
+        assert not (agent_root / "ag1" / "tombstone.json").exists()
+        entry = json.loads(log.read_text().strip())
+        assert entry["id"] == "ag1"
+        assert entry["last_tool"] == "fs_read"
+        assert entry["idle_secs"] == 200
+        assert "flagged" in entry
+
+    def test_appends_multiple_lines(self, agent_root):
+        record_slow_command("ag1", idle_secs=200)
+        record_slow_command("ag2", idle_secs=300)
+        lines = (agent_root / "slow_commands.jsonl").read_text().strip().splitlines()
+        assert len(lines) == 2
+        assert {json.loads(lines[0])["id"], json.loads(lines[1])["id"]} == {"ag1", "ag2"}

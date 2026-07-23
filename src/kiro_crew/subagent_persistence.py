@@ -165,6 +165,26 @@ def mark_delivered(agent_id: str) -> None:
     write_tombstone(agent_id, cause="delivered", recovery_action="delivered")
 
 
+# ── slow-command record (stalled but STILL RUNNING) ──────────────────
+
+
+def record_slow_command(agent_id: str, **fields: object) -> None:
+    """Append a stalled subagent's slow command to ``slow_commands.jsonl``.
+
+    Unlike :func:`write_tombstone`, this does NOT mark the agent dead — a
+    stalled subagent is still running; the record is purely for later analysis
+    of which commands run slow. Append-only, at the subagents-dir root so it
+    survives per-agent folder cleanup. Best-effort: never raises to the caller.
+    """
+    entry = {"id": agent_id, "flagged": time.time(), **fields}
+    try:
+        _SUBAGENTS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_SUBAGENTS_DIR / "slow_commands.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, default=str) + "\n")
+    except OSError:
+        logger.warning("record_slow_command failed for %s", agent_id, exc_info=True)
+
+
 # ── delete ───────────────────────────────────────────────────────────
 
 
