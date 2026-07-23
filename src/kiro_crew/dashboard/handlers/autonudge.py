@@ -10,6 +10,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.autonudge import get_instance as _autonudge_get
+from kiro_crew.autonudge import is_channel_key
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path
@@ -67,11 +68,58 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    slot_key = (body.get("slot_key") or "").strip()
+    slot_key = (body.get("session_key") or body.get("slot_key") or "").strip()
     message = (body.get("message") or "").strip()
     if not slot_key or not message:
-        return web.json_response({"error": "slot_key and message required"}, status=400)
-    if slot_key not in state._slots:
+        return web.json_response({"error": "session_key (or slot_key) and message required"}, status=400)
+    if is_channel_key(slot_key):
+        # Channel-bound loop (Slack / Discord ...). Validate the session is
+        # routable so a nudge fired later has somewhere to reply.
+        if slot_key.startswith("slack:"):
+            sessions = getattr(state, "sessions", None)
+            if sessions is None or not sessions.get_channel(slot_key):
+                return web.json_response(
+                    {"error": f"unknown slack session {slot_key}"}, status=404
+                )
+        elif slot_key.startswith("discord:"):
+            # Deny-by-default (mirrors the Discord inbound allowlist): only DM
+            # sessions of ALLOWLISTED users, and only the user's CURRENT
+            # session key exactly as the dispatcher derives it. Anything else
+            # would let an authenticated dashboard caller mint loops that DM
+            # arbitrary Discord users through the agent.
+            transports = getattr(state, "channel_transports", None) or {}
+            transport = transports.get("discord")
+            dispatcher = transport.dispatcher if transport is not None else None
+            if transport is None or dispatcher is None:
+                return web.json_response(
+                    {"error": "discord transport not running"}, status=404
+                )
+            parts = slot_key.split(":")
+            if len(parts) < 4 or parts[2] != "direct":
+                return web.json_response(
+                    {"error": f"unsupported discord session {slot_key} (DM sessions only)"},
+                    status=400,
+                )
+            user_id = parts[3]
+            if not dispatcher.is_authorized(user_id):
+                return web.json_response(
+                    {"error": "discord user is not in the allowed_user_ids allowlist"},
+                    status=403,
+                )
+            try:
+                current_key = dispatcher.current_session_key(user_id)
+            except Exception:
+                current_key = ""
+            if slot_key != current_key:
+                return web.json_response(
+                    {"error": "discord session key does not match the user's current session"},
+                    status=404,
+                )
+        else:
+            return web.json_response(
+                {"error": f"unsupported channel session {slot_key}"}, status=400
+            )
+    elif slot_key not in state._slots:
         return web.json_response({"error": f"unknown slot {slot_key}"}, status=404)
     if len(message) > 8000:
         return web.json_response({"error": "message too long (max 8000 chars)"}, status=400)
@@ -80,12 +128,16 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "stop_sentinel_path points to a sensitive location"}, status=400
         )
-    # Auto-default: per-slot sentinel so multiple loops don't clash
+    # Auto-default: per-session sentinel so multiple loops don't clash
     if not stop_sentinel_path:
-        slot = state._slots.get(slot_key)
-        if slot:
-            stop_sentinel_path = resolve_stop_sentinel(slot_key, getattr(slot, "workspace", "default"))
+        if is_channel_key(slot_key):
+            stop_sentinel_path = resolve_stop_sentinel(slot_key)
             Path(stop_sentinel_path).unlink(missing_ok=True)
+        else:
+            slot = state._slots.get(slot_key)
+            if slot:
+                stop_sentinel_path = resolve_stop_sentinel(slot_key, getattr(slot, "workspace", "default"))
+                Path(stop_sentinel_path).unlink(missing_ok=True)
     loop = await svc.add(
         slot_key=slot_key,
         message=message,

@@ -466,6 +466,19 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
     ],
 )
 
+# monitor_start creates an AutoNudge loop bound to the calling session (the
+# agent-facing "babysit this PR" primitive). message caps match the REST
+# endpoint's 8000-char limit; interval bounds mirror autonudge's
+# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp.
+MONITOR_START_SCHEMA = ToolSchema(
+    tool_name="monitor_start",
+    fields=[
+        FieldSpec("message", str, required=True, max_len=8000),
+        FieldSpec("interval_secs", int, min_val=15, max_val=86400),
+        FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+    ],
+)
+
 # delete_message reads args["channel"] and args["ts"] by subscript. Without a
 # schema, a call omitting either key raised KeyError, which is NOT caught by
 # call_tool_with_logging (only ValidationError is) and propagated out of the
@@ -1192,6 +1205,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "register_hook": REGISTER_HOOK_SCHEMA,
     "file_send": FILE_SEND_SCHEMA,
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
+    "monitor_start": MONITOR_START_SCHEMA,
     "delete_message": DELETE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     "knowledge_dedup": KNOWLEDGE_DEDUP_SCHEMA,

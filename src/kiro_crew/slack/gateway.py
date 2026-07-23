@@ -49,6 +49,9 @@ from kiro_crew.autonudge import (
     NudgeLoop,
 )
 from kiro_crew.autonudge import enabled as autonudge_enabled
+from kiro_crew.autonudge import (
+    is_channel_key,
+)
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -122,6 +125,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     rewrite_agents,
 )
 from kiro_crew.memory import MemoryStore
+from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.platform import boot_platform
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import safety_override
@@ -170,11 +174,16 @@ logger = logging.getLogger(__name__)
 # Max retries for injecting subagent results into parent sessions.
 _MAX_INJECT_ATTEMPTS = 2
 
+# Per-turn hard deadline for an unattended AutoNudge turn in a channel session
+# (Slack/Discord babysit loops). Mirrors HEARTBEAT_TASK_TIMEOUT_SECS / cron's
+# _JOB_TIMEOUT_SECS: no human is present, so the turn MUST be bounded.
+_NUDGE_TURN_TIMEOUT = 1800.0  # 30 min
+
 # Approval sources that run UNATTENDED (no human responder). These deny-fast on a
 # short window instead of burning the full 2h human-approval window. Subagent
 # approvals are NOT background: they route to the dashboard where the spawning
 # human is present (via the parent slot), so they keep the long interactive window.
-_BACKGROUND_APPROVAL_SOURCES = frozenset({"cron", "heartbeat", "taskrunner", ""})
+_BACKGROUND_APPROVAL_SOURCES = frozenset({"cron", "heartbeat", "taskrunner", "autonudge", ""})
 
 # Slack Block Kit section.text hard limit is 3000 chars.
 # We split cron output at this boundary so each chunk fits in a section block.
@@ -2166,6 +2175,200 @@ class GatewayOrchestrator:
         )
         await self.heartbeat_svc.start()
 
+    async def _fire_slack_nudge(self, loop: NudgeLoop) -> bool:
+        """Drive one unattended nudge turn in a Slack thread session.
+
+        Mirrors the subagent-completion Slack injection: acquire the session,
+        run the turn with auto-approval, post the reply into the originating
+        thread, persist for dashboard replay. Returns True when the turn ran;
+        False on skip (busy/unroutable/error) — the AutoNudge service re-arms
+        with backoff on False.
+        """
+        key = loop.slot_key
+        if self.sessions is None or self.slack is None:
+            return False
+        if self.sessions.is_busy(key):
+            logger.info("AutoNudge skip: slack session %s busy (loop %s)", key, loop.id)
+            return False
+        channel = self.sessions.get_channel(key)
+        thread_ts = self.sessions.get_thread(key)
+        if not thread_ts and key.startswith("slack:"):
+            # Canonical keys embed the thread root ts.
+            thread_ts = key.split(":", 1)[1]
+        if not channel:
+            logger.warning(
+                "AutoNudge: slack session %s unroutable — removing loop %s", key, loop.id
+            )
+            if self.autonudge_svc:
+                await self.autonudge_svc.remove(loop.id)
+            return False
+        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
+        # Fail closed: an unattended turn MUST run under the HookManager
+        # PreToolUse governance gate (mirrors cron's default approval path).
+        # Without ctx_builder there are no hooks to enforce the gate — skip.
+        if self.ctx_builder is None or self.ctx_builder.hooks is None:
+            logger.warning(
+                "AutoNudge: no hook manager available — refusing unattended "
+                "slack nudge turn for %s (loop %s)",
+                key,
+                loop.id,
+            )
+            return False
+        response: str | None = None
+        _acquired = False
+        try:
+            client, is_new, _resumed = await self.sessions.get_or_create(key)
+            _acquired = True
+            _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+            full_msg, _ = await run_in_embed_pool(
+                self.ctx_builder.build_message, tagged, is_new, key, provider_type=_provider
+            )
+            response = await asyncio.wait_for(
+                stream_and_collect(
+                    client,
+                    full_msg,
+                    retry_transient=False,
+                    # Same governance contract as unattended cron turns: the
+                    # HookManager PreToolUse gate decides tool approvals, and
+                    # anything it can't decide goes to the deny-fast
+                    # background-approval window (source "autonudge").
+                    approval_policy=ToolApprovalPolicy.HOOK_BASED,
+                    hooks=self.ctx_builder.hooks,
+                    on_tool_approval=self._interactive_approval("autonudge"),
+                ),
+                timeout=_NUDGE_TURN_TIMEOUT,
+            )
+        except Exception:
+            logger.exception("AutoNudge: slack nudge turn failed for %s (loop %s)", key, loop.id)
+            return False
+        finally:
+            if _acquired:
+                try:
+                    await self.sessions.cancel_current(key)
+                except Exception:
+                    logger.debug("AutoNudge: cancel_current failed for %s", key, exc_info=True)
+                try:
+                    self.sessions.release(key)
+                except Exception:
+                    logger.exception("AutoNudge: failed to release session %s", key)
+        # Post the response into the originating thread (best-effort — the
+        # turn itself already ran, so failures here don't fail the cycle).
+        try:
+            if response:
+                reply_text, _ = redact_exfiltration_urls(to_slack_mrkdwn(response))
+                reply_text, _ = redact_credentials(reply_text)
+                for part in split_message(reply_text):
+                    await self.slack.post_message(channel, part, thread_ts)
+        except Exception:
+            logger.exception("AutoNudge: slack posting failed for %s (turn ran)", key)
+        # Persist for dashboard replay (mirrors subagent Slack injection).
+        if self.conv_log and not (is_thread_temporary(key) or is_thread_incognito(key)):
+            try:
+                safe_nudge, _ = redact_exfiltration_urls(tagged)
+                safe_nudge, _ = redact_credentials(safe_nudge)
+                safe_response, _ = redact_exfiltration_urls(response or "")
+                safe_response, _ = redact_credentials(safe_response)
+                save_conversation_turn(
+                    self.conv_log,
+                    key,
+                    safe_nudge,
+                    safe_response,
+                    source_thread=key,
+                    source_user="autonudge",
+                    agent=_get_agent_for_session(key),
+                )
+            except Exception:
+                logger.warning(
+                    "AutoNudge: failed to persist nudge turn for %s", key, exc_info=True
+                )
+        return True
+
+    async def _fire_discord_nudge(self, loop: NudgeLoop) -> bool:
+        """Drive one unattended nudge turn in a Discord DM session.
+
+        Synthesizes an ``InboundMessage`` and routes it through the Discord
+        dispatcher — the exact path a real DM takes — so busy/steer/queue
+        handling, rendering, chunking, and persistence behave like a user
+        turn. ``interpret_commands=False`` keeps the nudge from being parsed
+        as a ``!command``.
+        """
+        key = loop.slot_key
+        transports = getattr(self.dashboard_state, "channel_transports", None) or {}
+        transport = transports.get("discord")
+        dispatcher = transport.dispatcher if transport is not None else None
+        if transport is None or dispatcher is None:
+            logger.info("AutoNudge skip: discord transport not running (loop %s)", loop.id)
+            return False
+        # Key shape: discord:{agent}:direct:{user_id}[:genN]
+        parts = key.split(":")
+        if len(parts) < 4 or parts[2] != "direct":
+            logger.warning(
+                "AutoNudge: unsupported discord key %s — removing loop %s", key, loop.id
+            )
+            if self.autonudge_svc:
+                await self.autonudge_svc.remove(loop.id)
+            return False
+        user_id = parts[3]
+        # Defense-in-depth: re-check the inbound allowlist at fire time (the
+        # create endpoint enforces it too, but the allowlist can shrink after
+        # a loop was created). Synthetic injection bypasses transport.receive,
+        # so authorization is this caller's responsibility — mirrors
+        # on_interaction's _authorized re-check. Uses the dispatcher's public
+        # injection surface; a missing method raises loudly instead of
+        # silently retiring the loop.
+        if not dispatcher.is_authorized(user_id):
+            logger.warning(
+                "AutoNudge: discord user %s not authorized — removing loop %s",
+                user_id,
+                loop.id,
+            )
+            if self.autonudge_svc:
+                await self.autonudge_svc.remove(loop.id)
+            return False
+        # Generation guard: the dispatcher derives the CURRENT key for this
+        # user (dm_scope + `!new` generation). If it no longer matches the
+        # loop's stored key, the monitored conversation is gone — a synthetic
+        # turn would run in a fresh session with none of the loop's context,
+        # and autonudge_stop from that new session could never find this
+        # loop. Retire it instead of firing into the wrong generation.
+        try:
+            current_key = dispatcher.current_session_key(user_id)
+        except Exception:
+            current_key = key
+        if current_key != key:
+            logger.info(
+                "AutoNudge: discord session rotated (%s -> %s) — removing loop %s",
+                key,
+                current_key,
+                loop.id,
+            )
+            if self.autonudge_svc:
+                await self.autonudge_svc.remove(loop.id)
+            return False
+        sessions = getattr(dispatcher, "sessions", None)
+        if sessions is not None and sessions.is_busy(key):
+            logger.info("AutoNudge skip: discord session %s busy (loop %s)", key, loop.id)
+            return False
+        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
+        try:
+            conversation_id = await transport.resolve_conversation(user_id)
+            synthetic = InboundMessage(
+                channel_type="discord",
+                user_id=user_id,
+                conversation_id=conversation_id,
+                text=tagged,
+            )
+            await asyncio.wait_for(
+                dispatcher.handle_message(synthetic, interpret_commands=False),
+                timeout=_NUDGE_TURN_TIMEOUT,
+            )
+            return True
+        except Exception:
+            logger.exception("AutoNudge: discord nudge failed for %s (loop %s)", key, loop.id)
+            return False
+
     async def _init_autonudge(self) -> None:
         """Initialize and start the auto-nudge service (feature-flagged)."""
         if not autonudge_enabled():
@@ -2173,13 +2376,29 @@ class GatewayOrchestrator:
             return
 
         async def _fire(loop: NudgeLoop) -> bool:
-            """Inject nudge message into the bound chat slot.
+            """Inject nudge message into the bound session.
+
+            Routes by binding-key namespace: ``slack:``/``discord:`` keys run
+            an unattended turn in the channel session; bare keys are dashboard
+            chat slots (original path).
 
             Returns True if the nudge was actually dispatched, False if skipped
             (slot missing, dashboard not ready, or turn still active). The
             service uses this to avoid counting skipped cycles toward
             max_cycles.
             """
+            if is_channel_key(loop.slot_key):
+                if loop.slot_key.startswith("slack:"):
+                    return await self._fire_slack_nudge(loop)
+                if loop.slot_key.startswith("discord:"):
+                    return await self._fire_discord_nudge(loop)
+                logger.warning(
+                    "AutoNudge: unsupported channel key %s — removing loop %s",
+                    loop.slot_key,
+                    loop.id,
+                )
+                await self.autonudge_svc.remove(loop.id)  # type: ignore[union-attr]
+                return False
             # Guard (not assert): stripped under -O; also _init_autonudge() can
             # run before _init_dashboard(), and _init_dashboard is skipped
             # entirely in --no-dashboard mode. Mirrors _observer's guard below.

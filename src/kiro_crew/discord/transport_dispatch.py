@@ -566,6 +566,21 @@ class DiscordDispatcher:
             )
             await self.handle_message(synthetic)
 
+    # ── Public injection surface ────────────────────────────────────────────
+    # Contract for out-of-band callers (AutoNudge fire path, the REST create
+    # endpoint, future channel injectors): synthetic turns bypass
+    # transport.receive, so authorization and session-key derivation MUST go
+    # through these methods — renaming the private helpers behind them breaks
+    # loudly here instead of silently at fire time.
+
+    def is_authorized(self, user_id: str) -> bool:
+        """Deny-by-default allowlist check for out-of-band (synthetic) turns."""
+        return self._authorized(user_id)
+
+    def current_session_key(self, user_id: str) -> str:
+        """The user's CURRENT DM session key (dm_scope + ``!new`` generation)."""
+        return self._session_key(user_id)
+
     # ── Helpers ────────────────────────────────────────────────────────────
 
     def _authorized(self, user_id: str) -> bool:

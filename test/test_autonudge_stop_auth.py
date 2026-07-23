@@ -40,6 +40,8 @@ class _MockAutonudgeHandler(BaseHTTPRequestHandler):
     issued_token = "user-token-abc"
     # Set per-test: the loop returned by GET /api/autonudge/slot/{slot_key}.
     loop_for_slot: dict | None = {"id": "loop-1", "slot_key": "chat-3-1700000000"}
+    # Bodies received by POST /api/autonudge (monitor_start tests).
+    created_bodies: list[dict] = []
 
     def _json(self, status: int, body: dict) -> None:
         self.send_response(status)
@@ -90,6 +92,34 @@ class _MockAutonudgeHandler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "Token required"})
                 return
             self._json(200, {"ok": True})
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_POST(self):  # noqa: N802
+        base = self.path.split("?", 1)[0]
+        if base == "/api/autonudge":
+            if self._reject_internal_secret():
+                return
+            if not self._has_valid_token():
+                self._json(403, {"error": "Token required"})
+                return
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            type(self).created_bodies.append(body)
+            key = body.get("session_key") or body.get("slot_key") or ""
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "loop": {
+                        "id": "loop-new",
+                        "slot_key": key,
+                        "message": body.get("message", ""),
+                        "idle_secs": body.get("idle_secs", 60),
+                        "max_cycles": body.get("max_cycles", 0),
+                    },
+                },
+            )
             return
         self._json(404, {"error": "not found"})
 
@@ -150,3 +180,100 @@ def test_internal_secret_handshake_would_403(mock_dashboard):
     resp = mcp_core._get("/api/autonudge/slot/chat-3-1700000000")
     assert "error" in resp
     assert "Token required" in resp["error"] or "403" in resp["error"]
+
+
+# ── monitor_start (babysit loops) ──
+
+
+def test_monitor_start_dashboard_session(mock_dashboard):
+    """monitor_start from a dashboard session posts the bare slot key."""
+    _MockAutonudgeHandler.created_bodies = []
+    result = _call_tool_inner(
+        "monitor_start",
+        {"message": "check PR #1 until green", "interval_secs": 300, "max_cycles": 5},
+    )
+    assert "started" in result.lower()
+    assert "loop-new" in result
+    assert len(_MockAutonudgeHandler.created_bodies) == 1
+    body = _MockAutonudgeHandler.created_bodies[0]
+    assert body["session_key"] == "chat-3-1700000000"
+    assert body["message"] == "check PR #1 until green"
+    assert body["idle_secs"] == 300
+    assert body["max_cycles"] == 5
+
+
+def test_monitor_start_slack_session(mock_dashboard, monkeypatch):
+    """monitor_start from a Slack thread session passes the namespaced key through."""
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "slack:1700000000.123456")
+    _MockAutonudgeHandler.created_bodies = []
+    result = _call_tool_inner("monitor_start", {"message": "watch CI"})
+    assert "started" in result.lower()
+    body = _MockAutonudgeHandler.created_bodies[0]
+    assert body["session_key"] == "slack:1700000000.123456"
+    assert body["idle_secs"] == 300  # default interval
+
+
+def test_monitor_start_discord_session(mock_dashboard, monkeypatch):
+    """monitor_start from a Discord DM session passes the namespaced key through."""
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "discord:kirocrew:direct:42")
+    _MockAutonudgeHandler.created_bodies = []
+    result = _call_tool_inner("monitor_start", {"message": "watch the deploy"})
+    assert "started" in result.lower()
+    assert _MockAutonudgeHandler.created_bodies[0]["session_key"] == "discord:kirocrew:direct:42"
+
+
+def test_monitor_start_rejects_cron_context(mock_dashboard, monkeypatch):
+    """Non-nudge-able contexts (cron/hook/subagent) get a clean noop message."""
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "cron:job-9")
+    _MockAutonudgeHandler.created_bodies = []
+    result = _call_tool_inner("monitor_start", {"message": "watch"})
+    assert "only works" in result.lower()
+    assert not _MockAutonudgeHandler.created_bodies
+
+
+def test_monitor_start_refuses_pid_walked_identity(mock_dashboard, monkeypatch):
+    """STRICT session resolution: no env var -> refuse, even if a PID walk
+    would resolve to a parent session.
+
+    A subagent spawned under a dashboard/Slack/Discord slot lives in the
+    parent's process tree; the lenient resolver would let it inherit the
+    parent identity and mint a persistent unattended loop the parent user
+    never asked for. monitor_start must use the env-var-only resolver.
+    """
+    monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+    # Simulate a PID walk that WOULD succeed if (wrongly) consulted.
+    monkeypatch.setattr(
+        mcp_core, "_resolve_session_key", lambda: "dashboard:chat-3-1700000000"
+    )
+    _MockAutonudgeHandler.created_bodies = []
+    result = _call_tool_inner("monitor_start", {"message": "watch"})
+    assert "only works" in result.lower()
+    assert not _MockAutonudgeHandler.created_bodies
+
+
+def test_autonudge_stop_refuses_pid_walked_identity(mock_dashboard, monkeypatch):
+    """autonudge_stop also mutates another session's loop state -> same
+    strict env-var-only resolution as monitor_start."""
+    monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+    monkeypatch.setattr(
+        mcp_core, "_resolve_session_key", lambda: "dashboard:chat-3-1700000000"
+    )
+    _MockAutonudgeHandler.loop_for_slot = {
+        "id": "loop-9",
+        "slot_key": "chat-3-1700000000",
+    }
+    result = _call_tool_inner("autonudge_stop", {})
+    assert "only works" in result.lower()
+    assert "loop-9" not in result
+
+
+def test_autonudge_stop_slack_session(mock_dashboard, monkeypatch):
+    """autonudge_stop works from a Slack session (channel-bound loop)."""
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "slack:1700000000.123456")
+    _MockAutonudgeHandler.loop_for_slot = {
+        "id": "loop-2",
+        "slot_key": "slack:1700000000.123456",
+    }
+    result = _call_tool_inner("autonudge_stop", {"reason": "PR is green"})
+    assert "stopped" in result.lower()
+    assert "loop-2" in result

@@ -91,6 +91,21 @@ class DiscordTransport(MessagingTransport):
         """The underlying Gateway/REST client (held + exposed, not hidden)."""
         return self._client
 
+    @property
+    def dispatcher(self) -> Any:
+        """The ``DiscordDispatcher`` whose bound ``handle_message`` was wired
+        as ``dispatch``, or ``None`` when unwired (tests) or wired to a plain
+        function.
+
+        Public surface for out-of-band injectors (AutoNudge fire path, the
+        REST loop-create endpoint): they need the dispatcher's authorization
+        and session-key contract (``is_authorized`` / ``current_session_key``
+        / ``handle_message``), and this property is the one sanctioned way to
+        reach it — reaching into ``_dispatch`` from outside this class is a
+        rename-away from silently killing active loops.
+        """
+        return getattr(self._dispatch, "__self__", None)
+
     # -- Tier-1 core --------------------------------------------------------
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None

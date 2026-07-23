@@ -95,33 +95,24 @@ When the user asks you to submit code for review and address automated comments 
 5. If no comments or only false positives: report done to the user
 6. Stop the loop and report remaining issues to the user if EITHER: you've iterated 3+ times without the comment count decreasing, OR you've completed 5 total iterations.
 
-**Long task or "keep an eye on it":** use Heartbeat.
+**Long task or "keep an eye on it" / "babysit" / "monitor":** use `monitor_start`.
 
-Heartbeat is a self-cleaning task queue that runs every few minutes, survives gateway restarts, and handles multiple tasks in parallel. Tasks are automatically removed once complete — no manual cleanup needed.
+`monitor_start(message, interval_secs?, max_cycles?)` starts a monitoring loop on YOUR CURRENT session — after your turn completes and the session idles for `interval_secs`, the message is re-injected as your next turn (same context, same tools, same conversation). Works from dashboard chat, Slack threads, and Discord DMs, and survives gateway restarts.
 
-**When to use heartbeat:**
-- User says "keep checking", "monitor", "let me know when"
-- Task may take longer than 30 minutes
+**When to use monitor_start:**
+- User says "keep checking", "monitor", "babysit", "let me know when"
+- Task may take longer than 30 minutes (beyond wait+poll territory)
 - You need to poll an external system until a condition is met (CR analysis, deployment, ticket resolution)
 
-**Writing a heartbeat task:**
-1. Write a checklist entry to `~/.kirocrew/workspace/HEARTBEAT.md`:
-   `- [ ] Check CR-XXXXX for new reviewer comments. If found, summarize them and respond with HEARTBEAT_KEEP. If none and nothing is owed, complete silently (no notification). <!-- deliver:dashboard -->`
+**Using monitor_start:**
+1. Put the full check instructions AND the exit condition in the message, e.g.: `Check PR #123 for new CI results and review comments. Fix legitimate findings and push. When the PR is review-ready (checks green, threads resolved), tell the user and call autonudge_stop.`
+2. Call `monitor_start` with a sensible interval (300s for CI/review polling), then tell the user monitoring is active and END YOUR TURN — the loop wakes you.
+3. Each cycle: do the check, act on findings, report only real signals (don't post "nothing new" every cycle).
+4. When the exit condition is met or the user says stop, call `autonudge_stop`. Set `max_cycles` as a safety cap when the task has a natural bound.
 
-   Notify only on a real signal (a failure, a blocked CR, an item needing action). For a routine "nothing to do" completion, keep the response minimal — do not post a "passed ✅" status. Append `<!-- deliver:dashboard -->` to route the completion to the dashboard bell only (no Slack DM); omit the tag to use the `heartbeat.default_deliver` config default (`slack`), or use `<!-- deliver:slack -->` to force a Slack DM for something genuinely urgent.
-2. Tell the user it's been added to heartbeat monitoring
-3. End the session — heartbeat re-processes retained tasks on the next cycle, creating a monitor-until-done loop
+One loop per session — starting a new one replaces the old. The user can also stop dashboard loops from the 🎯 popover.
 
-**Task retention (HEARTBEAT_KEEP):**
-When the heartbeat service executes your task, it checks your response to decide whether to keep or remove it:
-- Task complete → omit `HEARTBEAT_KEEP` → task is removed from the file
-- Task incomplete → include `HEARTBEAT_KEEP` in your response → task is retained for the next cycle
-- Task raises an exception → task is retained automatically
-
-Example response for an incomplete task:
-```
-Ticket TT-123 is still in "Assigned" status. Will check again next cycle. HEARTBEAT_KEEP
-```
+**Heartbeat (fallback):** the `~/.kirocrew/workspace/HEARTBEAT.md` task queue still exists for cases monitor_start can't cover: work that should run OUTSIDE this session (fresh context each cycle), or contexts where monitor_start is unavailable (cron/webhook sessions). Tasks are checklist entries processed every few minutes; include `HEARTBEAT_KEEP` in the response to retain a task for the next cycle, omit it when complete. Route completion with `<!-- deliver:dashboard -->` / `<!-- deliver:slack -->` tags. Notify only on real signals.
 
 ### Webhook-Triggered Sessions
 

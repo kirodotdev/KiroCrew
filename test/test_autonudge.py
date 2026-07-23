@@ -460,3 +460,85 @@ def test_render_nudge_message():
     # None sentinel produces empty string
     result2 = render_nudge_message("create {{STOP_FILE}}", None)
     assert result2 == "create "
+
+
+# ── Channel-key (Slack / Discord babysit) loops ──
+
+
+def test_is_channel_key():
+    from kiro_crew.autonudge import is_channel_key
+
+    assert is_channel_key("slack:1700000000.123456")
+    assert is_channel_key("discord:kirocrew:direct:42")
+    assert is_channel_key("unified:kirocrew")
+    # Bare dashboard slot keys are NOT channel keys.
+    assert not is_channel_key("chat-1-123")
+    # Fully-qualified dashboard keys never appear as binding keys, but must
+    # not be misclassified either.
+    assert not is_channel_key("dashboard:chat-1-123")
+
+
+@pytest.mark.asyncio
+async def test_channel_loop_self_rearms_after_delivered_fire(svc, monkeypatch):
+    """Slack/Discord loops run on a fixed interval: the timer re-arms itself
+    after a delivered fire (notify_turn_complete never fires for these keys)."""
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    svc._on_fire = on_fire
+    import kiro_crew.autonudge as _an
+
+    _real_sleep = _an.asyncio.sleep
+
+    async def _nosleep(_secs):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    await svc.start()
+    # max_cycles=1 bounds the loop: the re-armed second timer run hits the
+    # cycle cap and deactivates, keeping the test deterministic.
+    loop = await svc.add(
+        slot_key="slack:1700000000.123456", message="check PR", idle_secs=15, max_cycles=1
+    )
+    await svc._timers[loop.id]
+    assert len(fired) == 1
+    # The re-armed second run hits the cycle cap and deactivates the loop —
+    # proof the channel loop re-armed itself. A dashboard loop would idle
+    # forever here waiting for notify_turn_complete.
+    for _ in range(100):
+        if not svc._loops[loop.id].active:
+            break
+        await _real_sleep(0)
+    assert not svc._loops[loop.id].active
+    assert len(fired) == 1  # cap check runs before firing — no second delivery
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_loop_does_not_self_rearm(svc, monkeypatch):
+    """Dashboard loops stay idle-driven: after a delivered fire they wait for
+    notify_turn_complete instead of self-re-arming."""
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    svc._on_fire = on_fire
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15)
+    timer1 = svc._timers[loop.id]
+    await timer1
+    assert len(fired) == 1
+    # No new timer was armed — the finished task is still the registered one.
+    assert svc._timers.get(loop.id) is timer1
+    svc.stop()

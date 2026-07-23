@@ -469,6 +469,43 @@ class TestTransportAuth:
         assert DISCORD_CAPABILITIES.threads is False
 
 
+class TestPublicInjectionSurface:
+    """Locks the out-of-band injection contract used by AutoNudge + REST.
+
+    The AutoNudge fire path and POST /api/autonudge reach the dispatcher only
+    through ``transport.dispatcher`` and call only ``is_authorized`` /
+    ``current_session_key`` / ``handle_message``. If any of these are renamed,
+    these tests fail loudly — before a refactor can silently retire live
+    monitoring loops at fire time.
+    """
+
+    def test_transport_dispatcher_exposes_bound_dispatcher(self) -> None:
+        d, _cli, _sess = _dispatcher({"42"})
+        t = DiscordTransport(FakeClient(), dispatch=d.handle_message)  # type: ignore[arg-type]
+        assert t.dispatcher is d
+
+    def test_transport_dispatcher_none_when_unwired(self) -> None:
+        t = DiscordTransport(FakeClient())  # type: ignore[arg-type]
+        assert t.dispatcher is None
+
+    def test_is_authorized_deny_by_default(self) -> None:
+        d, _cli, _sess = _dispatcher(set())
+        assert d.is_authorized("42") is False
+        assert d.is_authorized("") is False
+
+    def test_is_authorized_allowlisted_user(self) -> None:
+        d, _cli, _sess = _dispatcher({"42"})
+        assert d.is_authorized("42") is True
+        assert d.is_authorized("99") is False
+
+    def test_current_session_key_matches_inbound_derivation(self) -> None:
+        d, _cli, _sess = _dispatcher({"42"}, default_agent="kirocrew")
+        # Must agree with the private derivation the inbound path uses — the
+        # generation guard compares a stored loop key against this value.
+        assert d.current_session_key("42") == d._session_key("42")
+        assert d.current_session_key("42").startswith("discord:")
+
+
 class TestTransportReceive:
     def _transport(self, allowed: list[str]) -> tuple[DiscordTransport, list[InboundMessage]]:
         dispatched: list[InboundMessage] = []

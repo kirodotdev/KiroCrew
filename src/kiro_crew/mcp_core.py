@@ -33,7 +33,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from kiro_crew import platform_compat
 from kiro_crew.aim_agents import list_agents
@@ -94,6 +94,7 @@ from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
     MAX_SHORT_STRING,
     MCP_CORE_SCHEMAS,
+    MONITOR_START_SCHEMA,
     REGISTER_HOOK_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
     SET_PROJECT_SCHEMA,
@@ -1199,6 +1200,48 @@ def _list_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "monitor_start",
+            "description": (
+                "Start a monitoring loop on YOUR CURRENT session: after each of "
+                "your turns completes and the session sits idle for "
+                "interval_secs, the given message is re-injected into this same "
+                "session as your next turn — same context, same tools, same "
+                "conversation. Works from dashboard chat, Slack threads, and "
+                "Discord DMs. Use when the user asks to babysit / monitor / "
+                "keep checking something (a PR, CI run, ticket, deployment): "
+                "put the check instructions and the exit condition in the "
+                "message, then END YOUR TURN — the loop wakes you on the "
+                "interval. When the exit condition is met (or the user says "
+                "stop), call autonudge_stop. One loop per session; starting a "
+                "new one replaces the old. Survives gateway restarts."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "The recurring instruction to re-inject each cycle, "
+                            "including what to check and when to stop (max 8000 chars)"
+                        ),
+                    },
+                    "interval_secs": {
+                        "type": "integer",
+                        "description": (
+                            "Idle seconds between cycles (15-86400, default 300)"
+                        ),
+                    },
+                    "max_cycles": {
+                        "type": "integer",
+                        "description": (
+                            "Safety cap on delivered cycles; 0 = unlimited (default 0)"
+                        ),
+                    },
+                },
+                "required": ["message"],
+            },
+        },
+        {
             "name": "local_knowledge_search",
             "description": (
                 "Search the user's knowledge library. Call ONLY when the user's "
@@ -2167,6 +2210,42 @@ def _delete_user(path: str) -> dict:
         return _http_error_body(e)
     except Exception as e:
         return {"error": str(e)}
+
+
+def _post_user(path: str, body: dict) -> dict:
+    """POST JSON to a user-token-gated route (e.g. ``POST /api/autonudge``)."""
+    token = _local_user_token()
+    if not token:
+        return {"error": "could not obtain local user token"}
+    req = urllib.request.Request(
+        f"{_API}{_with_token(path, token)}",
+        method="POST",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- _API is the loopback dashboard base resolved from local config and path is code-constructed; no user-controlled URL reaches urlopen (same trust profile as _get_user/_delete_user)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return _http_error_body(e)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _autonudge_binding_key(sk: str) -> str | None:
+    """Map a session key to its AutoNudge binding key, or None if unsupported.
+
+    ``dashboard:chat-N-TS`` → bare slot key ``chat-N-TS`` (the autonudge REST
+    layer keys dashboard loops on the bare slot key); ``slack:``/``discord:``
+    session keys pass through unchanged (channel-bound loops). Anything else
+    (``cron:``, ``hook:``, ``subagent:`` ...) is not a nudge-able session.
+    """
+    if sk.startswith("dashboard:"):
+        return sk.split(":", 1)[1]
+    if sk.startswith(("slack:", "discord:")):
+        return sk
+    return None
 
 
 def _artifact_ref_link(slug: str, name: str) -> str:
@@ -3942,24 +4021,29 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # point (matches spawn_run pattern above).
         args = validate_tool_args(args, AUTONUDGE_STOP_SCHEMA)
 
-        # Resolve the current session's slot key and stop any loop bound to it.
-        sk = _resolve_session_key()
-        # Session key is formatted "dashboard:chat-N-TS" for chat slots
-        # or "cron:<id>", "hook:<id>", etc. AutoNudge only binds to chat slots.
-        if not sk.startswith("dashboard:"):
+        # Resolve the current session's binding key and stop any loop on it.
+        # STRICT resolution (env-var only, no PID walk): this tool mutates
+        # another process's persistent loop state, and a subagent lives under
+        # the parent slot's process tree — a PID-walk would let it silently
+        # stop the PARENT session's loop (matches set_project's rule).
+        sk = _resolve_session_key_strict()
+        # AutoNudge binds to dashboard chat slots and slack:/discord: channel
+        # sessions — never to "cron:<id>", "hook:<id>", "subagent:<id>", etc.
+        slot_key = _autonudge_binding_key(sk)
+        if slot_key is None:
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="autonudge_stop", outcome="noop"
             )
             return (
                 "No auto-nudge loop to stop: this tool only works from within "
-                f"a dashboard chat session (current session_key={sk!r})."
+                "a dashboard, Slack, or Discord session "
+                f"(current session_key={sk!r})."
             )
-        slot_key = sk.split(":", 1)[1]
         reason = args.get("reason", "").strip()
         # /api/autonudge* rejects X-Internal-Secret and requires a user-scoped
         # token, so use the token-aware helpers (bootstrapped via
         # /api/token/local) rather than the plain internal-secret _get/_delete.
-        lookup = _get_user(f"/api/autonudge/slot/{slot_key}")
+        lookup = _get_user(f"/api/autonudge/slot/{quote(slot_key, safe='')}")
         if lookup.get("error"):
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="autonudge_stop", outcome="error"
@@ -3989,6 +4073,65 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"Auto-nudge loop {loop_id} stopped on session {slot_key}"
             + (f" (reason: {reason})" if reason else "")
             + ". No further nudges will fire."
+        )
+
+    if name == "monitor_start":
+        args = validate_tool_args(args, MONITOR_START_SCHEMA)
+        # STRICT resolution (env-var only, no PID walk): monitor_start creates
+        # a persistent unattended loop that repeatedly runs tools in the bound
+        # session. A subagent under the parent's process tree must NOT be able
+        # to PID-walk into the parent's identity and mint a loop the parent
+        # user never asked for (crosses the session authorization boundary).
+        sk = _resolve_session_key_strict()
+        binding_key = _autonudge_binding_key(sk)
+        if binding_key is None:
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_start", outcome="noop"
+            )
+            return (
+                "monitor_start only works from within a dashboard, Slack, or "
+                f"Discord session (current session_key={sk!r}). For other "
+                "contexts use cron_add or a HEARTBEAT.md task."
+            )
+        message = args["message"].strip()
+        if not message:
+            return "monitor_start: message must not be empty."
+        interval_secs = int(args.get("interval_secs") or 300)
+        max_cycles = int(args.get("max_cycles") or 0)
+        resp = _post_user(
+            "/api/autonudge",
+            {
+                "session_key": binding_key,
+                "message": message,
+                "idle_secs": interval_secs,
+                "max_cycles": max_cycles,
+            },
+        )
+        if resp.get("error"):
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_start", outcome="error"
+            )
+            return f"Failed to start monitor loop: {resp['error']}"
+        loop = resp.get("loop") or {}
+        sel().log_tool_invocation(
+            session_key=sk,
+            source="mcp",
+            tool_name="monitor_start",
+            outcome="success",
+            metadata={
+                "binding_key": binding_key,
+                "loop_id": loop.get("id", ""),
+                "interval_secs": interval_secs,
+                "max_cycles": max_cycles,
+            },
+        )
+        return (
+            f"Monitor loop {loop.get('id', '?')} started on session {binding_key}: "
+            f"the message will be re-injected into this session after every "
+            f"~{interval_secs}s of idle"
+            + (f", stopping after {max_cycles} cycles" if max_cycles else "")
+            + ". End your turn now — the loop wakes you. Call autonudge_stop "
+            "when the exit condition is met."
         )
 
     if name == "search_chat_history":

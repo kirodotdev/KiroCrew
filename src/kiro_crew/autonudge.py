@@ -51,6 +51,19 @@ _REARM_BACKOFF_MAX_SHIFT = 16  # clamp the 2**shift exponent
 # Sentinel file per loop: creating it halts the loop on next cycle.
 STOP_SENTINEL = "STOP"
 
+# Namespaced session-key prefixes that identify messaging-channel sessions
+# (as opposed to bare dashboard chat-slot keys). Channel-bound loops have no
+# dashboard turn-lifecycle hooks (notify_turn_complete / notify_user_input),
+# so they run on a fixed interval instead of an idle timer: the timer re-arms
+# itself right after every delivered fire.
+_CHANNEL_KEY_PREFIXES = ("slack:", "discord:", "telegram:", "whatsapp:", "unified:")
+
+
+def is_channel_key(key: str) -> bool:
+    """True when *key* names a messaging-channel session (``slack:<ts>``,
+    ``discord:{agent}:direct:{user}`` ...) rather than a dashboard chat slot."""
+    return key.startswith(_CHANNEL_KEY_PREFIXES)
+
 
 def enabled() -> bool:
     """Feature flag — on by default. Set ``KIROCREW_AUTONUDGE=0`` to disable."""
@@ -69,7 +82,14 @@ def get_instance() -> "AutoNudgeService | None":
 
 @dataclass
 class NudgeLoop:
-    """A single auto-nudge loop bound to one slot."""
+    """A single auto-nudge loop bound to one session.
+
+    ``slot_key`` is the binding key: either a bare dashboard chat-slot key
+    (e.g. ``chat-1-1721...``, idle-timer driven via notify_turn_complete) or a
+    namespaced messaging-channel session key (e.g. ``slack:<thread_ts>``,
+    ``discord:{agent}:direct:{user_id}``), which runs on a fixed interval.
+    The field keeps its historical name for store/REST/WS compatibility.
+    """
 
     id: str
     slot_key: str
@@ -376,3 +396,11 @@ class AutoNudgeService:
         loop.last_fire_ts = time.time()
         self._save()
         self._emit("fired", loop)
+        # Channel-bound loops (Slack/Discord/...) have no dashboard
+        # turn-lifecycle hook to re-arm them (notify_turn_complete never fires
+        # for these keys), so they self-re-arm on a fixed interval. The fire
+        # callback runs the turn inline, so the next fire lands idle_secs
+        # after the previous turn finished; the busy-skip + backoff above
+        # handles any overlap.
+        if is_channel_key(loop.slot_key) and loop.active and loop.id in self._loops:
+            self._arm_timer(loop)
