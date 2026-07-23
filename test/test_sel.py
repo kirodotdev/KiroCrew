@@ -903,3 +903,315 @@ class TestCriticalWrite:
                 )
         finally:
             mp.undo()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Audit-chain hardening regression tests (Track B):
+#   1. HMAC key length validation (reject empty/short keys — hard fail)
+#   2. HMAC key permission re-enforcement on load
+#   3. _read_last_hash no longer resets the chain to genesis on a corrupt
+#      trailing line when prior complete records exist
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestHmacKeyValidation:
+    def test_rejects_empty_key_file(self, tmp_path: Path) -> None:
+        """A 0-byte key file must hard-fail init, not sign with an empty key."""
+        (tmp_path / "sel_hmac.key").write_bytes(b"")
+        with pytest.raises(RuntimeError, match="too short"):
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+
+    def test_rejects_short_key_file(self, tmp_path: Path) -> None:
+        """A present-but-too-short key (< 32 bytes) must hard-fail init."""
+        (tmp_path / "sel_hmac.key").write_bytes(b"x" * 16)
+        with pytest.raises(RuntimeError, match="require >= 32"):
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+
+    def test_accepts_exactly_min_length_key(self, tmp_path: Path) -> None:
+        """A key of exactly the minimum length is accepted."""
+        key = b"k" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(key)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log._hmac_key == key
+
+    def test_generated_key_meets_minimum_length(self, tmp_path: Path) -> None:
+        """The auto-generated key must satisfy the validation on next load."""
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert len((tmp_path / "sel_hmac.key").read_bytes()) >= 32
+        # Re-init from the on-disk key must not raise.
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert len(log2._hmac_key) == 32
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+class TestHmacKeyPermissionEnforcement:
+    def test_created_key_is_owner_only(self, tmp_path: Path) -> None:
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        mode = (tmp_path / "sel_hmac.key").stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_reenforces_perms_on_load(self, tmp_path: Path) -> None:
+        """A key file left group/world-readable must be tightened to 0600 on load."""
+        key_path = tmp_path / "sel_hmac.key"
+        key_path.write_bytes(b"k" * 32)
+        os.chmod(key_path, 0o644)  # simulate relaxed perms (backup restore, etc.)
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        mode = key_path.stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_chmod_failure_on_load_is_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A chmod failure while re-enforcing perms on load must warn, not crash."""
+        key = b"k" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(key)
+
+        def _boom(*a, **kw):
+            raise OSError("chmod denied")
+
+        monkeypatch.setattr("kiro_crew.platform_compat.os.chmod", _boom)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log._hmac_key == key
+
+
+class TestReadLastHashCorruptTail:
+    def test_corrupt_tail_chains_from_last_valid_record(self, tmp_path: Path) -> None:
+        """A truncated final line must NOT reset the chain to genesis when
+        prior complete records exist — the next record chains off the last
+        COMPLETE record's entry_hash."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="e0"))
+        log.log(_make_event(event_id="e1"))
+        good_tip = log._last_hash
+        path = tmp_path / "security_events.jsonl"
+        # Simulate a crash mid-append: a partial/truncated trailing line.
+        with open(path, "a", encoding="utf-8") as f:
+            f.write('{"event_id": "e2", "prev_hash": "abc", "entry_ha')
+
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        # Chain tip recovered from the last COMPLETE record, not reset to "".
+        assert log2._last_hash == good_tip
+        assert log2._last_hash != ""
+
+    def test_new_record_after_corrupt_tail_keeps_chain_linked(self, tmp_path: Path) -> None:
+        """After recovering past a corrupt tail, appending a new record links
+        it to the surviving complete record (verify_integrity stays clean for
+        the intact prefix)."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="a0"))
+        log.log(_make_event(event_id="a1"))
+        prev_tip = log._last_hash
+        path = tmp_path / "security_events.jsonl"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write('{"truncated": tru')  # invalid JSON tail
+
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log2._last_hash == prev_tip
+
+    def test_only_corrupt_lines_returns_empty(self, tmp_path: Path) -> None:
+        """When NO complete record exists, "" is still the correct tip (nothing
+        to chain from) — preserves the genuine genesis case."""
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "security_events.jsonl").write_text("not-json-at-all\n")
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log._last_hash == ""
+
+    def test_non_object_json_tail_is_skipped(self, tmp_path: Path) -> None:
+        """A valid-JSON-but-non-object trailing line (e.g. a bare number) must
+        be skipped, not crash init on the .get() call."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="n0"))
+        good_tip = log._last_hash
+        path = tmp_path / "security_events.jsonl"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("12345\n")
+
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log2._last_hash == good_tip
+
+    def test_corrupt_tail_across_4kb_boundary(self, tmp_path: Path) -> None:
+        """The recovery scan works even when the last complete record is more
+        than one 4 KB chunk before the truncated tail."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        big = "x" * 200
+        for i in range(60):  # ~15 KB — spans multiple 4 KB chunks
+            log.log(_make_event(event_id=f"c{i:02d}", resources=big))
+        good_tip = log._last_hash
+        path = tmp_path / "security_events.jsonl"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write('{"event_id": "trunc", "entry_ha')  # truncated tail
+
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log2._last_hash == good_tip
+
+
+class TestCorruptTailNewlineBoundary:
+    """A record appended after recovering past an UNTERMINATED corrupt tail
+    must start on a fresh line — never glued onto the truncated fragment.
+
+    Regression for the silent-void bug: _read_last_hash() recovers the right
+    prev_hash, but if the writer O_APPENDs directly onto a tail line with no
+    trailing newline, the new record fuses into that fragment as one
+    unparseable line — so the event, though correctly chained, is orphaned
+    from every readable record (recent()/verify_integrity can't see it).
+    """
+
+    def _crash_with_truncated_tail(self, tmp_path: Path) -> tuple[str, str]:
+        """Log two clean events, then simulate a crash mid-append (a trailing
+        line with NO newline). Returns (recovered_tip, fragment)."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="e0"))
+        log.log(_make_event(event_id="e1"))
+        tip = log._last_hash
+        fragment = '{"event_id": "e2", "prev_hash": "abc", "entry_ha'
+        with open(tmp_path / "security_events.jsonl", "a", encoding="utf-8") as f:
+            f.write(fragment)
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        return tip, fragment
+
+    def test_new_record_is_parseable_after_corrupt_tail(self, tmp_path: Path) -> None:
+        tip, fragment = self._crash_with_truncated_tail(tmp_path)
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log2._last_hash == tip  # recovered, not reset to genesis
+        log2.log(_make_event(event_id="e_after"))
+
+        lines = (tmp_path / "security_events.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        # Last physical line must be the NEW record, cleanly parseable — not
+        # the corrupt fragment glued to it.
+        last = json.loads(lines[-1])
+        assert last["event_id"] == "e_after"
+        # And it chains off the recovered tip.
+        assert last["prev_hash"] == tip
+        # The corrupt fragment is PRESERVED as its own line (append-only
+        # forensic evidence), not truncated away.
+        assert any(fragment in ln for ln in lines)
+
+    def test_new_record_surfaces_in_recent_after_corrupt_tail(
+        self, tmp_path: Path
+    ) -> None:
+        self._crash_with_truncated_tail(tmp_path)
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log2.log(_make_event(event_id="visible"))
+        # recent() skips the corrupt fragment but MUST surface the new event —
+        # proof it isn't orphaned by gluing.
+        assert any(e["event_id"] == "visible" for e in log2.recent(limit=10))
+
+    def test_intact_prefix_still_verifies_after_recovery(self, tmp_path: Path) -> None:
+        tip, _ = self._crash_with_truncated_tail(tmp_path)
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log2.log(_make_event(event_id="post"))
+        total, valid = log2.verify_integrity()
+        # The two original records + the post-recovery record all chain and
+        # verify; only the single corrupt fragment line is non-valid.
+        assert valid == 3
+        assert total - valid == 1  # exactly the preserved corrupt fragment
+
+    def test_no_separator_inserted_when_tail_is_clean(self, tmp_path: Path) -> None:
+        """Normal appends (file ends with a newline) must NOT gain a blank
+        separator line — the boundary fix triggers only on a truncated tail."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="s0"))
+        log.log(_make_event(event_id="s1"))
+        raw = (tmp_path / "security_events.jsonl").read_text(encoding="utf-8")
+        assert "\n\n" not in raw  # no spurious blank line between records
+
+    def test_ends_without_newline_helper(self, tmp_path: Path) -> None:
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        path = tmp_path / "security_events.jsonl"
+        # A freshly-created log ends with a newline → no separator needed.
+        assert log._ends_without_newline() is False
+        # Empty file → no separator needed.
+        path.write_text("", encoding="utf-8")
+        assert log._ends_without_newline() is False
+        # Properly terminated line → no separator needed.
+        path.write_text("{}\n", encoding="utf-8")
+        assert log._ends_without_newline() is False
+        # Truncated tail (no trailing newline) → separator needed.
+        path.write_text('{"x": 1', encoding="utf-8")
+        assert log._ends_without_newline() is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+class TestHmacKeyAtomicCreation:
+    """Key creation is atomic: the key file is only ever visible as the full
+    32 bytes, so a crash/partial-write can't leave a short key that the
+    load-time length check would then hard-fail on the next boot.
+    """
+
+    def test_created_key_is_full_length_and_owner_only(self, tmp_path: Path) -> None:
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        key_path = tmp_path / "sel_hmac.key"
+        assert len(key_path.read_bytes()) == 32
+        assert (key_path.stat().st_mode & 0o777) == 0o600
+
+    def test_no_temp_key_files_left_behind(self, tmp_path: Path) -> None:
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        leftovers = list(tmp_path.glob(".sel_hmac_*"))
+        assert leftovers == []
+
+    def test_crash_during_create_leaves_no_short_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the write crashes mid-creation, NO key file is published (so the
+        next boot regenerates cleanly instead of hard-failing on a short key),
+        and the temp file is cleaned up."""
+        real_write = os.write
+
+        def _boom(fd, data):  # fail only the key write
+            raise OSError("disk full during key write")
+
+        monkeypatch.setattr(os, "write", _boom)
+        with pytest.raises(OSError):
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(os, "write", real_write)
+        # No published key, and no orphaned temp file.
+        assert not (tmp_path / "sel_hmac.key").exists()
+        assert list(tmp_path.glob(".sel_hmac_*")) == []
+
+    def test_short_write_still_persists_full_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """os.write() returning a SHORT count (e.g. near-full disk) must not
+        publish a truncated key — the writer loops until all 32 bytes land."""
+        real_write = os.write
+
+        def _short_write(fd, data):
+            # Write at most 8 bytes per call, forcing the write-all loop.
+            return real_write(fd, bytes(data)[:8])
+
+        monkeypatch.setattr(os, "write", _short_write)
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(os, "write", real_write)
+        assert len((tmp_path / "sel_hmac.key").read_bytes()) == 32
+
+    def test_zero_byte_write_is_treated_as_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A persistent 0-byte write must raise (not spin forever) and leave no
+        published key or temp file."""
+        real_write = os.write
+
+        def _zero(fd, data):
+            return 0
+
+        monkeypatch.setattr(os, "write", _zero)
+        with pytest.raises(OSError):
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(os, "write", real_write)
+        assert not (tmp_path / "sel_hmac.key").exists()
+        assert list(tmp_path.glob(".sel_hmac_*")) == []

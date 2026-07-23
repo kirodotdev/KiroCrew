@@ -38,6 +38,12 @@ _DEFAULT_DIR = Path.home() / ".kirocrew"
 _SEL_FILE = "security_events.jsonl"
 _RETENTION_DAYS = 365
 _HMAC_KEY_FILE = "sel_hmac.key"
+# Minimum accepted HMAC key length. os.urandom(32) is always written, so a
+# shorter key on disk means truncation/corruption/tampering — signing the
+# audit chain with an empty or short key yields a predictable, forgeable MAC
+# and silently disables the chain's tamper-evidence. Mirrors the >= 32-byte
+# requirement enforced in dashboard/token_secret.py.
+_HMAC_KEY_MIN_BYTES = 32
 _MAX_ARG_LEN = 500
 # Background-writer tuning. The queue is unbounded so callers never block; a
 # crash/kill can lose at most the events still queued (audit log is
@@ -222,6 +228,20 @@ class SecurityEventLog:
                     0o600,
                 )
                 with os.fdopen(fd, "a", encoding="utf-8") as f:
+                    # If a crash mid-append left a truncated tail line WITHOUT a
+                    # trailing newline, writing directly (O_APPEND) would glue
+                    # this record onto the corrupt fragment, forming a single
+                    # unparseable line. _read_last_hash() recovers the correct
+                    # prev_hash from the last complete record, but that glued
+                    # line stays unreadable by verify_integrity — so the new
+                    # event, though correctly chained, is orphaned from every
+                    # parseable record. Insert a newline boundary first so the
+                    # new record starts on a fresh, parseable line. We do NOT
+                    # truncate the corrupt fragment: the SEL log is append-only
+                    # forensic evidence, and the fragment is preserved as its
+                    # own (skipped) line.
+                    if self._ends_without_newline():
+                        f.write("\n")
                     f.write("".join(lines))
                 # Ensure permissions are correct even if file pre-existed with
                 # wrong mode (e.g. created by an older version).
@@ -277,42 +297,202 @@ class SecurityEventLog:
         key_path = self._dir / _HMAC_KEY_FILE
         self._dir.mkdir(parents=True, exist_ok=True)
         if key_path.exists():
-            return key_path.read_bytes()
+            existing = key_path.read_bytes()
+            # Validate the key BEFORE it is ever used to sign the chain. A
+            # 0-byte or too-short key is accepted silently by hmac.new(),
+            # producing a predictable, forgeable MAC that disables the audit
+            # chain's tamper-evidence. Fail HARD (mirroring token_secret.py's
+            # >= 32-byte requirement) rather than silently falling back to a
+            # weak key. We RAISE instead of regenerating (unlike
+            # token_secret.py's fall-through) because a fresh key would orphan
+            # every already-chained record — an operator must consciously
+            # rotate/restore the key.
+            if len(existing) < _HMAC_KEY_MIN_BYTES:
+                raise RuntimeError(
+                    f"SEL HMAC key {key_path} is too short ({len(existing)} bytes; "
+                    f"require >= {_HMAC_KEY_MIN_BYTES}). Refusing to sign the audit "
+                    "chain with a weak/forgeable key. Restore the correct key from "
+                    "backup, or remove the file to start a fresh chain with a new key."
+                )
+            # Re-enforce owner-only perms at LOAD time, not just at creation:
+            # the mode may have been relaxed since (backup restore, manual edit,
+            # migration) and this key signs the entire audit chain — a
+            # group/world-readable key lets any local user forge valid MACs.
+            # Mirrors token_secret.py's load-time restrict_to_owner. Fail-SOFT
+            # at the call site (warn, don't crash): a read-only FS / chmod
+            # failure must not take down SecurityEventLog init.
+            try:
+                platform_compat.restrict_to_owner(key_path)
+            except OSError:
+                # Logs the key file PATH, never the key bytes.
+                logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                    "failed to enforce owner-only permissions on SEL HMAC key %s; "
+                    "file may be readable by other users",
+                    key_path,
+                    exc_info=True,
+                )
+            return existing
         key = os.urandom(32)
-        key_path.write_bytes(key)
-        # chmod_safe (logs + swallows OSError; no-op on Windows) — fail-SOFT by
-        # design: a read-only FS must not crash SecurityEventLog init (see
-        # test_chmod_failure_is_swallowed). The reviewer's note was only that the
-        # old `try: chmod_safe except OSError: pass` wrapper was dead (chmod_safe
-        # never raises) — so drop the wrapper, keep the fail-soft behavior. (Unlike
-        # token_secret.py, which is fail-LOUD; the SEL key tolerates chmod failure.)
-        platform_compat.chmod_safe(key_path, 0o600)
+        # Create the key ATOMICALLY: write the full 32 bytes to a temp file in
+        # the same dir (0o600 from birth, so never briefly world-readable) and
+        # os.replace() it into place — the same pattern prune() uses. A plain
+        # os.open()+os.write() is NOT atomic: a crash or full-disk partial
+        # write between the two calls leaves a 0-byte/short key on disk, which
+        # the load-time length check above would then reject with a hard
+        # RuntimeError on the NEXT boot — bricking every SecurityEventLog()
+        # init until an operator manually removes the file. os.replace() makes
+        # the key file visible only once it is complete, so KiroCrew itself can
+        # never manufacture the hard-fail state; it fires solely on genuine
+        # external corruption/tampering (which is what the error message is
+        # written for).
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(key_path.parent), prefix=".sel_hmac_", suffix=".tmp"
+        )
+        try:
+            # os.write() may return a SHORT count (fewer bytes than len(key)),
+            # notably when storage is nearly full. Ignoring it would publish a
+            # truncated key while the running process keeps signing with the
+            # full in-memory key — the next boot then hard-fails on the short
+            # on-disk key and the existing records can't be verified. Loop
+            # until every byte is written; treat a 0-byte write as an error.
+            mv = memoryview(key)
+            while mv:
+                n = os.write(tmp_fd, mv)
+                if n == 0:
+                    raise OSError("short write persisting SEL HMAC key (wrote 0 bytes)")
+                mv = mv[n:]
+            os.close(tmp_fd)
+            tmp_fd = -1
+            os.replace(tmp_path, str(key_path))
+        except BaseException:
+            if tmp_fd != -1:
+                os.close(tmp_fd)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        # Re-enforce owner-only perms (POSIX 0o600 / Windows owner-only DACL).
+        # Fail-SOFT by design: a read-only FS must not crash SecurityEventLog
+        # init (see test_chmod_failure_is_swallowed). Unlike token_secret.py,
+        # which treats the same failure as merely a warning too, the SEL key
+        # tolerates chmod failure at startup.
+        try:
+            platform_compat.restrict_to_owner(key_path)
+        except OSError:
+            # Logs the key file PATH, never the key bytes.
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                "failed to set owner-only permissions on SEL HMAC key %s; "
+                "file may be readable by other users",
+                key_path,
+                exc_info=True,
+            )
         return key
 
+    def _ends_without_newline(self) -> bool:
+        """True if the log's final byte is not a newline.
+
+        A trailing byte other than ``\\n`` means the previous append was
+        truncated (crash / partial write) and left an unterminated fragment.
+        The writer uses this to insert a newline boundary before the next
+        record so the new line stays independently parseable (see
+        _flush_batch). Fail-soft: on any read error assume no separator is
+        needed rather than crashing the writer.
+        """
+        try:
+            with open(self._path, "rb") as f:
+                f.seek(0, 2)
+                if f.tell() == 0:
+                    return False
+                f.seek(-1, 2)
+                return f.read(1) != b"\n"
+        except OSError:
+            return False
+
     def _read_last_hash(self) -> str:
+        """Return the entry_hash of the last COMPLETE record, or "" if none.
+
+        A crash mid-append can leave a truncated/partial final line. The old
+        implementation wrapped the parse in a blanket ``except: return ""``, so
+        one corrupt tail line silently restarted the HMAC chain from genesis —
+        severing the tamper-evidence link and masking exactly the corruption
+        the chain exists to detect. Instead we scan backward and skip an
+        unparseable trailing line to chain from the last COMPLETE valid record;
+        we only return "" when the log is genuinely empty/absent or contains no
+        parseable record at all (nothing to chain from). Skipped corrupt tail
+        lines are logged so the integrity concern is surfaced, not hidden.
+        """
         if not self._path.exists():
             return ""
         try:
-            # Read last non-empty line
             with open(self._path, "rb") as f:
                 f.seek(0, 2)
                 pos = f.tell()
                 if pos == 0:
                     return ""
-                # Scan backward for last newline
+                # Scan backward in chunks. ``buf`` holds bytes not yet split
+                # into complete lines; while pos > 0 its first split element is
+                # a possibly-partial line whose start lies in an earlier chunk,
+                # so we hold it back until more is read (or we reach the file
+                # start). This lets us walk past a truncated tail line to find
+                # the last complete record.
                 buf = b""
+                skipped_corrupt = False
                 while pos > 0:
-                    pos = max(pos - 4096, 0)
-                    f.seek(pos)
-                    buf = f.read() + buf
-                    lines = buf.split(b"\n")
-                    for line in reversed(lines):
+                    read_start = max(pos - 4096, 0)
+                    f.seek(read_start)
+                    buf = f.read(pos - read_start) + buf
+                    pos = read_start
+                    parts = buf.split(b"\n")
+                    if pos > 0:
+                        # First element may be incomplete — defer it.
+                        buf = parts[0]
+                        complete = parts[1:]
+                    else:
+                        # Reached the file start: every element is complete.
+                        buf = b""
+                        complete = parts
+                    for line in reversed(complete):
                         line = line.strip()
-                        if line:
+                        if not line:
+                            continue
+                        try:
                             data = json.loads(line)
-                            return data.get("entry_hash", "")
+                        except (json.JSONDecodeError, ValueError):
+                            # Truncated/corrupt line — skip backward to the last
+                            # complete record rather than resetting the chain to
+                            # genesis. Flag it so the corruption is not hidden.
+                            skipped_corrupt = True
+                            logger.warning(
+                                "SEL: skipping unparseable audit-log line while "
+                                "resolving chain tip in %s; chaining from the last "
+                                "complete record instead of resetting to genesis",
+                                self._path,
+                            )
+                            continue
+                        if not isinstance(data, dict):
+                            # Parseable JSON but not a record object — treat as
+                            # corrupt and keep scanning backward.
+                            skipped_corrupt = True
+                            logger.warning(
+                                "SEL: skipping non-object audit-log line while "
+                                "resolving chain tip in %s",
+                                self._path,
+                            )
+                            continue
+                        if skipped_corrupt:
+                            logger.warning(
+                                "SEL: recovered chain tip from an earlier complete "
+                                "record after a corrupt/truncated tail in %s",
+                                self._path,
+                            )
+                        return data.get("entry_hash", "")
+            # No parseable record anywhere in the file — nothing to chain from.
             return ""
-        except Exception:
+        except OSError:
+            logger.warning(
+                "SEL: failed to read chain tip from %s", self._path, exc_info=True
+            )
             return ""
 
     def _compute_hash(self, event: SecurityEvent) -> str:
