@@ -97,7 +97,7 @@ class TaskRunner:
     # task_executor.execute_task()/self_review(), task_reporter.build_status()
 
     async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "file") -> TaskRun
-    def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "file") -> str
+    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "file") -> str
     def cancel(self, task_id: str | None = None) -> None  # None = cancel all
     def status(self) -> dict
 
@@ -106,9 +106,17 @@ class TaskRunner:
     @property
     def current_run(self) -> TaskRun | None
 
-    # Internal but accessed by handlers for delete
+    # Mutation APIs await fsync-backed persistence off the event loop.
+    async def update_plan(task_id: str, tasks: list[dict]) -> TaskRun
+    async def update_task(task_id: str, index: int, updates: dict) -> dict
+    async def execute_plan(task_id: str, ...) -> str
+    async def retry_from_task(task_id: str, from_task: int, agent: str = "") -> str
+    async def delete_run(task_id: str) -> bool
+
+    # Internal but accessed by handlers for read-only projection
     _runs: dict[str, TaskRun]
-    _persist_runs() -> None
+    async def _apersist_runs() -> None
+    _persist_runs() -> None  # synchronous compatibility/testing helper only
 ```
 
 ### Task Source & Visibility
@@ -180,7 +188,8 @@ class Project:
 
 - `_runs: dict[str, TaskRun]` — keyed by task_id
 - `_tasks: dict[str, asyncio.Task]` — background asyncio tasks
-- `start_background()` accepts optional `agent` param, returns task_id (`{spec_stem}_{timestamp}`)
+- `start_background()` accepts optional `agent` param, returns a collision-resistant task ID (`{spec_stem}_{time_ns}`)
+- `_start_lock` serializes concurrency admission, completed-run pruning, ID allocation, durable planning-placeholder persistence, and `_tasks` registration
 - All `get_or_create()` calls pass `agent=self._agent` so the task runs with the specified agent
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
 - Each task gets its own work dir: `{work_dir}/{spec_stem}/`

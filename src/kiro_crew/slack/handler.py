@@ -2306,7 +2306,7 @@ async def maybe_handle_keyword_command(
 
     # ── Task runner: "run <spec-path>" ──
     if task_runner:
-        run_reply = _handle_run_command(text, task_runner, slack, channel, reply_ts)
+        run_reply = await _handle_run_command(text, task_runner, slack, channel, reply_ts)
         if run_reply:
             await slack.post_message(channel, run_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
@@ -4454,7 +4454,7 @@ def _handle_cron_command(
     return None
 
 
-def _handle_run_command(
+async def _handle_run_command(
     text: str,
     runner: TaskRunner,
     slack: SlackClientOps,
@@ -4506,7 +4506,7 @@ def _handle_run_command(
         return f"❌ Spec file not found: `{spec_path}`"
 
     try:
-        runner.start_background(spec_path, source="chat")
+        await runner.start_background(spec_path, source="chat")
     except Exception as exc:
         return f"❌ Failed to start: {exc}"
     return f"🚀 Task started: `{spec_path.name}`\nUse `task run status` to check progress."

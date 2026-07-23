@@ -146,7 +146,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         auto_approve = _gate_auto_approve(
             request, body.get("auto_approve") is True, claimed_source, endpoint="start"
         )
-        task_id = state.task_runner.start_background(
+        task_id = await state.task_runner.start_background(
             spec_path, agent=agent, name=task_name, source=source, workspace_dir=workspace_dir,
             auto_approve=auto_approve,
         )
@@ -213,7 +213,7 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
         return web.json_response({"error": "cancel first"}, status=409)
     state.task_runner._runs.pop(task_id, None)
     state.task_runner._stall_cancelled_ids.discard(task_id)
-    state.task_runner._persist_runs()
+    await state.task_runner._apersist_runs()
     return web.json_response({"ok": True})
 
 
@@ -234,7 +234,7 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     if not name:
         return web.json_response({"error": "name required"}, status=400)
     run.name = name
-    state.task_runner._persist_runs()
+    await state.task_runner._apersist_runs()
     return web.json_response({"ok": True, "name": name})
 
 
@@ -253,7 +253,7 @@ async def api_taskrunner_update_task(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     try:
-        result = state.task_runner.update_task(task_id, index, data)
+        result = await state.task_runner.update_task(task_id, index, data)
         # SEL audit for all task field changes
         _sel().log_tool_invocation(
             session_key="dashboard",
@@ -286,7 +286,7 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON"}, status=400)
     from_step = body.get("from_step", 1)
     try:
-        state.task_runner.retry_from_task(task_id, from_step, agent=state.task_runner._agent or "")
+        await state.task_runner.retry_from_task(task_id, from_step, agent=state.task_runner._agent or "")
         return web.json_response({"ok": True, "task_id": task_id})
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -522,7 +522,7 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON"}, status=400)
     steps = body.get("steps", [])
     try:
-        run = state.task_runner.update_plan(task_id, steps)
+        run = await state.task_runner.update_plan(task_id, steps)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(
@@ -567,7 +567,7 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
         request, body.get("auto_approve") is True, None, endpoint="execute"
     )
     try:
-        state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh, workspace_dir=workspace_dir, auto_approve=auto_approve)
+        await state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh, workspace_dir=workspace_dir, auto_approve=auto_approve)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "task_id": task_id})
@@ -590,7 +590,7 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
         return web.json_response({"error": "steps array required"}, status=400)
     try:
         if task_id:
-            run = state.task_runner.update_plan(task_id, steps)
+            run = await state.task_runner.update_plan(task_id, steps)
         else:
             new_id = f"plan_{uuid.uuid4().hex[:8]}"
             task_dir = state.task_runner._work_dir / new_id
@@ -606,7 +606,7 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
             )
             state.task_runner._runs[new_id] = run
             try:
-                run = state.task_runner.update_plan(new_id, steps)
+                run = await state.task_runner.update_plan(new_id, steps)
             except ValueError:
                 state.task_runner._runs.pop(new_id, None)
                 raise

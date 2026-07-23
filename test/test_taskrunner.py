@@ -2956,7 +2956,7 @@ class TestTaskNaming:
         spec.write_text("# Bg Task\n## Steps\n1. Do thing\n   - run: echo hi")
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         with patch.object(runner, "run", new_callable=AsyncMock) as mock_run:
-            task_id = runner.start_background(spec, name="bg-task")
+            task_id = await runner.start_background(spec, name="bg-task")
             assert task_id
             await asyncio.sleep(0)  # yield to let the background task run
             mock_run.assert_called_once()
@@ -3010,13 +3010,14 @@ class TestWorkspaceDirValidation:
         with pytest.raises(ValueError, match="sensitive"):
             _resolve_workspace_dir("~/.aws")
 
-    def test_start_background_rejects_sensitive_workspace(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_start_background_rejects_sensitive_workspace(self, tmp_path):
         # The per-run override is validated synchronously at the top of
         # start_background so the HTTP handler surfaces a 400 immediately —
         # a bad path must raise before any background task is spawned.
         runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
         with pytest.raises(ValueError, match="sensitive"):
-            runner.start_background("anything.md", workspace_dir="~/.ssh")
+            await runner.start_background("anything.md", workspace_dir="~/.ssh")
 
     @pytest.mark.asyncio
     async def test_plan_per_run_workspace_override(self, tmp_path):

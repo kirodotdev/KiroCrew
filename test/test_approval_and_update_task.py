@@ -69,31 +69,35 @@ class TestUpdateTask:
         sessions = _mock_sessions()
         return TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
-    def test_update_title(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_title(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="Old", description="d")]
         runner._runs = {"t1": run}
-        result = runner.update_task("t1", 1, {"title": "New Title"})
+        result = await runner.update_task("t1", 1, {"title": "New Title"})
         assert result["title"] == "New Title"
 
-    def test_update_description(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_description(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="old")]
         runner._runs = {"t1": run}
-        result = runner.update_task("t1", 1, {"description": "new desc"})
+        result = await runner.update_task("t1", 1, {"description": "new desc"})
         assert result["description"] == "new desc"
 
-    def test_update_force_approval(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_force_approval(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
-        result = runner.update_task("t1", 1, {"force_approval": True})
+        result = await runner.update_task("t1", 1, {"force_approval": True})
         assert result["force_approval"] is True
 
-    def test_update_depends_on(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_depends_on(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [
@@ -101,42 +105,47 @@ class TestUpdateTask:
             Step(index=2, title="B", description="b"),
         ]
         runner._runs = {"t1": run}
-        result = runner.update_task("t1", 2, {"depends_on": [1]})
+        result = await runner.update_task("t1", 2, {"depends_on": [1]})
         assert result["depends_on"] == [1]
 
-    def test_update_requires_approval(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_requires_approval(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
-        result = runner.update_task("t1", 1, {"requires_approval": True})
+        result = await runner.update_task("t1", 1, {"requires_approval": True})
         assert result["requires_approval"] is True
 
-    def test_reject_empty_title(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reject_empty_title(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
         with pytest.raises(ValueError, match="non-empty string"):
-            runner.update_task("t1", 1, {"title": ""})
+            await runner.update_task("t1", 1, {"title": ""})
 
-    def test_reject_long_title(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reject_long_title(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
         with pytest.raises(ValueError, match="title too long"):
-            runner.update_task("t1", 1, {"title": "x" * 501})
+            await runner.update_task("t1", 1, {"title": "x" * 501})
 
-    def test_reject_long_description(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reject_long_description(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
         with pytest.raises(ValueError, match="description too long"):
-            runner.update_task("t1", 1, {"description": "x" * 5001})
+            await runner.update_task("t1", 1, {"description": "x" * 5001})
 
-    def test_reject_non_pending_task(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reject_non_pending_task(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         step = Step(index=1, title="T", description="d")
@@ -144,37 +153,41 @@ class TestUpdateTask:
         run.tasks = [step]
         runner._runs = {"t1": run}
         with pytest.raises(ValueError, match="Can only edit pending"):
-            runner.update_task("t1", 1, {"title": "New"})
+            await runner.update_task("t1", 1, {"title": "New"})
 
-    def test_reject_unknown_run(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reject_unknown_run(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         runner._runs = {}
         with pytest.raises(ValueError, match="not found"):
-            runner.update_task("missing", 1, {"title": "X"})
+            await runner.update_task("missing", 1, {"title": "X"})
 
-    def test_reject_unknown_task_index(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reject_unknown_task_index(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
         with pytest.raises(ValueError, match="Task 99 not found"):
-            runner.update_task("t1", 99, {"title": "X"})
+            await runner.update_task("t1", 99, {"title": "X"})
 
-    def test_reject_non_string_description(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_reject_non_string_description(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
         with pytest.raises(ValueError, match="description must be a string"):
-            runner.update_task("t1", 1, {"description": 123})
+            await runner.update_task("t1", 1, {"description": 123})
 
-    def test_invalid_depends_on_type(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_invalid_depends_on_type(self, tmp_path: Path) -> None:
         runner = self._make_runner(tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="running", task_id="t1")
         run.tasks = [Step(index=1, title="T", description="d")]
         runner._runs = {"t1": run}
         with pytest.raises(ValueError, match="depends_on must be a list"):
-            runner.update_task("t1", 1, {"depends_on": "invalid"})
+            await runner.update_task("t1", 1, {"depends_on": "invalid"})
 
 
 # ══════════════════════════════════════════════════════════════════════

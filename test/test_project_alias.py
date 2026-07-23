@@ -193,6 +193,7 @@ class TestProjectHandlers:
     async def test_update_renames(self):
         run = _make_run("r1")
         runner = MagicMock()
+        runner._apersist_runs = AsyncMock()
         runner._runs = {"r1": run}
         req = _make_request(
             _make_app(runner=runner),
@@ -203,7 +204,7 @@ class TestProjectHandlers:
         resp = await api_project_update(req)
         assert resp.status == 200
         assert run.name == "New"
-        runner._persist_runs.assert_called_once()
+        runner._apersist_runs.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_update_not_found(self):
@@ -218,7 +219,7 @@ class TestProjectHandlers:
     @pytest.mark.asyncio
     async def test_delete_success(self):
         runner = MagicMock()
-        runner.delete_run.return_value = True
+        runner.delete_run = AsyncMock(return_value=True)
         req = _make_request(_make_app(runner=runner), match_info={"id": "r1"})
         resp = await api_project_delete(req)
         assert json.loads(resp.body) == {"ok": True}
@@ -226,7 +227,7 @@ class TestProjectHandlers:
     @pytest.mark.asyncio
     async def test_delete_not_found(self):
         runner = MagicMock()
-        runner.delete_run.return_value = False
+        runner.delete_run = AsyncMock(return_value=False)
         req = _make_request(_make_app(runner=runner), match_info={"id": "x"})
         with pytest.raises(web.HTTPNotFound):
             await api_project_delete(req)
@@ -244,18 +245,21 @@ class TestProjectHandlers:
 
 
 class TestDeleteRun:
-    def test_delete_nonexistent(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent(self, tmp_path):
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
-        assert runner.delete_run("nope") is False
+        assert await runner.delete_run("nope") is False
 
-    def test_delete_completed_run(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_delete_completed_run(self, tmp_path):
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         runner._runs["r1"] = _make_run("r1", status="completed")
         with patch.object(runner, "_persist_runs"):
-            assert runner.delete_run("r1") is True
+            assert await runner.delete_run("r1") is True
         assert "r1" not in runner._runs
 
-    def test_delete_running_sets_cancelling(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_delete_running_sets_cancelling(self, tmp_path):
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         run = _make_run("r1", status="running")
         runner._runs["r1"] = run
@@ -263,18 +267,19 @@ class TestDeleteRun:
         mock_task.done.return_value = False
         runner._tasks["r1"] = mock_task
         with patch.object(runner, "_persist_runs"):
-            assert runner.delete_run("r1") is True
+            assert await runner.delete_run("r1") is True
         assert "r1" not in runner._runs
         mock_task.cancel.assert_called_once()
 
-    def test_delete_planning_cancels_bg_task(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_delete_planning_cancels_bg_task(self, tmp_path):
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         runner._runs["r1"] = _make_run("r1", status="planning")
         mock_task = MagicMock()
         mock_task.done.return_value = False
         runner._tasks["r1"] = mock_task
         with patch.object(runner, "_persist_runs"):
-            assert runner.delete_run("r1") is True
+            assert await runner.delete_run("r1") is True
         assert "r1" not in runner._runs
         mock_task.cancel.assert_called_once()
 
@@ -289,7 +294,7 @@ class TestStartBackgroundPlanning:
         spec.write_text("# Test\n## Steps\n1. Do thing\n   - run: echo hi")
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         with patch.object(runner, "run", new_callable=AsyncMock):
-            task_id = runner.start_background(spec, name="test-bg")
+            task_id = await runner.start_background(spec, name="test-bg")
             assert task_id in runner._runs
             assert runner._runs[task_id].status == "planning"
             assert runner._runs[task_id].name == "test-bg"
@@ -302,7 +307,7 @@ class TestStartBackgroundPlanning:
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         with patch.object(runner, "run", new_callable=AsyncMock, side_effect=ValueError("boom")):
             with patch.object(runner, "_persist_runs"):
-                task_id = runner.start_background(spec)
+                task_id = await runner.start_background(spec)
                 await asyncio.sleep(0.1)  # let _wrapped() run
                 run = runner._runs.get(task_id)
                 assert run is not None
@@ -315,7 +320,7 @@ class TestStartBackgroundPlanning:
         spec.write_text("# Test\n## Steps\n1. Do thing\n   - run: echo hi")
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         with patch.object(runner, "run", new_callable=AsyncMock):
-            task_id = runner.start_background(spec, source="mcp")
+            task_id = await runner.start_background(spec, source="mcp")
             assert runner._runs[task_id].source == "mcp"
 
     @pytest.mark.asyncio
@@ -324,7 +329,7 @@ class TestStartBackgroundPlanning:
         spec.write_text("x" * 10000)
         runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
         with patch.object(runner, "run", new_callable=AsyncMock):
-            task_id = runner.start_background(spec)
+            task_id = await runner.start_background(spec)
             assert len(runner._runs[task_id].spec_content) <= 4000
 
 
@@ -332,14 +337,16 @@ class TestStartBackgroundPlanning:
 
 
 class TestProjectRunAlias:
-    def test_project_run_normalizes(self):
+    @pytest.mark.asyncio
+    async def test_project_run_normalizes(self):
         runner = MagicMock()
         runner.status.return_value = {"running": False, "runs": []}
-        _handle_run_command("project run status", runner, MagicMock(), "C123", "ts123")
+        await _handle_run_command("project run status", runner, MagicMock(), "C123", "ts123")
         runner.status.assert_called_once()
 
-    def test_non_matching_returns_none(self):
-        result = _handle_run_command("hello world", MagicMock(), MagicMock(), "C123", "ts")
+    @pytest.mark.asyncio
+    async def test_non_matching_returns_none(self):
+        result = await _handle_run_command("hello world", MagicMock(), MagicMock(), "C123", "ts")
         assert result is None
 
 

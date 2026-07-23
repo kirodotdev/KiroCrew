@@ -114,24 +114,26 @@ class TestAutoApproveDefault:
 
 
 class TestSettersSetAutoApprove:
-    def test_execute_plan_sets_auto_approve(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_plan_sets_auto_approve(self, tmp_path: Path) -> None:
         runner = TaskRunner(sessions=_mock_sessions(), auto_test=False, work_dir=tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="planned", task_id="t1")
         run.tasks = [Step(index=1, title="A", description="d")]
         runner._runs = {"t1": run}
         # Prevent the background _execute task from actually running.
         with patch("kiro_crew.taskrunner.asyncio.create_task", return_value=MagicMock()):
-            runner.execute_plan("t1", auto_approve=True)
+            await runner.execute_plan("t1", auto_approve=True)
         assert run.auto_approve is True
         assert safety_override().is_scope_active(_auto_approve_scope("t1")) is True
 
-    def test_execute_plan_defaults_false(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_plan_defaults_false(self, tmp_path: Path) -> None:
         runner = TaskRunner(sessions=_mock_sessions(), auto_test=False, work_dir=tmp_path)
         run = TaskRun(spec_path="s.md", spec_content="s", status="planned", task_id="t1")
         run.tasks = [Step(index=1, title="A", description="d")]
         runner._runs = {"t1": run}
         with patch("kiro_crew.taskrunner.asyncio.create_task", return_value=MagicMock()):
-            runner.execute_plan("t1")
+            await runner.execute_plan("t1")
         assert run.auto_approve is False
         assert safety_override().is_scope_active(_auto_approve_scope("t1")) is False
 
@@ -155,7 +157,7 @@ class TestSettersSetAutoApprove:
         spec.write_text("# Bg\n## Steps\n1. Do thing", encoding="utf-8")
         runner = TaskRunner(sessions=_mock_sessions(), auto_test=False, work_dir=tmp_path)
         with patch.object(runner, "run", new_callable=AsyncMock) as mock_run:
-            task_id = runner.start_background(spec, auto_approve=True)
+            task_id = await runner.start_background(spec, auto_approve=True)
             await asyncio.sleep(0)  # let the wrapper task run
         # Placeholder Project carries the flag immediately …
         assert runner._runs[task_id].auto_approve is True
@@ -472,7 +474,7 @@ class TestAutoApproveProvenanceGating:
 
     async def _execute_auto_approve_passed(self, request_app: str, auto_approve: bool = True):
         runner = MagicMock()
-        runner.execute_plan = MagicMock(return_value=None)
+        runner.execute_plan = AsyncMock(return_value=None)
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
         req = make_mocked_request(

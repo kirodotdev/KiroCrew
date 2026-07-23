@@ -67,14 +67,14 @@ async def api_project_update(request):
         raise web.HTTPNotFound(text=f"Project {pid} not found")
     if "name" in data:
         run.name = data["name"]
-        tr._persist_runs()
+        await tr._apersist_runs()
     return web.json_response(_run_to_project(run))
 
 
 async def api_project_delete(request):
     tr = _runner(request)
     pid = request.match_info["id"]
-    if not tr or not tr.delete_run(pid):
+    if not tr or not await tr.delete_run(pid):
         raise web.HTTPNotFound(text=f"Project {pid} not found")
     return web.json_response({"ok": True})
 

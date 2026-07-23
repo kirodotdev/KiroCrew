@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine
 
-from kiro_crew import shutdown_event
+from kiro_crew import platform_compat, shutdown_event
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.memory import MemoryStore, workspace_dir
@@ -51,6 +54,62 @@ def heartbeat_path() -> Path:
     return workspace_dir() / HEARTBEAT_FILE
 
 
+def heartbeat_lock_path(path: Path | None = None) -> Path:
+    """Return the sibling lock file shared by all HEARTBEAT.md writers."""
+    target = path or heartbeat_path()
+    return target.with_name(f"{target.name}.lock")
+
+
+def append_heartbeat_task(entry: str, path: Path | None = None) -> None:
+    """Append one heartbeat entry under the cross-process writer lock.
+
+    Internal producers must use this helper rather than opening HEARTBEAT.md
+    directly, so the service's final read→replace transaction cannot overwrite
+    an append from another process.
+    """
+    target = path or heartbeat_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = heartbeat_lock_path(target)
+    with open(lock_path, "a+b") as lock_file:
+        with platform_compat.file_lock(lock_file.fileno(), exclusive=True):
+            if not target.exists():
+                atomic_write(target, _HEADER, fsync=True)
+            with open(target, "a", encoding="utf-8") as heartbeat_file:
+                heartbeat_file.write(entry.rstrip("\n") + "\n")
+                heartbeat_file.flush()
+                os.fsync(heartbeat_file.fileno())
+
+
+def _rewrite_heartbeat_locked(
+    path: Path,
+    original_tasks: list[tuple[str, str]],
+    keep: list[tuple[str, str]],
+) -> int:
+    """Re-read, merge, and atomically replace HEARTBEAT.md under an OS lock."""
+    lock_path = heartbeat_lock_path(path)
+    with open(lock_path, "a+b") as lock_file:
+        with platform_compat.file_lock(lock_file.fileno(), exclusive=True):
+            try:
+                current_tasks = _extract_tasks(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                current_tasks = []
+
+            remaining = Counter(t for t, _ in original_tasks)
+            appended: list[tuple[str, str]] = []
+            for task_text, deliver in current_tasks:
+                if remaining.get(task_text, 0) > 0:
+                    remaining[task_text] -= 1
+                else:
+                    appended.append((task_text, deliver))
+
+            lines = _HEADER
+            for task_text, deliver in keep + appended:
+                suffix = f"  <!-- deliver:{deliver} -->" if deliver else ""
+                lines += f"- {task_text}{suffix}\n"
+            atomic_write(path, lines, fsync=True)
+            return len(appended)
+
+
 class HeartbeatService:
     """Periodic wake-up that runs background maintenance tasks."""
 
@@ -75,6 +134,9 @@ class HeartbeatService:
         self._tick = 0
         self._processing = False
         self._task: asyncio.Task | None = None  # type: ignore[type-arg]
+        # Serializes the HEARTBEAT.md read→process→rewrite window within this
+        # process so two cycles can't clobber each other's rewrite.
+        self._file_lock = asyncio.Lock()
 
     async def start(self) -> None:
         path = heartbeat_path()
@@ -141,49 +203,59 @@ class HeartbeatService:
 
     async def _process_heartbeat_file(self) -> None:
         path = heartbeat_path()
-        if not path.exists():
-            return
-        content = path.read_text(encoding="utf-8").strip()
-        tasks = _extract_tasks(content)
-        if not tasks or not self._on_task:
-            return
+        # Hold the file lock across the whole read→process→rewrite window so a
+        # concurrent cycle can't rewrite the file from a stale snapshot.
+        async with self._file_lock:
+            if not path.exists():
+                return
+            content = path.read_text(encoding="utf-8").strip()
+            tasks = _extract_tasks(content)
+            if not tasks or not self._on_task:
+                return
 
-        self._processing = True
-        try:
-            logger.info("Heartbeat: %d task(s) found", len(tasks))
-            keep: list[tuple[str, str]] = []
-            results = await asyncio.gather(
-                *[self._run_one_task(t, d) for t, d in tasks],
-                return_exceptions=True,
-            )
-            for (task_text, deliver), result in zip(tasks, results):
-                if isinstance(result, BaseException):
-                    logger.warning(
-                        "Heartbeat task failed: %s", task_text[:80], exc_info=result,
+            self._processing = True
+            try:
+                logger.info("Heartbeat: %d task(s) found", len(tasks))
+                keep: list[tuple[str, str]] = []
+                results = await asyncio.gather(
+                    *[self._run_one_task(t, d) for t, d in tasks],
+                    return_exceptions=True,
+                )
+                for (task_text, deliver), result in zip(tasks, results):
+                    if isinstance(result, BaseException):
+                        logger.warning(
+                            "Heartbeat task failed: %s", task_text[:80], exc_info=result,
+                        )
+                        keep.append((task_text, deliver))
+                    elif _should_keep(result):
+                        logger.info("Heartbeat task incomplete, keeping: %s", task_text[:80])
+                        keep.append((task_text, deliver))
+
+                # Re-read, merge mid-cycle appends, and replace atomically while
+                # holding the sibling OS lock. Every internal writer uses the
+                # same lock via append_heartbeat_task(), so no append can land
+                # between this final read and os.replace. The entire durable
+                # transaction runs off the gateway event-loop thread.
+                appended_count = await asyncio.to_thread(
+                    _rewrite_heartbeat_locked, path, tasks, keep,
+                )
+                if appended_count:
+                    logger.info(
+                        "Heartbeat: preserving %d task(s) appended mid-cycle",
+                        appended_count,
                     )
-                    keep.append((task_text, deliver))
-                elif _should_keep(result):
-                    logger.info("Heartbeat task incomplete, keeping: %s", task_text[:80])
-                    keep.append((task_text, deliver))
-
-            # Rewrite: keep incomplete/failed tasks so they retry next tick
-            lines = _HEADER
-            for text, deliver in keep:
-                suffix = f"  <!-- deliver:{deliver} -->" if deliver else ""
-                lines += f"- {text}{suffix}\n"
-            path.write_text(lines, encoding="utf-8")
-        finally:
-            self._processing = False
-            # Cycle-end teardown — runs once after ALL tasks in this cycle
-            # complete.  Owner can use this to conditionally recycle the
-            # shared heartbeat session (e.g. only when context > threshold)
-            # so multi-task cycles don't tear down the session another
-            # in-flight task is still using.
-            if self._on_cycle_end is not None:
-                try:
-                    await self._on_cycle_end()
-                except Exception:
-                    logger.warning("Heartbeat: on_cycle_end callback failed", exc_info=True)
+            finally:
+                self._processing = False
+                # Cycle-end teardown — runs once after ALL tasks in this cycle
+                # complete.  Owner can use this to conditionally recycle the
+                # shared heartbeat session (e.g. only when context > threshold)
+                # so multi-task cycles don't tear down the session another
+                # in-flight task is still using.
+                if self._on_cycle_end is not None:
+                    try:
+                        await self._on_cycle_end()
+                    except Exception:
+                        logger.warning("Heartbeat: on_cycle_end callback failed", exc_info=True)
 
 
 def _should_keep(result: str | None) -> bool:

@@ -159,7 +159,8 @@ class TestAcceptanceCriteriaIgnored:
 
 
 class TestUpdatePlan:
-    def test_update_replaces_steps(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_replaces_steps(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         _planned_run(
             runner,
@@ -169,7 +170,7 @@ class TestUpdatePlan:
                 Step(index=3, title="Old3", description="O3"),
             ],
         )
-        run = runner.update_plan(
+        run = await runner.update_plan(
             "plan_test",
             [
                 {"title": "New1", "description": "N1"},
@@ -181,10 +182,11 @@ class TestUpdatePlan:
         assert run.tasks[0].title == "New1"
         assert run.tasks[1].index == 2
 
-    def test_update_validates_deps(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_validates_deps(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         _planned_run(runner)
-        run = runner.update_plan(
+        run = await runner.update_plan(
             "plan_test",
             [
                 {"title": "A", "depends_on": []},
@@ -193,49 +195,54 @@ class TestUpdatePlan:
         )
         assert run.tasks[1].depends_on == [1]
 
-    def test_update_rejects_non_planned(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_rejects_non_planned(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         run = _planned_run(runner)
         run.status = "running"
         with pytest.raises(ValueError, match="Cannot update plan while"):
-            runner.update_plan("plan_test", [{"title": "X"}])
+            await runner.update_plan("plan_test", [{"title": "X"}])
 
-    def test_update_rejects_not_found(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_rejects_not_found(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         with pytest.raises(ValueError, match="not found"):
-            runner.update_plan("nonexistent", [{"title": "X"}])
+            await runner.update_plan("nonexistent", [{"title": "X"}])
 
-    def test_update_cancelled_project_resets_to_planned(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_cancelled_project_resets_to_planned(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         run = _planned_run(runner)
         run.status = "cancelled"
         run.error = "old error"
         run.replan_count = 3
-        runner.update_plan("plan_test", [{"title": "New Step"}])
+        await runner.update_plan("plan_test", [{"title": "New Step"}])
         assert run.status == "planned"
         assert run.error == ""
         assert run.replan_count == 0
         assert len(run.tasks) == 1
         assert run.tasks[0].title == "New Step"
 
-    def test_update_failed_project_resets_to_planned(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_failed_project_resets_to_planned(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         run = _planned_run(runner)
         run.status = "failed"
         run.error = "old error"
         run.replan_count = 2
-        runner.update_plan("plan_test", [{"title": "Retry Step"}])
+        await runner.update_plan("plan_test", [{"title": "Retry Step"}])
         assert run.status == "planned"
         assert run.error == ""
         assert run.replan_count == 0
         assert len(run.tasks) == 1
         assert run.tasks[0].title == "Retry Step"
 
-    def test_update_rejects_empty_steps(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_rejects_empty_steps(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         _planned_run(runner)
         with pytest.raises(ValueError, match="No valid tasks"):
-            runner.update_plan("plan_test", [{"no_title": True}])
+            await runner.update_plan("plan_test", [{"no_title": True}])
 
 
 # ── TestExecutePlan ──
@@ -247,19 +254,20 @@ class TestExecutePlan:
         runner = _make_runner(tmp_path)
         _planned_run(runner)
         with patch("kiro_crew.taskrunner.git_coord"):
-            task_id = runner.execute_plan("plan_test")
+            task_id = await runner.execute_plan("plan_test")
         assert task_id == "plan_test"
         # Give the async task a tick to start
         await asyncio.sleep(0.05)
         run = runner._runs["plan_test"]
         assert run.status in ("running", "completed", "failed")
 
-    def test_execute_rejects_non_planned(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_rejects_non_planned(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         run = _planned_run(runner)
         run.status = "completed"
         with pytest.raises(ValueError, match="not in a startable state"):
-            runner.execute_plan("plan_test")
+            await runner.execute_plan("plan_test")
 
     @pytest.mark.asyncio
     async def test_execute_cancelled_project_resets_pending(self, tmp_path: Path) -> None:
@@ -272,7 +280,7 @@ class TestExecutePlan:
         run.tasks[1].result = "old result"
         run.error = "Shutdown signal received"
         with patch("kiro_crew.taskrunner.git_coord"):
-            runner.execute_plan("plan_test")
+            await runner.execute_plan("plan_test")
         # Reset happens synchronously before async execution starts
         assert run.tasks[0].status == StepStatus.PASSED  # preserved
         assert run.tasks[1].status == StepStatus.PENDING
@@ -291,7 +299,7 @@ class TestExecutePlan:
         run.tasks[1].result = "partial output"
         run.error = "Task 2 failed"
         with patch("kiro_crew.taskrunner.git_coord"):
-            runner.execute_plan("plan_test")
+            await runner.execute_plan("plan_test")
         # Reset happens synchronously before async execution starts
         assert run.tasks[0].status == StepStatus.PASSED  # preserved
         assert run.tasks[1].status == StepStatus.PENDING
@@ -309,7 +317,7 @@ class TestExecutePlan:
         run.tasks[1].status = StepStatus.FAILED
         run.tasks[1].error = "old error"
         with patch("kiro_crew.taskrunner.git_coord"):
-            runner.execute_plan("plan_test", fresh=True)
+            await runner.execute_plan("plan_test", fresh=True)
         # fresh=True resets ALL tasks including PASSED
         assert run.tasks[0].status == StepStatus.PENDING
         assert run.tasks[0].result == ""
@@ -330,7 +338,7 @@ class TestExecutePlan:
             ],
         )
         with patch("kiro_crew.taskrunner.git_coord"):
-            runner.execute_plan("plan_test")
+            await runner.execute_plan("plan_test")
             # Wait for completion
             task = runner._tasks.get("plan_test")
             if task:
@@ -367,7 +375,7 @@ class TestExecutePlan:
             ],
         )
         with patch("kiro_crew.taskrunner.git_coord"):
-            runner.execute_plan("plan_test")
+            await runner.execute_plan("plan_test")
             task = runner._tasks.get("plan_test")
             if task:
                 await asyncio.wait_for(task, timeout=10)
@@ -376,7 +384,8 @@ class TestExecutePlan:
         assert run.tasks[0].status == StepStatus.PASSED
         assert run.status == "completed"
 
-    def test_concurrent_guard_preserves_state_on_rejection(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_concurrent_guard_preserves_state_on_rejection(self, tmp_path: Path) -> None:
         """If MAX_CONCURRENT_TASKS is hit, state must NOT be mutated."""
         from kiro_crew.taskrunner import _MAX_CONCURRENT_TASKS
 
@@ -395,7 +404,7 @@ class TestExecutePlan:
             runner._tasks[f"fake_{i}"] = mock_task  # type: ignore[assignment]
 
         with pytest.raises(ValueError, match="Too many concurrent tasks"):
-            runner.execute_plan("plan_test", fresh=True)
+            await runner.execute_plan("plan_test", fresh=True)
 
         # State must be unchanged — guard fired before mutation
         assert run.status == "failed"
@@ -446,14 +455,15 @@ class TestPlanToChat:
         assert isinstance(parsed, list)
         assert len(parsed) == 2  # 2 original steps
 
-    def test_round_trip_json(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_round_trip_json(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         _planned_run(runner)
         output = runner.plan_to_chat_context("plan_test")
         start = output.index("```json") + 7
         end = output.index("```", start)
         parsed = json.loads(output[start:end])
-        run = runner.update_plan("plan_test", parsed)
+        run = await runner.update_plan("plan_test", parsed)
         assert len(run.tasks) == 2  # 2 from JSON
         assert run.tasks[0].title == "Step A"
 
@@ -648,7 +658,8 @@ class TestPlanRecoveryAfterTabSwitch:
         assert "plan_test" in runner2._runs
         assert runner2._runs["plan_test"].status == "paused"
 
-    def test_update_plan_preserves_steps_for_applied(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_plan_preserves_steps_for_applied(self, tmp_path: Path) -> None:
         """update_plan changes steps; status() returns updated steps (Use as Plan flow)."""
         runner = _make_runner(tmp_path)
         _planned_run(
@@ -658,7 +669,7 @@ class TestPlanRecoveryAfterTabSwitch:
                 Step(index=2, title="Old B", description="OB"),
             ],
         )
-        runner.update_plan(
+        await runner.update_plan(
             "plan_test",
             [
                 {"title": "New X", "description": "NX"},
@@ -672,12 +683,13 @@ class TestPlanRecoveryAfterTabSwitch:
         assert run_data["task_details"][0]["title"] == "New X"
         assert run_data["task_details"][2]["title"] == "New Z"
 
-    def test_status_finds_correct_run_by_task_id(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_status_finds_correct_run_by_task_id(self, tmp_path: Path) -> None:
         """With multiple planned runs, status() returns all so frontend can filter by task_id."""
         runner = _make_runner(tmp_path)
         _planned_run(runner, task_id="plan_old")
         _planned_run(runner, task_id="plan_new")
-        runner.update_plan("plan_new", [{"title": "Updated", "description": "U"}])
+        await runner.update_plan("plan_new", [{"title": "Updated", "description": "U"}])
         s = runner.status()
         ids = {r["task_id"] for r in s["runs"] if r["status"] == "planned"}
         assert ids == {"plan_old", "plan_new"}
@@ -750,11 +762,12 @@ class TestCrossGroupDependencyNormalization:
         )
         assert steps[4].depends_on == [3, 4]
 
-    def test_update_plan_preserves_user_deps(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_update_plan_preserves_user_deps(self, tmp_path: Path) -> None:
         """update_plan respects user's explicit dependency edits (no normalization)."""
         runner = _make_runner(tmp_path)
         _planned_run(runner)
-        runner.update_plan(
+        await runner.update_plan(
             "plan_test",
             [
                 {"title": "X", "depends_on": []},

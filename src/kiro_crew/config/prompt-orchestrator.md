@@ -250,7 +250,7 @@ Heartbeat is a self-cleaning task queue that runs every few minutes, survives ga
 - You need to poll an external system until a condition is met (CR analysis, deployment, ticket resolution)
 
 **Writing a heartbeat task:**
-1. Write a checklist entry to `~/.kirocrew/workspace/HEARTBEAT.md`:
+1. Append the checklist entry by calling `kiro_crew.heartbeat.append_heartbeat_task(entry)` from Python; never edit or append `~/.kirocrew/workspace/HEARTBEAT.md` directly. The helper shares the service's cross-process lock, preventing a cycle-end rewrite from losing the entry:
    `- [ ] Check CR-XXXXX for new code-review comments. If found, fix them, push a new revision, and respond with HEARTBEAT_KEEP. If none, notify user "CR-XXXXX passed ✅"`
 2. Tell the user it's been added to heartbeat monitoring
 3. End the session — heartbeat re-processes retained tasks on the next cycle, creating a monitor-until-done loop

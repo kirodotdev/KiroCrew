@@ -112,7 +112,7 @@ When the user asks you to submit code for review and address automated comments 
 
 One loop per session — starting a new one replaces the old. The user can also stop dashboard loops from the 🎯 popover.
 
-**Heartbeat (fallback):** the `~/.kirocrew/workspace/HEARTBEAT.md` task queue still exists for cases monitor_start can't cover: work that should run OUTSIDE this session (fresh context each cycle), or contexts where monitor_start is unavailable (cron/webhook sessions). Tasks are checklist entries processed every few minutes; include `HEARTBEAT_KEEP` in the response to retain a task for the next cycle, omit it when complete. Route completion with `<!-- deliver:dashboard -->` / `<!-- deliver:slack -->` tags. Notify only on real signals.
+**Heartbeat (fallback):** the `~/.kirocrew/workspace/HEARTBEAT.md` task queue still exists for cases monitor_start can't cover: work that should run OUTSIDE this session (fresh context each cycle), or contexts where monitor_start is unavailable (cron/webhook sessions). Append checklist entries by calling `kiro_crew.heartbeat.append_heartbeat_task(entry)` from Python; never edit the file directly, because the helper shares the service's cross-process lock. Tasks are processed every few minutes; include `HEARTBEAT_KEEP` in the response to retain a task for the next cycle, omit it when complete. Route completion with `<!-- deliver:dashboard -->` / `<!-- deliver:slack -->` tags. Notify only on real signals.
 
 ### Webhook-Triggered Sessions
 

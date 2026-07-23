@@ -8,12 +8,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from kiro_crew import git_coord, shutdown_event
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.llm_helpers import stream_and_collect_json
@@ -153,6 +155,12 @@ def _resolve_workspace_dir(raw: str) -> str:
     return resolved
 
 
+def _read_spec_prefix(path: str, max_chars: int) -> str:
+    """Read and normalize a bounded spec prefix on a worker thread."""
+    with open(path, encoding="utf-8") as spec_file:
+        return spec_file.read(max_chars).strip()
+
+
 def _decompose_yaml_with_audit(yaml_content: str, task_id: str) -> list[Task]:
     """Decompose YAML with SEL audit logging."""
     try:
@@ -235,7 +243,16 @@ class TaskRunner:
         else:
             self._max_parallel_steps = auto_cap
         self._runs: dict[str, Project] = {}
+        # Serialize registry writes and enforce monotonic ordering. Snapshots
+        # are always built on the event-loop thread (see _serialize_runs), so
+        # an older snapshot whose offloaded write lands late must not clobber a
+        # newer one: _commit_snapshot skips any write whose sequence is behind
+        # what has already been persisted.
+        self._persist_lock = threading.Lock()
+        self._persist_seq = 0  # last sequence handed out (event-loop thread only)
+        self._persist_written = 0  # highest sequence persisted (lock-guarded)
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        self._start_lock = asyncio.Lock()
         self._plan_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None
         self._stall_cancelled_ids: set[str] = set()
@@ -335,24 +352,24 @@ class TaskRunner:
         if not run.tasks:
             raise ValueError("Could not generate a plan. Try rephrasing.")
         self._runs[task_id] = run
-        self._persist_runs()
+        await self._apersist_runs()
         return run
 
     def cancel_plan(self) -> None:
         if self._plan_task and not self._plan_task.done():
             self._plan_task.cancel()
 
-    def update_plan(self, task_id: str, tasks: list[dict]) -> Project:
+    async def update_plan(self, task_id: str, tasks: list[dict]) -> Project:
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
         if run.status in ("running", "cancelling"):
             raise ValueError(f"Cannot update plan while {run.status}")
         result = update_plan_tasks(run, tasks)
-        self._persist_runs()
+        await self._apersist_runs()
         return result
 
-    def update_task(self, task_id: str, index: int, updates: dict) -> dict:
+    async def update_task(self, task_id: str, index: int, updates: dict) -> dict:
         """Update a single PENDING task in-place without resetting the run."""
         run = self._resolve_task(task_id)
         if not run:
@@ -394,10 +411,10 @@ class TaskRunner:
         # Apply atomically
         for key, value in changes.items():
             setattr(task, key, value)
-        self._persist_runs()
+        await self._apersist_runs()
         return {"index": task.index, "title": task.title, "description": task.description, "depends_on": task.depends_on, "requires_approval": task.requires_approval, "force_approval": task.force_approval}
 
-    def execute_plan(self, task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False) -> str:
+    async def execute_plan(self, task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False) -> str:
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
@@ -432,10 +449,10 @@ class TaskRunner:
             run.error = ""
             run.replan_count = 0
             run.status = "planned"
-            self._persist_runs()
+            await self._apersist_runs()
 
         self._grant_run_trust(run, bool(auto_approve))
-        self._persist_runs()
+        await self._apersist_runs()
 
         self._agent = agent
         history_key = f"taskrunner:run:{task_id}"
@@ -445,7 +462,7 @@ class TaskRunner:
             try:
                 run.status = "running"
                 run.started_at = run.last_task_time = time.time()
-                self._persist_runs()  # persist immediately so crash recovery works
+                await self._apersist_runs()  # persist immediately so crash recovery works
                 try:
                     await git_coord.init_workspace(run)
                 except Exception:
@@ -485,7 +502,7 @@ class TaskRunner:
                     run.status = "paused" if run.status == "pausing" else "cancelled"
                 run.finished_at = time.time()
                 save_progress(run)
-                self._persist_runs()
+                await self._apersist_runs()
                 if run.branch_name:
                     try:
                         await git_coord.finalize(run)
@@ -537,7 +554,7 @@ class TaskRunner:
         run.work_dir = str(task_dir)
         self._grant_run_trust(run, bool(auto_approve))
         self._runs[task_id] = run
-        self._persist_runs()  # persist immediately so crash recovery works
+        await self._apersist_runs()  # persist immediately so crash recovery works
         watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
         history_key = f"taskrunner:run:{spec_path.stem}"
         try:
@@ -557,7 +574,7 @@ class TaskRunner:
                 run.error = "Failed to decompose spec into tasks"
                 await self._notify("\u274c Task failed", run.error, run=run)
                 return run
-            self._persist_runs()  # persist tasks so resume works after crash
+            await self._apersist_runs()  # persist tasks so resume works after crash
             try:
                 await git_coord.init_workspace(run)
             except Exception as exc:
@@ -610,7 +627,7 @@ class TaskRunner:
                 run.status = "paused" if run.status == "pausing" else "cancelled"
             run.finished_at = time.time()
             save_progress(run)
-            self._persist_runs()
+            await self._apersist_runs()
             if run.branch_name:
                 try:
                     await git_coord.finalize(run)
@@ -670,7 +687,7 @@ class TaskRunner:
                     return
                 if task.result and len(task.result) > _RESULT_MEM_CAP:
                     task.result = task.result[:_RESULT_MEM_CAP]
-                self._persist_runs()  # persist after each task so crash recovery preserves progress
+                await self._apersist_runs()  # persist after each task so crash recovery preserves progress
             else:
                 titles = ", ".join(t.title for t in resolved)
                 await self._notify(
@@ -721,7 +738,7 @@ class TaskRunner:
                 for t in resolved:
                     if t.result and len(t.result) > _RESULT_MEM_CAP:
                         t.result = t.result[:_RESULT_MEM_CAP]
-                self._persist_runs()  # persist after parallel group so crash recovery preserves progress
+                await self._apersist_runs()  # persist after parallel group so crash recovery preserves progress
 
     async def _build_task_prompt(self, run: Project, task: Task, attempt: int = 1) -> str:
         """Delegate to standalone build_task_prompt for backward compat."""
@@ -839,73 +856,105 @@ class TaskRunner:
                 return await self._try_replan(run, task)
         return True
 
-    def start_background(
+    async def start_background(
         self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "",
         workspace_dir: str = "", auto_approve: bool = False,
     ) -> str:
-        # Validate the per-run workspace override synchronously so the caller
-        # (HTTP handler) surfaces a bad/sensitive path immediately, not inside
-        # the background task where run() would re-resolve it.
+        # Validate the per-run workspace override before entering the admission
+        # lock so a bad/sensitive path fails without blocking other starts.
         _resolve_workspace_dir(workspace_dir)
-        active = sum(1 for t in self._tasks.values() if not t.done())
-        if active >= _MAX_CONCURRENT_TASKS:
-            raise ValueError(
-                f"Too many concurrent tasks ({active}/{_MAX_CONCURRENT_TASKS}). "
-                "Cancel or wait for a running task to finish."
-            )
-
-        completed = [
-            tid for tid, r in self._runs.items() if r.status in ("completed", "failed", "cancelled")
-        ]
-        # Always purge completed cron runs; keep last 10 others
-        cron_done = [tid for tid in completed if self._runs[tid].source == "cron"]
-        for tid in cron_done:
-            self._runs.pop(tid, None)
-            self._stall_cancelled_ids.discard(tid)
-        other_done = [tid for tid in completed if tid in self._runs]
-        for tid in other_done[:-10]:
-            self._runs.pop(tid, None)
-            self._stall_cancelled_ids.discard(tid)
-        task_id = f"{Path(spec_path).stem}_{int(time.time())}"
         self._agent = agent
         try:
             from kiro_crew.hooks import validate_file_path
 
             safe_sp = validate_file_path(str(spec_path))
             if safe_sp:
-                with open(safe_sp, encoding="utf-8") as f:
-                    early_content = f.read(4000).strip()
+                early_content = await asyncio.to_thread(
+                    _read_spec_prefix, safe_sp, 4000,
+                )
             else:
                 early_content = ""
         except Exception:
             early_content = ""
-        self._runs[task_id] = Project(
-            spec_path=str(spec_path),
-            spec_content=early_content,
-            task_id=task_id,
-            name=name or Path(spec_path).stem,
-            status="planning",
-            started_at=time.time(),
-            source=source,
-            auto_approve=bool(auto_approve),
-        )
-        self._persist_runs()  # persist planning state for crash recovery
 
-        async def _wrapped() -> None:
+        # Admission is one transaction: concurrency check, pruning, unique ID
+        # allocation, placeholder persistence, and task registration. In
+        # particular, do not release this lock while _apersist_runs() yields;
+        # otherwise two same-spec starts can both pass the limit and overwrite
+        # each other's timestamp-based ID before either appears in _tasks.
+        async with self._start_lock:
+            active = sum(1 for task in self._tasks.values() if not task.done())
+            if active >= _MAX_CONCURRENT_TASKS:
+                raise ValueError(
+                    f"Too many concurrent tasks ({active}/{_MAX_CONCURRENT_TASKS}). "
+                    "Cancel or wait for a running task to finish."
+                )
+
+            completed = [
+                task_id
+                for task_id, run in self._runs.items()
+                if run.status in ("completed", "failed", "cancelled")
+            ]
+            # Always purge completed cron runs; keep last 10 others.
+            cron_done = [
+                task_id for task_id in completed
+                if self._runs[task_id].source == "cron"
+            ]
+            for task_id in cron_done:
+                self._runs.pop(task_id, None)
+                self._stall_cancelled_ids.discard(task_id)
+            other_done = [task_id for task_id in completed if task_id in self._runs]
+            for task_id in other_done[:-10]:
+                self._runs.pop(task_id, None)
+                self._stall_cancelled_ids.discard(task_id)
+
+            # Nanosecond IDs avoid routine same-second collisions. The guarded
+            # increment is a deterministic fallback if a clock/platform returns
+            # the same value for two starts.
+            id_suffix = time.time_ns()
+            task_id = f"{Path(spec_path).stem}_{id_suffix}"
+            while task_id in self._runs or task_id in self._tasks:
+                id_suffix += 1
+                task_id = f"{Path(spec_path).stem}_{id_suffix}"
+
+            self._runs[task_id] = Project(
+                spec_path=str(spec_path),
+                spec_content=early_content,
+                task_id=task_id,
+                name=name or Path(spec_path).stem,
+                status="planning",
+                started_at=time.time(),
+                source=source,
+                auto_approve=bool(auto_approve),
+            )
             try:
-                await self.run(spec_path, task_id=task_id, name=name, source=source, workspace_dir=workspace_dir, auto_approve=auto_approve)
-            except Exception as exc:
-                logger.exception("start_background task %s failed", task_id)
-                placeholder = self._runs.get(task_id)
-                if placeholder and placeholder.status == "planning":
-                    placeholder.status = "failed"
-                    placeholder.error = str(exc)
-                    self._persist_runs()
-            finally:
-                self._tasks.pop(task_id, None)
+                await self._apersist_runs()  # durable before background execution
+            except BaseException:
+                self._runs.pop(task_id, None)
+                raise
 
-        self._tasks[task_id] = asyncio.create_task(_wrapped())
-        return task_id
+            async def _wrapped() -> None:
+                try:
+                    await self.run(
+                        spec_path,
+                        task_id=task_id,
+                        name=name,
+                        source=source,
+                        workspace_dir=workspace_dir,
+                        auto_approve=auto_approve,
+                    )
+                except Exception as exc:
+                    logger.exception("start_background task %s failed", task_id)
+                    placeholder = self._runs.get(task_id)
+                    if placeholder and placeholder.status == "planning":
+                        placeholder.status = "failed"
+                        placeholder.error = str(exc)
+                        await self._apersist_runs()
+                finally:
+                    self._tasks.pop(task_id, None)
+
+            self._tasks[task_id] = asyncio.create_task(_wrapped())
+            return task_id
 
     @staticmethod
     def _reset_incomplete_tasks(run: Project) -> None:
@@ -987,7 +1036,7 @@ class TaskRunner:
         except Exception:
             logger.debug("deactivate auto-approve scope failed for %s", run.task_id, exc_info=True)
 
-    def delete_run(self, task_id: str) -> bool:
+    async def delete_run(self, task_id: str) -> bool:
         run = self._runs.get(task_id)
         if not run:
             return False
@@ -998,7 +1047,7 @@ class TaskRunner:
             bg_task.cancel()
         self._runs.pop(task_id, None)
         self._stall_cancelled_ids.discard(task_id)
-        self._persist_runs()
+        await self._apersist_runs()
         try:
             from kiro_crew.sel import sel
 
@@ -1048,7 +1097,7 @@ class TaskRunner:
         if t and not t.done():
             t.cancel()
 
-    def retry_from_task(self, task_id: str, from_task: int, agent: str = "") -> str:
+    async def retry_from_task(self, task_id: str, from_task: int, agent: str = "") -> str:
         run = self._resolve_task(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
@@ -1066,7 +1115,7 @@ class TaskRunner:
         run.error = ""
         run.finished_at = 0.0
         run.started_at = run.last_task_time = time.time()
-        self._persist_runs()  # persist immediately so crash recovery works
+        await self._apersist_runs()  # persist immediately so crash recovery works
         self._agent = agent
         history_key = f"taskrunner:run:{Path(run.spec_path).stem}"
 
@@ -1104,7 +1153,7 @@ class TaskRunner:
                     run.status = "paused" if run.status == "pausing" else "cancelled"
                 run.finished_at = time.time()
                 save_progress(run)
-                self._persist_runs()
+                await self._apersist_runs()
                 if watchdog_task and not watchdog_task.done():
                     watchdog_task.cancel()
                 self._tasks.pop(task_id, None)
@@ -1301,6 +1350,21 @@ class TaskRunner:
         return self._work_dir / self._RUNS_FILE
 
     def _persist_runs(self) -> None:
+        # Synchronous compatibility helper for internal/off-loop callers and
+        # focused persistence tests. Production mutation APIs await
+        # _apersist_runs so the fsync-backed atomic write never blocks the
+        # gateway event loop.
+        self._commit_snapshot(self._next_persist_seq(), self._serialize_runs())
+
+    def _serialize_runs(self) -> str:
+        """Serialize the runs registry to a JSON string.
+
+        MUST be called on the thread that owns ``_runs`` (the event loop).
+        Iterating the live registry in a worker thread while the loop mutates
+        it can raise ``RuntimeError: dictionary changed size during iteration``
+        or capture a torn snapshot, so persistence always snapshots here first
+        and offloads only the byte-level write.
+        """
         data = []
         for run in self._runs.values():
             if run.source == "cron":
@@ -1339,17 +1403,95 @@ class TaskRunner:
                         ],
                     }
                 )
-        try:
-            self._runs_path().write_text(json.dumps(data), encoding="utf-8")
-        except Exception:
-            logger.debug("Failed to persist runs", exc_info=True)
+        return json.dumps(data)
+
+    def _next_persist_seq(self) -> int:
+        # Handed out on the event-loop thread only (both _persist_runs and the
+        # pre-offload part of _apersist_runs run there), so the bump needs no
+        # lock — it establishes the causal order of snapshots.
+        self._persist_seq += 1
+        return self._persist_seq
+
+    def _commit_snapshot(self, seq: int, payload: str) -> None:
+        # Serialize concurrent writers and enforce monotonic ordering under the
+        # lock: a stale snapshot (older seq) whose offloaded write is scheduled
+        # late must never overwrite a newer one that already landed.
+        with self._persist_lock:
+            if seq < self._persist_written:
+                return
+            try:
+                # Atomic write: serialize to a temp file in the same dir, fsync,
+                # then os.replace onto the final path so a crash/kill/full-disk
+                # mid-write can never leave a truncated registry that
+                # _load_runs would otherwise have to discard.
+                atomic_write(self._runs_path(), payload, fsync=True)
+            except OSError:
+                logger.debug("Failed to persist runs", exc_info=True)
+                return
+            self._persist_written = seq
+
+    async def _apersist_runs(self) -> None:
+        """Persist the runs registry without blocking the event loop.
+
+        The JSON snapshot is built synchronously on THIS (event-loop) thread —
+        which owns ``_runs`` — so we never iterate the live registry in a
+        worker while the loop mutates it (that could raise ``dictionary
+        changed size during iteration`` or capture a torn snapshot). Only the
+        blocking, fsync-backed atomic write is offloaded to a worker thread, so
+        a slow/full disk can't stall the loop, while a per-snapshot sequence
+        number preserves write ordering. Every production mutation API awaits
+        this method before returning, preserving durability without blocking
+        unrelated gateway work.
+        """
+        seq = self._next_persist_seq()
+        payload = self._serialize_runs()
+        await asyncio.to_thread(self._commit_snapshot, seq, payload)
 
     def _load_runs(self) -> None:
+        path = self._runs_path()
         try:
-            path = self._runs_path()
-            if not path.exists():
-                return
-            for item in json.loads(path.read_text(encoding="utf-8")):
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # No registry yet — seed a fresh one rather than treating a
+            # missing file as an error.
+            return
+        except OSError:
+            # File exists but is unreadable (permission error, transient
+            # sharing violation, etc.). _load_runs is called from
+            # TaskRunner.__init__, so raising here would prevent the runner —
+            # and potentially the gateway — from starting. Log loudly and
+            # start with an empty in-memory registry without touching the file
+            # on disk (so a later, successful read can still recover it).
+            logger.error(
+                "Failed to read runs registry %s; starting with an empty "
+                "registry (file left untouched)",
+                path,
+                exc_info=True,
+            )
+            return
+        try:
+            items = json.loads(raw)
+        except (json.JSONDecodeError, ValueError, OSError) as exc:
+            # Never silently discard run state on a corrupt/truncated file:
+            # surface the corruption loudly and preserve the bad file as a
+            # sidecar for recovery instead of returning an empty registry.
+            bak = path.with_suffix(path.suffix + ".corrupt")
+            logger.error(
+                "Runs registry %s is corrupt (%s); preserved as %s, starting "
+                "with an empty registry",
+                path,
+                exc,
+                bak,
+            )
+            try:
+                path.replace(bak)
+            except OSError:
+                logger.warning(
+                    "Failed to preserve corrupt runs registry", exc_info=True
+                )
+            return
+        try:
+            for item in items:
                 tasks = [
                     Task(
                         index=t["index"],
@@ -1420,7 +1562,13 @@ class TaskRunner:
                             t.status = TaskStatus.CANCELLED
                     logger.info("Recovered crashed cancelling run %s — marked as cancelled", run.task_id)
         except Exception:
-            logger.debug("Failed to load runs", exc_info=True)
+            # A structural error while rebuilding an individual run (not a
+            # parse failure — that is handled above) is surfaced loudly and
+            # leaves the runs already loaded intact, rather than silently
+            # discarding the whole registry.
+            logger.error(
+                "Failed to deserialize a run from registry %s", path, exc_info=True
+            )
 
     def _save_progress(self, run: Project) -> None:
         save_progress(run)

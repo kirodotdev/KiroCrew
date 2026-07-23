@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time as _time
 from datetime import datetime
 from pathlib import Path
@@ -196,12 +197,32 @@ def _safe_key(key: str) -> str:
 class ConversationLog:
     """Append-only JSONL conversation store with provenance and rotation."""
 
+    # Per-file reentrant locks shared across every instance in this process so
+    # transcript mutations (append / rewrite / metadata edit) targeting the
+    # same session file are serialized and never lose each other's writes.
+    _file_locks: dict[str, threading.RLock] = {}
+    _file_locks_guard = threading.Lock()
+
     def __init__(self, base_dir: Path | None = None):
         self._dir = base_dir or _sessions_dir()
         # mtime-based message cache: key → (mtime, messages)
         self._msg_cache: dict[str, tuple[float, list[dict]]] = {}
         # mtime-based metadata cache: key → (mtime, metadata)
         self._meta_cache: dict[str, tuple[float, dict]] = {}
+
+    def _file_lock(self, key: str) -> threading.RLock:
+        """Return the process-wide reentrant lock guarding *key*'s session file.
+
+        Reentrant so a locked method (e.g. ``append``) can call another locked
+        helper (``_maybe_rotate``) without deadlocking.
+        """
+        lock_key = str(self._path(key))
+        with ConversationLog._file_locks_guard:
+            lock = ConversationLog._file_locks.get(lock_key)
+            if lock is None:
+                lock = threading.RLock()
+                ConversationLog._file_locks[lock_key] = lock
+            return lock
 
     def init(self) -> None:
         """Create sessions directory if missing."""
@@ -246,39 +267,45 @@ class ConversationLog:
         use :meth:`update_metadata` to change the agent after creation.)
         """
         path = self._path(key)
-        if not path.exists():
-            self._dir.mkdir(parents=True, exist_ok=True)
-            meta: dict = {
-                "_type": "metadata",
-                "created_at": datetime.now().isoformat(),
-                "last_consolidated": 0,
+        # Serialize the create-if-missing + append + rotate against concurrent
+        # rewrites (compaction / consolidation) so no write is lost and readers
+        # never observe a torn file.
+        with self._file_lock(key):
+            if not path.exists():
+                self._dir.mkdir(parents=True, exist_ok=True)
+                meta: dict = {
+                    "_type": "metadata",
+                    "created_at": datetime.now().isoformat(),
+                    "last_consolidated": 0,
+                }
+                if agent:
+                    meta["agent"] = agent
+                if tab_id:
+                    meta["tab_id"] = tab_id
+                path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+
+            msg: dict = {
+                "role": role,
+                "content": content,
+                "ts": datetime.now().isoformat(),
             }
-            if agent:
-                meta["agent"] = agent
-            if tab_id:
-                meta["tab_id"] = tab_id
-            path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+            if tools:
+                msg["tools"] = tools
+            if source_thread:
+                msg["source_thread"] = source_thread
+            if source_user:
+                msg["source_user"] = source_user
 
-        msg: dict = {
-            "role": role,
-            "content": content,
-            "ts": datetime.now().isoformat(),
-        }
-        if tools:
-            msg["tools"] = tools
-        if source_thread:
-            msg["source_thread"] = source_thread
-        if source_user:
-            msg["source_user"] = source_user
+            # Session transcripts are intentionally local plaintext JSONL (the
+            # documented storage format), not a credential/secret store.
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(msg) + "\n")  # lgtm[py/clear-text-storage-sensitive-data]
 
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(msg) + "\n")
+            # Invalidate cache since file changed
+            self._invalidate_cache(key)
 
-        # Invalidate cache since file changed
-        self._invalidate_cache(key)
-
-        # Rotate if file exceeds size limit
-        self._maybe_rotate(path)
+            # Rotate if file exceeds size limit
+            self._maybe_rotate(path)
 
     def recent(
         self,
@@ -362,21 +389,25 @@ class ConversationLog:
     def mark_consolidated(self, key: str, offset: int) -> None:
         """Rewrite metadata line with updated last_consolidated offset."""
         path = self._path(key)
-        if not path.exists():
-            return
-        prev_mtime = _safe_mtime(path)
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        if not lines:
-            return
-        meta = json.loads(lines[0])
-        meta["last_consolidated"] = offset
-        meta["updated_at"] = datetime.now().isoformat()
-        lines[0] = json.dumps(meta) + "\n"
-        path.write_text("".join(lines), encoding="utf-8")
-        # Housekeeping bookkeeping — must not advance the session's mtime
-        # (see _restore_mtime). Otherwise consolidation floats stale sessions
-        # to the top of list_sessions on every gateway restart.
-        _restore_mtime(path, prev_mtime)
+        # Serialize behind the per-file lock and re-read under it so a
+        # concurrent append (guarded by the same lock) is never lost, and
+        # write atomically so a crash mid-write can't truncate the transcript.
+        with self._file_lock(key):
+            if not path.exists():
+                return
+            prev_mtime = _safe_mtime(path)
+            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not lines:
+                return
+            meta = json.loads(lines[0])
+            meta["last_consolidated"] = offset
+            meta["updated_at"] = datetime.now().isoformat()
+            lines[0] = json.dumps(meta) + "\n"
+            atomic_write(path, "".join(lines), fsync=True)
+            # Housekeeping bookkeeping — must not advance the session's mtime
+            # (see _restore_mtime). Otherwise consolidation floats stale sessions
+            # to the top of list_sessions on every gateway restart.
+            _restore_mtime(path, prev_mtime)
         self._invalidate_cache(key)
 
     def unconsolidated_count(self, key: str) -> int:
@@ -743,6 +774,16 @@ class ConversationLog:
     def update_metadata(self, key: str, fields: dict) -> None:
         """Merge *fields* into the session's metadata line and persist.
 
+        Serialized behind the per-file lock so a concurrent append or rewrite
+        of the same session file can't clobber this metadata edit (and vice
+        versa).
+        """
+        with self._file_lock(key):
+            self._update_metadata_locked(key, fields)
+
+    def _update_metadata_locked(self, key: str, fields: dict) -> None:
+        """Merge *fields* into the session's metadata line and persist.
+
         Upsert semantics: if the session file does not exist yet (e.g. ``!ta
         <agent> --clean`` is issued before the first message is logged), the
         file is created with a fresh metadata line carrying *fields*.  Without
@@ -960,6 +1001,13 @@ class ConversationLog:
 
     def rewrite_session(self, key: str, messages: list[dict]) -> None:
         """Rewrite session JSONL with only the given messages."""
+        # Serialize the full rewrite against concurrent appends so a live
+        # session's writes aren't lost, and (via atomic_write below) so a crash
+        # can't truncate the transcript.
+        with self._file_lock(key):
+            self._rewrite_session_locked(key, messages)
+
+    def _rewrite_session_locked(self, key: str, messages: list[dict]) -> None:
         path = self._path(key)
         self._dir.mkdir(parents=True, exist_ok=True)
         # Compaction is housekeeping, not new activity — preserve the pre-write
@@ -1486,8 +1534,14 @@ class HistoryConsolidator:
 
             # Only advance the consolidated offset for history consolidation.
             # Prefs-only consolidation uses a separate in-memory offset.
+            # mark_consolidated does a synchronous, fsync-backed rewrite of the
+            # whole transcript (up to a couple of MB) behind the per-file lock.
+            # _consolidate runs on the gateway event loop (fired via
+            # asyncio.create_task), so offload the blocking rewrite to a worker
+            # thread — otherwise a slow filesystem freezes the loop (heartbeats,
+            # Slack, dashboard). Same rationale as the offloads above.
             if include_history:
-                self._log.mark_consolidated(key, total)
+                await asyncio.to_thread(self._log.mark_consolidated, key, total)
 
         except Exception:
             logger.exception("Consolidation failed for %s", key)

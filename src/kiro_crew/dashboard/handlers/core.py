@@ -372,33 +372,53 @@ async def api_stt_config(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         path = config_path()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        except Exception:
-            data = {}
-        stt = data.setdefault("stt", {})
-        if "enabled" in body:
-            stt["enabled"] = bool(body["enabled"])
-        if "provider" in body and body["provider"] in _stt_providers():
-            stt["provider"] = body["provider"]
-        if "model" in body and body["model"] in _STT_MODEL_SIZES:
-            stt["model"] = body["model"]
-        if (
-            "mlx_model" in body
-            and isinstance(body["mlx_model"], str)
-            and body["mlx_model"] in _STT_MLX_MODELS
-        ):
-            stt["mlx_model"] = body["mlx_model"]
-        if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
-            stt["transcribe_region"] = body["transcribe_region"]
-        if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
-            stt["transcribe_profile"] = body["transcribe_profile"]
-        if "language_code" in body and isinstance(body["language_code"], str):
-            stt["language_code"] = body["language_code"]
-        if "streaming" in body and isinstance(body["streaming"], bool):
-            stt["streaming"] = body["streaming"]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        from kiro_crew.agent import _atomic_json_write  # noqa: F811
+        from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+        # Serialize the full read-modify-write behind the shared config lock so
+        # concurrent PUTs (or another config writer) can't interleave and clobber
+        # each other's fields, and write atomically (temp + fsync + os.replace)
+        # so a crash mid-write can't leave a corrupt config JSON — matching the
+        # established pattern used by the other config handlers in this module.
+        async with _get_config_lock():
+            try:
+                raw = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                data = json.loads(raw)
+            except FileNotFoundError:
+                data = {}
+            except Exception:
+                # Fail loud on a corrupt config rather than proceeding with {}:
+                # an atomic write from a {} base would durably clobber every
+                # other user setting with an stt-only file. Matches the sibling
+                # config handler in this module, which returns 500 on an
+                # unparseable config instead of silently resetting it.
+                logger.warning("STT config PUT: config.json is unparseable", exc_info=True)
+                return web.json_response(
+                    {"error": "failed to read config file"}, status=500
+                )
+            stt = data.setdefault("stt", {})
+            if "enabled" in body:
+                stt["enabled"] = bool(body["enabled"])
+            if "provider" in body and body["provider"] in _stt_providers():
+                stt["provider"] = body["provider"]
+            if "model" in body and body["model"] in _STT_MODEL_SIZES:
+                stt["model"] = body["model"]
+            if (
+                "mlx_model" in body
+                and isinstance(body["mlx_model"], str)
+                and body["mlx_model"] in _STT_MLX_MODELS
+            ):
+                stt["mlx_model"] = body["mlx_model"]
+            if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
+                stt["transcribe_region"] = body["transcribe_region"]
+            if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
+                stt["transcribe_profile"] = body["transcribe_profile"]
+            if "language_code" in body and isinstance(body["language_code"], str):
+                stt["language_code"] = body["language_code"]
+            if "streaming" in body and isinstance(body["streaming"], bool):
+                stt["streaming"] = body["streaming"]
+            await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(_atomic_json_write, path, data)
         cfg = KiroCrewConfig.load()
 
     provider = cfg.stt.provider
