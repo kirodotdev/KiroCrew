@@ -28,6 +28,7 @@ import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
+import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
@@ -1523,10 +1524,8 @@ export default function App() {
             )}
             <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
               <span className="text-[13px] text-muted">Auto-update on restart</span>
-              <button aria-label="Auto-update on restart" role="switch" aria-checked={autoUpdate} className={`w-9 h-5 rounded-full transition-colors cursor-pointer border-none ${autoUpdate ? 'bg-accent' : 'bg-border'}`}
-                onClick={async () => { const next = !autoUpdate; setAutoUpdate(next); await api.setAutoUpdate(next) }}>
-                <span className={`block w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${autoUpdate ? 'translate-x-4' : 'translate-x-0.5'}`} />
-              </button>
+              <Toggle checked={autoUpdate} label="Auto-update on restart"
+                onChange={async next => { setAutoUpdate(next); await api.setAutoUpdate(next) }} />
             </div>
             <div className="mt-3 pt-3 border-t border-border">
               <button className="text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {

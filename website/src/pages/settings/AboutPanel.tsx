@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Scale, CheckCircle2, AlertCircle, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X } from 'lucide-react'
-import { Card, CardTitle, Btn } from '../../components/ui'
+import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
 import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
@@ -375,14 +375,11 @@ export function AboutPanel() {
                 )}
               </>
             )}
-            <div className="flex items-center justify-between pt-2.5 border-t border-border">
+            <div className="flex items-center justify-between pt-2.5 border-t border-border"
+              title="Automatically pull and apply updates when the gateway restarts">
               <span className="text-sm text-text">Auto-update on restart</span>
-              <button role="switch" aria-checked={autoUpdate} aria-label="Auto-update on restart"
-                title="Automatically pull and apply updates when the gateway restarts"
-                className={`w-9 h-5 rounded-full transition-colors cursor-pointer border-none shrink-0 ${autoUpdate ? 'bg-accent' : 'bg-border'}`}
-                onClick={async () => { const next = !autoUpdate; setAutoUpdate(next); try { await api.setAutoUpdate(next) } catch { setAutoUpdate(!next) } }}>
-                <span className={`block w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${autoUpdate ? 'translate-x-4' : 'translate-x-0.5'}`} />
-              </button>
+              <Toggle checked={autoUpdate} label="Auto-update on restart"
+                onChange={async next => { setAutoUpdate(next); try { await api.setAutoUpdate(next) } catch { setAutoUpdate(!next) } }} />
             </div>
           </div>
         )}
