@@ -31,6 +31,7 @@ from kiro_crew.notifications.bus import (
     payload_from_legacy,
 )
 from kiro_crew.notifications.rate_limit import AppRateLimiter
+from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1162,7 +1163,8 @@ class _ChatSlot:
             # Capture last_activity_ts from the most recent actionable message
             if not last_activity_ts and role in ("tool_call", "tool_result", "assistant") and not is_compaction:
                 last_activity_ts = m.get("ts") or ""
-            # Capture last conversational message (once). Skip compaction
+            # Capture the last conversational message (role/options once, and
+            # the newest non-empty preview). Skip compaction
             # notices: assistant-role system messages tagged
             # meta.kind == "compaction" — the auto-compact notice
             # ("Auto-compacted at N%.", _AUTO_COMPACT_NOTICE) and the
@@ -1170,22 +1172,37 @@ class _ChatSlot:
             # This keeps the sidebar showing the last real message and mirrors
             # the frontend's deriveFollowUpOptions skip so preview/options
             # stay consistent.
-            if not found_conv and role in ("user", "assistant") and not is_compaction:
+            if role in ("user", "assistant") and not is_compaction:
                 txt = m.get("content") or ""
                 if txt:
-                    found_conv = True
-                    last_conv_role = role
-                    redacted = _redact(txt)
-                    last_msg = (redacted[:80] + "…") if len(redacted) > 80 else redacted
-                    if role == "assistant":
-                        options = _parse_options(txt)
-                        has_options = bool(options)
-                        if has_options:
-                            stripped = _redact(_OPTIONS_RE.sub("", txt).strip())
-                            prompt_preview = (
-                                stripped[:240] + "…" if len(stripped) > 240 else stripped
-                            )
-            if found_conv and last_activity_ts:
+                    if not found_conv:
+                        found_conv = True
+                        last_conv_role = role
+                        if role == "assistant":
+                            options = _parse_options(txt)
+                            has_options = bool(options)
+                            if has_options:
+                                stripped = _redact(_OPTIONS_RE.sub("", txt).strip())
+                                prompt_preview = (
+                                    stripped[:240] + "…" if len(stripped) > 240 else stripped
+                                )
+                    if not last_msg:
+                        # Preview is plain text in a one-line truncate div —
+                        # strip markdown so raw markers (**, ```, links) don't
+                        # leak into the sidebar. Options/prompt keep raw text.
+                        # ORDER MATTERS: strip BEFORE redacting — markdown
+                        # markers inside a secret (e.g. AKIA**…**) would split
+                        # the credential signature past the scanner, and
+                        # stripping afterwards would rejoin the fragments into
+                        # a valid credential in the broadcast preview.
+                        # A message that is ONLY stripped syntax (e.g. just an
+                        # [OPTIONS:] block or a --- rule) yields '' — keep
+                        # scanning older messages for a visible preview, like
+                        # history.last_message_preview does, so live and
+                        # archived previews stay consistent.
+                        redacted = _redact(strip_markdown_preview(txt))
+                        last_msg = (redacted[:80] + "…") if len(redacted) > 80 else redacted
+            if found_conv and last_msg and last_activity_ts:
                 break
         pending_approval = any(not f.done() for f in self._approval_futures.values())
         # waiting_for_input: turn ended (not running), no options, no approval,

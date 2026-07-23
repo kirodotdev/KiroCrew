@@ -23,6 +23,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect_json
 from kiro_crew.messaging.link import legacy_key
+from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
@@ -883,7 +884,9 @@ class ConversationLog:
                 text = self._content_text(data.get("content"))
                 if not text:
                     continue
-                preview = " ".join(text.split())
+                preview = strip_markdown_preview(text)
+                if not preview:
+                    continue
                 if len(preview) > self._PREVIEW_MAX_CHARS:
                     preview = preview[: self._PREVIEW_MAX_CHARS].rstrip() + "…"
                 return preview
