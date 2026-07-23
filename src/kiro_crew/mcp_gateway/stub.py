@@ -463,6 +463,23 @@ async def run_bridge(
     ``sys.stdin``/``sys.stdout``. On clean stdin EOF an ``Unregister``
     frame is sent so gatewayd detaches without waiting on refcount."""
 
+    # Writer-thread liveness signals. The real bridge hands stdout frames to a
+    # daemon writer thread (see stdout_pump); if that thread dies (broken pipe
+    # to the kiro-cli reader) the bridge must tear down even when NO further
+    # upstream line ever arrives to trip the producer-side check — otherwise
+    # stdout_pump parks in reader.readuntil() forever and the bridge hangs, the
+    # very leak this guards against. The threading.Event is polled by the
+    # producer (_emit) as a fast path; the asyncio.Event, set via
+    # call_soon_threadsafe from the writer thread, wakes a dedicated bridge task
+    # so teardown never depends on upstream traffic.
+    bridge_loop = asyncio.get_running_loop()
+    writer_failed = threading.Event()
+    writer_failed_evt = asyncio.Event()
+
+    def _flag_writer_failed() -> None:
+        writer_failed.set()
+        bridge_loop.call_soon_threadsafe(writer_failed_evt.set)
+
     async def stdin_pump() -> None:
         # Inbound line source. Tests inject an in-process StreamReader; the
         # real stub reads sys.stdin on a DEDICATED DAEMON THREAD and hands
@@ -537,17 +554,29 @@ async def run_bridge(
         # cancellable sleep, never the default executor.
         write_q: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=256)
         writer_thread: Optional[threading.Thread] = None
+        # writer_failed (threading.Event) + writer_failed_evt (asyncio.Event)
+        # are defined at run_bridge scope; _flag_writer_failed() sets both so a
+        # dead writer surfaces both to the producer (_emit fast path) and to a
+        # dedicated bridge task, tearing the bridge down even if upstream goes
+        # silent.
         if stdout_writer is None:
             def _blocking_writer() -> None:
-                while True:
-                    item = write_q.get()
-                    if item is None:
-                        return
-                    try:
-                        stdout_fh.write(item)
-                        stdout_fh.flush()
-                    except Exception:  # pragma: no cover — defensive
-                        return
+                try:
+                    while True:
+                        item = write_q.get()
+                        if item is None:
+                            return
+                        try:
+                            stdout_fh.write(item)
+                            stdout_fh.flush()
+                        except Exception:
+                            # Real write failure (reader gone / pipe broken):
+                            # flag it so _emit raises and the bridge tears down
+                            # even with no more upstream lines, then exit.
+                            _flag_writer_failed()
+                            return
+                except Exception:  # pragma: no cover — defensive
+                    _flag_writer_failed()
             writer_thread = threading.Thread(
                 target=_blocking_writer, name="stub-stdout", daemon=True
             )
@@ -561,6 +590,10 @@ async def run_bridge(
             # Bounded put with cancellable backpressure — never the default
             # executor, so a stalled writer thread cannot hang SIGTERM.
             while True:
+                if writer_failed.is_set():
+                    # Writer thread died — propagate instead of parking on a
+                    # full queue forever so the bridge tears down.
+                    raise BrokenPipeError("stub stdout writer thread died")
                 try:
                     write_q.put_nowait(line)
                     return
@@ -592,6 +625,12 @@ async def run_bridge(
         asyncio.create_task(stdin_pump(), name="mc-mcp-stub-stdin"),
         asyncio.create_task(stdout_pump(), name="mc-mcp-stub-stdout"),
         asyncio.create_task(stop_event.wait(), name="mc-mcp-stub-stop"),
+        # Wakes when the stdout writer thread dies, so the bridge tears down
+        # even if no further upstream line arrives to trip _emit's fast-path
+        # check.
+        asyncio.create_task(
+            writer_failed_evt.wait(), name="mc-mcp-stub-writer-failed"
+        ),
     }
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

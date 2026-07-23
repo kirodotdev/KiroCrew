@@ -471,6 +471,14 @@ async def api_cron_run(request: web.Request) -> web.Response:
     job = next((j for j in jobs if j.id == job_id), None)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
+    # Reject if a run is already in flight. Overwriting _running_tasks[job_id]
+    # would orphan the prior task's handle (it could no longer be
+    # tracked/cancelled/joined) and allow overlapping duplicate runs. The
+    # check-and-set below is atomic: there is no await between the guard and the
+    # assignment, so the single-threaded event loop cannot interleave a second
+    # request into this critical section.
+    if job_id in state.crons._running_tasks or state.crons.is_running(job_id):
+        return web.json_response({"error": "job is already running"}, status=409)
     task = asyncio.create_task(state.crons.run_job(job_id))  # type: ignore[arg-type]
     state.crons._running_tasks[job_id] = task  # type: ignore[assignment]
 

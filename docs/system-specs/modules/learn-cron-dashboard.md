@@ -91,7 +91,7 @@ Deterministic cron jobs that bypass the LLM entirely:
 
 ### Trigger Command
 
-On-demand job execution via CLI (`kirocrew cron trigger <job_id>`) and MCP tool (`cron_trigger`). Delegates to `POST /api/crons/{id}/run`. The endpoint returns job name and uses `create_task` for non-blocking execution. Both CLI and MCP paths include SEL audit logging.
+On-demand job execution via CLI (`kirocrew cron trigger <job_id>`) and MCP tool (`cron_trigger`). Delegates to `POST /api/crons/{id}/run`. The endpoint returns job name and uses `create_task` for non-blocking execution. If a run for the job is already in flight (tracked in `_running_tasks` or `is_running(job_id)`), the endpoint returns **409** `{"error": "job is already running"}` instead of starting a second overlapping run — the guard is an atomic check-and-set with no `await` between the check and the `_running_tasks` assignment, so overwriting (and thereby orphaning) the in-flight task handle is impossible. Unknown job → 404. This 409 propagates to the dashboard "Run now" button, the CLI `trigger`, and the `cron_trigger` MCP tool, which surface it as an "already running" outcome rather than a duplicate launch. Both CLI and MCP paths include SEL audit logging.
 
 ### Compact `cron_list` MCP Response
 

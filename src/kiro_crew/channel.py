@@ -27,6 +27,10 @@ _MAX_CHANNELS = 1
 _MAX_MESSAGES = 200
 _MAX_A2A_EXCHANGES = 3
 
+# Max time an agent blocks on its inbox before re-checking its stop condition,
+# guaranteeing subscribe() can never park indefinitely.
+_INBOX_POLL_SECS = 1.0
+
 
 class ListenMode(Enum):
     """How an agent receives channel messages."""
@@ -319,7 +323,15 @@ class Channel:
         if not agent:
             return
         while agent.state not in ("done", "failed"):
-            msg = await agent.inbox.get()
+            # Bounded get so the agent re-checks its stop condition instead of
+            # parking forever on inbox.get() when no message ever arrives
+            # (sender died, channel closed, shutdown signalled). Without the
+            # timeout nothing would wake the blocked get() and the task/thread
+            # would leak, blocking clean shutdown.
+            try:
+                msg = await asyncio.wait_for(agent.inbox.get(), timeout=_INBOX_POLL_SECS)
+            except asyncio.TimeoutError:
+                continue
             yield msg
 
     def _broadcast(self, event_type: str, data: dict[str, Any]) -> None:

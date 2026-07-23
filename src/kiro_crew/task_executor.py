@@ -12,7 +12,7 @@ import time as _time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from kiro_crew import git_coord, shutdown_event
+from kiro_crew import git_coord, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
@@ -787,12 +787,69 @@ async def self_review(
         await sessions.reset(review_key)
 
 
+# Grace period between SIGTERM and SIGKILL when reaping a timed-out test's
+# process group.
+_TEST_KILL_GRACE = 5.0
+
+
+async def _reap_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill a spawned test process and its entire process tree.
+
+    The child is spawned as a group/session leader (``start_new_session`` on
+    POSIX, ``CREATE_NEW_PROCESS_GROUP`` on Windows), so reaping the whole tree —
+    not just ``proc.pid`` — cleans up any shell wrapper or grandchildren it
+    forked. Without this a test that exceeds ``TEST_TIMEOUT`` — or crashes the
+    pump — would orphan processes that keep holding CPU/memory/file handles and
+    locks, accumulating across runs.
+
+    Routed through :mod:`platform_compat` so the tree kill is portable:
+    ``killpg(getpgid)`` on POSIX (with the shim's broadcast-guard against
+    signalling pgid<=1 / our own group) and ``taskkill /T /F`` on Windows.
+    Sends SIGTERM to the tree, waits briefly, then escalates to SIGKILL; both
+    signal calls tolerate an already-exited target.
+    """
+    if proc.returncode is not None:
+        return
+    pid = proc.pid
+    if pid is None:
+        return
+    try:
+        await platform_compat.kill_process_tree_async(pid, platform_compat.SIGTERM)
+    except (ProcessLookupError, OSError):
+        # Already gone, or a group we refuse to signal — nothing to escalate.
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_TEST_KILL_GRACE)
+        return
+    except Exception:
+        pass
+    try:
+        await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_TEST_KILL_GRACE)
+    except Exception:
+        pass
+
+
+def _close_proc_pipes(proc: asyncio.subprocess.Process) -> None:
+    """Close the subprocess transport so its pipe fds are not leaked."""
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        try:
+            transport.close()
+        except Exception:  # pragma: no cover — defensive
+            logger.debug("run_tests: closing proc transport failed", exc_info=True)
+
+
 async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
     """Run the configured test command. Returns (success, output)."""
     # The test command and its working directory are both agent-influenced, so
     # route the spawn through the sandbox chokepoint: OS-level isolation plus a
     # credential-scrubbed environment.
     argv, env, cleanup = sandboxed_spawn_argv(list(test_cmd))
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -801,6 +858,12 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
             stderr=asyncio.subprocess.STDOUT,
             env=env,
             preexec_fn=resource_limit_preexec(),
+            # Lead a new session/process group so a timeout can signal the whole
+            # tree (shell wrapper + any children) rather than just the top pid.
+            # start_new_session is silently ignored on Windows, where
+            # CREATE_NEW_PROCESS_GROUP makes the tree taskkill /T-reapable.
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TEST_TIMEOUT)
         output = stdout.decode(errors="replace") if stdout else ""
@@ -813,10 +876,18 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
                 output = "...\n" + output[-2000:]
         return success, output
     except asyncio.TimeoutError:
+        logger.warning("TaskRunner: tests timed out after %ds", TEST_TIMEOUT)
         return False, f"Test timed out after {TEST_TIMEOUT}s"
     except FileNotFoundError:
         logger.debug("Test command not found, skipping tests")
         return True, "test command not found (skipped)"
     finally:
+        # Reap the process group on EVERY exit path (timeout, crash, or normal
+        # return where communicate() left the child alive) so orphaned test
+        # processes cannot survive holding CPU/memory/fds/locks. Then close the
+        # transport to avoid leaking pipe fds.
+        if proc is not None:
+            await _reap_process_group(proc)
+            _close_proc_pipes(proc)
         if cleanup:
             Path(cleanup).unlink(missing_ok=True)
