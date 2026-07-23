@@ -10,6 +10,8 @@ from __future__ import annotations
 import time
 
 from kiro_crew.messaging.link import (
+    CHAT_TYPE_DIRECT,
+    CHAT_TYPE_FORUM,
     DEFAULT_DM_SCOPE,
     DM_SCOPE_PER_CHANNEL_PEER,
     DM_SCOPE_UNIFIED,
@@ -67,6 +69,35 @@ class TestBuildDmSessionKey:
         assert (
             build_dm_session_key("telegram", "a", "1", chat_type="group")
             == "telegram:a:group:1"
+        )
+
+    def test_unified_scopes_only_direct_dms_not_forum(self) -> None:
+        # SECURITY (issue #211, PR #219 Codex HIGH): dm_scope=unified must NOT
+        # collapse a forum Topic into the shared DM bucket — that would leak
+        # private DM content into a group Topic (and vice versa). A forum route
+        # keeps its FULL bucket regardless of dm_scope.
+        key = build_dm_session_key(
+            "telegram",
+            "kirocrew",
+            "-1001234567890:5",
+            dm_scope=DM_SCOPE_UNIFIED,
+            chat_type=CHAT_TYPE_FORUM,
+        )
+        assert key == "telegram:kirocrew:forum:-1001234567890:5"
+        assert not key.startswith(f"{DM_SCOPE_UNIFIED}:")
+
+    def test_unified_still_collapses_direct_dm(self) -> None:
+        # Regression: a direct (1:1) DM under unified still collapses to the
+        # single shared bucket (cross-surface continuity preserved).
+        assert (
+            build_dm_session_key(
+                "telegram",
+                "kirocrew",
+                "123",
+                dm_scope=DM_SCOPE_UNIFIED,
+                chat_type=CHAT_TYPE_DIRECT,
+            )
+            == "unified:kirocrew"
         )
 
 

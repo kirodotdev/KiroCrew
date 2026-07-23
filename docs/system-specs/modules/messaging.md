@@ -143,6 +143,40 @@ Session keys are namespaced as `f"{channel_type}:{conversation_id}"` (`session_k
 
 `MessagingConfig.use_transport` (`config/loader.py`, default `True` in KiroCrew; exposed in `config.json` under `messaging`) is the single switch. `slack/events.py::_route_message` checks `orch._cfg.messaging.use_transport`; when `True` it creates a task on `handle_message_transport` and skips the native `handle_message` monolith. (There is no challenge-redirect in this fork — Slack messages are processed inline.) Approval mode is resolved by `_resolve_approval_mode(orch)` (respects configured mode + operator YOLO/SafetyOverride TTL), and the per-channel `slack.channels.<id>.agent` override is passed through.
 
+## Telegram forum topics (per-Topic sessions)
+
+A Telegram **supergroup with Topics enabled** maps onto the same `thread_id`
+abstraction Slack uses, so one bot serves many parallel, topic-scoped sessions
+(Slack channel+threads) instead of a single session per user.
+
+- **Routing / session key.** The transport captures each update's
+  `message_thread_id` (the Topic id) and carries it as the neutral
+  `InboundMessage.thread_id`. The dispatcher folds `(chat_type, chat_id,
+  thread_id)` into a route and reuses the `chat_type` slot of
+  `build_dm_session_key`: a Topic keys to
+  `telegram:{agent}:forum:{chat_id}:{thread_id}`, while a private DM stays
+  byte-for-byte `telegram:{agent}:direct:{user_id}`. `messaging.dm_scope="unified"`
+  collapses **only** direct DMs into the `unified:{agent}` bucket — forum routes
+  always keep the full per-Topic key, so no group Topic can share a session with
+  a DM or another group.
+- **Per-Topic generation.** `ConversationState` is keyed on the same route, so
+  `/new`, idle/daily rotation and `/compact` are scoped to one Topic.
+- **Gate — fail-closed AND Topic-scoped.** `forum_gate_outcome(chat_type,
+  chat_id, message_thread_id, *, allow_forum, allowed_forum_chat_ids)` is the
+  single predicate guarding **both** `TelegramTransport.receive` (frozen
+  allow-list) and `TelegramDispatcher.on_callback` (live cfg). It authorizes a
+  turn/callback only for a real forum Topic — `chat_type == "supergroup"` AND a
+  `message_thread_id` — in an allow-listed chat (`telegram.allow_forum` **and**
+  `chat_id ∈ telegram.allowed_forum_chat_ids`). Ordinary groups and the
+  supergroup **General** chat (no thread) are denied and SEL-audited
+  (`denied_forum_not_allowed` / `denied_non_private_chat`); the owner
+  `allowed_user_ids` check still gates *who* may drive a turn.
+- **Outbound.** Streamed answers, command/notice replies, queue receipts, the
+  queue drain, callback re-dispatch, and the `/link` dashboard-mirror
+  `ChannelLink` all carry `message_thread_id`, so every reply lands in its Topic
+  and a queued message drains under the forum key (`editMessageText` is not
+  threaded — the message id already identifies the message within its Topic).
+
 ## Mid-turn routing & per-message overrides (Telegram)
 
 A message arriving while a turn is in flight is routed by

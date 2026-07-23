@@ -89,9 +89,10 @@ DM_SCOPE_UNIFIED = "unified"
 #: stays separate; ``unified`` opts into one shared bucket per agent.
 DEFAULT_DM_SCOPE = DM_SCOPE_PER_CHANNEL_PEER
 
-#: Only ``direct`` (1:1 DM) is wired today; ``group`` is reserved for future
-#: group-chat support and is produced by no current channel.
+#: ``direct`` (1:1 DM) is the baseline; ``forum`` keys a Telegram supergroup
+#: forum Topic ``(chat_id, thread_id)`` to its own session (Slack-thread style).
 CHAT_TYPE_DIRECT = "direct"
+CHAT_TYPE_FORUM = "forum"
 
 
 def build_dm_session_key(
@@ -115,8 +116,12 @@ def build_dm_session_key(
     ``dm_scope``:
       * ``per-channel-peer`` (default) -- one bucket per ``(channel, user)``, so
         the same person on Telegram vs WeCom stays isolated.
-      * ``unified`` -- all DMs collapse into a single ``unified:{agent}`` bucket
-        for cross-surface continuity (channel and user drop out of the key).
+      * ``unified`` -- direct (1:1) DMs collapse into a single ``unified:{agent}``
+        bucket for cross-surface continuity (channel and user drop out of the
+        key). Applies ONLY to direct DMs: a forum route (``chat_type ==
+        CHAT_TYPE_FORUM``) ALWAYS keeps its full
+        ``{channel}:{agent}:{chat_type}:{user}`` bucket regardless of dm_scope,
+        so private DM content can never collapse into a shared group Topic.
 
     An unrecognized ``dm_scope`` falls back to per-channel-peer (safe isolation)
     rather than raising, so a hand-edited config can never crash dispatch.
@@ -128,7 +133,7 @@ def build_dm_session_key(
     carry no prior persisted history to migrate; the legacy bare-thread Slack
     keys keep their existing compatibility shim (see ``canonical_key``) untouched.
     """
-    if dm_scope == DM_SCOPE_UNIFIED:
+    if dm_scope == DM_SCOPE_UNIFIED and chat_type == CHAT_TYPE_DIRECT:
         bucket = f"{DM_SCOPE_UNIFIED}:{agent}"
     else:
         bucket = f"{channel}:{agent}:{chat_type}:{user}"
@@ -162,6 +167,7 @@ def seed_generation(
     agent: str,
     user_id: str,
     dm_scope: str,
+    chat_type: str = CHAT_TYPE_DIRECT,
 ) -> int:
     """Seed a DM ``ConversationState`` generation from the persisted session map.
 
@@ -171,8 +177,14 @@ def seed_generation(
     a stale on-disk generation instead of colliding with and resurrecting it.
     Shared by every DM dispatcher so the restart-safe seeding lives in one place
     rather than being copy-pasted per channel.
+
+    ``chat_type`` selects the bucket namespace (``direct`` for a 1:1 DM,
+    ``forum`` for a per-topic session); it defaults to ``direct`` so existing
+    callers keep their exact bucket shape.
     """
-    bucket = build_dm_session_key(channel, agent, user_id, gen=0, dm_scope=dm_scope)
+    bucket = build_dm_session_key(
+        channel, agent, user_id, gen=0, dm_scope=dm_scope, chat_type=chat_type
+    )
     return sessions.max_generation(bucket)
 
 

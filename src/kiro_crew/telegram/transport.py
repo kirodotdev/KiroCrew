@@ -42,6 +42,11 @@ class TelegramInboundMessage(InboundMessage):
     """
 
     message_id: int = 0
+    # Originating chat type ("private" | "group" | "supergroup"). The forum
+    # Topic id, when present, rides the base ``thread_id`` field. Consumers read
+    # it via ``getattr(msg, "chat_type", "private")`` so the neutral message
+    # stays channel-agnostic.
+    chat_type: str = "private"
 
 
 # A dispatch callback consumes a normalized, already-authorized message and
@@ -65,6 +70,44 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
 )
 
 
+def forum_gate_outcome(
+    chat_type: str,
+    chat_id: int,
+    message_thread_id: int | None,
+    *,
+    allow_forum: bool,
+    allowed_forum_chat_ids: Iterable[int],
+) -> str | None:
+    """Fail-closed forum authZ predicate shared by the inbound and callback paths.
+
+    Returns ``None`` when the chat is authorized to drive a turn/callback, else
+    the SEL audit ``outcome`` string the caller logs before dropping. Only a
+    message inside a **real forum Topic** (``supergroup`` AND a truthy
+    ``message_thread_id``) of an allow-listed chat is authorized:
+      * ``private``            -> ``None`` (1:1 DM, always allowed past auth).
+      * ``supergroup`` + Topic  -> ``None`` ONLY when forum topics are enabled
+        AND the chat_id is allow-listed; otherwise ``"denied_forum_not_allowed"``.
+      * everything else -> ``"denied_non_private_chat"``. This DENIES ordinary
+        groups (which cannot have Topics) AND the supergroup **General** chat
+        (no ``message_thread_id``) -- serving those would post to the whole
+        group's readable main chat (non-private exposure) and exceeds the
+        "forum topics" scope.
+
+    One predicate, two call sites (``TelegramTransport.receive`` +
+    ``TelegramDispatcher.on_callback``) so the security decision can never drift
+    between the inbound and callback paths. Each site passes its OWN allow-list
+    source -- the transport freezes it at construction, the dispatcher reads live
+    cfg -- and that difference is deliberate (see the call sites).
+    """
+    if chat_type == "private":
+        return None
+    if chat_type == "supergroup" and message_thread_id:
+        if allow_forum and int(chat_id) in set(allowed_forum_chat_ids):
+            return None
+        return "denied_forum_not_allowed"
+    return "denied_non_private_chat"
+
+
 class TelegramTransport(MessagingTransport):
     """Concrete Telegram transport over the low-level ``TelegramClient``."""
 
@@ -75,12 +118,21 @@ class TelegramTransport(MessagingTransport):
         client: TelegramClient,
         *,
         allowed_user_ids: Iterable[int] = (),
+        allow_forum: bool = False,
+        allowed_forum_chat_ids: Iterable[int] = (),
         dispatch: DispatchFn | None = None,
     ) -> None:
         self._client = client
         # Deny-by-default: freeze the allow-list as strings (to match
         # InboundMessage.user_id) so it can't mutate under an in-flight decision.
         self._allowed: frozenset[str] = frozenset(str(u) for u in allowed_user_ids)
+        # Forum-topic gate (fail closed): serve supergroup forum Topics only when
+        # explicitly enabled AND the supergroup's chat_id is allow-listed. The
+        # chat_ids are numeric ints (matched against the raw ``TelegramInbound``).
+        self._allow_forum = bool(allow_forum)
+        self._allowed_forum_chat_ids: frozenset[int] = frozenset(
+            int(c) for c in allowed_forum_chat_ids
+        )
         self._dispatch = dispatch
         self.capabilities = TELEGRAM_CAPABILITIES
 
@@ -93,7 +145,11 @@ class TelegramTransport(MessagingTransport):
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
-        mid = await self._client.send_message(int(conversation_id), content)
+        mid = await self._client.send_message(
+            int(conversation_id),
+            content,
+            message_thread_id=int(thread_id) if thread_id else None,
+        )
         return str(mid or "")
 
     async def resolve_conversation(self, user_id: str) -> str:
@@ -143,17 +199,29 @@ class TelegramTransport(MessagingTransport):
         inbound = raw_envelope
         if not inbound.text:
             return
-        # Private-chat-only, fail closed. A bot added to a group receives
-        # messages; even from an allow-listed user, running a turn would reply
-        # in the group (conversation_id == group chat_id at renderer time),
-        # exposing tool output to non-authorized members. resolve_conversation
-        # also assumes chat_id == user_id, which only holds in private chats.
-        # Deny anything not explicitly a private chat and audit it.
-        if inbound.chat_type != "private":
+        # Chat-type gate (fail closed). A bot added to a group receives every
+        # message and its replies land in that chat, so we serve ONLY a real
+        # forum Topic (supergroup + message_thread_id) whose chat_id is
+        # allow-listed; ordinary groups, the supergroup General chat (no
+        # thread), channels and other types are always denied. The decision
+        # lives in the shared ``forum_gate_outcome`` predicate so it can't drift
+        # from the callback path (on_callback). The allow-list source here is
+        # the construction-time FROZEN copy (self._allow_forum /
+        # self._allowed_forum_chat_ids) -- DELIBERATE, so the gate can't mutate
+        # under an in-flight decision (mirrors the frozen user-allowlist); the
+        # dispatcher's on_callback reads live cfg instead.
+        outcome = forum_gate_outcome(
+            inbound.chat_type,
+            inbound.chat_id,
+            inbound.message_thread_id,
+            allow_forum=self._allow_forum,
+            allowed_forum_chat_ids=self._allowed_forum_chat_ids,
+        )
+        if outcome is not None:
             sel().log_api_access(
                 caller=str(inbound.user_id) or "unknown",
                 operation="telegram_transport.receive",
-                outcome="denied_non_private_chat",
+                outcome=outcome,
                 source="telegram",
             )
             return
@@ -162,8 +230,11 @@ class TelegramTransport(MessagingTransport):
             user_id=str(inbound.user_id),
             conversation_id=str(inbound.chat_id),
             text=inbound.text,
-            thread_id=None,
+            thread_id=(
+                str(inbound.message_thread_id) if inbound.message_thread_id else None
+            ),
             message_id=inbound.message_id,
+            chat_type=inbound.chat_type,
         )
         if not self.authorize(msg):
             return

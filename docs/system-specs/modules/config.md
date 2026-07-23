@@ -251,6 +251,15 @@ class DashboardConfig:
     tips_model: str = "claude-haiku-4.5"  # model for tips generation (pinned to Haiku for cost)
     tips_explore_ratio: float = 0.2    # probability of random catalog pick vs personalized (clamped to [0, 1])
 
+@dataclass
+class TelegramConfig:
+    enabled: bool = False              # start the Telegram Bot API channel (long-polling) at gateway startup
+    bot_token: str = ""                # @BotFather token; prefer the TELEGRAM_BOT_TOKEN credential
+    allowed_user_ids: list[int] = []   # numeric user IDs allowed to drive the bot; empty = deny all (fail closed)
+    soft_threshold_pct: int = 80       # prompt to /compact or /new when context passes this %
+    allow_forum: bool = False          # serve supergroup forum Topics as per-Topic sessions (Slack-thread style). Fail-closed: also requires the supergroup's chat_id in allowed_forum_chat_ids, and only real Topics (message_thread_id present) are served — ordinary groups and the supergroup General chat are denied
+    allowed_forum_chat_ids: list[int] = []  # numeric supergroup chat_ids permitted to run forum-topic sessions; empty = deny all groups (fail closed)
+
 # Additional top-level DTOs (not fully expanded here — see loader.py):
 # OrchestratorConfig, CronHistoryConfig, TunnelConfig, InstancesConfig, HeartbeatConfig,
 # WorkspaceConfig, MemoryStoreConfig, ExternalRegistryConfig,

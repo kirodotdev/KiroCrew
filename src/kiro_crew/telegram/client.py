@@ -44,6 +44,9 @@ class TelegramInbound:
     text: str = ""
     message_id: int = 0
     chat_type: str = ""  # "private" | "group" | "supergroup" | "channel"
+    # Forum-topic id in a supergroup (Bot API ``message_thread_id``); None in a
+    # 1:1 DM or the supergroup's General topic.
+    message_thread_id: int | None = None
 
 
 @dataclass
@@ -58,6 +61,8 @@ class TelegramCallback:
     label: str = ""  # button text, recovered from the message's reply_markup
     username: str = ""
     chat_type: str = ""  # "private" | "group" | "supergroup" | "channel"
+    # Forum-topic id of the message the button lives on (None outside a topic).
+    message_thread_id: int | None = None
 
 
 class TelegramClient:
@@ -132,6 +137,7 @@ class TelegramClient:
         reply_markup: dict | None = None,
         retry_plain: bool = True,
         reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
     ) -> int | None:
         """Send a new message. Returns the message_id on success.
 
@@ -139,11 +145,16 @@ class TelegramClient:
         sending with parse_mode=HTML would make any bare ``<``/``>``/``&`` trip a
         Telegram 400 and force a second round-trip. Callers that generate real
         markup (e.g. a static help card) may pass parse_mode explicitly.
+
+        ``message_thread_id`` targets a supergroup forum Topic; it is included
+        only when set, so DM sends are byte-for-byte unchanged.
         """
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "text": text[:TELEGRAM_MAX_TEXT],
         }
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
         if parse_mode:
             params["parse_mode"] = parse_mode
         if reply_markup:
@@ -166,7 +177,8 @@ class TelegramClient:
         return result.get("message_id") if result else None
 
     async def send_message_draft(
-        self, chat_id: int, draft_id: int, text: str, *, parse_mode: str | None = None
+        self, chat_id: int, draft_id: int, text: str, *, parse_mode: str | None = None,
+        message_thread_id: int | None = None,
     ) -> bool:
         """Stream an ephemeral partial-message draft (Bot API 9.3+ sendMessageDraft).
 
@@ -176,12 +188,17 @@ class TelegramClient:
         Requires the bot to have Forum Topic Mode enabled in BotFather; returns
         False (so the caller can fall back) if the API rejects it. Sent as
         plaintext (no parse_mode by default) so partial markdown never 400s.
+
+        ``message_thread_id`` targets a supergroup forum Topic; included only
+        when set.
         """
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "draft_id": draft_id,
             "text": text[:TELEGRAM_MAX_TEXT],
         }
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
         if parse_mode:
             params["parse_mode"] = parse_mode
         result = await self._api("sendMessageDraft", params)
@@ -234,9 +251,13 @@ class TelegramClient:
         result = await self._api("editMessageReplyMarkup", params)
         return result is not None
 
-    async def send_typing(self, chat_id: int) -> None:
-        """Send 'typing...' chat action."""
-        await self._api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+    async def send_typing(self, chat_id: int, *, message_thread_id: int | None = None) -> None:
+        """Send 'typing...' chat action. ``message_thread_id`` targets a forum
+        Topic (included only when set)."""
+        params: dict[str, Any] = {"chat_id": chat_id, "action": "typing"}
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
+        await self._api("sendChatAction", params)
 
     async def answer_callback(self, callback_query_id: str, text: str = "") -> None:
         """Acknowledge a callback_query to stop the spinner on the button."""
@@ -341,6 +362,7 @@ class TelegramClient:
                 text=text,
                 message_id=msg.get("message_id", 0),
                 chat_type=chat.get("type", ""),
+                message_thread_id=msg.get("message_thread_id"),
             )
             task = asyncio.create_task(self._invoke_message(inbound))
             self._handler_tasks.add(task)
@@ -371,6 +393,7 @@ class TelegramClient:
                 label=label,
                 username=user.get("username", ""),
                 chat_type=chat.get("type", ""),
+                message_thread_id=(msg or {}).get("message_thread_id"),
             )
             task = asyncio.create_task(self._invoke_callback(callback))
             self._handler_tasks.add(task)

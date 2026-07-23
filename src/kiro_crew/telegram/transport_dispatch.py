@@ -34,6 +34,8 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.link import (
+    CHAT_TYPE_DIRECT,
+    CHAT_TYPE_FORUM,
     ChannelLink,
     build_dm_session_key,
     dashboard_mirror_key,
@@ -47,7 +49,11 @@ from kiro_crew.telegram.commands import (
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
-from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.telegram.transport import (
+    TELEGRAM_CAPABILITIES,
+    TelegramInboundMessage,
+    forum_gate_outcome,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -189,6 +195,28 @@ class TelegramDispatcher:
         user_id = int(msg.user_id)
         chat_id = int(msg.conversation_id)
         text = msg.text
+        # Route to the conversation identity. DM (private) -> (direct, user_id),
+        # reproducing the pre-forum key EXACTLY; an authorized supergroup forum
+        # message always carries a Topic thread -> (forum, "chat:thread"). A
+        # threadless General message never reaches here (the forum gate in
+        # transport.receive / on_callback denies it); the threadless (forum,
+        # "chat") branch below is defensive dead code, not a served path.
+        # ``thread`` is the raw Topic id passed to the renderer so its outbound
+        # messages thread into the Topic. Everything downstream (session key,
+        # generation counter, awaiting flag) keys on ``route`` so /new, idle
+        # rotation and /compact are per-topic, not per-user.
+        route = self._route_key(
+            chat_type=getattr(msg, "chat_type", "private"),
+            user_id=user_id,
+            chat_id=chat_id,
+            thread=getattr(msg, "thread_id", None),
+        )
+        thread = getattr(msg, "thread_id", None)
+        # The Topic id (int) used to thread EVERY dispatcher-originated reply for
+        # this turn back into the user's Topic (command confirmations, receipts,
+        # the soft-threshold notice); None only for a DM (an authorized forum
+        # turn always carries a Topic — General is denied at the gate).
+        reply_thread = self._route_thread(route)
 
         # Per-message mid-turn override: "/queue …" / "/steer …" let the user
         # choose how THIS message is handled if it lands while a turn is running
@@ -211,24 +239,26 @@ class TelegramDispatcher:
             else None
         )
         if cmd == "new":
-            self._conv.bump_gen(user_id)
-            await self.client.send_message(chat_id, "✅ New conversation started.")
+            self._conv.bump_gen(route)
+            await self._reply(
+                chat_id, "✅ New conversation started.", thread=reply_thread
+            )
             return
         if cmd == "compact":
-            self._conv.clear_awaiting(user_id)
-            await self._handle_compact(user_id, chat_id)
+            self._conv.clear_awaiting(route)
+            await self._handle_compact(route, chat_id)
             return
         if cmd == "link":
-            await self._handle_link(user_id, chat_id)
+            await self._handle_link(route, chat_id)
             return
         if cmd == "unlink":
-            await self._handle_unlink(user_id, chat_id)
+            await self._handle_unlink(route, chat_id)
             return
         if cmd == "help":
-            await self.client.send_message(chat_id, _HELP_TEXT)
+            await self._reply(chat_id, _HELP_TEXT, thread=reply_thread)
             return
         if cmd == "stop":
-            await self._handle_stop(user_id, chat_id)
+            await self._handle_stop(route, chat_id)
             return
 
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
@@ -236,18 +266,20 @@ class TelegramDispatcher:
         # mint a new key and miss the running turn, letting a second concurrent
         # turn bypass steer/queue. Surface the message (steer or queue) instead
         # of a silent block.
-        session_key = self._session_key(user_id)
+        session_key = self._session_key(route)
         if self.sessions.is_busy(session_key):
-            await self._handle_busy(session_key, msg, text, override_mode)
+            await self._handle_busy(
+                session_key, msg, text, override_mode, thread=reply_thread
+            )
             return
 
         self._conv.maybe_rotate(
-            user_id,
+            route,
             time.time(),
             idle_minutes=self.cfg.messaging.idle_reset_minutes,
             daily_reset_hour=self.cfg.messaging.daily_reset_hour,
         )
-        session_key = self._session_key(user_id)
+        session_key = self._session_key(route)
         channel_id = f"telegram:{user_id}"
         # Resolve the kiro-cli agent: an explicit override wins, else the
         # configured default, else the canonical "kirocrew" agent — so the
@@ -261,7 +293,8 @@ class TelegramDispatcher:
             else None
         )
         renderer = TelegramRenderer(
-            self.client, chat_id, TELEGRAM_CAPABILITIES, session_key=session_key
+            self.client, chat_id, TELEGRAM_CAPABILITIES, session_key=session_key,
+            message_thread_id=int(thread) if thread else None,
         )
         # Expose this turn's renderer so a concurrent mid-turn steer (a separate
         # _handle_busy task) can hand it the user's typed steer text for the
@@ -341,7 +374,7 @@ class TelegramDispatcher:
                     "Telegram: persist_turn failed session=%s", session_key, exc_info=True
                 )
             try:
-                await self._maybe_notice(chat_id, user_id, session_key, provider)
+                await self._maybe_notice(chat_id, route, session_key, provider)
             except Exception:
                 logger.warning(
                     "Telegram: maybe_notice failed session=%s", session_key, exc_info=True
@@ -373,7 +406,13 @@ class TelegramDispatcher:
         # (queue_mode == "queue"). ``drain`` is False for drained turns so the
         # loop stays iterative at one level (no recursion); ``limit`` bounds it.
         if drain:
-            await self._drain_queue(session_key, user_id, chat_id)
+            await self._drain_queue(
+                session_key,
+                user_id,
+                chat_id,
+                chat_type=getattr(msg, "chat_type", "private"),
+                thread=thread,
+            )
 
     async def _handle_busy(
         self,
@@ -381,6 +420,8 @@ class TelegramDispatcher:
         msg: InboundMessage,
         text: str,
         override_mode: str | None,
+        *,
+        thread: int | None = None,
     ) -> None:
         """A message arrived mid-turn: steer the running turn or queue for after
         it. ``text`` is the message with any ``/queue``|``/steer`` directive
@@ -440,10 +481,20 @@ class TelegramDispatcher:
         # bubble. If the turn finished in the window the message is not queued, so
         # we run it now (re-entering handle_message, which re-strips the directive
         # and runs it as a fresh turn) instead of stranding it.
-        if not await self._enqueue_with_receipt(session_key, chat_id, text):
+        if not await self._enqueue_with_receipt(
+            session_key, chat_id, text, thread=thread
+        ):
             await self.handle_message(msg)
 
-    async def _drain_queue(self, session_key: str, user_id: int, chat_id: int) -> None:
+    async def _drain_queue(
+        self,
+        session_key: str,
+        user_id: int,
+        chat_id: int,
+        *,
+        chat_type: str = "private",
+        thread: str | None = None,
+    ) -> None:
         """Collapse every message queued during the just-finished turn into ONE
         combined turn (order preserved, blank-line joined) and answer them
         together, rather than replaying each as a separate turn.
@@ -489,11 +540,16 @@ class TelegramDispatcher:
             )
         combined = "\n\n".join(texts)
         await self.handle_message(
-            InboundMessage(
+            TelegramInboundMessage(
                 channel_type="telegram",
                 user_id=str(user_id),
                 conversation_id=str(chat_id),
                 text=combined,
+                # Carry the turn's ORIGINAL route so the drained turn resolves to
+                # the SAME forum session key -- a plain DM-shaped InboundMessage
+                # would drain a queued forum message under the DM key instead.
+                thread_id=thread,
+                chat_type=chat_type,
             ),
             drain=False,
             # Drained payloads are pure turn content: a queued "/new" must reach
@@ -504,7 +560,7 @@ class TelegramDispatcher:
     # ── Mid-turn queue receipt (single, in-place, persistent record) ───────
 
     async def _enqueue_with_receipt(
-        self, session_key: str, chat_id: int, text: str
+        self, session_key: str, chat_id: int, text: str, *, thread: int | None = None
     ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its collapsing
         "⏳ Queued (N): …" receipt, under ``_receipt_lock``.
@@ -525,7 +581,9 @@ class TelegramDispatcher:
                 return False
             receipt = self._queue_receipts.get(session_key)
             if receipt is None:
-                msg_id = await self.client.send_message(chat_id, _receipt_text([text]))
+                msg_id = await self._reply(
+                    chat_id, _receipt_text([text]), thread=thread
+                )
                 if msg_id is not None:
                     self._queue_receipts[session_key] = _QueueReceipt(
                         msg_id=msg_id, texts=[text]
@@ -580,7 +638,7 @@ class TelegramDispatcher:
         except Exception:
             logger.debug("telegram: queue receipt cancel-finalize failed", exc_info=True)
 
-    async def _handle_stop(self, user_id: int, chat_id: int) -> None:
+    async def _handle_stop(self, route: tuple[str, str], chat_id: int) -> None:
         """Hard cancel: abort the in-flight turn and clear everything.
 
         Aborts the running turn via the provider's cooperative ACP cancel,
@@ -590,7 +648,8 @@ class TelegramDispatcher:
         the acknowledgement is snappy.
         """
         assert self.client is not None
-        session_key = self._session_key(user_id)
+        session_key = self._session_key(route)
+        thread = self._route_thread(route)
         cancelled_turn = False
         if self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)
@@ -606,9 +665,10 @@ class TelegramDispatcher:
         async with self._receipt_lock:
             self.sessions.clear_queue(session_key)
             await self._receipt_finish_cancelled_locked(session_key, chat_id)
-        await self.client.send_message(
+        await self._reply(
             chat_id,
             "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared.",
+            thread=thread,
         )
 
     # ── Inline-button handler (client's on_callback) ───────────────────────
@@ -620,13 +680,47 @@ class TelegramDispatcher:
         # unauthorized user's press — avoids a wasted Bot API round-trip.
         if not self._authorized(cb.user_id):
             return
-        # Private-chat-only (mirrors receive()): buttons live on messages the
-        # bot sent, and turns are blocked in non-private chats, so a non-private
-        # callback shouldn't occur — deny defensively before acting on it.
-        if cb.chat_type != "private":
+        # Chat-type gate — an authZ boundary that MUST mirror
+        # ``transport.receive`` EXACTLY: buttons live on messages the bot sent,
+        # so a press can originate from a private DM or an allow-listed
+        # supergroup forum Topic. Uses the SHARED ``forum_gate_outcome`` predicate
+        # so this fail-closed decision can never drift from the inbound path.
+        # NEVER honor a callback from an ordinary group, a non-allow-listed
+        # supergroup, or the supergroup General chat (no thread). This gate is
+        # ADDITIONAL to the owner/user authorization above, not a replacement.
+        # The allow-list source here is LIVE cfg (self.cfg.telegram.*), whereas
+        # the transport uses its construction-time frozen copy; that source
+        # difference is DELIBERATE (see forum_gate_outcome).
+        outcome = forum_gate_outcome(
+            cb.chat_type,
+            cb.chat_id,
+            getattr(cb, "message_thread_id", None),
+            allow_forum=self.cfg.telegram.allow_forum,
+            allowed_forum_chat_ids=self.cfg.telegram.allowed_forum_chat_ids,
+        )
+        if outcome is not None:
+            sel().log_api_access(
+                caller=str(cb.user_id) or "unknown",
+                operation="telegram_transport.on_callback",
+                outcome=outcome,
+                source="telegram",
+            )
             return
         # Answer to dismiss the button spinner for the authorized user.
         await self.client.answer_callback(cb.callback_query_id)
+
+        # Route the callback to the same conversation identity its turn used so
+        # an approval/[OPTIONS:] press resolves against the correct session key:
+        # a private press -> (direct, user_id); an allow-listed forum press ->
+        # the per-Topic forum key (chat_type + message_thread_id carried through).
+        route = self._route_key(
+            chat_type=cb.chat_type,
+            user_id=cb.user_id,
+            chat_id=cb.chat_id,
+            thread=getattr(cb, "message_thread_id", None),
+        )
+        # Topic id to thread the [OPTIONS:] echo sends back into (None for a DM).
+        cb_thread = self._route_thread(route)
 
         data = cb.data or ""
 
@@ -635,7 +729,7 @@ class TelegramDispatcher:
             body = data[2:]
             rid, _, flag = body.rpartition(":")
             approved = flag == "1"
-            key = TelegramApprovalDecider.key(self._session_key(cb.user_id), rid)
+            key = TelegramApprovalDecider.key(self._session_key(route), rid)
             resolved = TelegramApprovalDecider.resolve_global(key, approved)
             if resolved:
                 verdict = "✅ Approved" if approved else "🚫 Denied"
@@ -660,29 +754,40 @@ class TelegramDispatcher:
                 cb.chat_id, cb.message_id, {"inline_keyboard": []}
             )
             if not choice_text:
-                await self.client.send_message(
+                await self._reply(
                     cb.chat_id,
                     "⚠️ Couldn't read that choice — please type it instead.",
+                    thread=cb_thread,
                 )
                 return
             # Echo the picked option as its own block (a quoted bubble) so the
             # user can see what they chose -- a button tap can't render as a
             # real user message, so this stands in for it. Then re-dispatch the
             # choice as a fresh turn whose answer streams in as a NEW message.
-            echoed = await self.client.send_message(
+            echoed = await self._reply(
                 cb.chat_id,
                 f"<blockquote>{html.escape(choice_text)}</blockquote>",
+                thread=cb_thread,
                 parse_mode="HTML",
                 retry_plain=False,
             )
             if echoed is None:  # malformed HTML -> plain fallback
-                await self.client.send_message(cb.chat_id, f"» {choice_text}")
-            # Re-inject the choice as a fresh turn via the normal path.
-            synthetic = InboundMessage(
+                await self._reply(cb.chat_id, f"» {choice_text}", thread=cb_thread)
+            # Re-inject the choice as a fresh turn via the normal path, carrying
+            # the callback's ORIGINAL route (chat_type + Topic thread) so a forum
+            # [OPTIONS:] press re-dispatches under the SAME forum session key
+            # instead of a DM-shaped key.
+            synthetic = TelegramInboundMessage(
                 channel_type="telegram",
                 user_id=str(cb.user_id),
                 conversation_id=str(cb.chat_id),
                 text=choice_text,
+                thread_id=(
+                    str(cb.message_thread_id)
+                    if getattr(cb, "message_thread_id", None)
+                    else None
+                ),
+                chat_type=cb.chat_type,
             )
             await self.handle_message(synthetic)
 
@@ -695,26 +800,91 @@ class TelegramDispatcher:
     def _resolve_agent(self) -> str:
         return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
 
-    def _session_key(self, user_id: int) -> str:
-        gen = self._conv.current_gen(user_id)
+    def _route_key(
+        self,
+        *,
+        chat_type: str,
+        user_id: int,
+        chat_id: int,
+        thread: str | int | None,
+    ) -> tuple[str, str]:
+        """Map an inbound message/callback to its conversation-identity key.
+
+        Returns ``(slot, comp)`` where ``slot`` selects the session namespace:
+          * private DM -> ``(CHAT_TYPE_DIRECT, str(user_id))`` -- byte-for-byte
+            the pre-forum identity, so DM keys are unchanged.
+          * supergroup forum Topic -> ``(CHAT_TYPE_FORUM, "{chat_id}:{thread}")``.
+
+        A threadless supergroup (General) message is denied at the forum gate
+        and never reaches here; the ``str(chat_id)`` fallback below is defensive
+        dead code (kept for safety), NOT a served route.
+
+        The tuple is used as the ``ConversationState`` key (per-topic generation)
+        and, via ``_session_key``, as the session-key ``comp`` + ``chat_type``.
+        """
+        if chat_type in ("group", "supergroup"):
+            comp = f"{chat_id}:{thread}" if thread else str(chat_id)
+            return CHAT_TYPE_FORUM, comp
+        return CHAT_TYPE_DIRECT, str(user_id)
+
+    @staticmethod
+    def _route_thread(route: tuple[str, str]) -> int | None:
+        """The forum Topic id for a ``route``, or None for a DM.
+
+        Mirrors ``_route_key``'s ``comp`` encoding: a forum Topic route carries
+        ``"{chat_id}:{thread}"`` -> the Topic id; a DM (direct) route -> None.
+        An authorized forum turn always carries a Topic (General is denied at
+        the gate), so the threadless-``comp`` -> None case is only the defensive
+        fallback. Used to thread every dispatcher-originated send back into the
+        SAME Topic the turn came from.
+        """
+        slot, comp = route
+        if slot == CHAT_TYPE_FORUM and ":" in comp:
+            return int(comp.split(":", 1)[1])
+        return None
+
+    async def _reply(
+        self, chat_id: int, text: str, *, thread: int | None = None, **kw: Any
+    ) -> int | None:
+        """Send a user-facing chat message, threaded into the originating forum
+        Topic (``thread``) or the DM chat (``thread`` is None).
+
+        Single choke point for every dispatcher-originated send (command
+        confirmations, queue receipts, the soft-threshold notice, ``[OPTIONS:]``
+        echoes) so a forum turn's side messages land in the user's Topic. A
+        threadless supergroup General message is denied at the gate, so no served
+        send ever lands in the supergroup's General chat. ``answer_callback`` is
+        intentionally NOT routed here -- it is a callback ack, not a chat send.
+        """
+        assert self.client is not None
+        return await self.client.send_message(
+            chat_id, text, message_thread_id=thread, **kw
+        )
+
+    def _session_key(self, route: tuple[str, str]) -> str:
+        slot, comp = route
+        gen = self._conv.current_gen(route)
         return build_dm_session_key(
             "telegram",
             self._resolve_agent(),
-            str(user_id),
+            comp,
             gen=gen,
             dm_scope=self.cfg.messaging.dm_scope,
+            chat_type=slot,
         )
 
-    def _seed_gen(self, user_id: int) -> int:
+    def _seed_gen(self, route: tuple[str, str]) -> int:
+        slot, comp = route
         return seed_generation(
             self.sessions,
             channel="telegram",
             agent=self._resolve_agent(),
-            user_id=str(user_id),
+            user_id=comp,
             dm_scope=self.cfg.messaging.dm_scope,
+            chat_type=slot,
         )
 
-    async def _handle_link(self, user_id: int, chat_id: int) -> None:
+    async def _handle_link(self, route: tuple[str, str], chat_id: int) -> None:
         """Mirror this conversation's dashboard tab back to Telegram.
 
         Binds the current session's dashboard mirror slot to this chat so the
@@ -722,23 +892,36 @@ class TelegramDispatcher:
         here. ``/new`` starts a fresh, unlinked conversation.
         """
         assert self.client is not None
-        key = dashboard_mirror_key(self._session_key(user_id))
+        key = dashboard_mirror_key(self._session_key(route))
+        # Carry the forum Topic so dashboard-mirrored replies for a forum-linked
+        # session thread back into the SAME Topic (via
+        # ``_deliver_cross_surface_reply``'s ``thread_id=link.thread_id``), not
+        # the supergroup General. None only for a DM (an authorized forum turn
+        # always carries a Topic — General is denied at the gate).
+        topic = self._route_thread(route)
         self.sessions.set_mirror_link(
-            key, ChannelLink("telegram", channel_id=str(chat_id))
+            key,
+            ChannelLink(
+                "telegram",
+                channel_id=str(chat_id),
+                thread_id=(str(topic) if topic is not None else None),
+            ),
         )
-        await self.client.send_message(
+        await self._reply(
             chat_id,
             "✅ Linked. Replies from the dashboard for this conversation will "
             "also show up here. Send /unlink to stop.",
+            thread=self._route_thread(route),
         )
 
-    async def _handle_unlink(self, user_id: int, chat_id: int) -> None:
+    async def _handle_unlink(self, route: tuple[str, str], chat_id: int) -> None:
         assert self.client is not None
-        key = dashboard_mirror_key(self._session_key(user_id))
+        key = dashboard_mirror_key(self._session_key(route))
         was_linked = self.sessions.clear_mirror_link(key)
-        await self.client.send_message(
+        await self._reply(
             chat_id,
             "✅ Unlinked." if was_linked else "This conversation wasn't linked.",
+            thread=self._route_thread(route),
         )
 
     def _persist_turn(
@@ -755,7 +938,7 @@ class TelegramDispatcher:
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(
-        self, chat_id: int, user_id: int, session_key: str, provider: Any
+        self, chat_id: int, route: tuple[str, str], session_key: str, provider: Any
     ) -> None:
         """Soft-threshold context warning as a SEPARATE message (not persisted).
 
@@ -764,16 +947,17 @@ class TelegramDispatcher:
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self.cfg.telegram.soft_threshold_pct
-        if pct >= soft_pct and not self._conv.is_awaiting(user_id):
-            self._conv.set_awaiting(user_id)
+        if pct >= soft_pct and not self._conv.is_awaiting(route):
+            self._conv.set_awaiting(route)
             assert self.client is not None
-            await self.client.send_message(
+            await self._reply(
                 chat_id,
                 "⚠️ Context is getting long. Use /compact to compress or "
                 "/new to start fresh.",
+                thread=self._route_thread(route),
             )
 
-    async def _handle_compact(self, user_id: int, chat_id: int) -> None:
+    async def _handle_compact(self, route: tuple[str, str], chat_id: int) -> None:
         """In-place ACP ``/compact`` on the user's session (mirrors Slack).
 
         Holds the per-session semaphore for the WHOLE compaction. Each Telegram
@@ -785,25 +969,33 @@ class TelegramDispatcher:
         turn is already in flight); the ``finally`` always releases it.
         """
         assert self.client is not None
-        session_key = self._session_key(user_id)
+        session_key = self._session_key(route)
+        thread = self._route_thread(route)
         # Atomically take the turn semaphore, or refuse. Distinguish "busy" (a
         # turn is streaming) from "no session yet" for the user-facing note.
         if not await self.sessions.try_acquire(session_key):
             if self.sessions.has_session(session_key):
-                await self.client.send_message(
+                await self._reply(
                     chat_id,
                     "⏳ Still working on your last message — try /compact once it finishes.",
+                    thread=thread,
                 )
             else:
-                await self.client.send_message(chat_id, "No active session to compact.")
+                await self._reply(
+                    chat_id, "No active session to compact.", thread=thread
+                )
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
-                await self.client.send_message(chat_id, "No active session to compact.")
+                await self._reply(
+                    chat_id, "No active session to compact.", thread=thread
+                )
                 return
 
-            status_id = await self.client.send_message(chat_id, "🔄 Compacting context…")
+            status_id = await self._reply(
+                chat_id, "🔄 Compacting context…", thread=thread
+            )
             result_text: str | None = None
             try:
 
@@ -852,7 +1044,7 @@ class TelegramDispatcher:
             if status_id:
                 await self.client.edit_message(chat_id, status_id, final)
             else:
-                await self.client.send_message(chat_id, final)
+                await self._reply(chat_id, final, thread=thread)
         finally:
             # Always release the semaphore we took. No-op if the except path
             # already destroyed the session (release() looks up by key).

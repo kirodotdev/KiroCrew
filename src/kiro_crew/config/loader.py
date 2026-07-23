@@ -2535,6 +2535,25 @@ class TelegramConfig:
             tags=["telegram"],
         ),
     )
+    allow_forum: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Forum Topics",
+            "Serve Telegram supergroup forum Topics as per-topic sessions "
+            "(Slack-thread style). Fail-closed: also requires the supergroup's "
+            "chat_id in allowed_forum_chat_ids.",
+            tags=["telegram"],
+        ),
+    )
+    allowed_forum_chat_ids: list[int] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Forum Chat IDs",
+            "Numeric supergroup chat_ids permitted to run forum-topic sessions. "
+            "Empty = deny all groups (fail closed).",
+            tags=["telegram"],
+        ),
+    )
 
 
 @dataclass
@@ -3160,6 +3179,10 @@ class KiroCrewConfig:
                 allowed_user_ids=_coerce_int_ids(telegram_data.get("allowed_user_ids")),
                 soft_threshold_pct=max(
                     1, min(100, _coerce_int(telegram_data.get("soft_threshold_pct"), 80))
+                ),
+                allow_forum=bool(telegram_data.get("allow_forum", False)),
+                allowed_forum_chat_ids=_coerce_int_ids(
+                    telegram_data.get("allowed_forum_chat_ids")
                 ),
             ),
             discord=DiscordConfig(

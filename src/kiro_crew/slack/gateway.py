@@ -529,6 +529,12 @@ class GatewayOrchestrator:
         )
         self._telegram_enabled = bool(cfg.telegram.enabled and self._telegram_bot_token)
         self._telegram_allowed_user_ids: list[int] = list(cfg.telegram.allowed_user_ids)
+        # Forum-topic gate (fail closed): serve supergroup forum Topics only when
+        # allow_forum is set AND the supergroup's chat_id is allow-listed.
+        self._telegram_allow_forum: bool = bool(cfg.telegram.allow_forum)
+        self._telegram_allowed_forum_chat_ids: list[int] = list(
+            cfg.telegram.allowed_forum_chat_ids
+        )
         self._telegram_client: "TelegramClient | None" = None
         # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
         # cfg.discord.bot_token; all other settings come from the typed

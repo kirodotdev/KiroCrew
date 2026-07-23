@@ -322,10 +322,15 @@ class TelegramRenderer(Renderer):
         capabilities: TransportCapabilities,
         *,
         session_key: str = "",
+        message_thread_id: int | None = None,
     ) -> None:
         super().__init__(capabilities)
         self._client = client
         self._chat_id = chat_id
+        # Forum-topic id: when set, every outbound send/typing is threaded into
+        # that Topic. None for a 1:1 DM or the supergroup General topic. Edits
+        # never carry it (message_id already locates the message in its topic).
+        self._thread_id = message_thread_id
         self._session_key = session_key
         self._buf: list[str] = []
         self._last_tool = ""
@@ -372,7 +377,9 @@ class TelegramRenderer(Renderer):
         try:
             while not self._closed:
                 try:
-                    await self._client.send_typing(self._chat_id)
+                    await self._client.send_typing(
+                        self._chat_id, message_thread_id=self._thread_id
+                    )
                 except Exception:
                     logger.debug("Telegram: typing refresh failed", exc_info=True)
                 await asyncio.sleep(_TYPING_REFRESH_S)
@@ -521,7 +528,9 @@ class TelegramRenderer(Renderer):
         self._last_edit = now
         self._shown = text
         if self._stream_mid is None:
-            mid = await self._client.send_message(self._chat_id, text)
+            mid = await self._client.send_message(
+                self._chat_id, text, message_thread_id=self._thread_id
+            )
             if mid is not None:
                 self._stream_mid = mid
         else:
@@ -555,10 +564,12 @@ class TelegramRenderer(Renderer):
         mid = await self._client.send_message(
             self._chat_id, html_text, parse_mode="HTML",
             reply_markup=keyboard, retry_plain=False,
+            message_thread_id=self._thread_id,
         )
         if mid is None:
             await self._client.send_message(
                 self._chat_id, _strip_md(text), reply_markup=keyboard,
+                message_thread_id=self._thread_id,
             )
 
     async def on_thinking(self, text: str) -> None:
@@ -597,12 +608,16 @@ class TelegramRenderer(Renderer):
         }
         tool = self._last_tool or "this tool"
         await self._client.send_message(
-            self._chat_id, f"🔐 Approve `{tool}`?", reply_markup=keyboard
+            self._chat_id, f"🔐 Approve `{tool}`?", reply_markup=keyboard,
+            message_thread_id=self._thread_id,
         )
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         try:
-            await self._client.send_message(self._chat_id, "🗜️ Compacting context…")
+            await self._client.send_message(
+                self._chat_id, "🗜️ Compacting context…",
+                message_thread_id=self._thread_id,
+            )
         except Exception:
             logger.debug("Telegram: compaction notice send failed", exc_info=True)
 
@@ -658,7 +673,8 @@ class TelegramRenderer(Renderer):
                 )
             else:
                 await self._client.send_message(
-                    self._chat_id, placeholder, reply_markup=keyboard
+                    self._chat_id, placeholder, reply_markup=keyboard,
+                    message_thread_id=self._thread_id,
                 )
             return
         await self._seal_current(keyboard=keyboard)

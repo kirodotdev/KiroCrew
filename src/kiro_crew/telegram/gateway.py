@@ -77,7 +77,13 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         )
         client = TelegramClient(token=bot_token, on_callback=dispatcher.on_callback)
         transport = TelegramTransport(
-            client, allowed_user_ids=allowed_ids, dispatch=dispatcher.handle_message
+            client,
+            allowed_user_ids=allowed_ids,
+            allow_forum=bool(getattr(orch, "_telegram_allow_forum", False)),
+            allowed_forum_chat_ids=list(
+                getattr(orch, "_telegram_allowed_forum_chat_ids", []) or []
+            ),
+            dispatch=dispatcher.handle_message,
         )
         # Inbound: client long-poll -> transport.receive (authorize + normalize)
         # -> dispatcher.handle_message (drive the turn on the shared TurnDriver).
