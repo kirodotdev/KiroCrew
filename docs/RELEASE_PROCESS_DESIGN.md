@@ -182,7 +182,34 @@ The flow reads left to right: CI builds and stages unsigned artifacts,
 the signing service and Apple notary transform them inside the private
 signing bucket, and only verified output gets published to the
 distribution bucket, which CloudFront serves to the three consumer types.
-All infrastructure is managed as code (CDK).
+
+### Accounts and infrastructure
+
+The flow runs on infrastructure managed as code (CDK), split across
+ownership boundaries:
+
+```mermaid
+flowchart TB
+    subgraph DOMACC["kiro.dev domain infrastructure (separate team)"]
+        APEX["kiro.dev apex hosted zone"]
+    end
+    subgraph PUBACC["KiroCrew publish account"]
+        CI_ID["CI identity<br/>GitHub OIDC provider + reviewer roles"]
+        SIGNING["Signing<br/>private signing bucket + signing roles"]
+        DIST["Distribution<br/>private bucket + CloudFront CDN"]
+        CREW["crew.kiro.dev hosted zone"]
+    end
+    GHA["GitHub Actions<br/>kirodotdev/KiroCrew"] -->|"OIDC assume: main / environment:prod only"| SIGNING
+    SIGNING -->|"verified artifacts publish"| DIST
+    APEX -.->|"NS delegation (one record)"| CREW
+    CREW -->|"apex A/AAAA alias"| DIST
+    CLIENTS["Clients: Squirrel updater, pip, human downloads"] -->|"crew.kiro.dev (after the certificate phase) or *.cloudfront.net"| DIST
+```
+
+Everything KiroCrew releases lives in its own publish account, so the
+team iterates without cross-team review; the only cross-account
+touchpoint is a single NS record in the kiro.dev apex zone, owned by the
+domain team.
 
 ### Download and feed URL design
 
