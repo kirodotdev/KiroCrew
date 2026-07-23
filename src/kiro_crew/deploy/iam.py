@@ -481,9 +481,25 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                     "iam:DeleteRole", "iam:GetRole",
                     "iam:PutRolePolicy", "iam:DeleteRolePolicy",
                     "iam:AttachRolePolicy", "iam:DetachRolePolicy",
-                    "iam:PassRole", "iam:TagRole",
+                    "iam:TagRole",
                 ],
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-reaper*",
+            },
+            {
+                # PassRole scoped to lambda only — the reaper execution role is
+                # passed solely to the EventBridge-timed reaper Lambda. Mirrors
+                # IAMPassRoleLambdaOnly for app roles so the role can't be
+                # passed to any other service (resource prefix bounds WHICH
+                # role; PassedToService bounds TO WHICH service).
+                "Sid": "ReaperPassRoleLambdaOnly",
+                "Effect": "Allow",
+                "Action": ["iam:PassRole"],
+                "Resource": "arn:aws:iam::*:role/kirocrew-deploy-reaper*",
+                "Condition": {
+                    "StringEquals": {
+                        "iam:PassedToService": "lambda.amazonaws.com"
+                    }
+                },
             },
             {
                 "Sid": "ReaperEvents",

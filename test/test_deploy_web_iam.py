@@ -217,6 +217,23 @@ def test_policy_fullstack_passrole_scoped_to_lambda():
     assert cond.get("StringEquals", {}).get("iam:PassedToService") == "lambda.amazonaws.com"
 
 
+def test_policy_reaper_passrole_scoped_to_lambda():
+    """Reaper PassRole must be split out and constrained to lambda.amazonaws.com,
+    mirroring IAMPassRoleLambdaOnly — resource prefix alone bounds WHICH role but
+    not TO WHICH service."""
+    doc = iam_mod.policy_document(tier="fullstack")
+    pass_stmt = next(
+        (s for s in doc["Statement"] if s.get("Sid") == "ReaperPassRoleLambdaOnly"), None)
+    assert pass_stmt is not None, "ReaperPassRoleLambdaOnly statement missing"
+    assert pass_stmt["Action"] == ["iam:PassRole"]
+    assert "kirocrew-deploy-reaper" in pass_stmt["Resource"]
+    cond = pass_stmt.get("Condition", {})
+    assert cond.get("StringEquals", {}).get("iam:PassedToService") == "lambda.amazonaws.com"
+    # PassRole must no longer be bundled in the general ReaperIAMRole statement.
+    reaper_iam = next(s for s in doc["Statement"] if s["Sid"] == "ReaperIAMRole")
+    assert "iam:PassRole" not in reaper_iam["Action"]
+
+
 def test_policy_custom_domain_no_delete_certificate():
     """acm:DeleteCertificate must not be granted (no template uses it)."""
     doc = iam_mod.policy_document(include_custom_domain=True)

@@ -297,9 +297,65 @@ const ALLOWED_TAGS = new Set([
   // Math (rehypeKatex pipeline -- pass through rehypeRaw)
   'math', 'inlinemath',
 ])
-const DANGEROUS_ATTR_RE = /^on/i  // onclick, onerror, onload, etc.
 const DANGEROUS_PROTOCOLS = ['javascript:', 'data:', 'vbscript:']
 const cleanUrl = (url: string) => url.replace(/[\x00-\x1f\x7f]/g, '').trim().toLowerCase()
+
+/**
+ * Attribute ALLOWLIST (replaces the former on-handler / protocol denylist).
+ *
+ * frontend-security: for an allowlisted element we now KEEP only the attributes
+ * explicitly permitted for it and DROP everything else — so `style`,
+ * `formaction`, `srcset`-on-the-wrong-tag, unknown `on*` handlers, etc. are all
+ * removed by default rather than only the handful we remembered to block.
+ *
+ * Matching is case-insensitive because hast camelCases some property names
+ * (`viewBox`, `colSpan`, `ariaHidden`, `data-*` → `dataSourcepos`); we always
+ * compare on the lowercased key. `aria*`/`data*` prefixes are allowed wholesale
+ * (inert, a11y/metadata only).
+ */
+const GLOBAL_ATTRS = new Set([
+  'classname', 'class', 'id', 'title', 'dir', 'lang', 'role', 'align',
+])
+const TAG_ATTRS: Record<string, Set<string>> = {
+  a: new Set(['href', 'name', 'target', 'rel']),
+  img: new Set(['src', 'alt', 'width', 'height', 'loading']),
+  input: new Set(['type', 'checked', 'disabled']),
+  ol: new Set(['start', 'type', 'reversed']),
+  li: new Set(['value']),
+  td: new Set(['colspan', 'rowspan', 'headers']),
+  th: new Set(['colspan', 'rowspan', 'scope', 'headers']),
+  col: new Set(['span', 'width']),
+  colgroup: new Set(['span', 'width']),
+  source: new Set(['src', 'srcset', 'type', 'media', 'sizes']),
+  video: new Set(['src', 'controls', 'width', 'height', 'poster', 'loop', 'muted', 'preload']),
+  audio: new Set(['src', 'controls', 'loop', 'muted', 'preload']),
+  details: new Set(['open']),
+  time: new Set(['datetime']),
+}
+// SVG-family elements share a pool of inert presentation/geometry attributes.
+const SVG_TAGS = new Set([
+  'svg', 'path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'text', 'g',
+  'defs', 'use', 'tspan', 'ellipse', 'lineargradient', 'radialgradient', 'stop',
+  'clippath', 'marker',
+])
+const SVG_ATTRS = new Set([
+  'viewbox', 'xmlns', 'fill', 'stroke', 'strokewidth', 'strokelinecap',
+  'strokelinejoin', 'strokedasharray', 'strokeopacity', 'fillopacity',
+  'fillrule', 'cliprule', 'clippath', 'opacity', 'transform', 'd', 'points',
+  'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'width',
+  'height', 'offset', 'stopcolor', 'stopopacity', 'gradientunits',
+  'gradienttransform', 'preserveaspectratio', 'markerwidth', 'markerheight',
+  'refx', 'refy', 'orient',
+])
+/** True when `key` is a permitted attribute for element `tag` (both lowercased). */
+function isAllowedAttr(tag: string, key: string): boolean {
+  const k = key.toLowerCase()
+  if (k.startsWith('aria') || k.startsWith('data')) return true
+  if (GLOBAL_ATTRS.has(k)) return true
+  if (TAG_ATTRS[tag]?.has(k)) return true
+  if (SVG_TAGS.has(tag) && SVG_ATTRS.has(k)) return true
+  return false
+}
 
 /** Elements that cannot have children per HTML spec (used by escapedNodeTree). */
 const VOID_ELEMENTS = new Set(['img', 'br', 'hr', 'input', 'source', 'wbr', 'col'])
@@ -388,12 +444,17 @@ function rehypeSanitize() {
           }
         }
 
-        // Strip event handler attributes, dangerous protocol URLs, and srcdoc
+        // Attribute ALLOWLIST: keep only attributes permitted for this element;
+        // drop everything else (was: a denylist that stripped on*/protocol/srcdoc
+        // and kept the rest). Retained URL-bearing attrs still get the
+        // dangerous-protocol check below.
         if (node.properties) {
           for (const [key, val] of Object.entries(node.properties)) {
-            if (DANGEROUS_ATTR_RE.test(key)) {
+            if (!isAllowedAttr(tagLower, key)) {
               delete node.properties[key]
-            } else if (typeof val === 'string') {
+              continue
+            }
+            if (typeof val === 'string') {
               const cleaned = cleanUrl(val)
               if (DANGEROUS_PROTOCOLS.some(p => cleaned.startsWith(p))) {
                 // Allow data:image/* on img src (inline base64 images)
@@ -404,7 +465,6 @@ function rehypeSanitize() {
               }
             }
           }
-          delete node.properties.srcdoc
         }
       }
       if (node.children) {

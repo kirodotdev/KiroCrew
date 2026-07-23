@@ -127,6 +127,45 @@ describe('rehypeSanitize allowlist (React #290 fix)', () => {
     expect(container.querySelector('tspan')).not.toBeNull()
     expect(container.textContent).not.toContain('<tspan')
   })
+
+  it('drops non-allowlisted attributes (style) from allowed tags', () => {
+    // Attribute ALLOWLIST: `style` is not permitted, so CSS-injection payloads
+    // never reach the DOM even though the tag itself is allowed.
+    const { container } = render(
+      <MarkdownRenderer content={'<div style="background:url(javascript:alert(1))">x</div>'} />
+    )
+    const div = container.querySelector('div')
+    expect(div).not.toBeNull()
+    expect(div!.getAttribute('style')).toBeNull()
+    expect(container.innerHTML).not.toContain('javascript:')
+  })
+
+  it('drops formaction and unknown handler-ish attributes', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'<div formaction="x" onpointerdown="alert(1)">body</div>'} />
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain('formaction')
+    expect(html).not.toContain('onpointerdown')
+    // Tag itself still renders.
+    expect(container.querySelector('div')).not.toBeNull()
+    expect(container.textContent).toContain('body')
+  })
+
+  it('keeps attributes the renderer depends on (href, svg geometry)', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'<a href="/x" title="t">link</a>'} />
+    )
+    expect(container.querySelector('a')!.getAttribute('href')).toBe('/x')
+
+    const svg = render(
+      <MarkdownRenderer content={'<svg><path d="M0 0" stroke="red"/></svg>'} />
+    )
+    const path = svg.container.querySelector('path')!
+    expect(path).not.toBeNull()
+    expect(path.getAttribute('d')).toBe('M0 0')
+    expect(path.getAttribute('stroke')).toBe('red')
+  })
 })
 
 describe('MessageErrorBoundary (per-message containment)', () => {
