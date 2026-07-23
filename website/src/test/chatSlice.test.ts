@@ -560,6 +560,39 @@ describe('appendSlotMessage steer reconcile', () => {
     expect(users[0].meta?.optimistic).toBe(true)
     expect(users[0].meta?.steer).toBeUndefined()
   })
+
+  it('stashes the optimistic client ts as meta.clientTs when the echo swaps in the server ts', () => {
+    // Remount-replay regression: the renderer keys rows by clientTs ?? ts.
+    // Overwriting ts without stashing the client ts changed the React key,
+    // remounting the bubble and replaying the steer entrance animation.
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'steered text', cls: 'msg msg-u', ts: 'client-ts', meta: { steer: true, optimistic: true } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'steered text', cls: 'msg msg-u', ts: 'server-ts', meta: { steer: true } } }))
+    const users = state.messages.filter(m => m.role === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0].ts).toBe('server-ts')
+    expect(users[0].meta?.clientTs).toBe('client-ts')
+    expect(users[0].meta?.optimistic).toBeUndefined()
+  })
+
+  it('does not stash clientTs when the echo carries the same ts (key already stable)', () => {
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'steered text', cls: 'msg msg-u', ts: 'same-ts', meta: { steer: true, optimistic: true } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'steered text', cls: 'msg msg-u', ts: 'same-ts', meta: { steer: true } } }))
+    const users = state.messages.filter(m => m.role === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0].meta?.clientTs).toBeUndefined()
+  })
+
+  it('does not stash clientTs when the echo has no ts (optimistic ts kept as-is)', () => {
+    let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
+    state = reducer(state, appendMessage({ role: 'user', content: 'steered text', cls: 'msg msg-u', ts: 'client-ts', meta: { steer: true, optimistic: true } }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'steered text', cls: 'msg msg-u', meta: { steer: true } } }))
+    const users = state.messages.filter(m => m.role === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0].ts).toBe('client-ts')
+    expect(users[0].meta?.clientTs).toBeUndefined()
+  })
 })
 
 describe('sseChatMessage', () => {

@@ -732,6 +732,14 @@ const chatSlice = createSlice({
         const bubble = target ?? fallback
         if (bubble) {
           if (message.content) bubble.content = message.content
+          // Preserve the optimistic (client-generated) ts as meta.clientTs
+          // BEFORE overwriting with the server ts. The chat renderer keys
+          // rows by `meta.clientTs ?? ts`; without this stash the ts change
+          // would change the React key, remounting the bubble and replaying
+          // the one-shot steer entrance animation (visible flicker).
+          if (message.ts && bubble.ts && message.ts !== bubble.ts) {
+            bubble.meta = { ...(bubble.meta || {}), clientTs: bubble.ts }
+          }
           if (message.ts) bubble.ts = message.ts
           bubble.meta = { ...(bubble.meta || {}), ...(message.meta || {}) }
           delete (bubble.meta as Record<string, unknown>).optimistic

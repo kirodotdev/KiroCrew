@@ -2737,7 +2737,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   )
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
-    const key = m.ts ? `${m.role}-${m.ts}` : `${m.role}-${i}`
+    // Prefer the optimistic client ts (stashed by the steer-echo reconcile in
+    // chatSlice.appendSlotMessage) over the server ts for the React key. A
+    // steered bubble is appended optimistically with a client ts, then the
+    // steer_push echo overwrites ts with the server ts — keying on ts alone
+    // would change the key mid-stream, remounting the bubble and replaying its
+    // one-shot entrance animation. clientTs keeps the key (and DOM) stable.
+    const keyTs = (m.meta?.clientTs as string | undefined) || m.ts
+    const key = keyTs ? `${m.role}-${keyTs}` : `${m.role}-${i}`
     if (m.role === 'thinking') return m.content ? <ThinkingBlock key={key} content={m.content} /> : null
     if (m.role === 'tool') {
       // Skip ✅/🚫 completion messages — completion shown via CircleCheckBig icon

@@ -191,4 +191,22 @@ describe('UserMessage', () => {
     const bubble = container.querySelector('.msg-content') as HTMLElement
     expect(bubble.className).toContain('border-accent/40')
   })
+
+  // One-shot entrance guard identity: the optimistic bubble mounts with a client
+  // ts; the steer_push reconcile stashes it as meta.clientTs and swaps messageTs
+  // to the server ts. A later remount (virtualization scroll-away) must key the
+  // animatedSteers guard on clientTs so the entrance does NOT replay under the
+  // new server ts. The ring-pulse overlay (border-2 border-accent) only renders
+  // when the entrance plays.
+  it('does not replay the steer entrance on remount after the reconcile swapped in the server ts', () => {
+    const ringSelector = '.border-2.border-accent'
+    // First mount: optimistic bubble, client ts — entrance plays (ring present).
+    const first = render(<UserMessage content="steer me" meta={{ steer: true }} messageTs="client-ts-guard" renderContent={renderContent} />)
+    expect(first.container.querySelector(ringSelector)).not.toBeNull()
+    first.unmount()
+    // Remount post-reconcile: server ts, clientTs stashed in meta — guard must
+    // recognize the same message and skip the entrance (no ring).
+    const second = render(<UserMessage content="steer me" meta={{ steer: true, clientTs: 'client-ts-guard' }} messageTs="server-ts-guard" renderContent={renderContent} />)
+    expect(second.container.querySelector(ringSelector)).toBeNull()
+  })
 })

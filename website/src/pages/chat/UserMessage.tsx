@@ -48,7 +48,13 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
   const isSteer = !!(meta && (meta as { steer?: boolean }).steer)
   const [playSteer] = useState(() => {
     if (!isSteer) return false
-    const key = messageTs || content
+    // Stable identity across the steer lifecycle: the optimistic bubble mounts
+    // with a client ts (messageTs), then the steer_push reconcile stashes that
+    // client ts as meta.clientTs and swaps messageTs to the server ts. Keying
+    // the guard on clientTs first keeps the identity constant, so a
+    // virtualization remount after the reconcile still hits the set and the
+    // entrance animation plays exactly once.
+    const key = ((meta as { clientTs?: string })?.clientTs) || messageTs || content
     if (animatedSteers.has(key)) return false
     animatedSteers.add(key)
     return true
