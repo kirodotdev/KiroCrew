@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -72,7 +73,12 @@ def _compress_to_outline(text: str) -> str:
     return header + "\n".join(outline)
 
 
-_SCREENSHOT_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "kirocrew-screenshots")
+# Use tempfile.gettempdir() rather than a hardcoded ``/tmp`` fallback so the
+# screenshot dir resolves to the platform-native temp location — POSIX honours
+# ``$TMPDIR``/``$TEMP``/``$TMP`` and falls back to ``/tmp``; on Windows the
+# fallback is ``%TEMP%`` / ``%USERPROFILE%\\AppData\\Local\\Temp`` (``/tmp``
+# does not exist and would fail on ``os.makedirs``).
+_SCREENSHOT_DIR = os.path.join(tempfile.gettempdir(), "kirocrew-screenshots")
 
 
 def _env_int(name: str, default: int) -> int:

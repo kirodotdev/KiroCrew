@@ -621,3 +621,80 @@ class TestApiKirocrewConfig:
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put("/api/config/kirocrew", json={"agent": {"unknown_key": 42}})
             assert resp.status == 400
+
+
+class TestSlackProfileMissingScope:
+    """read_slack_profile surfaces an actionable, scope-specific guidance message
+    (not a bare 502) when Slack rejects the call with ``missing_scope``.
+    """
+
+    @staticmethod
+    def _slack_client_raising(error: str, needed: str | None = None):
+        """Slack client whose get_user_profile raises a SlackApiError."""
+        from unittest.mock import AsyncMock
+
+        from slack_sdk.errors import SlackApiError
+
+        response = {"ok": False, "error": error}
+        if needed is not None:
+            response["needed"] = needed
+        client = MagicMock()
+        client.get_user_profile = AsyncMock(
+            side_effect=SlackApiError(message=error, response=response)
+        )
+        return client
+
+    @pytest.mark.asyncio
+    async def test_missing_scope_names_the_needed_scope(self, tmp_path, monkeypatch):
+        # Slack's error response carries ``needed`` — surface that exact scope.
+        import kiro_crew.slack.handler as _handler
+
+        monkeypatch.setattr(_handler, "_owner_id", "U0OWNER99")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+
+        client = self._slack_client_raising("missing_scope", needed="users:read")
+        state = _make_state(tmp_path, slack_client=client)
+
+        async with TestClient(TestServer(_make_api_app(state))) as c:
+            resp = await c.post("/api/slack-profile", json={"user": "U0OWNER99"})
+            assert resp.status == 403
+            data = await resp.json()
+            assert "users:read" in data["error"]
+            assert "SLACK_SETUP.md" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_scope_generic_when_needed_absent(self, tmp_path, monkeypatch):
+        # Works for any scope: when Slack omits ``needed``, fall back to generic
+        # wording (no hardcoded users:read).
+        import kiro_crew.slack.handler as _handler
+
+        monkeypatch.setattr(_handler, "_owner_id", "U0OWNER99")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+
+        client = self._slack_client_raising("missing_scope")  # no needed field
+        state = _make_state(tmp_path, slack_client=client)
+
+        async with TestClient(TestServer(_make_api_app(state))) as c:
+            resp = await c.post("/api/slack-profile", json={"user": "U0OWNER99"})
+            assert resp.status == 403
+            data = await resp.json()
+            assert "OAuth scope" in data["error"]
+            assert "users:read" not in data["error"]
+            assert "SLACK_SETUP.md" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_other_slack_error_still_returns_502(self, tmp_path, monkeypatch):
+        import kiro_crew.slack.handler as _handler
+
+        monkeypatch.setattr(_handler, "_owner_id", "U0OWNER99")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+
+        client = self._slack_client_raising("user_not_found")
+        state = _make_state(tmp_path, slack_client=client)
+
+        async with TestClient(TestServer(_make_api_app(state))) as c:
+            resp = await c.post("/api/slack-profile", json={"user": "U0OWNER99"})
+            assert resp.status == 502
+            data = await resp.json()
+            assert data["error"] == "Slack API error"
+            assert "OAuth scope" not in data["error"]

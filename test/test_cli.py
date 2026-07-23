@@ -108,7 +108,7 @@ class TestDoctor:
         _healthy_agent_file(agent_file)
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -131,7 +131,7 @@ class TestDoctor:
             "profile=amazon resolved no companion; set KIROCREW_PROFILE=standalone"
         )
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -166,7 +166,7 @@ class TestDoctor:
         agent_file.write_text("{}")
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -196,7 +196,7 @@ class TestDoctor:
             "KIROCREW_OWNER_ID": "U123",
         }
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -222,7 +222,7 @@ class TestDoctor:
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         slack_creds = {"SLACK_APP_TOKEN": "xapp-test", "SLACK_BOT_TOKEN": "xoxb-test"}
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -2082,7 +2082,7 @@ class TestDoctorStaleProjectDir:
         agent_file.write_text(json.dumps(agent_data))
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen"),
@@ -2339,7 +2339,7 @@ class TestDoctorStt:
         cfg = KiroCrewConfig.load()
         cfg.stt = SttConfig(enabled=True, provider="whisper")
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -2378,7 +2378,7 @@ class TestDoctorStt:
         cfg = KiroCrewConfig.load()
         cfg.stt = SttConfig(enabled=False)
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -2426,7 +2426,7 @@ class TestDoctorStt:
             "boto3": MagicMock(),
         }
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -2478,7 +2478,7 @@ class TestDoctorStt:
         # setitem(sys.modules, ..., None) is the documented hook for this.
         monkeypatch.setitem(sys.modules, "amazon_transcribe.client", None)
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
@@ -2524,7 +2524,7 @@ class TestDoctorStt:
         # Force `import boto3` inside _doctor() to raise ImportError.
         monkeypatch.setitem(sys.modules, "boto3", None)
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),

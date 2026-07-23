@@ -14,6 +14,8 @@ import sys
 from collections.abc import MutableMapping
 from pathlib import Path
 
+from kiro_crew import platform_compat
+
 logger = logging.getLogger(__name__)
 
 # Common directories where MCP server binaries may be installed.
@@ -281,8 +283,11 @@ def resolve_krb5_ccname(env: dict[str, str]) -> None:
         return
     # The /tmp/krb5cc_<uid> workaround only applies to the Linux kernel-keyring
     # default. On macOS/other platforms the keyring-isolation problem does not
-    # exist and a stray /tmp file must not hijack the native ccache.
-    if sys.platform != "linux":
+    # exist and a stray /tmp file must not hijack the native ccache. Routing
+    # through ``platform_compat`` (rather than a raw ``sys.platform`` compare)
+    # keeps this consistent with the rest of the codebase's POSIX/Linux gates
+    # and gives Windows the same no-op behaviour it needs (no ``os.getuid``).
+    if not platform_compat.IS_LINUX:
         return
     # The kernel's default FILE ccache is named by numeric UID
     # (``/tmp/krb5cc_<uid>``) — this is also what the documented workaround

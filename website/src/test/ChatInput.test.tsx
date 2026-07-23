@@ -5,6 +5,7 @@ import { renderWithProviders } from './helpers'
 import { safeSetItem } from '../utils/safeStorage'
 import ChatInput from '../components/ChatInput'
 import { SlotProvider } from '../providers/SlotContext'
+import type { PasteBlock } from '../utils/pasteTokens'
 
 const defaultProps = {
   value: '',
@@ -1464,5 +1465,88 @@ describe('ChatInput undo/redo', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// --- Undo restores deleted/expanded paste content ---
+// A `[ Paste #N ]` token in the text is just a pointer; its content lives in a
+// separate PasteBlock the parent owns. Deleting or expanding a token drops the
+// block, so the undo snapshot must carry the blocks to make the paste
+// recoverable — restoring only the text would resurrect a dead token literal.
+describe('ChatInput undo/redo: paste content', () => {
+  const undo = (ta: HTMLElement) => fireEvent.keyDown(ta, { key: 'z', ctrlKey: true })
+  const redoShift = (ta: HTMLElement) => fireEvent.keyDown(ta, { key: 'z', ctrlKey: true, shiftKey: true })
+
+  // Harness mirroring ChatPage: value and pasteBlocks are separate controlled
+  // state, wired to the two callbacks the way the real parent wires them.
+  function PasteHarness({ initial, initialBlocks }: { initial: string; initialBlocks: PasteBlock[] }) {
+    const [v, setV] = React.useState(initial)
+    const [blocks, setBlocks] = React.useState<PasteBlock[]>(initialBlocks)
+    return (
+      <ChatInput
+        {...defaultProps}
+        value={v}
+        onChange={setV}
+        pasteBlocks={blocks}
+        onPasteBlocksChange={setBlocks}
+      />
+    )
+  }
+
+  const block: PasteBlock = { id: 'p1', seq: 1, lines: 40, content: 'TRACEBACK: boom\n...40 lines...' }
+  const token = '[ Paste #1 · 40 lines ]'
+
+  it('recovers the paste content after a Backspace-delete of the token', () => {
+    // Caret just past the token; Backspace removes the token AND its block.
+    renderWithProviders(<PasteHarness initial={`${token}`} initialBlocks={[block]} />)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    ta.setSelectionRange(token.length, token.length)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('') // token gone
+
+    undo(ta)
+    expect(ta.value).toBe(token) // token text back...
+    // ...and its content is recoverable: copy of a full selection expands it.
+    ta.setSelectionRange(0, ta.value.length)
+    const clip = { data: '' as string, setData: (_t: string, d: string) => { clip.data = d } }
+    fireEvent.copy(ta, { clipboardData: { setData: clip.setData } })
+    expect(clip.data).toBe(block.content) // block was restored, not a dead literal
+  })
+
+  it('recovers the paste after expanding the token, then undo re-collapses it', () => {
+    // Double-click expands the token to full content and drops the block.
+    renderWithProviders(<PasteHarness initial={token} initialBlocks={[block]} />)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    ta.setSelectionRange(2, 2) // caret inside the token
+    fireEvent.click(ta, { detail: 2 })
+    expect(ta.value).toBe(block.content) // expanded inline
+
+    undo(ta)
+    expect(ta.value).toBe(token) // collapsed token restored
+    ta.setSelectionRange(0, ta.value.length)
+    const clip = { data: '' as string, setData: (_t: string, d: string) => { clip.data = d } }
+    fireEvent.copy(ta, { clipboardData: { setData: clip.setData } })
+    expect(clip.data).toBe(block.content)
+  })
+
+  it('redo re-drops the block so an undone delete can be redone', () => {
+    renderWithProviders(<PasteHarness initial={token} initialBlocks={[block]} />)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    ta.setSelectionRange(token.length, token.length)
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+    expect(ta.value).toBe('')
+    undo(ta)
+    expect(ta.value).toBe(token)
+    redoShift(ta)
+    expect(ta.value).toBe('') // deletion reinstated
+  })
+
+  it('leaves plain-text undo untouched when no pastes exist', () => {
+    renderWithProviders(<PasteHarness initial="" initialBlocks={[]} />)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'hello world' } })
+    fireEvent.change(ta, { target: { value: '' } })
+    undo(ta)
+    expect(ta.value).toBe('hello world')
   })
 })

@@ -1109,6 +1109,26 @@ async def api_delete_message(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _missing_scope_message(needed: str) -> str:
+    """Build an actionable missing_scope message, naming the scope(s) when known."""
+    # Slack's ``needed`` field may name several comma-separated scopes.
+    scopes = [s.strip() for s in needed.split(",") if s.strip()] if needed else []
+    if scopes:
+        joined = ", ".join(scopes)
+        noun = "OAuth scope" if len(scopes) == 1 else "OAuth scopes"
+        scope_clause = f"the {joined} {noun}"
+        add_clause = f"add {joined} to"
+    else:
+        scope_clause = "an OAuth scope"
+        add_clause = "add the required scope to"
+    return (
+        f"This Slack action requires {scope_clause}, which is not granted to this app. "
+        "Reinstall the app after granting the required permissions in the Slack Dashboard. "
+        f"Alternatively, {add_clause} the app manifest and recreate the app by following "
+        "the steps in SLACK_SETUP.md."
+    )
+
+
 async def api_slack_profile(request: web.Request) -> web.Response:
     """POST /api/slack-profile — read a Slack user's profile."""
     import time  # noqa: F811
@@ -1178,7 +1198,27 @@ async def api_slack_profile(request: web.Request) -> web.Response:
 
     try:
         profile = await state.slack_client.get_user_profile(user_id)
-    except Exception:
+    except Exception as exc:
+        from slack_sdk.errors import SlackApiError  # noqa: F811
+
+        if isinstance(exc, SlackApiError):
+            response = exc.response  # type: ignore[attr-defined]
+            slack_error = str(response.get("error", "") or "") if response else ""
+            if slack_error == "missing_scope":
+                needed = str(response.get("needed", "") or "") if response else ""
+                logger.warning(
+                    "slack-profile: missing_scope (needed=%s) for %s", needed or "?", user_id
+                )
+                _sel().log_tool_invocation(
+                    session_key="dashboard",
+                    tool_name="read_slack_profile",
+                    outcome="error",
+                    downstream_service="slack",
+                    resources=f"user={user_id} reason=missing_scope needed={needed}",
+                )
+                needed, _ = redact_credentials(needed)
+                needed, _ = redact_exfiltration_urls(needed)
+                return web.json_response({"error": _missing_scope_message(needed)}, status=403)
         logger.exception("slack-profile: failed for %s", user_id)
         _sel().log_tool_invocation(
             session_key="dashboard",

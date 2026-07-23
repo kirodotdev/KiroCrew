@@ -23,6 +23,7 @@ from kiro_crew.apps.bridges import (
     deregister_app,
     load_app_cron_defs,
     register_app,
+    register_app_crons_with_service,
 )
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.manifest import AppManifest
@@ -227,6 +228,36 @@ class TestCronRegistration:
         )
         registered = _register_crons("test-app", manifest)
         assert registered == []
+
+    @pytest.mark.asyncio
+    async def test_register_with_running_service_arms_timer_on_loop(self, tmp_path, app_env):
+        # Regression: register_app_crons_with_service ends in
+        # CronService.add_job -> _arm_timer -> asyncio.create_task, which needs
+        # a RUNNING event loop. It must therefore run ON the loop, never offloaded
+        # to a worker thread (which raised RuntimeError and left a half-persisted,
+        # unowned cron behind). Driving it through a started CronService inside
+        # this async test exercises the create_task path end-to-end.
+        from kiro_crew.cron import CronService
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        _register_crons("test-app", manifest)  # persist the app-cron defs
+
+        # Hermetic store under the isolated home (bare CronService() would bind
+        # its crons.json at the process-default dir, leaking state across tests).
+        svc = CronService(base_dir=app_env["home"] / "crons")
+        await svc.start()
+        try:
+            registered = register_app_crons_with_service("test-app", svc)
+            assert "test-app/refresh" in registered
+            # The job is fully added (owned) and the timer armed without error.
+            assert any(j.name == "test-app/refresh" for j in svc.list_jobs())
+            assert svc._timer_task is not None  # _arm_timer ran on the loop
+        finally:
+            await svc.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -800,11 +831,104 @@ class TestCronServiceBridge:
             every_secs=600,
             cron_expr="",
             agent="my-agent",
+            command="",
+            script="",
             agent_sequence=["a1", "a2"],
             env={"FOO": "bar"},
             persistent_session=False,
             silent=True,
         )
+
+    def test_registers_command_type_cron(self, tmp_path, app_env, monkeypatch):
+        """Apps declaring command-type crons get them registered as command jobs."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        cron_defs = [{
+            "name": "test-app/collect",
+            "every": 60,
+            "cron_expr": "",
+            "agent": "",
+            "message": "",
+            "command": "python3 ~/.kirocrew/apps/test-app/scripts/collect.py",
+            "script": "",
+            "app": "test-app",
+            "agent_sequence": [],
+            "env": {},
+            "persistent_session": False,
+            "silent": True,
+        }]
+        self._write_app_crons(tmp_path, "test-app", cron_defs)
+
+        mock_cron_service = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+        mock_sdk.add_job.return_value = MagicMock(id="cmd123")
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = register_app_crons_with_service("test-app", mock_cron_service)
+
+        assert result == ["test-app/collect"]
+        mock_sdk.add_job.assert_called_once_with(
+            name="test-app/collect",
+            message="",
+            every_secs=60,
+            cron_expr="",
+            agent="",
+            command="python3 ~/.kirocrew/apps/test-app/scripts/collect.py",
+            script="",
+            agent_sequence=None,
+            env=None,
+            persistent_session=False,
+            silent=True,
+        )
+
+    def test_rejects_malicious_command(self, tmp_path, app_env, monkeypatch):
+        """Commands blocked by _vet_shell_command are skipped with SEL audit."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        cron_defs = [{
+            "name": "test-app/evil",
+            "every": 60,
+            "command": "cat ~/.aws/credentials",
+        }]
+        self._write_app_crons(tmp_path, "test-app", cron_defs)
+
+        mock_cron_service = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = register_app_crons_with_service("test-app", mock_cron_service)
+
+        assert result == []
+        mock_sdk.add_job.assert_not_called()
+
+    def test_rejects_invalid_script_path(self, tmp_path, app_env, monkeypatch):
+        """Scripts outside ~/.kirocrew/crons/ are rejected at registration."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        cron_defs = [{
+            "name": "test-app/bad-script",
+            "every": 60,
+            "script": "/etc/passwd:run",
+        }]
+        self._write_app_crons(tmp_path, "test-app", cron_defs)
+
+        mock_cron_service = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = register_app_crons_with_service("test-app", mock_cron_service)
+
+        assert result == []
+        mock_sdk.add_job.assert_not_called()
 
     def test_idempotent_skips_existing(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock, patch

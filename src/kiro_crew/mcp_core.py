@@ -2604,6 +2604,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         agent_ids: list[str] = []
         agent_names: list[str] = []
         errors: list[str] = []
+        # Forward this session's own approval_mode (set as an env var at
+        # process spawn -- see gateway.py cron dispatch, mirroring
+        # KIROCREW_SESSION_KEY/KIROCREW_CHANNEL_ID) so a cron running with
+        # approval_mode="auto" deterministically auto-approves its own
+        # spawn_run subagent launches. Without this, SubagentManager.spawn's
+        # only route to auto-approve is its own parent_trusted lookup, which
+        # requires parent_session to resolve back to the cron's session key
+        # -- an identity-plumbing path that can fail silently and leave the
+        # spawn stuck on the interactive approval path a cron has no
+        # responder for.
+        approval_mode = os.environ.get("KIROCREW_APPROVAL_MODE", "")
         for i, t in enumerate(task_list):
             a = agents_list[i] if agents_list else agent
             body: dict[str, Any] = {"task": t, "agent": a, "parent_session": parent_session}
@@ -2613,6 +2624,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 body["cwd"] = cwd
             if model:
                 body["model"] = model
+            if approval_mode:
+                body["approval_mode"] = approval_mode
             d = _post("/api/spawn", body)
             if d.get("error"):
                 errors.append(f"{t[:60]}: {d['error']}")

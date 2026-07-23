@@ -150,6 +150,7 @@ class TestNodeVersionManagerBins:
 class TestResolveKrb5Ccname:
     def test_prefers_uid_ccache(self, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 4242)})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -159,6 +160,7 @@ class TestResolveKrb5Ccname:
         import getpass
 
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         monkeypatch.setattr(getpass, "getuser", lambda: "tuser")
         # uid path missing, username path present
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_tuser": ("reg", 4242)})
@@ -168,6 +170,7 @@ class TestResolveKrb5Ccname:
 
     def test_respects_existing_file_value(self, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 4242)})
         env = {"KRB5CCNAME": "FILE:/custom/cc"}
         resolve_krb5_ccname(env)
@@ -175,6 +178,7 @@ class TestResolveKrb5Ccname:
 
     def test_overrides_keyring_value(self, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 4242)})
         env = {"KRB5CCNAME": "KEYRING:persistent:1000"}
         resolve_krb5_ccname(env)
@@ -182,6 +186,7 @@ class TestResolveKrb5Ccname:
 
     def test_noop_when_no_cache_file(self, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -191,6 +196,7 @@ class TestResolveKrb5Ccname:
         # sssd/systemd ship /tmp/krb5cc_<uid> as a uid-owned symlink into
         # /run/user/<uid>/krb5cc/... — follow it and trust the resolved target.
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("link", 4242, 4242)})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -200,6 +206,7 @@ class TestResolveKrb5Ccname:
         # A symlink owned by another uid is the attack vector — reject without
         # following (a co-tenant could point it anywhere).
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("link", 9999, 4242)})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -208,6 +215,7 @@ class TestResolveKrb5Ccname:
     def test_rejects_uid_symlink_to_foreign_target(self, monkeypatch) -> None:
         # uid-owned symlink whose resolved target is owned by someone else.
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("link", 4242, 9999)})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -216,6 +224,7 @@ class TestResolveKrb5Ccname:
     def test_rejects_dangling_uid_symlink(self, monkeypatch) -> None:
         # uid-owned symlink whose target does not exist.
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("link", 4242, None)})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -225,6 +234,7 @@ class TestResolveKrb5Ccname:
         # A regular file owned by a different uid (planted by a co-tenant on a
         # shared /tmp) must NOT be trusted.
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 9999)})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -233,6 +243,7 @@ class TestResolveKrb5Ccname:
     def test_preserves_kcm_scheme(self, monkeypatch) -> None:
         # macOS default is KCM: — a stale /tmp file must NOT hijack it.
         monkeypatch.setattr("kiro_crew.env.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", False)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 4242)})
         env = {"KRB5CCNAME": "KCM:"}
         resolve_krb5_ccname(env)
@@ -240,6 +251,7 @@ class TestResolveKrb5Ccname:
 
     def test_preserves_dir_scheme(self, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 4242)})
         env = {"KRB5CCNAME": "DIR:/run/user/4242/krb5cc"}
         resolve_krb5_ccname(env)
@@ -248,6 +260,7 @@ class TestResolveKrb5Ccname:
     def test_noop_on_non_linux(self, monkeypatch) -> None:
         # On macOS with empty KRB5CCNAME, a stale /tmp file must not be adopted.
         monkeypatch.setattr("kiro_crew.env.sys.platform", "darwin")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", False)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 4242)})
         env: dict[str, str] = {}
         resolve_krb5_ccname(env)
@@ -257,6 +270,7 @@ class TestResolveKrb5Ccname:
         import logging
 
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 4242)})
         env: dict[str, str] = {}
         with caplog.at_level(logging.DEBUG, logger="kiro_crew.env"):
@@ -269,6 +283,7 @@ class TestResolveKrb5Ccname:
         import logging
 
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {"/tmp/krb5cc_4242": ("reg", 9999)})
         env: dict[str, str] = {}
         with caplog.at_level(logging.DEBUG, logger="kiro_crew.env"):
@@ -281,11 +296,36 @@ class TestResolveKrb5Ccname:
         import logging
 
         monkeypatch.setattr("kiro_crew.env.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", True)
         _patch_statfns(monkeypatch, {})
         env: dict[str, str] = {}
         with caplog.at_level(logging.DEBUG, logger="kiro_crew.env"):
             resolve_krb5_ccname(env)
         assert "rejected ccache candidate" not in caplog.text
+
+    def test_never_calls_getuid_when_not_linux(self, monkeypatch) -> None:
+        """On Windows/macOS the resolver MUST short-circuit before touching
+        ``os.getuid`` — the shim exists precisely because ``os.getuid`` is
+        undefined on Windows and would crash the gateway boot. Regression
+        guard for the exact Windows-crash the ``IS_LINUX`` gate was introduced
+        to prevent: if a future refactor moves the ``getuid`` call above the
+        platform check, this counter fires.
+        """
+        monkeypatch.setattr("kiro_crew.env.platform_compat.IS_LINUX", False)
+        calls: list[None] = []
+
+        def _getuid_boom() -> int:
+            calls.append(None)
+            raise AssertionError("os.getuid must not be called on non-Linux")
+
+        # ``raising=False`` lets this run on Windows too, where ``os.getuid``
+        # doesn't exist — that's the entire crash the shim prevents, and we
+        # still want to prove the resolver returns without touching it.
+        monkeypatch.setattr("kiro_crew.env.os.getuid", _getuid_boom, raising=False)
+        env: dict[str, str] = {}
+        resolve_krb5_ccname(env)
+        assert calls == []
+        assert "KRB5CCNAME" not in env
 
 
 class TestActivateMise:

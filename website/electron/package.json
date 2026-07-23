@@ -57,6 +57,7 @@
       "gateway-wait.js",
       "window-state.js",
       "gateway-liveness.js",
+      "gateway-recovery.js",
       "pyspy-dump.js",
       "host-config.js",
       "remote-token.js",

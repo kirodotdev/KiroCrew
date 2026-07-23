@@ -92,6 +92,14 @@ def render_unit() -> str:
         "Restart=on-failure\n"
         "RestartSec=10\n"
         "TimeoutStopSec=20\n"
+        # Pin a high open-file limit rather than inheriting the host's
+        # ambient DefaultLimitNOFILE. Stock systemd defaults to 1024 — and
+        # the frontend production build (vite/rollup) opens ~1000
+        # lucide-react icon files concurrently, which exhausts a 1024 cap and
+        # fails with `EMFILE: too many open files`. Pinning it here makes
+        # agent-launched builds and other FD-hungry work survive regardless
+        # of the host default.
+        "LimitNOFILE=65536\n"
         f"Environment=HOME={home}\n"
         f"Environment=USER={user}\n"
         f"Environment=PATH={service_path(home)}\n"

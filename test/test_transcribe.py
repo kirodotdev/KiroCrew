@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat as _pc
 from kiro_crew.config.loader import SttConfig
 from kiro_crew.transcribe import (
     _find_mlx_whisper,
@@ -553,6 +555,112 @@ class TestFfmpegEnsuredForWhisper:
              patch("kiro_crew.transcribe._transcribe_aws", new_callable=AsyncMock, return_value="hi"):
             await transcribe_audio(str(audio), cfg)
         mock_ensure.assert_not_called()
+
+
+class TestFfmpegCandidateDirsWindows:
+    """Regression guards for the Windows ffmpeg discovery fix.
+
+    Runs on POSIX CI by monkeypatching ``platform_compat.IS_WINDOWS`` (same
+    pattern as ``TestTaskkillErrorMapping`` in ``test_platform_compat.py``) —
+    the branch construction is platform-independent code.
+    """
+
+    def test_windows_dirs_appended(self, monkeypatch):
+        from kiro_crew import platform_compat as pc
+        from kiro_crew import transcribe as tr
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        pf = r"C:\Program Files"
+        la = r"C:\Users\user\AppData\Local"
+        monkeypatch.setenv("ProgramFiles", pf)
+        monkeypatch.setenv("LOCALAPPDATA", la)
+
+        dirs = tr._ffmpeg_candidate_dirs()
+        assert os.path.join(pf, "ffmpeg", "bin") in dirs
+        assert os.path.join(la, "Programs", "ffmpeg", "bin") in dirs
+        assert "/usr/local/bin" in dirs
+
+    def test_non_windows_omits_windows_dirs(self, monkeypatch):
+        from kiro_crew import platform_compat as pc
+        from kiro_crew import transcribe as tr
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        dirs = tr._ffmpeg_candidate_dirs()
+        for d in dirs:
+            assert "Program Files" not in d
+            assert "AppData" not in d
+
+    def test_ensure_ffmpeg_probes_with_which(self, tmp_path, monkeypatch):
+        """``ensure_ffmpeg_in_path`` must use ``shutil.which(name, path=d)`` so it
+        catches ``ffmpeg.exe`` on Windows in addition to plain ``ffmpeg`` on POSIX.
+        Regression: the prior implementation called ``os.path.isfile(<d>/ffmpeg)``
+        which is blind to the ``.exe`` suffix.
+        """
+        from kiro_crew import transcribe as tr
+
+        target_dir = tmp_path / "ffbin"
+        target_dir.mkdir()
+
+        monkeypatch.setattr(tr, "_FFMPEG_CANDIDATE_DIRS", [str(target_dir)])
+        monkeypatch.setenv("PATH", "/nowhere")
+
+        calls: list[tuple[str, str]] = []
+
+        def fake_which(name, path=None):
+            calls.append((name, path or ""))
+            return f"{path}/ffmpeg" if path == str(target_dir) else None
+
+        monkeypatch.setattr(tr.shutil, "which", fake_which)
+        tr.ensure_ffmpeg_in_path()
+
+        assert calls and calls[0][0] == "ffmpeg"
+        assert calls[0][1] == str(target_dir)
+        assert os.environ["PATH"].startswith(str(target_dir))
+
+    def test_ensure_ffmpeg_skips_dirs_already_on_path(self, tmp_path, monkeypatch):
+        from kiro_crew import transcribe as tr
+
+        target_dir = tmp_path / "ffbin"
+        target_dir.mkdir()
+        monkeypatch.setattr(tr, "_FFMPEG_CANDIDATE_DIRS", [str(target_dir)])
+        monkeypatch.setenv("PATH", f"{target_dir}{os.pathsep}/nowhere")
+
+        called: list[str] = []
+
+        def fake_which(name, path=None):
+            called.append(name)
+            return None
+
+        monkeypatch.setattr(tr.shutil, "which", fake_which)
+        tr.ensure_ffmpeg_in_path()
+
+        assert called == []
+        assert os.environ["PATH"].startswith(str(target_dir))
+
+
+class TestFfmpegDiscoveryWindowsOnly:
+    """Real, unmocked Windows behaviour — mkdir a fake install dir, drop an
+    ``ffmpeg.exe`` inside, point ``_FFMPEG_CANDIDATE_DIRS`` at it, verify
+    ``ensure_ffmpeg_in_path`` picks it up. Skipped on POSIX.
+    """
+
+    @pytest.mark.skipif(
+        not _pc.IS_WINDOWS,
+        reason="Windows-only: exercises PATHEXT-driven .exe suffix resolution.",
+    )
+    def test_ffmpeg_exe_discovered(self, tmp_path, monkeypatch):
+        from kiro_crew import transcribe as tr
+
+        ffbin = tmp_path / "ffbin"
+        ffbin.mkdir()
+        exe = ffbin / "ffmpeg.exe"
+        exe.write_bytes(b"MZ")
+
+        monkeypatch.setattr(tr, "_FFMPEG_CANDIDATE_DIRS", [str(ffbin)])
+        monkeypatch.setenv("PATH", r"C:\\Windows\\System32")
+
+        tr.ensure_ffmpeg_in_path()
+        assert os.environ["PATH"].startswith(str(ffbin))
 
 
 # ---------------------------------------------------------------------------

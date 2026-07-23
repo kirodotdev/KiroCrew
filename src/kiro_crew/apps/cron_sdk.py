@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ class CronSDK:
         every_secs: int | None = None,
         cron_expr: str | None = None,
         agent: str = "",
+        command: str = "",
+        script: str = "",
         agent_sequence: list[str] | None = None,
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
@@ -50,6 +53,73 @@ class CronSDK:
 
         Returns the created CronJob object.
         """
+        # Defense-in-depth: vet command/script BEFORE the job is created, so a
+        # rejected payload never lands in the cron service's in-memory state
+        # (deny-by-default). add_job() is safe even if a future caller reaches
+        # it without the upstream vetting in bridges.py; legitimate callers
+        # (which already vet and skip bad entries) are unaffected.
+        #
+        # command/script are NOT executed here. At fire time the gateway routes
+        # job.command through cron_script.run_command_sandboxed() and job.script
+        # through run_script_sandboxed() (slack/gateway.py), both applying the
+        # OS-level sandbox via wrap_argv(mode="cc"). The mcp_cron vetting imports
+        # are lazy to avoid the mcp_cron -> security -> ... -> bridges ->
+        # cron_sdk import cycle.
+        if command:
+            # circular import: mcp_cron -> security -> ... -> bridges -> cron_sdk
+            from kiro_crew.mcp_cron import _vet_shell_command
+
+            err = _vet_shell_command(command)
+            if err:
+                sel().log_api_access(
+                    caller="cron_sdk",
+                    operation="cron_command_vetted",
+                    outcome="denied",
+                    resources=f"app={self._owner_prefix} cron={name}",
+                    error=err,
+                )
+                raise ValueError(f"cron command rejected: {err}")
+            sel().log_api_access(
+                caller="cron_sdk",
+                operation="cron_command_vetted",
+                outcome="allowed",
+                resources=f"app={self._owner_prefix} cron={name}",
+            )
+        if script:
+            # circular import: mcp_cron -> security -> ... -> bridges -> cron_sdk
+            from kiro_crew.mcp_cron import _vet_script_file
+
+            # resolve_script_path rejects paths outside ~/.kirocrew/crons/ (and
+            # missing/sensitive files) by raising. Emit a SEL denied audit on
+            # that path too, mirroring bridges.py, so every denial is audited.
+            try:
+                file_path, _ = resolve_script_path(script)
+            except (PermissionError, FileNotFoundError, ValueError) as exc:
+                sel().log_api_access(
+                    caller="cron_sdk",
+                    operation="cron_script_vetted",
+                    outcome="denied",
+                    resources=f"app={self._owner_prefix} cron={name}",
+                    error=str(exc),
+                )
+                raise ValueError(f"cron script rejected: {exc}") from exc
+            err = _vet_script_file(file_path)
+            if err:
+                sel().log_api_access(
+                    caller="cron_sdk",
+                    operation="cron_script_vetted",
+                    outcome="denied",
+                    resources=f"app={self._owner_prefix} cron={name}",
+                    error=err,
+                )
+                raise ValueError(f"cron script rejected: {err}")
+            sel().log_api_access(
+                caller="cron_sdk",
+                operation="cron_script_vetted",
+                outcome="allowed",
+                resources=f"app={self._owner_prefix} cron={name}",
+            )
+
         # Build kwargs for add_job — only pass what's supported
         kwargs: dict[str, Any] = {
             "name": name,
@@ -65,9 +135,13 @@ class CronSDK:
         # Tag ownership
         job.created_by = self._owner_prefix
 
-        # Set extended fields
+        # Set extended fields (command/script already vetted above)
         if agent:
             job.agent_id = agent
+        if command:
+            job.command = command
+        if script:
+            job.script = script
         if agent_sequence:
             job.agent_sequence = agent_sequence
         if env:

@@ -69,6 +69,12 @@ class TestIsHeaded:
         monkeypatch.setattr("platform.system", lambda: "Linux")
         assert is_headed() is False
 
+    def test_headed_on_windows(self, monkeypatch):
+        # Windows has a desktop session and interactive SSO — run a visible
+        # Chromium window like macOS, not the Linux headless mode.
+        monkeypatch.setattr("platform.system", lambda: "Windows")
+        assert is_headed() is True
+
 
 class TestGetPlaywrightMcpArgs:
     def test_includes_headed_on_macos(self, monkeypatch):

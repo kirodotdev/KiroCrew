@@ -34,19 +34,53 @@ except ImportError:  # pragma: no cover — covered by cli_doctor tests
 
 logger = logging.getLogger(__name__)
 
-_FFMPEG_CANDIDATE_DIRS = [
-    os.path.expanduser("~/ffmpeg"),
-    os.path.expanduser("~/.local/bin"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-]
+
+def _ffmpeg_candidate_dirs() -> list[str]:
+    """Build the ordered directory list to probe for an ffmpeg install.
+
+    POSIX-standard install prefixes come first (Homebrew, /usr/local, and the
+    per-user ~/ffmpeg / ~/.local/bin extraction dirs). On Windows we append
+    the two idiomatic install locations: the winget/Chocolatey machine-wide
+    ``%ProgramFiles%\\ffmpeg\\bin`` and the winget/scoop user-scope
+    ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. Expanded once at import time.
+    """
+    dirs = [
+        os.path.expanduser("~/ffmpeg"),
+        os.path.expanduser("~/.local/bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ]
+    if platform_compat.IS_WINDOWS:
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        local_appdata = os.environ.get(
+            "LOCALAPPDATA",
+            os.path.join(os.path.expanduser("~"), "AppData", "Local"),
+        )
+        dirs.extend(
+            [
+                os.path.join(program_files, "ffmpeg", "bin"),
+                os.path.join(local_appdata, "Programs", "ffmpeg", "bin"),
+            ]
+        )
+    return dirs
+
+
+_FFMPEG_CANDIDATE_DIRS = _ffmpeg_candidate_dirs()
 
 
 def ensure_ffmpeg_in_path() -> None:
-    """Add known ffmpeg directories to PATH if they contain an ffmpeg binary."""
+    """Add known ffmpeg directories to PATH if they contain an ffmpeg binary.
+
+    Probes each candidate dir with ``shutil.which("ffmpeg", path=d)`` — that
+    honours ``PATHEXT`` on Windows (so ``ffmpeg.exe`` resolves) while still
+    matching a plain ``ffmpeg`` on POSIX. The prior ``os.path.isfile(<d>/ffmpeg)``
+    check missed the ``.exe`` suffix on Windows and never prepended the dir.
+    """
     path_parts = os.environ.get("PATH", "").split(os.pathsep)
     for d in reversed(_FFMPEG_CANDIDATE_DIRS):
-        if d not in path_parts and os.path.isfile(os.path.join(d, "ffmpeg")):
+        if d in path_parts:
+            continue
+        if shutil.which("ffmpeg", path=d):
             os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
             path_parts.insert(0, d)
 

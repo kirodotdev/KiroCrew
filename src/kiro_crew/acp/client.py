@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import AsyncGenerator, AsyncIterator
 
 from kiro_crew import model_registry, platform_compat
+from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOracle
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     EVENT_AGENT_SWITCHED,
@@ -682,6 +683,17 @@ _RE_5XX_NAMED = re.compile(
 )
 _RE_5XX_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:50[0234]|529)\b", re.IGNORECASE)
 _RE_5XX_HINT = re.compile(r"(please try again|response stream)", re.IGNORECASE)
+# kiro-cli's generic wrapper for a backend generation failure that died BEFORE
+# the response stream was established (so no request_id, no error class, and
+# none of the tokens above). Observed a case where data was exactly "Kiro
+# failed to generate a response" while an independent gateway was
+# simultaneously getting model-unavailable for the same model family. These
+# pre-stream failures are overwhelmingly momentary capacity or rollout blips,
+# so they are retry-worthy. Matched against the provider `data` field only
+# (like model-unavailable): the phrase is a provider wrapper, never JSON-RPC
+# boilerplate, and scoping to `data` keeps a stray echo in `message` from
+# flipping an otherwise-terminal error.
+_RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE)
 
 
 def _is_transient_raw_error(error: object) -> bool:
@@ -694,7 +706,7 @@ def _is_transient_raw_error(error: object) -> bool:
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence mirrors
     :func:`_format_acp_error`: model-unavailable → throttle → auth(terminal) →
-    generic 5xx → unknown(terminal)."""
+    generic 5xx / pre-stream generation failure → unknown(terminal)."""
     if not isinstance(error, dict):
         return False
     data = str(error.get("data", "") or "")
@@ -711,6 +723,7 @@ def _is_transient_raw_error(error: object) -> bool:
         _RE_5XX_NAMED.search(haystack)
         or _RE_5XX_STATUS.search(haystack)
         or _RE_5XX_HINT.search(haystack)
+        or _RE_GENERATE_FAILED.search(data)
     )
 
 
@@ -802,6 +815,22 @@ def _format_acp_error(error: object) -> str:
                 "The model backend hit a transient error (HTTP 5xx). This is "
                 "usually momentary — retry in a moment. If it keeps happening, "
                 "switch to a different model in the picker."
+                f"{req_id_suffix}"
+            )
+        elif _RE_GENERATE_FAILED.search(data):
+            # kiro-cli's generic pre-stream generation failure ("Kiro failed
+            # to generate a response"): the backend call died before a
+            # response stream existed, so there is no request_id and no error
+            # class. Almost always a momentary model capacity / rollout blip
+            # — same guidance as the 5xx branch. Kept as its own branch (not
+            # folded into _RE_5XX_HINT) because it matches `data` only, so a
+            # stray phrase echo in the JSON-RPC `message` can't flip an
+            # otherwise-terminal error to transient.
+            formatted = (
+                "The model failed to generate a response (transient error — the "
+                "backend call died before streaming started, usually a momentary "
+                "capacity blip). Retry in a moment; if it keeps happening, switch "
+                "to a different model in the picker."
                 f"{req_id_suffix}"
             )
         elif re.search(r"already in progress", data, re.IGNORECASE):
@@ -1319,6 +1348,12 @@ class AcpClient:
         # single progress frame.  Gates the _TOOL_STALL_TIMEOUT watchdog so a
         # dispatched-but-never-resolved tool can't hang the whole turn.
         self._tool_dispatched: bool = False
+        # Liveness oracle for the stale-turn gate: before ending a silent turn
+        # at _STALE_TURN_TIMEOUT, consult /proc evidence so a backend that is
+        # provably working (CPU/IO movement in the subprocess subtree) is not
+        # reaped. Mirrors the kiro shared-runtime path (AcpSessionHandle), which
+        # already defers on a WORKING verdict instead of a blunt wall-clock.
+        self._liveness_oracle = LivenessOracle()
         # Record every observed tool_call (id -> (title, kind)) so the
         # PostToolUse hook fire can recover the tool_name from the result's
         # tool_call_id — the RESULT event carries no title. See
@@ -2735,17 +2770,44 @@ class AcpClient:
                     # reasoning step, burning ~_STALE_TURN_TIMEOUT s per turn and
                     # reaping long subagent runs at the timeout.
                     last_seen = max(last_data_ts, self._last_activity)
-                    if (
-                        self._stale_eligible
-                        and (time.monotonic() - last_seen) > _STALE_TURN_TIMEOUT
-                    ):
-                        logger.warning(
-                            "Stale turn detected for req %d — no data for %.0fs after text was streamed. "
-                            "Treating as complete.",
-                            req_id,
-                            time.monotonic() - last_seen,
-                        )
-                        return
+                    if self._stale_eligible:
+                        # Consult the liveness oracle on EVERY silent read once
+                        # text has streamed — not only at the timeout. The oracle
+                        # needs a prior sample to compute a movement delta (its
+                        # first call after reset always reads UNKNOWN/"sampling"),
+                        # so a single consult at the 90s mark would always reap.
+                        # Sampling each silent read primes the baseline and keeps
+                        # the movement window recent, mirroring the kiro path's
+                        # per-tick consult. The consult is /proc-based and
+                        # offloaded so it cannot block the read loop, and degrades
+                        # to a non-WORKING verdict on any error (fail toward
+                        # reaping). In production, silent reads recur at the
+                        # ~_READ_TIMEOUT cadence, giving well-spaced samples.
+                        verdict, evidence = await self._consult_liveness_model_wait()
+                        if (time.monotonic() - last_seen) > _STALE_TURN_TIMEOUT:
+                            # Past the cutoff: a backend still doing work (CPU/IO
+                            # movement in its subtree — a long model generation or
+                            # a spawned build) reads WORKING and we keep waiting.
+                            # Only WORKING extends; any other verdict
+                            # (DEAD/UNKNOWN/STUCK_INPUT) preserves the conservative
+                            # end-the-turn behavior, so hang recovery is never
+                            # weakened (still bounded by _DEFAULT_PROMPT_TIMEOUT).
+                            if verdict == VERDICT_WORKING:
+                                logger.debug(
+                                    "Stale-turn deferral for req %d — idle %.0fs but "
+                                    "backend WORKING (%s)",
+                                    req_id, time.monotonic() - last_seen, evidence,
+                                )
+                                continue
+                            logger.warning(
+                                "Stale turn detected for req %d — no data for %.0fs after text was streamed "
+                                "(liveness=%s: %s). Treating as complete.",
+                                req_id,
+                                time.monotonic() - last_seen,
+                                verdict,
+                                evidence,
+                            )
+                            return
                     # Tool-stall watchdog: a tool was dispatched but NOTHING has
                     # come back (no result, no progress, no permission) for the
                     # stall window.  This is the silent-hang case where
@@ -2807,6 +2869,44 @@ class AcpClient:
             # escalates to hard kill, the correct outcome for a dead turn.
             if not self._turn_done.is_set():
                 self._turn_done.set()
+
+    async def _consult_liveness_model_wait(self) -> tuple[str, str]:
+        """Liveness verdict for the stale-turn gate, offloaded off the loop.
+
+        The oracle walks ``/proc`` for the backend subprocess subtree — a
+        synchronous filesystem walk that can block on a wedged fd — so it runs
+        on ``subprocess_executor()`` under a bounded timeout, the same treatment
+        the runtime's other /proc probes get. Any failure or timeout degrades to
+        a non-WORKING verdict so the caller falls through to ending the turn
+        (fail toward reaping, never toward hanging).
+
+        Scope, mirroring the shared-runtime oracle this converges onto:
+        - Linux-only evidence. On a host without ``/proc`` the verdict is
+          UNKNOWN → the turn is reaped at the cutoff exactly as before this
+          gate existed, so the change is behavior-preserving off Linux and a
+          strict improvement on the gateway's Linux deploy target.
+        - Subtree-aggregate movement. A busy *unrelated* descendant (e.g. an
+          MCP child polling) can read WORKING even if the model turn itself is
+          wedged with a lost completion frame, extending that turn to the 2h
+          ``_DEFAULT_PROMPT_TIMEOUT`` backstop rather than reaping at 90s. This
+          is an inherent property of the shared ``LivenessOracle`` (the kiro
+          path has it too); tighter per-branch attribution belongs in
+          ``liveness.py``, shared by both callers, not here.
+        """
+        pid = getattr(self, "_pid", None)
+        try:
+            loop = asyncio.get_running_loop()
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    subprocess_executor(),
+                    self._liveness_oracle.check_model_wait,
+                    pid,
+                ),
+                timeout=10.0,
+            )
+        except Exception:
+            logger.debug("liveness consult failed/timed out", exc_info=True)
+            return VERDICT_UNKNOWN, "oracle offload error"
 
     # ── Public API ──
 
@@ -2930,6 +3030,9 @@ class AcpClient:
         self._permission_options.clear()
         self._stale_eligible = False
         self._tool_dispatched = False
+        # Reset the liveness oracle's movement baseline so this turn's stale
+        # gate measures activity from turn start, not a prior turn's samples.
+        self._liveness_oracle.reset()
         got_complete = False
         saw_agent_switch = False
 

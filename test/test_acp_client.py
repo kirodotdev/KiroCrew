@@ -27,6 +27,12 @@ from kiro_crew.acp.client import (
     _substitute_model_from_advisory,
     _vendored_claude_acp_roots,
 )
+from kiro_crew.acp.liveness import (
+    VERDICT_DEAD,
+    VERDICT_UNKNOWN,
+    VERDICT_WORKING,
+    LivenessOracle,
+)
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpPromptStats
 
 
@@ -1150,6 +1156,161 @@ class TestAcpClientStaleTurn:
 
         assert actions == []  # returned via stale-turn early return
         assert "Stale turn detected" in caplog.text  # real protection preserved
+
+
+class TestAcpClientStaleTurnOracleGate:
+    """The 90s stale-turn cutoff is oracle-gated.
+
+    A turn whose stdout AND stderr are silent but whose backend process
+    subtree is provably WORKING (CPU/IO movement) must NOT be declared stale
+    at ``_STALE_TURN_TIMEOUT`` — the kiro shared-runtime path already defers on
+    a WORKING liveness verdict; the ``AcpClient`` capture path must converge
+    onto the same contract instead of a blunt wall-clock. A non-WORKING verdict
+    preserves today's behavior exactly (the turn ends).
+    """
+
+    def _silent_client(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        client._read_message = AsyncMock(return_value=None)
+        client._is_process_alive = MagicMock(return_value=True)
+        client._stale_eligible = True
+        client._last_activity = time.monotonic()
+        return client
+
+    @pytest.mark.asyncio
+    async def test_working_verdict_defers_stale_turn(self, tmp_path, caplog):
+        """WORKING backend movement keeps a silent turn alive past the cutoff."""
+        client = self._silent_client(tmp_path)
+        client._consult_liveness_model_wait = AsyncMock(
+            return_value=(VERDICT_WORKING, "backend activity (io)")
+        )
+
+        # Loop timeout must exceed the stale window so the check fires repeatedly;
+        # without the fix the first stale hit returns and the turn ends.
+        with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.1):
+            with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+                actions = []
+                async for action, _msg in client._prompt_loop(
+                    req_id=11, timeout=0.6
+                ):
+                    actions.append(action)
+
+        assert actions == []
+        # The turn was NOT declared stale — it ran until the loop deadline.
+        assert "Stale turn detected" not in caplog.text
+        # Proves priming: the oracle is consulted on silent reads BEFORE the
+        # cutoff too, not once at the 90s mark — a single consult would read
+        # UNKNOWN (no movement baseline) and reap. Expect several consults over
+        # the 0.6s loop at the ~_READ_TIMEOUT cadence (patched small in the loop).
+        assert client._consult_liveness_model_wait.await_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_real_oracle_movement_defers_via_fake_proc(self, tmp_path, caplog):
+        """End-to-end with the REAL LivenessOracle over a fake /proc tree.
+
+        Guards the priming bug the mock hides: the oracle needs a prior sample
+        to compute a movement delta, so the loop must consult it repeatedly to
+        build a baseline before the cutoff. Here the backend subtree's IO
+        counter grows between reads → real WORKING verdict → deferral.
+
+        Builds a minimal fake ``/proc`` inline (only the files the model-wait
+        oracle reads: ``<pid>/stat``, ``<pid>/task/<tid>/children``,
+        ``<pid>/io``) rather than importing a helper from another test module —
+        a cross-``test``-package import fails in the pipeline runner where
+        ``test`` is not an importable package (``ModuleNotFoundError``).
+        """
+        proc = tmp_path / "proc"
+
+        def _write_pid(pid: int, *, children: list[int], io_bytes: int) -> None:
+            d = proc / str(pid)
+            (d / "task" / str(pid)).mkdir(parents=True, exist_ok=True)
+            (d / "task" / str(pid) / "children").write_text(
+                " ".join(str(c) for c in children)
+            )
+            # stat: pid (comm) state ... starttime(field 22); huge starttime →
+            # negative age so the oracle's start-time guard accepts the pid.
+            fields = ["0"] * 50
+            fields[0] = "S"
+            fields[19] = "10000000"
+            (d / "stat").write_text(f"{pid} (fake) {' '.join(fields)}\n")
+            (d / "io").write_text(f"rchar: {io_bytes}\nwchar: 0\n")
+
+        def _set_io(pid: int, io_bytes: int) -> None:
+            (proc / str(pid) / "io").write_text(f"rchar: {io_bytes}\nwchar: 0\n")
+
+        _write_pid(4242, children=[4243], io_bytes=0)
+        _write_pid(4243, children=[], io_bytes=1000)
+
+        client = AcpClient(work_dir=tmp_path)
+        client._is_process_alive = MagicMock(return_value=True)
+        client._stale_eligible = True
+        client._last_activity = time.monotonic()
+        client._pid = 4242
+        # Real oracle, tiny sample window so movement is detectable within the
+        # fast test loop; point it at the fake /proc tree.
+        client._liveness_oracle = LivenessOracle(str(proc), sample_min_secs=0.0)
+
+        # Grow the subtree's IO on every silent read → movement between samples.
+        _io = {"n": 1000}
+
+        async def read_and_move(*args, **kwargs):
+            await asyncio.sleep(0.02)
+            _io["n"] += 5000
+            _set_io(4243, _io["n"])
+            return None
+
+        client._read_message = AsyncMock(side_effect=read_and_move)
+
+        with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.05):
+            with patch("kiro_crew.acp.client._READ_TIMEOUT", 0.02):
+                with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+                    actions = []
+                    async for action, _msg in client._prompt_loop(
+                        req_id=42, timeout=0.5
+                    ):
+                        actions.append(action)
+
+        assert actions == []
+        assert "Stale turn detected" not in caplog.text  # real movement → deferred
+
+    @pytest.mark.asyncio
+    async def test_dead_verdict_still_ends_stale_turn(self, tmp_path, caplog):
+        """A non-WORKING verdict preserves today's end-the-turn behavior."""
+        client = self._silent_client(tmp_path)
+        client._consult_liveness_model_wait = AsyncMock(
+            return_value=(VERDICT_DEAD, "no established backend socket")
+        )
+
+        with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.05):
+            with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+                actions = []
+                async for action, _msg in client._prompt_loop(
+                    req_id=12, timeout=5.0
+                ):
+                    actions.append(action)
+
+        assert actions == []
+        assert "Stale turn detected" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_verdict_still_ends_stale_turn(self, tmp_path, caplog):
+        """UNKNOWN keeps the conservative 90s cutoff — the gate never weakens
+        hang recovery; only a provably-WORKING turn is extended."""
+        client = self._silent_client(tmp_path)
+        client._consult_liveness_model_wait = AsyncMock(
+            return_value=(VERDICT_UNKNOWN, "established-but-flat")
+        )
+
+        with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.05):
+            with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+                actions = []
+                async for action, _msg in client._prompt_loop(
+                    req_id=13, timeout=5.0
+                ):
+                    actions.append(action)
+
+        assert actions == []
+        assert "Stale turn detected" in caplog.text
 
 
 class TestAcpClientReadMessage:
@@ -6308,6 +6469,33 @@ class TestFormatAcpError:
         assert "transient error" in out.lower()
         assert "aaaa1111-bbbb-2222-cccc-333344445555" in out
 
+    def test_kiro_generic_generation_failure_formats_as_transient(self):
+        """kiro-cli's pre-stream generation failure wrapper gets the friendly
+        retry guidance instead of the raw-dict fallback: data carried no
+        request_id and no error class, only the generic wrapper string.
+        """
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "Kiro failed to generate a response",
+        }
+        out = _format_acp_error(err)
+        assert "transient error" in out.lower()
+        assert "Prompt error: {" not in out
+
+    def test_generation_failure_phrase_in_message_only_is_not_transient(self):
+        """The generation-failure pattern is scoped to `data` — the phrase
+        appearing only in the JSON-RPC `message` field must not trigger the
+        friendly transient branch (mirrors the model-unavailable scoping)."""
+        err = {
+            "code": -32603,
+            "message": "Kiro failed to generate a response",
+            "data": "ValidationException: input contains an unsupported field 'foo'",
+        }
+        out = _format_acp_error(err)
+        assert "transient error" not in out.lower()
+        assert "Prompt error: {" in out
+
 
 class TestIsTransientRawError:
     """_is_transient_raw_error classifies retryability from the RAW JSON-RPC
@@ -6373,6 +6561,43 @@ class TestIsTransientRawError:
         assert _is_transient_raw_error({"code": -32603, "message": "Internal error", "data": ""}) is False
         assert _is_transient_raw_error(None) is False
         assert _is_transient_raw_error("boom") is False
+
+    def test_kiro_generic_generation_failure_is_transient(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # kiro-cli's pre-stream generation failure wrapper: no request_id, no
+        # error class, none of the 5xx/throttle tokens. Retryable — this exact
+        # shape was surfaced to the user with no retry during a model-capacity
+        # blip.
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "Kiro failed to generate a response",
+        }
+        assert _is_transient_raw_error(err) is True
+
+    def test_generation_failure_scoped_to_data_and_loses_to_auth(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # Phrase only in `message` (data carries a deterministic failure):
+        # scoped match must not fire — stays terminal.
+        assert (
+            _is_transient_raw_error(
+                {
+                    "message": "Kiro failed to generate a response",
+                    "data": "ValidationException: unsupported field",
+                }
+            )
+            is False
+        )
+        # Auth is checked first and stays terminal even when the generation-
+        # failure phrase co-occurs in data.
+        assert (
+            _is_transient_raw_error(
+                {"data": "AccessDeniedException: Kiro failed to generate a response"}
+            )
+            is False
+        )
 
     def test_raise_acp_error_carries_transient_flag_and_formatted_message(self):
         import pytest

@@ -40,8 +40,14 @@ def ensure_playwright_installed() -> None:
 
 
 def is_headed() -> bool:
-    """Return True if browser should run in headed mode (macOS). Headless on Linux."""
-    return platform.system() == "Darwin"
+    """Return True if browser should run in headed mode.
+
+    Headed on macOS and Windows (a desktop user session is available and a
+    visible Chromium window is preferred so users can complete interactive SSO
+    prompts). Headless on Linux, where the gateway typically runs on a
+    server without an accessible display.
+    """
+    return platform.system() in ("Darwin", "Windows")
 
 
 def has_playwright_extension() -> bool:

@@ -26,6 +26,8 @@ class MockCronJob:
     message: str = ""
     created_by: str = ""
     agent_id: str = ""
+    command: str = ""
+    script: str = ""
     agent_sequence: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     persistent_session: bool = True
@@ -271,3 +273,93 @@ class TestCronRemoveAll:
         sdk_a.remove_all()
         assert len(sdk_a.list_jobs()) == 0
         assert len(sdk_b.list_jobs()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Storage-layer command/script vetting (deny-by-default)
+# ---------------------------------------------------------------------------
+
+
+class TestCronVettingDenyPath:
+    """add_job() vets command/script BEFORE creating the job (deny-by-default).
+
+    Covers the storage-layer defense-in-depth added to ``CronSDK.add_job``: a
+    rejected command/script must raise ``ValueError`` and must NOT land a job in
+    the cron service (no zombie job on rejection).
+    """
+
+    def test_add_job_rejects_malicious_command(self) -> None:
+        """A command blocked by _vet_shell_command raises and creates no job."""
+        svc = MockCronService()
+        sdk = CronSDK("evil-app", svc)
+
+        with pytest.raises(ValueError, match="cron command rejected"):
+            sdk.add_job(
+                name="exfil",
+                message="",
+                command="cat ~/.aws/credentials",
+                cron_expr="* * * * *",
+            )
+
+        # Deny-by-default: nothing was added to the service.
+        assert svc._jobs == []
+
+    def test_add_job_rejects_malicious_script(self, tmp_path, monkeypatch) -> None:
+        """A script whose body fails vetting raises and creates no job.
+
+        Uses a real script under the sanctioned ``~/.kirocrew/crons/`` dir (so
+        ``resolve_script_path`` succeeds) whose body references a credential
+        path, so ``_vet_script_file`` returns an error and add_job hits the
+        script deny branch.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path))
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        evil = crons_dir / "evil.py"
+        evil.write_text(
+            "import os\n"
+            "def run(ctx):\n"
+            "    # exfiltrate the caller's AWS creds\n"
+            "    return open(os.path.expanduser('~/.aws/credentials')).read()\n"
+        )
+
+        svc = MockCronService()
+        sdk = CronSDK("evil-app", svc)
+
+        with pytest.raises(ValueError, match="cron script rejected"):
+            sdk.add_job(
+                name="exfil",
+                message="",
+                script="~/.kirocrew/crons/evil.py:run",
+                cron_expr="* * * * *",
+            )
+
+        # Deny-by-default: nothing was added to the service.
+        assert svc._jobs == []
+
+    def test_add_job_rejects_script_outside_sanctioned_dir(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A script path outside ~/.kirocrew/crons/ is denied (resolve raises).
+
+        ``resolve_script_path`` raises ``PermissionError``/``FileNotFoundError``
+        for paths outside the sanctioned dir; add_job must convert that into a
+        ``ValueError`` and emit a SEL denied audit rather than letting it
+        propagate unaudited.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".kirocrew" / "crons").mkdir(parents=True)
+
+        svc = MockCronService()
+        sdk = CronSDK("evil-app", svc)
+
+        with pytest.raises(ValueError, match="cron script rejected"):
+            sdk.add_job(
+                name="escape",
+                message="",
+                script="/etc/passwd:run",
+                cron_expr="* * * * *",
+            )
+
+        # Deny-by-default: nothing was added to the service.
+        assert svc._jobs == []

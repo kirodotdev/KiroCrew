@@ -104,6 +104,119 @@ class TestCronApprovalModeGateway:
         assert captured["on_tool_approval"] is not None
 
 
+class TestCronApprovalModeExtraEnv:
+    """Cron dispatch injects KIROCREW_APPROVAL_MODE into the spawned process
+    env when approval_mode='auto', so spawn_run (mcp_core.py) can forward it to
+    /api/spawn without depending on parent_session resolution back to the
+    cron's session key."""
+
+    def _run_cron_callback_capture_get_or_create(
+        self, approval_mode: str, job_env: dict | None = None
+    ) -> dict:
+        """Invoke the real _cron_callback closure and capture get_or_create kwargs."""
+        from kiro_crew.slack.gateway import GatewayOrchestrator
+
+        gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
+        gw.ctx_builder = MagicMock()
+        gw.slack = MagicMock()
+        gw.conv_log = None
+        gw.dashboard_state = None
+        gw._owner_id = "U000"
+        gw.subagent_mgr = None
+        gw._cron_injecting = {}
+        gw._no_crons = False
+
+        captured_kwargs: dict = {}
+
+        async def fake_get_or_create(key, **kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock(), True, False
+
+        gw.sessions = MagicMock()
+        gw.sessions.get_pid = MagicMock(return_value=None)
+        gw.sessions.get_or_create = fake_get_or_create
+        gw.sessions.release = MagicMock()
+        gw.sessions.reset = AsyncMock()
+        gw.sessions.cancel_current = AsyncMock()
+        gw.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        gw.ctx_builder.hooks = MagicMock()
+        gw._interactive_approval = MagicMock(return_value="interactive_cb")
+
+        job = CronJob(
+            id="g1",
+            name="test",
+            message="go",
+            schedule=CronSchedule(kind="every", every_secs=300),
+            approval_mode=approval_mode,
+            env=job_env or {},
+        )
+
+        captured_cb = None
+
+        with patch("kiro_crew.slack.gateway.stream_and_collect", AsyncMock(return_value="done")), patch(
+            "kiro_crew.slack.gateway.CronService"
+        ) as mock_cron_cls:
+
+            def capture_cron(on_job=None, **kw):
+                nonlocal captured_cb
+                captured_cb = on_job
+                svc = MagicMock()
+                svc.start = AsyncMock()
+                return svc
+
+            mock_cron_cls.side_effect = capture_cron
+
+            async def _init_and_run():
+                await gw._init_cron()
+                assert captured_cb is not None
+                await captured_cb(job)
+
+            asyncio.run(_init_and_run())
+
+        return captured_kwargs
+
+    def test_auto_mode_injects_approval_mode_env_var(self) -> None:
+        captured = self._run_cron_callback_capture_get_or_create("auto")
+        assert captured["extra_env"] == {"KIROCREW_APPROVAL_MODE": "auto"}
+
+    def test_empty_mode_does_not_inject_env_var(self) -> None:
+        captured = self._run_cron_callback_capture_get_or_create("")
+        assert captured["extra_env"] is None
+
+    def test_auto_mode_preserves_existing_job_env(self) -> None:
+        captured = self._run_cron_callback_capture_get_or_create(
+            "auto", job_env={"SOME_OTHER_VAR": "x"}
+        )
+        assert captured["extra_env"] == {
+            "SOME_OTHER_VAR": "x",
+            "KIROCREW_APPROVAL_MODE": "auto",
+        }
+
+    def test_empty_mode_preserves_existing_job_env(self) -> None:
+        captured = self._run_cron_callback_capture_get_or_create(
+            "", job_env={"SOME_OTHER_VAR": "x"}
+        )
+        assert captured["extra_env"] == {"SOME_OTHER_VAR": "x"}
+
+    def test_interactive_job_cannot_smuggle_auto_via_job_env(self) -> None:
+        # Security: KIROCREW_APPROVAL_MODE is a RESERVED control var. An
+        # app/user-controlled job.env that sets it must NOT let an interactive
+        # cron auto-approve its spawn_run subagents -- it is stripped and only
+        # re-injected for a VALIDATED approval_mode == "auto".
+        captured = self._run_cron_callback_capture_get_or_create(
+            "", job_env={"KIROCREW_APPROVAL_MODE": "auto", "SOME_OTHER_VAR": "x"}
+        )
+        assert captured["extra_env"] == {"SOME_OTHER_VAR": "x"}
+
+    def test_auto_job_env_does_not_double_inject(self) -> None:
+        # An auto job whose job.env already carries the reserved var yields
+        # exactly one canonical entry (no duplication, value forced to "auto").
+        captured = self._run_cron_callback_capture_get_or_create(
+            "auto", job_env={"KIROCREW_APPROVAL_MODE": "auto"}
+        )
+        assert captured["extra_env"] == {"KIROCREW_APPROVAL_MODE": "auto"}
+
+
 class TestCronApprovalModeValidation:
     """Validation schema accepts valid values, rejects invalid."""
 

@@ -2979,6 +2979,8 @@ class KiroCrewConfig:
         if not isinstance(session_data, dict):
             session_data = {}
         taskrunner_data = data.get("taskrunner", {})
+        if not isinstance(taskrunner_data, dict):
+            taskrunner_data = {}
         cron_history_data = data.get("cron_history", {})
         if not isinstance(cron_history_data, dict):
             cron_history_data = {}
@@ -3117,12 +3119,12 @@ class KiroCrewConfig:
                 tool_search=bool(agent_data.get("tool_search", True)),
                 session_sharing=bool(agent_data.get("session_sharing", True)),
                 max_subagents=agent_data.get("max_subagents", 0),
-                subagent_mem_buffer_pct=int(agent_data.get("subagent_mem_buffer_pct", 20)),
-                subagent_cost_gb=float(agent_data.get("subagent_cost_gb", 0.5)),
-                subagent_cpu_cost_cores=float(agent_data.get("subagent_cpu_cost_cores", 1.0)),
-                subagent_auto_max=int(agent_data.get("subagent_auto_max", 32)),
-                subagent_spawn_stagger_secs=float(
-                    agent_data.get("subagent_spawn_stagger_secs", 2.0)
+                subagent_mem_buffer_pct=_safe_int(agent_data.get("subagent_mem_buffer_pct", 20), 20),
+                subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
+                subagent_cpu_cost_cores=_safe_float(agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0),
+                subagent_auto_max=_safe_int(agent_data.get("subagent_auto_max", 32), 32),
+                subagent_spawn_stagger_secs=_safe_float(
+                    agent_data.get("subagent_spawn_stagger_secs", 2.0), 2.0
                 ),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
@@ -3132,8 +3134,8 @@ class KiroCrewConfig:
                 completion_keep=_validated_completion_keep(
                     agent_data.get("completion_keep", "head")
                 ),
-                completion_keep_chars=int(agent_data.get("completion_keep_chars", 3000)),
-                subagent_result_ttl_secs=int(agent_data.get("subagent_result_ttl_secs", 3600)),
+                completion_keep_chars=_safe_int(agent_data.get("completion_keep_chars", 3000), 3000),
+                subagent_result_ttl_secs=_safe_int(agent_data.get("subagent_result_ttl_secs", 3600), 3600),
                 subagent_cwd_allowed_roots=list(
                     agent_data.get(
                         "subagent_cwd_allowed_roots",
@@ -3145,17 +3147,17 @@ class KiroCrewConfig:
                 max_channels=agent_data.get("max_channels", 1),
                 max_channel_agents=agent_data.get("max_channel_agents", 3),
                 soft_stop_budget_secs=max(
-                    0.5, min(60.0, float(agent_data.get("soft_stop_budget_secs", 10.0)))
+                    0.5, min(60.0, _safe_float(agent_data.get("soft_stop_budget_secs", 10.0), 10.0))
                 ),
             ),
             session=SessionConfig(
                 timeout_secs=session_data.get("timeout_secs", DEFAULT_SESSION_TIMEOUT),
-                autocompact_pct=float(session_data.get("autocompact_pct", 90.0)),
-                pool_size=int(session_data.get("pool_size", 2)),
+                autocompact_pct=_safe_float(session_data.get("autocompact_pct", 90.0), 90.0),
+                pool_size=_safe_int(session_data.get("pool_size", 2), 2),
                 pool_agent=str(session_data.get("pool_agent", "")),
-                pool_ttl_secs=int(session_data.get("pool_ttl_secs", 1800)),
+                pool_ttl_secs=_safe_int(session_data.get("pool_ttl_secs", 1800), 1800),
                 archive_retention_days=_archive_retention_days(session_data),
-                watchdog_rss_max_mb=int(session_data.get("watchdog_rss_max_mb", 0)),
+                watchdog_rss_max_mb=_safe_int(session_data.get("watchdog_rss_max_mb", 0), 0),
             ),
             taskrunner=TaskRunnerConfig(
                 max_parallel_steps=taskrunner_data.get(
@@ -3164,12 +3166,12 @@ class KiroCrewConfig:
                 workspace_dir=str(taskrunner_data.get("workspace_dir", "")),
             ),
             cron_history=CronHistoryConfig(
-                cron_summary_cap=int(cron_history_data.get("cron_summary_cap", 200)),
-                cron_trace_cap_kb=int(cron_history_data.get("cron_trace_cap_kb", 50)),
-                cron_max_records_per_job=int(
-                    cron_history_data.get("cron_max_records_per_job", 100)
+                cron_summary_cap=_safe_int(cron_history_data.get("cron_summary_cap", 200), 200),
+                cron_trace_cap_kb=_safe_int(cron_history_data.get("cron_trace_cap_kb", 50), 50),
+                cron_max_records_per_job=_safe_int(
+                    cron_history_data.get("cron_max_records_per_job", 100), 100
                 ),
-                cron_max_index_records=int(cron_history_data.get("cron_max_index_records", 2000)),
+                cron_max_index_records=_safe_int(cron_history_data.get("cron_max_index_records", 2000), 2000),
             ),
             messaging=MessagingConfig(
                 use_transport=bool(messaging_data.get("use_transport", True)),
@@ -3207,7 +3209,7 @@ class KiroCrewConfig:
             telemetry=TelemetryConfig(
                 enabled=bool(telemetry_data.get("enabled", False)),
                 local_dir=str(telemetry_data.get("local_dir", "")),
-                export_interval_seconds=int(telemetry_data.get("export_interval_seconds", 60)),
+                export_interval_seconds=_safe_int(telemetry_data.get("export_interval_seconds", 60), 60),
             ),
             memory=MemoryConfig(
                 embedding_provider=_coerce_embedding_provider(
@@ -3244,8 +3246,8 @@ class KiroCrewConfig:
                     and mb >= 0
                     else 100.0
                 ),
-                embed_timeout_secs=float(knowledge_data.get("embed_timeout_secs", 10.0)),
-                embed_content_budget=int(knowledge_data.get("embed_content_budget", 0)),
+                embed_timeout_secs=_safe_float(knowledge_data.get("embed_timeout_secs", 10.0), 10.0),
+                embed_content_budget=_safe_int(knowledge_data.get("embed_content_budget", 0), 0),
                 pool_idle_ttl_secs=(
                     ttl
                     if isinstance((ttl := knowledge_data.get("pool_idle_ttl_secs", 300)), int)
@@ -3426,61 +3428,79 @@ class KiroCrewConfig:
                 enabled=bool(mcp_gateway_data.get("enabled", False)),
                 socket_path=str(mcp_gateway_data.get("socket_path", "")),
                 overlay_dir=str(mcp_gateway_data.get("overlay_dir", "")),
-                idle_timeout_secs=max(10, int(mcp_gateway_data.get("idle_timeout_secs", 300))),
-                max_backends=max(1, int(mcp_gateway_data.get("max_backends", 64))),
+                idle_timeout_secs=max(10, _safe_int(mcp_gateway_data.get("idle_timeout_secs", 300), 300)),
+                max_backends=max(1, _safe_int(mcp_gateway_data.get("max_backends", 64), 64)),
                 poolable_servers=[
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
                 ],
-                prewarm_count=max(0, int(mcp_gateway_data.get("prewarm_count", 0))),
+                prewarm_count=max(0, _safe_int(mcp_gateway_data.get("prewarm_count", 0), 0)),
                 read_buffer_limit_bytes=max(
-                    1024, int(mcp_gateway_data.get("read_buffer_limit_bytes", 64 * 1024 * 1024))
+                    1024,
+                    _safe_int(
+                        mcp_gateway_data.get("read_buffer_limit_bytes", 64 * 1024 * 1024),
+                        64 * 1024 * 1024,
+                    ),
                 ),
                 response_spill_threshold_bytes=max(
-                    0, int(mcp_gateway_data.get("response_spill_threshold_bytes", 256 * 1024))
+                    0,
+                    _safe_int(
+                        mcp_gateway_data.get("response_spill_threshold_bytes", 256 * 1024),
+                        256 * 1024,
+                    ),
                 ),
             ),
             instances=InstancesConfig(
                 enabled=bool(instances_data.get("enabled", False)),
-                warm_set_cap=int(instances_data.get("warm_set_cap", _DEFAULT_WARM_SET_CAP)),
-                tunnel_base_port=int(
-                    instances_data.get("tunnel_base_port", _DEFAULT_TUNNEL_BASE_PORT)
+                warm_set_cap=_safe_int(
+                    instances_data.get("warm_set_cap", _DEFAULT_WARM_SET_CAP), _DEFAULT_WARM_SET_CAP
+                ),
+                tunnel_base_port=_safe_int(
+                    instances_data.get("tunnel_base_port", _DEFAULT_TUNNEL_BASE_PORT),
+                    _DEFAULT_TUNNEL_BASE_PORT,
                 ),
                 ssh_compression=bool(
                     instances_data.get("ssh_compression", _DEFAULT_SSH_COMPRESSION)
                 ),
-                max_recovery_attempts=int(
-                    instances_data.get("max_recovery_attempts", _DEFAULT_MAX_RECOVERY)
+                max_recovery_attempts=_safe_int(
+                    instances_data.get("max_recovery_attempts", _DEFAULT_MAX_RECOVERY),
+                    _DEFAULT_MAX_RECOVERY,
                 ),
-                recover_backoff_max_secs=float(
-                    instances_data.get("recover_backoff_max_secs", _DEFAULT_BACKOFF_MAX)
+                recover_backoff_max_secs=_safe_float(
+                    instances_data.get("recover_backoff_max_secs", _DEFAULT_BACKOFF_MAX),
+                    _DEFAULT_BACKOFF_MAX,
                 ),
-                probe_failure_threshold=int(
-                    instances_data.get("probe_failure_threshold", _DEFAULT_PROBE_FAILS)
+                probe_failure_threshold=_safe_int(
+                    instances_data.get("probe_failure_threshold", _DEFAULT_PROBE_FAILS),
+                    _DEFAULT_PROBE_FAILS,
                 ),
             ),
             heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
             skills=SkillsConfig(
-                max_triggered=int(skills_data.get("max_triggered", 3)),
+                max_triggered=_safe_int(skills_data.get("max_triggered", 3), 3),
                 lazy_load=bool(skills_data.get("lazy_load", False)),
                 auto_create_from_sessions=bool(skills_data.get("auto_create_from_sessions", False)),
                 auto_refine_on_deviation=bool(skills_data.get("auto_refine_on_deviation", False)),
-                auto_min_tool_calls=int(skills_data.get("auto_min_tool_calls", 5)),
-                auto_similarity_threshold=float(skills_data.get("auto_similarity_threshold", 0.85)),
+                auto_min_tool_calls=_safe_int(skills_data.get("auto_min_tool_calls", 5), 5),
+                auto_similarity_threshold=_safe_float(skills_data.get("auto_similarity_threshold", 0.85), 0.85),
                 extra_paths=list(skills_data.get("extra_paths", [])),
             ),
             slack_channels={
                 ch_id: ChannelConfig.from_dict(ch_data)
-                for ch_id, ch_data in data.get("slack", {}).get("channels", {}).items()
+                for ch_id, ch_data in (
+                    slack_data.get("channels", {})
+                    if isinstance(slack_data.get("channels"), dict)
+                    else {}
+                ).items()
                 if isinstance(ch_data, dict)
             },
             slack_dm_activation=_validate_activation(
-                data.get("slack", {}).get("dm_activation", ACTIVATION_ALWAYS)
+                slack_data.get("dm_activation", ACTIVATION_ALWAYS)
             ),
             observe_max_messages=max(
-                1, int(data.get("slack", {}).get("observe_max_messages", 200))
+                1, _safe_int(slack_data.get("observe_max_messages", 200), 200)
             ),
             observe_ttl_hours=max(
-                0.0, float(data.get("slack", {}).get("observe_ttl_hours", 168.0))
+                0.0, _safe_float(slack_data.get("observe_ttl_hours", 168.0), 168.0)
             ),
             _extra_sections=extra_sections,
         )

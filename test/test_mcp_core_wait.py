@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 from kiro_crew.mcp_core import _call_tool
@@ -75,6 +76,43 @@ def test_spawn_run_no_orphan_warning_when_all_spawns_fail():
         result = _call_tool("spawn_run", {"task": "failing task"})
     assert "these subagents are orphaned" not in result
     assert "⚠ parent_session UNRESOLVED —" not in result
+
+
+class TestSpawnRunApprovalModeForwarding:
+    """Regression tests: spawn_run must forward this session's own
+    KIROCREW_APPROVAL_MODE env var to /api/spawn, so a cron running with
+    approval_mode="auto" deterministically auto-approves its own subagent
+    launches instead of depending solely on SubagentManager's parent_trusted
+    lookup (which requires parent_session to resolve correctly)."""
+
+    def test_forwards_approval_mode_auto_from_env(self):
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+                patch.dict("os.environ", {"KIROCREW_APPROVAL_MODE": "auto"}):
+            mock_post.return_value = {"id": "abc123"}
+            _call_tool("spawn_run", {"task": "test task"})
+
+        body = mock_post.call_args[0][1]
+        assert body["approval_mode"] == "auto"
+
+    def test_omits_approval_mode_when_env_unset(self):
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+                patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("KIROCREW_APPROVAL_MODE", None)
+            mock_post.return_value = {"id": "abc123"}
+            _call_tool("spawn_run", {"task": "test task"})
+
+        body = mock_post.call_args[0][1]
+        assert "approval_mode" not in body
+
+    def test_forwards_approval_mode_to_every_batch_task(self):
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+                patch.dict("os.environ", {"KIROCREW_APPROVAL_MODE": "auto"}):
+            mock_post.side_effect = [{"id": "a1"}, {"id": "b2"}]
+            _call_tool("spawn_run", {"tasks": ["task1", "task2"]})
+
+        assert mock_post.call_count == 2
+        for call in mock_post.call_args_list:
+            assert call[0][1]["approval_mode"] == "auto"
 
 
 def test_spawn_run_no_orphan_warning_when_parent_resolved():

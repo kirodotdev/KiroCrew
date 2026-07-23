@@ -63,6 +63,8 @@ class CronEntry:
     cron_expr: str = ""  # cron expression (alternative to every)
     agent: str = ""  # agent name to run
     message: str = ""  # prompt message for the agent
+    command: str = ""  # shell command for direct execution (bypasses LLM)
+    script: str = ""  # Python callable path (file.py:func) for direct execution (bypasses LLM)
     # Extended fields for advanced scheduling
     agent_sequence: list[str] = field(default_factory=list)  # ordered list of agents to run
     env: dict[str, str] = field(default_factory=dict)  # environment variables for the job
@@ -79,6 +81,10 @@ class CronEntry:
             d["agent"] = self.agent
         if self.message:
             d["message"] = self.message
+        if self.command:
+            d["command"] = self.command
+        if self.script:
+            d["script"] = self.script
         if self.agent_sequence:
             d["agent_sequence"] = self.agent_sequence
         if self.env:
@@ -91,12 +97,17 @@ class CronEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CronEntry:
+        def _str_or_empty(v: Any) -> str:
+            return v if isinstance(v, str) else ""
+
         return cls(
-            name=str(data.get("name", "")),
+            name=_str_or_empty(data.get("name")),
             every=int(data.get("every", 0)),
-            cron_expr=str(data.get("cron_expr", "")),
-            agent=str(data.get("agent", "")),
-            message=str(data.get("message", "")),
+            cron_expr=_str_or_empty(data.get("cron_expr")),
+            agent=_str_or_empty(data.get("agent")),
+            message=_str_or_empty(data.get("message")),
+            command=_str_or_empty(data.get("command")),
+            script=_str_or_empty(data.get("script")),
             agent_sequence=[str(a) for a in data.get("agent_sequence", [])],
             env={str(k): str(v) for k, v in data.get("env", {}).items()},
             persistent_session=bool(data.get("persistent_session", True)),
@@ -816,6 +827,15 @@ class AppManifest:
                 errors.append(
                     f"cron entry {cron.name!r} must specify either 'every' or 'cron_expr'"
                 )
+            if cron.command and cron.script:
+                errors.append(
+                    f"cron entry {cron.name!r}: 'command' and 'script' are mutually exclusive"
+                )
+            if not (cron.agent or cron.agent_sequence or cron.message or cron.command or cron.script):
+                errors.append(
+                    f"cron entry {cron.name!r}: must specify at least one of "
+                    "'agent', 'agent_sequence', 'message', 'command', or 'script'"
+                )
 
         # Backend hooks validation
         errors.extend(self.backend.hooks.validate())
@@ -831,7 +851,7 @@ class AppManifest:
         list keeps its manifest order, so reordering channel declarations is
         a signature-relevant change (intentional -- the signed bytes track
         the manifest as written)."""
-        body = {
+        body: dict[str, Any] = {
             "name": self.name,
             "version": self.version,
             "signer": self.signer,
@@ -843,6 +863,17 @@ class AppManifest:
             # Included only when non-empty so manifests signed before
             # notifications existed keep producing the identical payload.
             body["notifications"] = self.notifications.to_dict()
+        if self.crons:
+            # Cron declarations can carry `command`/`script` -- a direct
+            # code-execution surface. Tampering with a signed app's cron
+            # definitions (e.g. swapping the shell command) must invalidate
+            # the signature: vetting bounds the SYNTAX of what runs, but only
+            # the signature authenticates PUBLISHER INTENT. Each entry's
+            # canonical to_dict() (list order preserved -- reordering is a
+            # signature-relevant change) covers name/schedule/agent/message/
+            # command/script/env. Included only when non-empty so manifests
+            # signed before crons existed keep producing the identical payload.
+            body["crons"] = [c.to_dict() for c in self.crons]
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------

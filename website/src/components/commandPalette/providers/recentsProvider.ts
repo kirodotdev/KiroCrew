@@ -33,7 +33,7 @@ const RECENTS_STALE_MS = 10_000
 const HISTORY_LIMIT = 20
 const PLANNED_LIMIT = 6
 
-interface HistorySession {
+export interface HistorySession {
   key: string
   title?: string
   agent?: string
@@ -43,6 +43,58 @@ interface HistorySession {
 }
 interface HistoryResponse {
   sessions?: HistorySession[]
+}
+
+/** True when the slot still carries the backend's synthetic placeholder title.
+ * Exact match on both ellipsis spellings — a prefix test would misclassify
+ * user-named sessions like "New Session Planning". */
+export function hasPlaceholderTitle(s: ChatSlot): boolean {
+  const t = s.title || ''
+  return t === 'New Session…' || t === 'New Session...'
+}
+
+/** An empty untitled slot: placeholder title AND no messages yet. Only these
+ * double as the "+ New Session…" create affordance — an untitled slot that
+ * already carries messages is a real conversation and renders as a normal
+ * row. */
+export function isEmptyNewSlot(s: ChatSlot): boolean {
+  return hasPlaceholderTitle(s) && (s.messages ?? 0) === 0
+}
+
+/** Order live slots (empty-new first, then pinned, then recency — matching
+ * the sidebar with new-chat pinned to the top) and keep at most ONE empty-new
+ * slot, the most recent, so the palette never shows duplicate
+ * "+ New Session…" rows when several empty chats are open. */
+export function prepareCurrentSlots(slots: ChatSlot[]): {
+  ordered: ChatSlot[]
+  hasEmptyNew: boolean
+} {
+  const sorted = [...slots].sort((a, b) => {
+    const na = isEmptyNewSlot(a) ? 0 : 1
+    const nb = isEmptyNewSlot(b) ? 0 : 1
+    if (na !== nb) return na - nb
+    const pa = a.pinned ? 0 : 1
+    const pb = b.pinned ? 0 : 1
+    if (pa !== pb) return pa - pb
+    return recencyEpoch(b) - recencyEpoch(a)
+  })
+  let hasEmptyNew = false
+  const ordered = sorted.filter((s) => {
+    if (!isEmptyNewSlot(s)) return true
+    if (hasEmptyNew) return false
+    hasEmptyNew = true
+    return true
+  })
+  return { ordered, hasEmptyNew }
+}
+
+/** History rows worth showing: drop sessions that never got past creation —
+ * placeholder/blank title AND no preview. They resume into an empty session
+ * and render as dead "New Session…" rows in the Older group. */
+export function shouldShowHistorySession(s: HistorySession): boolean {
+  const t = (s.title || '').trim()
+  const placeholder = !t || t === 'New Session…' || t === 'New Session...'
+  return !placeholder || Boolean((s.preview || '').trim())
 }
 
 function sessionIcon() {
@@ -140,21 +192,10 @@ export function useRecentsProvider(): ResourceProvider {
   const unread = useAppSelector((s) => s.dashboard.unreadSlots)
 
   return useMemo(() => {
-    // CURRENT — New Session (untitled) first, then pinned, then recency
-    // (matches the sidebar ordering with new-chat pinned to the top).
-    // Exact match on the backend's synthetic placeholder title — a prefix
-    // test would misclassify user-named sessions like "New Session Planning".
-    const isNewSlot = (s: ChatSlot) => (s.title || '') === 'New Session…' || (s.title || '') === 'New Session...'
-    const orderedSlots = [...slots].sort((a, b) => {
-      const na = isNewSlot(a) ? 0 : 1
-      const nb = isNewSlot(b) ? 0 : 1
-      if (na !== nb) return na - nb
-      const pa = a.pinned ? 0 : 1
-      const pb = b.pinned ? 0 : 1
-      if (pa !== pb) return pa - pb
-      return recencyEpoch(b) - recencyEpoch(a)
-    })
-    const currentKeys = new Set(orderedSlots.map((s) => normalizeKey(s.key)))
+    const { ordered: orderedSlots, hasEmptyNew } = prepareCurrentSlots(slots)
+    // Dedupe Older against ALL live slots (not just rendered ones) so a
+    // filtered-out empty duplicate can't resurface as a history row.
+    const currentKeys = new Set(slots.map((s) => normalizeKey(s.key)))
 
     return {
       id: 'recents',
@@ -190,10 +231,11 @@ export function useRecentsProvider(): ResourceProvider {
 
         // CURRENT — live slots (folder-labeled), ordered pinned-first + recency.
         const current: Result[] = orderedSlots.map((s) => {
-          const isNew = isNewSlot(s)
-          // A "New Session…" slot is an untitled live session — it may carry
-          // messages, but we render it as a bare "+ New Session…" create
-          // affordance: no agent line, status, message preview, or timestamp.
+          // Only an EMPTY untitled slot renders as the bare "+ New Session…"
+          // create affordance (no agent line, status, preview, or timestamp).
+          // An untitled slot that already has messages is a real conversation
+          // and keeps its normal row treatment.
+          const isNew = isEmptyNewSlot(s)
           const st = isNew ? {} : sessionStatus(s, unread)
           return {
             id: `recents:cur:${s.key}`,
@@ -222,10 +264,10 @@ export function useRecentsProvider(): ResourceProvider {
         })
 
         // "+ New Session" must ALWAYS be available as a create affordance.
-        // When an untitled live slot exists it doubles as that row (clicking
-        // it lands in the fresh session); otherwise synthesize a create
-        // action so the row never disappears with the untitled slot.
-        if (!orderedSlots.some(isNewSlot)) {
+        // When an empty untitled live slot exists it doubles as that row
+        // (clicking it lands in the fresh session); otherwise synthesize a
+        // create action so the row never disappears with the untitled slot.
+        if (!hasEmptyNew) {
           current.unshift({
             id: 'recents:new-session',
             providerId: 'recents',
@@ -268,9 +310,11 @@ export function useRecentsProvider(): ResourceProvider {
 
         // OLDER — archived history not already open, faded, one group
         // ("Older Sessions"), newest first, with a last-message preview.
+        // Sessions that never got past creation (placeholder title, no
+        // preview) are dropped — they'd render as dead "New Session…" rows.
         const sessions = hist?.sessions ?? []
         const older: Result[] = sessions
-          .filter((s) => !currentKeys.has(normalizeKey(s.key)))
+          .filter((s) => !currentKeys.has(normalizeKey(s.key)) && shouldShowHistorySession(s))
           .map((s) => ({
             id: `recents:old:${s.key}`,
             providerId: 'recents',

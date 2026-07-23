@@ -1597,6 +1597,38 @@ class GatewayOrchestrator:
                 finally:
                     self._running_script_ids.discard(job.id)
 
+            def _cron_extra_env() -> dict[str, str] | None:
+                """job.env plus KIROCREW_APPROVAL_MODE when the job runs auto.
+
+                SubagentManager.spawn's own auto-approve fallback for a cron's
+                spawn_run subagents (parent_trusted, i.e.
+                sessions.get_approval_policy(parent_session_key)=="auto")
+                depends on parent_session resolving back to this cron's session
+                key -- an identity-plumbing path that can fail silently and
+                leave the spawn stuck on the interactive approval path a cron
+                has no responder for. Injecting the mode directly as an env var
+                the spawned kiro-cli process inherits (mirroring
+                KIROCREW_SESSION_KEY/KIROCREW_CHANNEL_ID) lets the spawn_run MCP
+                tool (mcp_core.py) read and forward its own approval_mode
+                explicitly, independent of whether parent_session resolution
+                succeeds.
+
+                KIROCREW_APPROVAL_MODE is a RESERVED control var: it is stripped
+                from the app/user-controlled ``job.env`` on every path and only
+                re-injected here when the job's VALIDATED ``approval_mode`` is
+                "auto". Otherwise an app manifest could set it directly in
+                ``job.env`` and have an interactive cron's spawn_run subagents
+                silently auto-approved -- an authorization bypass.
+                """
+                env = {
+                    k: v
+                    for k, v in (job.env or {}).items()
+                    if k != "KIROCREW_APPROVAL_MODE"
+                }
+                if job.approval_mode == "auto":
+                    env["KIROCREW_APPROVAL_MODE"] = "auto"
+                return env or None
+
             async def _acquire_with_model_fallback(
                 key: str, agent_id: str | None
             ) -> "tuple[LLMProvider, bool, bool, bool]":
@@ -1611,7 +1643,7 @@ class GatewayOrchestrator:
                         channel_id=job.channel,
                         approval_policy=job.approval_mode,
                         model=job.model or None,
-                        extra_env=job.env or None,
+                        extra_env=_cron_extra_env(),
                     )
                     return client, is_new, resumed, False
                 except Exception as model_exc:
@@ -1635,7 +1667,7 @@ class GatewayOrchestrator:
                         agent=agent_id,
                         channel_id=job.channel,
                         approval_policy=job.approval_mode,
-                        extra_env=job.env or None,
+                        extra_env=_cron_extra_env(),
                     )
                     return client, is_new, resumed, True
 

@@ -185,6 +185,13 @@ def test_max_subagents_defaults_to_auto_sentinel() -> None:
     assert resolve_max_subagents(pinned) == 7
 
 
+def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
+    assert KiroCrewConfig().agent.sandbox_allow_unsandboxed_exec is False
+    assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False
+    enabled = _load_from_dict({"agent": {"sandbox_allow_unsandboxed_exec": True}})
+    assert enabled.agent.sandbox_allow_unsandboxed_exec is True
+
+
 def test_publish_relocate_roots_parsed_and_round_trips():
     # Regression (PR #14 nrb): publish.relocate_roots was declared + consumed by
     # the relocate handler but NOT parsed in from_dict, so an operator value was
@@ -2938,3 +2945,94 @@ class TestOrchestratorWatchdogThemeAreParsed:
         )
         assert cfg.watchdog.check_after_secs == 60.0
         assert cfg.orchestrator.stage_timeout_seconds == 1800
+
+
+class TestMalformedConfigNeverBricksLoad:
+    """load() must honor its documented "fall back to defaults, never raise"
+    contract for malformed-but-writable values reachable via `kirocrew config
+    set` (cli_config._parse_value returns the raw string, _dict_set accepts any
+    existing key with no type/schema check). Pre-fix three classes crashed
+    load() with an uncaught exception, and because `config get/set` and the
+    gateway all call load() first, the CLI recovery path was bricked too — the
+    user had to hand-edit the JSON.
+
+    (1) a non-dict section value (taskrunner was the only unguarded section)
+    (2) a non-dict `slack` value (raw re-reads bypassed the guarded slack_data)
+    (3) a non-numeric string where an int/float was expected (bare coercions)
+    """
+
+    def test_non_dict_taskrunner_section_falls_back(self) -> None:
+        # Pre-fix: AttributeError: 'str' object has no attribute 'get'.
+        cfg = _load_from_dict({"taskrunner": "oops"})
+        assert cfg.taskrunner is not None
+
+    def test_non_dict_slack_section_falls_back(self) -> None:
+        # Pre-fix: AttributeError from the raw data.get("slack", {}).get(...)
+        # re-reads that bypassed the guarded slack_data local.
+        cfg = _load_from_dict({"slack": "off"})
+        assert cfg.slack_dm_activation == "always"
+
+    def test_non_numeric_int_field_falls_back(self) -> None:
+        # Pre-fix: ValueError: invalid literal for int() with base 10: 'two'.
+        cfg = _load_from_dict({"session": {"pool_size": "two"}})
+        assert cfg.session.pool_size == 2
+
+    def test_non_numeric_float_field_falls_back(self) -> None:
+        cfg = _load_from_dict({"agent": {"subagent_cost_gb": "lots"}})
+        assert cfg.agent.subagent_cost_gb == 0.5
+
+    def test_numeric_string_still_coerces(self) -> None:
+        # A numeric string is a valid coercion — must NOT fall back.
+        cfg = _load_from_dict({"session": {"pool_size": "5"}})
+        assert cfg.session.pool_size == 5
+
+    def test_well_formed_values_still_parse(self) -> None:
+        # The fix must not regress the happy path.
+        cfg = _load_from_dict(
+            {"session": {"pool_size": 7}, "slack": {"observe_max_messages": 50}}
+        )
+        assert cfg.session.pool_size == 7
+        assert cfg.observe_max_messages == 50
+
+    def test_remaining_numeric_coercions_fall_back(self) -> None:
+        # Review follow-up: these load-time coercions still used bare
+        # int()/float() and would raise on a non-numeric config value — the exact
+        # crash class this fix addresses. Each must now fall back to its default.
+        defaults = _load_from_dict({})
+        cfg = _load_from_dict(
+            {
+                "agent": {"subagent_spawn_stagger_secs": "soon"},
+                "session": {"watchdog_rss_max_mb": "big"},
+                "cron_history": {"cron_max_records_per_job": "many"},
+                "instances": {
+                    "tunnel_base_port": "port",
+                    "max_recovery_attempts": "lots",
+                    "recover_backoff_max_secs": "slow",
+                    "probe_failure_threshold": "few",
+                },
+            }
+        )
+        assert (
+            cfg.agent.subagent_spawn_stagger_secs
+            == defaults.agent.subagent_spawn_stagger_secs
+        )
+        assert (
+            cfg.session.watchdog_rss_max_mb == defaults.session.watchdog_rss_max_mb
+        )
+        assert (
+            cfg.cron_history.cron_max_records_per_job
+            == defaults.cron_history.cron_max_records_per_job
+        )
+        assert cfg.instances.tunnel_base_port == defaults.instances.tunnel_base_port
+        assert (
+            cfg.instances.max_recovery_attempts
+            == defaults.instances.max_recovery_attempts
+        )
+        assert (
+            cfg.instances.recover_backoff_max_secs
+            == defaults.instances.recover_backoff_max_secs
+        )
+        assert (
+            cfg.instances.probe_failure_threshold
+            == defaults.instances.probe_failure_threshold
+        )

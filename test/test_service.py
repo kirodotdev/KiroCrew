@@ -84,6 +84,11 @@ class TestLinuxUnitRendering:
         # gateway start cannot melt the user's terminal with journal output.
         assert "StartLimitBurst=3" in unit
         assert "StartLimitIntervalSec=300" in unit
+        # Pin a high open-file limit so the gateway (and the FD-hungry
+        # frontend build it may launch) never depends on the host's ambient
+        # DefaultLimitNOFILE — stock systemd defaults to 1024, which the
+        # vite/rollup build exhausts with EMFILE.
+        assert "LimitNOFILE=65536" in unit
         assert "[Install]" in unit
         # System-level units want multi-user.target (the default boot target),
         # not default.target (which is user-session-scoped and only used

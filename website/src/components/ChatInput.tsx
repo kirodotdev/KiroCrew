@@ -99,7 +99,21 @@ const UNDO_COALESCE_MS = 400 // merge keystrokes within this window into one und
 const UNDO_BULK_DELTA = 8 // an insert/delete of >= this many chars is its own boundary
 const UNDO_MAX_HISTORY = 200 // cap snapshots to bound memory
 
-type UndoSnap = { value: string; selStart: number; selEnd: number }
+// `blocks` rides with each snapshot so undo/redo restores the paste content
+// backing any `[ Paste #N ]` token in `value` — deleting or expanding a token
+// drops its PasteBlock, and without this an undo would resurrect the token text
+// as a dead literal with no recoverable content.
+type UndoSnap = { value: string; selStart: number; selEnd: number; blocks: PasteBlock[] }
+
+/** True when two block lists hold the same blocks by id (order-independent).
+ *  Lets undo/redo skip a redundant onPasteBlocksChange when the paste set is
+ *  unchanged (e.g. plain-text undo, where both sides are empty). */
+function sameBlocks(a: PasteBlock[], b: PasteBlock[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  const ids = new Set(a.map(x => x.id))
+  return b.every(x => ids.has(x.id))
+}
 
 function toApiDecision(d: string): 'approve' | 'reject' {
   return (d === 'approved' || d === 'trust' || d === 'trust_reads') ? 'approve' : 'reject'
@@ -709,12 +723,16 @@ function ChatInput({
   // so it doesn't re-create on every keystroke.
   const valueRef = useRef(value)
   valueRef.current = value
+  // Mirror the paste blocks so the undo-recording effect (keyed on
+  // [value, autoFocusKey], not pasteBlocks) always snapshots the freshest set.
+  const pasteBlocksRef = useRef(pasteBlocks)
+  pasteBlocksRef.current = pasteBlocks
   // --- Prompt undo/redo history (per slot) ---
   // Explicit snapshot stack: undoHistoryRef[undoPointerRef] always mirrors the
   // live value. Rapid keystrokes coalesce into one entry; bulk deletes and
   // programmatic resets become their own restorable boundary. applyingUndoRef
   // suppresses re-recording the value we set during an undo/redo.
-  const undoHistoryRef = useRef<UndoSnap[]>([{ value, selStart: value.length, selEnd: value.length }])
+  const undoHistoryRef = useRef<UndoSnap[]>([{ value, selStart: value.length, selEnd: value.length, blocks: pasteBlocks }])
   const undoPointerRef = useRef(0)
   const undoLastEditRef = useRef(0)
   const applyingUndoRef = useRef(false)
@@ -895,6 +913,7 @@ function ChatInput({
         value,
         selStart: el?.selectionStart ?? value.length,
         selEnd: el?.selectionEnd ?? value.length,
+        blocks: pasteBlocksRef.current,
       }]
       undoPointerRef.current = 0
       undoLastEditRef.current = 0
@@ -946,6 +965,7 @@ function ChatInput({
       value,
       selStart: el?.selectionStart ?? value.length,
       selEnd: el?.selectionEnd ?? value.length,
+      blocks: pasteBlocksRef.current,
     }
     const now = Date.now()
     // Coalesce only small, incremental, recent edits at the tip of the history.
@@ -1072,7 +1092,7 @@ function ChatInput({
         if (hist[ptr]?.value !== v) {
           const el = inputRef.current
           hist.splice(ptr + 1)
-          hist.push({ value: v, selStart: el?.selectionStart ?? v.length, selEnd: el?.selectionEnd ?? v.length })
+          hist.push({ value: v, selStart: el?.selectionStart ?? v.length, selEnd: el?.selectionEnd ?? v.length, blocks: pasteBlocksRef.current })
           if (hist.length > UNDO_MAX_HISTORY) hist.shift()
           undoPointerRef.current = hist.length - 1
           undoLastEditRef.current = Date.now()
@@ -1133,6 +1153,14 @@ function ChatInput({
         const snap = hist[ptr]
         applyingUndoRef.current = true
         onChange(snap.value)
+        // Restore the paste blocks captured in this snapshot so a `[ Paste #N ]`
+        // token brought back by the undo has its backing content again. Only
+        // emit when the set actually differs (identity or membership) to avoid a
+        // redundant parent render on plain-text undo. The pruneBlocks effect
+        // would otherwise strip a block whose token the undo just restored.
+        if (onPasteBlocksChange && !sameBlocks(pasteBlocksRef.current, snap.blocks)) {
+          onPasteBlocksChange(snap.blocks)
+        }
         requestAnimationFrame(() => {
           const el = inputRef.current
           if (!el) return

@@ -140,6 +140,35 @@ class TestManifestRoundTrip:
         assert restored.persistent_session == cron.persistent_session
         assert restored.silent == cron.silent
 
+    def test_from_dict_coerces_null_string_fields_to_empty(self) -> None:
+        """Explicit JSON null on a string field deserializes to "" not "None".
+
+        Regression anchor for the ``_str_or_empty`` helper: a malformed
+        app.json with ``"name": null`` (or null on any string-typed cron
+        field) must coerce to the empty string. The prior
+        ``str(data.get(...))`` form turned ``None`` into the literal string
+        ``"None"``, which would then be treated as a real value downstream.
+        """
+        entry = CronEntry.from_dict(
+            {
+                "name": None,
+                "cron_expr": None,
+                "agent": None,
+                "message": None,
+                "command": None,
+                "script": None,
+                "every": 60,
+            }
+        )
+        assert entry.name == ""
+        assert entry.cron_expr == ""
+        assert entry.agent == ""
+        assert entry.message == ""
+        assert entry.command == ""
+        assert entry.script == ""
+        # Non-string fields keep their normal coercion / defaults.
+        assert entry.every == 60
+
 
 # ---------------------------------------------------------------------------
 # Property 12: Hook path validation

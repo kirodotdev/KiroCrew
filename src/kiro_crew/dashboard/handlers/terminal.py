@@ -45,6 +45,13 @@ _MAX_SESSIONS = 12
 _ORPHAN_TIMEOUT_S = 900  # 15 min with no WS → reap PTY (grace window for reload/network drops; in-app nav keeps the WS alive)
 _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
 
+# Fail-fast message + SEL reason for the Windows-unsupported path. Kept as a
+# module constant so the POST create-session handler and the WebSocket open
+# handler return byte-identical wording (avoids drift; CLAUDE.md forbids
+# scattered business-logic string literals).
+_UNSUPPORTED_PLATFORM_MSG = "The web terminal is not supported on Windows."
+_UNSUPPORTED_PLATFORM_REASON = "unsupported_platform"
+
 
 def _redact_terminal(data: bytes | bytearray) -> bytes:
     """Strip credentials/exfiltration URLs from PTY output before it reaches a
@@ -378,12 +385,12 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         _sel().log_api_access(
             caller=caller, operation="terminal.ws.open",
             outcome="denied", source="dashboard",
-            resources="unsupported_platform",
+            resources=_UNSUPPORTED_PLATFORM_REASON,
         )
         if not ws.closed:
             await ws.send_str(json.dumps({
                 "type": "error",
-                "message": "The web terminal is not supported on Windows.",
+                "message": _UNSUPPORTED_PLATFORM_MSG,
             }))
             await ws.close()
         return ws
@@ -557,6 +564,23 @@ async def api_terminal_create(request: web.Request) -> web.Response:
             resources="feature_disabled",
         )
         return web.Response(status=403, text="Terminal panel disabled")
+
+    if platform_compat.IS_WINDOWS:
+        # PTY/fork are POSIX-only; on Windows we fail fast at session-create so
+        # the frontend surfaces the "not supported" error immediately instead of
+        # opening a WebSocket that dies during PTY spawn. Same wording as the WS
+        # handler's error frame so the frontend rendering is uniform. A ConPTY
+        # backend is deferred.
+        _sel().log_api_access(
+            caller=caller, operation="terminal.session.create",
+            outcome="denied", source="dashboard",
+            resources=_UNSUPPORTED_PLATFORM_REASON,
+        )
+        return web.json_response(
+            {"error": _UNSUPPORTED_PLATFORM_MSG,
+             "reason": _UNSUPPORTED_PLATFORM_REASON},
+            status=501,
+        )
 
     registry = _get_registry(request)
     cfg = _get_config(request)

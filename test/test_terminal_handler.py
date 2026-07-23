@@ -267,6 +267,16 @@ class TestKillSession:
 
 
 class TestApiTerminalCreate:
+    """POSIX happy-path coverage. Force ``IS_WINDOWS=False`` so these run on the
+    Windows build host too — the Windows-specific 501 gate has its own suite in
+    ``TestApiTerminalCreateWindowsFailFast``. Mirrors the umbrella-wide
+    monkeypatch pattern used by ``TestRestrictToOwnerArgvOnLinux`` in
+    ``test_platform_compat.py``."""
+
+    @pytest.fixture(autouse=True)
+    def _force_posix(self, monkeypatch):
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", False)
+
     @pytest.mark.asyncio
     async def test_rejects_unauthenticated(self):
         req = _make_request(user=None)
@@ -319,6 +329,114 @@ class TestApiTerminalCreate:
             resp = await terminal.api_terminal_create(req)
         body = json.loads(resp.body)
         assert body["shell"] == "/bin/zsh"
+
+
+class TestApiTerminalCreateWindowsFailFast:
+    """POST /api/terminal/sessions must fail fast on Windows with a 501.
+
+    Mirrors the ``TestTaskkillErrorMapping`` / ``TestRestrictToOwnerArgvOnLinux``
+    monkeypatch pattern from ``test_platform_compat.py``: patch
+    ``platform_compat.IS_WINDOWS`` so the branch is exercised on the Linux build
+    fleet. PTY/fork are POSIX-only and the ConPTY port is deferred — until then
+    the create endpoint MUST refuse on Windows with the same wording the WS
+    handler emits, so the frontend never opens a socket that will die during
+    PTY spawn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_windows_returns_501_with_error_and_reason(self, monkeypatch):
+        registry: dict = {}
+        req = _make_request(registry=registry)
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)
+        with patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 501
+        body = json.loads(resp.body)
+        assert body["error"] == terminal._UNSUPPORTED_PLATFORM_MSG
+        assert body["reason"] == terminal._UNSUPPORTED_PLATFORM_REASON
+        # No session was created; registry stays untouched.
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_windows_logs_denied_unsupported_platform(self, monkeypatch):
+        req = _make_request()
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)
+        with patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal, "_sel") as mock_sel:
+            log = MagicMock()
+            mock_sel.return_value.log_api_access = log
+            await terminal.api_terminal_create(req)
+        # Denied audit event with the shared reason string, so the reason is
+        # a single source of truth across the WS and REST paths.
+        assert log.called
+        kwargs = log.call_args.kwargs
+        assert kwargs.get("operation") == "terminal.session.create"
+        assert kwargs.get("outcome") == "denied"
+        assert kwargs.get("resources") == terminal._UNSUPPORTED_PLATFORM_REASON
+
+    @pytest.mark.asyncio
+    async def test_windows_gate_runs_before_max_sessions(self, monkeypatch):
+        # Even at capacity, Windows must return 501 (unsupported) rather than
+        # 429 (busy) — the platform gate is unconditional and takes precedence.
+        registry = {"s1": _make_session(), "s2": _make_session(), "s3": _make_session()}
+        req = _make_request(registry=registry)
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)
+        with patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 501
+
+    @pytest.mark.asyncio
+    async def test_windows_gate_still_requires_auth(self, monkeypatch):
+        # Authentication is still enforced first — an unauthenticated request
+        # must not learn platform capabilities. 401 wins over 501.
+        req = _make_request(user=None)
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)
+        resp = await terminal.api_terminal_create(req)
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_non_windows_still_returns_session_id(self, monkeypatch):
+        # Guard against regressing the POSIX happy path.
+        req = _make_request()
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", False)
+        with patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert "session_id" in body
+
+
+@pytest.mark.skipif(
+    not platform_compat.IS_WINDOWS,
+    reason="Real-host Windows-only assertion; the monkeypatched suite above "
+           "covers the same code path on Linux CI.",
+)
+class TestApiTerminalCreateWindowsUnmocked:
+    """Windows-only unmocked coverage of the fail-fast gate.
+
+    Runs against the real ``platform_compat.IS_WINDOWS`` constant (no
+    monkeypatch), so a regression that skips the guard or wires the constant
+    wrong on Windows would be caught here even if the Linux monkeypatch suite
+    passed. Skipped on POSIX to keep CI green — pattern mirrors the umbrella's
+    other ``skipif(not IS_WINDOWS)`` classes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_windows_returns_501(self):
+        req = _make_request()
+        with patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 501
+        body = json.loads(resp.body)
+        assert body["reason"] == terminal._UNSUPPORTED_PLATFORM_REASON
 
 
 # ── api_terminal_delete ──
@@ -1006,6 +1124,54 @@ class TestTerminalWsIntegration:
 
             # No PTY session was registered; the reserved placeholder was popped.
             assert "winnope-sess" not in registry
+
+    @pytest.mark.asyncio
+    async def test_ws_unsupported_platform_logs_shared_reason_constant(
+        self, monkeypatch, tmp_path
+    ):
+        """The WS-denied audit event must carry the SAME ``_UNSUPPORTED_PLATFORM_REASON``
+        string the REST path emits (see ``test_windows_logs_denied_unsupported_platform``).
+        Keeping a single source of truth means auditors filtering on
+        ``resources == "unsupported_platform"`` catch both surfaces at once —
+        if a future refactor inlines a different string here, this assertion
+        fires.
+        """
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        sel_mock = MagicMock()
+        sel_mock.log_api_access = MagicMock()
+        monkeypatch.setattr(terminal, "_sel", lambda: sel_mock)
+        monkeypatch.setattr(terminal.platform_compat, "IS_POSIX", False)
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/audit-sess") as ws:
+                # Drain the error frame + close (mirrors the sibling test).
+                msg = await ws.receive(timeout=5)
+                assert msg.type == web.WSMsgType.TEXT
+                closing = await ws.receive(timeout=5)
+                assert closing.type in (
+                    web.WSMsgType.CLOSE,
+                    web.WSMsgType.CLOSING,
+                    web.WSMsgType.CLOSED,
+                )
+
+        # Find the denied audit event (there may be earlier "allowed" logs;
+        # scan for the one this test is guarding).
+        denied_calls = [
+            c for c in sel_mock.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "denied"
+        ]
+        assert denied_calls, "expected at least one denied audit event"
+        kwargs = denied_calls[-1].kwargs
+        assert kwargs["operation"] == "terminal.ws.open"
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["resources"] == terminal._UNSUPPORTED_PLATFORM_REASON
 
     @pytest.mark.asyncio
     async def test_ws_ctrl_c_delivers_sigint(self, monkeypatch, tmp_path):

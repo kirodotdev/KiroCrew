@@ -26,6 +26,7 @@ from kiro_crew.apps.manager import app_dir, get_app, get_app_manifest
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,8 @@ def _register_crons(app_name: str, manifest: AppManifest) -> list[str]:
             "cron_expr": cron.cron_expr,
             "agent": cron.agent,
             "message": cron.message,
+            "command": cron.command,
+            "script": cron.script,
             "app": app_name,
             "agent_sequence": cron.agent_sequence,
             "env": cron.env,
@@ -385,11 +388,65 @@ def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[st
     sdk = CronSDK(app_name, cron_service)
     existing_names = {j.name for j in sdk.list_jobs()}
 
+    # circular import: mcp_cron → security → ... → hooks_integration → bridges
+    from kiro_crew.mcp_cron import _vet_script_file, _vet_shell_command
+
     newly_registered: list[str] = []
     for d in defs:
         name = d.get("name", "")
         if not name or name in existing_names:
             continue
+        command = d.get("command") or ""
+        script = d.get("script") or ""
+        # Security vetting: same checks as the MCP cron_add path
+        if command:
+            err = _vet_shell_command(command)
+            if err:
+                logger.warning("App %s: cron %r command rejected: %s", app_name, name, err)
+                sel().log_api_access(
+                    caller="app_bridge",
+                    operation="app_cron_command_vetted",
+                    outcome="denied",
+                    resources=f"app={app_name} cron={name}",
+                    error=err,
+                )
+                continue
+            sel().log_api_access(
+                caller="app_bridge",
+                operation="app_cron_command_vetted",
+                outcome="allowed",
+                resources=f"app={app_name} cron={name}",
+            )
+        if script:
+            try:
+                file_path, _ = resolve_script_path(script)
+                err = _vet_script_file(file_path)
+                if err:
+                    logger.warning("App %s: cron %r script rejected: %s", app_name, name, err)
+                    sel().log_api_access(
+                        caller="app_bridge",
+                        operation="app_cron_script_vetted",
+                        outcome="denied",
+                        resources=f"app={app_name} cron={name}",
+                        error=err,
+                    )
+                    continue
+                sel().log_api_access(
+                    caller="app_bridge",
+                    operation="app_cron_script_vetted",
+                    outcome="allowed",
+                    resources=f"app={app_name} cron={name}",
+                )
+            except (PermissionError, FileNotFoundError, ValueError) as exc:
+                logger.warning("App %s: cron %r script path rejected: %s", app_name, name, exc)
+                sel().log_api_access(
+                    caller="app_bridge",
+                    operation="app_cron_script_vetted",
+                    outcome="denied",
+                    resources=f"app={app_name} cron={name}",
+                    error=str(exc),
+                )
+                continue
         try:
             sdk.add_job(
                 name=name,
@@ -397,12 +454,20 @@ def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[st
                 every_secs=d.get("every"),  # JSON "every" → Python "every_secs"
                 cron_expr=d.get("cron_expr"),
                 agent=d.get("agent") or "",
+                command=command,
+                script=script,
                 agent_sequence=d.get("agent_sequence") or None,
                 env=d.get("env") or None,
                 persistent_session=d.get("persistent_session", False),
                 silent=bool(d.get("silent", False)),
             )
             newly_registered.append(name)
+            sel().log_api_access(
+                caller="app_bridge",
+                operation="app_cron_add_job",
+                outcome="allowed",
+                resources=f"app={app_name} cron={name}",
+            )
         except Exception as exc:
             logger.warning(
                 "App %s: failed to register cron %r (%s): %s",

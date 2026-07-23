@@ -13,6 +13,7 @@ const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort } = require
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
+const { chooseRecoveryStrategy } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
@@ -123,6 +124,15 @@ if (!app.requestSingleInstanceLock()) {
 let mainWindow = null;
 let tray = null;
 let gatewayProcess = null;
+// True only when WE spawned the bundled backend on this flavor's port. False on
+// the reuse path — i.e. a gateway was already answering when we booted, which is
+// exactly the remote-tunnel setup (localhost:<port> is an SSH forward to a
+// remote gateway) and also the "dev ran `kirocrew gateway` in a terminal" case.
+// Recovery must NEVER kill or respawn a gateway we did not spawn: the port-holder
+// is someone else's process (our SSH tunnel, a manual gateway), and the correct
+// fix on a dropped tunnel is to re-probe and reconnect once it heals, not to
+// force-stop the port or spawn a (nonexistent, in remote mode) local backend.
+let weSpawnedGateway = false;
 // Post-handoff backend liveness monitor (primary window only). Detects a wedged
 // gateway — alive TCP socket, frozen event loop — that the spawn 'exit' watcher
 // can't, since the process never exits. See gateway-liveness.js.
@@ -217,6 +227,7 @@ async function resolveGatewayConflict() {
   const decision = decideGatewayAction(app.getVersion(), health);
   if (decision.action === "reuse") {
     glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
+    weSpawnedGateway = false; // reuse path — recovery must not kill/respawn a gateway we don't own
     sendStatus("Gateway already running ✓");
     return "reuse";
   }
@@ -327,6 +338,7 @@ function spawnGateway(resolve) {
           },
         });
         gatewayProcess = child;
+        weSpawnedGateway = true; // we own this child — recovery may kill+respawn it
         // The child inherits its own dup of the fd; close our copy so it doesn't leak.
         if (typeof childOut === "number") { try { fs.closeSync(childOut); } catch { /* ignore */ } }
 
@@ -1123,6 +1135,20 @@ function startLivenessMonitor(win) {
  * on success; its own catch handles a restart that fails.
  */
 async function recoverWedgedGateway(win) {
+  // We only OWN (and may kill/respawn) a gateway we spawned. On the reuse path
+  // the port-holder is someone else's process — in the remote-tunnel setup it is
+  // our own SSH forward, whose backend lives on a remote host. An unresponsive
+  // probe there almost always means the SSH tunnel dropped (lid close,
+  // Wi-Fi→Ethernet handoff, VPN blip), not a wedged backend. Killing the port
+  // would tear down the tunnel; force-stop correctly refuses, then the old code
+  // fell through to showUnrecoverableGatewayError, which QUIT the app on any
+  // button (that was the "crash on Retry"). Instead: leave the tunnel alone and
+  // re-probe until it heals, then reconnect.
+  if (chooseRecoveryStrategy({ weSpawnedGateway }) === "reconnect") {
+    glog("liveness: backend unresponsive on a gateway we did not spawn (remote tunnel / external gateway) — waiting for it to recover instead of killing the port");
+    if (!win || win.isDestroyed() || isQuitting) return;
+    return reconnectExternalGateway(win);
+  }
   glog("liveness: backend unresponsive — force-killing wedged gateway and restarting");
   // Capture the frozen stack from OUTSIDE the wedged process BEFORE the kill.
   // The in-process faulthandler watchdog races (and loses to) this very SIGKILL,
@@ -1158,6 +1184,35 @@ async function recoverWedgedGateway(win) {
   gatewayStartFailure = null; // re-arm so waitForGateway doesn't fail-fast on the kill we just did
   await startGateway(); // spawn a fresh child before re-waiting
   if (win.isDestroyed() || isQuitting) return;
+  return showLoadingThenConnect(win, BACKEND_URL);
+}
+
+/**
+ * Recover a gateway we do NOT own (reuse path — remote tunnel or external
+ * gateway). We must not kill the port-holder or spawn a local backend. Instead
+ * show the loading screen and gently re-probe /api/status until the backend is
+ * reachable again (the SSH tunnel typically re-establishes within ~15s), then
+ * re-run the normal connect flow — which re-fetches a fresh token over SSH,
+ * since the dropped link likely invalidated the old one. Bailing out whenever
+ * the window is torn down or the app is quitting keeps this loop from outliving
+ * its window.
+ */
+async function reconnectExternalGateway(win) {
+  const wc = win.webContents;
+  try { wc.loadFile(path.join(__dirname, "loading.html")); } catch { /* window may be mid-teardown */ }
+  if (!win || win.isDestroyed() || isQuitting) return; // loadFile may have thrown on a torn-down window; show() would too
+  win.show();
+  sendStatus("Connection lost — waiting for the gateway to come back…");
+  for (;;) {
+    if (!win || win.isDestroyed() || isQuitting) return;
+    let healthy = false;
+    try { await checkBackend(HEALTH_URL); healthy = true; } catch { /* still down */ }
+    if (healthy) break;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  if (!win || win.isDestroyed() || isQuitting) return;
+  glog("liveness: external gateway reachable again — refetching token and reconnecting");
+  gatewayStartFailure = null;
   return showLoadingThenConnect(win, BACKEND_URL);
 }
 
@@ -1461,6 +1516,18 @@ function showScreenPermissionDialog() {
     })
     .catch(() => {});
 }
+
+// Last-resort safety net. An unhandled exception/rejection anywhere on the main
+// process would otherwise tear the app down with no trace — the exact "it just
+// crashed" the remote-tunnel drop used to produce. Log it (best-effort; logging
+// must never itself throw here) and stay alive so the recovery paths above can
+// run. glog appends to the retrievable gateway-launch.log the user can inspect.
+process.on("uncaughtException", (err) => {
+  try { glog(`uncaughtException: ${err && err.stack ? err.stack : err}`); } catch { /* logging must never throw here */ }
+});
+process.on("unhandledRejection", (reason) => {
+  try { glog(`unhandledRejection: ${reason && reason.stack ? reason.stack : reason}`); } catch { /* ignore */ }
+});
 
 app.whenReady().then(async () => {
   // Zoom items are explicit (not `role:`-based) so each zoom change can also

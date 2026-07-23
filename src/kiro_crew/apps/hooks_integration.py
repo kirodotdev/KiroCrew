@@ -98,6 +98,12 @@ async def on_app_enable(
 
     # Promote app-declared crons into the running scheduler.
     try:
+        # Runs on the event loop: registration ends in CronService.add_job ->
+        # _arm_timer -> asyncio.create_task, which REQUIRES a running loop and
+        # raises RuntimeError on a worker thread — leaving a half-persisted,
+        # unowned cron behind. The vetting/persistence I/O is a few
+        # app-declared crons at enable time (not a hot path), so keep the whole
+        # call on the loop rather than offloading and losing timer arming.
         registered = register_app_crons_with_service(app_name, cron_service)
         if registered:
             result["crons_registered"] = registered
@@ -225,6 +231,10 @@ async def on_gateway_startup(*, cron_service: Any = None, broadcast_fn: Any = No
         # Reconcile app-declared crons into the running scheduler.
         if cron_service is not None:
             try:
+                # On the event loop (see on_app_enable): registration ends in
+                # CronService.add_job -> _arm_timer -> asyncio.create_task,
+                # which needs a running loop. Startup reconciles apps
+                # sequentially, so this awaited call cannot starve peers.
                 registered = register_app_crons_with_service(name, cron_service)
                 if registered:
                     logger.info(

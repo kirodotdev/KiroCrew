@@ -1,5 +1,6 @@
 """Unit tests for mcp_playwright_proxy — compression, framing, error handling."""
 
+from kiro_crew import mcp_playwright_proxy as proxy
 from kiro_crew.mcp_playwright_proxy import (
     _compress_to_outline,
     _is_accessibility_tree,
@@ -145,3 +146,29 @@ class TestMaybeCompressResponse:
         msg = {"jsonrpc": "2.0", "id": 3}
         result = _maybe_compress_response(msg)
         assert result == msg
+
+
+class TestScreenshotDir:
+    """The screenshot dir must use tempfile.gettempdir(), not a hardcoded
+    ``/tmp`` fallback that fails on Windows where ``/tmp`` does not exist."""
+
+    def test_uses_platform_tempdir(self):
+        import tempfile
+
+        # The module resolves _SCREENSHOT_DIR at import time from
+        # tempfile.gettempdir(); assert the result lives under the current
+        # process's platform-native temp root.
+        assert proxy._SCREENSHOT_DIR.startswith(tempfile.gettempdir())
+        assert proxy._SCREENSHOT_DIR.endswith("kirocrew-screenshots")
+
+    def test_source_uses_tempfile_gettempdir_not_hardcoded_slash_tmp(self):
+        # Regression: the old code used ``os.environ.get("TMPDIR", "/tmp")``
+        # whose fallback did not exist on Windows and crashed os.makedirs.
+        # Read the source to prove the constant is derived from tempfile,
+        # without reload side effects on the module-level pump state.
+        import inspect
+
+        src = inspect.getsource(proxy)
+        assert "tempfile.gettempdir()" in src
+        # And the deprecated hardcoded fallback is no longer present.
+        assert 'os.environ.get("TMPDIR", "/tmp")' not in src
