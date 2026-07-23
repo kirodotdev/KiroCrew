@@ -37,7 +37,6 @@ from kiro_crew.dashboard.chat_persistence import (
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
-    _THEME_PERSONAS,
     _build_stream_chunk,
     _edit_queued_by_id,
     _emit_agent_assignment,
@@ -62,7 +61,11 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import SecurityEvent, sel
-from kiro_crew.validation import _AGENT_NAME_RE, ARTIFACT_SLUG_RE
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    ARTIFACT_SLUG_RE,
+    normalize_theme_consent_sha,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +122,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_meta = body.get("meta")  # knowledge/files/pastes metadata from frontend
     if not isinstance(user_meta, dict):
         user_meta = None
-    if not isinstance(color_theme, str) or color_theme not in {"", *_THEME_PERSONAS}:
+    theme_consent = body.get("theme_consent") is True
+    # Content-bound persona consent (Codex HIGH fix): the sha256 hex the user
+    # granted in the consent modal. Injection is gated on this matching the
+    # persona text read from disk server-side; the legacy boolean above is
+    # still parsed (backward-compatible bodies + logging) but no longer grants
+    # injection by itself. Normalize + full-match to 64 lowercase hex here so a
+    # malformed value (non-ASCII "é", wrong length, non-str) becomes None
+    # (absent) rather than reaching hmac.compare_digest and crashing the turn
+    # with a TypeError (GPT HIGH fix).
+    theme_consent_sha = normalize_theme_consent_sha(body.get("theme_consent_sha"))
+    if not isinstance(color_theme, str) or not (
+        color_theme == "" or color_theme.startswith("custom-")
+    ):
         color_theme = ""
     if not isinstance(agent, str) or not (agent == "" or _AGENT_NAME_RE.match(agent)):
         _emit_agent_assignment(str(slot_name or ""), str(agent), outcome="denied_invalid")
@@ -204,6 +219,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
     if "color_theme" in body:
         slot.color_theme = color_theme
+        slot.theme_consent = theme_consent
+        slot.theme_consent_sha = theme_consent_sha
 
     if slot.running:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
@@ -1914,6 +1931,13 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.color_index = meta["color_index"]
     if meta.get("color_theme"):
         slot.color_theme = meta["color_theme"]
+        slot.theme_consent = meta.get("theme_consent") is True
+        # Restore from history metadata: re-run the same fail-closed normalizer
+        # so a tampered/legacy JSONL can't seed a malformed sha that later
+        # crashes the compare (GPT HIGH fix).
+        slot.theme_consent_sha = normalize_theme_consent_sha(
+            meta.get("theme_consent_sha")
+        )
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm
     if mm != "persistent":

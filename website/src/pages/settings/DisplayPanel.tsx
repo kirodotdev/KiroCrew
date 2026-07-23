@@ -1,4 +1,6 @@
-import { X } from 'lucide-react'
+import { X, Loader2 } from 'lucide-react'
+import { useState } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
 import { useTheme } from '../../hooks/useTheme'
 import type { ColorTheme } from '../../hooks/useTheme'
@@ -15,11 +17,44 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { clampTintCount, RECENT_TINT_COUNT } from '../../utils/recencyTint'
 
+/**
+ * Lightweight inline spinner (no modal / progress bar — matches the "status,
+ * not ceremony" preference). Colors come from theme CSS vars via Tailwind
+ * (`text-muted`), never hardcoded. Under prefers-reduced-motion the rotating
+ * glyph is replaced by a static "…" so nothing animates.
+ */
+function StatusSpinner() {
+  const reduce = useReducedMotion()
+  if (reduce) {
+    return <span className="text-[13px] leading-none text-muted" aria-hidden="true">…</span>
+  }
+  return (
+    <motion.span
+      className="inline-flex text-muted"
+      aria-hidden="true"
+      animate={{ rotate: 360 }}
+      transition={{ repeat: Infinity, ease: 'linear', duration: 0.8 }}
+    >
+      <Loader2 className="w-3.5 h-3.5" />
+    </motion.span>
+  )
+}
+
+/** Spinner + label pair with a polite live region for screen readers. */
+function StatusIndicator({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[12px] text-muted" role="status" aria-live="polite">
+      <StatusSpinner />
+      {label}
+    </span>
+  )
+}
+
 export function DisplayPanel() {
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
-  const { preference, setTheme, colorTheme, setColorTheme, allThemes } = useTheme()
+  const { preference, setTheme, colorTheme, setColorTheme, allThemes, loadCustomThemes, themeSwitching } = useTheme()
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
 
@@ -50,6 +85,43 @@ export function DisplayPanel() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
   })
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
+
+  // ── Install theme (Level 0) from a local folder or a GitHub repo ──
+  const [installType, setInstallType] = useState<'github' | 'local'>('github')
+  const [installValue, setInstallValue] = useState('')
+  const [installBusy, setInstallBusy] = useState(false)
+  const [installError, setInstallError] = useState<string | null>(null)
+  // Phase for the install status indicator: fetching (api.installTheme in
+  // flight) → applying (auto-selecting the freshly installed theme).
+  const [installPhase, setInstallPhase] = useState<'fetching' | 'applying' | null>(null)
+
+  const handleInstall = async () => {
+    const v = installValue.trim()
+    if (!v || installBusy) return
+    setInstallBusy(true)
+    setInstallError(null)
+    setInstallPhase('fetching')
+    try {
+      const source =
+        installType === 'github'
+          ? ({ type: 'github', url: v } as const)
+          : ({ type: 'local', path: v } as const)
+      const res = await api.installTheme(source)
+      if (!res?.ok) {
+        setInstallError(res?.error || 'Install failed')
+        return
+      }
+      setInstallPhase('applying')
+      await loadCustomThemes()
+      if (res.slug) setColorTheme(`custom-${res.slug}` as ColorTheme)
+      setInstallValue('')
+    } catch (e) {
+      setInstallError(e instanceof Error ? e.message : 'Install failed')
+    } finally {
+      setInstallBusy(false)
+      setInstallPhase(null)
+    }
+  }
 
   return (
     <>
@@ -88,11 +160,16 @@ export function DisplayPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Color Theme">
+      <SettingsSection title="Theme">
         <SettingsCard>
-          <SettingsSelect label="Color Theme" description="Select a color palette for the dashboard" value={colorTheme}
-            options={allThemes.map(t => t.value)} optionLabels={allThemes.map(t => t.label)}
-            onChange={v => setColorTheme(v as ColorTheme)} />
+          <div className="flex items-center gap-2">
+            <div className="flex-1 min-w-0">
+              <SettingsSelect label="Theme" description="Select a theme for the dashboard" value={colorTheme}
+                options={allThemes.map(t => t.value)} optionLabels={allThemes.map(t => t.label)}
+                onChange={v => setColorTheme(v as ColorTheme)} />
+            </div>
+            {themeSwitching && <StatusIndicator label="Applying…" />}
+          </div>
           <SettingsButtonGroup label="Mode" description="Light or dark appearance for the dashboard" value={preference}
             options={[
               { value: 'system', label: 'Auto', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },
@@ -103,12 +180,14 @@ export function DisplayPanel() {
 
           {allThemes.filter(t => t.custom).length > 0 && (
             <div className="flex flex-col gap-1.5 pt-2">
-              <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">Custom Themes</span>
+              <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">Custom & Installed Themes</span>
               {allThemes.filter(t => t.custom).map(t => (
                 <div key={t.value} className="flex items-center justify-between px-3 py-2 rounded-md bg-bg-elevated border border-border">
                   <span className="text-[13px] text-text font-medium">{t.label}</span>
                   <div className="flex items-center gap-2">
-                    <button className="text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none transition-colors" onClick={() => editor.openEditTheme(t.value.replace('custom-', ''))}>Edit</button>
+                    {!t.installed && (
+                      <button className="text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none transition-colors" onClick={() => editor.openEditTheme(t.value.replace('custom-', ''))}>Edit</button>
+                    )}
                     <button className="text-[13px] text-muted hover:text-danger cursor-pointer bg-transparent border-none transition-colors" onClick={() => editor.handleDelete(t.value.replace('custom-', ''))}>Delete</button>
                   </div>
                 </div>
@@ -117,6 +196,30 @@ export function DisplayPanel() {
           )}
           <div className="pt-1">
             <button className="px-2.5 py-1 rounded-md text-[13px] font-medium border border-dashed border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent" onClick={editor.openNewTheme}>+ New Theme</button>
+          </div>
+
+          <div className="flex flex-col gap-1.5 pt-2">
+            <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">Install Theme</span>
+            <div className="flex items-center gap-2">
+              <select aria-label="Theme source" value={installType}
+                onChange={e => setInstallType(e.target.value as 'github' | 'local')}
+                className="text-[13px] px-2 py-1.5 rounded-md bg-bg border border-border text-text cursor-pointer">
+                <option value="github">GitHub</option>
+                <option value="local">Local folder</option>
+              </select>
+              <input aria-label="Theme source location" value={installValue}
+                onChange={e => setInstallValue(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleInstall() }}
+                placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
+                className="flex-1 min-w-0 text-[13px] px-2.5 py-1.5 rounded-md bg-bg border border-border text-text" />
+              <button onClick={handleInstall} disabled={installBusy || !installValue.trim()}
+                aria-live="polite"
+                className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
+                {installBusy && <StatusSpinner />}
+                {installBusy ? (installPhase === 'applying' ? 'Applying…' : 'Fetching…') : 'Install'}
+              </button>
+            </div>
+            {installError && <span className="text-[12px] text-danger">{installError}</span>}
           </div>
         </SettingsCard>
       </SettingsSection>

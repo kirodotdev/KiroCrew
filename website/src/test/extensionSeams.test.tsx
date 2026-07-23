@@ -84,9 +84,8 @@ describe('builtinIcons — nav-icon seam', () => {
 })
 
 describe('themeBranding — theme seam', () => {
-  it('seeds the core lumon branding', () => {
-    const lumon = getThemeBranding('lumon')
-    expect(lumon?.botName).toBe('LumonClaw')
+  it('ships no core-seeded registrations (built-in Lumon removed with theme packs)', () => {
+    expect(getThemeBranding('lumon')).toBeUndefined()
   })
 
   it('returns undefined for a theme with no branding', () => {
@@ -98,11 +97,12 @@ describe('themeBranding — theme seam', () => {
     expect(getThemeBranding('seam-theme')?.botName).toBe('SeamBot')
   })
 
-  it('throws on duplicate theme branding in dev/test; core wins', () => {
-    expect(() => registerThemeBranding({ lumon: { botName: 'Hijack' } })).toThrow(
+  it('throws on duplicate theme branding in dev/test; first registration wins', () => {
+    registerThemeBranding({ 'seam-dup': { botName: 'First', logo: '/a.svg' } })
+    expect(() => registerThemeBranding({ 'seam-dup': { botName: 'Hijack' } })).toThrow(
       /already registered/,
     )
-    expect(getThemeBranding('lumon')?.botName).toBe('LumonClaw')
+    expect(getThemeBranding('seam-dup')?.botName).toBe('First')
   })
 })
 
@@ -379,9 +379,10 @@ describe('composition root — stock extensions.ts is empty', () => {
     // appeared (the seam tests above add their own entries, so compare deltas
     // against a fresh reimport rather than absolute counts).
     await import('../extensions')
-    // lumon is the only seeded theme branding; the icon registry is seeded with
-    // the core lucide set; neither should gain entries from the stock root.
-    expect(getThemeBranding('lumon')?.botName).toBe('LumonClaw')
+    // Theme branding ships unseeded (built-in Lumon removed with theme packs);
+    // the icon registry is seeded with the core lucide set; neither should
+    // gain entries from the stock root.
+    expect(getThemeBranding('lumon')).toBeUndefined()
     expect(getBuiltinIcon('Brain')).toBeDefined()
     // No stock top-bar widget (edition-only slot).
     expect(getTopBarWidgets().every(w => !w.id.startsWith('edition:'))).toBe(true)

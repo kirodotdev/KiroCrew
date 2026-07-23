@@ -10,6 +10,30 @@ import type {
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { installApiTransport } from './apiTransport'
 import { queryClient } from './queryClient'
+import { getStoredConsent } from '../utils/themeConsent'
+
+/**
+ * Resolve the theme-consent token to transmit for an installed pack's chat.
+ *
+ * Two-tier consent, wire side: the client no longer computes a trust boolean —
+ * it just transmits the RAW stored grant (the sha256 the user granted for the
+ * persona content they saw). The backend does the content-binding check: it
+ * injects the persona only if this token equals sha256 of the persona.md it
+ * reads, so a re-install that swaps persona.md (new sha) no longer matches the
+ * stale grant and the never-consented persona is never injected.
+ *
+ * Installed/custom packs are keyed `custom-<slug>` in colorTheme (useTheme), so
+ * slice(7) drops the `custom-` prefix to recover the slug. Returns null (field
+ * omitted from the body) when there's nothing transmittable: no colorTheme, a
+ * built-in theme, no stored grant, or a legacy `'1'`/`''` token (which must
+ * re-prompt, never activate).
+ */
+function themeConsentSha(colorTheme?: string): string | null {
+  if (!colorTheme || !colorTheme.startsWith('custom-')) return null
+  const stored = getStoredConsent(colorTheme.slice('custom-'.length))
+  if (stored === null || stored === '' || stored === '1') return null
+  return stored
+}
 
 export type McpPoolableServer = {
   name: string
@@ -808,8 +832,16 @@ export const api = {
   updateTagColumn: (id: string, body: { name?: string; tag_ids?: string[]; mode?: 'any' | 'all' | 'none'; order?: number; include_untagged?: boolean }) => patch('/api/chat/tag-columns/' + encodeURIComponent(id), body).then(j),
   deleteTagColumn: (id: string) => del('/api/chat/tag-columns/' + encodeURIComponent(id)).then(j),
   reorderTagColumns: (ids: string[]) => fetch('/api/chat/tag-columns/order', { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ ids }) }).then(j),
-  sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, browse?: boolean) =>
-    fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(meta ? { meta } : {}), ...(browse ? { browse: true } : {}) }), signal }),
+  sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, browse?: boolean) => {
+    // theme_consent_sha is the WIRE TOKEN (two-tier consent). The client just
+    // TRANSMITS the raw stored grant (see themeConsentSha) — the server verifies
+    // content-binding, injecting the persona only when this token equals sha256
+    // of the persona.md it reads. Omitted for a built-in theme, no grant, or a
+    // legacy '1'/'' token (must re-prompt). The legacy `theme_consent` boolean
+    // is intentionally NOT sent anymore: gating is content-bound server-side.
+    const themeConsent = themeConsentSha(colorTheme)
+    return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(browse ? { browse: true } : {}) }), signal })
+  },
   // Mid-turn steer: inject into the RUNNING turn instead of queueing. Fire-and-forget
   // JSON response ({ok, steered}); the backend falls back to queue if steer is
   // unavailable so the text is never dropped.
@@ -944,6 +976,8 @@ export const api = {
   dashboardConfig: () => fetch('/api/dashboard/config').then(j),
   updateDashboardConfig: (body: object) => put('/api/dashboard/config', body).then(j),
   createTheme: (body: object) => post('/api/themes', body).then(j),
+  installTheme: (source: { type: 'local'; path: string } | { type: 'github'; url: string }) =>
+    post('/api/themes/install', { source }).then(j),
   updateTheme: (slug: string, body: object) => put('/api/themes/' + encodeURIComponent(slug), body).then(j),
   deleteTheme: (slug: string) => del('/api/themes/' + encodeURIComponent(slug)).then(j),
   themeDetail: (slug: string) => fetch('/api/themes/' + encodeURIComponent(slug)).then(j),

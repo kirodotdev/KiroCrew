@@ -841,6 +841,26 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.publish": ScopeSpec(
         CAPABILITY, capability_default=False, scope_matchers={"destinations": "identifier"}
     ),
+    # Installed theme packs may ship a persona.md whose (consent-gated) text is
+    # injected into the agent's FIRST turn — third-party text entering the
+    # model's context (mirrors capabilities.publish being a governable external
+    # surface). Making it a capability row lets an enterprise POLICY
+    # force-disable persona injection wholesale. Default True: policy-absence
+    # keeps personas working (this is a tone-only surface; the deny floor +
+    # PreToolUse gate still bind every action the persona could ask for), while
+    # a governing policy can pin it off. Data row only — CONTRACT_VERSION and
+    # the evaluator are untouched (per spec).
+    "capabilities.theme_persona": ScopeSpec(CAPABILITY, capability_default=True),
+    # Installing a theme pack fetches third-party content server-side (a local
+    # dir move or a ``git clone`` from a remote URL), stores it, and serves its
+    # sandboxed JS + assets into the operator's dashboard — a content-ingestion
+    # surface that, like capabilities.publish, an enterprise POLICY must be able
+    # to close. Making install a capability row lets a managed-fleet ceiling
+    # ban pack installation wholesale (consulted in ``api_themes_install``).
+    # Default True: policy-absence keeps install working for the standalone
+    # single-user owner; a governing policy can pin it off. Data row only —
+    # CONTRACT_VERSION and the evaluator are untouched (mirrors theme_persona).
+    "capabilities.theme_install": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

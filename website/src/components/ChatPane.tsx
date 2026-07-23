@@ -285,7 +285,8 @@ export default function ChatPane({
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto py-3 min-h-0">
+        {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
+        <div className="chat-container flex-1 overflow-y-auto py-3 min-h-0">
           {messages.length === 0 && !running && (
             <div className="text-center text-muted text-[13px] py-8">Session ready. Type a message to start.</div>
           )}

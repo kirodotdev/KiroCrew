@@ -6,7 +6,8 @@ persona injection, and other helpers used across chat_*.py modules.
 
 from __future__ import annotations
 
-import functools
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -17,7 +18,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
 
-from kiro_crew.agent import _BUNDLED_CFG_DIR, _shipped_prompt
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
@@ -28,7 +28,11 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import SecurityEvent, sel
-from kiro_crew.validation import MAX_TOOL_NAME_LEN, sanitize_string
+from kiro_crew.validation import (
+    MAX_TOOL_NAME_LEN,
+    THEME_CONSENT_SHA_RE,
+    sanitize_string,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -399,51 +403,67 @@ def _apply_incognito_prefix(slot, message: str) -> str:
     return message
 
 
-# Theme persona registry: color_theme slug -> (display tag, persona filename).
-# Adding a persona-backed theme is a single entry here plus dropping the
-# matching config/persona-<slug>.md (auto-packaged via the config/persona-*.md
-# glob in setup.cfg). No new loader function or branching required.
-_THEME_PERSONAS: dict[str, tuple[str, str]] = {
-    "lumon": ("LUMON PERSONA", "persona-lumon.md"),
-    "lcars": ("LCARS PERSONA", "persona-lcars.md"),
-    "bikini-bottom": ("KAREN PERSONA", "persona-bikini-bottom.md"),
-    "knight-rider": ("KITT PERSONA", "persona-knight-rider.md"),
-}
+def _maybe_inject_persona(
+    message: str,
+    color_theme: str,
+    is_new: bool,
+    theme_consent_sha: str | None = None,
+) -> str:
+    """Append a theme persona to *message* on the first turn, when an installed
+    theme (value ``custom-<slug>``) ships a validated ``persona.md``.
 
-
-def _maybe_inject_persona(message: str, color_theme: str, is_new: bool) -> str:
-    """Append a theme persona to *message* on the first turn, when the theme
-    declares one in ``_THEME_PERSONAS``."""
+    ALL personas come from installed packs and are gated on **content-bound**
+    consent: the caller threads ``theme_consent_sha`` (the sha256 hex the user
+    granted in the consent modal, from the frontend), and the pack's persona is
+    injected only when it equals sha256 of the persona text actually read from
+    disk *now*. A stale hash (e.g. a reinstall rewrote ``persona.md``) or a
+    missing hash fails closed, so a never-consented persona can never be
+    injected. The legacy boolean ``theme_consent`` request field does not grant
+    injection on its own -- consent is content-bound (Codex HIGH fix). There is
+    no built-in / unconditional persona path."""
     if not is_new:
         return message
-    spec = _THEME_PERSONAS.get(color_theme)
-    if spec is None:
-        return message
-    tag, filename = spec
-    try:
-        text = _cached_persona(filename)
+    # Installed themes may carry a persona.md (validated at install, §6.5).
+    # Persona activation for INSTALLED packs is content-bound: the sha256 the
+    # user consented to must equal the hash of the persona text we read now
+    # (fail closed on None/mismatch/non-str). This closes the reinstall-swap
+    # gap where a client-asserted boolean would inject a never-consented
+    # persona after persona.md changed. The THEME_CONSENT_SHA_RE full-match is
+    # also a hard guard that only pure 64-hex ASCII ever reaches
+    # hmac.compare_digest below (which raises TypeError on non-ASCII, GPT HIGH).
+    if (
+        color_theme.startswith("custom-")
+        and isinstance(theme_consent_sha, str)
+        and THEME_CONSENT_SHA_RE.fullmatch(theme_consent_sha)
+    ):
+        text = _installed_theme_persona(color_theme[len("custom-"):])
         if text:
-            return message + f"\n[{tag}]\n{text}\n[END {tag}]\n\n"
-        return message
+            actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if hmac.compare_digest(actual, theme_consent_sha):
+                return message + f"\n[THEME PERSONA]\n{text}\n[END THEME PERSONA]\n\n"
+    return message
+
+
+def _installed_theme_persona(slug: str) -> str:
+    """Read an installed theme's ``persona.md`` (bounded), or '' if none.
+
+    Defense-in-depth: re-validate the slug (no traversal) even though install
+    already did, and cap the length at the install-time bound. A lazy import of
+    ``config_dir`` avoids a circular import with the handlers package.
+    """
+    if not slug or not all(("a" <= c <= "z") or ("0" <= c <= "9") or c == "-" for c in slug):
+        return ""
+    try:
+        from kiro_crew.config.loader import config_dir
+
+        p = config_dir() / "themes" / slug / "persona.md"
+        if not p.is_file() or p.is_symlink():
+            return ""
+        text = safe_read_file(str(p))
+        return text[:2000] if text else ""
     except Exception:
-        logger.warning("Persona injection failed", exc_info=True)
-        return message
-
-
-@functools.lru_cache(maxsize=8)
-def _cached_persona(filename: str) -> str:
-    """Load and cache a shipped persona file by name (config/<filename>)."""
-
-    # Defense-in-depth: this helper is importable and LRU-cached, so reject any
-    # filename that could escape the config dir (path traversal / absolute path)
-    # even though current callers only pass hardcoded _THEME_PERSONAS values.
-    if "/" in filename or "\\" in filename or ".." in filename:
-        raise ValueError(f"Invalid persona filename: {filename}")
-
-    _p = _shipped_prompt().parent / filename
-    if not _p.is_file():
-        _p = _BUNDLED_CFG_DIR / filename
-    return safe_read_file(str(_p))
+        logger.warning("Installed theme persona load failed", exc_info=True)
+        return ""
 
 
 def _maybe_consolidate(state, slot) -> None:

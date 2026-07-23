@@ -1,6 +1,7 @@
 import {
   useState,
   useEffect,
+  useRef,
   useCallback,
   createContext,
   useContext,
@@ -20,6 +21,105 @@ export interface ThemeEntry {
   value: string
   label: string
   custom?: boolean
+  /** True for themes installed from a folder/GitHub (read-only), vs editor-created customs. */
+  installed?: boolean
+}
+
+export interface ThemeFontFace {
+  family: string
+  src: string
+  weight?: number
+  style?: string
+}
+
+export interface ThemeBranding {
+  botName?: string
+  logo?: string
+  favicon?: string
+  wordmark?: string
+}
+
+/** Closed enum of overlay placements (mirrors backend `_THEME_OVERLAY_POSITIONS`). */
+export type ThemeOverlayPosition =
+  | 'top'
+  | 'bottom'
+  | 'left'
+  | 'right'
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right'
+  | 'center'
+  | 'fullscreen'
+
+/** Overlay animation hint (mirrors backend `_THEME_OVERLAY_ANIMATIONS`). */
+export type ThemeOverlayAnimation = 'continuous' | 'once' | 'none'
+
+/**
+ * Manifest-declared overlay placement/behaviour (§3.1). The backend now surfaces
+ * `assets.overlays` as objects (was `string[]`); the loader still tolerates the
+ * old string shape for a stale descriptor — see `ThemeExperienceLayer`.
+ * `trigger` is `continuous | activate | idle-<N>s`.
+ */
+export interface ThemeOverlayDecl {
+  id: string
+  position: ThemeOverlayPosition
+  zIndex: number
+  pointerEvents: boolean
+  animation: ThemeOverlayAnimation
+  trigger: string
+}
+
+/** Topbar declaration (§3.1): file presence + optional height/hideOnMobile. */
+export interface ThemeTopbar {
+  dark?: boolean
+  light?: boolean
+  /** CSS length, e.g. `28px`; defaults to `28px` when absent. */
+  height?: string
+  hideOnMobile?: boolean
+}
+
+/** One audio trigger entry (§3.3). Consumed by the audio engine in Stage 4. */
+export interface ThemeAudioTrigger {
+  src: string
+  volume: number
+  /** Seconds; 0 == unlimited (ambient trigger). */
+  maxDuration: number
+}
+
+/** Ambient (looping) audio bed (§3.3). */
+export interface ThemeAudioAmbient {
+  src: string
+  volume: number
+  loop: boolean
+  fadeIn: number
+}
+
+/** Parsed `audio/manifest.json` map (§3.3). Typed now; wired in Stage 4. */
+export interface ThemeAudioManifest {
+  triggers: Record<string, ThemeAudioTrigger>
+  ambient: ThemeAudioAmbient | null
+}
+
+export interface ThemeAssets {
+  branding?: ThemeBranding
+  fonts?: ThemeFontFace[]
+  hasOverrides?: boolean
+  // L2 (consumed in the overlays/audio stage): overlays, topbar, audio, persona.
+  overlays?: ThemeOverlayDecl[]
+  topbar?: ThemeTopbar
+  hasAudio?: boolean
+  /** Parsed audio manifest (Stage 4 consumes this; typed here only). */
+  audio?: ThemeAudioManifest
+  hasPersona?: boolean
+  /**
+   * Persona descriptor for installed L2 packs (backend-provided). Lets the
+   * consent layer bind a grant to the exact persona text: `sha256` fingerprints
+   * the persona.md content so a re-install with changed text re-prompts, and
+   * `text` is shown verbatim in the consent modal so the user sees exactly what
+   * will be injected into the system prompt. Absent on legacy/pre-upgrade descriptors.
+   */
+  personaInfo?: { sha256: string; chars: number; text: string }
 }
 
 export interface CustomThemeData {
@@ -28,6 +128,10 @@ export interface CustomThemeData {
   emoji: string
   dark: Record<string, string>
   light: Record<string, string>
+  /** Capability tier: 0 color · 1 branded · 2 experience. Absent ⇒ 0. */
+  level?: number
+  /** L1/L2 asset descriptor from the backend (installed themes only). */
+  assets?: ThemeAssets
 }
 
 function getSystemMode(): ResolvedMode {
@@ -119,7 +223,370 @@ function injectCustomThemeCSS(theme: CustomThemeData) {
 
 /** Remove injected CSS for a custom theme. */
 function removeCustomThemeCSS(slug: string) {
-  document.getElementById(`mc-custom-theme-${slug}`)?.remove()
+  const safe = _safeSlug(slug)
+  document.getElementById(`mc-custom-theme-${safe}`)?.remove()
+  document.getElementById(`mc-theme-fonts-${safe}`)?.remove()
+}
+
+// ── Level 1 (branded) asset application ──
+//
+// Fonts are injected once per installed theme, scoped to that theme's
+// data-theme selectors, so they only take effect when the theme is active
+// (the browser lazy-loads a @font-face only when a matching element uses it).
+// Branding (favicon / logo / bot-name) and overrides.css are *lifecycle*
+// scoped: applied only while the theme is the active selection and reverted on
+// switch-away. On top of the install-time denylist, overrides.css is also
+// fetched, parsed, and run through the §4.2/§5.1 positive-selector allowlist at
+// runtime (see _scopeOverridesCss) before injection — defense-in-depth so a
+// rule can only reach one of the 10 allowlisted surfaces.
+
+const _assetBase = (slug: string) => `/api/theme/${encodeURIComponent(slug)}/assets`
+const _safeSlug = (slug: string) => slug.replace(/[^a-z0-9-]/g, '')
+const _safeFamily = (f: string) => f.replace(/[^A-Za-z0-9 _-]/g, '')
+// Sanitize a branding asset relative path (e.g. "branding/logo.svg"): allow only
+// safe chars, reject traversal/absolute. Defense-in-depth on top of the backend
+// asset route's own path-containment; returns '' when unusable.
+const _safeAssetPath = (p: string): string => {
+  const cleaned = (p || '').replace(/[^a-z0-9./_-]/gi, '')
+  if (!cleaned || cleaned.startsWith('/') || cleaned.split('/').includes('..')) return ''
+  return cleaned
+}
+
+/** Inject @font-face rules + a --font-body override for an installed theme. */
+function injectThemeFonts(theme: CustomThemeData) {
+  const slug = _safeSlug(theme.slug)
+  if (!slug) return
+  const id = `mc-theme-fonts-${slug}`
+  document.getElementById(id)?.remove()
+  const fonts = theme.assets?.fonts || []
+  const faces: string[] = []
+  // Track the family of the FIRST face that actually made it into the stylesheet
+  // — fonts[0] may have been skipped (bad family/src/format), in which case
+  // keying --font-body off it would name a family with no @font-face behind it.
+  let firstEmittedFamily = ''
+  for (const f of fonts) {
+    const fam = _safeFamily(f.family || '')
+    const file = (f.src || '').replace(/[^a-z0-9./_-]/gi, '')
+    if (!fam || !file.startsWith('styles/fonts/')) continue
+    const fmt = file.endsWith('.woff2') ? 'woff2' : file.endsWith('.ttf') ? 'truetype' : ''
+    if (!fmt) continue
+    const weight = typeof f.weight === 'number' && f.weight >= 100 && f.weight <= 900 ? f.weight : 400
+    const style = f.style === 'italic' ? 'italic' : 'normal'
+    faces.push(
+      `@font-face{font-family:'${fam}';` +
+        `src:url('${_assetBase(slug)}/${file}') format('${fmt}');` +
+        `font-weight:${weight};font-style:${style};font-display:swap;}`
+    )
+    if (!firstEmittedFamily) firstEmittedFamily = fam
+  }
+  if (!faces.length) return
+  const primary = firstEmittedFamily
+  const style = document.createElement('style')
+  style.id = id
+  style.textContent =
+    faces.join('\n') +
+    `\n[data-theme="custom-${slug}-dark"],[data-theme="custom-${slug}-light"]{` +
+    `--font-body:'${primary}','Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;}`
+  document.head.appendChild(style)
+}
+
+// ── §4.2/§5.1 runtime positive-selector scoper ──
+// A selector group from overrides.css is kept only if EVERY selector, after
+// stripping one optional leading [data-theme="…"] / html[data-theme…] scoping
+// prefix, targets one of the 10 allowlisted surfaces (optionally with extra
+// chained classes/pseudo-classes on the SAME base — no descendant/child/sibling
+// combinators, no ids/attribute selectors, never the forbidden set).
+const _OVERRIDES_ID = 'mc-theme-overrides'
+const _ALLOWED_ELEMENTS = new Set(['', 'body', 'button']) // blocks iframe/script/div/…
+const _ALLOWED_CLASSES = new Set([
+  'topbar',
+  'chat-container',
+  'sidebar',
+  'message-bubble',
+  'input-area',
+  'code-block',
+])
+const _FORBIDDEN_CLASSES = new Set(['token', 'credential'])
+
+/** True if a single selector targets an allowlisted surface. */
+function _selectorAllowed(sel: string): boolean {
+  let s = sel.trim()
+  if (!s) return false
+  // Strip one optional leading scoping prefix: [data-theme…] or html[data-theme…].
+  s = s.replace(/^(?:html)?\s*\[data-theme[^\]]*\]\s*/i, '').trim()
+  if (!s) return false
+  // No descendant/child/sibling combinators may remain in the compound.
+  if (/[\s>+~]/.test(s)) return false
+  // No ids or (remaining) attribute selectors — blocks #app-root and [data-auth].
+  if (s.includes('#') || s.includes('[')) return false
+  // Leading element (optional) followed by chained .class / :pseudo / ::pseudo.
+  const m = /^([a-zA-Z][\w-]*)?((?:\.[\w-]+|::?[\w-]+(?:\([^)]*\))?)*)$/.exec(s)
+  if (!m) return false
+  const element = (m[1] || '').toLowerCase()
+  if (!_ALLOWED_ELEMENTS.has(element)) return false
+  const classes = new Set<string>()
+  const pseudoEls = new Set<string>()
+  const tokRe = /(\.[\w-]+)|(::?[\w-]+(?:\([^)]*\))?)/g
+  let t: RegExpExecArray | null
+  while ((t = tokRe.exec(m[2] || '')) !== null) {
+    if (t[1]) {
+      classes.add(t[1].slice(1).toLowerCase())
+    } else if (t[2]) {
+      const dbl = t[2].startsWith('::')
+      const name = t[2].replace(/^::?/, '').replace(/\(.*$/, '').toLowerCase()
+      if (dbl || name === 'before' || name === 'after') pseudoEls.add(name)
+      // single-colon pseudo-classes (:hover, :focus, …) are tolerated / ignored
+    }
+  }
+  for (const c of classes) if (_FORBIDDEN_CLASSES.has(c)) return false
+  if (element === 'body') {
+    // Only bare body / body::before / body::after (single-colon tolerated).
+    if (classes.size) return false
+    for (const p of pseudoEls) if (p !== 'before' && p !== 'after') return false
+    return true
+  }
+  if (element === 'button') return classes.has('primary')
+  // Class-based surfaces (element === ''): allowed if any base class is present.
+  for (const c of classes) if (_ALLOWED_CLASSES.has(c)) return true
+  return false
+}
+
+/** True if a comma selector group is kept (every selector must pass). */
+function _groupAllowed(group: string): boolean {
+  const parts = group.split(',')
+  return parts.length > 0 && parts.every((p) => _selectorAllowed(p))
+}
+
+/**
+ * Filter an overrides.css string to allowlisted rules only. Top-level rules
+ * whose selector group passes are emitted verbatim; @media blocks are recursed
+ * into (wrapper preserved, inner filtered); every other at-rule is dropped.
+ */
+// Declaration-body denylist — mirrors the backend `_THEME_CSS_DENY_RE`
+// (theme_validate.py). Non-global (no /g) so repeated `.test()` is stateless.
+// Applied to KEPT rules' bodies so the runtime boundary is fail-closed for
+// declarations, not just selectors.
+const _DECL_DENY_RE =
+  /@import|expression\s*\(|javascript:|-moz-binding|url\s*\(\s*['"]?\s*(?:https?:)?\/\//i
+
+// Evasion normalization (arbiter finding-2 family): a browser decodes CSS
+// `\`-escapes during tokenization, so `\75 rl(` becomes `url(`. Comments are
+// already stripped globally below. Decode escapes and run the denylist on the
+// decoded text too, so an escaped forbidden token can't hide from the scoper.
+// Mirrors backend `_decode_css_escapes` / `_css_denylist_normalize`. Not a full
+// CSS parse (that is #316) — just the minimal decode the known evasions exploit.
+const _CSS_ESCAPE_RE = /\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g
+function _decodeCssEscapes(s: string): string {
+  return s.replace(_CSS_ESCAPE_RE, (_m, hex: string | undefined, ch: string | undefined) => {
+    if (hex !== undefined) {
+      try {
+        return String.fromCodePoint(parseInt(hex, 16))
+      } catch {
+        return ''
+      }
+    }
+    return ch ?? ''
+  })
+}
+/** True if a declaration body hits the denylist raw OR after escape-decoding. */
+function _declDenied(block: string): boolean {
+  return _DECL_DENY_RE.test(block) || _DECL_DENY_RE.test(_decodeCssEscapes(block))
+}
+
+function _scopeOverridesCss(css: string): { css: string; kept: number; dropped: number } {
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, '') // strip comments
+  let kept = 0
+  let dropped = 0
+
+  const walk = (input: string): string => {
+    const out: string[] = []
+    let i = 0
+    let buf = ''
+    while (i < input.length) {
+      const ch = input[i]
+      // Skip quoted strings verbatim so braces/quotes inside them (e.g.
+      // `content:"}"`) can't desync the brace walker. Mirrors the backend
+      // `_css_skip_string`. (Comments are already stripped above.)
+      if (ch === '"' || ch === "'") {
+        buf += ch
+        i++
+        while (i < input.length) {
+          const c = input[i]
+          buf += c
+          i++
+          if (c === '\\') {
+            if (i < input.length) {
+              buf += input[i]
+              i++
+            }
+            continue
+          }
+          if (c === ch) break
+        }
+        continue
+      }
+      if (ch === '{') {
+        const prelude = buf.trim()
+        buf = ''
+        let depth = 1
+        i++
+        const start = i
+        while (i < input.length && depth > 0) {
+          const c = input[i]
+          if (c === '"' || c === "'") {
+            // Skip string literal so braces inside it don't affect depth.
+            i++
+            while (i < input.length) {
+              const cc = input[i]
+              i++
+              if (cc === '\\') {
+                if (i < input.length) i++
+                continue
+              }
+              if (cc === c) break
+            }
+            continue
+          }
+          if (c === '{') depth++
+          else if (c === '}') depth--
+          if (depth > 0) i++
+        }
+        const block = input.slice(start, i)
+        i++ // skip closing }
+        if (prelude.startsWith('@')) {
+          if (/^@media\b/i.test(prelude)) {
+            const inner = walk(block)
+            if (inner.trim()) out.push(`${prelude}{${inner}}`)
+          }
+          // all other at-rules (@import, @font-face, @supports, …) are dropped
+        } else if (_groupAllowed(prelude)) {
+          // Fail-closed on declaration BODIES too, not just selectors (arbiter):
+          // mirror the backend install denylist at runtime so a declaration that
+          // EVADES install-time validation (encoding drift, future CSS features)
+          // is still dropped before it reaches the main document. Legit packs are
+          // unaffected — their declarations already passed the identical check at
+          // install. Closes the selector-allowlist / declaration-fail-open
+          // asymmetry pending the #316 CSSOM consolidation.
+          if (_declDenied(block)) {
+            dropped++
+          } else {
+            kept++
+            out.push(`${prelude}{${block}}`)
+          }
+        } else {
+          dropped++
+        }
+      } else {
+        buf += ch
+        i++
+      }
+    }
+    return out.join('\n')
+  }
+
+  return { css: walk(src), kept, dropped }
+}
+
+// ── §4.2 pack-relative url() rewriting ──
+// overrides.css is injected as an inline <style>, so a relative url() would
+// resolve against the *document* base (→ 404), not the pack. Rewrite relative
+// refs in KEPT rules to absolute asset-route URLs, resolving against the
+// stylesheet's virtual location `styles/overrides.css` (so `../branding/x.png`
+// → `<assetBase>/branding/x.png`, `fonts/x.ttf` → `<assetBase>/styles/fonts/x.ttf`).
+// data:, absolute (`/…`, incl. already-rewritten `/api/theme/…`) and schemed
+// (http:, blob:, …) urls are left untouched — external refs are install-blocked;
+// this is defense-in-depth. Traversal escaping the pack root is neutralized.
+
+/** Resolve a relative overrides.css url() ref to a sanitized pack-relative path
+ *  (rooted at the pack), or '' if it escapes the pack root / is otherwise unsafe. */
+function _resolveOverrideAsset(rel: string): string {
+  const stack = ['styles'] // stylesheet dir = styles/ (styles/overrides.css)
+  for (const seg of rel.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') {
+      if (!stack.length) return '' // escaped the pack root
+      stack.pop()
+      continue
+    }
+    stack.push(seg)
+  }
+  return _safeAssetPath(stack.join('/'))
+}
+
+/** Rewrite relative url() refs in scoped overrides.css to absolute asset URLs. */
+function _rewriteOverridesUrls(css: string, slug: string): string {
+  const base = _assetBase(slug)
+  return css.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (whole, _q, raw) => {
+    const u = (raw || '').trim()
+    if (!u) return whole
+    if (/^data:/i.test(u)) return whole // inline data URI — leave as-is
+    if (u.startsWith('/')) return whole // absolute same-origin (incl. /api/theme/…)
+    if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return whole // schemed (http:, blob:, …) — install-blocked
+    const safe = _resolveOverrideAsset(u)
+    if (!safe) return "url('')" // traversal / unsafe → neutralized, no raw ../ leaks
+    return `url('${base}/${safe}')`
+  })
+}
+
+// Monotonic token so an in-flight fetch can't re-inject after a switch-away.
+let _overridesToken = 0
+
+/**
+ * Apply/remove the active installed theme's runtime-scoped overrides.css.
+ * Returns a promise that settles once the fetch+inject completes (or
+ * immediately when there is nothing to fetch) so the theme-switch status
+ * indicator has a natural "applied" point to clear on.
+ */
+function applyThemeOverrides(theme: CustomThemeData | undefined): Promise<void> {
+  const myToken = ++_overridesToken
+  document.getElementById(_OVERRIDES_ID)?.remove()
+  const slug = theme ? _safeSlug(theme.slug) : ''
+  if (!theme?.assets?.hasOverrides || !slug) return Promise.resolve()
+  if (typeof fetch !== 'function') return Promise.resolve()
+  return fetch(`${_assetBase(slug)}/styles/overrides.css`)
+    .then((r) => (r.ok ? r.text() : ''))
+    .then((raw) => {
+      if (myToken !== _overridesToken || !raw) return // superseded or empty
+      const { css, dropped } = _scopeOverridesCss(raw)
+      if (dropped) {
+        // eslint-disable-next-line no-console -- intentional theme-scoper diagnostic
+        console.debug(`[theme] overrides.css: dropped ${dropped} disallowed rule(s)`)
+      }
+      if (!css.trim()) return
+      // Rewrite pack-relative url() refs → absolute asset-route URLs (the inline
+      // <style> injection point means relative refs would 404 against the doc base).
+      const scoped = _rewriteOverridesUrls(css, slug)
+      document.getElementById(_OVERRIDES_ID)?.remove()
+      const style = document.createElement('style')
+      style.id = _OVERRIDES_ID
+      style.textContent = scoped
+      document.head.appendChild(style)
+    })
+    .catch(() => {
+      /* fetch failure → no overrides (silent) */
+    })
+}
+
+/** Apply/revert the active installed theme's branding (favicon + logo var). */
+function applyThemeBranding(theme: CustomThemeData | undefined) {
+  const root = document.documentElement
+  document.getElementById('mc-theme-favicon')?.remove()
+  root.style.removeProperty('--theme-logo')
+  const b = theme?.assets?.branding
+  const slug = theme ? _safeSlug(theme.slug) : ''
+  if (!b || !slug) return
+  const fav = b.favicon ? _safeAssetPath(b.favicon) : ''
+  if (fav) {
+    const link = document.createElement('link')
+    link.id = 'mc-theme-favicon'
+    link.rel = 'icon'
+    link.href = `${_assetBase(slug)}/${fav}`
+    document.head.appendChild(link)
+  }
+  const logo = b.logo ? _safeAssetPath(b.logo) : ''
+  if (logo) {
+    root.style.setProperty('--theme-logo', `url('${_assetBase(slug)}/${logo}')`)
+  }
 }
 
 export const THEMES: ThemeEntry[] = [
@@ -138,7 +605,6 @@ export const THEMES: ThemeEntry[] = [
   { value: 'kiro', label: '👻 Kiro' },
   { value: 'intellij', label: '😶‍🌫️ IntelliJ' },
   { value: 'highcontrast', label: '🔆 High Contrast' },
-  { value: 'lumon', label: '🛗 Lumon' },
   { value: 'everforest', label: '🌲 Everforest' },
   { value: 'amoled-midnight', label: '🌌 AMOLED Midnight' },
   { value: 'amoled-grey-calm', label: '🌑 AMOLED Grey Calm' },
@@ -206,7 +672,17 @@ export interface ThemeContextValue {
   setTheme: (pref: ModePreference) => void
   colorTheme: ColorTheme
   setColorTheme: (t: ColorTheme) => void
+  /**
+   * True while an *installed* theme's async assets (branding + runtime-scoped
+   * overrides.css) are being applied after a switch. Built-in / editor-custom
+   * (L0) themes apply synchronously and do not flip this. Drives a lightweight
+   * "Applying…" indicator; guarded by a ~150ms minimum-visible window so it
+   * never flickers.
+   */
+  themeSwitching: boolean
   allThemes: ThemeEntry[]
+  /** Active installed theme's branding bot-name, or null for built-ins / L0. */
+  brandName: string | null
   customThemes: ThemeEntry[]
   customThemeDataMap: Map<string, CustomThemeData>
   themeVersion: number
@@ -263,15 +739,38 @@ function useThemeState(): ThemeContextValue {
   const [themeVersion, setThemeVersion] = useState(0)
   const bumpThemeVersion = useCallback(() => setThemeVersion(v => v + 1), [])
   const [onboarded, setOnboarded] = useState(() => !!localStorage.getItem('mc-onboarded'))
+  // Active installed theme's branding bot-name (null for built-ins / L0 themes).
+  const [brandName, setBrandName] = useState<string | null>(null)
+  // Lightweight "Applying…" indicator: true only while an INSTALLED theme's
+  // async assets settle after a switch (built-ins/editor-customs are instant).
+  const [themeSwitching, setThemeSwitching] = useState(false)
+  // Slugs of installed (folder/GitHub) themes — read synchronously in
+  // setColorTheme (via a ref so its identity stays stable) to decide whether a
+  // selection is one whose async assets warrant the indicator.
+  const installedSlugsRef = useRef<Set<string>>(new Set())
+  // Timestamp of the current switch, for the ~150ms minimum-visible guard.
+  const switchStartRef = useRef(0)
+  // Current colorTheme, read synchronously in setColorTheme (via a ref so its
+  // identity stays stable) to no-op a same-value re-select.
+  const colorThemeRef = useRef(colorTheme)
+  useEffect(() => {
+    colorThemeRef.current = colorTheme
+  }, [colorTheme])
+  // Gate self-repair on the first custom-theme load so a persisted custom-<slug>
+  // selection isn't reset to the default before the theme list has arrived.
+  const [customThemesLoaded, setCustomThemesLoaded] = useState(false)
 
   const loadCustomThemes = useCallback(async () => {
     try {
       const res = await api.themes()
-      const themes: ThemeEntry[] = (res.themes || []).map((t: { slug: string; name: string; emoji: string }) => ({
-        value: `custom-${t.slug}`,
-        label: `${t.emoji} ${t.name}`,
-        custom: true,
-      }))
+      const themes: ThemeEntry[] = (res.themes || []).map(
+        (t: { slug: string; name: string; emoji: string; source?: string }) => ({
+          value: `custom-${t.slug}`,
+          label: `${t.emoji} ${t.name}`,
+          custom: true,
+          installed: t.source === 'installed',
+        })
+      )
       setCustomThemes(themes)
 
       // Fetch all theme details in parallel to avoid serial waterfall
@@ -283,9 +782,11 @@ function useThemeState(): ThemeContextValue {
         if (r.status === 'fulfilled') {
           dataMap.set(r.value.slug, r.value)
           injectCustomThemeCSS(r.value)
+          injectThemeFonts(r.value)
         }
       }
       setCustomThemeDataMap(dataMap)
+      setCustomThemesLoaded(true)
       bumpThemeVersion()
     } catch {
       // API not available yet — ignore
@@ -386,12 +887,88 @@ function useThemeState(): ThemeContextValue {
   }, [mode, setMode_])
 
   const setColorTheme = useCallback((t: ColorTheme) => {
+    // No-op a same-value re-select: nothing changes, and flipping themeSwitching
+    // on for an installed slug here would never clear (the apply effect only runs
+    // when colorTheme actually changes), wedging the "Applying…" indicator.
+    if (t === colorThemeRef.current) return
     safeSetItem('mc-color-theme', t)
+    // Show the "Applying…" indicator only for installed themes, whose branding
+    // + overrides.css apply asynchronously. Built-ins / editor customs (L0) are
+    // instant, so we don't flash for them. A ~150ms minimum-visible guard in
+    // the apply effect below prevents flicker.
+    const slug = t.startsWith('custom-') ? t.slice('custom-'.length) : ''
+    if (slug && installedSlugsRef.current.has(slug)) {
+      switchStartRef.current = Date.now()
+      setThemeSwitching(true)
+    }
     setColorThemeState(t)
     const m = (localStorage.getItem('mc-theme') as ModePreference) || 'system'
     broadcast(m, t)
     persistTheme({ color: t })
   }, [persistTheme])
+
+  // Keep the installed-slug lookup (read in setColorTheme) in sync with the
+  // loaded theme list, without changing setColorTheme's identity.
+  useEffect(() => {
+    installedSlugsRef.current = new Set(
+      customThemes
+        .filter(t => t.installed)
+        .map(t => t.value.slice('custom-'.length))
+    )
+  }, [customThemes])
+
+  // Apply the active installed theme's branding + scoped overrides.css; revert
+  // for built-ins / L0. (Fonts are injected at load, scoped by data-theme.)
+  // When a switch flipped `themeSwitching` on, clear it once the async
+  // overrides fetch settles — held for a ~150ms minimum so it doesn't flicker.
+  useEffect(() => {
+    const active = colorTheme.startsWith('custom-')
+      ? customThemeDataMap.get(colorTheme.slice('custom-'.length))
+      : undefined
+    try {
+      applyThemeBranding(active)
+      setBrandName(active?.assets?.branding?.botName ?? null)
+    } catch {
+      // A branding-application throw must not skip the overrides settle below,
+      // which is what clears the "Applying…" indicator — otherwise it wedges.
+      setBrandName(null)
+    }
+    let cancelled = false
+    applyThemeOverrides(active).finally(() => {
+      if (cancelled) return
+      const remaining = Math.max(0, 150 - (Date.now() - switchStartRef.current))
+      window.setTimeout(() => {
+        if (!cancelled) setThemeSwitching(false)
+      }, remaining)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [colorTheme, customThemeDataMap])
+
+  // Self-repair: a persisted selection that is no longer valid falls back to
+  // the default built-in — a quick pre-apply validity check at boot (and after
+  // any theme-list refresh). Two dangling cases:
+  //   1. An unknown *built-in* value (e.g. a theme removed in a newer build,
+  //      like the retired 'lumon') — can never become valid, so repair at once.
+  //   2. A dangling custom-<slug> whose pack is uninstalled — repair once the
+  //      theme list has loaded (gated so a valid install isn't reset early).
+  useEffect(() => {
+    if (
+      !colorTheme.startsWith('custom-') &&
+      !THEMES.some(t => t.value === colorTheme)
+    ) {
+      setColorTheme(DEFAULT_COLOR_THEME)
+      return
+    }
+    if (!customThemesLoaded) return
+    if (
+      colorTheme.startsWith('custom-') &&
+      !customThemeDataMap.has(colorTheme.slice('custom-'.length))
+    ) {
+      setColorTheme(DEFAULT_COLOR_THEME)
+    }
+  }, [customThemesLoaded, colorTheme, customThemeDataMap, setColorTheme])
 
   /** Add a new custom theme via API, inject CSS, and select it. */
   const addCustomTheme = useCallback(async (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => {
@@ -432,7 +1009,9 @@ function useThemeState(): ThemeContextValue {
     setTheme: setMode_,
     colorTheme,
     setColorTheme,
+    themeSwitching,
     allThemes,
+    brandName,
     customThemes,
     customThemeDataMap,
     themeVersion,

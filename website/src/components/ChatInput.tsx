@@ -1657,7 +1657,8 @@ function ChatInput({
   }, [hasFiles])
 
   return (
-    <div className={`px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
+    // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
+    <div className={`input-area px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
       style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (pendingFiles.length > 0 ? INPUT_DRAG_MIN_H + FILE_PREVIEW_H : INPUT_DRAG_MIN_H) + 'px' } : {}) }}>
 
       {aboveComposer}
@@ -2206,8 +2207,9 @@ function ChatInput({
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
               </button>
+              {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
               <button
-                className="w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={onSend}
                 disabled={(!value.trim() && !pendingFiles.length) || disabled || optimizing || !connected}
                 aria-label="Send"

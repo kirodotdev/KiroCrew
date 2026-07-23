@@ -23,6 +23,7 @@
     "check": "npm run typecheck && npm run lint && npm run test",
     "jscpd": "jscpd .",
     "gen:settings": "node scripts/gen-settings-registry.mjs",
+    "lint:theme-colors": "node scripts/check-theme-colors.mjs",
     "pretest": "npm run jscpd"
   },
   "files": [

@@ -2328,7 +2328,7 @@ async def _run_chat(
             # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
             # name (e.g. "default"), so build_message's is_custom check
             # correctly identifies kirocrew sessions and enables skills.
-            # Lumon persona injection — prepend to message so build_message
+            # Theme persona injection — prepend to message so build_message
             # accounts for it in context budget calculations.
             # Folder breadcrumb: inject once per session, and again after a
             # folder move (no session reset — it's just a label refresh).
@@ -2336,7 +2336,43 @@ async def _run_chat(
             if is_new or slot._folder_changed:
                 folder_path = state.folder_breadcrumb(slot.folder_id) or None
                 slot._folder_changed = False
-            message = _maybe_inject_persona(message, getattr(slot, "color_theme", ""), is_new)
+            _color_theme = getattr(slot, "color_theme", "")
+            # Governance gate (arbiter item 1): installed-pack persona injection
+            # is a governable capability. A policy can force-disable it wholesale
+            # (default-allow standalone). Only consult when a persona could
+            # actually be injected (new turn + installed "custom-" theme) to
+            # avoid a governance call on every ordinary turn. fail_closed=True:
+            # unlike the neighboring capability sites (spawn/messaging/...),
+            # which have always-on chokepoint checks behind governance, this
+            # gate is the ONLY enforcement of the enterprise persona
+            # off-switch — a degraded permissive Decision would silently
+            # bypass a policy that disables capabilities.theme_persona.
+            # A governance-evaluation error therefore denies (persona skipped
+            # for that turn; the chat itself is unaffected).
+            _persona_permitted = True
+            if is_new and isinstance(_color_theme, str) and _color_theme.startswith("custom-"):
+                from kiro_crew.platform.governance_profiles import governance_permits
+
+                _decision = governance_permits(
+                    "capabilities.theme_persona",
+                    "",
+                    session_key=session_key,
+                    log_warning=False,
+                    fail_closed=True,
+                )
+                _persona_permitted = getattr(_decision, "permitted", False)
+                if not _persona_permitted:
+                    logger.info(
+                        "theme persona injection skipped: capabilities."
+                        "theme_persona denied by governance policy"
+                    )
+            if _persona_permitted:
+                message = _maybe_inject_persona(
+                    message,
+                    _color_theme,
+                    is_new,
+                    theme_consent_sha=getattr(slot, "theme_consent_sha", None),
+                )
             # Scale the injected-context budget to the active model's context
             # window so a 200K model gets one-fifth the memory/lessons/history
             # chars a 1M model gets (same share of the window). Resolve from the

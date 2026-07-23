@@ -3328,6 +3328,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             ) : (
             <div
               ref={scrollerRef}
+              // stable theming hook 'chat-container' — see website/docs/theming-contract.md
+              className="chat-container"
               style={{
                 flex: 1,
                 paddingBottom: 8,

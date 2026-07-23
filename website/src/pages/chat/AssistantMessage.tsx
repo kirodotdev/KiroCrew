@@ -201,7 +201,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   }, [term, caseSensitive, currentOcc, effectiveContent, rawMode])
 
   return <div data-role="assistant" className="group/msg">
-    <div ref={contentRef} className="msg-content group/bubble relative text-sm leading-relaxed text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
+    <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-relaxed text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       <MessageErrorBoundary rawContent={smoothedText}>
         <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} rawMode={rawMode} messageTs={messageTs} glow={isStreaming} smooth={smooth} />
       </MessageErrorBoundary>

@@ -1010,7 +1010,7 @@ def _fd_real_path(fd: int) -> str | None:
         if hasattr(fcntl, "F_GETPATH"):  # macOS
             buf = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
             return buf.split(b"\x00", 1)[0].decode()
-    except (OSError, ValueError):
+    except (OSError, ValueError, ImportError):
         pass
     return None
 

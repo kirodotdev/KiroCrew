@@ -741,6 +741,8 @@ class _ChatSlot:
         "_compaction_fail_cooldown_until",
         "color_index",
         "color_theme",
+        "theme_consent",
+        "theme_consent_sha",
         "memory_mode",
         "_ephemeral",
         "_pending_context",
@@ -887,6 +889,13 @@ class _ChatSlot:
         self._compaction_fail_cooldown_until: float = 0.0
         self.color_index: int | None = None
         self.color_theme: str = ""
+        # Explicit user consent for the active INSTALLED theme's experience
+        # layer (persona injection is gated on this; fail-closed default).
+        self.theme_consent: bool = False
+        # Content-bound persona consent: sha256 hex of the installed pack's
+        # persona text the user granted in the consent modal. Persona injection
+        # requires this to match the persona read from disk (fail-closed None).
+        self.theme_consent_sha: str | None = None
         if memory_mode not in VALID_MEMORY_MODES:
             raise ValueError(f"invalid memory_mode {memory_mode!r}, must be one of {VALID_MEMORY_MODES}")
         self.memory_mode: str = memory_mode
@@ -1375,6 +1384,8 @@ class _ChatSlot:
             "tags": list(self.tags),
             "color_index": self.color_index,
             "color_theme": self.color_theme,
+            "theme_consent": self.theme_consent,
+            "theme_consent_sha": self.theme_consent_sha,
             "memory_mode": self.memory_mode,
             "forked_from": self.forked_from,
             "linked_session_key": self.linked_session_key,

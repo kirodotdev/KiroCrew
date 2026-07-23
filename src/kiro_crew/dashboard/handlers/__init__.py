@@ -52,18 +52,12 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: E402, F401
     _resolve_aim_skill_path,
 )
 
-# ── Agents & Themes (extracted to handlers/agents.py) ──
+# ── Agents (extracted to handlers/agents.py) ──
 from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
-    _CSS_VALUE_ALLOWED_RE,
-    _THEME_CSS_VARS_SET,
     _auto_install_agent,
     _find_agent_config,
     _get_config_lock,
     _installed_agent_config,
-    _sanitize_css_value,
-    _slugify_theme_name,
-    _strip_to_allowed_vars,
-    _validate_theme_data,
     api_agent_config,
     api_agent_detail,
     api_agent_metadata_delete,
@@ -88,9 +82,6 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     api_kirocrew_agents_sync,
     api_models,
     api_slash_commands,
-    api_theme_detail,
-    api_themes,
-    api_themes_create,
 )
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_ack,
@@ -331,6 +322,17 @@ from kiro_crew.dashboard.handlers.terminal import (  # noqa: E402, F401
     reap_orphaned_terminals,
 )
 
+# ── Themes: HTTP handlers (extracted to handlers/themes.py) ──
+from kiro_crew.dashboard.handlers.themes import (  # noqa: E402, F401
+    api_theme_asset,
+    api_theme_detail,
+    api_theme_overlay,
+    api_theme_topbar,
+    api_themes,
+    api_themes_create,
+    api_themes_install,
+)
+
 # ── Updates & Logs (extracted to handlers/updates.py) ──
 # NOTE: api_stream passes update_available= to status_snapshot (see updates.py)
 from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
@@ -357,6 +359,16 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.usage import (  # noqa: E402, F401
     api_kiro_usage,
     api_usage,
+)
+
+# ── Themes: validation/parsing core (extracted to theme_validate.py) ──
+from kiro_crew.dashboard.theme_validate import (  # noqa: E402, F401
+    _CSS_VALUE_ALLOWED_RE,
+    _THEME_CSS_VARS_SET,
+    _sanitize_css_value,
+    _slugify_theme_name,
+    _strip_to_allowed_vars,
+    _validate_theme_data,
 )
 
 # ── Prompts & Skills (extracted to handlers/prompts.py) ──

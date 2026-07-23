@@ -386,6 +386,69 @@ an already-published artifact `publish_sync.publish` dispatches to the existing
 default one) before deciding, or a re-publish with no explicit provider could be
 gated against the wrong destination.
 
+### Governed capability: theme-pack persona injection
+
+Installed theme packs (see `themes.md`) can carry a `persona.md` that
+`_maybe_inject_persona` prepends to the first user turn — the first
+user-installed content path that shapes agent behavior. This surface is
+**governed by the `capabilities.theme_persona` `SCOPE_CATALOG` capability
+row** (`capability_default=True`): standalone it defaults to allow, but an
+enterprise POLICY can force-disable **installed-pack persona injection** —
+the scope this row enforces today. (It does NOT gate L2 asset serving —
+overlays/topbar/audio keep working under a denying policy; if wholesale L2
+disablement is wanted it will be its own row or an extension of this one,
+tracked with kirodotdev/KiroCrew#312.) The decision is consulted at the
+injection site
+(`chat_runner.py`, via `governance_permits("capabilities.theme_persona",
+"", session_key=...)`); a denying policy skips injection silently (info log).
+It is a **data row only** — `CONTRACT_VERSION` is unchanged and the evaluator
+(`resolve`/`gate_decision`/`load_security_policy`) is untouched, per this
+spec's design.
+
+**Companion row — pack installation.** The wider content-ingestion surface
+(`POST /api/themes/install`, including a server-side `git clone` of a remote
+pack, then serving its sandboxed JS + assets into the dashboard) is governed by
+a sibling `capabilities.theme_install` `SCOPE_CATALOG` capability row
+(`capability_default=True`, same data-only shape — no `CONTRACT_VERSION` or
+evaluator change). Standalone it defaults to allow; a managed-fleet POLICY can
+ban pack installation wholesale. Consulted in `api_themes_install`
+(`handlers/themes.py`, via `governance_permits("capabilities.theme_install",
+"", fail_closed=True)`) **before any fetch/clone**; a denying policy — or a
+governance-evaluation error (admission chokepoint fails closed) — returns `403`
+and ingests nothing.
+
+Rationale for the tone-only surface (context, not a reason to leave it
+ungoverned):
+
+- The persona is **tone-only by construction**: it is injected as message
+  text, not policy — it cannot grant tools, change refusals, alter the deny
+  patterns, or move any governance ceiling. Every tool call the persona-styled
+  agent makes still passes the full PreToolUse gate, so the Level-1 POLICY
+  ceiling continues to bind all agent *actions* regardless of persona.
+- Activation requires a locally installed pack (filesystem access to
+  `~/.kirocrew/themes/`) plus a per-content sha grant — an actor with that
+  access is already inside the trust boundary the POLICY ceiling models.
+- The persona-injection force-disable that a plain in-boundary actor could
+  not otherwise get is now available to an enterprise POLICY via the
+  capability row above (this supersedes the earlier "deferred to a follow-up
+  row" decision for the persona surface).
+
+**Recorded maintainer decision (2026-07-24, PR #107):** "consent =
+surprise-prevention UX, not authorization" is **accepted as the v1
+contract** for installed-pack personas, and `capabilities.theme_persona`
+ships `capability_default=True`. Rationale: KiroCrew is a single-user,
+self-hosted tool where the pack installer is the machine owner; the persona is
+tone-only, content-bound (sha256), and enterprise-disableable via the row
+above — while a default-off would make every installed persona silently dead
+on arrival. The considered stronger alternatives (server-recorded grants,
+default-off until a headless consent story exists) were explicitly declined
+for v1; server-side grant persistence remains the optional half of
+kirodotdev/KiroCrew#312 and MAY tighten the model later without breaking this
+contract (a stricter server is backward-compatible with consenting clients).
+**Revisit trigger:** #312 MUST be revisited before any persona-scope
+expansion (longer length bound, per-turn injection, or richer pack tiers) —
+scope growth without server-recorded grants is not covered by this decision.
+
 ## Audit
 
 `sel.log_governance_decision` records a `governance_decision` event

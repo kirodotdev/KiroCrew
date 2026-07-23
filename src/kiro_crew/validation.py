@@ -62,6 +62,34 @@ ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 # Valid model name pattern — alphanumerics, hyphens, dots (e.g. "claude-opus-4.8", "deepseek-3.2")
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
+# Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64
+# lowercase hex chars. This value flows into hmac.compare_digest at the
+# persona-injection site (chat_utils._maybe_inject_persona); compare_digest
+# raises TypeError on any non-ASCII str (e.g. "é"), which would abort the whole
+# chat turn (GPT HIGH). Validating full-match here means anything malformed is
+# treated as ABSENT (fail closed: no injection, no crash). \Z (not $) anchors
+# the true end of the string so a trailing newline can't sneak through.
+THEME_CONSENT_SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def normalize_theme_consent_sha(value: Any) -> str | None:
+    """Return a canonical 64-lowercase-hex consent sha, or ``None`` if absent
+    or malformed.
+
+    Fail-closed normalizer for the ``theme_consent_sha`` request field. A
+    non-str, or any string that is not exactly 64 hex chars after ``strip()`` +
+    ``lower()``, yields ``None`` (treated as no consent). This guarantees the
+    value ever handed to ``hmac.compare_digest`` is pure ASCII hex, so a
+    non-ASCII or otherwise malformed value can never crash the turn.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    if THEME_CONSENT_SHA_RE.fullmatch(candidate):
+        return candidate
+    return None
+
+
 # Valid workspace name pattern (same rules as agent names)
 WORKSPACE_NAME_RE = _AGENT_NAME_RE
 

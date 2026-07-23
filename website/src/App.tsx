@@ -1381,7 +1381,8 @@ export default function App() {
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">Skip to content</a>
 
       {/* Topbar */}
-      <header className="topbar-glass relative flex items-center pl-3 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
+      {/* stable theming hook — see website/docs/theming-contract.md */}
+      <header className="topbar topbar-glass relative flex items-center pl-3 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
         {/* Left: mobile menu toggle + inline instance selector. The brand now
             lives in the sidebar (item 1.1). The selector reuses InstanceTabBar's
             visibility rule — it renders nothing unless >=1 remote instance
