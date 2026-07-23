@@ -3908,6 +3908,27 @@ async def api_remote_artifacts_fork(request: web.Request) -> web.Response:
     )
 
 
+def _audit_remote_denied(tool: str, request: web.Request, reason: str) -> None:
+    """Emit a denied SEL event for a remote-artifact permission rejection.
+
+    Every permission decision on the remote-artifact endpoints must produce an
+    SEL record (backend-security-controls) — both the restricted-session guard
+    and the provider capability-gate rejection. Provider/external_id are pulled
+    from the route match so the event carries the same context as the
+    success/error audits, without assuming the local vars are bound yet.
+    """
+    _audit(
+        tool=tool,
+        request=request,
+        outcome="denied",
+        error=reason,
+        extra={
+            "provider": request.match_info.get("provider", ""),
+            "external_id": request.match_info.get("external_id", ""),
+        },
+    )
+
+
 async def api_remote_artifact_get(request: web.Request) -> web.Response:
     """GET /api/remote-artifacts/{provider}/{external_id} — fetch one remote artifact.
 
@@ -3924,11 +3945,17 @@ async def api_remote_artifact_get(request: web.Request) -> web.Response:
 
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
+        _audit_remote_denied(
+            "remote_artifact_fetch",
+            request,
+            "restricted session" if state is not None else "missing dashboard state",
+        )
         return _err("restricted session", status=403)
 
     try:
         provider = get_provider(provider_name)
         if Capability.CONTENT_PULL not in provider.capabilities():
+            _audit_remote_denied("remote_artifact_fetch", request, "provider lacks CONTENT_PULL")
             return _err(f"{provider_name} does not support fetching content", status=400)
         result = await provider.fetch_content(external_id=external_id)
     except Exception as exc:  # noqa: BLE001 — provider failure must not 500 the view
@@ -3950,8 +3977,12 @@ async def api_remote_artifact_get(request: web.Request) -> web.Response:
         outcome="success",
         extra={"provider": provider_name, "external_id": external_id},
     )
-    # Redact the provider payload (content + any metadata) before it leaves.
-    return _json_response(_redact_remote_response(dict(result)))
+    # Redact the provider payload (content + any metadata) before it leaves. The
+    # content can be large (up to MAX_CONTENT_BYTES), so run the redaction regex
+    # off the event loop — same discipline as api_artifact_comments.
+    payload = dict(result)
+    redacted = await _run_off_loop(lambda: _redact_remote_response(payload))
+    return _json_response(redacted)
 
 
 # ── Remote-artifact comments (browse a provider-hosted artifact directly) ────
@@ -4044,6 +4075,11 @@ async def api_remote_artifact_comments(request: web.Request) -> web.Response:
 
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
+        _audit_remote_denied(
+            "remote_artifact_comments",
+            request,
+            "restricted session" if state is not None else "missing dashboard state",
+        )
         return _err("restricted session", status=403)
 
     now = time.monotonic()
@@ -4057,6 +4093,9 @@ async def api_remote_artifact_comments(request: web.Request) -> web.Response:
     try:
         provider = get_provider(provider_name)
         if Capability.COMMENTS_READ not in provider.capabilities():
+            _audit_remote_denied(
+                "remote_artifact_comments", request, "provider lacks COMMENTS_READ"
+            )
             remote_sync_error = f"{provider_name} does not support comments"
         else:
             remote = await provider.fetch_comments(external_id=external_id)
@@ -4075,6 +4114,11 @@ async def api_remote_artifact_post_comment(request: web.Request) -> web.Response
     """POST /api/remote-artifacts/{provider}/{external_id}/comments — scope=shared."""
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
+        _audit_remote_denied(
+            "remote_artifact_post_comment",
+            request,
+            "restricted session" if state is not None else "missing dashboard state",
+        )
         return _err("restricted session", status=403)
 
     provider_name = request.match_info["provider"]
@@ -4110,6 +4154,9 @@ async def api_remote_artifact_post_comment(request: web.Request) -> web.Response
     try:
         provider = get_provider(provider_name)
         if Capability.COMMENTS_WRITE not in provider.capabilities():
+            _audit_remote_denied(
+                "remote_artifact_post_comment", request, "provider lacks COMMENTS_WRITE"
+            )
             return _err(f"{provider_name} does not support comments", status=400)
 
         anchor_obj = None
@@ -4148,6 +4195,11 @@ async def api_remote_artifact_reply_comment(request: web.Request) -> web.Respons
     """POST /api/remote-artifacts/{provider}/{external_id}/comments/{id}/reply."""
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
+        _audit_remote_denied(
+            "remote_artifact_reply_comment",
+            request,
+            "restricted session" if state is not None else "missing dashboard state",
+        )
         return _err("restricted session", status=403)
 
     provider_name = request.match_info["provider"]
@@ -4180,6 +4232,9 @@ async def api_remote_artifact_reply_comment(request: web.Request) -> web.Respons
     try:
         provider = get_provider(provider_name)
         if Capability.COMMENTS_WRITE not in provider.capabilities():
+            _audit_remote_denied(
+                "remote_artifact_reply_comment", request, "provider lacks COMMENTS_WRITE"
+            )
             return _err(f"{provider_name} does not support comments", status=400)
         rc = await provider.reply_comment(
             external_id=external_id, parent_remote_id=parent_id, body=text
@@ -4213,6 +4268,11 @@ async def api_remote_artifact_mark_review(request: web.Request) -> web.Response:
     """
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
+        _audit_remote_denied(
+            "remote_artifact_mark_review",
+            request,
+            "restricted session" if state is not None else "missing dashboard state",
+        )
         return _err("restricted session", status=403)
 
     provider_name = request.match_info["provider"]
@@ -4234,6 +4294,9 @@ async def api_remote_artifact_mark_review(request: web.Request) -> web.Response:
     try:
         provider = get_provider(provider_name)
         if Capability.COMMENTS_WRITE not in provider.capabilities():
+            _audit_remote_denied(
+                "remote_artifact_mark_review", request, "provider lacks COMMENTS_WRITE"
+            )
             return _err(f"{provider_name} does not support comments", status=400)
         await provider.mark_review(external_id=external_id, remote_id=comment_id)
     except Exception as exc:  # noqa: BLE001
@@ -4264,6 +4327,11 @@ async def api_remote_artifact_delete_comment(request: web.Request) -> web.Respon
     """
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
+        _audit_remote_denied(
+            "remote_artifact_delete_comment",
+            request,
+            "restricted session" if state is not None else "missing dashboard state",
+        )
         return _err("restricted session", status=403)
 
     provider_name = request.match_info["provider"]
@@ -4285,6 +4353,9 @@ async def api_remote_artifact_delete_comment(request: web.Request) -> web.Respon
     try:
         provider = get_provider(provider_name)
         if Capability.COMMENTS_WRITE not in provider.capabilities():
+            _audit_remote_denied(
+                "remote_artifact_delete_comment", request, "provider lacks COMMENTS_WRITE"
+            )
             return _err(f"{provider_name} does not support comments", status=400)
         await provider.delete_comment(external_id=external_id, remote_id=comment_id)
     except Exception as exc:  # noqa: BLE001

@@ -28,7 +28,9 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_pull_latest,
     api_artifact_update,
     api_artifact_upstream_status,
+    api_remote_artifact_comments,
     api_remote_artifact_delete_comment,
+    api_remote_artifact_get,
     api_remote_artifact_mark_review,
     api_remote_artifact_post_comment,
     api_remote_artifact_reply_comment,
@@ -1162,3 +1164,91 @@ class TestRemoteCommentGovernanceGate:
         assert resp.status == 201
         assert comment_provider.writes == ["post"]
         assert gate_open == ["fakeprov"]
+
+
+class TestRemoteDenialAudit:
+    """Every permission decision on the remote-artifact endpoints emits an SEL
+    event (backend-security-controls): both the restricted-session guard and the
+    provider capability-gate rejection must audit a ``denied`` outcome."""
+
+    @pytest.fixture
+    def capture_audit(self, monkeypatch):
+        events: list[dict] = []
+        monkeypatch.setattr(
+            art_handlers,
+            "_audit",
+            lambda **kw: events.append(kw),
+        )
+        return events
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "handler,match,body",
+        [
+            (api_remote_artifact_get, {"provider": "p", "external_id": "e"}, None),
+            (api_remote_artifact_comments, {"provider": "p", "external_id": "e"}, None),
+            (api_remote_artifact_post_comment, _MATCH, {"text": "x"}),
+            (api_remote_artifact_reply_comment, _MATCH, {"text": "x"}),
+            (api_remote_artifact_mark_review, _MATCH, None),
+            (api_remote_artifact_delete_comment, _MATCH, None),
+        ],
+    )
+    async def test_restricted_session_emits_denied_audit(
+        self, patch_restricted, capture_audit, handler, match, body
+    ):
+        req = _request(match=match, body=body, restricted=True)
+        resp = await handler(req)
+        assert resp.status == 403
+        # A denied SEL event was recorded for the permission decision.
+        assert any(e.get("outcome") == "denied" for e in capture_audit)
+
+    @pytest.mark.asyncio
+    async def test_capability_rejection_emits_denied_audit(
+        self, patch_restricted, capture_audit, gate_open, monkeypatch
+    ):
+        # A provider that lacks COMMENTS_WRITE → post rejects with 400 + audit.
+        class _NoWrite(_CommentProvider):
+            def capabilities(self):
+                return {Capability.COMMENTS_READ}
+
+        prov = _NoWrite()
+        saved = dict(publish_provider._FACTORIES)
+        publish_provider.reset_providers()
+        publish_provider.register_provider(prov.name, lambda: prov)
+        publish_provider._INSTANCES[prov.name] = prov
+        try:
+            req = _request(body={"text": "x"}, match=_MATCH)
+            resp = await api_remote_artifact_post_comment(req)
+            assert resp.status == 400
+            assert any(e.get("outcome") == "denied" for e in capture_audit)
+        finally:
+            publish_provider._FACTORIES.clear()
+            publish_provider._FACTORIES.update(saved)
+            publish_provider.reset_providers()
+
+    @pytest.mark.asyncio
+    async def test_comments_read_rejection_emits_denied_audit(
+        self, patch_restricted, capture_audit, monkeypatch
+    ):
+        # The comments GET soft-degrades (200 + remote_sync_error) when the
+        # provider lacks COMMENTS_READ, but that capability-gate decision must
+        # still emit a denied SEL event like every other permission decision.
+        class _NoRead(_CommentProvider):
+            def capabilities(self):
+                return set()
+
+        prov = _NoRead()
+        saved = dict(publish_provider._FACTORIES)
+        publish_provider.reset_providers()
+        publish_provider.register_provider(prov.name, lambda: prov)
+        publish_provider._INSTANCES[prov.name] = prov
+        art_handlers._remote_comment_cache.clear()
+        try:
+            req = _request(match=_MATCH)
+            resp = await api_remote_artifact_comments(req)
+            assert resp.status == 200
+            assert any(e.get("outcome") == "denied" for e in capture_audit)
+        finally:
+            publish_provider._FACTORIES.clear()
+            publish_provider._FACTORIES.update(saved)
+            publish_provider.reset_providers()
